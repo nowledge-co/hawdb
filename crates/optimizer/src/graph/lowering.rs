@@ -19,6 +19,7 @@ use super::{
         push_optional_relationship_count_sum_cost_decision,
     },
     logical_rewrite::{rewrite_logical_plan, LogicalRewriteOutput},
+    properties::satisfies_ordering,
     selected_trace::selected_plan_trace,
     stages::{
         ACCESS_PATH_SELECTION_STAGE, DIRECT_PHYSICAL_FALLBACK_STAGE, LOGICAL_GROUPING_STAGE,
@@ -318,6 +319,14 @@ fn select_bounded_sort_plan(
     catalog: &OptimizerCatalog,
     decisions: &mut Vec<String>,
 ) -> PhysicalPlan {
+    if satisfies_ordering(&input, &items, catalog) {
+        decisions.push("elide bounded sort: access path satisfies required ordering".to_string());
+        return PhysicalPlan::LimitExec {
+            offset,
+            limit: Some(limit),
+            input: Box::new(input),
+        };
+    }
     let top_n = PhysicalPlan::TopNExec {
         items: items.clone(),
         offset,
@@ -1007,17 +1016,26 @@ fn lower_logical(
                 stage_events,
             )),
         },
-        LogicalPlan::Sort { items, input } => PhysicalPlan::SortExec {
-            items: items.clone(),
-            input: Box::new(children.lower(
+        LogicalPlan::Sort { items, input } => {
+            let input = children.lower(
                 input,
                 0,
                 catalog,
                 optimizer_context,
                 decisions,
                 stage_events,
-            )),
-        },
+            );
+            if satisfies_ordering(&input, items, catalog) {
+                decisions
+                    .push("elide SortExec: access path satisfies required ordering".to_string());
+                input
+            } else {
+                PhysicalPlan::SortExec {
+                    items: items.clone(),
+                    input: Box::new(input),
+                }
+            }
+        }
         LogicalPlan::Limit {
             offset,
             limit,

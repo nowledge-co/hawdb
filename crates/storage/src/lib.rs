@@ -28,6 +28,8 @@ pub mod artifact_files;
 pub mod background;
 pub mod backup;
 #[doc(hidden)]
+pub mod branch_catalog;
+#[doc(hidden)]
 pub mod branch_head;
 pub mod cache;
 pub mod canonical;

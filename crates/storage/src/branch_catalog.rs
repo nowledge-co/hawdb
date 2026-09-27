@@ -1,0 +1,1310 @@
+//! Bounded, deterministic identity and catalog records for project branches.
+//!
+//! This module is the storage-owned codec seam for the branching contract.  It
+//! deliberately does not open branches or publish files yet; those operations
+//! will build on these validated records.  The wire format is versioned and
+//! checksummed so a future publisher can reject an incomplete or ambiguous
+//! catalog before changing any durable selector.
+
+use crate::durability;
+use hawdb_core::Uuid;
+use hawdb_integrity::crc32c;
+use std::collections::BTreeSet;
+use std::fmt::{self, Display, Formatter};
+use std::fs::{self, File, OpenOptions, TryLockError};
+use std::io::{self, Read, Write};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+const MAGIC: &[u8; 8] = b"HBCATV1\0";
+const VERSION: u16 = 1;
+const MAX_CATALOG_BYTES: usize = 16 * 1024 * 1024;
+const MAX_BRANCHES: u32 = 100_000;
+const MAX_NAME_BYTES: usize = 128;
+const MAX_OWNER_BYTES: usize = 256;
+const MAX_REQUEST_KEY_BYTES: usize = 256;
+const DIGEST_BYTES: usize = 32;
+const METADATA_LOCK_FILE: &str = "metadata.hawdb.lock";
+static CANDIDATE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Stable project-scoped branch identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BranchId(Uuid);
+
+impl BranchId {
+    pub fn new(value: Uuid) -> Result<Self, CatalogError> {
+        if value.is_nil() {
+            return Err(CatalogError::InvalidIdentity("branch UUID must not be nil"));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn parse(value: &str) -> Result<Self, CatalogError> {
+        let uuid = value
+            .parse::<Uuid>()
+            .map_err(|_| CatalogError::InvalidIdentity("branch UUID is not valid"))?;
+        Self::new(uuid)
+    }
+
+    pub const fn as_uuid(self) -> Uuid {
+        self.0
+    }
+}
+
+/// Case-sensitive, validated catalog name.  Names are never used as paths.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BranchName(String);
+
+impl BranchName {
+    pub fn new(value: impl Into<String>) -> Result<Self, CatalogError> {
+        let value = value.into();
+        validate_name(&value)?;
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn from_encoded(value: String) -> Result<Self, CatalogError> {
+        validate_catalog_name(&value)?;
+        Ok(Self(value))
+    }
+}
+
+/// Explicit selector alternatives prevent UUID-looking names from being
+/// silently reinterpreted by an open operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchSelector<'a> {
+    Id(BranchId),
+    Name(&'a BranchName),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchState {
+    Creating,
+    Ready,
+    Expired,
+    Deleting,
+    Deleted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateOutcome {
+    Pending,
+    Succeeded,
+    Aborted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchRecord {
+    pub id: BranchId,
+    pub name: BranchName,
+    pub parent_id: Option<BranchId>,
+    pub source_commit_epoch: u64,
+    pub base_root_digest: Option<[u8; DIGEST_BYTES]>,
+    pub metadata_revision: u64,
+    pub state: BranchState,
+    pub owner: Option<String>,
+    pub expires_at_unix_seconds: Option<i64>,
+    pub create_request_key: String,
+    pub request_fingerprint: [u8; DIGEST_BYTES],
+    pub create_outcome: CreateOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Catalog {
+    pub project_id: BranchId,
+    pub revision: u64,
+    pub branches: Vec<BranchRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateRequest {
+    pub id: BranchId,
+    pub name: BranchName,
+    pub parent_id: BranchId,
+    pub source_commit_epoch: u64,
+    pub base_root_digest: [u8; DIGEST_BYTES],
+    pub owner: Option<String>,
+    pub expires_at_unix_seconds: Option<i64>,
+    pub request_key: String,
+    pub request_fingerprint: [u8; DIGEST_BYTES],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CatalogTransitionError {
+    Conflict(&'static str),
+    InvalidState(&'static str),
+    MissingBranch,
+    MissingParent,
+    StaleRevision { expected: u64, actual: u64 },
+    Overflow(&'static str),
+    Validation(CatalogError),
+}
+
+impl Display for CatalogTransitionError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Conflict(message) => write!(formatter, "branch catalog conflict: {message}"),
+            Self::InvalidState(message) => {
+                write!(formatter, "invalid branch catalog state: {message}")
+            }
+            Self::MissingBranch => formatter.write_str("branch catalog branch is missing"),
+            Self::MissingParent => formatter.write_str("branch catalog parent is missing"),
+            Self::StaleRevision { expected, actual } => write!(
+                formatter,
+                "branch catalog revision mismatch: expected {expected}, found {actual}"
+            ),
+            Self::Overflow(field) => write!(formatter, "branch catalog {field} overflow"),
+            Self::Validation(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for CatalogTransitionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Validation(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl Catalog {
+    pub fn validate(&self) -> Result<(), CatalogError> {
+        if self.branches.len() > MAX_BRANCHES as usize {
+            return Err(CatalogError::Limit("branch count"));
+        }
+        let mut ordered = self.branches.clone();
+        ordered.sort_by_key(|branch| branch.id);
+        for pair in ordered.windows(2) {
+            if pair[0].id == pair[1].id {
+                return Err(CatalogError::Duplicate("branch UUID"));
+            }
+        }
+        let mut names = BTreeSet::new();
+        let mut main_count = 0;
+        for branch in &self.branches {
+            if branch.state != BranchState::Deleted && !names.insert(branch.name.clone()) {
+                return Err(CatalogError::Duplicate("branch name"));
+            }
+            if branch.id == self.project_id {
+                return Err(CatalogError::InvalidIdentity(
+                    "project UUID and branch UUID must be distinct",
+                ));
+            }
+            validate_catalog_name(branch.name.as_str())?;
+            if branch.name.as_str() == "main" {
+                main_count += 1;
+                if branch.parent_id.is_some() {
+                    return Err(CatalogError::InvalidState(
+                        "main branch cannot have a parent",
+                    ));
+                }
+                if matches!(branch.state, BranchState::Deleting | BranchState::Deleted) {
+                    return Err(CatalogError::InvalidState("main branch cannot be deleted"));
+                }
+            }
+            if branch.parent_id == Some(branch.id) {
+                return Err(CatalogError::InvalidState(
+                    "branch cannot be its own parent",
+                ));
+            }
+            if let Some(parent_id) = branch.parent_id
+                && !self
+                    .branches
+                    .iter()
+                    .any(|candidate| candidate.id == parent_id)
+            {
+                return Err(CatalogError::InvalidIdentity(
+                    "branch parent UUID is not present in the catalog",
+                ));
+            }
+            if branch.name.as_str().starts_with("agent/")
+                && branch.name.as_str() != format!("agent/{}", branch.id.as_uuid())
+            {
+                return Err(CatalogError::InvalidName);
+            }
+            validate_bounded_string(
+                &branch.create_request_key,
+                MAX_REQUEST_KEY_BYTES,
+                "create request key",
+            )?;
+            if let Some(owner) = &branch.owner {
+                validate_bounded_string(owner, MAX_OWNER_BYTES, "owner")?;
+            }
+            if branch.state == BranchState::Deleted
+                && branch.create_outcome == CreateOutcome::Pending
+            {
+                return Err(CatalogError::InvalidState(
+                    "deleted branch cannot have a pending create outcome",
+                ));
+            }
+        }
+        if main_count > 1 {
+            return Err(CatalogError::Duplicate("main branch"));
+        }
+        Ok(())
+    }
+
+    /// Reserve a branch identity and name before any child files are created.
+    /// Replaying the same request key and fingerprint returns the original ID;
+    /// a reused key with different input is always a conflict.
+    pub fn reserve_create(
+        &mut self,
+        request: CreateRequest,
+    ) -> Result<BranchId, CatalogTransitionError> {
+        if let Some(existing) = self
+            .branches
+            .iter()
+            .find(|branch| branch.create_request_key == request.request_key)
+        {
+            if existing.request_fingerprint == request.request_fingerprint {
+                return Ok(existing.id);
+            }
+            return Err(CatalogTransitionError::Conflict(
+                "create request key has a different fingerprint",
+            ));
+        }
+        let parent = self
+            .branches
+            .iter()
+            .find(|branch| branch.id == request.parent_id)
+            .ok_or(CatalogTransitionError::MissingParent)?;
+        if parent.state != BranchState::Ready {
+            return Err(CatalogTransitionError::InvalidState(
+                "create parent is not ready",
+            ));
+        }
+        if parent.source_commit_epoch != request.source_commit_epoch {
+            return Err(CatalogTransitionError::Conflict(
+                "create source revision is stale",
+            ));
+        }
+        if self.branches.iter().any(|branch| branch.id == request.id) {
+            return Err(CatalogTransitionError::Conflict(
+                "branch UUID is already used",
+            ));
+        }
+        if self
+            .branches
+            .iter()
+            .any(|branch| branch.name == request.name && branch.state != BranchState::Deleted)
+        {
+            return Err(CatalogTransitionError::Conflict("branch name is reserved"));
+        }
+        let catalog_revision = self.next_revision()?;
+        let mut candidate = self.clone();
+        candidate.revision = catalog_revision;
+        candidate.branches.push(BranchRecord {
+            id: request.id,
+            name: request.name,
+            parent_id: Some(request.parent_id),
+            source_commit_epoch: request.source_commit_epoch,
+            base_root_digest: Some(request.base_root_digest),
+            metadata_revision: 1,
+            state: BranchState::Creating,
+            owner: request.owner,
+            expires_at_unix_seconds: request.expires_at_unix_seconds,
+            create_request_key: request.request_key,
+            request_fingerprint: request.request_fingerprint,
+            create_outcome: CreateOutcome::Pending,
+        });
+        candidate
+            .validate()
+            .map_err(CatalogTransitionError::Validation)?;
+        *self = candidate;
+        Ok(request.id)
+    }
+
+    pub fn complete_create(
+        &mut self,
+        id: BranchId,
+        expected_metadata_revision: u64,
+    ) -> Result<(), CatalogTransitionError> {
+        self.transition_create(id, expected_metadata_revision, CreateOutcome::Succeeded)
+    }
+
+    pub fn abort_create(
+        &mut self,
+        id: BranchId,
+        expected_metadata_revision: u64,
+    ) -> Result<(), CatalogTransitionError> {
+        self.transition_create(id, expected_metadata_revision, CreateOutcome::Aborted)
+    }
+
+    fn transition_create(
+        &mut self,
+        id: BranchId,
+        expected_metadata_revision: u64,
+        outcome: CreateOutcome,
+    ) -> Result<(), CatalogTransitionError> {
+        let index = self
+            .branches
+            .iter()
+            .position(|branch| branch.id == id)
+            .ok_or(CatalogTransitionError::MissingBranch)?;
+        let branch = &self.branches[index];
+        if branch.metadata_revision != expected_metadata_revision {
+            return Err(CatalogTransitionError::StaleRevision {
+                expected: expected_metadata_revision,
+                actual: branch.metadata_revision,
+            });
+        }
+        if branch.state != BranchState::Creating || branch.create_outcome != CreateOutcome::Pending
+        {
+            return Err(CatalogTransitionError::InvalidState(
+                "create transition requires a pending reservation",
+            ));
+        }
+        let mut candidate = self.clone();
+        let catalog_revision = candidate.next_revision()?;
+        let metadata_revision = candidate.next_metadata_revision(index)?;
+        candidate.revision = catalog_revision;
+        candidate.branches[index].metadata_revision = metadata_revision;
+        candidate.branches[index].create_outcome = outcome;
+        candidate.branches[index].state = match outcome {
+            CreateOutcome::Succeeded => BranchState::Ready,
+            CreateOutcome::Aborted => BranchState::Deleted,
+            CreateOutcome::Pending => unreachable!("pending is rejected above"),
+        };
+        candidate
+            .validate()
+            .map_err(CatalogTransitionError::Validation)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    pub fn rename(
+        &mut self,
+        id: BranchId,
+        expected_metadata_revision: u64,
+        new_name: BranchName,
+    ) -> Result<(), CatalogTransitionError> {
+        if new_name.as_str() == "main" || new_name.as_str().starts_with("agent/") {
+            return Err(CatalogTransitionError::Conflict("name is reserved"));
+        }
+        let index = self.index_at_revision(id, expected_metadata_revision)?;
+        if !matches!(
+            self.branches[index].state,
+            BranchState::Ready | BranchState::Expired
+        ) {
+            return Err(CatalogTransitionError::InvalidState(
+                "only a ready or expired branch can be renamed",
+            ));
+        }
+        if self.branches.iter().any(|branch| {
+            branch.id != id && branch.name == new_name && branch.state != BranchState::Deleted
+        }) {
+            return Err(CatalogTransitionError::Conflict("branch name is reserved"));
+        }
+        let mut candidate = self.clone();
+        candidate.revision = candidate.next_revision()?;
+        candidate.branches[index].metadata_revision = candidate.next_metadata_revision(index)?;
+        candidate.branches[index].name = new_name;
+        candidate
+            .validate()
+            .map_err(CatalogTransitionError::Validation)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    pub fn expire(
+        &mut self,
+        id: BranchId,
+        expected_metadata_revision: u64,
+        now_unix_seconds: i64,
+    ) -> Result<(), CatalogTransitionError> {
+        let index = self.index_at_revision(id, expected_metadata_revision)?;
+        let branch = &self.branches[index];
+        if branch.name.as_str() == "main" {
+            return Err(CatalogTransitionError::InvalidState(
+                "main branch cannot expire",
+            ));
+        }
+        if branch.state != BranchState::Ready {
+            return Err(CatalogTransitionError::InvalidState(
+                "only a ready branch can expire",
+            ));
+        }
+        if branch
+            .expires_at_unix_seconds
+            .is_none_or(|expires_at| expires_at > now_unix_seconds)
+        {
+            return Err(CatalogTransitionError::InvalidState(
+                "branch expiry is not due",
+            ));
+        }
+        self.transition_state(index, BranchState::Expired)
+    }
+
+    pub fn begin_delete(
+        &mut self,
+        id: BranchId,
+        expected_metadata_revision: u64,
+    ) -> Result<(), CatalogTransitionError> {
+        let index = self.index_at_revision(id, expected_metadata_revision)?;
+        let branch = &self.branches[index];
+        if branch.name.as_str() == "main" {
+            return Err(CatalogTransitionError::InvalidState(
+                "main branch is protected",
+            ));
+        }
+        if !matches!(branch.state, BranchState::Ready | BranchState::Expired) {
+            return Err(CatalogTransitionError::InvalidState(
+                "branch is not deletable",
+            ));
+        }
+        self.transition_state(index, BranchState::Deleting)
+    }
+
+    pub fn finish_delete(
+        &mut self,
+        id: BranchId,
+        expected_metadata_revision: u64,
+    ) -> Result<(), CatalogTransitionError> {
+        let index = self.index_at_revision(id, expected_metadata_revision)?;
+        if self.branches[index].state != BranchState::Deleting {
+            return Err(CatalogTransitionError::InvalidState(
+                "delete finalization requires a deleting branch",
+            ));
+        }
+        self.transition_state(index, BranchState::Deleted)
+    }
+
+    fn index_at_revision(
+        &self,
+        id: BranchId,
+        expected_metadata_revision: u64,
+    ) -> Result<usize, CatalogTransitionError> {
+        let index = self
+            .branches
+            .iter()
+            .position(|branch| branch.id == id)
+            .ok_or(CatalogTransitionError::MissingBranch)?;
+        let actual = self.branches[index].metadata_revision;
+        if actual != expected_metadata_revision {
+            return Err(CatalogTransitionError::StaleRevision {
+                expected: expected_metadata_revision,
+                actual,
+            });
+        }
+        Ok(index)
+    }
+
+    fn transition_state(
+        &mut self,
+        index: usize,
+        state: BranchState,
+    ) -> Result<(), CatalogTransitionError> {
+        let mut candidate = self.clone();
+        candidate.revision = candidate.next_revision()?;
+        candidate.branches[index].metadata_revision = candidate.next_metadata_revision(index)?;
+        candidate.branches[index].state = state;
+        candidate
+            .validate()
+            .map_err(CatalogTransitionError::Validation)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    fn next_revision(&self) -> Result<u64, CatalogTransitionError> {
+        self.revision
+            .checked_add(1)
+            .ok_or(CatalogTransitionError::Overflow("catalog revision"))
+    }
+
+    fn next_metadata_revision(&self, index: usize) -> Result<u64, CatalogTransitionError> {
+        self.branches[index]
+            .metadata_revision
+            .checked_add(1)
+            .ok_or(CatalogTransitionError::Overflow("branch metadata revision"))
+    }
+
+    /// Encode in UUID order.  Sorting is part of the codec contract, so two
+    /// equivalent catalogs have byte-identical representations.
+    pub fn encode(&self) -> Result<Vec<u8>, CatalogError> {
+        self.validate()?;
+        let mut branches = self.branches.clone();
+        branches.sort_by_key(|branch| branch.id);
+        let mut bytes = Vec::with_capacity(128);
+        bytes.extend_from_slice(MAGIC);
+        put_u16(&mut bytes, VERSION);
+        bytes.extend_from_slice(self.project_id.as_uuid().as_bytes());
+        put_u64(&mut bytes, self.revision);
+        put_u32(&mut bytes, branches.len() as u32);
+        for branch in branches {
+            encode_branch(&mut bytes, &branch)?;
+        }
+        let checksum = crc32c(&bytes).get();
+        put_u32(&mut bytes, checksum);
+        if bytes.len() > MAX_CATALOG_BYTES {
+            return Err(CatalogError::Limit("catalog bytes"));
+        }
+        Ok(bytes)
+    }
+
+    pub fn decode(encoded: &[u8]) -> Result<Self, CatalogError> {
+        if encoded.len() > MAX_CATALOG_BYTES {
+            return Err(CatalogError::Limit("catalog bytes"));
+        }
+        if encoded.len() < MAGIC.len() + 2 + 16 + 8 + 4 + 4 {
+            return Err(CatalogError::Truncated);
+        }
+        let checksum_offset = encoded.len() - 4;
+        let expected = u32::from_le_bytes(
+            encoded[checksum_offset..]
+                .try_into()
+                .map_err(|_| CatalogError::Truncated)?,
+        );
+        let actual = crc32c(&encoded[..checksum_offset]).get();
+        if actual != expected {
+            return Err(CatalogError::Checksum);
+        }
+        let mut reader = Reader::new(&encoded[..checksum_offset]);
+        if reader.take(MAGIC.len())? != MAGIC {
+            return Err(CatalogError::Version);
+        }
+        if reader.u16()? != VERSION {
+            return Err(CatalogError::Version);
+        }
+        let project_id = BranchId::new(Uuid::from_bytes(reader.array()?))?;
+        let revision = reader.u64()?;
+        let count = reader.u32()?;
+        if count > MAX_BRANCHES {
+            return Err(CatalogError::Limit("branch count"));
+        }
+        let mut branches = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            branches.push(decode_branch(&mut reader)?);
+        }
+        if !reader.is_empty() {
+            return Err(CatalogError::TrailingBytes);
+        }
+        let catalog = Self {
+            project_id,
+            revision,
+            branches,
+        };
+        catalog.validate()?;
+        Ok(catalog)
+    }
+}
+
+/// Read a published catalog after applying the same byte bound as the decoder.
+pub fn read_catalog(path: &Path) -> io::Result<Catalog> {
+    let length = fs::metadata(path)?.len();
+    if length > MAX_CATALOG_BYTES as u64 {
+        return Err(invalid_data("branch catalog exceeds its byte limit"));
+    }
+    let mut file = fs::File::open(path)?;
+    let mut encoded = Vec::with_capacity(length as usize);
+    file.read_to_end(&mut encoded)?;
+    Catalog::decode(&encoded).map_err(|error| invalid_data(error.to_string()))
+}
+
+/// Publish a catalog with candidate-file sync followed by atomic replacement.
+///
+/// The destination is never opened for writing.  A failed write or sync removes
+/// only its private candidate; a failed replacement is returned without retry,
+/// because the caller cannot infer whether the directory operation reached the
+/// filesystem.  The caller must reopen before attempting another publication.
+pub fn write_catalog(path: &Path, catalog: &Catalog) -> io::Result<()> {
+    let encoded = catalog
+        .encode()
+        .map_err(|error| invalid_data(error.to_string()))?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| invalid_data("branch catalog destination has no parent"))?;
+    let _metadata_lock = CatalogMetadataLease::acquire(parent)?;
+    let sequence = CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let candidate = parent.join(format!(
+        ".{}.candidate-{}-{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("catalog"),
+        std::process::id(),
+        sequence
+    ));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&candidate)?;
+        file.write_all(&encoded)?;
+        file.sync_all()?;
+        drop(file);
+        durability::durable_replace_file(&candidate, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&candidate);
+    }
+    result
+}
+
+/// Stable project metadata lock.  It is separate from branch writer leases so
+/// independent branch handles can write their own WALs while catalog updates
+/// remain serialized.
+#[derive(Debug)]
+pub struct CatalogMetadataLease {
+    file: File,
+}
+
+impl CatalogMetadataLease {
+    pub fn acquire(project_directory: &Path) -> io::Result<Self> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(project_directory.join(METADATA_LOCK_FILE))?;
+        match file.try_lock() {
+            Ok(()) => Ok(Self { file }),
+            Err(TryLockError::WouldBlock) => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "branch catalog metadata lock is held",
+            )),
+            Err(TryLockError::Error(error)) => Err(error),
+        }
+    }
+}
+
+impl Drop for CatalogMetadataLease {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+fn invalid_data(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+fn validate_name(value: &str) -> Result<(), CatalogError> {
+    validate_bounded_string(value, MAX_NAME_BYTES, "branch name")?;
+    if value == "main" || value.starts_with("agent/") {
+        return Err(CatalogError::ReservedName);
+    }
+    validate_catalog_name(value)
+}
+
+fn validate_catalog_name(value: &str) -> Result<(), CatalogError> {
+    validate_bounded_string(value, MAX_NAME_BYTES, "branch name")?;
+    if value.starts_with('/') || value.ends_with('/') || value.contains('\\') {
+        return Err(CatalogError::InvalidName);
+    }
+    for component in value.split('/') {
+        if component.is_empty() || component == "." || component == ".." {
+            return Err(CatalogError::InvalidName);
+        }
+        if !component
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        {
+            return Err(CatalogError::InvalidName);
+        }
+        if component.bytes().any(|byte| byte.is_ascii_whitespace()) {
+            return Err(CatalogError::InvalidName);
+        }
+    }
+    Ok(())
+}
+
+fn validate_bounded_string(
+    value: &str,
+    maximum: usize,
+    field: &'static str,
+) -> Result<(), CatalogError> {
+    if value.is_empty() || value.len() > maximum || !value.is_ascii() {
+        return Err(CatalogError::Limit(field));
+    }
+    if value.bytes().any(|byte| byte.is_ascii_control()) {
+        return Err(CatalogError::InvalidName);
+    }
+    Ok(())
+}
+
+fn encode_branch(output: &mut Vec<u8>, branch: &BranchRecord) -> Result<(), CatalogError> {
+    output.extend_from_slice(branch.id.as_uuid().as_bytes());
+    put_string(output, branch.name.as_str(), MAX_NAME_BYTES, "branch name")?;
+    put_optional_uuid(output, branch.parent_id);
+    put_u64(output, branch.source_commit_epoch);
+    put_optional_bytes(output, branch.base_root_digest);
+    put_u64(output, branch.metadata_revision);
+    output.push(state_byte(branch.state));
+    put_optional_string(output, branch.owner.as_deref(), MAX_OWNER_BYTES, "owner")?;
+    match branch.expires_at_unix_seconds {
+        Some(value) => {
+            output.push(1);
+            put_i64(output, value);
+        }
+        None => output.push(0),
+    }
+    put_string(
+        output,
+        &branch.create_request_key,
+        MAX_REQUEST_KEY_BYTES,
+        "create request key",
+    )?;
+    output.extend_from_slice(&branch.request_fingerprint);
+    output.push(outcome_byte(branch.create_outcome));
+    Ok(())
+}
+
+fn decode_branch(reader: &mut Reader<'_>) -> Result<BranchRecord, CatalogError> {
+    let id = BranchId::new(Uuid::from_bytes(reader.array()?))?;
+    let name = BranchName::from_encoded(reader.string(MAX_NAME_BYTES, "branch name")?)?;
+    let parent_id = reader.optional_uuid()?;
+    let source_commit_epoch = reader.u64()?;
+    let base_root_digest = reader.optional_array()?;
+    let metadata_revision = reader.u64()?;
+    let state = parse_state(reader.byte()?)?;
+    let owner = reader.optional_string(MAX_OWNER_BYTES, "owner")?;
+    let expires_at_unix_seconds = if reader.byte()? == 1 {
+        Some(reader.i64()?)
+    } else {
+        None
+    };
+    let create_request_key = reader.string(MAX_REQUEST_KEY_BYTES, "create request key")?;
+    let request_fingerprint = reader.array()?;
+    let create_outcome = parse_outcome(reader.byte()?)?;
+    Ok(BranchRecord {
+        id,
+        name,
+        parent_id,
+        source_commit_epoch,
+        base_root_digest,
+        metadata_revision,
+        state,
+        owner,
+        expires_at_unix_seconds,
+        create_request_key,
+        request_fingerprint,
+        create_outcome,
+    })
+}
+
+fn state_byte(value: BranchState) -> u8 {
+    match value {
+        BranchState::Creating => 0,
+        BranchState::Ready => 1,
+        BranchState::Expired => 2,
+        BranchState::Deleting => 3,
+        BranchState::Deleted => 4,
+    }
+}
+
+fn parse_state(value: u8) -> Result<BranchState, CatalogError> {
+    match value {
+        0 => Ok(BranchState::Creating),
+        1 => Ok(BranchState::Ready),
+        2 => Ok(BranchState::Expired),
+        3 => Ok(BranchState::Deleting),
+        4 => Ok(BranchState::Deleted),
+        _ => Err(CatalogError::InvalidEnum("branch state")),
+    }
+}
+
+fn outcome_byte(value: CreateOutcome) -> u8 {
+    match value {
+        CreateOutcome::Pending => 0,
+        CreateOutcome::Succeeded => 1,
+        CreateOutcome::Aborted => 2,
+    }
+}
+
+fn parse_outcome(value: u8) -> Result<CreateOutcome, CatalogError> {
+    match value {
+        0 => Ok(CreateOutcome::Pending),
+        1 => Ok(CreateOutcome::Succeeded),
+        2 => Ok(CreateOutcome::Aborted),
+        _ => Err(CatalogError::InvalidEnum("create outcome")),
+    }
+}
+
+fn put_u16(output: &mut Vec<u8>, value: u16) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn put_u32(output: &mut Vec<u8>, value: u32) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn put_u64(output: &mut Vec<u8>, value: u64) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn put_i64(output: &mut Vec<u8>, value: i64) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn put_string(
+    output: &mut Vec<u8>,
+    value: &str,
+    maximum: usize,
+    field: &'static str,
+) -> Result<(), CatalogError> {
+    validate_bounded_string(value, maximum, field)?;
+    let length = u16::try_from(value.len()).map_err(|_| CatalogError::Limit(field))?;
+    put_u16(output, length);
+    output.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn put_optional_string(
+    output: &mut Vec<u8>,
+    value: Option<&str>,
+    maximum: usize,
+    field: &'static str,
+) -> Result<(), CatalogError> {
+    match value {
+        Some(value) => {
+            output.push(1);
+            put_string(output, value, maximum, field)?;
+        }
+        None => output.push(0),
+    }
+    Ok(())
+}
+
+fn put_optional_uuid(output: &mut Vec<u8>, value: Option<BranchId>) {
+    match value {
+        Some(value) => {
+            output.push(1);
+            output.extend_from_slice(value.as_uuid().as_bytes());
+        }
+        None => output.push(0),
+    }
+}
+
+fn put_optional_bytes(output: &mut Vec<u8>, value: Option<[u8; DIGEST_BYTES]>) {
+    match value {
+        Some(value) => {
+            output.push(1);
+            output.extend_from_slice(&value);
+        }
+        None => output.push(0),
+    }
+}
+
+struct Reader<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> Reader<'a> {
+    const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    fn take(&mut self, count: usize) -> Result<&'a [u8], CatalogError> {
+        let end = self
+            .offset
+            .checked_add(count)
+            .ok_or(CatalogError::Truncated)?;
+        let value = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or(CatalogError::Truncated)?;
+        self.offset = end;
+        Ok(value)
+    }
+
+    fn byte(&mut self) -> Result<u8, CatalogError> {
+        Ok(*self.take(1)?.first().ok_or(CatalogError::Truncated)?)
+    }
+
+    fn u16(&mut self) -> Result<u16, CatalogError> {
+        Ok(u16::from_le_bytes(
+            self.take(2)?
+                .try_into()
+                .map_err(|_| CatalogError::Truncated)?,
+        ))
+    }
+
+    fn u32(&mut self) -> Result<u32, CatalogError> {
+        Ok(u32::from_le_bytes(
+            self.take(4)?
+                .try_into()
+                .map_err(|_| CatalogError::Truncated)?,
+        ))
+    }
+
+    fn u64(&mut self) -> Result<u64, CatalogError> {
+        Ok(u64::from_le_bytes(
+            self.take(8)?
+                .try_into()
+                .map_err(|_| CatalogError::Truncated)?,
+        ))
+    }
+
+    fn i64(&mut self) -> Result<i64, CatalogError> {
+        Ok(i64::from_le_bytes(
+            self.take(8)?
+                .try_into()
+                .map_err(|_| CatalogError::Truncated)?,
+        ))
+    }
+
+    fn array<const N: usize>(&mut self) -> Result<[u8; N], CatalogError> {
+        self.take(N)?
+            .try_into()
+            .map_err(|_| CatalogError::Truncated)
+    }
+
+    fn optional_uuid(&mut self) -> Result<Option<BranchId>, CatalogError> {
+        match self.byte()? {
+            0 => Ok(None),
+            1 => Ok(Some(BranchId::new(Uuid::from_bytes(self.array()?))?)),
+            _ => Err(CatalogError::InvalidEnum("optional UUID marker")),
+        }
+    }
+
+    fn optional_array(&mut self) -> Result<Option<[u8; DIGEST_BYTES]>, CatalogError> {
+        match self.byte()? {
+            0 => Ok(None),
+            1 => Ok(Some(self.array()?)),
+            _ => Err(CatalogError::InvalidEnum("optional digest marker")),
+        }
+    }
+
+    fn string(&mut self, maximum: usize, field: &'static str) -> Result<String, CatalogError> {
+        let length = self.u16()? as usize;
+        if length == 0 || length > maximum {
+            return Err(CatalogError::Limit(field));
+        }
+        let value = std::str::from_utf8(self.take(length)?)
+            .map_err(|_| CatalogError::InvalidUtf8(field))?;
+        validate_bounded_string(value, maximum, field)?;
+        Ok(value.to_owned())
+    }
+
+    fn optional_string(
+        &mut self,
+        maximum: usize,
+        field: &'static str,
+    ) -> Result<Option<String>, CatalogError> {
+        match self.byte()? {
+            0 => Ok(None),
+            1 => Ok(Some(self.string(maximum, field)?)),
+            _ => Err(CatalogError::InvalidEnum("optional string marker")),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.offset == self.bytes.len()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CatalogError {
+    Checksum,
+    Duplicate(&'static str),
+    InvalidEnum(&'static str),
+    InvalidIdentity(&'static str),
+    InvalidName,
+    InvalidState(&'static str),
+    InvalidUtf8(&'static str),
+    Limit(&'static str),
+    ReservedName,
+    TrailingBytes,
+    Truncated,
+    Version,
+}
+
+impl Display for CatalogError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Checksum => formatter.write_str("branch catalog checksum mismatch"),
+            Self::Duplicate(field) => write!(formatter, "duplicate branch catalog {field}"),
+            Self::InvalidEnum(field) => write!(formatter, "invalid branch catalog {field}"),
+            Self::InvalidIdentity(message) => formatter.write_str(message),
+            Self::InvalidName => formatter.write_str("invalid branch catalog name"),
+            Self::InvalidState(message) => formatter.write_str(message),
+            Self::InvalidUtf8(field) => write!(formatter, "branch catalog {field} is not UTF-8"),
+            Self::Limit(field) => write!(formatter, "branch catalog {field} exceeds its limit"),
+            Self::ReservedName => formatter.write_str("branch catalog name is reserved"),
+            Self::TrailingBytes => formatter.write_str("branch catalog has trailing bytes"),
+            Self::Truncated => formatter.write_str("branch catalog is truncated"),
+            Self::Version => formatter.write_str("unsupported branch catalog version"),
+        }
+    }
+}
+
+impl std::error::Error for CatalogError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicUsize;
+
+    static DIRECTORY_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+
+    fn id(byte: u8) -> BranchId {
+        BranchId::new(Uuid::from_bytes([byte; 16])).unwrap()
+    }
+
+    fn record(byte: u8, name: &str) -> BranchRecord {
+        BranchRecord {
+            id: id(byte),
+            name: BranchName::new(name).unwrap(),
+            parent_id: None,
+            source_commit_epoch: 7,
+            base_root_digest: Some([byte; DIGEST_BYTES]),
+            metadata_revision: 3,
+            state: BranchState::Ready,
+            owner: Some("agent-1".to_string()),
+            expires_at_unix_seconds: Some(42),
+            create_request_key: format!("request-{byte}"),
+            request_fingerprint: [byte.wrapping_add(1); DIGEST_BYTES],
+            create_outcome: CreateOutcome::Succeeded,
+        }
+    }
+
+    fn catalog() -> Catalog {
+        Catalog {
+            project_id: id(99),
+            revision: 11,
+            branches: vec![record(2, "second"), record(1, "first")],
+        }
+    }
+
+    fn create_request() -> CreateRequest {
+        CreateRequest {
+            id: id(3),
+            name: BranchName::new("third").unwrap(),
+            parent_id: id(1),
+            source_commit_epoch: 7,
+            base_root_digest: [3; DIGEST_BYTES],
+            owner: Some("worker-1".to_string()),
+            expires_at_unix_seconds: Some(100),
+            request_key: "create-third".to_string(),
+            request_fingerprint: [9; DIGEST_BYTES],
+        }
+    }
+
+    fn temporary_catalog_path() -> (PathBuf, PathBuf) {
+        let directory = std::env::temp_dir().join(format!(
+            "hawdb-branch-catalog-{}-{}",
+            std::process::id(),
+            DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("catalog.hawdb");
+        (directory, path)
+    }
+
+    #[test]
+    fn names_enforce_the_catalog_path_independent_contract() {
+        for value in [
+            "", "main", "agent/x", "/x", "x/", "x//y", "x/../y", "x/y\\z", "x y",
+        ] {
+            assert!(BranchName::new(value).is_err(), "accepted {value:?}");
+        }
+        for value in ["Foo", "foo", "agentx", "a/b.c_2"] {
+            assert!(BranchName::new(value).is_ok(), "rejected {value:?}");
+        }
+        assert!(BranchName::new("agent/generated").is_err());
+    }
+
+    #[test]
+    fn catalog_codec_accepts_reserved_engine_names_only_in_catalog_records() {
+        let mut main = record(1, "ordinary-main");
+        main.name = BranchName::from_encoded("main".to_string()).unwrap();
+        main.parent_id = None;
+        let mut generated = record(2, "generated");
+        generated.name =
+            BranchName::from_encoded(format!("agent/{}", generated.id.as_uuid())).unwrap();
+        generated.parent_id = Some(main.id);
+        let catalog = Catalog {
+            project_id: id(99),
+            revision: 1,
+            branches: vec![main, generated],
+        };
+        let encoded = catalog.encode().unwrap();
+        assert_eq!(Catalog::decode(&encoded).unwrap().branches.len(), 2);
+    }
+
+    #[test]
+    fn codec_is_deterministic_and_round_trips_unsorted_records() {
+        let catalog = catalog();
+        let mut reversed = catalog.clone();
+        reversed.branches.reverse();
+        let encoded = catalog.encode().unwrap();
+        assert_eq!(encoded, reversed.encode().unwrap());
+        let mut expected = catalog.clone();
+        expected.branches.sort_by_key(|branch| branch.id);
+        assert_eq!(Catalog::decode(&encoded).unwrap(), expected);
+    }
+
+    #[test]
+    fn file_publication_syncs_and_reopens_the_canonical_catalog() {
+        let (directory, path) = temporary_catalog_path();
+        let catalog = catalog();
+        write_catalog(&path, &catalog).unwrap();
+        assert_eq!(read_catalog(&path).unwrap().revision, catalog.revision);
+        assert!(path.is_file());
+        assert!(directory.join(METADATA_LOCK_FILE).is_file());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn metadata_lock_is_stable_and_serializes_catalog_writers() {
+        let (directory, _path) = temporary_catalog_path();
+        let first = CatalogMetadataLease::acquire(&directory).unwrap();
+        assert_eq!(
+            CatalogMetadataLease::acquire(&directory)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        drop(first);
+        CatalogMetadataLease::acquire(&directory).unwrap();
+        assert!(directory.join(METADATA_LOCK_FILE).is_file());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn file_publication_failure_keeps_previous_bytes_and_cleans_candidate() {
+        let (directory, path) = temporary_catalog_path();
+        let first = catalog();
+        write_catalog(&path, &first).unwrap();
+        let before = fs::read(&path).unwrap();
+        let _failure = durability::fail_durable_replace_for_destination("catalog.hawdb");
+        assert!(write_catalog(
+            &path,
+            &Catalog {
+                revision: 12,
+                ..first
+            }
+        )
+        .is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(path.is_file());
+        assert!(directory.join(METADATA_LOCK_FILE).is_file());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn read_rejects_an_oversized_catalog_before_loading_bytes() {
+        let (directory, path) = temporary_catalog_path();
+        let file = fs::File::create(&path).unwrap();
+        file.set_len((MAX_CATALOG_BYTES + 1) as u64).unwrap();
+        let error = read_catalog(&path).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn codec_rejects_tampering_versions_duplicates_and_trailing_bytes() {
+        let catalog = Catalog {
+            project_id: id(99),
+            revision: 1,
+            branches: vec![record(1, "one")],
+        };
+        let encoded = catalog.encode().unwrap();
+        let mut tampered = encoded.clone();
+        tampered[10] ^= 1;
+        assert_eq!(Catalog::decode(&tampered), Err(CatalogError::Checksum));
+
+        let mut trailing = encoded.clone();
+        trailing.insert(trailing.len() - 4, 0);
+        let checksum = crc32c(&trailing[..trailing.len() - 4]).get();
+        let checksum_offset = trailing.len() - 4;
+        trailing[checksum_offset..].copy_from_slice(&checksum.to_le_bytes());
+        assert_eq!(Catalog::decode(&trailing), Err(CatalogError::TrailingBytes));
+
+        let duplicate = Catalog {
+            project_id: id(99),
+            revision: 1,
+            branches: vec![record(1, "one"), record(1, "two")],
+        };
+        assert_eq!(
+            duplicate.encode(),
+            Err(CatalogError::Duplicate("branch UUID"))
+        );
+    }
+
+    #[test]
+    fn lifecycle_transitions_are_idempotent_and_revision_bound() {
+        let mut catalog = catalog();
+        let request = create_request();
+        let before = catalog.encode().unwrap();
+        assert_eq!(catalog.reserve_create(request.clone()).unwrap(), id(3));
+        assert_eq!(catalog.branches.len(), 3);
+        assert_eq!(catalog.branches[2].state, BranchState::Creating);
+        assert_eq!(catalog.reserve_create(request).unwrap(), id(3));
+        assert_eq!(catalog.encode().unwrap(), catalog.encode().unwrap());
+        assert_ne!(catalog.encode().unwrap(), before);
+
+        assert_eq!(
+            catalog.complete_create(id(3), 99),
+            Err(CatalogTransitionError::StaleRevision {
+                expected: 99,
+                actual: 1
+            })
+        );
+        catalog.complete_create(id(3), 1).unwrap();
+        assert_eq!(catalog.branches[2].state, BranchState::Ready);
+        catalog
+            .rename(id(3), 2, BranchName::new("renamed").unwrap())
+            .unwrap();
+        catalog.expire(id(3), 3, 100).unwrap();
+        catalog.begin_delete(id(3), 4).unwrap();
+        catalog.finish_delete(id(3), 5).unwrap();
+        assert_eq!(catalog.branches[2].state, BranchState::Deleted);
+
+        let mut reused = create_request();
+        reused.id = id(4);
+        reused.name = BranchName::new("renamed").unwrap();
+        reused.request_key = "create-reused-name".to_string();
+        reused.request_fingerprint = [10; DIGEST_BYTES];
+        assert_eq!(catalog.reserve_create(reused).unwrap(), id(4));
+    }
+
+    #[test]
+    fn failed_reservation_and_cas_leave_catalog_bytes_unchanged() {
+        let mut catalog = catalog();
+        let mut request = create_request();
+        request.source_commit_epoch = 8;
+        let before = catalog.encode().unwrap();
+        assert_eq!(
+            catalog.reserve_create(request),
+            Err(CatalogTransitionError::Conflict(
+                "create source revision is stale"
+            ))
+        );
+        assert_eq!(catalog.encode().unwrap(), before);
+
+        assert_eq!(
+            catalog.rename(id(1), 99, BranchName::new("renamed").unwrap()),
+            Err(CatalogTransitionError::StaleRevision {
+                expected: 99,
+                actual: 3
+            })
+        );
+        assert_eq!(catalog.encode().unwrap(), before);
+    }
+
+    #[test]
+    fn invalid_uuid_and_deleted_pending_state_fail_closed() {
+        assert!(BranchId::new(Uuid::nil()).is_err());
+        assert!(BranchId::parse("not-a-uuid").is_err());
+        let mut branch = record(1, "one");
+        branch.state = BranchState::Deleted;
+        branch.create_outcome = CreateOutcome::Pending;
+        let catalog = Catalog {
+            project_id: id(99),
+            revision: 1,
+            branches: vec![branch],
+        };
+        assert_eq!(
+            catalog.encode(),
+            Err(CatalogError::InvalidState(
+                "deleted branch cannot have a pending create outcome"
+            ))
+        );
+    }
+}

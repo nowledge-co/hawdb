@@ -17,6 +17,15 @@
 use super::*;
 use hawdb_storage::ids::project_node_record;
 
+enum RangeRecord<'a> {
+    Live(&'a NodeRecord),
+    Canonical(&'a CanonicalSegmentReader, NodeId),
+}
+
+#[cfg(test)]
+#[path = "graph_read/ordered_range_tests.rs"]
+mod ordered_range_tests;
+
 impl GraphStore {
     pub fn canonical_node_from_segments(&self, id: NodeId) -> Result<Option<NodeRecord>> {
         self.durable
@@ -1534,6 +1543,8 @@ impl GraphStore {
             .collect()
     }
 
+    /// Uses bounded ordered index delivery when backing data is complete.
+    /// Without an index/projection the ordinary unordered scan remains available.
     pub fn visit_nodes_by_property_range_owned(
         &self,
         label_id: LabelId,
@@ -1542,93 +1553,42 @@ impl GraphStore {
         upper: Option<&(Value, bool)>,
         mut consumer: impl FnMut(NodeRecord) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
-        let Some(reader) = &self.canonical_base else {
-            return self.visit_nodes_owned(Some(label_id), |node| {
-                if node
-                    .properties
-                    .get(property)
-                    .is_some_and(|value| range_bounds_match(value, lower, upper))
-                {
-                    consumer(node)
-                } else {
-                    GraphScanControl::Continue
-                }
-            });
-        };
-        let Some(projection) = self
-            .persistent_property_projection
-            .as_ref()
-            .filter(|projection| {
-                projection.manifest().supports(
-                    label_id,
-                    property,
-                    PersistentPropertyProjectionKind::Range,
-                )
-            })
-        else {
-            return self.visit_nodes_owned(Some(label_id), |node| {
-                if node
-                    .properties
-                    .get(property)
-                    .is_some_and(|value| range_bounds_match(value, lower, upper))
-                {
-                    consumer(node)
-                } else {
-                    GraphScanControl::Continue
-                }
-            });
-        };
-
-        let mut graph_control = GraphScanControl::Continue;
-        let (report, projection_control) = projection
-            .scan_range_candidates(label_id, property, lower, upper, |node_id| {
-                if self.node_tombstones.contains(&node_id) || self.nodes.contains_key(&node_id) {
-                    return Ok(CanonicalScanControl::Continue);
-                }
-                let node = reader.get_node(node_id)?.ok_or_else(|| {
-                    PersistentPropertyProjectionError::Corrupt(format!(
-                        "property projection references missing canonical node {}",
-                        node_id.0
-                    ))
-                })?;
-                if !node.labels.contains(&label_id)
-                    || !node
-                        .properties
-                        .get(property)
-                        .is_some_and(|value| range_bounds_match(value, lower, upper))
+        if let Some(control) =
+            self.try_visit_ordered_range(label_id, property, lower, upper, |value, source| {
+                let node = match source {
+                    RangeRecord::Live(node) => node.clone(),
+                    RangeRecord::Canonical(reader, id) => {
+                        reader.get_node(id)?.ok_or_else(|| {
+                            PersistentPropertyProjectionError::Corrupt(format!(
+                                "range projection references missing canonical node {}",
+                                id.0
+                            ))
+                        })?
+                    }
+                };
+                if !node.labels.contains(&label_id) || node.properties.get(property) != Some(value)
                 {
                     return Err(PersistentPropertyProjectionError::Corrupt(format!(
-                        "property projection candidate {} fails its canonical range predicate",
-                        node_id.0
+                        "range index key disagrees with node {}",
+                        node.id.0
                     )));
                 }
-                if consumer(node) == GraphScanControl::Stop {
-                    graph_control = GraphScanControl::Stop;
-                    return Ok(CanonicalScanControl::Stop);
-                }
-                Ok(CanonicalScanControl::Continue)
-            })
-            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
-        self.graph_index_read_metrics
-            .record_property(PersistentGraphIndexClass::NodeRange, report);
-        if projection_control == CanonicalScanControl::Stop {
-            return Ok(graph_control);
+                Ok(consumer(node))
+            })?
+        {
+            return Ok(control);
         }
-        for node in self.nodes.values() {
-            if self.node_tombstones.contains(&node.id) {
-                continue;
-            }
-            if node.labels.contains(&label_id)
-                && node
-                    .properties
-                    .get(property)
-                    .is_some_and(|value| range_bounds_match(value, lower, upper))
-                && consumer(node.clone()) == GraphScanControl::Stop
+        self.visit_nodes_owned(Some(label_id), |node| {
+            if node
+                .properties
+                .get(property)
+                .is_some_and(|value| range_bounds_match(value, lower, upper))
             {
-                return Ok(GraphScanControl::Stop);
+                consumer(node)
+            } else {
+                GraphScanControl::Continue
             }
-        }
-        Ok(GraphScanControl::Continue)
+        })
     }
 
     fn visit_projected_nodes_by_property_range_owned(
@@ -1640,82 +1600,133 @@ impl GraphStore {
         required_properties: &BTreeSet<String>,
         mut consumer: impl FnMut(ProjectedNodeRecord) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
-        let Some((reader, projection)) = self
-            .canonical_base
+        let mut decode_properties = required_properties.clone();
+        decode_properties.insert(property.to_string());
+        if let Some(control) =
+            self.try_visit_ordered_range(label_id, property, lower, upper, |value, source| {
+                let node = match source {
+                    RangeRecord::Live(node) => {
+                        project_node_record(node.clone(), &decode_properties)
+                    }
+                    RangeRecord::Canonical(reader, id) => reader
+                        .get_projected_node(id, &decode_properties)?
+                        .ok_or_else(|| {
+                            PersistentPropertyProjectionError::Corrupt(format!(
+                                "range projection references missing canonical node {}",
+                                id.0
+                            ))
+                        })?,
+                };
+                if !node.labels.contains(&label_id) || node.properties.get(property) != Some(value)
+                {
+                    return Err(PersistentPropertyProjectionError::Corrupt(format!(
+                        "range index key disagrees with projected node {}",
+                        node.id.0
+                    )));
+                }
+                Ok(consumer(node))
+            })?
+        {
+            return Ok(control);
+        }
+        self.visit_nodes_by_property_range_owned(label_id, property, lower, upper, |node| {
+            consumer(project_node_record(node, required_properties))
+        })
+    }
+
+    fn try_visit_ordered_range(
+        &self,
+        label_id: LabelId,
+        property: &str,
+        lower: Option<&(Value, bool)>,
+        upper: Option<&(Value, bool)>,
+        mut consumer: impl FnMut(
+            &Value,
+            RangeRecord<'_>,
+        ) -> std::result::Result<
+            GraphScanControl,
+            PersistentPropertyProjectionError,
+        >,
+    ) -> Result<Option<GraphScanControl>> {
+        let projection = self
+            .persistent_property_projection
             .as_ref()
-            .zip(self.persistent_property_projection.as_ref())
-            .filter(|(_, projection)| {
+            .filter(|projection| {
                 projection.manifest().supports(
                     label_id,
                     property,
                     PersistentPropertyProjectionKind::Range,
                 )
+            });
+        if self.canonical_base.is_some() && projection.is_none() {
+            return Ok(None);
+        }
+        // The public visitor also accepts undeclared indexes. With no posting
+        // keys, retain its scan fallback; a declared but empty index emits no rows.
+        if self.canonical_base.is_none()
+            && !self
+                .property_index
+                .keys()
+                .any(|(label, key, _)| *label == label_id && key == property)
+        {
+            return Ok(None);
+        }
+        let mut live = self
+            .property_index
+            .iter()
+            .filter(|((label, key, value), _)| {
+                *label == label_id && key == property && range_bounds_match(value, lower, upper)
             })
-        else {
-            return self.visit_nodes_by_property_range_owned(
-                label_id,
-                property,
-                lower,
-                upper,
-                |node| consumer(project_node_record(node, required_properties)),
-            );
+            .flat_map(|((_, _, value), ids)| ids.iter().map(move |id| (value, id)))
+            .filter(|(_, id)| !self.node_tombstones.contains(id))
+            .filter_map(|(value, id)| self.nodes.get(id).map(|node| (value, node)))
+            .peekable();
+        let integrity_error = |error: PersistentPropertyProjectionError| {
+            HawDBError::StorageIntegrity(error.to_string())
         };
-
-        let mut decode_properties = required_properties.clone();
-        decode_properties.insert(property.to_string());
-        let mut graph_control = GraphScanControl::Continue;
-        let (report, projection_control) = projection
-            .scan_range_candidates(label_id, property, lower, upper, |node_id| {
-                if self.node_tombstones.contains(&node_id) || self.nodes.contains_key(&node_id) {
-                    return Ok(CanonicalScanControl::Continue);
-                }
-                let node = reader
-                    .get_projected_node(node_id, &decode_properties)?
-                    .ok_or_else(|| {
-                        PersistentPropertyProjectionError::Corrupt(format!(
-                            "property projection references missing canonical node {}",
-                            node_id.0
-                        ))
-                    })?;
-                if !node.labels.contains(&label_id)
-                    || !node
-                        .properties
-                        .get(property)
-                        .is_some_and(|value| range_bounds_match(value, lower, upper))
-                {
-                    return Err(PersistentPropertyProjectionError::Corrupt(format!(
-                        "property projection candidate {} fails its canonical range predicate",
-                        node_id.0
-                    )));
-                }
-                if consumer(node) == GraphScanControl::Stop {
-                    graph_control = GraphScanControl::Stop;
-                    return Ok(CanonicalScanControl::Stop);
-                }
-                Ok(CanonicalScanControl::Continue)
-            })
-            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
-        self.graph_index_read_metrics
-            .record_property(PersistentGraphIndexClass::NodeRange, report);
-        if projection_control == CanonicalScanControl::Stop {
-            return Ok(graph_control);
-        }
-        for node in self.nodes.values() {
-            if self.node_tombstones.contains(&node.id) {
-                continue;
+        if let (Some(reader), Some(projection)) = (&self.canonical_base, projection) {
+            // Both inputs use Value::cmp, not the mixed-numeric predicate
+            // comparator. Keep only the projection's bounded block and one
+            // borrowed delta entry; never materialize or sort result nodes.
+            let (report, control) = projection
+                .scan_range_entries(label_id, property, lower, upper, |value, id| {
+                    if self.node_tombstones.contains(&id) || self.nodes.contains_key(&id) {
+                        return Ok(CanonicalScanControl::Continue);
+                    }
+                    while live
+                        .peek()
+                        .is_some_and(|(key, node)| (*key, node.id) <= (value, id))
+                    {
+                        let (key, node) = live.next().expect("peeked live range entry");
+                        if consumer(key, RangeRecord::Live(node))? == GraphScanControl::Stop {
+                            return Ok(CanonicalScanControl::Stop);
+                        }
+                    }
+                    Ok(
+                        if consumer(value, RangeRecord::Canonical(reader, id))?
+                            == GraphScanControl::Stop
+                        {
+                            CanonicalScanControl::Stop
+                        } else {
+                            CanonicalScanControl::Continue
+                        },
+                    )
+                })
+                .map_err(integrity_error)?;
+            self.graph_index_read_metrics
+                .record_property(PersistentGraphIndexClass::NodeRange, report);
+            if control == CanonicalScanControl::Stop {
+                return Ok(Some(GraphScanControl::Stop));
             }
-            if node.labels.contains(&label_id)
-                && node
-                    .properties
-                    .get(property)
-                    .is_some_and(|value| range_bounds_match(value, lower, upper))
-                && consumer(project_node_record(node.clone(), &decode_properties))
-                    == GraphScanControl::Stop
+        }
+        for (value, node) in live {
+            if consumer(value, RangeRecord::Live(node)).map_err(integrity_error)?
+                == GraphScanControl::Stop
             {
-                return Ok(GraphScanControl::Stop);
+                return Ok(Some(GraphScanControl::Stop));
             }
         }
-        Ok(GraphScanControl::Continue)
+        Ok(Some(GraphScanControl::Continue))
     }
 
     pub fn seek_nodes_by_full_text_property<'a>(

@@ -19,7 +19,19 @@ use super::{
 use hawdb_plan_cypher::write_projection_expression;
 use hawdb_plan_cypher::{SortDirection, SortItem, SortKey};
 
-pub(super) fn selected_plan_properties(plan: &PhysicalPlan) -> PhysicalProperties {
+mod ordering;
+pub(super) use ordering::satisfies_ordering;
+
+pub(super) fn selected_plan_properties(
+    plan: &PhysicalPlan,
+    catalog: &super::OptimizerCatalog,
+) -> PhysicalProperties {
+    let mut properties = non_ordering_properties(plan);
+    properties.ordering = sort_ordering_keys(&ordering::selected_ordering(plan, catalog));
+    properties
+}
+
+fn non_ordering_properties(plan: &PhysicalPlan) -> PhysicalProperties {
     match plan {
         PhysicalPlan::GraphMatchExec { .. } => PhysicalProperties {
             distribution: Distribution::Single,
@@ -48,22 +60,19 @@ pub(super) fn selected_plan_properties(plan: &PhysicalPlan) -> PhysicalPropertie
         | PhysicalPlan::NodeColumnLookupExec { input, .. }
         | PhysicalPlan::AdjacencyExpandExec { input, .. }
         | PhysicalPlan::AdjacencyExistsExec { input, .. }
-        | PhysicalPlan::OptionalDegreeExec { input, .. } => selected_plan_properties(input),
-        PhysicalPlan::SortExec { items, input } => {
-            let mut properties = selected_plan_properties(input);
-            properties.ordering = sort_ordering_keys(items);
+        | PhysicalPlan::OptionalDegreeExec { input, .. } => non_ordering_properties(input),
+        PhysicalPlan::SortExec { input, .. } => {
+            let mut properties = non_ordering_properties(input);
             properties.memory_budget = MemoryBudgetClass::Blocking;
             properties
         }
-        PhysicalPlan::TopNExec { items, input, .. } => {
-            let mut properties = selected_plan_properties(input);
-            properties.ordering = sort_ordering_keys(items);
+        PhysicalPlan::TopNExec { input, .. } => {
+            let mut properties = non_ordering_properties(input);
             properties.memory_budget = MemoryBudgetClass::RowLinear;
             properties
         }
         PhysicalPlan::AggregateExec { input, .. } | PhysicalPlan::DistinctExec { input } => {
-            let mut properties = selected_plan_properties(input);
-            properties.ordering.clear();
+            let mut properties = non_ordering_properties(input);
             properties.memory_budget = MemoryBudgetClass::Blocking;
             properties
         }
@@ -167,8 +176,8 @@ pub(super) fn selected_plan_properties(plan: &PhysicalPlan) -> PhysicalPropertie
         },
         PhysicalPlan::NodeCartesianProductExec { left, right }
         | PhysicalPlan::HashJoinExec { left, right, .. } => {
-            let left = selected_plan_properties(left);
-            let right = selected_plan_properties(right);
+            let left = non_ordering_properties(left);
+            let right = non_ordering_properties(right);
             PhysicalProperties {
                 distribution: Distribution::Single,
                 covering_fields: left

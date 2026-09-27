@@ -1090,85 +1090,108 @@ fn document_run_partial_writes_flush_failures_and_unwind_cleanup() {
 #[test]
 #[ignore = "explicit local Bazel document-frequency fuzz campaign"]
 fn document_frequency_spill_differential_campaign() {
-    for seed in 0..128u64 {
-        let root = TestRoot::new();
-        let mut random = seed + 1;
-        let mut next = || {
-            random ^= random << 13;
-            random ^= random >> 7;
-            random ^= random << 17;
-            random
-        };
-        let analyzer = SearchAnalyzerLexicon::default()
-            .with_normalized_alias_rule(["graph storage"], ["graph"])
-            .with_stopwords(["skipword"]);
-        let mut document = SearchDocument {
-            id: format!("seed-{seed}"),
-            title: "graph storage graph".into(),
-            content: String::new(),
-            embedding: None,
-            metadata: BTreeMap::new(),
-        };
-        for index in 0..(256 + seed as usize % 129) {
-            document
-                .content
-                .push_str(&format!("entry{:05} ", (index * 97) % 997));
-            let suffix = match next() % 6 {
-                0 => "graph storage ",
-                1 => "GraphStorage graph_storage ",
-                2 => "\u{4e2d}\u{6587}\u{6570}\u{636e}\u{5e93} ",
-                3 => "skipword graph ",
-                4 => "APIClient api client ",
-                _ => "graph graph graph ",
-            };
-            document.content.push_str(suffix);
-        }
-        if seed % 2 == 0 {
-            document
-                .metadata
-                .insert("source_id".into(), "GraphStorage graph storage".into());
-        }
-        if seed % 3 == 0 {
-            document
-                .metadata
-                .insert("space_id".into(), "APIClient api client".into());
-        }
-        let expected = reference_frequencies(&document, &analyzer);
-        let config = LexicalProjectionConfig {
-            build_memory_bytes: NonZeroU64::new(34_816 + (seed % 8) * 1024).unwrap(),
-            max_term_bytes: NonZeroU64::new(128).unwrap(),
-            ..Default::default()
-        };
-        let mut pool = SpillRuns::new(&root.0, 1, config);
-        let result = analyze(&document, &analyzer, &mut pool, &mut Vec::new(), &mut 0).unwrap();
-        assert!(
-            matches!(result, AnalyzedDocument::Spilled { .. }),
-            "seed={seed}"
-        );
-        let bytes = pool.bytes;
-        let runs = pool.sequence;
-        assert!(runs >= 3, "seed={seed}");
-        assert_eq!(result.document_len(), expected.1, "seed={seed}");
-        let mut actual = BTreeMap::new();
-        result
-            .visit(config, |term, frequency, _| {
-                assert!(actual.insert(term.into_untracked()?, frequency).is_none());
-                Ok(())
+    const SEEDS: u64 = 128;
+    // Each seed builds and tears down its own spill root, so seeds are
+    // independent and safe to spread across worker threads.
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |count| count.get() as u64)
+        .min(SEEDS);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|worker| {
+                scope.spawn(move || {
+                    let mut seed = worker;
+                    while seed < SEEDS {
+                        run_seed(seed);
+                        seed += workers;
+                    }
+                })
             })
-            .unwrap();
-        assert_eq!(actual, expected.0, "seed={seed}");
-        assert_eq!(root.entries(), 0);
-        for (limit, accepted) in [(bytes, true), (bytes - 1, false)] {
-            let limited = LexicalProjectionConfig {
-                max_spill_bytes: NonZeroU64::new(limit).unwrap(),
-                ..config
-            };
-            let mut pool = SpillRuns::new(&root.0, 1, limited);
-            let result = analyze(&document, &analyzer, &mut pool, &mut Vec::new(), &mut 0);
-            assert_eq!(result.is_ok(), accepted, "seed={seed}, limit={limit}");
-            drop(result);
-            assert_eq!(root.entries(), 0);
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
         }
+    });
+}
+
+fn run_seed(seed: u64) {
+    let root = TestRoot::new();
+    let mut random = seed + 1;
+    let mut next = || {
+        random ^= random << 13;
+        random ^= random >> 7;
+        random ^= random << 17;
+        random
+    };
+    let analyzer = SearchAnalyzerLexicon::default()
+        .with_normalized_alias_rule(["graph storage"], ["graph"])
+        .with_stopwords(["skipword"]);
+    let mut document = SearchDocument {
+        id: format!("seed-{seed}"),
+        title: "graph storage graph".into(),
+        content: String::new(),
+        embedding: None,
+        metadata: BTreeMap::new(),
+    };
+    for index in 0..(256 + seed as usize % 129) {
+        document
+            .content
+            .push_str(&format!("entry{:05} ", (index * 97) % 997));
+        let suffix = match next() % 6 {
+            0 => "graph storage ",
+            1 => "GraphStorage graph_storage ",
+            2 => "\u{4e2d}\u{6587}\u{6570}\u{636e}\u{5e93} ",
+            3 => "skipword graph ",
+            4 => "APIClient api client ",
+            _ => "graph graph graph ",
+        };
+        document.content.push_str(suffix);
+    }
+    if seed.is_multiple_of(2) {
+        document
+            .metadata
+            .insert("source_id".into(), "GraphStorage graph storage".into());
+    }
+    if seed.is_multiple_of(3) {
+        document
+            .metadata
+            .insert("space_id".into(), "APIClient api client".into());
+    }
+    let expected = reference_frequencies(&document, &analyzer);
+    let config = LexicalProjectionConfig {
+        build_memory_bytes: NonZeroU64::new(34_816 + (seed % 8) * 1024).unwrap(),
+        max_term_bytes: NonZeroU64::new(128).unwrap(),
+        ..Default::default()
+    };
+    let mut pool = SpillRuns::new(&root.0, 1, config);
+    let result = analyze(&document, &analyzer, &mut pool, &mut Vec::new(), &mut 0).unwrap();
+    assert!(
+        matches!(result, AnalyzedDocument::Spilled { .. }),
+        "seed={seed}"
+    );
+    let bytes = pool.bytes;
+    let runs = pool.sequence;
+    assert!(runs >= 3, "seed={seed}");
+    assert_eq!(result.document_len(), expected.1, "seed={seed}");
+    let mut actual = BTreeMap::new();
+    result
+        .visit(config, |term, frequency, _| {
+            assert!(actual.insert(term.into_untracked()?, frequency).is_none());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(actual, expected.0, "seed={seed}");
+    assert_eq!(root.entries(), 0);
+    for (limit, accepted) in [(bytes, true), (bytes - 1, false)] {
+        let limited = LexicalProjectionConfig {
+            max_spill_bytes: NonZeroU64::new(limit).unwrap(),
+            ..config
+        };
+        let mut pool = SpillRuns::new(&root.0, 1, limited);
+        let result = analyze(&document, &analyzer, &mut pool, &mut Vec::new(), &mut 0);
+        assert_eq!(result.is_ok(), accepted, "seed={seed}, limit={limit}");
+        drop(result);
+        assert_eq!(root.entries(), 0);
     }
 }
 

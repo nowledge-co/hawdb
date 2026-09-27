@@ -58,7 +58,10 @@ rust_test(
 [
     rust_test(
         name = name,
-        size = "large",
+        # Measured at 3-5s locally (2026-09-27), well under "small"; the
+        # prior "large" (900s) was ~200x observed runtime. Bazel's own
+        # --test_verbose_timeout_warnings recommended size="small" here.
+        size = "small",
         args = [
             test_filter,
             "--exact",
@@ -219,6 +222,7 @@ rust_binary(
 
 rust_test(
     name = "hawdb_append_fuzz_cli_tests",
+    size = "small",
     crate_root = "src/append_main.rs",
     srcs = ["src/append_main.rs"],
     edition = "2024",
@@ -244,6 +248,7 @@ rust_binary(
 
 rust_test(
     name = "hawdb_parser_fuzz_cli_tests",
+    size = "small",
     crate_root = "src/parser_main.rs",
     srcs = ["src/parser_main.rs"],
     edition = "2024",

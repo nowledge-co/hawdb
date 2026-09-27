@@ -20878,7 +20878,7 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
         parameters: &BTreeMap<String, Value>,
         task_context: &hawdb_core::RuntimeTaskContext,
     ) -> Result<QueryOutput> {
-        let (cypher_text, prepared) = prepared.into_execution(&self.catalog);
+        let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
         Ok(self
             .query_with_params_bounded_profile_prepared_internal(
                 &cypher_text,
@@ -20897,7 +20897,7 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
         parameters: &BTreeMap<String, Value>,
     ) -> Result<BoundedReadQueryOutput> {
         let task_context = self.task_context.clone();
-        let (cypher_text, prepared) = prepared.into_execution(&self.catalog);
+        let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
         self.query_with_params_bounded_profile_prepared_internal(
             &cypher_text,
             prepared,
@@ -21065,7 +21065,7 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
         task_context: &hawdb_core::RuntimeTaskContext,
         mut consumer: impl FnMut(Row) -> Result<()>,
     ) -> Result<QueryStreamReport> {
-        let (cypher_text, prepared) = prepared.into_execution(&self.catalog);
+        let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
         self.query_with_params_streaming_prepared_external_internal(
             &cypher_text,
             prepared,
