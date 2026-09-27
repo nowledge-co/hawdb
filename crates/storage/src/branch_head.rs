@@ -16,6 +16,7 @@
 
 use crate::durability::durable_replace_file;
 use crate::immutable_object::{ObjectKind, ObjectReference};
+use crate::sealed_wal::PreparedWalRotation;
 use hawdb_integrity::{crc32c, IntegrityHasher, Sha256Digest};
 use std::fmt::{self, Display, Formatter};
 use std::fs::{self, File, OpenOptions};
@@ -46,6 +47,17 @@ pub struct BranchHead {
     pub sealed_root: ObjectReference,
     pub logical_commit_epoch: u64,
     pub active_wal: ActiveWalIdentity,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedWalRotationHeadRequest<'a> {
+    pub expected_current_generation: u64,
+    pub project_id: [u8; 16],
+    pub branch_id: [u8; 16],
+    pub sealed_root: ObjectReference,
+    pub logical_commit_epoch: u64,
+    pub prepared: &'a PreparedWalRotation,
+    pub max_active_wal_bytes: u64,
 }
 
 #[derive(Debug)]
@@ -252,6 +264,46 @@ pub fn active_wal_identity_from_file(
     })
 }
 
+/// Switches a branch head after [`PreparedWalRotation`] has made the
+/// successor WAL header durable.  The caller must hold the source publication
+/// barrier and must have published the sealed root before calling this
+/// function; this function performs only the final selector adoption.
+pub fn publish_prepared_wal_rotation(
+    path: &Path,
+    request: PreparedWalRotationHeadRequest<'_>,
+) -> Result<BranchHead, BranchHeadError> {
+    let current = read_branch_head(path)?;
+    if current.project_id != request.project_id || current.branch_id != request.branch_id {
+        return Err(BranchHeadError::BranchIdentityMismatch);
+    }
+    if current.physical_generation != request.expected_current_generation {
+        return Err(BranchHeadError::StaleGeneration {
+            expected: request.expected_current_generation,
+            actual: current.physical_generation,
+        });
+    }
+    let physical_generation = current
+        .physical_generation
+        .checked_add(1)
+        .ok_or(BranchHeadError::InvalidGeneration)?;
+    let active_wal = active_wal_identity_from_file(
+        &request.prepared.next_wal_path,
+        request.prepared.next_generation,
+        request.prepared.next_start_lsn,
+        request.max_active_wal_bytes,
+    )?;
+    let next = BranchHead {
+        project_id: request.project_id,
+        branch_id: request.branch_id,
+        physical_generation,
+        sealed_root: request.sealed_root,
+        logical_commit_epoch: request.logical_commit_epoch,
+        active_wal,
+    };
+    publish_branch_head(path, request.expected_current_generation, next)?;
+    Ok(next)
+}
+
 /// Publishes a newer selector after an exact generation and identity check.
 pub fn publish_branch_head(
     path: &Path,
@@ -391,6 +443,8 @@ mod tests {
     use super::*;
     use crate::durability::fail_durable_replace_for_destination;
     use crate::immutable_object::ObjectKind;
+    use crate::immutable_object::PublishOutcome;
+    use crate::sealed_wal::SealedWalPublication;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn sample() -> BranchHead {
@@ -510,5 +564,45 @@ mod tests {
             Err(BranchHeadError::InvalidWalIdentity)
         ));
         fs::remove_file(file).unwrap();
+    }
+
+    #[test]
+    fn prepared_rotation_switches_head_only_after_successor_identity_is_read() {
+        let head_path = path("rotation-head");
+        let next_path = path("rotation-next");
+        let old = sample();
+        fs::write(&head_path, old.encode().unwrap()).unwrap();
+        let successor = b"durable-successor-header";
+        fs::write(&next_path, successor).unwrap();
+        let prepared = PreparedWalRotation {
+            sealed: SealedWalPublication {
+                generation: old.active_wal.generation,
+                start_lsn: old.active_wal.replay_start_lsn,
+                end_lsn: 42,
+                object: ObjectReference::for_bytes(ObjectKind::SealedWal, 1, b"sealed"),
+                outcome: PublishOutcome::Published,
+            },
+            next_generation: old.active_wal.generation + 1,
+            next_start_lsn: 42,
+            next_wal_path: next_path.clone(),
+        };
+        let next = publish_prepared_wal_rotation(
+            &head_path,
+            PreparedWalRotationHeadRequest {
+                expected_current_generation: old.physical_generation,
+                project_id: old.project_id,
+                branch_id: old.branch_id,
+                sealed_root: old.sealed_root,
+                logical_commit_epoch: old.logical_commit_epoch + 1,
+                prepared: &prepared,
+                max_active_wal_bytes: 1024,
+            },
+        )
+        .unwrap();
+        assert_eq!(next.physical_generation, old.physical_generation + 1);
+        assert_eq!(next.active_wal.sha256, hawdb_integrity::sha256(successor));
+        assert_eq!(read_branch_head(&head_path).unwrap(), next);
+        fs::remove_file(head_path).unwrap();
+        fs::remove_file(next_path).unwrap();
     }
 }

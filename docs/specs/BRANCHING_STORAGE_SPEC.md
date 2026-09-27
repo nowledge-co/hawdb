@@ -322,6 +322,16 @@ length and digest identify the same byte image that recovery will open. A
 length-limit failure occurs before an identity is returned, preserving the
 old head as the only acknowledged selector.
 
+`publish_prepared_wal_rotation` is the final handoff operation. It first
+re-reads the current head and checks the caller's generation and branch
+identity, then reads and hashes the already-prepared successor, constructs the
+next physical generation, and invokes the generation-checked atomic selector
+replacement. By this ordering, a missing or oversized successor leaves the
+old selector untouched; once replacement succeeds, the selector's active WAL
+identity is exactly the successor byte image prepared by the preceding
+rotation step. The sealed root is an explicit precondition, so this helper
+cannot acknowledge a head that has not already named an immutable root.
+
 ## Locks and publication ownership
 
 Project metadata serialization and the branch writer lease are separate. One
