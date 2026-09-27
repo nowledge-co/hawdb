@@ -17,9 +17,10 @@ compares these results with a rebuilt one-segment corpus, including text,
 scalar-vector, hybrid, metadata and hydration behavior.
 
 This is a serving contract for validated immutable closures. Compaction remains
-bounded: a selected range containing all active mutation targets can absorb the
-visible documents and remove the absorbed runs; a partial target closure is
-left for the later multi-run rewrite. Sustained workload, power-loss recovery
+bounded: a selected range absorbs entries targeting its segments and publishes
+the surviving outside-target entries as a replacement run. A complete target
+closure therefore removes its run; a partial closure keeps the outside targets
+without widening the selected range. Sustained workload, power-loss recovery
 and whole-process RSS qualification remain separate gates.
 
 ## Exact target contribution validation
@@ -130,7 +131,7 @@ against a rebuilt one-segment corpus, including text scores, scalar vector and
 hybrid results, metadata filters and hydration. It also exercises a RaBitQ
 allowlist with a hidden predecessor. The fixture uses the same closure
 validation as the public constructor. Complete target closures are absorbed by
-compaction; partial closures still defer to the future multi-run rewrite, and
+compaction; partial closures rewrite the outside-target entries atomically, and
 sustained resource qualification remains unfinished.
 
 ## Layout-independent RaBitQ candidate ordering
@@ -190,9 +191,10 @@ The publication protocol requires:
 3. A prepared publication is committed only if its base generation is still
    active. The check and selector replacement share the publication lease.
 4. Cleanup retains the union of active, pinned and in-flight durable closures.
-5. Compaction materializes visible versions from its complete selected closure,
-   preserves their logical values, and removes the absorbed mutation entries.
-   If that closure exceeds the admitted budget, compaction defers.
+5. Compaction materializes visible versions from its selected closure, preserves
+   their logical values, removes entries targeting selected segments, and
+   republishes entries targeting outside segments. If the selected artifacts
+   exceed the admitted budget, compaction defers.
 
 Initially the content-only closure satisfies these properties. A replacement
 adds one fresh version and a mutation bound to its predecessor's segment. The
@@ -209,6 +211,25 @@ replacement leaves the complete new closure. This assumes atomic durable
 selector replacement and truthful successful file durability, rather than
 proving those primitives from filesystem behavior.
 
+For a partial closure, let `S` be the selected content-segment IDs and split
+the active entries into `R_S = {r | r.target_segment ∈ S}` and
+`R_o = R \\ R_S`. The compaction writer emits exactly
+`V_S = {v ∈ C | v.segment ∈ S and visible(v, R)}`. Publication replaces `S`
+with one fresh segment containing `V_S`, removes `R_S`, and serializes `R_o`
+as the new mutation run. Every entry in `R_o` still targets an unchanged
+active segment, so its `(segment, document_id)` binding is preserved. The
+logical result is therefore
+
+```
+(C \\ S ∪ V_S, R_o) = (C, R) \\ {v ∈ S | not visible(v, R)}
+```
+
+with the same visible IDs, document contributions and retracted statistics.
+The staged count and reversible digest are checked against `V_S` before the
+manifest CAS. This proves the partial-closure rewrite under valid immutable
+artifacts; it does not prove filesystem durability beyond the existing
+publish-last contract.
+
 The byte-level recovery regression additionally writes a durable mutation run,
 then replaces the active selector with an invalid/torn value before reopening
 through the writer. Recovery chooses the last generation-specific manifest;
@@ -219,10 +240,11 @@ for an unverified storage device.
 
 Pinning adds the selected closure to the protected union. Cleanup removes only
 files outside that union; releasing a pin may shrink it but cannot remove the
-active closure. During complete-closure compaction, each visible logical value
-is copied to fresh content and the absorbed entries are removed. Thus logical
-values are unchanged and no retained entry targets removed content. Partial
-selection requires a closure-expansion/budget algorithm not implemented here.
+active closure. During compaction, each visible logical value is copied to
+fresh content, entries targeting selected segments are removed, and entries
+targeting outside segments are republished. Thus logical values are unchanged
+and no retained entry targets removed content. The selected artifact budget
+still bounds the rewrite; it does not require closure expansion.
 
 ## Executable finite model
 
@@ -258,10 +280,9 @@ protocol obligation, while the runtime gate prevents treating it as completed
 serving support. The Source sidecar model remains about graph-epoch binding and
 is not a substitute for this search mutation contract.
 
-Issue #291 still requires the multi-run partial-closure rewrite, crash/power-loss
-qualification across the real publication paths, and sustained workload
-write-amplification/RSS qualification. Model success alone does not authorize
-enabling any of those paths.
+Issue #291 still requires crash/power-loss qualification across the real
+publication paths and sustained workload write-amplification/RSS qualification.
+Model success alone does not authorize enabling any of those paths.
 
 ## Verification
 
@@ -428,5 +449,5 @@ failure. These do not prove power-loss recovery or bounded sustained load.
 The branch is reachable for validated mutation readers and clean readers whose
 updates target a visible document. New-ID appends remain on the append path.
 Complete target closures can be absorbed by compaction; partial target closures
-defer until a multi-run rewrite is available. The remaining power-loss and
+are rewritten into a bounded outside-target run. The remaining power-loss and
 sustained O(K) qualification gates are open.

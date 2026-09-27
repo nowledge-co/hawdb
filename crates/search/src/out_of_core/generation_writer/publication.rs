@@ -31,6 +31,13 @@ use std::path::Path;
 use super::io::GenerationIo;
 
 #[derive(Debug)]
+pub(super) struct CompactionMutationRewrite {
+    pub(super) entries: Vec<crate::out_of_core::mutation_run::SearchMutationRunEntry>,
+    pub(super) analyzer_digest: u64,
+    pub(super) max_run_bytes: u64,
+}
+
+#[derive(Debug)]
 pub(super) enum ActiveManifestUpdate {
     Mutate {
         expected_generation: u64,
@@ -60,6 +67,7 @@ pub(super) enum ActiveManifestUpdate {
         target_level: u32,
         expected_document_count: usize,
         expected_documents_digest: u64,
+        mutation_rewrite: Option<CompactionMutationRewrite>,
     },
 }
 
@@ -162,9 +170,35 @@ pub(super) fn publish_generation(
         Some(task),
         "search out-of-core layout",
     )?;
-    let mutation_name = input
+    let compaction_rewrite = match input.active_manifest_update {
+        Some(ActiveManifestUpdate::Compact {
+            mutation_rewrite, ..
+        }) => mutation_rewrite.as_ref(),
+        _ => None,
+    };
+    let mutation_entries = input
         .mutations
-        .filter(|mutation| !mutation.entries.is_empty())
+        .map(|mutation| mutation.entries.as_slice())
+        .or_else(|| compaction_rewrite.map(|rewrite| rewrite.entries.as_slice()));
+    let mutation_analyzer_digest = input
+        .mutations
+        .map(|mutation| mutation.analyzer_digest)
+        .or_else(|| compaction_rewrite.map(|rewrite| rewrite.analyzer_digest));
+    let mutation_max_run_bytes = input
+        .mutations
+        .map(|mutation| mutation.max_run_bytes)
+        .or_else(|| compaction_rewrite.map(|rewrite| rewrite.max_run_bytes));
+    if mutation_entries.is_some()
+        && (mutation_analyzer_digest.is_none() || mutation_max_run_bytes.is_none())
+    {
+        return Err(HawDBError::Storage(
+            "mutation publication is missing its encoding policy".into(),
+        ));
+    }
+    let mutation_analyzer_digest = mutation_analyzer_digest.unwrap_or_default();
+    let mutation_max_run_bytes = mutation_max_run_bytes.unwrap_or_default();
+    let mutation_name = mutation_entries
+        .filter(|entries| !entries.is_empty())
         .map(|_| Name::generated("search_projection_mutation_run.", generation, memory, task))
         .transpose()?;
     #[derive(serde::Serialize)]
@@ -174,18 +208,17 @@ pub(super) fn publish_generation(
         analyzer_digest: u64,
         entries: &'a [crate::out_of_core::mutation_run::SearchMutationRunEntry],
     }
-    let mutation_bytes = input
-        .mutations
-        .filter(|mutation| !mutation.entries.is_empty())
-        .map(|mutation| {
+    let mutation_bytes = mutation_entries
+        .filter(|entries| !entries.is_empty())
+        .map(|entries| {
             json::encode_with_context(
                 &MutationBody {
                     format: crate::out_of_core::mutation_run::MUTATION_RUN_FORMAT,
                     generation,
-                    analyzer_digest: mutation.analyzer_digest,
-                    entries: &mutation.entries,
+                    analyzer_digest: mutation_analyzer_digest,
+                    entries,
                 },
-                mutation.max_run_bytes,
+                mutation_max_run_bytes,
                 memory,
                 task,
                 "search mutation run",
@@ -193,9 +226,10 @@ pub(super) fn publish_generation(
         })
         .transpose()?;
     if let (Some(mutation), Some(encoded)) = (input.mutations, &mutation_bytes) {
-        mutation
-            .reopen_budget
-            .admit_encoded_extension(&encoded.bytes, mutation.entries.len())?;
+        mutation.reopen_budget.admit_encoded_extension(
+            &encoded.bytes,
+            mutation_entries.map_or(0, |entries| entries.len()),
+        )?;
     }
     let mut mutation_runs = Vec::new();
     let (mut segments, document_count, documents_digest, segment_id, level, compact_range) =
@@ -353,6 +387,7 @@ pub(super) fn publish_generation(
                 target_level,
                 expected_document_count,
                 expected_documents_digest,
+                mutation_rewrite,
             }) => {
                 if *segment_count < 2 {
                     return Err(HawDBError::Storage(
@@ -417,19 +452,10 @@ pub(super) fn publish_generation(
                     .unwrap_or_default()
                     .checked_add(1)
                     .ok_or_else(|| HawDBError::Storage("search segment id overflow".into()))?;
-                // If every selected physical document survived, existing run
-                // targets remain valid. A smaller staged count means this
-                // compaction absorbed the complete target closure, so the
-                // old runs must be removed with the old content segments.
-                let selected_physical_count =
-                    selected.iter().try_fold(0usize, |total, segment| {
-                        total.checked_add(segment.document_count).ok_or_else(|| {
-                            HawDBError::Storage(
-                                "search segment compaction document count overflows".into(),
-                            )
-                        })
-                    })?;
-                if input.document_count == selected_physical_count {
+                // A rewrite marker means at least one target belongs to this
+                // range. Its retained entries target segments outside the
+                // range; entries for selected segments were absorbed.
+                if mutation_rewrite.is_none() {
                     mutation_runs = active.mutation_runs;
                 }
                 (
@@ -598,8 +624,8 @@ pub(super) fn publish_generation(
     } else {
         segments.push(new_segment);
     }
-    let _mutation_reference_memory = match (&mutation_name, &mutation_bytes, input.mutations) {
-        (Some(name), Some(encoded), Some(mutation)) => {
+    let _mutation_reference_memory = match (&mutation_name, &mutation_bytes, mutation_entries) {
+        (Some(name), Some(encoded), Some(entries)) => {
             let capacity = crate::build_memory::checked_add(mutation_runs.len(), 1)?
                 .max(mutation_runs.capacity());
             let lease = memory.retained.reserve(crate::build_memory::checked_add(
@@ -622,8 +648,8 @@ pub(super) fn publish_generation(
                 file: name.as_str().to_owned(),
                 len: encoded.bytes.len() as u64,
                 checksum: crate::checksum_bytes(&encoded.bytes),
-                entry_count: mutation.entries.len(),
-                analyzer_digest: mutation.analyzer_digest,
+                entry_count: entries.len(),
+                analyzer_digest: mutation_analyzer_digest,
             });
             Some(lease)
         }

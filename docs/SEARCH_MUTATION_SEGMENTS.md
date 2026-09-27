@@ -29,11 +29,11 @@ Internal differential fixtures exercise these paths after validation. Aggregate
 run admission and typed, observable budget fallback are implemented in the read
 path. The continuation writer prepares target-bound runs for clean readers as
 well as existing closures and publishes replacements or delete-only manifests.
-Compaction defers ranges containing mutation targets until those references
-can be rewritten atomically; a range containing the complete target closure
-materializes only visible documents and removes those runs, while unaffected
-ranges retain the existing runs and may compact. Sustained qualification is
-still required.
+Compaction rewrites the mutation run atomically with the selected range. A
+range containing the complete target closure materializes only visible
+documents and removes those entries; a partial closure retains entries targeting
+segments outside the range in a new run. Unaffected ranges retain their
+existing runs and may compact. Sustained qualification is still required.
 
 ## Goal
 
@@ -212,11 +212,11 @@ extended as later lifecycle states land.
 ## Compaction
 
 Content and mutation runs compact as one logical closure. A compaction that
-selects a target content segment must also select every active mutation entry
-that targets it. When the selected range contains the complete active target
-closure, it materializes only visible documents into the replacement content
-segment and drops the corresponding mutation entries. A partial target closure
-is deferred until a multi-run rewrite can preserve entries outside the range.
+selects a target content segment materializes only visible documents into the
+replacement content segment. Entries targeting selected segments are absorbed;
+entries targeting segments outside the range are serialized into a replacement
+mutation run in the same manifest publication. This keeps every surviving
+target bound to an unchanged segment without widening the selected byte range.
 
 Leveled selection remains bounded by the existing input-byte policy. If the
 visibility closure would exceed the selected budget, the run is deferred rather
@@ -233,9 +233,9 @@ admission and cancellation use the scheduled compaction API introduced by #704.
    visibility plus retracted corpus statistics.
 4. Apply the same predicate to hydration and scalar vector reads; add RaBitQ
    allowlist/fallback behavior.
-5. Absorb complete visibility closures during compaction, add the multi-run
-   rewrite for partial closures, then qualify sustained append/update/delete
-   workloads and write amplification.
+5. Absorb complete visibility closures and rewrite partial mutation closures
+   during compaction, then qualify sustained append/update/delete workloads and
+   write amplification.
 
 Each delivery remains a separate reviewable change. Later cuts must not expose
 mutation artifacts to serving before the shared visibility and statistic

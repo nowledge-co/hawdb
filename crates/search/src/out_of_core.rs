@@ -4298,6 +4298,71 @@ mod tests {
         install_edited_mutation_run(path, document, target_segment_id, run_generation, |_| {});
     }
 
+    fn install_delete_mutation_runs(
+        path: &Path,
+        targets: &[(&SearchDocument, u64)],
+        run_generation: u64,
+    ) {
+        let reader = SearchOutOfCoreReader::open(path).unwrap();
+        let entries = targets
+            .iter()
+            .map(|(document, target_segment_id)| {
+                Ok(mutation_run::SearchMutationRunEntry {
+                    document_id: document.id.clone(),
+                    target_segment_id: *target_segment_id,
+                    operation: mutation_run::SearchMutationOperation::Delete,
+                    retraction: mutation_run::SearchMutationRetraction::from_document(
+                        document,
+                        &reader.segments[0].lexical_projection,
+                        &SearchAnalyzerLexicon::default(),
+                    )?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        let manifest_path = path.join(OUT_OF_CORE_MANIFEST_FILE);
+        let envelope: SearchOutOfCoreManifestEnvelope =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let mut manifest = envelope.body;
+        let mut documents_digest = manifest.segments.iter().fold(0, |digest, segment| {
+            crate::lexical_projection::DocumentsDigest::combine(digest, segment.documents_digest)
+        });
+        for entry in &entries {
+            documents_digest = crate::lexical_projection::DocumentsDigest::replace(
+                documents_digest,
+                entry.retraction.documents_digest,
+                0,
+            );
+        }
+        let analyzer_digest = lexical_analyzer_digest(&SearchAnalyzerLexicon::default());
+        let run_body =
+            mutation_run::SearchMutationRunBody::new(manifest.generation, analyzer_digest, entries)
+                .unwrap();
+        let run_bytes = run_body.encode().unwrap();
+        let run_file = mutation_run::artifact_file(run_generation);
+        fs::write(path.join(&run_file), &run_bytes).unwrap();
+        manifest.mutation_runs = vec![SearchOutOfCoreMutationRunManifest {
+            generation: manifest.generation,
+            file: run_file,
+            len: run_bytes.len() as u64,
+            checksum: checksum_bytes(&run_bytes),
+            entry_count: targets.len(),
+            analyzer_digest,
+        }];
+        manifest.document_count = manifest.document_count.checked_sub(targets.len()).unwrap();
+        manifest.documents_digest = documents_digest;
+        let body_bytes = serde_json::to_vec(&manifest).unwrap();
+        fs::write(
+            manifest_path,
+            serde_json::to_vec(&SearchOutOfCoreManifestEnvelope {
+                body: manifest,
+                checksum: checksum_bytes(&body_bytes),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
     fn install_edited_mutation_run(
         path: &Path,
         document: &SearchDocument,
@@ -5121,6 +5186,66 @@ mod tests {
                 .documents,
             vec![live]
         );
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
+    fn mutation_compaction_rewrites_entries_outside_the_selected_range() {
+        let path = test_dir("mutation-compaction-partial-closure");
+        let first = document(0, "first-space");
+        let live = document(1, "live-space");
+        let outside = document(2, "outside-space");
+        publish_two_artifact_manifest(&path, first.clone(), live.clone());
+
+        let reader = SearchOutOfCoreReader::open(&path).unwrap();
+        let outside_row = crate::SearchProjectionRow {
+            kind: crate::SearchProjectionKind::Memory,
+            external_id: "002".into(),
+            title: outside.title.clone(),
+            body: outside.content.clone(),
+            embedding: outside.embedding.clone(),
+            source_id: None,
+            metadata: outside.metadata.clone(),
+        };
+        let outside = outside_row.clone().into_document();
+        SearchOutOfCoreGenerationWriter::prepare_delta(
+            &reader,
+            crate::SearchProjectionDelta {
+                upserts: vec![outside_row],
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap()
+        .finish()
+        .unwrap();
+        drop(reader);
+
+        install_delete_mutation_runs(&path, &[(&first, 0), (&outside, 2)], 3);
+        let reader = SearchOutOfCoreReader::open(&path).unwrap();
+        let policy =
+            crate::out_of_core::generation_writer::SearchOutOfCoreSegmentCompactionPolicy::default(
+            );
+        let report =
+            SearchOutOfCoreGenerationWriter::compact_segments(&reader, policy, Default::default())
+                .unwrap()
+                .unwrap();
+        assert_eq!(report.build().document_count, 1);
+        drop(reader);
+
+        let reopened = SearchOutOfCoreReader::open(&path).unwrap();
+        assert_eq!(reopened.document_count(), 1);
+        assert_eq!(reopened.manifest.mutation_runs.len(), 1);
+        assert_eq!(reopened.manifest.mutation_runs[0].entry_count, 1);
+        assert!(reopened
+            .hydrate_documents(std::slice::from_ref(&live.id))
+            .unwrap()
+            .documents
+            .contains(&live));
+        assert!(reopened
+            .hydrate_documents(std::slice::from_ref(&outside.id))
+            .is_err());
         fs::remove_dir_all(path).unwrap();
     }
 

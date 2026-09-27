@@ -257,11 +257,6 @@ impl MutationVisibility {
             .any(|entry| entry.target_segment_id == segment_id)
     }
 
-    pub(super) fn has_target_outside(&self, segment_ids: &[u64]) -> bool {
-        self.retractions()
-            .any(|entry| !segment_ids.contains(&entry.target_segment_id))
-    }
-
     pub(super) fn is_visible(&self, segment_id: u64, document_id: &str) -> bool {
         !self.runs.iter().any(|run| {
             run.entries()

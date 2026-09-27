@@ -15,7 +15,9 @@
 //! Bounded leveled compaction for immutable append-only search segments.
 
 use super::{
-    context_memory::Options, delta::hydration, publication::ActiveManifestUpdate,
+    context_memory::Options,
+    delta::hydration,
+    publication::{ActiveManifestUpdate, CompactionMutationRewrite},
     SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationBuildReport,
     SearchOutOfCoreGenerationWriter,
 };
@@ -251,6 +253,7 @@ struct Selection {
     document_count: usize,
     logical_document_count: usize,
     logical_documents_digest: u64,
+    mutation_rewrite: Option<CompactionMutationRewrite>,
     source_bytes: u64,
 }
 
@@ -367,6 +370,7 @@ pub(super) fn prepare(
         target_level: selection.target_level,
         expected_document_count: selection.logical_document_count,
         expected_documents_digest: selection.logical_documents_digest,
+        mutation_rewrite: selection.mutation_rewrite,
     });
     let task_context = writer.task_context.clone();
     let source_read_metrics = hydration::visit_range_with_segment(
@@ -427,16 +431,12 @@ fn select_with_fan_in(
             .iter()
             .map(|segment| segment.segment_id)
             .collect::<Vec<_>>();
-        // A compacted artifact gets a new content-segment identity. If this
-        // range contains mutation targets, it is safe only when every target
-        // is absorbed by the same rewrite; otherwise leave the range for a
-        // later multi-run rewrite and continue looking for an unaffected one.
+        // A compacted artifact gets a new content-segment identity. Targets in
+        // this range are absorbed; retain only entries targeting segments that
+        // remain active outside the range and publish them as a new run.
         let contains_target = candidate_ids
             .iter()
             .any(|segment_id| reader.visibility.has_target_segment(*segment_id));
-        if contains_target && reader.visibility.has_target_outside(&candidate_ids) {
-            continue;
-        }
         let source_level = candidates[0].level;
         if candidates
             .iter()
@@ -491,7 +491,7 @@ fn select_with_fan_in(
             );
         let max_level = (policy.level_count.get() - 1).max(source_level);
         let target_level = source_level.saturating_add(1).min(max_level);
-        let candidate = Selection {
+        let mut candidate = Selection {
             start,
             end: start + fan_in,
             first_segment_id: candidates[0].segment_id,
@@ -501,12 +501,25 @@ fn select_with_fan_in(
             document_count,
             logical_document_count,
             logical_documents_digest,
+            mutation_rewrite: None,
             source_bytes,
         };
         if selected
             .as_ref()
             .is_none_or(|current: &Selection| source_level < current.source_level)
         {
+            candidate.mutation_rewrite = contains_target.then(|| CompactionMutationRewrite {
+                entries: reader
+                    .visibility
+                    .retractions()
+                    .filter(|entry| !candidate_ids.contains(&entry.target_segment_id))
+                    .cloned()
+                    .collect(),
+                analyzer_digest: crate::lexical_projection::analyzer_digest(
+                    reader.analyzer_lexicon(),
+                ),
+                max_run_bytes: reader.config.max_mutation_run_bytes.get(),
+            });
             selected = Some(candidate);
         }
     }
