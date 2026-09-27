@@ -468,6 +468,12 @@ append hydration after every reopen. This is a finite state-machine witness,
 not a proof of arbitrary-length RSS stability; the benchmark and production
 corpus qualification remain separate.
 
+The `HAWDB_SEARCH_MUTATION_BENCH_ROUNDS` mode exercises the same transition
+with 32 seeded append segments and records per-round checkpoint bytes, source
+hydration, compaction publication, and process-memory deltas. Those samples
+are measurement evidence only; they do not strengthen the finite induction
+claim into an arbitrary-history or whole-process RSS theorem.
+
 `mutation_compaction_publication_failure_preserves_the_active_closure` covers
 the failure edge of the same transition. It exhausts the admitted published-
 byte budget after the compaction candidate has been staged, then checks byte-

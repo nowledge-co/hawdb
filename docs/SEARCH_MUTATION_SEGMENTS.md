@@ -271,6 +271,35 @@ The benchmark is an evidence generator, not a release qualification by itself:
 the resulting JSON must be recorded against the host-selected production corpus
 and paired with sustained RSS and crash-recovery runs.
 
+Set `HAWDB_SEARCH_MUTATION_BENCH_ROUNDS` to run the sustained mode. It first
+creates 32 small append segments, then repeats replacement plus new-ID append,
+reopen, and bounded compaction for the requested number of rounds. The JSON
+contains one record per round with checkpoint bytes, source hydration, whether
+compaction published, document count, and process-memory deltas. For example:
+
+```sh
+HAWDB_SEARCH_MUTATION_BENCH_DOCUMENTS=200000 \
+HAWDB_SEARCH_MUTATION_BENCH_TOUCHES=100 \
+HAWDB_SEARCH_MUTATION_BENCH_ROUNDS=8 \
+cargo bench --locked --bench search_mutation
+```
+
+A smoke run with 200 documents, 10 initial deletes, and three sustained rounds
+published compaction on all three rounds, grew the logical count from 222 to
+225, and kept each round's source hydration to one replacement document. This
+is a deterministic lifecycle and RSS sampling harness; it does not establish a
+production RSS limit or replace host power-loss testing.
+
+At the issue's corpus-shaped scale, a release run with 334,844 documents, 100
+initial deletes, and two sustained rounds wrote 68,285,256 bytes for the full
+generation and 65,673 bytes for the initial mutation checkpoint. Both sustained
+rounds published compaction, each checkpoint wrote 38,347 and 38,511 bytes,
+hydrated one replacement document, and read 1,131 source-segment bytes. The
+logical count advanced from 334,776 to 334,778. The initial checkpoint took
+0.52 s; the two sustained checkpoints took 0.91 s and 0.90 s. This is still a
+synthetic-content baseline and does not close production RSS or host power-loss
+qualification.
+
 The current corpus-shaped run uses the issue #291 scale (334,844 documents and
 100 deletes) with the deterministic fixture above. On the local release build it
 reported 68,285,256 bytes for the full generation and 34,733 bytes for the
