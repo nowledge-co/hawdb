@@ -11,7 +11,7 @@ use hawdb_core::Uuid;
 use hawdb_integrity::crc32c;
 use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,6 +24,7 @@ const MAX_NAME_BYTES: usize = 128;
 const MAX_OWNER_BYTES: usize = 256;
 const MAX_REQUEST_KEY_BYTES: usize = 256;
 const DIGEST_BYTES: usize = 32;
+const METADATA_LOCK_FILE: &str = "metadata.hawdb.lock";
 static CANDIDATE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Stable project-scoped branch identity.
@@ -288,6 +289,7 @@ pub fn write_catalog(path: &Path, catalog: &Catalog) -> io::Result<()> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .ok_or_else(|| invalid_data("branch catalog destination has no parent"))?;
+    let _metadata_lock = CatalogMetadataLease::acquire(parent)?;
     let sequence = CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let candidate = parent.join(format!(
         ".{}.candidate-{}-{}",
@@ -311,6 +313,39 @@ pub fn write_catalog(path: &Path, catalog: &Catalog) -> io::Result<()> {
         let _ = fs::remove_file(&candidate);
     }
     result
+}
+
+/// Stable project metadata lock.  It is separate from branch writer leases so
+/// independent branch handles can write their own WALs while catalog updates
+/// remain serialized.
+#[derive(Debug)]
+pub struct CatalogMetadataLease {
+    file: File,
+}
+
+impl CatalogMetadataLease {
+    pub fn acquire(project_directory: &Path) -> io::Result<Self> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(project_directory.join(METADATA_LOCK_FILE))?;
+        match file.try_lock() {
+            Ok(()) => Ok(Self { file }),
+            Err(TryLockError::WouldBlock) => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "branch catalog metadata lock is held",
+            )),
+            Err(TryLockError::Error(error)) => Err(error),
+        }
+    }
+}
+
+impl Drop for CatalogMetadataLease {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
 }
 
 fn invalid_data(message: impl Into<String>) -> io::Error {
@@ -767,10 +802,24 @@ mod tests {
         let catalog = catalog();
         write_catalog(&path, &catalog).unwrap();
         assert_eq!(read_catalog(&path).unwrap().revision, catalog.revision);
-        assert!(directory
-            .read_dir()
-            .unwrap()
-            .all(|entry| entry.unwrap().file_name() == "catalog.hawdb"));
+        assert!(path.is_file());
+        assert!(directory.join(METADATA_LOCK_FILE).is_file());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn metadata_lock_is_stable_and_serializes_catalog_writers() {
+        let (directory, _path) = temporary_catalog_path();
+        let first = CatalogMetadataLease::acquire(&directory).unwrap();
+        assert_eq!(
+            CatalogMetadataLease::acquire(&directory)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        drop(first);
+        CatalogMetadataLease::acquire(&directory).unwrap();
+        assert!(directory.join(METADATA_LOCK_FILE).is_file());
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -790,10 +839,8 @@ mod tests {
         )
         .is_err());
         assert_eq!(fs::read(&path).unwrap(), before);
-        assert!(directory
-            .read_dir()
-            .unwrap()
-            .all(|entry| entry.unwrap().file_name() == "catalog.hawdb"));
+        assert!(path.is_file());
+        assert!(directory.join(METADATA_LOCK_FILE).is_file());
         fs::remove_dir_all(directory).unwrap();
     }
 
