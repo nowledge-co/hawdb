@@ -38,6 +38,43 @@ Graph expansion propagates only authorization-scope fields (`space_id`,
 filters such as `kind` do not prevent a scoped Memory candidate from expanding
 to an Entity in the same space.
 
+## Rerank scoring
+
+The `rerank` stage combines a candidate's retriever scores into its ranking
+score. Three policies are supported:
+
+- `Max`: the larger of the search-hit score and the graph-seed score.
+- `WeightedSum { search_weight, graph_seed_weight }`: the two retriever scores
+  with caller weights.
+- `Spec(ScoringSpec)`: a typed, host-injectable specification — a weighted sum
+  of features multiplied by exponential decay factors. Features are the search
+  score, the graph-seed score, the bounded graph distance from a seed, a
+  numeric canonical node property, and a canonical timestamp property aged
+  against the request clock.
+
+Semantics:
+
+- **Missing features are reported, not scored.** A feature the engine cannot
+  supply contributes nothing and is listed in the evaluation's
+  `missing_features`, which the candidate's `score_breakdown` carries. A
+  request never fails because a property is absent, and an absent property is
+  never silently ranked as zero-valued evidence.
+- **Decay multiplies.** `0.5^(age / half_life)` is clamped to
+  `[min_factor, 1]`; timestamps in the future are treated as age zero. Only
+  `HopDistance` and `TimestampProperty` define an age.
+- **Weights are rebindable slots.** `ScoringSpec::shape_fingerprint` identifies
+  the feature shape without its weights, so changing weights never invalidates
+  a cached plan or a cached scoring decision.
+- **Property features read canonical state inside the pinned snapshot.** Node
+  records are loaded only when the policy asks for a property feature, bounded
+  by the candidate limit; the stage order, snapshot binding, and budgets of
+  this specification are unchanged, and the TLA refinement points keep their
+  meaning.
+- **`HopDistance` is zero for every candidate today** because only search hits
+  and graph seeds become candidates; expanded nodes currently appear as graph
+  context. Distance decay becomes observable when expanded nodes are ranked as
+  candidates, which this stage's feature contract already supports.
+
 ## Resource contract
 
 The pipeline uses one query-rooted `QueryMemoryLedger` for retained identity

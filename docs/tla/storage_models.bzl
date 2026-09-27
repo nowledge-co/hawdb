@@ -1,10 +1,12 @@
 """Authoritative storage model set shared by Bazel and retained evidence."""
 
 STORAGE_MODELS = [
+    "HawDBAgedWriterProgress",
     "HawDBAppendMixedTransaction",
     "HawDBAppendSegmentPublication",
     "HawDBAppendTable",
     "HawDBBoundedMorselMerge",
+    "HawDBBranchLifecycle",
     "HawDBColumnGroupManifest",
     "HawDBColumnarShadowIntegration",
     "HawDBCompactionVisibility",
@@ -26,6 +28,7 @@ STORAGE_MODELS = [
     "HawDBGeneratedAppendOrder",
     "HawDBGenerationReclamation",
     "HawDBGossipDelivery",
+    "HawDBGovernedConflictRetry",
     "HawDBGovernedWriterProgress",
     "HawDBGraphDescriptorPaging",
     "HawDBGraphIndexQualification",

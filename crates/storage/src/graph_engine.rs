@@ -44,6 +44,14 @@ pub trait GraphReadEngine {
 
     fn statistics(&self, catalog: &Catalog) -> GraphStatistics;
 
+    /// Whether a declared range index delivers ascending `Value::cmp` order
+    /// through both full and projected execution visitors on this read view.
+    /// A descriptor alone is not sufficient: an out-of-core base needs a
+    /// complete backing projection. External engines opt in explicitly.
+    fn supports_ordered_node_range(&self, _label: hawdb_core::LabelId, _property: &str) -> bool {
+        false
+    }
+
     fn storage_recovery_report(&self) -> StorageRecoveryReport;
 
     fn segment_cache_snapshot(&self) -> Option<SegmentCacheSnapshot>;

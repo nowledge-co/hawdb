@@ -1847,6 +1847,18 @@ plus a convergent join yields a convergent system is argued from the join's
 commutativity, associativity, and idempotence, not machine-checked, because
 the composed model is the three-replica instance that does not terminate.
 
+## Durable branch lifecycle
+
+`HawDBBranchLifecycle.tla` models a parent and child sharing sealed immutable
+roots while holding independent writer leases. It separates durable create
+reservation, child head installation and catalog publication, and checks
+per-object persistence before root selection, expiry admission, two-phase
+deletion, recovery and mark/revalidated sweep. It is the P0 design model for
+[#776](https://github.com/nowledge-co/hawdb/issues/776), not proof that runtime
+branching exists. The [contract](../specs/BRANCHING_STORAGE_SPEC.md) and
+[proof scope, controls and traces](BRANCH_LIFECYCLE_PROOF.md) define the
+implementation obligations and finite-model limits.
+
 ## Proof Boundary
 
 TLC exhaustively checks the configured finite instances; it is not a proof of
@@ -1933,3 +1945,15 @@ The [execution request contract](../EXECUTION_REQUEST_CONTRACT.md) supplies the
 inductive proof, Rust transition mapping, old-wrapper compatibility exception,
 and profile snapshot lifetime. The model excludes the legacy unbounded consumer's
 incremental-delivery policy, process RSS, and arbitrary operator semantics.
+
+## Aged background transaction progress
+
+`HawDBAgedWriterProgress` instantiates the shared governed-writer model with
+background aging and recurring foreground arrivals. See the
+[conditional progress proof and executable boundary](AGED_WRITER_PROGRESS_PROOF.md).
+
+## Governed conflict retry
+
+`HawDBGovernedConflictRetry` models a shared first attempt and capacity escalation
+after conflict, with an explicit starvation control for fixed-weight retries.
+See [the retry-policy proof and workload](GOVERNED_CONFLICT_RETRY_PROOF.md).

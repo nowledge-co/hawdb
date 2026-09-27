@@ -431,7 +431,7 @@ fn select_relation_order(select: &SelectStatement) -> Vec<String> {
         select
             .from_alias
             .clone()
-            .unwrap_or_else(|| select.from.name.clone()),
+            .unwrap_or_else(|| select.from_table().name.clone()),
     )
     .chain(select.joins.iter().map(|join| {
         join.alias
@@ -445,7 +445,7 @@ fn bind_relations<'a>(
     select: &SelectStatement,
     state: &'a RelationalState,
 ) -> Result<Vec<BoundRelation<'a>>> {
-    let sources = std::iter::once((&select.from, &select.from_alias))
+    let sources = std::iter::once((select.from_table(), &select.from_alias))
         .chain(select.joins.iter().map(|join| (&join.table, &join.alias)));
     sources
         .enumerate()
@@ -912,7 +912,7 @@ fn prepare_inner_select(
     )?;
     if reordered {
         let base = relation_by_binding(relations, plan.base_binding);
-        select.from = base.table.clone();
+        select.from = Some(base.table.clone());
         select.from_alias = base.alias.clone();
         let predicate_by_id = predicates
             .iter()
@@ -966,7 +966,7 @@ fn prepare_outer_select(
     )?;
     if reordered {
         let base = relation_by_binding(relations, plan.base_binding);
-        select.from = base.table.clone();
+        select.from = Some(base.table.clone());
         select.from_alias = base.alias.clone();
         let predicate_by_id = predicates
             .iter()

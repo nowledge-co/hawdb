@@ -111,6 +111,14 @@ fn published() -> DurableManifest {
     }
 }
 
+#[test]
+fn manifest_artifact_inputs_are_explicit_and_non_scanning() {
+    let error = published()
+        .manifest_artifact_inputs(Path::new("/checkpoint-root"))
+        .unwrap_err();
+    assert!(error.to_string().contains("read manifest-bound artifact"));
+}
+
 fn fields(text: &str) -> Vec<(String, String)> {
     text.lines()
         .skip(1)

@@ -277,13 +277,21 @@ fn plan_scan_hydration_fields(
     state: &RelationalState,
     scan_fields: &BTreeMap<String, Arc<[usize]>>,
 ) -> Result<BTreeMap<String, Arc<[usize]>>> {
-    let base_schema = state.table_schema(&select.from.name).ok_or_else(|| {
-        HawDBError::Semantic(format!("unknown relational table {}", select.from.name))
-    })?;
+    let base_schema = state
+        .table_schema(&select.from_table().name)
+        .ok_or_else(|| {
+            HawDBError::Semantic(format!(
+                "unknown relational table {}",
+                select.from_table().name
+            ))
+        })?;
     let mut bindings = Vec::with_capacity(select.joins.len() + 1);
     bindings.push(FieldBinding {
-        table: &select.from.name,
-        qualifier: select.from_alias.as_deref().unwrap_or(&select.from.name),
+        table: &select.from_table().name,
+        qualifier: select
+            .from_alias
+            .as_deref()
+            .unwrap_or(&select.from_table().name),
         schema: base_schema,
     });
     for join in &select.joins {
@@ -392,12 +400,20 @@ fn plan_fields(
     include_projection: bool,
 ) -> Result<BTreeMap<String, Arc<[usize]>>> {
     let mut bindings = Vec::with_capacity(select.joins.len() + 1);
-    let base_schema = state.table_schema(&select.from.name).ok_or_else(|| {
-        HawDBError::Semantic(format!("unknown relational table {}", select.from.name))
-    })?;
+    let base_schema = state
+        .table_schema(&select.from_table().name)
+        .ok_or_else(|| {
+            HawDBError::Semantic(format!(
+                "unknown relational table {}",
+                select.from_table().name
+            ))
+        })?;
     bindings.push(FieldBinding {
-        table: &select.from.name,
-        qualifier: select.from_alias.as_deref().unwrap_or(&select.from.name),
+        table: &select.from_table().name,
+        qualifier: select
+            .from_alias
+            .as_deref()
+            .unwrap_or(&select.from_table().name),
         schema: base_schema,
     });
     for join in &select.joins {

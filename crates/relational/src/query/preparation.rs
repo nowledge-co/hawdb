@@ -36,11 +36,11 @@ pub(super) fn prepare_relational_select(
     let prepare_started = Instant::now();
     let mut current_state_bind_nanos = 0;
     measure_nanos(&mut current_state_bind_nanos, || -> Result<()> {
-        reject_non_public_schema(select.from.schema.as_deref())?;
-        if state.table_schema(&select.from.name).is_none() {
+        reject_non_public_schema(select.from_table().schema.as_deref())?;
+        if state.table_schema(&select.from_table().name).is_none() {
             return Err(HawDBError::Semantic(format!(
                 "unknown relational table {}",
-                select.from.name
+                select.from_table().name
             )));
         }
         for join in &select.joins {
@@ -106,13 +106,18 @@ pub(super) fn prepare_syntax_access_plan(
     read_modes: RelationalQueryReadModes<'_, impl RelationalQueryStoreReader>,
     limits: RelationalQueryLimits,
 ) -> Result<PreparedRelationalAccessPlan> {
-    let base_schema = state.table_schema(&select.from.name).ok_or_else(|| {
-        HawDBError::Semantic(format!("unknown relational table {}", select.from.name))
-    })?;
+    let base_schema = state
+        .table_schema(&select.from_table().name)
+        .ok_or_else(|| {
+            HawDBError::Semantic(format!(
+                "unknown relational table {}",
+                select.from_table().name
+            ))
+        })?;
     let base_qualifier = select
         .from_alias
         .clone()
-        .unwrap_or_else(|| select.from.name.clone());
+        .unwrap_or_else(|| select.from_table().name.clone());
     let has_aggregate =
         select.having.is_some() || select.projection.iter().any(projection_contains_aggregate);
     let prefer_ordered_access =
@@ -128,10 +133,10 @@ pub(super) fn prepare_syntax_access_plan(
         parameters,
         state,
         schema: base_schema,
-        table: &select.from.name,
+        table: &select.from_table().name,
         qualifier: &base_qualifier,
         cardinality_limit: limits.max_intermediate_rows.saturating_add(1),
-        projection: projection_access_planning(read_modes.row, &select.from.name),
+        projection: projection_access_planning(read_modes.row, &select.from_table().name),
     })?;
     let join_accesses = select
         .joins

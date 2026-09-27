@@ -51,6 +51,7 @@ pub struct OptimizerCatalog {
     pub(super) equality_property_indexes: BTreeSet<(String, String)>,
     pub(super) composite_property_indexes: BTreeSet<(String, Vec<String>)>,
     pub(super) range_property_indexes: BTreeSet<(String, String)>,
+    pub(super) ordered_range_indexes: BTreeSet<(String, String)>,
     pub(super) full_text_property_indexes: BTreeSet<(String, String)>,
     pub(super) label_counts: BTreeMap<String, u64>,
     pub(super) rel_type_counts: BTreeMap<String, u64>,
@@ -379,6 +380,7 @@ impl OptimizerCatalog {
             equality_property_indexes: indexes.equality_property_indexes,
             composite_property_indexes: indexes.composite_property_indexes,
             range_property_indexes: indexes.range_property_indexes,
+            ordered_range_indexes: BTreeSet::new(),
             full_text_property_indexes: indexes.full_text_property_indexes,
             label_counts: statistics.label_counts,
             rel_type_counts: statistics.rel_type_counts,
@@ -399,6 +401,20 @@ impl OptimizerCatalog {
             sampled_property_histograms: statistics.sampled_property_histograms,
             sampled_rel_property_histograms: statistics.sampled_rel_property_histograms,
         }
+    }
+
+    /// Opts declared range indexes into ascending `Value::cmp` delivery.
+    /// The execution engine must guarantee this for full and projected scans,
+    /// including checkpoint/delta merging. Descriptors do not imply ordering.
+    pub fn with_ordered_range_indexes(
+        mut self,
+        indexes: impl IntoIterator<Item = (String, String)>,
+    ) -> Self {
+        self.ordered_range_indexes = indexes
+            .into_iter()
+            .filter(|index| self.range_property_indexes.contains(index))
+            .collect();
+        self
     }
 
     pub(super) fn optimistic() -> Self {

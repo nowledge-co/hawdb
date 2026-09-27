@@ -58,6 +58,7 @@ pub mod result_delivery;
 pub mod runtime_admission;
 #[doc(hidden)]
 pub mod scan;
+pub mod scoring;
 #[doc(hidden)]
 pub mod spill;
 #[doc(hidden)]

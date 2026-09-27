@@ -325,12 +325,34 @@ fn row_workspace_differential_smoke() {
 #[test]
 #[ignore = "complete local differential campaign"]
 fn row_workspace_differential_campaign() {
-    for seed in 0..128 {
-        run_seed(seed);
-        if (seed + 1) % 32 == 0 {
-            eprintln!("row workspace campaign: {} / 128 seeds complete", seed + 1);
+    const SEEDS: u64 = 128;
+    // Each seed builds and tears down its own fixture/directory, so seeds are
+    // independent and safe to spread across worker threads.
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |count| count.get() as u64)
+        .min(SEEDS);
+    let completed = std::sync::atomic::AtomicU64::new(0);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|worker| {
+                let completed = &completed;
+                scope.spawn(move || {
+                    let mut seed = worker;
+                    while seed < SEEDS {
+                        run_seed(seed);
+                        let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                        if done.is_multiple_of(32) {
+                            eprintln!("row workspace campaign: {done} / {SEEDS} seeds complete");
+                        }
+                        seed += workers;
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
         }
-    }
+    });
 }
 
 #[test]

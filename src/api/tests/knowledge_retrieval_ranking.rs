@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use super::*;
+use crate::{ScoreFeature, ScoringSpec, ScoringTerm};
 
 #[test]
 fn retrieves_bounded_multi_hop_knowledge_context() {
@@ -349,4 +350,115 @@ fn knowledge_retrieval_applies_search_fusion_weights() {
     assert!(output.evidence[0].text_rrf_score > 0.0);
     assert_eq!(output.evidence[0].vector_rrf_score, 0.0);
     assert_eq!(output.evidence[0].score, output.evidence[0].rrf_score);
+}
+
+fn scoring_spec_request(spec: ScoringSpec, limit: usize) -> KnowledgeRetrievalRequest {
+    KnowledgeRetrievalRequest {
+        query_text: "knowledge ranking".to_string(),
+        query_embedding: None,
+        mode: SearchMode::Text,
+        limit,
+        offset: 0,
+        rank_window: Some(4),
+        search_fusion_weights: SearchFusionWeights::default(),
+        metadata_filters: BTreeMap::new(),
+        candidate_limit: Some(4),
+        candidate_scoring: KnowledgeCandidateScoringPolicy::Spec(spec),
+        graph_seed_limit: 0,
+        graph_context_limit: 0,
+        graph_context_max_hops: 0,
+    }
+}
+
+fn scoring_spec_database() -> (Database, NodeId, NodeId) {
+    let mut db = Database::new();
+    let mut create = |id: &str, pagerank: i64| {
+        db.store
+            .create_node(
+                &mut db.catalog,
+                "Memory",
+                BTreeMap::from([
+                    ("id".to_string(), Value::String(id.to_string())),
+                    (
+                        "title".to_string(),
+                        Value::String("Knowledge ranking".to_string()),
+                    ),
+                    (
+                        "content".to_string(),
+                        Value::String("Knowledge ranking content".to_string()),
+                    ),
+                    ("pagerank".to_string(), Value::Int(pagerank)),
+                ]),
+            )
+            .unwrap()
+    };
+    let low = create("memory:low_rank", 7);
+    let high = create("memory:high_rank", 65_000);
+    (db, low, high)
+}
+
+#[test]
+fn knowledge_retrieval_scoring_spec_ranks_by_canonical_property() {
+    let (db, low, high) = scoring_spec_database();
+    let mut search_index = SearchIndex::in_memory();
+    db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
+        .unwrap();
+    let request = scoring_spec_request(
+        ScoringSpec {
+            terms: vec![ScoringTerm {
+                weight: 1.0,
+                feature: ScoreFeature::NodeProperty("pagerank".to_string()),
+            }],
+            decay: Vec::new(),
+        },
+        2,
+    );
+
+    let output = db.retrieve_knowledge(&search_index, &request).unwrap();
+
+    assert_eq!(output.candidates.len(), 2);
+    assert_eq!(output.candidates[0].canonical_node_id, Some(high.0));
+    assert_eq!(output.candidates[1].canonical_node_id, Some(low.0));
+    let evaluation = output.candidates[0]
+        .score_breakdown
+        .scoring_spec
+        .as_ref()
+        .expect("typed scoring spec provenance");
+    assert_eq!(evaluation.term_contributions, vec![65_000.0]);
+    assert!(evaluation.missing_features.is_empty());
+}
+
+#[test]
+fn knowledge_retrieval_scoring_spec_reports_missing_canonical_properties() {
+    let (db, _, _) = scoring_spec_database();
+    let mut search_index = SearchIndex::in_memory();
+    db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
+        .unwrap();
+    let request = scoring_spec_request(
+        ScoringSpec {
+            terms: vec![ScoringTerm {
+                weight: 1.0,
+                feature: ScoreFeature::NodeProperty("absent_property".to_string()),
+            }],
+            decay: Vec::new(),
+        },
+        2,
+    );
+
+    let output = db.retrieve_knowledge(&search_index, &request).unwrap();
+
+    assert_eq!(output.candidates.len(), 2);
+    for candidate in &output.candidates {
+        let evaluation = candidate
+            .score_breakdown
+            .scoring_spec
+            .as_ref()
+            .expect("typed scoring spec provenance");
+        assert_eq!(evaluation.combined_score, 0.0);
+        assert_eq!(evaluation.term_contributions, vec![0.0]);
+        assert_eq!(
+            evaluation.missing_features,
+            vec![ScoreFeature::NodeProperty("absent_property".to_string())]
+        );
+    }
 }

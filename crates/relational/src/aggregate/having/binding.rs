@@ -131,7 +131,7 @@ impl<'a> HavingBindings<'a> {
         parameters: &'a [Value],
         state: &'a RelationalState,
     ) -> Result<Self> {
-        let relations = std::iter::once((&select.from, &select.from_alias))
+        let relations = std::iter::once((select.from_table(), &select.from_alias))
             .chain(select.joins.iter().map(|join| (&join.table, &join.alias)))
             .map(|(table, alias)| {
                 let schema = state.table_schema(&table.name).ok_or_else(|| {

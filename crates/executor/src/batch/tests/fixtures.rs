@@ -668,5 +668,20 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
             },
             true,
         ),
+        (
+            PhysicalPlan::ScoringRerankExec {
+                score_column: hawdb_plan_cypher::VECTOR_SEED_SCORE_COLUMN.to_string(),
+                spec: hawdb_core::graph_rag::ScoringSpec {
+                    terms: vec![hawdb_core::graph_rag::ScoringTerm {
+                        weight: 1.0,
+                        feature: hawdb_core::graph_rag::ScoreFeature::SearchScore,
+                    }],
+                    decay: Vec::new(),
+                },
+                limit: 1,
+                input: Box::new(PhysicalPlan::EmptyExec),
+            },
+            true,
+        ),
     ]
 }

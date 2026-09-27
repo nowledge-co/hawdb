@@ -212,7 +212,10 @@ impl VectorSeedScanSpec<'_> {
             output.rows.into_iter().map(|row| {
                 let mut values = BTreeMap::from([
                     ("id".to_string(), Value::String(row.id)),
-                    ("score".to_string(), Value::Float(row.score)),
+                    (
+                        hawdb_plan_cypher::VECTOR_SEED_SCORE_COLUMN.to_string(),
+                        Value::Float(row.score),
+                    ),
                 ]);
                 if *output_external_id && let Some(external_id) = row.external_id {
                     values.insert("external_id".to_string(), Value::String(external_id));

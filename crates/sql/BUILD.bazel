@@ -42,6 +42,7 @@ rust_test(
 # This campaign runs only when explicitly selected for local fuzz verification.
 rust_test(
     name = "hawdb_sql_clause_diagnostics_fuzz_tests",
+    size = "small",
     tags = ["manual"],
     args = [
         "parser::clause_tests::clause_diagnostics_campaign",
@@ -59,6 +60,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_sql_frontend_corpus_fuzz_tests",
+    size = "small",
     tags = ["manual"],
     args = [
         "tests::frontend_corpus::frontend_corpus_differential_campaign",
@@ -76,6 +78,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_sql_create_binding_fuzz_tests",
+    size = "small",
     tags = ["manual"],
     args = [
         "pgq::create::tests::create_binding_differential_campaign",

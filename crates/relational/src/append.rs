@@ -300,7 +300,10 @@ pub fn compile_append_select_sql(
     let SqlStatement::Select(select) = prepared.statement else {
         return Ok(None);
     };
-    let Some(schema) = state.schema(&select.from.name) else {
+    if select.from.is_none() {
+        return Ok(None);
+    }
+    let Some(schema) = state.schema(&select.from_table().name) else {
         return Ok(None);
     };
     compile_append_select(select, parameters, schema, configured_max_rows).map(Some)
@@ -326,7 +329,10 @@ pub fn compile_append_explain_sql(
     let SqlStatement::Select(select) = *explain.statement else {
         return Ok(None);
     };
-    let Some(schema) = state.schema(&select.from.name) else {
+    if select.from.is_none() {
+        return Ok(None);
+    }
+    let Some(schema) = state.schema(&select.from_table().name) else {
         return Ok(None);
     };
     Ok(Some(AppendExplainPlan {
@@ -341,7 +347,7 @@ fn compile_append_select(
     schema: &AppendTableSchema,
     configured_max_rows: usize,
 ) -> Result<AppendSelectPlan> {
-    reject_non_public_schema(select.from.schema.as_deref())?;
+    reject_non_public_schema(select.from_table().schema.as_deref())?;
     if select.distinct
         || !select.joins.is_empty()
         || !select.group_by.is_empty()

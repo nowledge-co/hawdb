@@ -43,7 +43,11 @@ pub struct SqlExplainStatement {
 pub struct SelectStatement {
     pub projection: Vec<SelectProjection>,
     pub distinct: bool,
-    pub from: SqlTableName,
+    /// `None` for a FROM-less SELECT (e.g. `SELECT version();`): the
+    /// projection is evaluated exactly once against an implicit row with no
+    /// column bindings, so any column reference in it is rejected the same
+    /// way an unresolvable column against a real table would be.
+    pub from: Option<SqlTableName>,
     pub from_alias: Option<String>,
     pub joins: Vec<SqlJoin>,
     pub selection: Option<SqlPredicate>,
@@ -53,6 +57,19 @@ pub struct SelectStatement {
     pub limit: Option<SqlBound>,
     pub offset: Option<SqlBound>,
     pub lock_strength: Option<SqlLockStrength>,
+}
+
+impl SelectStatement {
+    /// The base table, for every code path that only ever runs on a real
+    /// table (catalog resolution, access-path selection, join planning, row
+    /// scanning). FROM-less selects never reach these paths — they're
+    /// handled by a separate, earlier branch — so `None` here is a caller
+    /// bug, not a user-facing state.
+    pub fn from_table(&self) -> &SqlTableName {
+        self.from
+            .as_ref()
+            .expect("from_table called on a FROM-less SELECT; it must take the fromless path")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

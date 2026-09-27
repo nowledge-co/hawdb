@@ -534,6 +534,15 @@ fn estimate_local_operator_cost(
                 .max(1);
             input_cost.with_cpu(rows, rows, 0)
         }
+        PhysicalPlan::ScoringRerankExec { limit, .. } => {
+            let input_cost = inputs[0].expect("unary input cost");
+            let retained_rows = (*limit as u64).min(input_cost.estimated_rows);
+            let heap_depth = retained_rows.max(2).ilog2().max(1) as u64;
+            let evaluation_cost = input_cost
+                .estimated_rows
+                .saturating_add(retained_rows.saturating_mul(heap_depth));
+            input_cost.with_cpu(retained_rows, evaluation_cost, 0)
+        }
         PhysicalPlan::CreateNodeLabel { .. }
         | PhysicalPlan::CreateRelationshipType { .. }
         | PhysicalPlan::CreateNodeTable { .. }

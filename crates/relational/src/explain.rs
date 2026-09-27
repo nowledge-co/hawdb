@@ -194,8 +194,11 @@ pub fn format_relational_explain(
             Some(selection),
             &output.access_path,
             &select.order_by,
-            &select.from.name,
-            select.from_alias.as_deref().unwrap_or(&select.from.name),
+            &select.from_table().name,
+            select
+                .from_alias
+                .as_deref()
+                .unwrap_or(&select.from_table().name),
         )
     {
         nodes.push(RelationalExplainNode {
@@ -233,8 +236,9 @@ pub fn format_relational_explain(
     }
     let base_operator_id = RelationalOperatorId::from_plan_index(0);
     let base_cardinality = relational_operator_cardinality_profile(&output, base_operator_id);
-    let base_table =
-        base_cardinality.map_or(select.from.name.as_str(), |profile| profile.table.as_str());
+    let base_table = base_cardinality.map_or(select.from_table().name.as_str(), |profile| {
+        profile.table.as_str()
+    });
     let base_access_path =
         base_cardinality.map_or(&output.access_path, |profile| &profile.access_path);
     nodes.push(RelationalExplainNode {

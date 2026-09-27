@@ -106,7 +106,7 @@ pub(super) fn execute_aggregate_select<'a>(
     if let Some(mut aggregate) = ColumnarAggregateExecutor::try_new(
         select,
         base_schema,
-        &select.from.name,
+        &select.from_table().name,
         base_qualifier,
         joins.is_empty(),
         execution_memory.batch_rows.get(),
@@ -456,7 +456,12 @@ pub(super) fn execute_grouped_aggregate<'a>(
     let task_context = pipeline.task_context;
     let locator_layout = match tree_execution {
         Some(execution) => relational_physical_join_plan_locator_layout(state, execution.tree)?,
-        None => relational_locator_layout(&select.from.name, base_qualifier, base_schema, joins)?,
+        None => relational_locator_layout(
+            &select.from_table().name,
+            base_qualifier,
+            base_schema,
+            joins,
+        )?,
     };
     let mut order = ExternalTopN::new(
         "SortExec",

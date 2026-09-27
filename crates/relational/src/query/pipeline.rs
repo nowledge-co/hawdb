@@ -586,7 +586,7 @@ pub(super) fn visit_relational_rows<'a>(
         state,
         index_runtime,
         row_runtime,
-        &select.from.name,
+        &select.from_table().name,
         base_access,
         None,
         &mut |row| {
@@ -600,7 +600,7 @@ pub(super) fn visit_relational_rows<'a>(
                 BoundRow {
                     bindings: vec![Binding {
                         binding: BindingId::new(0),
-                        table: &select.from.name,
+                        table: &select.from_table().name,
                         qualifier: base_qualifier,
                         schema: base_schema,
                         row: Some(row),

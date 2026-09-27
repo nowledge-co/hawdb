@@ -174,7 +174,7 @@ fn derive_ranges(predicate: &str, parameters: &[Value]) -> KeyRanges {
     single_key_ranges(
         select.selection.as_ref().unwrap(),
         "id",
-        &select.from,
+        select.from_table(),
         select.from_alias.as_deref(),
         parameters,
     )

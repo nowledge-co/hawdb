@@ -54,10 +54,10 @@ fn parses_postgres_select_subset() {
     clear_select_source_spans(&mut select);
     assert_eq!(
         select.from,
-        SqlTableName {
+        Some(SqlTableName {
             schema: Some("system".to_string()),
             name: "slow_queries".to_string(),
-        }
+        })
     );
     assert_eq!(
         select.projection,
@@ -200,10 +200,10 @@ fn normalizes_unquoted_identifiers_with_postgres_rules() {
     clear_select_source_spans(&mut select);
     assert_eq!(
         select.from,
-        SqlTableName {
+        Some(SqlTableName {
             schema: Some("system".to_string()),
             name: "slow_queries".to_string(),
-        }
+        })
     );
     assert_eq!(
         select.projection[0],

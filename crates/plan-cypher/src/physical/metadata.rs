@@ -105,6 +105,7 @@ pub enum PhysicalPlanKind {
     SortExec,
     TopNExec,
     LimitExec,
+    ScoringRerankExec,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -205,6 +206,7 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::SortExec,
             PhysicalPlanKind::TopNExec,
             PhysicalPlanKind::LimitExec,
+            PhysicalPlanKind::ScoringRerankExec,
         ];
         ALL
     }
@@ -291,6 +293,7 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::SortExec => "SortExec",
             PhysicalPlanKind::TopNExec => "TopNExec",
             PhysicalPlanKind::LimitExec => "LimitExec",
+            PhysicalPlanKind::ScoringRerankExec => "ScoringRerankExec",
         }
     }
 
@@ -359,7 +362,8 @@ impl PhysicalPlanKind {
             | PhysicalPlanKind::DistinctExec
             | PhysicalPlanKind::SortExec
             | PhysicalPlanKind::TopNExec
-            | PhysicalPlanKind::LimitExec => PhysicalPlanClass::Relational,
+            | PhysicalPlanKind::LimitExec
+            | PhysicalPlanKind::ScoringRerankExec => PhysicalPlanClass::Relational,
             PhysicalPlanKind::ProjectGraph
             | PhysicalPlanKind::GraphAlgorithm
             | PhysicalPlanKind::VectorSeedScan

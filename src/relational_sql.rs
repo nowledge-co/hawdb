@@ -200,6 +200,61 @@ mod tests {
     }
 
     #[test]
+    fn fromless_select_evaluates_literals_and_functions_exactly_once() {
+        let mut database = Database::new();
+        let output = database
+            .query_sql("SELECT 1 AS one, version() AS server_version, uuidv7() AS id")
+            .expect("FROM-less SELECT with only literals/no-arg functions must succeed");
+        assert_eq!(output.rows.len(), 1);
+        assert_eq!(output.rows[0]["one"], Value::Int(1));
+        let Value::String(version) = &output.rows[0]["server_version"] else {
+            panic!(
+                "expected version() to return text, got {:?}",
+                output.rows[0]["server_version"]
+            );
+        };
+        assert!(
+            version.starts_with("HawDB "),
+            "unexpected version() banner: {version}"
+        );
+        assert!(matches!(output.rows[0]["id"], Value::Uuid(_)));
+
+        // A second call must not reuse any state: no FROM means no table, so
+        // there's nothing for two calls to share.
+        let second = database
+            .query_sql("SELECT version()")
+            .expect("FROM-less SELECT must be independently repeatable");
+        assert_eq!(second.rows.len(), 1);
+    }
+
+    #[test]
+    fn fromless_select_rejects_a_column_reference() {
+        let mut database = Database::new();
+        let error = database
+            .query_sql("SELECT does_not_exist")
+            .expect_err("a FROM-less SELECT referencing a column must fail, not return NULL");
+        assert!(
+            error.to_string().contains("does_not_exist"),
+            "unexpected error for FROM-less column reference: {error}"
+        );
+    }
+
+    #[test]
+    fn fromless_select_rejects_where_and_other_clauses() {
+        let mut database = Database::new();
+        for sql in [
+            "SELECT 1 WHERE true",
+            "SELECT 1 ORDER BY 1",
+            "SELECT 1 LIMIT 1",
+            "SELECT 1 GROUP BY 1",
+        ] {
+            database
+                .query_sql(sql)
+                .expect_err(&format!("FROM-less SELECT must reject: {sql}"));
+        }
+    }
+
+    #[test]
     fn relational_uuid_scalar_survives_wal_and_checkpoint_reopen() {
         let value = hawdb_core::Uuid::parse_str("018f4e6a-7c1e-7d7a-8f4d-1234567890ab")
             .expect("parse durable UUID");

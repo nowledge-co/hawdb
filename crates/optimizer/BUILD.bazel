@@ -54,6 +54,7 @@ rust_test(
 # Private production costing, exercised only by an explicitly selected campaign.
 rust_test(
     name = "hawdb_optimizer_cardinality_metadata_fuzz_tests",
+    size = "small",
     tags = ["manual"],
     args = [
         "graph::cardinality::bindings::tests::cardinality_metadata_differential_campaign",
@@ -70,6 +71,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_optimizer_cardinality_defaults_fuzz_tests",
+    size = "small",
     tags = ["manual"],
     args = [
         "graph::tests::cardinality_defaults::cardinality_defaults_differential_campaign",
@@ -86,6 +88,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_optimizer_candidate_fingerprint_fuzz_tests",
+    size = "small",
     tags = ["manual"],
     args = [
         "graph::access_path::candidates::tests::candidate_fingerprint_differential_campaign",
@@ -102,6 +105,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_optimizer_trace_cost_fuzz_tests",
+    size = "small",
     tags = ["manual"],
     args = [
         "graph::selected_trace::differential::selected_trace_cost_differential_campaign",
@@ -118,6 +122,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_optimizer_full_text_cost_fuzz_tests",
+    size = "small",
     tags = ["manual"],
     args = [
         "graph::tests::fulltext_costing::full_text_cost_differential_campaign",
@@ -134,6 +139,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_optimizer_ddl_command_fuzz_tests",
+    size = "small",
     tags = ["manual"],
     args = [
         "graph::tests::ddl::ddl_command_pipeline_campaign",
@@ -150,6 +156,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_optimizer_access_cost_fuzz_tests",
+    size = "small",
     tags = ["manual"],
     args = [
         "relational::cost_tests::access_cost_differential_campaign",

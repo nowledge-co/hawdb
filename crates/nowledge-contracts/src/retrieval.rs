@@ -847,20 +847,32 @@ pub struct KnowledgeCandidate {
     pub graph_context_path_count: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum KnowledgeCandidateScoringPolicy {
     Max,
     WeightedSum {
         search_weight: f64,
         graph_seed_weight: f64,
     },
+    /// Typed weighted-feature scoring with optional exponential decay.
+    Spec(ScoringSpec),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+// The scoring contract lives in `hawdb_core`, below the search crate, because
+// the executor-side scoring operator must consume it. These re-exports keep the
+// host-facing surface unchanged.
+pub use hawdb_core::graph_rag::{
+    DecayTerm, ScoreFeature, ScoringEvaluation, ScoringFeatureSource, ScoringSpec,
+    ScoringSpecError, ScoringTerm,
+};
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct KnowledgeCandidateScoreBreakdown {
     pub search_score: Option<f64>,
     pub graph_seed_score: Option<f64>,
     pub combined_score: f64,
+    /// Per-term provenance when a typed scoring spec drove this rerank.
+    pub scoring_spec: Option<ScoringEvaluation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -897,7 +909,7 @@ pub struct KnowledgeEvidence {
 }
 
 #[cfg(test)]
-mod owner_tests {
+mod contract_tests {
     use super::{KnowledgeRetrievalPipelineReport, KnowledgeRetrievalStage};
     use std::any::TypeId;
 

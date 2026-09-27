@@ -149,6 +149,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_search_candidate_evidence_fuzz_tests",
+    size = "small",
     args = [
         "candidate_evidence::differential::candidate_evidence_differential_campaign",
         "--exact",
@@ -234,6 +235,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_search_manifest_encoding_fuzz_tests",
+    size = "small",
     args = [
         "lexical_projection::manifest_encoding::tests::manifest_encoding_differential_campaign",
         "--exact",
@@ -250,6 +252,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_search_block_encoding_fuzz_tests",
+    size = "small",
     args = [
         "lexical_projection::block_encoding::tests::block_encoding_differential_campaign",
         "--exact",
@@ -266,6 +269,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_search_bounded_file_fuzz_tests",
+    size = "small",
     tags = ["manual"],
     args = [
         "bounded_file::tests::bounded_file_differential_campaign",
@@ -282,6 +286,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_search_hex_decoding_fuzz_tests",
+    size = "small",
     args = [
         "document_decoding_tests::hex_decoding_differential_campaign",
         "--exact",
@@ -298,6 +303,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_search_compression_fuzz_tests",
+    size = "small",
     args = [
         "compression_tests::compressed_envelope_differential_campaign",
         "--exact",
@@ -348,6 +354,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_search_mini_delta_snapshot_fuzz_tests",
+    size = "small",
     tags = ["manual"],
     args = [
         "lexical_projection::tests::robustness::mini_delta_snapshot_lifecycle_campaign",
@@ -381,6 +388,7 @@ rust_test(
 # Keep spool encoding faults and differential coverage on the local fuzz surface.
 rust_test(
     name = "hawdb_search_spool_encoding_fuzz_tests",
+    size = "small",
     tags = ["manual"],
     args = [
         "out_of_core::generation_writer::spool::write_tests::spool_encoding_differential_campaign",
@@ -415,6 +423,7 @@ rust_test(
 # Keep the concurrent lexical read campaign on the explicit local fuzz surface.
 rust_test(
     name = "hawdb_search_concurrent_read_fuzz_tests",
+    size = "small",
     tags = ["manual"],
     args = [
         "lexical_projection::positioned_read_tests::concurrent_lexical_read_differential_campaign",
@@ -432,6 +441,7 @@ rust_test(
 # Keep the streaming hydration campaign on the explicit local fuzz surface.
 rust_test(
     name = "hawdb_search_hydration_fuzz_tests",
+    size = "small",
     tags = ["manual"],
     args = [
         "out_of_core::hydration::tests::hydration_differential_campaign",

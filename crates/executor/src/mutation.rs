@@ -542,6 +542,7 @@ pub fn mutation_command(plan: &PhysicalPlan) -> Result<Option<GraphMutation>> {
         | PhysicalPlan::SortExec { .. }
         | PhysicalPlan::TopNExec { .. }
         | PhysicalPlan::LimitExec { .. }
+        | PhysicalPlan::ScoringRerankExec { .. }
         | PhysicalPlan::ProjectGraph { .. }
         | PhysicalPlan::GraphAlgorithm { .. }
         | PhysicalPlan::VectorSeedScan { .. }

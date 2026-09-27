@@ -10,7 +10,7 @@
   "sources": [
     {
       "path": "crates/sql/src/tests.rs",
-      "sha256": "67991100ae6624a8f2aaeabce8f98a40cb1513497448d292c82ea31a77cdd7f6",
+      "sha256": "0557f6adbef3b966a3a604d7603c01b94288c2be234579829536fd4d1a325266",
       "case_ids": [
         "case-0001",
         "case-0002",
@@ -1180,6 +1180,15 @@
       "direction": "owned_accepts",
       "issue": "https://github.com/nowledge-co/hawdb/issues/159",
       "reason": "Production preparation validates dense parameter positions after parsing. The owned entry point is syntax-only and does not perform that preparation check."
+    },
+    {
+      "id": "owned-fromless-select",
+      "families": [
+        "select"
+      ],
+      "direction": "upstream_accepts",
+      "issue": "https://github.com/nowledge-co/hawdb/issues/785",
+      "reason": "Production now accepts a FROM-less SELECT (e.g. SELECT 'literal') by evaluating the projection once against an implicit empty-binding row. The owned syntax-only entry point has not been updated to accept an empty FROM clause yet."
     }
   ],
   "local_case_ids": [

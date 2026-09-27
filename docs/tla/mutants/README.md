@@ -37,11 +37,26 @@ The primary-key predicate controls reject extraction through an OR branch and
 omission of absent-row intents; see the
 [predicate replay proof](../PRIMARY_KEY_PREDICATE_MVCC_PROOF.md).
 
+The aged-writer bypass control rejects a younger foreground grant after the
+background large waiter ages; temporal starvation controls and witnesses are
+described in the [aging refinement](../AGED_WRITER_PROGRESS_PROOF.md).
+
+The governed-conflict-retry control rejects publication from a conflicting
+attempt. Its [proof](../GOVERNED_CONFLICT_RETRY_PROOF.md) also records the
+non-escalating retry starvation control and reachable conflict/retry witnesses.
+
 The search mutation publication controls reject global-ID masking of replacement
 versions, stale selector publication, publication before artifact durability,
 pinned closure reclamation and orphaned targets after compaction. Two false
 invariants witness repeated replacement and compaction reachability. See the
 [search mutation proof boundary](../SEARCH_MUTATION_PUBLICATION_PROOF.md).
+
+The branch lifecycle controls reject early head publication, child writes to
+the parent's head, omission of pending-create roots, stale mark/sweep decisions,
+deletion under lease, and expired opens. Separate false invariants witness
+create completion/abort and delete recovery after crash, concurrent writers,
+expiry under an existing handle, and independent writes. See the
+[branch lifecycle proof boundary](../BRANCH_LIFECYCLE_PROOF.md).
 
 The constraint-preserving update controls reject omitting unique or FK columns
 from eligibility; see the [projection proof](../CONSTRAINT_PRESERVING_UPDATE_MVCC_PROOF.md).

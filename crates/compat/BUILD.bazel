@@ -41,6 +41,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_compat_contract_fuzz_tests",
+    size = "small",
     args = [
         "differential::compatibility_contract_differential_campaign",
         "--exact",

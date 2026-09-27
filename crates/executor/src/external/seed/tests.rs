@@ -374,7 +374,15 @@ fn vector_seed_preserves_request_binding_and_reservation_lifetime() {
     );
     assert!(!result.batches[0][1].contains_key("external_id"));
     assert_eq!(result.batches[1][0]["id"], Value::String("id-2".into()));
-    assert_eq!(result.batches[1][0]["score"], Value::Float(0.5));
+    // The seed score is the declared plan-level column, typed as a float.
+    assert_eq!(
+        result.batches[1][0][hawdb_plan_cypher::VECTOR_SEED_SCORE_COLUMN],
+        Value::Float(0.5)
+    );
+    assert!(matches!(
+        result.batches[1][0][hawdb_plan_cypher::VECTOR_SEED_SCORE_COLUMN],
+        Value::Float(_)
+    ));
     assert_eq!(result.emit_reservations, vec![5120, 5120]);
     assert_eq!(result.reports, vec![output(3).report]);
     assert!(result.ledger.peak_bytes > 5120);
