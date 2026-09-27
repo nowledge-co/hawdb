@@ -4480,6 +4480,276 @@ mod tests {
 
     #[test]
     #[cfg(feature = "full-text-search")]
+    fn mutation_publication_replacements_match_rebuild_and_can_delete_to_empty() {
+        let path = test_dir("mutation-replace-publication");
+        let merged_path = test_dir("mutation-replace-publication-merged");
+        let old = document(0, "team");
+        publish_two_artifact_manifest_with_initial_documents(
+            &path,
+            vec![old.clone(), document(1, "team")],
+            Default::default(),
+            document(2, "team"),
+            Default::default(),
+        );
+        install_delete_mutation_run(&path, &old, 0, 3);
+        let reader = mutation_reader_for_test(&path);
+        let row = |id: &str, body: &str| crate::SearchProjectionRow {
+            kind: crate::SearchProjectionKind::Memory,
+            external_id: id.into(),
+            title: "graph replacement".into(),
+            body: body.into(),
+            embedding: Some(vec![1.0, 0.0]),
+            source_id: None,
+            metadata: BTreeMap::new(),
+        };
+        let revived = row("000", "new graph version");
+        let replacement = row("001", "updated graph memory");
+        let (delta, _, _) = SearchOutOfCoreGenerationWriter::prepare_delta(
+            &reader,
+            crate::SearchProjectionDelta {
+                upserts: vec![replacement.clone(), revived.clone()],
+                deletes: vec!["memory:002".into()],
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap()
+        .finish()
+        .unwrap();
+        assert_eq!(delta.before_document_count, 2);
+        assert_eq!(delta.after_document_count, 2);
+        assert_eq!(delta.deleted_documents, 1);
+        let current = mutation_reader_for_test(&path);
+        let mut merged =
+            SearchOutOfCoreGenerationWriter::create(&merged_path, Default::default()).unwrap();
+        merged.push(revived.clone().into_document()).unwrap();
+        merged.push(replacement.into_document()).unwrap();
+        merged.finish().unwrap();
+        let merged = SearchOutOfCoreReader::open(&merged_path).unwrap();
+        let expected = merged
+            .search_with_options("graph", None, SearchMode::Text, options(10, None))
+            .unwrap();
+        let actual = current
+            .search_with_options("graph", None, SearchMode::Text, options(10, None))
+            .unwrap();
+        assert_search_parity(&expected.result, &actual.result);
+        let latest = row("001", "latest graph revision");
+        SearchOutOfCoreGenerationWriter::prepare_delta(
+            &current,
+            crate::SearchProjectionDelta {
+                upserts: vec![latest.clone()],
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap()
+        .finish()
+        .unwrap();
+        let replaced = mutation_reader_for_test(&path);
+        assert_eq!(
+            replaced
+                .hydrate_documents(&["memory:001".into()])
+                .unwrap()
+                .documents,
+            vec![latest.into_document()]
+        );
+        assert_eq!(replaced.manifest.mutation_runs.len(), 3);
+        SearchOutOfCoreGenerationWriter::prepare_delta(
+            &replaced,
+            crate::SearchProjectionDelta {
+                deletes: vec!["memory:000".into(), "memory:001".into()],
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap()
+        .finish()
+        .unwrap();
+        let empty = mutation_reader_for_test(&path);
+        assert_eq!(empty.document_count(), 0);
+        assert_eq!(empty.manifest.documents_digest, 0);
+        assert!(empty
+            .search_with_options("graph", None, SearchMode::Text, options(10, None))
+            .unwrap()
+            .result
+            .hits
+            .is_empty());
+        drop(empty);
+        drop(replaced);
+        drop(current);
+        drop(reader);
+        drop(merged);
+        fs::remove_dir_all(path).unwrap();
+        fs::remove_dir_all(merged_path).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
+    fn mutation_publication_budget_and_cancel_leave_active_manifest_unchanged() {
+        let path = test_dir("mutation-publication-rejection");
+        let old = document(0, "team");
+        publish_two_artifact_manifest(&path, old.clone(), document(1, "team"));
+        install_delete_mutation_run(&path, &old, 0, 3);
+        let before = fs::read(path.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+        let delta = || crate::SearchProjectionDelta {
+            deletes: vec!["memory:001".into()],
+            ..Default::default()
+        };
+        let mut reader = mutation_reader_for_test(&path);
+        reader.config.max_mutation_run_bytes = NonZeroU64::MIN;
+        let update =
+            SearchOutOfCoreGenerationWriter::prepare_delta(&reader, delta(), Default::default())
+                .unwrap();
+        assert!(update
+            .finish()
+            .unwrap_err()
+            .to_string()
+            .contains("search mutation run requires"));
+        assert_eq!(
+            fs::read(path.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+            before
+        );
+        reader.config.max_mutation_run_bytes =
+            SearchOutOfCoreConfig::default().max_mutation_run_bytes;
+        reader.config.max_mutation_working_bytes = NonZeroU64::MIN;
+        assert!(SearchOutOfCoreGenerationWriter::prepare_delta(
+            &reader,
+            delta(),
+            Default::default()
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("mutation-run working set"));
+        assert_eq!(
+            fs::read(path.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+            before
+        );
+        reader.config.max_mutation_working_bytes =
+            SearchOutOfCoreConfig::default().max_mutation_working_bytes;
+        let token = crate::RuntimeCancellationToken::new();
+        let task = crate::RuntimeTaskContext::without_deadline(token.clone());
+        let update = SearchOutOfCoreGenerationWriter::prepare_delta_with_context(
+            &reader,
+            delta(),
+            Default::default(),
+            task,
+        )
+        .unwrap();
+        assert!(token.cancel());
+        assert!(update
+            .finish()
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled"));
+        assert_eq!(
+            fs::read(path.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+            before
+        );
+        drop(reader);
+        let reopened = mutation_reader_for_test(&path);
+        assert_eq!(reopened.document_count(), 1);
+        drop(reopened);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
+    fn mutation_delete_publication_reuses_content_and_repeated_delete_is_a_noop() {
+        let path = test_dir("mutation-delete-publication");
+        let old = document(0, "team");
+        let deleted = document(1, "team");
+        let live = document(2, "team");
+        publish_two_artifact_manifest_with_initial_documents(
+            &path,
+            vec![old.clone(), deleted.clone()],
+            Default::default(),
+            live.clone(),
+            Default::default(),
+        );
+        install_delete_mutation_run(&path, &old, 0, 3);
+        let reader = mutation_reader_for_test(&path);
+        let physical = serde_json::to_vec(&reader.manifest.segments).unwrap();
+        let before_payloads: Vec<_> = reader
+            .manifest
+            .segments
+            .iter()
+            .map(|segment| {
+                (
+                    segment.payload_file.clone(),
+                    fs::read(path.join(&segment.payload_file)).unwrap(),
+                )
+            })
+            .collect();
+        let prepare = |reader: &SearchOutOfCoreReader| {
+            SearchOutOfCoreGenerationWriter::prepare_delta(
+                reader,
+                crate::SearchProjectionDelta {
+                    deletes: vec![deleted.id.clone(), "memory:missing".into()],
+                    ..Default::default()
+                },
+                Default::default(),
+            )
+            .unwrap()
+        };
+        let update = prepare(&reader);
+        let stale = prepare(&reader);
+        assert_eq!(update.delta_report().deleted_documents, 1);
+        assert_eq!(update.source_read_metrics().hydrated_documents, 1);
+        let (_, build, _) = update.finish().unwrap();
+        assert_eq!(build.document_count, 1);
+        assert_eq!(build.document_payload_bytes, 0);
+        assert_eq!(build.lexical_artifact_bytes, 0);
+        assert!(stale
+            .finish()
+            .unwrap_err()
+            .to_string()
+            .contains("base changed"));
+        let reopened = mutation_reader_for_test(&path);
+        assert_eq!(
+            serde_json::to_vec(&reopened.manifest.segments).unwrap(),
+            physical
+        );
+        assert_eq!(reopened.manifest.mutation_runs.len(), 2);
+        assert_eq!(
+            build.generation_bytes,
+            build.manifest_bytes + reopened.manifest.mutation_runs[1].len
+        );
+        assert_eq!(
+            reopened
+                .hydrate_documents(std::slice::from_ref(&live.id))
+                .unwrap()
+                .documents,
+            vec![live.clone()]
+        );
+        assert!(reopened
+            .hydrate_documents(std::slice::from_ref(&deleted.id))
+            .is_err());
+        for (name, bytes) in before_payloads {
+            assert_eq!(fs::read(path.join(name)).unwrap(), bytes);
+        }
+        let repeated = prepare(&reopened);
+        assert_eq!(repeated.delta_report().deleted_documents, 0);
+        assert_eq!(repeated.source_read_metrics().hydrated_documents, 0);
+        let (_, repeated_build, _) = repeated.finish().unwrap();
+        let final_reader = mutation_reader_for_test(&path);
+        assert_eq!(final_reader.manifest.mutation_runs.len(), 2);
+        assert_eq!(
+            repeated_build.generation_bytes,
+            repeated_build.manifest_bytes
+        );
+        assert_eq!(final_reader.document_count(), 1);
+        assert_eq!(
+            serde_json::to_vec(&final_reader.manifest.segments).unwrap(),
+            physical
+        );
+        drop(final_reader);
+        drop(reopened);
+        drop(reader);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
     fn mutation_append_preserves_retractions_and_logical_identity() {
         let path = test_dir("mutation-append-preservation");
         let old = document(0, "team");

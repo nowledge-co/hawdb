@@ -27,6 +27,7 @@ use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
 
 mod input;
+pub(super) mod mutation;
 
 pub(super) mod hydration;
 
@@ -142,6 +143,42 @@ impl SearchOutOfCoreGenerationUpdate {
         // Keep dimension-only identity even when this batch has no vectors.
         writer.embedding_dimension = reader.manifest.embedding_dimension;
         writer.expected_active_generation = Some(reader.generation());
+        // Transitional staging boundary: only validated internal mutation
+        // readers reach this branch until mutation-aware compaction is ready.
+        // The public constructor still rejects nonempty mutation closures.
+        if !reader.visibility.is_empty() {
+            let (mutations, deleted_documents, source_read_metrics) =
+                mutation::Prepared::prepare(reader, &input, &memory, &task)?;
+            let after_document_count = before_document_count
+                .checked_sub(mutations.entries.len())
+                .and_then(|count| count.checked_add(upserted_documents))
+                .ok_or_else(|| HawDBError::Storage("mutation logical count overflows".into()))?;
+            while !input.upserts.is_empty() {
+                writer.push_inner(input.pop_upsert())?;
+            }
+            writer.mutations = Some(mutations);
+            writer.active_manifest_update = Some(ActiveManifestUpdate::Mutate {
+                expected_generation: reader.generation(),
+            });
+            return Ok(Self {
+                delta_report: SearchProjectionDeltaReport {
+                    artifact_type: "search_projection".into(),
+                    name: "search_projection".into(),
+                    action: "incremental_mutation_publish".into(),
+                    before_document_count,
+                    after_document_count,
+                    upserted_documents,
+                    deleted_documents,
+                    operation_count,
+                    source_graph_commit_epoch_before,
+                    source_graph_commit_epoch_after,
+                    source_graph_commit_epoch_updated: epoch_updated,
+                },
+                writer,
+                source_read_metrics,
+                _report_memory: report_memory,
+            });
+        }
         let can_append = input
             .upserts
             .front()

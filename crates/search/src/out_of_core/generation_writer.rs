@@ -209,6 +209,7 @@ pub struct SearchOutOfCoreGenerationWriter {
     metadata_field_bytes: u64,
     expected_active_generation: Option<u64>,
     active_manifest_update: Option<ActiveManifestUpdate>,
+    mutations: Option<delta::mutation::Prepared>,
     poisoned: bool,
     needs_chinese_analyzer: bool,
     task_context: RuntimeTaskContext,
@@ -373,6 +374,7 @@ impl SearchOutOfCoreGenerationWriter {
             metadata_field_bytes,
             expected_active_generation: None,
             active_manifest_update: None,
+            mutations: None,
             poisoned: false,
             needs_chinese_analyzer: false,
             task_context,
@@ -640,7 +642,6 @@ impl SearchOutOfCoreGenerationWriter {
             &self.memory,
             &self.task_context,
         )?;
-        let lexical_generation = generation;
         let GenerationArtifacts {
             segment: segment_output,
             lexical_artifact_name,
@@ -659,6 +660,7 @@ impl SearchOutOfCoreGenerationWriter {
                 document_count: self.document_count,
                 documents_digest: self.documents_digest.finish(),
                 active_manifest_update: self.active_manifest_update.as_ref(),
+                mutations: self.mutations.as_ref(),
                 source_graph_commit_epoch: self.options.source_graph_commit_epoch,
                 import_source_graph_commit_epoch: self.options.import_source_graph_commit_epoch,
                 embedding_manifest: self.options.embedding_manifest.as_ref(),
@@ -674,6 +676,15 @@ impl SearchOutOfCoreGenerationWriter {
             &self.memory,
             &self.task_context,
         )?;
+
+        let lexical_generation = published.lexical_generation;
+        let content_bytes = |bytes| {
+            if published.content_published {
+                bytes
+            } else {
+                0
+            }
+        };
 
         #[cfg(test)]
         crate::generation_cleanup::once::evidence::run(
@@ -731,12 +742,12 @@ impl SearchOutOfCoreGenerationWriter {
             peak_segment_document_count: segment_output.peak_segment_document_count,
             peak_segment_encoded_bytes: segment_output.peak_segment_encoded_bytes,
             descriptor_working_bytes: segment_output.descriptor_working_bytes,
-            descriptor_bytes: segment_output.descriptor_bytes,
-            document_payload_bytes: segment_output.document_payload_bytes,
-            metadata_payload_bytes: segment_output.metadata_payload_bytes,
-            vector_payload_bytes: segment_output.vector_payload_bytes,
-            lexical_artifact_bytes,
-            lexical_manifest_bytes,
+            descriptor_bytes: content_bytes(segment_output.descriptor_bytes),
+            document_payload_bytes: content_bytes(segment_output.document_payload_bytes),
+            metadata_payload_bytes: content_bytes(segment_output.metadata_payload_bytes),
+            vector_payload_bytes: content_bytes(segment_output.vector_payload_bytes),
+            lexical_artifact_bytes: content_bytes(lexical_artifact_bytes),
+            lexical_manifest_bytes: content_bytes(lexical_manifest_bytes),
             rabitq_artifact_bytes: rabitq
                 .as_ref()
                 .map_or(0, |artifact| artifact.artifact_bytes),

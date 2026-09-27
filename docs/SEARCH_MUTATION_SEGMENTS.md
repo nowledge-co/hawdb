@@ -3,8 +3,8 @@
 ## Status
 
 Implementation contract for the remaining work in issue #291 after append-only
-publication and bounded leveled compaction. Mutation-run encoding and integrity
-inspection exist, but production writers do not emit runs. Public readers reject
+publication and bounded leveled compaction. Mutation-run encoding, integrity inspection and a guarded continuation writer
+exist. Ordinary content-only updates still use the established writer paths. Public readers reject
 nonempty mutation closures until shared serving visibility and retracted
 statistics are implemented. Cleanup can validate and retain those artifacts
 without exposing a query handle.
@@ -29,8 +29,10 @@ and their assumptions.
 Internal differential fixtures exercise these paths after validation while the
 public constructor still rejects mutation closures. Aggregate run admission and
 typed, observable budget fallback are implemented in the guarded read path.
-Writer installation, mutation-aware compaction and sustained qualification are
-still required. This work does not
+A continuation writer now prepares target-bound runs and publishes replacements
+or delete-only manifests for validated internal mutation readers. Initial-run
+activation, mutation-aware compaction and sustained qualification are still
+required. This work does not
 make mutation serving publicly available.
 
 ## Goal
@@ -259,3 +261,34 @@ contracts are complete.
 This is not an LSM for primary graph or relational storage, a background thread
 inside HawDB, a partial-result fallback, or a compatibility migration for old
 development-only HawDB manifests.
+
+
+## Guarded continuation writer
+
+The current delta path selects mutation publication only for a reader that
+already owns a validated mutation closure. Public construction still rejects
+such closures; internal lifecycle fixtures exercise the path. This is a staging
+boundary while compaction is incomplete, not the final feature-selection rule.
+Once all lifecycle paths are ready, ordinary updates must enter this same path
+without requiring an existing run.
+
+Preparation resolves each unique requested ID against current visibility. It
+reads one bounded descriptor payload range at a time with the operation's
+hydration admission, reconstructs exact retractions with an admitted analyzer,
+and retains only changed IDs/term sets. Repeated targets in one range currently
+repeat I/O. New content contains only upserts. A delete of an absent ID produces
+no retraction, and an upsert of a previously deleted ID is a fresh visible version.
+
+Publication encodes the run under its per-file limit and rechecks aggregate
+reopen capacity for old-run decode prefixes and the new run before installing
+anything. It preserves old runs, subtracts newly retracted count/digest once,
+and adds new content contributions. Delete-only publication installs no empty
+content artifact: its root-level written bytes comprise only the new run and
+manifest. Empty build artifacts are still created in the temporary stage and
+discarded; this has not been optimized or qualified. A repeated absent deletion
+can publish just a new manifest (including source-epoch progress).
+
+The existing generation lease/CAS and manifest-last commit boundary apply.
+Cancellation, stale-generation rejection and budget failure leave the old
+manifest unchanged. The public guard, mutation-aware compaction and sustained
+RSS/write-amplification qualification remain explicit unfinished requirements.

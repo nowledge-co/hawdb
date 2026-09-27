@@ -370,3 +370,53 @@ Tests cover vectorless append and vectorless compaction with an unselected
 vector-bearing segment. The linked [cleanup proof](../SEARCH_CLEANUP_OWNERSHIP.md)
 now additionally treats failed closure discovery as unknown retention rather
 than evidence for deleting old generations.
+
+
+## Guarded mutation continuation publication
+
+Let `V = visible(C, R)`, `U` be the delta's unique upsert IDs, and `D` its unique
+delete IDs, with `U ∩ D = ∅` (validated before staging). Exact visible-version
+lookup yields `T`, one physical target for each ID in `(U ∪ D) ∩ ids(V)`.
+All `T` targets are distinct and none is already hidden by `R`. Publish a run
+for `T`, retaining its operation tags, and a new content segment `N` containing
+exactly `U` if `U` is nonempty. Then
+
+`visible(C ∪ {N}, R ∪ T) = (V \ targets(T)) ∪ documents(N)`.
+
+The right-hand sets are disjoint by lookup and input uniqueness. Consequently
+`count' = count - |T| + |U|`, and the additive document digest subtracts each
+verified target contribution exactly once then adds the new segment digest.
+Missing deletes contribute neither a target nor a subtraction. Repeated
+replacements target the newest visible segment; previously hidden same-ID
+versions cannot be selected. Deleting all visible versions yields count/digest
+zero while retaining immutable physical artifacts until future compaction.
+
+The continuation writer uses the operation ledger for entry slots, ID copies,
+analyzer map/terms, output term vectors, controlled hydration and encoded run
+bytes. It keeps target records transient and output retractions owned until
+publication/drop. The stored per-run read/decode peak bound lets preparation
+replay old-run prefix admission with the next closure's header/index counts;
+new-run admission includes all prior retained ownership. Thus a new outer run
+slot or content-segment index cannot silently invalidate a formerly admitted
+old decode prefix. This is requested-capacity admission under the earlier
+pinned decoder assumptions, not a whole-operation RSS proof. Legacy active
+manifest decoding and all prior limits retain their existing boundaries.
+
+At finish, the existing publication lease checks the expected active generation
+before generation allocation. Retractions are encoded and admitted, content
+and run files are installed and verified, and only then is the active manifest
+durably replaced. Any earlier error leaves the active closure unchanged; staged
+or orphan files cannot become selectable through that unchanged manifest.
+There is no new claim about an OS error after rename but before directory sync:
+that boundary follows the existing storage contract. The finite TLA+ protocol
+model is unchanged; this argument maps the guarded continuation path to its
+publish-last/CAS steps, not to a machine-checked Rust refinement.
+
+Fixtures cover delete-only byte accounting and unchanged content references,
+missing/repeated deletes, competing prepared writers, replacement/revival
+against a rebuilt lexical corpus, repeated replacement and deletion to empty.
+Budget and cancellation fixtures compare active-manifest bytes before/after
+failure. These do not prove power-loss recovery or bounded sustained load.
+The branch is intentionally reachable only from internal validated mutation
+readers until compaction and initial-run activation are implemented; ordinary
+public updates do not yet obtain the required O(K) mutation publication.

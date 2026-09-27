@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::Path;
 
-const MUTATION_RUN_FORMAT: &str = "HAWDB_SEARCH_MUTATION_RUN_V1";
+pub(super) const MUTATION_RUN_FORMAT: &str = "HAWDB_SEARCH_MUTATION_RUN_V1";
 const MUTATION_RUN_PREFIX: &str = "search_projection_mutation_run.";
 
 fn size_overflow() -> HawDBError {
@@ -69,6 +69,15 @@ impl MutationRunBudget {
             )));
         }
         Ok(total)
+    }
+
+    pub(super) fn admit_encoded_extension(&self, bytes: &[u8], entry_count: usize) -> Result<()> {
+        self.check(add(multiply(bytes.len() as u64, 2)?, 8192)?)?;
+        self.check(add(
+            add(bytes.len() as u64, decode_capacity(bytes)?)?,
+            multiply(entry_count as u64, crate::build_memory::SET_ENTRY_BYTES)?,
+        )?)?;
+        Ok(())
     }
 
     fn retain(&mut self, additional: u64) -> Result<()> {
@@ -198,6 +207,7 @@ struct SearchMutationRunEnvelope {
 #[derive(Debug)]
 pub(super) struct SearchMutationRun {
     body: SearchMutationRunBody,
+    open_working_bytes: u64,
 }
 
 /// One target-bound predicate shared by every read path of a validated closure.
@@ -209,6 +219,31 @@ pub(super) struct MutationVisibility {
 }
 
 impl MutationVisibility {
+    pub(super) fn publication_budget(
+        &self,
+        limit: u64,
+        content_segments: usize,
+        append_run: bool,
+    ) -> Result<MutationRunBudget> {
+        let runs = self
+            .runs
+            .len()
+            .checked_add(usize::from(append_run))
+            .ok_or_else(size_overflow)?;
+        let mut budget = MutationRunBudget::new(limit, runs, content_segments)?;
+        for run in &self.runs {
+            budget.check(run.open_working_bytes)?;
+            budget.retain(add(
+                run.body.retained_capacity()?,
+                multiply(
+                    run.entries().len() as u64,
+                    crate::build_memory::SET_ENTRY_BYTES,
+                )?,
+            )?)?;
+        }
+        Ok(budget)
+    }
+
     pub(super) fn from_validated_runs(runs: Vec<SearchMutationRun>) -> Self {
         Self { runs }
     }
@@ -356,7 +391,8 @@ impl SearchMutationRun {
             ));
         }
         // The bounded reader may briefly own old and new input allocations.
-        budget.check(add(multiply(manifest.len, 2)?, 8192)?)?;
+        let read_working_bytes = add(multiply(manifest.len, 2)?, 8192)?;
+        budget.check(read_working_bytes)?;
         let bytes = read_bounded_file(&root.join(&manifest.file), manifest.len)?;
         if bytes.len() as u64 != manifest.len || checksum_bytes(&bytes) != manifest.checksum {
             return Err(HawDBError::Storage(
@@ -368,10 +404,11 @@ impl SearchMutationRun {
             manifest.entry_count as u64,
             crate::build_memory::SET_ENTRY_BYTES,
         )?;
-        budget.check(add(
+        let decode_working_bytes = add(
             add(bytes.capacity() as u64, decoded_capacity)?,
             target_index_bytes,
-        )?)?;
+        )?;
+        budget.check(decode_working_bytes)?;
         let envelope: SearchMutationRunEnvelope =
             serde_json::from_slice(&bytes).map_err(|error| {
                 HawDBError::Storage(format!("invalid search mutation-run artifact: {error}"))
@@ -407,6 +444,7 @@ impl SearchMutationRun {
         budget.retain(add(retained, target_index_bytes)?)?;
         Ok(Self {
             body: envelope.body,
+            open_working_bytes: read_working_bytes.max(decode_working_bytes),
         })
     }
 
@@ -687,9 +725,11 @@ mod tests {
         second.target_segment_id = 8;
         let visibility = MutationVisibility::from_validated_runs(vec![
             SearchMutationRun {
+                open_working_bytes: 0,
                 body: SearchMutationRunBody::new(3, 5, vec![first]).unwrap(),
             },
             SearchMutationRun {
+                open_working_bytes: 0,
                 body: SearchMutationRunBody::new(4, 5, vec![second]).unwrap(),
             },
         ]);

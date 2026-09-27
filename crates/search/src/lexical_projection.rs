@@ -964,6 +964,68 @@ impl LexicalProjectionReader {
         ))
     }
 
+    pub(super) fn document_retraction_with_context(
+        &self,
+        document: &SearchDocument,
+        analyzer: &SearchAnalyzerLexicon,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+        retained: &mut QueryMemoryLease,
+    ) -> Result<(u64, Vec<String>)> {
+        admit_document_source(document, self.config)?;
+        let mut analyze = |workspace: Option<&crate::analyzer_workspace::Workspace>| {
+            let mut accumulator =
+                DocumentAnalysis::new_with_memory(&document.id, self.config, Some(memory))?;
+            for (field, (text, weight)) in document_token_fields(document).enumerate() {
+                crate::analyzer_stream::visit_admitted_token_list(
+                    text,
+                    analyzer,
+                    crate::analyzer_stream::Control {
+                        memory: Some(memory),
+                        task: Some(task),
+                        workspace,
+                        checkpoint_throttle: None,
+                    },
+                    |term, occurrence| accumulator.push_term(term, occurrence, field as u8, weight),
+                )?;
+            }
+            let length = u64::from(accumulator.document_len);
+            let count = accumulator.frequencies.len();
+            retained.grow(crate::build_memory::checked_mul(
+                count,
+                std::mem::size_of::<String>(),
+            )?)?;
+            let mut terms = Vec::new();
+            terms.try_reserve_exact(count).map_err(|error| {
+                HawDBError::Execution(format!(
+                    "cannot allocate mutation retraction terms: {error}"
+                ))
+            })?;
+            if terms.capacity() > count {
+                return Err(HawDBError::Execution(
+                    "mutation retraction term slots exceed admission".into(),
+                ));
+            }
+            for (term, _) in accumulator.into_frequencies() {
+                crate::build_control::checkpoint(task)?;
+                retained.grow(term.len())?;
+                let owned = term.to_string();
+                if owned.capacity() > term.len() {
+                    return Err(HawDBError::Execution(
+                        "mutation retraction term exceeds admission".into(),
+                    ));
+                }
+                terms.push(owned);
+            }
+            Ok((length, terms))
+        };
+        if crate::analyzer_workspace::document_needs_workspace(document) {
+            crate::analyzer_workspace::run(memory, task, |workspace| analyze(Some(workspace)))
+        } else {
+            analyze(None)
+        }
+    }
+
     pub(crate) fn document_id_bounds(&self) -> Option<(&str, &str)> {
         let mut blocks = self
             .manifest
