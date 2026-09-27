@@ -270,6 +270,27 @@ removed where its outcome is known. The remaining uncertain directory-sync
 case is returned as an error and must be handled by the caller's publication
 poison/reopen protocol.
 
+### Branch-head selector codec and CAS
+
+`crates/storage/src/branch_head.rs` defines the v1 branch-head selector. It
+binds nonzero project and branch identities, a strictly positive physical
+generation, a sealed-root object reference, the logical commit epoch, and the
+active WAL generation/start LSN/length/digest. The selector has a fixed field
+order and CRC32C footer; unknown, truncated, checksum-invalid, trailing, or
+incomplete values fail closed before a handle can use them.
+
+The codec proof follows the bounded reader offset exactly as for the root
+codec: every field advances only after a checked slice, and the final exact-end
+check excludes hidden state. Validation establishes the identity and reference
+invariants before encoding or publication. Head publication then reads the
+current selector, requires matching project/branch identities and the caller's
+exact physical generation, and accepts only a strictly newer generation. The
+candidate is fully written and synchronized before `durable_replace_file`
+changes visibility, so a failed pre-replacement operation leaves the old bytes
+selected. A successful replacement selects one complete old or new selector;
+the later crash-recovery integration must still prove how an uncertain
+filesystem result is poisoned and reopened.
+
 ## Locks and publication ownership
 
 Project metadata serialization and the branch writer lease are separate. One
