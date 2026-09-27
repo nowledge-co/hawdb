@@ -109,7 +109,12 @@ impl SealedRoot {
 
         let mut previous_checkpoint: Option<ObjectReference> = None;
         for reference in &self.checkpoint_references {
-            validate_reference_kind(*reference, ObjectKind::Checkpoint)?;
+            if !matches!(
+                reference.kind,
+                ObjectKind::Checkpoint | ObjectKind::CheckpointArtifact
+            ) {
+                return Err(SealedRootError::InvalidObjectKind);
+            }
             if previous_checkpoint.is_some_and(|previous| previous >= *reference) {
                 return if previous_checkpoint == Some(*reference) {
                     Err(SealedRootError::DuplicateCheckpointReference)
@@ -276,6 +281,7 @@ fn decode_reference(reader: &mut Reader<'_>) -> Result<ObjectReference, SealedRo
         1 => ObjectKind::Checkpoint,
         2 => ObjectKind::SealedWal,
         3 => ObjectKind::SealedRoot,
+        4 => ObjectKind::CheckpointArtifact,
         _ => return Err(SealedRootError::InvalidObjectKind),
     };
     let format_version = reader.u16()?;

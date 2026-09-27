@@ -34,6 +34,8 @@ pub mod canonical;
 pub mod canonical_adjacency;
 #[doc(hidden)]
 pub mod checkpoint;
+#[doc(hidden)]
+pub mod checkpoint_closure;
 pub mod column_group;
 pub mod config;
 #[doc(hidden)]

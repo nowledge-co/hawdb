@@ -39,6 +39,7 @@ pub enum ObjectKind {
     Checkpoint = 1,
     SealedWal = 2,
     SealedRoot = 3,
+    CheckpointArtifact = 4,
 }
 
 impl ObjectKind {
@@ -47,6 +48,7 @@ impl ObjectKind {
             Self::Checkpoint => "checkpoint",
             Self::SealedWal => "sealed-wal",
             Self::SealedRoot => "sealed-root",
+            Self::CheckpointArtifact => "checkpoint-artifact",
         }
     }
 }
