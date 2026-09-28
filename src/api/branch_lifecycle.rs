@@ -30,7 +30,6 @@ pub struct BranchCreateRequest {
     pub parent: BranchSelector,
     pub expected_source_commit_epoch: u64,
     pub owner: Option<String>,
-    pub expires_at_unix_seconds: Option<i64>,
     pub idempotency_key: String,
 }
 
@@ -146,7 +145,6 @@ mod tests {
                 parent: BranchSelector::Id(main.id),
                 expected_source_commit_epoch: main.source_commit_epoch,
                 owner: Some("test".to_string()),
-                expires_at_unix_seconds: None,
                 idempotency_key: "open-query-test".to_string(),
             })
             .expect("create child branch");
@@ -176,27 +174,9 @@ mod tests {
             Err(BranchLifecycleError::LeaseUnavailable(_))
         ));
         drop(handle);
-        let expired = database
-            .create_branch(BranchCreateRequest {
-                name: Some("expired-query".to_string()),
-                parent: BranchSelector::Id(main.id),
-                expected_source_commit_epoch: main.source_commit_epoch,
-                owner: None,
-                expires_at_unix_seconds: Some(1),
-                idempotency_key: "expired-open-test".to_string(),
-            })
-            .expect("create expired branch");
-        let transitioned = database
-            .expire_branch(BranchSelector::Id(expired.id), i64::MAX)
-            .expect("expire child branch");
-        assert_eq!(transitioned.state, BranchLifecycleState::Expired);
-        assert!(matches!(
-            database.open_branch(BranchSelector::Id(expired.id)),
-            Err(BranchLifecycleError::Expired)
-        ));
         let deleted = database
-            .delete_branch(BranchSelector::Name(expired.name.clone()))
-            .expect("delete expired branch");
+            .delete_branch(BranchSelector::Name(child.name.clone()))
+            .expect("delete branch");
         assert_eq!(deleted.state, BranchLifecycleState::Deleted);
         drop(database);
         std::fs::remove_dir_all(path).unwrap();
@@ -223,7 +203,6 @@ mod tests {
             parent: BranchSelector::Id(main.id),
             expected_source_commit_epoch: main.source_commit_epoch,
             owner: None,
-            expires_at_unix_seconds: None,
             idempotency_key: "create-child".to_string(),
         }
     }
@@ -248,22 +227,6 @@ mod tests {
         database.checkpoint().unwrap();
         assert_eq!(branch_head::read_branch_head(&head_path).unwrap(), head);
         database.create_branch(create_request(&main)).unwrap();
-        drop(database);
-        std::fs::remove_dir_all(path).unwrap();
-    }
-
-    #[test]
-    fn create_rejects_changed_expiry_with_the_same_key() {
-        let (path, mut database, main) = initialized_database();
-        let mut request = create_request(&main);
-        database.create_branch(request.clone()).unwrap();
-        request.expires_at_unix_seconds = Some(0);
-        assert!(matches!(
-            database.create_branch(request),
-            Err(BranchLifecycleError::Transition(
-                storage::CatalogTransitionError::Conflict(_)
-            ))
-        ));
         drop(database);
         std::fs::remove_dir_all(path).unwrap();
     }
@@ -380,9 +343,6 @@ mod tests {
         assert!(database
             .delete_branch(BranchSelector::Id(child.id))
             .is_err());
-        assert!(database
-            .expire_branch(BranchSelector::Id(child.id), i64::MAX)
-            .is_err());
         assert_eq!(std::fs::read(catalog_path).unwrap(), before);
         drop(database);
         std::fs::remove_dir_all(path).unwrap();
@@ -463,7 +423,6 @@ pub struct BranchInfo {
     pub source_commit_epoch: u64,
     pub state: BranchLifecycleState,
     pub owner: Option<String>,
-    pub expires_at_unix_seconds: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -475,7 +434,6 @@ pub enum BranchLifecycleError {
     Transition(storage::CatalogTransitionError),
     UnknownBranch,
     RootBranchImmutable,
-    Expired,
     Deleting,
     Deleted,
     LeaseUnavailable(String),
@@ -497,7 +455,6 @@ impl Display for BranchLifecycleError {
             }
             Self::UnknownBranch => formatter.write_str("branch does not exist"),
             Self::RootBranchImmutable => formatter.write_str("the root branch cannot be deleted"),
-            Self::Expired => formatter.write_str("branch has expired and cannot be opened"),
             Self::Deleting => formatter.write_str("branch is being deleted"),
             Self::Deleted => formatter.write_str("branch has been deleted"),
             Self::LeaseUnavailable(message) => {
@@ -533,7 +490,6 @@ fn info(branch: &storage::BranchRecord) -> BranchInfo {
         source_commit_epoch: branch.source_commit_epoch,
         state: state(branch.state),
         owner: branch.owner.clone(),
-        expires_at_unix_seconds: branch.expires_at_unix_seconds,
     }
 }
 
@@ -556,7 +512,6 @@ fn request_fingerprint(request: &BranchCreateRequest) -> [u8; 32] {
         parent,
         request.expected_source_commit_epoch,
         &request.owner,
-        request.expires_at_unix_seconds,
         &request.idempotency_key,
     ))
     .expect("branch request contains only JSON-serializable scalar fields");
@@ -835,42 +790,6 @@ impl Database {
         Ok(info(branch))
     }
 
-    /// Marks a ready branch expired at the supplied wall-clock time. Expiry
-    /// changes only catalog state; any admitted [`BranchHandle`] remains valid
-    /// until its lease is released, and storage reclamation stays separate.
-    pub fn expire_branch(
-        &self,
-        selector: BranchSelector,
-        now_unix_seconds: i64,
-    ) -> Result<BranchInfo, BranchLifecycleError> {
-        self.ensure_branch_writable()?;
-        let path = self.branch_catalog_path()?;
-        let catalog_directory = path
-            .parent()
-            .expect("branch catalog path has a parent")
-            .to_path_buf();
-        let _metadata_lease = storage::CatalogMetadataLease::acquire_blocking(&catalog_directory)
-            .map_err(BranchLifecycleError::CatalogIo)?;
-        let mut catalog = self.read_branch_catalog()?;
-        let id = catalog
-            .branches
-            .iter()
-            .find(|branch| selector_matches(branch, &selector))
-            .map(|branch| branch.id)
-            .ok_or(BranchLifecycleError::UnknownBranch)?;
-        let revision = catalog
-            .branches
-            .iter()
-            .find(|branch| branch.id == id)
-            .expect("branch remains after selector resolution")
-            .metadata_revision;
-        catalog
-            .expire(id, revision, now_unix_seconds)
-            .map_err(BranchLifecycleError::Transition)?;
-        storage::write_catalog_locked(&path, &catalog).map_err(BranchLifecycleError::CatalogIo)?;
-        self.describe_branch(BranchSelector::Id(id.as_uuid()))
-    }
-
     /// Creates an isolated child branch from a sealed parent head. The
     /// idempotency key is retained by the catalog, so retrying the same
     /// request returns the existing record without creating another head.
@@ -946,7 +865,7 @@ impl Database {
             source_commit_epoch: request.expected_source_commit_epoch,
             base_root_digest: *parent_head.sealed_root.sha256.as_bytes(),
             owner: request.owner,
-            expires_at_unix_seconds: request.expires_at_unix_seconds,
+            expires_at_unix_seconds: None,
             request_key: request.idempotency_key,
             request_fingerprint: fingerprint,
         };
@@ -982,7 +901,13 @@ impl Database {
         let branch_info = info(branch);
         match branch.state {
             storage::BranchState::Ready => {}
-            storage::BranchState::Expired => return Err(BranchLifecycleError::Expired),
+            storage::BranchState::Expired => {
+                return Err(BranchLifecycleError::Transition(
+                    storage::CatalogTransitionError::InvalidState(
+                        "expired branch must be deleted before opening",
+                    ),
+                ))
+            }
             storage::BranchState::Deleting => return Err(BranchLifecycleError::Deleting),
             storage::BranchState::Deleted => return Err(BranchLifecycleError::Deleted),
             storage::BranchState::Creating => {
@@ -990,16 +915,6 @@ impl Database {
                     storage::CatalogTransitionError::InvalidState("open branch is not ready"),
                 ));
             }
-        }
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?
-            .as_secs() as i64;
-        if branch
-            .expires_at_unix_seconds
-            .is_some_and(|expires_at| expires_at <= now)
-        {
-            return Err(BranchLifecycleError::Expired);
         }
         let branch_directory = self.branch_directory(branch.id.as_uuid())?;
         let directory_lease = DatabaseDirectoryLease::acquire(&branch_directory)
