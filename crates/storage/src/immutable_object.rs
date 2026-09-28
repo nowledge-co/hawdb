@@ -105,6 +105,7 @@ pub enum ImmutableObjectError {
     InvalidSealedRoot {
         source: crate::sealed_root::SealedRootError,
     },
+    BranchMetadataIncomplete(&'static str),
 }
 
 impl Display for ImmutableObjectError {
@@ -145,6 +146,12 @@ impl Display for ImmutableObjectError {
                     "sealed root is invalid for reachability: {source}"
                 )
             }
+            Self::BranchMetadataIncomplete(message) => {
+                write!(
+                    formatter,
+                    "branch reclamation metadata is incomplete: {message}"
+                )
+            }
         }
     }
 }
@@ -165,6 +172,23 @@ pub struct ReclamationReport {
     pub retained_objects: u64,
     pub reclaimed_objects: u64,
     pub reclaimed_bytes: u64,
+}
+
+/// Durable branch metadata supplied by the catalog/lease owner to a global
+/// reclamation pass. The collector never infers branch liveness from files.
+#[derive(Debug, Clone)]
+pub struct BranchReclamationEntry {
+    pub state: crate::branch_catalog::BranchState,
+    pub sealed_root: Option<ObjectReference>,
+    pub directory: PathBuf,
+    pub active_lease: bool,
+}
+
+/// Explicit inventory for a branch-aware immutable-object sweep.
+#[derive(Debug, Clone, Default)]
+pub struct BranchReclamationInventory {
+    pub objects: Vec<ObjectReference>,
+    pub branches: Vec<BranchReclamationEntry>,
 }
 
 /// Owns the immutable-object namespace for one project.
@@ -315,6 +339,48 @@ impl ImmutableObjectStore {
             }
             report.reclaimed_objects += 1;
             report.reclaimed_bytes = report.reclaimed_bytes.saturating_add(reference.byte_length);
+        }
+        Ok(report)
+    }
+
+    /// Reclaims immutable objects and completed branch directories using a
+    /// catalog/lease-owned inventory. Any branch whose root cannot be proven
+    /// is retained conservatively and prevents the sweep.
+    pub fn reclaim_branches(
+        &mut self,
+        inventory: &BranchReclamationInventory,
+    ) -> Result<ReclamationReport, ImmutableObjectError> {
+        let mut roots = Vec::new();
+        for branch in &inventory.branches {
+            let removable = matches!(branch.state, crate::branch_catalog::BranchState::Deleted)
+                && !branch.active_lease;
+            if !removable {
+                roots.push(branch.sealed_root.ok_or(
+                    ImmutableObjectError::BranchMetadataIncomplete(
+                        "live or recovery-pending branch has no sealed root",
+                    ),
+                )?);
+            }
+        }
+        let report = self.reclaim_unreachable(&inventory.objects, &roots)?;
+        for branch in &inventory.branches {
+            if matches!(branch.state, crate::branch_catalog::BranchState::Deleted)
+                && !branch.active_lease
+                && branch.directory.exists()
+            {
+                fs::remove_dir_all(&branch.directory).map_err(|source| {
+                    ImmutableObjectError::Io {
+                        operation: "remove deleted branch directory",
+                        source,
+                    }
+                })?;
+                crate::durability::sync_parent_directory(&branch.directory).map_err(|source| {
+                    ImmutableObjectError::Io {
+                        operation: "sync branch directory parent after reclamation",
+                        source,
+                    }
+                })?;
+            }
         }
         Ok(report)
     }
@@ -783,6 +849,97 @@ mod tests {
             .unwrap();
         assert_eq!(report.reclaimed_objects, 2);
         assert_eq!(report.reclaimed_bytes, (first.len() + second.len()) as u64);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn branch_reclamation_keeps_live_roots_and_removes_deleted_branch_directory() {
+        let root = test_root("branch-reclamation");
+        let mut store = ImmutableObjectStore::open(&root).unwrap();
+        let checkpoint_reference = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, b"base");
+        let wal_reference = ObjectReference::for_bytes(ObjectKind::SealedWal, 1, b"wal");
+        store.publish(checkpoint_reference, b"base").unwrap();
+        store.publish(wal_reference, b"wal").unwrap();
+        let live_root = SealedRoot {
+            checkpoint_epoch: 1,
+            commit_epoch: 1,
+            wal_replay_start_lsn: 0,
+            checkpoint_references: vec![checkpoint_reference],
+            sealed_wals: vec![SealedWalReference {
+                start_lsn: 0,
+                end_lsn: 3,
+                object: wal_reference,
+            }],
+        };
+        let live_root_bytes = live_root.encode().unwrap();
+        let live_root_reference =
+            ObjectReference::for_bytes(ObjectKind::SealedRoot, 1, &live_root_bytes);
+        let orphan_reference = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, b"orphan");
+        store
+            .publish(live_root_reference, &live_root_bytes)
+            .unwrap();
+        store.publish(orphan_reference, b"orphan").unwrap();
+        let deleted_directory = root.join("branches").join("deleted");
+        fs::create_dir_all(&deleted_directory).unwrap();
+        fs::write(deleted_directory.join("head"), b"old").unwrap();
+
+        let report = store
+            .reclaim_branches(&BranchReclamationInventory {
+                objects: vec![
+                    live_root_reference,
+                    checkpoint_reference,
+                    wal_reference,
+                    orphan_reference,
+                ],
+                branches: vec![
+                    BranchReclamationEntry {
+                        state: crate::branch_catalog::BranchState::Ready,
+                        sealed_root: Some(live_root_reference),
+                        directory: root.join("branches").join("live"),
+                        active_lease: true,
+                    },
+                    BranchReclamationEntry {
+                        state: crate::branch_catalog::BranchState::Deleted,
+                        sealed_root: None,
+                        directory: deleted_directory.clone(),
+                        active_lease: false,
+                    },
+                ],
+            })
+            .unwrap();
+        assert_eq!(report.retained_objects, 3);
+        assert_eq!(report.reclaimed_objects, 1);
+        assert!(!deleted_directory.exists());
+        assert!(store.read(live_root_reference).is_ok());
+        assert!(matches!(
+            store.read(orphan_reference),
+            Err(ImmutableObjectError::Io { .. })
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn branch_reclamation_fails_closed_for_live_branch_without_root() {
+        let root = test_root("branch-reclamation-incomplete");
+        let mut store = ImmutableObjectStore::open(&root).unwrap();
+        let orphan_reference = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, b"orphan");
+        store.publish(orphan_reference, b"orphan").unwrap();
+        let error = store
+            .reclaim_branches(&BranchReclamationInventory {
+                objects: vec![orphan_reference],
+                branches: vec![BranchReclamationEntry {
+                    state: crate::branch_catalog::BranchState::Creating,
+                    sealed_root: None,
+                    directory: root.join("branches").join("creating"),
+                    active_lease: false,
+                }],
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            ImmutableObjectError::BranchMetadataIncomplete(_)
+        ));
+        assert!(store.object_path(orphan_reference).exists());
         fs::remove_dir_all(root).unwrap();
     }
 }
