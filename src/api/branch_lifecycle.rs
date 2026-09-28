@@ -162,6 +162,13 @@ mod tests {
             .query("MATCH (n:Memory) RETURN n.id")
             .expect("query child branch");
         assert_eq!(output.rows.len(), 1);
+        assert!(handle
+            .query("CREATE (:Memory {id: 'must-not-persist'})")
+            .is_err());
+        assert!(matches!(
+            database.delete_branch(BranchSelector::Id(child.id)),
+            Err(BranchLifecycleError::LeaseUnavailable(_))
+        ));
         drop(handle);
         let expired = database
             .create_branch(BranchCreateRequest {
@@ -367,7 +374,35 @@ mod tests {
         assert!(database
             .delete_branch(BranchSelector::Id(child.id))
             .is_err());
+        assert!(database
+            .expire_branch(BranchSelector::Id(child.id), i64::MAX)
+            .is_err());
         assert_eq!(std::fs::read(catalog_path).unwrap(), before);
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn failed_branch_replay_removes_private_recovery_directory() {
+        let (path, mut database, main) = initialized_database();
+        let child = database
+            .create_branch(create_request(&main))
+            .expect("create child");
+        let head_path = database.branch_head_path(child.id).unwrap();
+        std::fs::write(&head_path, b"corrupt").unwrap();
+        let prefix = format!("hawdb-branch-open-{}-", child.id);
+        let before = std::fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+            .count();
+        assert!(database.open_branch(BranchSelector::Id(child.id)).is_err());
+        let after = std::fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+            .count();
+        assert_eq!(after, before);
         drop(database);
         std::fs::remove_dir_all(path).unwrap();
     }
@@ -764,6 +799,8 @@ impl Database {
         if branch.name.as_str() == "main" {
             return Err(BranchLifecycleError::RootBranchImmutable);
         }
+        let _branch_lease = DatabaseDirectoryLease::acquire(&self.branch_directory(id.as_uuid())?)
+            .map_err(|error| BranchLifecycleError::LeaseUnavailable(error.to_string()))?;
         let revision = branch.metadata_revision;
         catalog
             .begin_delete(id, revision)
@@ -794,6 +831,7 @@ impl Database {
         selector: BranchSelector,
         now_unix_seconds: i64,
     ) -> Result<BranchInfo, BranchLifecycleError> {
+        self.ensure_branch_writable()?;
         let path = self.branch_catalog_path()?;
         let mut catalog = self.read_branch_catalog()?;
         let id = catalog
@@ -961,16 +999,33 @@ impl Database {
         let recovery_path =
             std::env::temp_dir().join(format!("hawdb-branch-open-{}-{nonce}", branch.id.as_uuid()));
         let mut graph_catalog = hawdb_storage::schema::Catalog::default();
-        hawdb_storage::store::GraphStore::open_from_branch_head(
+        let replay_result = hawdb_storage::store::GraphStore::open_from_branch_head(
             &self.store,
             &head_path,
             &objects,
             &recovery_path,
             &mut graph_catalog,
-        )
-        .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
-        let database = Database::open(&recovery_path)
-            .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+        );
+        match replay_result {
+            Ok((replayed, _)) => drop(replayed),
+            Err(error) => {
+                let _ = fs::remove_dir_all(&recovery_path);
+                return Err(BranchLifecycleError::Storage(error.to_string()));
+            }
+        }
+        let database = match Database::open_with_config(
+            &recovery_path,
+            super::DatabaseConfig {
+                read_only: true,
+                ..Default::default()
+            },
+        ) {
+            Ok(database) => database,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&recovery_path);
+                return Err(BranchLifecycleError::Storage(error.to_string()));
+            }
+        };
         Ok(BranchHandle {
             database: Some(database),
             branch: branch_info,
