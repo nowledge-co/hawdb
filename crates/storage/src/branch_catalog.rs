@@ -7,10 +7,14 @@
 //! catalog before changing any durable selector.
 
 use crate::branch_head::{
-    create_child_branch_head_from_parent, BranchHead, BranchHeadError, ChildBranchHeadRequest,
-    ChildBranchSourceExpectation,
+    create_child_branch_head_from_parent, read_branch_head, BranchHead, BranchHeadError,
+    ChildBranchHeadRequest, ChildBranchSourceExpectation,
 };
 use crate::durability;
+use crate::immutable_object::{
+    BranchReclamationEntry, BranchReclamationInventory, ImmutableObjectError, ImmutableObjectStore,
+    ObjectReference, ReclamationReport,
+};
 use crate::ownership::{DatabaseDirectoryLease, DatabaseDirectoryLeaseError};
 use hawdb_core::Uuid;
 use hawdb_integrity::crc32c;
@@ -18,7 +22,7 @@ use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAGIC: &[u8; 8] = b"HBCATV1\0";
@@ -814,6 +818,112 @@ pub struct BranchCreateResult {
     pub lease: DatabaseDirectoryLease,
 }
 
+/// Filesystem locations needed to bind one catalog record to its durable head.
+/// Paths are supplied by the branch owner; the catalog never derives paths
+/// from human names.
+#[derive(Debug, Clone)]
+pub struct BranchReclamationPath {
+    pub id: BranchId,
+    pub directory: PathBuf,
+    pub head_path: PathBuf,
+}
+
+#[derive(Debug)]
+pub enum BranchReclamationError {
+    Catalog(io::Error),
+    MissingPath(BranchId),
+    Head(BranchHeadError),
+    Lease(io::Error),
+    Objects(ImmutableObjectError),
+}
+
+impl Display for BranchReclamationError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Catalog(error) => {
+                write!(formatter, "read branch catalog for reclamation: {error}")
+            }
+            Self::MissingPath(id) => write!(
+                formatter,
+                "missing reclamation path for branch {}",
+                id.as_uuid()
+            ),
+            Self::Head(error) => write!(formatter, "read branch head for reclamation: {error}"),
+            Self::Lease(error) => {
+                write!(formatter, "inspect branch lease for reclamation: {error}")
+            }
+            Self::Objects(error) => write!(formatter, "reclaim branch objects: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for BranchReclamationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Catalog(error) | Self::Lease(error) => Some(error),
+            Self::Head(error) => Some(error),
+            Self::Objects(error) => Some(error),
+            Self::MissingPath(_) => None,
+        }
+    }
+}
+
+/// Builds a conservative branch-aware sweep from one durable catalog. A
+/// catalog read, head read, or lease inspection failure prevents reclamation.
+pub fn reclaim_catalog_branches(
+    catalog_path: &Path,
+    object_store: &mut ImmutableObjectStore,
+    objects: &[ObjectReference],
+    paths: &[BranchReclamationPath],
+) -> Result<ReclamationReport, BranchReclamationError> {
+    let catalog = read_catalog(catalog_path).map_err(BranchReclamationError::Catalog)?;
+    let mut branches = Vec::with_capacity(catalog.branches.len());
+    for record in &catalog.branches {
+        let path = paths
+            .iter()
+            .find(|candidate| candidate.id == record.id)
+            .ok_or(BranchReclamationError::MissingPath(record.id))?;
+        let active_lease =
+            if matches!(record.state, BranchState::Deleted) && !path.directory.exists() {
+                false
+            } else {
+                match DatabaseDirectoryLease::acquire(&path.directory) {
+                    Ok(lease) => {
+                        drop(lease);
+                        false
+                    }
+                    Err(DatabaseDirectoryLeaseError::AlreadyOpen) => true,
+                    Err(DatabaseDirectoryLeaseError::Canonicalize(error))
+                    | Err(DatabaseDirectoryLeaseError::OpenLockFile(error))
+                    | Err(DatabaseDirectoryLeaseError::Lock(error)) => {
+                        return Err(BranchReclamationError::Lease(error));
+                    }
+                }
+            };
+        let sealed_root = if matches!(record.state, BranchState::Deleted) {
+            None
+        } else {
+            Some(
+                read_branch_head(&path.head_path)
+                    .map_err(BranchReclamationError::Head)?
+                    .sealed_root,
+            )
+        };
+        branches.push(BranchReclamationEntry {
+            state: record.state,
+            sealed_root,
+            directory: path.directory.clone(),
+            active_lease,
+        });
+    }
+    object_store
+        .reclaim_branches(&BranchReclamationInventory {
+            objects: objects.to_vec(),
+            branches,
+        })
+        .map_err(BranchReclamationError::Objects)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateRecoveryOutcome {
     Completed,
@@ -1288,6 +1398,7 @@ impl std::error::Error for CatalogError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::immutable_object::ObjectKind;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicUsize;
 
@@ -1680,6 +1791,96 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), before);
         assert!(path.is_file());
         assert!(directory.join(METADATA_LOCK_FILE).is_file());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn catalog_reclamation_binds_heads_leases_and_deleted_directories() {
+        let (directory, catalog_path) = temporary_catalog_path();
+        let object_root = directory.join("objects");
+        let mut objects = ImmutableObjectStore::open(&object_root).unwrap();
+        let checkpoint = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, b"checkpoint");
+        let wal = ObjectReference::for_bytes(ObjectKind::SealedWal, 1, b"wal");
+        objects.publish(checkpoint, b"checkpoint").unwrap();
+        objects.publish(wal, b"wal").unwrap();
+        let sealed_root = crate::sealed_root::SealedRoot {
+            checkpoint_epoch: 1,
+            commit_epoch: 1,
+            wal_replay_start_lsn: 0,
+            checkpoint_references: vec![checkpoint],
+            sealed_wals: vec![crate::sealed_root::SealedWalReference {
+                start_lsn: 0,
+                end_lsn: 3,
+                object: wal,
+            }],
+        };
+        let sealed_root_bytes = sealed_root.encode().unwrap();
+        let root_reference =
+            ObjectReference::for_bytes(ObjectKind::SealedRoot, 1, &sealed_root_bytes);
+        let orphan = ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, b"orphan");
+        objects.publish(root_reference, &sealed_root_bytes).unwrap();
+        objects.publish(orphan, b"orphan").unwrap();
+
+        let parent_directory = directory.join("parent");
+        let deleted_directory = directory.join("deleted");
+        fs::create_dir_all(&parent_directory).unwrap();
+        fs::create_dir_all(&deleted_directory).unwrap();
+        fs::write(deleted_directory.join("head"), b"old").unwrap();
+        let parent_head_path = parent_directory.join("branch.head");
+        fs::write(
+            &parent_head_path,
+            BranchHead {
+                project_id: *id(99).as_uuid().as_bytes(),
+                branch_id: *id(1).as_uuid().as_bytes(),
+                physical_generation: 1,
+                sealed_root: root_reference,
+                logical_commit_epoch: 1,
+                active_wal: crate::branch_head::ActiveWalIdentity {
+                    generation: 1,
+                    replay_start_lsn: 3,
+                    byte_length: 3,
+                    sha256: hawdb_integrity::sha256(b"wal"),
+                },
+            }
+            .encode()
+            .unwrap(),
+        )
+        .unwrap();
+        let mut deleted = record(2, "deleted");
+        deleted.parent_id = Some(id(1));
+        deleted.state = BranchState::Deleted;
+        deleted.create_outcome = CreateOutcome::Succeeded;
+        write_catalog(
+            &catalog_path,
+            &Catalog {
+                project_id: id(99),
+                revision: 1,
+                branches: vec![record(1, "parent"), deleted],
+            },
+        )
+        .unwrap();
+
+        let report = reclaim_catalog_branches(
+            &catalog_path,
+            &mut objects,
+            &[root_reference, checkpoint, wal, orphan],
+            &[
+                BranchReclamationPath {
+                    id: id(1),
+                    directory: parent_directory,
+                    head_path: parent_head_path,
+                },
+                BranchReclamationPath {
+                    id: id(2),
+                    directory: deleted_directory.clone(),
+                    head_path: deleted_directory.join("branch.head"),
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(report.retained_objects, 3);
+        assert_eq!(report.reclaimed_objects, 1);
+        assert!(!deleted_directory.exists());
         fs::remove_dir_all(directory).unwrap();
     }
 
