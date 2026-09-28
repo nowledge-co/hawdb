@@ -109,6 +109,9 @@ mod graph_mutation;
 mod graph_read;
 #[path = "store/graph_recovery.rs"]
 mod graph_recovery;
+#[path = "store/immutable_root.rs"]
+mod immutable_root;
+pub use immutable_root::PreparedImmutableRootHandoff;
 #[path = "store/relational_index_shadow.rs"]
 mod relational_index_shadow;
 #[path = "store/relational_row_pages.rs"]
