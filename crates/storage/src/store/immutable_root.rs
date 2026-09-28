@@ -20,6 +20,65 @@ pub struct PreparedImmutableRootHandoff {
 }
 
 impl GraphStore {
+    /// Reconstructs a read/write GraphStore from immutable root objects for
+    /// recovery qualification. The source directory is copied only as a
+    /// container for non-checkpoint metadata; every root-bound checkpoint
+    /// artifact and sealed WAL is read from the immutable object store.
+    #[doc(hidden)]
+    pub fn open_from_immutable_root(
+        source: &GraphStore,
+        root: &SealedRoot,
+        immutable_store_root: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        catalog: &mut crate::schema::Catalog,
+    ) -> Result<GraphStore> {
+        root.validate()
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let source_durable = source.durable.as_ref().ok_or_else(|| {
+            HawDBError::Storage("immutable root replay requires durable storage".to_string())
+        })?;
+        let manifest = DurableManifest::load(&source_durable.root_path.join(MANIFEST_FILE))?;
+        let destination = destination.as_ref();
+        copy_recovery_container(&source_durable.root_path, destination)?;
+        let objects = ImmutableObjectStore::open(immutable_store_root.as_ref())
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let plan = source_durable.checkpoint_closure_plan(manifest)?;
+        for input in plan.inputs() {
+            if !root.checkpoint_references.contains(&input.reference) {
+                return Err(HawDBError::Storage(
+                    "immutable root is missing a checkpoint closure artifact".to_string(),
+                ));
+            }
+            let bytes = objects
+                .read(input.reference)
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            let name = input.path.file_name().ok_or_else(|| {
+                HawDBError::Storage("checkpoint closure artifact has no file name".to_string())
+            })?;
+            fs::write(destination.join(name), bytes)?;
+        }
+        if root.sealed_wals.len() != 1 {
+            return Err(HawDBError::Storage(
+                "immutable root replay currently requires one sealed WAL interval".to_string(),
+            ));
+        }
+        let wal = objects
+            .read(root.sealed_wals[0].object)
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        fs::write(
+            destination.join(
+                manifest
+                    .wal_path(&source_durable.root_path)
+                    .file_name()
+                    .ok_or_else(|| {
+                        HawDBError::Storage("manifest WAL path has no file name".to_string())
+                    })?,
+            ),
+            wal,
+        )?;
+        GraphStore::open(destination, catalog)
+    }
+
     /// Seals the current active WAL, publishes the validated manifest-bound
     /// checkpoint closure and root, and creates the next private WAL. The
     /// caller must keep the branch publication barrier until
@@ -146,6 +205,28 @@ impl GraphStore {
     }
 }
 
+fn copy_recovery_container(source: &Path, destination: &Path) -> Result<()> {
+    if destination.exists() {
+        fs::remove_dir_all(destination)?;
+    }
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let name = entry.file_name();
+        if name.to_string_lossy().contains(".lock") {
+            continue;
+        }
+        let destination_path = destination.join(name);
+        if source_path.is_dir() {
+            copy_recovery_container(&source_path, &destination_path)?;
+        } else {
+            fs::copy(source_path, destination_path)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,6 +276,40 @@ mod tests {
         assert!(prepared.rotation.next_wal_path.exists());
         assert!(objects.join("objects").exists());
 
+        let replay_database = temp_dir("immutable-root-replay");
+        let mut replay_catalog = Catalog::default();
+        let replayed = GraphStore::open_from_immutable_root(
+            &store,
+            &prepared.root,
+            &objects,
+            &replay_database,
+            &mut replay_catalog,
+        )
+        .expect("replay immutable root");
+        assert_eq!(replayed.node_count_for_label(None), 2);
+        drop(replayed);
+
+        store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                BTreeMap::from([("value".into(), Value::Int(3))]),
+            )
+            .expect("write unrelated branch state");
+        let replay_after_write_database = temp_dir("immutable-root-replay-after-write");
+        let mut replay_after_write_catalog = Catalog::default();
+        let replay_after_write = GraphStore::open_from_immutable_root(
+            &store,
+            &prepared.root,
+            &objects,
+            &replay_after_write_database,
+            &mut replay_after_write_catalog,
+        )
+        .expect("replay immutable root after unrelated write");
+        assert_eq!(replay_after_write.node_count_for_label(None), 2);
+
         let _ = fs::remove_dir_all(database);
+        let _ = fs::remove_dir_all(replay_database);
+        let _ = fs::remove_dir_all(replay_after_write_database);
     }
 }

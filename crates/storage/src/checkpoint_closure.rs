@@ -102,6 +102,10 @@ impl CheckpointClosurePlan {
         Ok(())
     }
 
+    pub fn inputs(&self) -> &[CheckpointArtifactInput] {
+        &self.inputs
+    }
+
     pub fn mark_family_empty(
         &mut self,
         family: CheckpointArtifactFamily,
