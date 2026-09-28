@@ -5,7 +5,9 @@ use crate::checkpoint_closure::build_sealed_root;
 use crate::durable_manifest::DurableManifest;
 use crate::error::{HawDBError, Result};
 use crate::immutable_object::ImmutableObjectStore;
-use crate::sealed_wal::{prepare_wal_rotation, PreparedWalRotation};
+use crate::sealed_wal::{
+    prepare_wal_rotation, seal_wal_file, PreparedWalRotation, SealedWalPublication,
+};
 use crate::{branch_catalog, branch_head, sealed_root::SealedRoot};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -211,32 +213,7 @@ impl GraphStore {
         )
         .map_err(|error| HawDBError::Storage(error.to_string()))?;
 
-        let manifest = DurableManifest::load(&durable.root_path.join(MANIFEST_FILE))?;
-        let closure = durable
-            .checkpoint_closure_plan(manifest)?
-            .publish(&mut objects)
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
-        let root = build_sealed_root(
-            &closure,
-            manifest.checkpoint_epoch,
-            self.commit_epoch,
-            manifest.wal_replay_start_lsn,
-            vec![crate::sealed_root::SealedWalReference {
-                start_lsn: rotation.sealed.start_lsn,
-                end_lsn: rotation.sealed.end_lsn,
-                object: rotation.sealed.object,
-            }],
-        )
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
-        let root_reference = root
-            .object_reference()
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
-        let encoded = root
-            .encode()
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
-        objects
-            .publish(root_reference, &encoded)
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let root = publish_sealed_root(durable, self.commit_epoch, rotation.sealed, &mut objects)?;
         Ok(PreparedImmutableRootHandoff {
             root,
             rotation,
@@ -293,48 +270,125 @@ impl GraphStore {
         Ok(head)
     }
 
-    /// Creates the initial branch selector for a database that has just been
-    /// sealed. This is the bootstrap counterpart to
-    /// [`GraphStore::complete_immutable_root_handoff`]: it requires an absent
-    /// selector and publishes generation one without replacing any existing
-    /// identity.
+    /// Publishes an initial sealed snapshot with a private empty WAL.
+    /// The ordinary database remains manifest-owned: changing its writer here
+    /// would lose subsequent writes when ordinary open replays the manifest WAL.
     #[doc(hidden)]
     pub fn initialize_immutable_root_head(
         &mut self,
-        prepared: PreparedImmutableRootHandoff,
+        immutable_store_root: impl AsRef<Path>,
         head_path: impl AsRef<Path>,
         project_id: [u8; 16],
         branch_id: [u8; 16],
     ) -> Result<branch_head::BranchHead> {
         self.ensure_usable()?;
-        let durable = self.durable.as_mut().ok_or_else(|| {
-            HawDBError::Storage("immutable root handoff requires durable storage".to_string())
+        let durable = self.durable.as_ref().ok_or_else(|| {
+            HawDBError::Storage(
+                "immutable root initialization requires durable storage".to_string(),
+            )
         })?;
+        if durable.read_only {
+            return Err(HawDBError::Storage(
+                "read-only storage cannot initialize a branch".to_string(),
+            ));
+        }
         let max_active_wal_bytes = durable.max_wal_bytes.unwrap_or(u64::MAX);
-        let root_reference = prepared
-            .root
+        let mut objects = ImmutableObjectStore::open(immutable_store_root.as_ref())
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let sealed = seal_wal_file(
+            &durable.wal_path,
+            durable.wal_generation,
+            durable.wal_replay_start_lsn,
+            max_active_wal_bytes,
+            &mut objects,
+        )
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let root = publish_sealed_root(durable, self.commit_epoch, sealed, &mut objects)?;
+        let root_reference = root
             .object_reference()
             .map_err(|error| HawDBError::Storage(error.to_string()))?;
-        let head = branch_head::create_initial_branch_head(branch_head::InitialBranchHeadRequest {
-            path: head_path.as_ref(),
-            project_id,
-            branch_id,
-            sealed_root: root_reference,
-            logical_commit_epoch: self.commit_epoch,
-            wal_path: &prepared.rotation.next_wal_path,
-            wal_generation: prepared.rotation.next_generation,
-            replay_start_lsn: prepared.rotation.next_start_lsn,
+        let generation = durable.wal_generation.checked_add(1).ok_or_else(|| {
+            HawDBError::Storage("initial branch WAL generation overflow".to_string())
+        })?;
+        let head_path = head_path.as_ref();
+        let wal_path = head_path.with_file_name(format!("wal-{generation}.hawdb"));
+        if wal_path.try_exists()? {
+            // A crash may leave the private WAL before publishing the selector.
+            // Only an exact empty successor can be reused; never adopt data.
+            let header = crate::wal::frame::encode_binary_wal_header(generation, sealed.end_lsn);
+            if fs::metadata(&wal_path)?.len() != header.len() as u64
+                || fs::read(&wal_path)? != header
+            {
+                return Err(HawDBError::Storage(
+                    "initial branch WAL is not the expected empty successor".to_string(),
+                ));
+            }
+            return branch_head::create_initial_branch_head(
+                branch_head::InitialBranchHeadRequest {
+                    path: head_path,
+                    project_id,
+                    branch_id,
+                    sealed_root: root_reference,
+                    logical_commit_epoch: self.commit_epoch,
+                    wal_path: &wal_path,
+                    wal_generation: generation,
+                    replay_start_lsn: sealed.end_lsn,
+                    max_active_wal_bytes,
+                },
+            )
+            .map_err(|error| HawDBError::Storage(error.to_string()));
+        }
+        branch_head::create_child_branch_head(
+            head_path,
+            branch_head::ChildBranchHeadRequest {
+                project_id,
+                branch_id,
+                sealed_root: root_reference,
+                logical_commit_epoch: self.commit_epoch,
+                active_wal_generation: generation,
+                replay_start_lsn: sealed.end_lsn,
+                head_path: head_path.to_path_buf(),
+                wal_path,
+            },
             max_active_wal_bytes,
-        })
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
-        durable.wal_append_file = None;
-        durable.wal_path = prepared.rotation.next_wal_path;
-        durable.wal_generation = prepared.rotation.next_generation;
-        durable.wal_replay_start_lsn = prepared.rotation.next_start_lsn;
-        durable.wal_bytes = fs::metadata(&durable.wal_path)?.len();
-        durable.wal_commit_epoch = self.commit_epoch;
-        Ok(head)
+        )
+        .map_err(|error| HawDBError::Storage(error.to_string()))
     }
+}
+
+fn publish_sealed_root(
+    durable: &super::durable::DurableStore,
+    commit_epoch: u64,
+    sealed: SealedWalPublication,
+    objects: &mut ImmutableObjectStore,
+) -> Result<SealedRoot> {
+    let manifest = DurableManifest::load(&durable.root_path.join(MANIFEST_FILE))?;
+    let closure = durable
+        .checkpoint_closure_plan(manifest)?
+        .publish(objects)
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+    let root = build_sealed_root(
+        &closure,
+        manifest.checkpoint_epoch,
+        commit_epoch,
+        manifest.wal_replay_start_lsn,
+        vec![crate::sealed_root::SealedWalReference {
+            start_lsn: sealed.start_lsn,
+            end_lsn: sealed.end_lsn,
+            object: sealed.object,
+        }],
+    )
+    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+    let root_reference = root
+        .object_reference()
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+    let encoded = root
+        .encode()
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+    objects
+        .publish(root_reference, &encoded)
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+    Ok(root)
 }
 
 fn copy_recovery_container(source: &Path, destination: &Path) -> Result<()> {

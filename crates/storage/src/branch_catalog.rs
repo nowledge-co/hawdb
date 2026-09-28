@@ -827,10 +827,63 @@ pub fn create_branch_from_parent(
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     if reservation.replayed {
+        if reservation.id.as_uuid().as_bytes() != &child_head_request.branch_id {
+            return Err(BranchCreateError::InconsistentRequest(
+                "replayed branch identity does not match the requested child paths",
+            ));
+        }
         let lease =
             DatabaseDirectoryLease::acquire(child_directory).map_err(BranchCreateError::Lease)?;
+        let catalog = read_catalog(catalog_path)
+            .map_err(|error| BranchCreateError::Catalog(CatalogFileTransitionError::Io(error)))?;
+        let branch = catalog
+            .branches
+            .iter()
+            .find(|branch| branch.id == reservation.id)
+            .ok_or(BranchCreateError::InconsistentRequest(
+                "replayed branch is missing",
+            ))?;
+        match (branch.state, branch.create_outcome) {
+            (BranchState::Creating, CreateOutcome::Pending) => {
+                if recover_create_file(
+                    catalog_path,
+                    reservation.id,
+                    &child_head_path,
+                    &child_head_request.wal_path,
+                    max_active_wal_bytes,
+                )? == CreateRecoveryOutcome::Aborted
+                {
+                    return Err(BranchCreateError::InconsistentRequest(
+                        "replayed branch creation was aborted",
+                    ));
+                }
+            }
+            (BranchState::Ready, CreateOutcome::Succeeded) => {}
+            _ => {
+                return Err(BranchCreateError::InconsistentRequest(
+                    "replayed branch is not ready",
+                ))
+            }
+        }
         let head = crate::branch_head::read_branch_head(&child_head_path)
             .map_err(BranchCreateError::Head)?;
+        if head.project_id != *catalog.project_id.as_uuid().as_bytes()
+            || head.branch_id != *reservation.id.as_uuid().as_bytes()
+        {
+            return Err(BranchCreateError::InconsistentRequest(
+                "replayed branch head identity mismatch",
+            ));
+        }
+        let wal = crate::branch_head::active_wal_identity_from_file(
+            &child_head_request.wal_path,
+            head.active_wal.generation,
+            head.active_wal.replay_start_lsn,
+            max_active_wal_bytes,
+        )
+        .map_err(BranchCreateError::Head)?;
+        if wal != head.active_wal {
+            return Err(BranchCreateError::Head(BranchHeadError::InvalidWalIdentity));
+        }
         return Ok(BranchCreateResult { head, lease });
     }
     if let Err(error) = fs::create_dir_all(child_directory) {

@@ -88,6 +88,221 @@ mod tests {
         drop(database);
         std::fs::remove_dir_all(path).unwrap();
     }
+
+    fn initialized_database() -> (PathBuf, Database, BranchInfo) {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("hawdb-branch-retry-{suffix}"));
+        let mut database = Database::open(&path).unwrap();
+        database.checkpoint().unwrap();
+        database.query("CREATE (:Memory {id: 'root'})").unwrap();
+        let main = database
+            .initialize_main_branch(Uuid::from_u128(11), Uuid::from_u128(12))
+            .unwrap();
+        (path, database, main)
+    }
+
+    fn create_request(main: &BranchInfo) -> BranchCreateRequest {
+        BranchCreateRequest {
+            name: Some("child".to_string()),
+            parent: BranchSelector::Id(main.id),
+            expected_source_commit_epoch: main.source_commit_epoch,
+            owner: None,
+            expires_at_unix_seconds: None,
+            idempotency_key: "create-child".to_string(),
+        }
+    }
+
+    #[test]
+    fn main_initialization_preserves_writes_across_reopen() {
+        let (path, mut database, main) = initialized_database();
+        let head_path = database.branch_head_path(main.id).unwrap();
+        let head = branch_head::read_branch_head(&head_path).unwrap();
+        database
+            .query("CREATE (:Memory {id: 'after-bootstrap'})")
+            .unwrap();
+        let before = database
+            .query("MATCH (m:Memory) RETURN m.id ORDER BY m.id")
+            .unwrap();
+        drop(database);
+        let mut database = Database::open(&path).unwrap();
+        let after = database
+            .query("MATCH (m:Memory) RETURN m.id ORDER BY m.id")
+            .unwrap();
+        assert_eq!(before.rows, after.rows);
+        database.checkpoint().unwrap();
+        assert_eq!(branch_head::read_branch_head(&head_path).unwrap(), head);
+        database.create_branch(create_request(&main)).unwrap();
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn create_rejects_changed_expiry_with_the_same_key() {
+        let (path, mut database, main) = initialized_database();
+        let mut request = create_request(&main);
+        database.create_branch(request.clone()).unwrap();
+        request.expires_at_unix_seconds = Some(0);
+        assert!(matches!(
+            database.create_branch(request),
+            Err(BranchLifecycleError::Transition(
+                storage::CatalogTransitionError::Conflict(_)
+            ))
+        ));
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn main_initialization_repairs_interrupted_catalog_binding() {
+        let (path, mut database, main) = initialized_database();
+        let catalog_path = database.branch_catalog_path().unwrap();
+        let mut catalog = database.read_branch_catalog().unwrap();
+        catalog.branches[0].base_root_digest = None;
+        catalog.branches[0].source_commit_epoch = 0;
+        storage::write_catalog(&catalog_path, &catalog).unwrap();
+        let retried = database
+            .initialize_main_branch(Uuid::from_u128(11), main.id)
+            .unwrap();
+        assert_eq!(retried.source_commit_epoch, main.source_commit_epoch);
+        database.create_branch(create_request(&main)).unwrap();
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn creates_custom_and_generated_branches_and_replays_without_parent_files() {
+        let (path, mut database, main) = initialized_database();
+        let custom = database.create_branch(create_request(&main)).unwrap();
+        assert_eq!(
+            database
+                .describe_branch(BranchSelector::Name(custom.name.clone()))
+                .unwrap(),
+            custom
+        );
+        let mut request = create_request(&custom);
+        request.name = None;
+        request.idempotency_key = "generated-child".to_string();
+        let child = database.create_branch(request.clone()).unwrap();
+        assert_eq!(child.name, format!("agent/{}", child.id));
+        let deleted = database
+            .delete_branch(BranchSelector::Id(custom.id))
+            .unwrap();
+        assert_eq!(deleted.state, BranchLifecycleState::Deleted);
+        std::fs::remove_file(database.branch_head_path(custom.id).unwrap()).unwrap();
+        assert_eq!(database.create_branch(request).unwrap(), child);
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn create_retry_completes_a_pending_durable_child() {
+        let (path, mut database, main) = initialized_database();
+        let request = create_request(&main);
+        let child = database.create_branch(request.clone()).unwrap();
+        let mut catalog = database.read_branch_catalog().unwrap();
+        let branch = catalog
+            .branches
+            .iter_mut()
+            .find(|branch| branch.id.as_uuid() == child.id)
+            .unwrap();
+        branch.state = storage::BranchState::Creating;
+        branch.create_outcome = storage::CreateOutcome::Pending;
+        storage::write_catalog(&database.branch_catalog_path().unwrap(), &catalog).unwrap();
+        assert_eq!(database.create_branch(request).unwrap(), child);
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn create_retry_rejects_a_pending_child_with_corrupt_wal() {
+        let (path, mut database, main) = initialized_database();
+        let request = create_request(&main);
+        let child = database.create_branch(request.clone()).unwrap();
+        let mut catalog = database.read_branch_catalog().unwrap();
+        let branch = catalog
+            .branches
+            .iter_mut()
+            .find(|branch| branch.id.as_uuid() == child.id)
+            .unwrap();
+        branch.state = storage::BranchState::Creating;
+        branch.create_outcome = storage::CreateOutcome::Pending;
+        let catalog_path = database.branch_catalog_path().unwrap();
+        storage::write_catalog(&catalog_path, &catalog).unwrap();
+        let head =
+            branch_head::read_branch_head(&database.branch_head_path(child.id).unwrap()).unwrap();
+        std::fs::write(
+            database
+                .branch_wal_path(child.id, head.active_wal.generation)
+                .unwrap(),
+            b"corrupt",
+        )
+        .unwrap();
+        assert!(database.create_branch(request).is_err());
+        assert_eq!(storage::read_catalog(&catalog_path).unwrap(), catalog);
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn readonly_branch_mutations_leave_catalog_unchanged() {
+        let (path, mut database, main) = initialized_database();
+        let child = database.create_branch(create_request(&main)).unwrap();
+        let catalog_path = database.branch_catalog_path().unwrap();
+        let before = std::fs::read(&catalog_path).unwrap();
+        drop(database);
+        let mut database = Database::open_with_config(
+            &path,
+            super::super::DatabaseConfig {
+                read_only: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(database.create_branch(create_request(&main)).is_err());
+        assert!(database
+            .initialize_main_branch(Uuid::from_u128(11), main.id)
+            .is_err());
+        assert!(database
+            .delete_branch(BranchSelector::Id(child.id))
+            .is_err());
+        assert_eq!(std::fs::read(catalog_path).unwrap(), before);
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn initial_head_retry_reuses_only_an_empty_private_wal() {
+        let (path, mut database, main) = initialized_database();
+        let head_path = database.branch_head_path(main.id).unwrap();
+        let head = branch_head::read_branch_head(&head_path).unwrap();
+        let wal_path = database
+            .branch_wal_path(main.id, head.active_wal.generation)
+            .unwrap();
+        let catalog_path = database.branch_catalog_path().unwrap();
+        let mut catalog = database.read_branch_catalog().unwrap();
+        catalog.branches[0].base_root_digest = None;
+        catalog.branches[0].source_commit_epoch = 0;
+        storage::write_catalog(&catalog_path, &catalog).unwrap();
+        std::fs::remove_file(&head_path).unwrap();
+        assert_eq!(
+            database
+                .initialize_main_branch(Uuid::from_u128(11), main.id)
+                .unwrap(),
+            main
+        );
+        assert_eq!(branch_head::read_branch_head(&head_path).unwrap(), head);
+        storage::write_catalog(&catalog_path, &catalog).unwrap();
+        std::fs::remove_file(&head_path).unwrap();
+        std::fs::write(&wal_path, b"corrupt").unwrap();
+        assert!(database
+            .initialize_main_branch(Uuid::from_u128(11), main.id)
+            .is_err());
+        assert!(!head_path.exists());
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,22 +395,35 @@ fn selector_matches(branch: &storage::BranchRecord, selector: &BranchSelector) -
 
 fn request_fingerprint(request: &BranchCreateRequest) -> [u8; 32] {
     let parent = match &request.parent {
-        BranchSelector::Id(id) => id.to_string(),
-        BranchSelector::Name(name) => name.clone(),
+        BranchSelector::Id(id) => ("id", id.to_string()),
+        BranchSelector::Name(name) => ("name", name.clone()),
     };
-    let encoded = format!(
-        "{}\0{}\0{}\0{}\0{}\0{}",
-        request.name.as_deref().unwrap_or(""),
+    // Preserve option tags and field boundaries in the durable request identity.
+    let encoded = serde_json::to_vec(&(
+        "hawdb-branch-create-v1",
+        &request.name,
         parent,
         request.expected_source_commit_epoch,
-        request.owner.as_deref().unwrap_or(""),
-        request.expires_at_unix_seconds.unwrap_or_default(),
-        request.idempotency_key,
-    );
-    *hawdb_integrity::sha256(encoded.as_bytes()).as_bytes()
+        &request.owner,
+        request.expires_at_unix_seconds,
+        &request.idempotency_key,
+    ))
+    .expect("branch request contains only JSON-serializable scalar fields");
+    *hawdb_integrity::sha256(&encoded).as_bytes()
 }
 
 impl Database {
+    fn ensure_branch_writable(&self) -> Result<(), BranchLifecycleError> {
+        if self.config.read_only {
+            return Err(BranchLifecycleError::Transition(
+                storage::CatalogTransitionError::InvalidState(
+                    "read-only storage cannot change branch metadata",
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     fn branch_catalog_path(&self) -> Result<PathBuf, BranchLifecycleError> {
         let root = self
             .store
@@ -234,6 +462,7 @@ impl Database {
         project_id: Uuid,
         main_branch_id: Uuid,
     ) -> Result<BranchInfo, BranchLifecycleError> {
+        self.ensure_branch_writable()?;
         let path = self.branch_catalog_path()?;
         if path.exists() {
             return self
@@ -254,17 +483,30 @@ impl Database {
         Ok(info(&catalog.branches[0]))
     }
 
-    /// Seals the current durable store and publishes the first `main` head.
-    /// This is explicit because it changes the WAL selector and requires a
-    /// checkpoint closure; ordinary database open never invents a root.
+    /// Publishes the current durable state as the initial sealed `main` snapshot.
+    /// Requires a checkpoint and a non-empty active WAL. The snapshot has its own
+    /// private WAL; ordinary database writes and reopen remain manifest-owned.
+    /// Later ordinary writes do not advance this sealed branch source.
     pub fn initialize_main_branch(
         &mut self,
         project_id: Uuid,
         main_branch_id: Uuid,
     ) -> Result<BranchInfo, BranchLifecycleError> {
+        self.ensure_branch_writable()?;
         let main = self.initialize_branch_catalog(project_id, main_branch_id)?;
+        let mut catalog = self.read_branch_catalog()?;
+        if main.id != main_branch_id || catalog.project_id.as_uuid() != project_id {
+            return Err(BranchLifecycleError::Transition(
+                storage::CatalogTransitionError::Conflict(
+                    "initial main identity does not match the catalog",
+                ),
+            ));
+        }
         let head_path = self.branch_head_path(main.id)?;
-        if head_path.exists() {
+        let head = if head_path
+            .try_exists()
+            .map_err(BranchLifecycleError::CatalogIo)?
+        {
             let head = branch_head::read_branch_head(&head_path)
                 .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
             if head.project_id != *project_id.as_bytes()
@@ -274,37 +516,75 @@ impl Database {
                     "existing main head identity does not match the catalog".to_string(),
                 ));
             }
-            return Ok(main);
-        }
-        let branch_directory = head_path
-            .parent()
-            .expect("branch head has a parent directory");
-        std::fs::create_dir_all(branch_directory).map_err(BranchLifecycleError::CatalogIo)?;
-        let objects = self
-            .branch_catalog_path()?
-            .parent()
-            .expect("branch catalog has a parent")
-            .join("objects");
-        let prepared = self
-            .store
-            .prepare_immutable_root_handoff(&objects)
-            .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
-        let head = self
-            .store
-            .initialize_immutable_root_head(
-                prepared,
-                &head_path,
-                *project_id.as_bytes(),
-                *main_branch_id.as_bytes(),
-            )
-            .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+            head
+        } else {
+            if catalog
+                .branches
+                .iter()
+                .any(|branch| branch.id.as_uuid() == main.id && branch.base_root_digest.is_some())
+            {
+                return Err(BranchLifecycleError::Storage(
+                    "initialized main branch is missing its head".to_string(),
+                ));
+            }
+            let branch_directory = head_path
+                .parent()
+                .expect("branch head has a parent directory");
+            std::fs::create_dir_all(branch_directory).map_err(BranchLifecycleError::CatalogIo)?;
+            let objects = self
+                .branch_catalog_path()?
+                .parent()
+                .expect("branch catalog has a parent")
+                .join("objects");
+            self.store
+                .initialize_immutable_root_head(
+                    &objects,
+                    &head_path,
+                    *project_id.as_bytes(),
+                    *main_branch_id.as_bytes(),
+                )
+                .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?
+        };
         let catalog_path = self.branch_catalog_path()?;
-        let mut catalog = self.read_branch_catalog()?;
+        let objects = hawdb_storage::immutable_object::ImmutableObjectStore::open(
+            catalog_path
+                .parent()
+                .expect("branch catalog has a parent")
+                .join("objects"),
+        )
+        .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+        let root_bytes = objects
+            .read(head.sealed_root)
+            .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+        let root = hawdb_storage::sealed_root::SealedRoot::decode(&root_bytes)
+            .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+        let wal = branch_head::active_wal_identity_from_file(
+            &self.branch_wal_path(main.id, head.active_wal.generation)?,
+            head.active_wal.generation,
+            head.active_wal.replay_start_lsn,
+            head.active_wal.byte_length,
+        )
+        .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+        if root.commit_epoch != head.logical_commit_epoch || wal != head.active_wal {
+            return Err(BranchLifecycleError::Storage(
+                "initial main root/WAL does not match its head".to_string(),
+            ));
+        }
         let branch = catalog
             .branches
             .iter_mut()
             .find(|branch| branch.id.as_uuid() == main_branch_id)
             .ok_or(BranchLifecycleError::UnknownBranch)?;
+        if let Some(digest) = branch.base_root_digest {
+            if digest != *head.sealed_root.sha256.as_bytes()
+                || branch.source_commit_epoch != head.logical_commit_epoch
+            {
+                return Err(BranchLifecycleError::Storage(
+                    "main catalog binding does not match its sealed head".to_string(),
+                ));
+            }
+            return Ok(info(branch));
+        }
         branch.base_root_digest = Some(*head.sealed_root.sha256.as_bytes());
         branch.source_commit_epoch = head.logical_commit_epoch;
         branch.metadata_revision = branch.metadata_revision.checked_add(1).ok_or_else(|| {
@@ -357,6 +637,7 @@ impl Database {
         &self,
         selector: BranchSelector,
     ) -> Result<BranchInfo, BranchLifecycleError> {
+        self.ensure_branch_writable()?;
         let path = self.branch_catalog_path()?;
         let mut catalog = self.read_branch_catalog()?;
         let id = catalog
@@ -373,11 +654,16 @@ impl Database {
         if branch.name.as_str() == "main" {
             return Err(BranchLifecycleError::RootBranchImmutable);
         }
-        let revision = catalog.revision;
+        let revision = branch.metadata_revision;
         catalog
             .begin_delete(id, revision)
             .map_err(BranchLifecycleError::Transition)?;
-        let deleting_revision = catalog.revision;
+        let deleting_revision = catalog
+            .branches
+            .iter()
+            .find(|branch| branch.id == id)
+            .expect("deleting branch remains in catalog")
+            .metadata_revision;
         catalog
             .finish_delete(id, deleting_revision)
             .map_err(BranchLifecycleError::Transition)?;
@@ -394,11 +680,37 @@ impl Database {
     /// idempotency key is retained by the catalog, so retrying the same
     /// request returns the existing record without creating another head.
     pub fn create_branch(
-        &self,
+        &mut self,
         request: BranchCreateRequest,
     ) -> Result<BranchInfo, BranchLifecycleError> {
+        self.ensure_branch_writable()?;
         let catalog_path = self.branch_catalog_path()?;
         let catalog = self.read_branch_catalog()?;
+        let fingerprint = request_fingerprint(&request);
+        if let Some(existing) = catalog
+            .branches
+            .iter()
+            .find(|branch| branch.create_request_key == request.idempotency_key)
+        {
+            if existing.request_fingerprint != fingerprint {
+                return Err(BranchLifecycleError::Transition(
+                    storage::CatalogTransitionError::Conflict(
+                        "create request key has a different fingerprint",
+                    ),
+                ));
+            }
+            match existing.create_outcome {
+                storage::CreateOutcome::Succeeded => return Ok(info(existing)),
+                storage::CreateOutcome::Aborted => {
+                    return Err(BranchLifecycleError::Transition(
+                        storage::CatalogTransitionError::InvalidState(
+                            "branch creation was aborted",
+                        ),
+                    ))
+                }
+                storage::CreateOutcome::Pending => {}
+            }
+        }
         let parent = catalog
             .branches
             .iter()
@@ -418,7 +730,6 @@ impl Database {
                 storage::CatalogTransitionError::Conflict("create source revision is stale"),
             ));
         }
-        let fingerprint = request_fingerprint(&request);
         let id_bytes = *hawdb_integrity::sha256(request.idempotency_key.as_bytes()).as_bytes();
         let id = Uuid::from_bytes(id_bytes[..16].try_into().expect("UUID width"));
         let child_id = storage::BranchId::new(id).map_err(BranchLifecycleError::Catalog)?;
@@ -427,7 +738,12 @@ impl Database {
             None => storage::BranchName::generated_agent(child_id),
         };
         let child_head_path = self.branch_head_path(id)?;
-        let child_wal_path = self.branch_wal_path(id, parent_head.active_wal.generation + 1)?;
+        let generation = parent_head.active_wal.generation.checked_add(1).ok_or(
+            BranchLifecycleError::Transition(storage::CatalogTransitionError::Overflow(
+                "child WAL generation",
+            )),
+        )?;
+        let child_wal_path = self.branch_wal_path(id, generation)?;
         let create_request = storage::CreateRequest {
             id: child_id,
             name,
@@ -439,6 +755,10 @@ impl Database {
             request_key: request.idempotency_key,
             request_fingerprint: fingerprint,
         };
+        let mut candidate = catalog.clone();
+        candidate
+            .reserve_create(create_request.clone())
+            .map_err(BranchLifecycleError::Transition)?;
         self.store
             .create_isolated_branch_from_parent_head(
                 &catalog_path,
