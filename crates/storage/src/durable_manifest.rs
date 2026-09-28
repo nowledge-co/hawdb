@@ -796,7 +796,7 @@ impl DurableManifest {
         Self::decode(&fs::read_to_string(path)?)
     }
 
-    fn decode(text: &str) -> Result<Self> {
+    pub(crate) fn decode(text: &str) -> Result<Self> {
         let (body, checksum) = split_manifest_checksum(text)?;
         let actual = checksum_bytes(body.as_bytes());
         if checksum != actual {
@@ -1151,7 +1151,7 @@ impl DurableManifest {
         Ok(manifest)
     }
 
-    fn encode(&self) -> String {
+    pub(crate) fn encode(&self) -> String {
         let mut body = String::new();
         body.push_str(&format!("{MANIFEST_HEADER_V1}\n"));
         body.push_str(&format!("version\t{STORAGE_VERSION}\n"));

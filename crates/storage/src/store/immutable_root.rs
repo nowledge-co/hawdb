@@ -98,11 +98,23 @@ impl GraphStore {
         let source_durable = source.durable.as_ref().ok_or_else(|| {
             HawDBError::Storage("immutable root replay requires durable storage".to_string())
         })?;
-        let manifest = DurableManifest::load(&source_durable.root_path.join(MANIFEST_FILE))?;
         let destination = destination.as_ref();
         copy_recovery_container(&source_durable.root_path, destination)?;
         let objects = ImmutableObjectStore::open(immutable_store_root.as_ref())
             .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let manifest = root
+            .checkpoint_references
+            .iter()
+            .filter_map(|reference| objects.read(*reference).ok())
+            .filter_map(|bytes| {
+                std::str::from_utf8(&bytes)
+                    .ok()
+                    .and_then(|text| DurableManifest::decode(text).ok())
+            })
+            .next()
+            .unwrap_or(DurableManifest::load(
+                &source_durable.root_path.join(MANIFEST_FILE),
+            )?);
         let plan = source_durable.checkpoint_closure_plan(manifest)?;
         for input in plan.inputs() {
             if !root.checkpoint_references.contains(&input.reference) {
@@ -363,10 +375,21 @@ fn publish_sealed_root(
     objects: &mut ImmutableObjectStore,
 ) -> Result<SealedRoot> {
     let manifest = DurableManifest::load(&durable.root_path.join(MANIFEST_FILE))?;
-    let closure = durable
+    let mut closure = durable
         .checkpoint_closure_plan(manifest)?
         .publish(objects)
         .map_err(|error| HawDBError::Storage(error.to_string()))?;
+    let manifest_bytes = manifest.encode().into_bytes();
+    let manifest_reference = crate::immutable_object::ObjectReference::for_bytes(
+        crate::immutable_object::ObjectKind::CheckpointArtifact,
+        1,
+        &manifest_bytes,
+    );
+    objects
+        .publish(manifest_reference, &manifest_bytes)
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+    closure.references.push(manifest_reference);
+    closure.references.sort_unstable();
     let root = build_sealed_root(
         &closure,
         manifest.checkpoint_epoch,
