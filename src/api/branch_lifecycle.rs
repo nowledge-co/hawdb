@@ -9,8 +9,11 @@ use crate::error::HawDBError;
 use hawdb_core::Uuid;
 use hawdb_storage::branch_catalog as storage;
 use hawdb_storage::branch_head;
+use hawdb_storage::ownership::DatabaseDirectoryLease;
 use std::fmt::{self, Display, Formatter};
+use std::fs;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const BRANCH_DIRECTORY: &str = "branches";
 const BRANCH_CATALOG_FILE: &str = "catalog.hawdb";
@@ -29,6 +32,39 @@ pub struct BranchCreateRequest {
     pub owner: Option<String>,
     pub expires_at_unix_seconds: Option<i64>,
     pub idempotency_key: String,
+}
+
+/// A query-capable lease on one ready branch.
+///
+/// The lease is admitted before the sealed head is replayed. The replay is
+/// opened in a private recovery directory, so callers cannot mutate catalog
+/// files or storage paths through this facade.
+#[derive(Debug)]
+pub struct BranchHandle {
+    database: Option<Database>,
+    branch: BranchInfo,
+    _directory_lease: DatabaseDirectoryLease,
+    recovery_path: PathBuf,
+}
+
+impl BranchHandle {
+    pub fn branch(&self) -> &BranchInfo {
+        &self.branch
+    }
+
+    pub fn query(&mut self, cypher: &str) -> Result<super::QueryOutput, HawDBError> {
+        self.database
+            .as_mut()
+            .expect("branch handle database remains present while open")
+            .query(cypher)
+    }
+}
+
+impl Drop for BranchHandle {
+    fn drop(&mut self) {
+        drop(self.database.take());
+        let _ = fs::remove_dir_all(&self.recovery_path);
+    }
 }
 
 #[cfg(test)]
@@ -85,6 +121,70 @@ mod tests {
             .join(main.id.to_string())
             .join("branch.head")
             .is_file());
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn opens_a_created_branch_for_queries_and_holds_its_lease() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("hawdb-branch-open-api-{suffix}"));
+        let mut database = Database::open(&path).expect("open database");
+        database.checkpoint().expect("checkpoint graph state");
+        database
+            .query("CREATE (:Memory {id: 'branch-open'})")
+            .expect("create graph state");
+        let main = database
+            .initialize_main_branch(Uuid::from_u128(21), Uuid::from_u128(22))
+            .expect("publish main head");
+        let child = database
+            .create_branch(BranchCreateRequest {
+                name: Some("agent-query".to_string()),
+                parent: BranchSelector::Id(main.id),
+                expected_source_commit_epoch: main.source_commit_epoch,
+                owner: Some("test".to_string()),
+                expires_at_unix_seconds: None,
+                idempotency_key: "open-query-test".to_string(),
+            })
+            .expect("create child branch");
+        let mut handle = database
+            .open_branch(BranchSelector::Name(child.name.clone()))
+            .expect("open child branch");
+        assert_eq!(handle.branch().id, child.id);
+        assert!(matches!(
+            database.open_branch(BranchSelector::Id(child.id)),
+            Err(BranchLifecycleError::LeaseUnavailable(_))
+        ));
+        let output = handle
+            .query("MATCH (n:Memory) RETURN n.id")
+            .expect("query child branch");
+        assert_eq!(output.rows.len(), 1);
+        drop(handle);
+        let expired = database
+            .create_branch(BranchCreateRequest {
+                name: Some("expired-query".to_string()),
+                parent: BranchSelector::Id(main.id),
+                expected_source_commit_epoch: main.source_commit_epoch,
+                owner: None,
+                expires_at_unix_seconds: Some(1),
+                idempotency_key: "expired-open-test".to_string(),
+            })
+            .expect("create expired branch");
+        let transitioned = database
+            .expire_branch(BranchSelector::Id(expired.id), i64::MAX)
+            .expect("expire child branch");
+        assert_eq!(transitioned.state, BranchLifecycleState::Expired);
+        assert!(matches!(
+            database.open_branch(BranchSelector::Id(expired.id)),
+            Err(BranchLifecycleError::Expired)
+        ));
+        let deleted = database
+            .delete_branch(BranchSelector::Name(expired.name.clone()))
+            .expect("delete expired branch");
+        assert_eq!(deleted.state, BranchLifecycleState::Deleted);
         drop(database);
         std::fs::remove_dir_all(path).unwrap();
     }
@@ -334,6 +434,10 @@ pub enum BranchLifecycleError {
     Transition(storage::CatalogTransitionError),
     UnknownBranch,
     RootBranchImmutable,
+    Expired,
+    Deleting,
+    Deleted,
+    LeaseUnavailable(String),
 }
 
 impl Display for BranchLifecycleError {
@@ -352,6 +456,12 @@ impl Display for BranchLifecycleError {
             }
             Self::UnknownBranch => formatter.write_str("branch does not exist"),
             Self::RootBranchImmutable => formatter.write_str("the root branch cannot be deleted"),
+            Self::Expired => formatter.write_str("branch has expired and cannot be opened"),
+            Self::Deleting => formatter.write_str("branch is being deleted"),
+            Self::Deleted => formatter.write_str("branch has been deleted"),
+            Self::LeaseUnavailable(message) => {
+                write!(formatter, "branch lease unavailable: {message}")
+            }
         }
     }
 }
@@ -676,6 +786,35 @@ impl Database {
         Ok(info(branch))
     }
 
+    /// Marks a ready branch expired at the supplied wall-clock time. Expiry
+    /// changes only catalog state; any admitted [`BranchHandle`] remains valid
+    /// until its lease is released, and storage reclamation stays separate.
+    pub fn expire_branch(
+        &self,
+        selector: BranchSelector,
+        now_unix_seconds: i64,
+    ) -> Result<BranchInfo, BranchLifecycleError> {
+        let path = self.branch_catalog_path()?;
+        let mut catalog = self.read_branch_catalog()?;
+        let id = catalog
+            .branches
+            .iter()
+            .find(|branch| selector_matches(branch, &selector))
+            .map(|branch| branch.id)
+            .ok_or(BranchLifecycleError::UnknownBranch)?;
+        let revision = catalog
+            .branches
+            .iter()
+            .find(|branch| branch.id == id)
+            .expect("branch remains after selector resolution")
+            .metadata_revision;
+        catalog
+            .expire(id, revision, now_unix_seconds)
+            .map_err(BranchLifecycleError::Transition)?;
+        storage::write_catalog(&path, &catalog).map_err(BranchLifecycleError::CatalogIo)?;
+        self.describe_branch(BranchSelector::Id(id.as_uuid()))
+    }
+
     /// Creates an isolated child branch from a sealed parent head. The
     /// idempotency key is retained by the catalog, so retrying the same
     /// request returns the existing record without creating another head.
@@ -769,5 +908,74 @@ impl Database {
             )
             .map_err(|error| BranchLifecycleError::CatalogIo(std::io::Error::other(error)))?;
         self.describe_branch(BranchSelector::Id(id))
+    }
+
+    /// Opens a ready branch for queries after admitting its directory lease.
+    /// Expired and deleting branches are rejected before any recovery files
+    /// are materialized.
+    pub fn open_branch(
+        &self,
+        selector: BranchSelector,
+    ) -> Result<BranchHandle, BranchLifecycleError> {
+        let catalog = self.read_branch_catalog()?;
+        let branch = catalog
+            .branches
+            .iter()
+            .find(|branch| selector_matches(branch, &selector))
+            .ok_or(BranchLifecycleError::UnknownBranch)?;
+        let branch_info = info(branch);
+        match branch.state {
+            storage::BranchState::Ready => {}
+            storage::BranchState::Expired => return Err(BranchLifecycleError::Expired),
+            storage::BranchState::Deleting => return Err(BranchLifecycleError::Deleting),
+            storage::BranchState::Deleted => return Err(BranchLifecycleError::Deleted),
+            storage::BranchState::Creating => {
+                return Err(BranchLifecycleError::Transition(
+                    storage::CatalogTransitionError::InvalidState("open branch is not ready"),
+                ));
+            }
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?
+            .as_secs() as i64;
+        if branch
+            .expires_at_unix_seconds
+            .is_some_and(|expires_at| expires_at <= now)
+        {
+            return Err(BranchLifecycleError::Expired);
+        }
+        let branch_directory = self.branch_directory(branch.id.as_uuid())?;
+        let directory_lease = DatabaseDirectoryLease::acquire(&branch_directory)
+            .map_err(|error| BranchLifecycleError::LeaseUnavailable(error.to_string()))?;
+        let head_path = self.branch_head_path(branch.id.as_uuid())?;
+        let objects = self
+            .branch_catalog_path()?
+            .parent()
+            .expect("branch catalog has a parent")
+            .join("objects");
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?
+            .as_nanos();
+        let recovery_path =
+            std::env::temp_dir().join(format!("hawdb-branch-open-{}-{nonce}", branch.id.as_uuid()));
+        let mut graph_catalog = hawdb_storage::schema::Catalog::default();
+        hawdb_storage::store::GraphStore::open_from_branch_head(
+            &self.store,
+            &head_path,
+            &objects,
+            &recovery_path,
+            &mut graph_catalog,
+        )
+        .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+        let database = Database::open(&recovery_path)
+            .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+        Ok(BranchHandle {
+            database: Some(database),
+            branch: branch_info,
+            _directory_lease: directory_lease,
+            recovery_path,
+        })
     }
 }
