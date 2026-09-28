@@ -624,7 +624,7 @@ pub fn write_catalog(path: &Path, catalog: &Catalog) -> io::Result<()> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .ok_or_else(|| invalid_data("branch catalog destination has no parent"))?;
-    let _metadata_lock = CatalogMetadataLease::acquire(parent)?;
+    let _metadata_lock = CatalogMetadataLease::acquire_blocking(parent)?;
     write_catalog_locked(path, catalog)
 }
 
@@ -700,7 +700,7 @@ pub fn reserve_create_file(
             CatalogFileTransitionError::Io(invalid_data("branch catalog destination has no parent"))
         })?;
     let _metadata_lock =
-        CatalogMetadataLease::acquire(parent).map_err(CatalogFileTransitionError::Io)?;
+        CatalogMetadataLease::acquire_blocking(parent).map_err(CatalogFileTransitionError::Io)?;
     let mut catalog = read_catalog(path).map_err(CatalogFileTransitionError::Io)?;
     let id = catalog
         .reserve_create(request)
@@ -732,7 +732,7 @@ pub fn complete_create_file(
             CatalogFileTransitionError::Io(invalid_data("branch catalog destination has no parent"))
         })?;
     let _metadata_lock =
-        CatalogMetadataLease::acquire(parent).map_err(CatalogFileTransitionError::Io)?;
+        CatalogMetadataLease::acquire_blocking(parent).map_err(CatalogFileTransitionError::Io)?;
     let mut catalog = read_catalog(path).map_err(CatalogFileTransitionError::Io)?;
     catalog
         .complete_create(reservation.id, reservation.metadata_revision)
@@ -752,7 +752,7 @@ pub fn abort_create_file(
             CatalogFileTransitionError::Io(invalid_data("branch catalog destination has no parent"))
         })?;
     let _metadata_lock =
-        CatalogMetadataLease::acquire(parent).map_err(CatalogFileTransitionError::Io)?;
+        CatalogMetadataLease::acquire_blocking(parent).map_err(CatalogFileTransitionError::Io)?;
     let mut catalog = read_catalog(path).map_err(CatalogFileTransitionError::Io)?;
     catalog
         .abort_create(reservation.id, reservation.metadata_revision)
@@ -1064,6 +1064,17 @@ impl CatalogMetadataLease {
             )),
             Err(TryLockError::Error(error)) => Err(error),
         }
+    }
+
+    pub fn acquire_blocking(project_directory: &Path) -> io::Result<Self> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(project_directory.join(METADATA_LOCK_FILE))?;
+        file.lock()?;
+        Ok(Self { file })
     }
 }
 
