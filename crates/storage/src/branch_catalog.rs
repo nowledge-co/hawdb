@@ -620,6 +620,18 @@ pub fn read_catalog(path: &Path) -> io::Result<Catalog> {
 /// because the caller cannot infer whether the directory operation reached the
 /// filesystem.  The caller must reopen before attempting another publication.
 pub fn write_catalog(path: &Path, catalog: &Catalog) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| invalid_data("branch catalog destination has no parent"))?;
+    let _metadata_lock = CatalogMetadataLease::acquire(parent)?;
+    write_catalog_locked(path, catalog)
+}
+
+/// Publishes a catalog while the caller owns the project metadata lease.
+/// Keeping the lock acquisition outside the read/modify/write sequence lets
+/// catalog transitions serialize their read and publication as one operation.
+fn write_catalog_locked(path: &Path, catalog: &Catalog) -> io::Result<()> {
     let encoded = catalog
         .encode()
         .map_err(|error| invalid_data(error.to_string()))?;
@@ -627,7 +639,6 @@ pub fn write_catalog(path: &Path, catalog: &Catalog) -> io::Result<()> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .ok_or_else(|| invalid_data("branch catalog destination has no parent"))?;
-    let _metadata_lock = CatalogMetadataLease::acquire(parent)?;
     let sequence = CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let candidate = parent.join(format!(
         ".{}.candidate-{}-{}",
@@ -682,6 +693,14 @@ pub fn reserve_create_file(
     path: &Path,
     request: CreateRequest,
 ) -> Result<CreateReservation, CatalogFileTransitionError> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            CatalogFileTransitionError::Io(invalid_data("branch catalog destination has no parent"))
+        })?;
+    let _metadata_lock =
+        CatalogMetadataLease::acquire(parent).map_err(CatalogFileTransitionError::Io)?;
     let mut catalog = read_catalog(path).map_err(CatalogFileTransitionError::Io)?;
     let id = catalog
         .reserve_create(request)
@@ -694,7 +713,7 @@ pub fn reserve_create_file(
         .ok_or(CatalogFileTransitionError::Transition(
             CatalogTransitionError::MissingBranch,
         ))?;
-    write_catalog(path, &catalog).map_err(CatalogFileTransitionError::Io)?;
+    write_catalog_locked(path, &catalog).map_err(CatalogFileTransitionError::Io)?;
     Ok(CreateReservation {
         id,
         metadata_revision,
@@ -706,11 +725,19 @@ pub fn complete_create_file(
     path: &Path,
     reservation: CreateReservation,
 ) -> Result<(), CatalogFileTransitionError> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            CatalogFileTransitionError::Io(invalid_data("branch catalog destination has no parent"))
+        })?;
+    let _metadata_lock =
+        CatalogMetadataLease::acquire(parent).map_err(CatalogFileTransitionError::Io)?;
     let mut catalog = read_catalog(path).map_err(CatalogFileTransitionError::Io)?;
     catalog
         .complete_create(reservation.id, reservation.metadata_revision)
         .map_err(CatalogFileTransitionError::Transition)?;
-    write_catalog(path, &catalog).map_err(CatalogFileTransitionError::Io)
+    write_catalog_locked(path, &catalog).map_err(CatalogFileTransitionError::Io)
 }
 
 /// Aborts a reserved child create after a known pre-publication failure.
@@ -718,11 +745,19 @@ pub fn abort_create_file(
     path: &Path,
     reservation: CreateReservation,
 ) -> Result<(), CatalogFileTransitionError> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            CatalogFileTransitionError::Io(invalid_data("branch catalog destination has no parent"))
+        })?;
+    let _metadata_lock =
+        CatalogMetadataLease::acquire(parent).map_err(CatalogFileTransitionError::Io)?;
     let mut catalog = read_catalog(path).map_err(CatalogFileTransitionError::Io)?;
     catalog
         .abort_create(reservation.id, reservation.metadata_revision)
         .map_err(CatalogFileTransitionError::Transition)?;
-    write_catalog(path, &catalog).map_err(CatalogFileTransitionError::Io)
+    write_catalog_locked(path, &catalog).map_err(CatalogFileTransitionError::Io)
 }
 
 #[derive(Debug)]
@@ -1541,6 +1576,63 @@ mod tests {
             BranchState::Ready
         );
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn concurrent_create_reservations_serialize_the_read_modify_publish_cycle() {
+        let (directory, path) = temporary_catalog_path();
+        write_catalog(&path, &catalog()).unwrap();
+        let first_path = path.clone();
+        let first =
+            std::thread::spawn(move || reserve_with_retry(&first_path, create_request_for(3)));
+        let second_path = path.clone();
+        let second =
+            std::thread::spawn(move || reserve_with_retry(&second_path, create_request_for(4)));
+        let first = first.join().unwrap().unwrap();
+        let second = second.join().unwrap().unwrap();
+        assert_ne!(first.id, second.id);
+        let published = read_catalog(&path).unwrap();
+        assert!(published
+            .branches
+            .iter()
+            .any(|branch| branch.id == first.id));
+        assert!(published
+            .branches
+            .iter()
+            .any(|branch| branch.id == second.id));
+        assert_eq!(published.revision, 13);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn create_request_for(byte: u8) -> CreateRequest {
+        CreateRequest {
+            id: id(byte),
+            name: BranchName::new(format!("branch-{byte}")).unwrap(),
+            parent_id: id(1),
+            source_commit_epoch: 7,
+            base_root_digest: [byte; DIGEST_BYTES],
+            owner: Some("worker-1".to_string()),
+            expires_at_unix_seconds: Some(100),
+            request_key: format!("create-{byte}"),
+            request_fingerprint: [byte.wrapping_add(10); DIGEST_BYTES],
+        }
+    }
+
+    fn reserve_with_retry(
+        path: &Path,
+        request: CreateRequest,
+    ) -> Result<CreateReservation, CatalogFileTransitionError> {
+        for _ in 0..100 {
+            match reserve_create_file(path, request.clone()) {
+                Err(CatalogFileTransitionError::Io(error))
+                    if error.kind() == io::ErrorKind::WouldBlock =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                result => return result,
+            }
+        }
+        panic!("catalog metadata lock did not become available");
     }
 
     #[test]
