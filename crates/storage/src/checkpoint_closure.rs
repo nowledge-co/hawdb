@@ -355,4 +355,42 @@ mod tests {
         let error = plan.publish(&mut store).unwrap_err();
         assert!(matches!(error, CheckpointClosureError::Incomplete { .. }));
     }
+
+    #[test]
+    fn deduplicating_family_coalesces_identical_physical_artifacts() {
+        let dir = TempDir::new();
+        let checkpoint = dir.path().join("checkpoint");
+        let first = dir.path().join("first");
+        let second = dir.path().join("second");
+        fs::write(&checkpoint, b"checkpoint").unwrap();
+        fs::write(&first, b"same-bytes").unwrap();
+        fs::write(&second, b"same-bytes").unwrap();
+        let mut plan = CheckpointClosurePlan::new(vec![input(
+            checkpoint,
+            ObjectKind::Checkpoint,
+            b"checkpoint",
+        )]);
+        plan.add_family_artifacts_deduplicating(
+            CheckpointArtifactFamily::Canonical,
+            vec![
+                input(first, ObjectKind::CheckpointArtifact, b"same-bytes"),
+                input(second, ObjectKind::CheckpointArtifact, b"same-bytes"),
+            ],
+        )
+        .unwrap();
+        for family in [
+            CheckpointArtifactFamily::Adjacency,
+            CheckpointArtifactFamily::PropertySpill,
+            CheckpointArtifactFamily::PropertyProjection,
+            CheckpointArtifactFamily::RelationalRow,
+            CheckpointArtifactFamily::RelationalOverflow,
+            CheckpointArtifactFamily::RelationalIndex,
+            CheckpointArtifactFamily::Append,
+        ] {
+            plan.mark_family_empty(family).unwrap();
+        }
+        let mut store = ImmutableObjectStore::open(dir.path().join("objects")).unwrap();
+        let closure = plan.publish(&mut store).unwrap();
+        assert_eq!(closure.references.len(), 2);
+    }
 }
