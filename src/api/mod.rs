@@ -85,6 +85,7 @@ use system_variables::{
 
 mod access_control;
 mod artifact_jobs;
+mod branch_lifecycle;
 mod canonical_snapshot;
 mod concurrent;
 mod explain;
@@ -106,6 +107,9 @@ mod types;
 
 pub(crate) use hawdb_system_sql as system_sql;
 
+pub use branch_lifecycle::{
+    BranchInfo, BranchLifecycleError, BranchLifecycleState, BranchSelector,
+};
 pub(crate) use hawdb_executor::runtime_admission::runtime_planning_request;
 #[cfg(feature = "tokio-runtime")]
 pub(crate) use hawdb_executor::runtime_admission::RuntimeAdmissionPlan;

@@ -98,6 +98,7 @@ pub use api::{
     AccessControlPolicyReadiness, AppendCommitResult, BackgroundMaintenanceCandidate,
     BackgroundMaintenanceKind, BackgroundMaintenanceOptions, BackgroundMaintenanceSummary,
     BackgroundMaintenanceSummaryItem, BlockingOperatorMemoryReport, BoundedReadQueryOutput,
+    BranchInfo, BranchLifecycleError, BranchLifecycleState, BranchSelector,
     CanonicalGraphSnapshotExport, CanonicalGraphSnapshotValidation,
     CanonicalSnapshotEndpointViolation, CanonicalSnapshotIdentityAudit, CanonicalSnapshotNode,
     CanonicalSnapshotRelationship, CanonicalStableIdMapping, ConcurrentDatabase,

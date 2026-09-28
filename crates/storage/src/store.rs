@@ -1968,6 +1968,13 @@ impl GraphStore {
         self.durable.as_ref().map(|durable| durable.root_path())
     }
 
+    /// Returns the durable database root for library-owned metadata such as
+    /// the branch catalog. In-memory stores do not have a filesystem root.
+    #[doc(hidden)]
+    pub fn durable_root_path(&self) -> Option<&Path> {
+        self.durable.as_ref().map(|durable| durable.root_path())
+    }
+
     pub fn initial_import_source_fingerprint(&self) -> Option<&str> {
         self.initial_import_source_fingerprint.as_deref()
     }

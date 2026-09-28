@@ -65,6 +65,12 @@ impl BranchId {
 pub struct BranchName(String);
 
 impl BranchName {
+    /// The canonical root branch name. It is reserved for catalog records and
+    /// cannot be supplied as a user-created branch name.
+    pub fn main() -> Self {
+        Self("main".to_string())
+    }
+
     pub fn new(value: impl Into<String>) -> Result<Self, CatalogError> {
         let value = value.into();
         validate_name(&value)?;
@@ -181,6 +187,35 @@ impl std::error::Error for CatalogTransitionError {
 }
 
 impl Catalog {
+    /// Creates a new catalog with an empty, non-deletable root branch.
+    pub fn bootstrap(project_id: BranchId, main_id: BranchId) -> Result<Self, CatalogError> {
+        if project_id == main_id {
+            return Err(CatalogError::InvalidIdentity(
+                "project UUID and branch UUID must be distinct",
+            ));
+        }
+        let catalog = Self {
+            project_id,
+            revision: 1,
+            branches: vec![BranchRecord {
+                id: main_id,
+                name: BranchName::main(),
+                parent_id: None,
+                source_commit_epoch: 0,
+                base_root_digest: None,
+                metadata_revision: 1,
+                state: BranchState::Ready,
+                owner: None,
+                expires_at_unix_seconds: None,
+                create_request_key: "bootstrap".to_string(),
+                request_fingerprint: [0; DIGEST_BYTES],
+                create_outcome: CreateOutcome::Succeeded,
+            }],
+        };
+        catalog.validate()?;
+        Ok(catalog)
+    }
+
     pub fn validate(&self) -> Result<(), CatalogError> {
         if self.branches.len() > MAX_BRANCHES as usize {
             return Err(CatalogError::Limit("branch count"));
