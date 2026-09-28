@@ -671,7 +671,7 @@ pub fn write_catalog(path: &Path, catalog: &Catalog) -> io::Result<()> {
 /// Publishes a catalog while the caller owns the project metadata lease.
 /// Keeping the lock acquisition outside the read/modify/write sequence lets
 /// catalog transitions serialize their read and publication as one operation.
-fn write_catalog_locked(path: &Path, catalog: &Catalog) -> io::Result<()> {
+pub fn write_catalog_locked(path: &Path, catalog: &Catalog) -> io::Result<()> {
     let encoded = catalog
         .encode()
         .map_err(|error| invalid_data(error.to_string()))?;

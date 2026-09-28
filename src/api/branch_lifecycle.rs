@@ -790,6 +790,12 @@ impl Database {
     ) -> Result<BranchInfo, BranchLifecycleError> {
         self.ensure_branch_writable()?;
         let path = self.branch_catalog_path()?;
+        let catalog_directory = path
+            .parent()
+            .expect("branch catalog path has a parent")
+            .to_path_buf();
+        let _metadata_lease = storage::CatalogMetadataLease::acquire_blocking(&catalog_directory)
+            .map_err(BranchLifecycleError::CatalogIo)?;
         let mut catalog = self.read_branch_catalog()?;
         let id = catalog
             .branches
@@ -820,7 +826,7 @@ impl Database {
         catalog
             .finish_delete(id, deleting_revision)
             .map_err(BranchLifecycleError::Transition)?;
-        storage::write_catalog(&path, &catalog).map_err(BranchLifecycleError::CatalogIo)?;
+        storage::write_catalog_locked(&path, &catalog).map_err(BranchLifecycleError::CatalogIo)?;
         let branch = catalog
             .branches
             .iter()
@@ -839,6 +845,12 @@ impl Database {
     ) -> Result<BranchInfo, BranchLifecycleError> {
         self.ensure_branch_writable()?;
         let path = self.branch_catalog_path()?;
+        let catalog_directory = path
+            .parent()
+            .expect("branch catalog path has a parent")
+            .to_path_buf();
+        let _metadata_lease = storage::CatalogMetadataLease::acquire_blocking(&catalog_directory)
+            .map_err(BranchLifecycleError::CatalogIo)?;
         let mut catalog = self.read_branch_catalog()?;
         let id = catalog
             .branches
@@ -855,7 +867,7 @@ impl Database {
         catalog
             .expire(id, revision, now_unix_seconds)
             .map_err(BranchLifecycleError::Transition)?;
-        storage::write_catalog(&path, &catalog).map_err(BranchLifecycleError::CatalogIo)?;
+        storage::write_catalog_locked(&path, &catalog).map_err(BranchLifecycleError::CatalogIo)?;
         self.describe_branch(BranchSelector::Id(id.as_uuid()))
     }
 
