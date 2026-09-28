@@ -150,6 +150,12 @@ mod tests {
                 idempotency_key: "open-query-test".to_string(),
             })
             .expect("create child branch");
+        database
+            .query("CREATE (:Memory {id: 'parent-advanced-after-child'})")
+            .expect("advance parent after child snapshot");
+        database
+            .checkpoint()
+            .expect("checkpoint parent after child snapshot");
         let mut handle = database
             .open_branch(BranchSelector::Name(child.name.clone()))
             .expect("open child branch");

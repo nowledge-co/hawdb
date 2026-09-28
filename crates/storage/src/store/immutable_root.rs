@@ -115,6 +115,10 @@ impl GraphStore {
             .unwrap_or(DurableManifest::load(
                 &source_durable.root_path.join(MANIFEST_FILE),
             )?);
+        fs::write(
+            destination.join(MANIFEST_FILE),
+            manifest.encode().into_bytes(),
+        )?;
         let plan = source_durable.checkpoint_closure_plan(manifest)?;
         for input in plan.inputs() {
             if !root.checkpoint_references.contains(&input.reference) {
