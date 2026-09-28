@@ -409,7 +409,7 @@ mod tests {
             .expect("write unrelated branch state");
         drop(store);
         let mut reopened_catalog = Catalog::default();
-        let reopened_source =
+        let mut reopened_source =
             GraphStore::open(&database, &mut reopened_catalog).expect("reopen source database");
         let replay_after_write_database = temp_dir("immutable-root-replay-after-write");
         let mut replay_after_write_catalog = Catalog::default();
@@ -423,6 +423,38 @@ mod tests {
         .expect("replay immutable root after selector reopen");
         assert_eq!(reopened_head.sealed_root, root_reference);
         assert_eq!(replay_after_write.node_count_for_label(None), 2);
+
+        // A failed selector publication must leave the previously published
+        // root authoritative even though the successor WAL and root were
+        // prepared durably.
+        reopened_source
+            .create_node(
+                &mut reopened_catalog,
+                "Memory",
+                BTreeMap::from([("value".into(), Value::Int(4))]),
+            )
+            .expect("create post-reopen node");
+        let next_prepared = reopened_source
+            .prepare_immutable_root_handoff(&objects)
+            .expect("prepare second immutable root");
+        let previous_head_bytes = fs::read(&head_path).expect("read published head");
+        let _failure = crate::durability::fail_durable_replace_for_destination(
+            head_path.file_name().expect("head file name"),
+        );
+        let error = reopened_source
+            .complete_immutable_root_handoff(
+                next_prepared,
+                &head_path,
+                [1; 16],
+                [2; 16],
+                reopened_head.physical_generation,
+            )
+            .expect_err("injected selector publication failure");
+        assert!(error.to_string().contains("uncertain"));
+        assert_eq!(
+            fs::read(&head_path).expect("read unchanged published head"),
+            previous_head_bytes
+        );
 
         let _ = fs::remove_dir_all(database);
         let _ = fs::remove_dir_all(replay_database);
