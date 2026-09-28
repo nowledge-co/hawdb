@@ -6,7 +6,7 @@ use crate::durable_manifest::DurableManifest;
 use crate::error::{HawDBError, Result};
 use crate::immutable_object::ImmutableObjectStore;
 use crate::sealed_wal::{prepare_wal_rotation, PreparedWalRotation};
-use crate::{branch_head, sealed_root::SealedRoot};
+use crate::{branch_catalog, branch_head, sealed_root::SealedRoot};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -20,6 +20,65 @@ pub struct PreparedImmutableRootHandoff {
 }
 
 impl GraphStore {
+    /// Creates an isolated child branch from the selected sealed parent head.
+    /// The catalog/head primitives own the durable state machine; this method
+    /// only derives the child request from the live parent selector and keeps
+    /// the parent data files untouched.
+    #[doc(hidden)]
+    pub fn create_isolated_branch_from_parent_head(
+        &self,
+        catalog_path: impl AsRef<Path>,
+        parent_head_path: impl AsRef<Path>,
+        child_head_path: impl AsRef<Path>,
+        child_wal_path: impl AsRef<Path>,
+        request: branch_catalog::CreateRequest,
+    ) -> Result<branch_catalog::BranchCreateResult> {
+        let parent = branch_head::read_branch_head(parent_head_path.as_ref())
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        if request.base_root_digest != *parent.sealed_root.sha256.as_bytes()
+            || request.source_commit_epoch != parent.logical_commit_epoch
+        {
+            return Err(HawDBError::Storage(
+                "child branch request does not match the selected parent head".to_string(),
+            ));
+        }
+        let active_wal_generation = parent
+            .active_wal
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| HawDBError::Storage("child WAL generation overflow".to_string()))?;
+        let max_active_wal_bytes = self
+            .durable
+            .as_ref()
+            .and_then(|durable| durable.max_wal_bytes)
+            .unwrap_or(u64::MAX);
+        let child_request = branch_head::ChildBranchHeadRequest {
+            project_id: parent.project_id,
+            branch_id: *request.id.as_uuid().as_bytes(),
+            sealed_root: parent.sealed_root,
+            logical_commit_epoch: parent.logical_commit_epoch,
+            active_wal_generation,
+            replay_start_lsn: parent.active_wal.replay_start_lsn,
+            head_path: child_head_path.as_ref().to_path_buf(),
+            wal_path: child_wal_path.as_ref().to_path_buf(),
+        };
+        let expected_parent = branch_head::ChildBranchSourceExpectation {
+            branch_id: parent.branch_id,
+            physical_generation: parent.physical_generation,
+            logical_commit_epoch: parent.logical_commit_epoch,
+            sealed_root: parent.sealed_root,
+        };
+        branch_catalog::create_branch_from_parent(
+            catalog_path.as_ref(),
+            parent_head_path.as_ref(),
+            child_request,
+            expected_parent,
+            max_active_wal_bytes,
+            request,
+        )
+        .map_err(|error| HawDBError::Storage(error.to_string()))
+    }
+
     /// Reconstructs a read/write GraphStore from immutable root objects for
     /// recovery qualification. The source directory is copied only as a
     /// container for non-checkpoint metadata; every root-bound checkpoint
@@ -368,5 +427,113 @@ mod tests {
         let _ = fs::remove_dir_all(database);
         let _ = fs::remove_dir_all(replay_database);
         let _ = fs::remove_dir_all(replay_after_write_database);
+    }
+
+    #[test]
+    fn graph_store_creates_isolated_child_from_selected_parent_head() {
+        let database = temp_dir("isolated-child");
+        let catalog_path = database.join("catalog");
+        let parent_head_path = database.join("parent.head");
+        let child_directory = database.join("child");
+        let child_head_path = child_directory.join("branch.head");
+        let child_wal_path = child_directory.join("wal.8");
+        fs::create_dir_all(&child_directory).expect("create child directory");
+
+        let project_id = crate::branch_catalog::BranchId::new(hawdb_core::Uuid::from_u128(1))
+            .expect("project id");
+        let parent_id = crate::branch_catalog::BranchId::new(hawdb_core::Uuid::from_u128(2))
+            .expect("parent id");
+        let child_id =
+            crate::branch_catalog::BranchId::new(hawdb_core::Uuid::from_u128(3)).expect("child id");
+        let parent_root = crate::immutable_object::ObjectReference::for_bytes(
+            crate::immutable_object::ObjectKind::SealedRoot,
+            1,
+            b"parent-root",
+        );
+        let parent_head = crate::branch_head::BranchHead {
+            project_id: *project_id.as_uuid().as_bytes(),
+            branch_id: *parent_id.as_uuid().as_bytes(),
+            physical_generation: 4,
+            sealed_root: parent_root,
+            logical_commit_epoch: 7,
+            active_wal: crate::branch_head::ActiveWalIdentity {
+                generation: 7,
+                replay_start_lsn: 20,
+                byte_length: 1,
+                sha256: hawdb_integrity::sha256(b"parent-wal"),
+            },
+        };
+        fs::write(
+            &parent_head_path,
+            parent_head.encode().expect("encode parent head"),
+        )
+        .expect("write parent head");
+        let catalog = crate::branch_catalog::Catalog {
+            project_id,
+            revision: 1,
+            branches: vec![crate::branch_catalog::BranchRecord {
+                id: parent_id,
+                name: crate::branch_catalog::BranchName::new("parent").expect("parent name"),
+                parent_id: None,
+                source_commit_epoch: 7,
+                base_root_digest: Some(*parent_root.sha256.as_bytes()),
+                metadata_revision: 1,
+                state: crate::branch_catalog::BranchState::Ready,
+                owner: None,
+                expires_at_unix_seconds: None,
+                create_request_key: "parent-create".to_string(),
+                request_fingerprint: [1; 32],
+                create_outcome: crate::branch_catalog::CreateOutcome::Succeeded,
+            }],
+        };
+        crate::branch_catalog::write_catalog(&catalog_path, &catalog).expect("write catalog");
+
+        let request = crate::branch_catalog::CreateRequest {
+            id: child_id,
+            name: crate::branch_catalog::BranchName::new("child").expect("child name"),
+            parent_id,
+            source_commit_epoch: 7,
+            base_root_digest: *parent_root.sha256.as_bytes(),
+            owner: None,
+            expires_at_unix_seconds: None,
+            request_key: "child-create".to_string(),
+            request_fingerprint: [2; 32],
+        };
+        let parent_bytes = fs::read(&parent_head_path).expect("read parent head");
+        let result = GraphStore::default()
+            .create_isolated_branch_from_parent_head(
+                &catalog_path,
+                &parent_head_path,
+                &child_head_path,
+                &child_wal_path,
+                request,
+            )
+            .expect("create isolated child");
+
+        assert_eq!(result.head.sealed_root, parent_root);
+        assert_eq!(result.head.branch_id, *child_id.as_uuid().as_bytes());
+        assert_ne!(
+            result.head.active_wal.generation,
+            parent_head.active_wal.generation
+        );
+        assert!(child_head_path.is_file());
+        assert!(child_wal_path.is_file());
+        assert_eq!(
+            fs::read(&parent_head_path).expect("read parent head"),
+            parent_bytes
+        );
+        let child_record = crate::branch_catalog::read_catalog(&catalog_path)
+            .expect("read catalog")
+            .branches
+            .into_iter()
+            .find(|branch| branch.id == child_id)
+            .expect("child catalog record");
+        assert_eq!(
+            child_record.state,
+            crate::branch_catalog::BranchState::Ready
+        );
+        assert_eq!(child_record.parent_id, Some(parent_id));
+
+        let _ = fs::remove_dir_all(database);
     }
 }
