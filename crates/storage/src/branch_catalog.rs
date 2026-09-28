@@ -71,6 +71,11 @@ impl BranchName {
         Self("main".to_string())
     }
 
+    /// Returns the canonical engine-generated agent name for a branch UUID.
+    pub fn generated_agent(id: BranchId) -> Self {
+        Self(format!("agent/{}", id.as_uuid()))
+    }
+
     pub fn new(value: impl Into<String>) -> Result<Self, CatalogError> {
         let value = value.into();
         validate_name(&value)?;

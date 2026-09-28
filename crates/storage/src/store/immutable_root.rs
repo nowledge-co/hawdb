@@ -292,6 +292,49 @@ impl GraphStore {
         durable.wal_commit_epoch = self.commit_epoch;
         Ok(head)
     }
+
+    /// Creates the initial branch selector for a database that has just been
+    /// sealed. This is the bootstrap counterpart to
+    /// [`GraphStore::complete_immutable_root_handoff`]: it requires an absent
+    /// selector and publishes generation one without replacing any existing
+    /// identity.
+    #[doc(hidden)]
+    pub fn initialize_immutable_root_head(
+        &mut self,
+        prepared: PreparedImmutableRootHandoff,
+        head_path: impl AsRef<Path>,
+        project_id: [u8; 16],
+        branch_id: [u8; 16],
+    ) -> Result<branch_head::BranchHead> {
+        self.ensure_usable()?;
+        let durable = self.durable.as_mut().ok_or_else(|| {
+            HawDBError::Storage("immutable root handoff requires durable storage".to_string())
+        })?;
+        let max_active_wal_bytes = durable.max_wal_bytes.unwrap_or(u64::MAX);
+        let root_reference = prepared
+            .root
+            .object_reference()
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let head = branch_head::create_initial_branch_head(branch_head::InitialBranchHeadRequest {
+            path: head_path.as_ref(),
+            project_id,
+            branch_id,
+            sealed_root: root_reference,
+            logical_commit_epoch: self.commit_epoch,
+            wal_path: &prepared.rotation.next_wal_path,
+            wal_generation: prepared.rotation.next_generation,
+            replay_start_lsn: prepared.rotation.next_start_lsn,
+            max_active_wal_bytes,
+        })
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        durable.wal_append_file = None;
+        durable.wal_path = prepared.rotation.next_wal_path;
+        durable.wal_generation = prepared.rotation.next_generation;
+        durable.wal_replay_start_lsn = prepared.rotation.next_start_lsn;
+        durable.wal_bytes = fs::metadata(&durable.wal_path)?.len();
+        durable.wal_commit_epoch = self.commit_epoch;
+        Ok(head)
+    }
 }
 
 fn copy_recovery_container(source: &Path, destination: &Path) -> Result<()> {

@@ -108,7 +108,7 @@ mod types;
 pub(crate) use hawdb_system_sql as system_sql;
 
 pub use branch_lifecycle::{
-    BranchInfo, BranchLifecycleError, BranchLifecycleState, BranchSelector,
+    BranchCreateRequest, BranchInfo, BranchLifecycleError, BranchLifecycleState, BranchSelector,
 };
 pub(crate) use hawdb_executor::runtime_admission::runtime_planning_request;
 #[cfg(feature = "tokio-runtime")]

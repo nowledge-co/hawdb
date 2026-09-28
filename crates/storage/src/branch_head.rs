@@ -251,6 +251,62 @@ pub fn create_child_branch_head(
     Ok(head)
 }
 
+/// Creates the first durable selector for a branch after its immutable root
+/// and successor WAL have already been published. The selector is exclusive;
+/// an existing path is never replaced or adopted implicitly.
+#[derive(Debug, Clone, Copy)]
+pub struct InitialBranchHeadRequest<'a> {
+    pub path: &'a Path,
+    pub project_id: [u8; 16],
+    pub branch_id: [u8; 16],
+    pub sealed_root: ObjectReference,
+    pub logical_commit_epoch: u64,
+    pub wal_path: &'a Path,
+    pub wal_generation: u64,
+    pub replay_start_lsn: u64,
+    pub max_active_wal_bytes: u64,
+}
+
+pub fn create_initial_branch_head(
+    request: InitialBranchHeadRequest<'_>,
+) -> Result<BranchHead, BranchHeadError> {
+    let active_wal = active_wal_identity_from_file(
+        request.wal_path,
+        request.wal_generation,
+        request.replay_start_lsn,
+        request.max_active_wal_bytes,
+    )?;
+    let head = BranchHead {
+        project_id: request.project_id,
+        branch_id: request.branch_id,
+        physical_generation: 1,
+        sealed_root: request.sealed_root,
+        logical_commit_epoch: request.logical_commit_epoch,
+        active_wal,
+    };
+    let encoded = head.encode()?;
+    let mut selector = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(request.path)
+        .map_err(|source| BranchHeadError::Io {
+            operation: "create initial branch head",
+            source,
+        })?;
+    if let Err(source) = selector
+        .write_all(&encoded)
+        .and_then(|_| selector.sync_all())
+        .and_then(|_| crate::durability::sync_parent_directory(request.path))
+    {
+        let _ = fs::remove_file(request.path);
+        return Err(BranchHeadError::Io {
+            operation: "sync initial branch head",
+            source,
+        });
+    }
+    Ok(head)
+}
+
 /// Creates a child head only when the selected parent head still names the
 /// expected sealed source revision.  The parent selector is read but never
 /// modified, so a stale request cannot alter parent state.
