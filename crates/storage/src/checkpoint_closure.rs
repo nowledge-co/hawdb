@@ -79,6 +79,29 @@ impl CheckpointClosurePlan {
         Ok(())
     }
 
+    /// Adds a family's physical artifacts while coalescing files with the
+    /// same immutable content identity. Multiple physical generations may
+    /// legitimately share one content-addressed object.
+    pub fn add_family_artifacts_deduplicating(
+        &mut self,
+        family: CheckpointArtifactFamily,
+        inputs: impl IntoIterator<Item = CheckpointArtifactInput>,
+    ) -> Result<(), CheckpointClosureError> {
+        self.complete_family(family)?;
+        let existing = self
+            .inputs
+            .iter()
+            .map(|input| input.reference)
+            .collect::<BTreeSet<_>>();
+        let mut references = existing;
+        self.inputs.extend(
+            inputs
+                .into_iter()
+                .filter(|input| references.insert(input.reference)),
+        );
+        Ok(())
+    }
+
     pub fn mark_family_empty(
         &mut self,
         family: CheckpointArtifactFamily,

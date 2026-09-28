@@ -15,7 +15,12 @@
 //! Checkpoint-bound backup closure and destination publication.
 
 use super::DurableStore;
+use crate::checkpoint_closure::{
+    CheckpointArtifactFamily, CheckpointArtifactInput, CheckpointClosurePlan,
+};
+use crate::durable_manifest::DurableManifest;
 use crate::error::{HawDBError, Result};
+use crate::immutable_object::{ObjectKind, ObjectReference};
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checkpoint_generation_file, copy_backup_file,
@@ -34,9 +39,213 @@ use hawdb_storage::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 impl DurableStore {
+    /// Builds the complete validated checkpoint closure through bound family
+    /// readers; it never scans the storage directory.
+    pub(in crate::store) fn checkpoint_closure_plan(
+        &self,
+        manifest: DurableManifest,
+    ) -> Result<CheckpointClosurePlan> {
+        let generation = manifest.checkpoint_generation.ok_or_else(|| {
+            HawDBError::Storage("checkpoint closure requires a checkpoint generation".into())
+        })?;
+        let mut plan =
+            CheckpointClosurePlan::new(manifest.manifest_artifact_inputs(&self.root_path)?);
+        let input = |path: PathBuf| -> Result<CheckpointArtifactInput> {
+            let bytes = fs::read(&path).map_err(|error| {
+                HawDBError::Storage(format!(
+                    "read checkpoint closure artifact {}: {error}",
+                    path.display()
+                ))
+            })?;
+            Ok(CheckpointArtifactInput {
+                path,
+                reference: ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, &bytes),
+            })
+        };
+        let map_paths = |names: Vec<String>| {
+            names
+                .iter()
+                .map(|name| input(self.root_path.join(name)))
+                .collect::<Result<Vec<_>>>()
+        };
+        let add =
+            |plan: &mut CheckpointClosurePlan, family, inputs: Vec<CheckpointArtifactInput>| {
+                plan.add_family_artifacts_deduplicating(family, inputs)
+                    .map_err(|error| HawDBError::Storage(error.to_string()))
+            };
+        if manifest.canonical_manifest_encoded_len.is_some() {
+            add(
+                &mut plan,
+                CheckpointArtifactFamily::Canonical,
+                map_paths(vec![
+                    canonical_artifact_generation_file(generation),
+                    hawdb_storage::canonical::canonical_segment_descriptor_page_file(generation),
+                    hawdb_storage::canonical::canonical_segment_descriptor_root_file(generation),
+                ])?,
+            )?;
+        } else {
+            plan.mark_family_empty(CheckpointArtifactFamily::Canonical)
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        }
+        if manifest.canonical_adjacency_generation_artifacts.is_some() {
+            add(
+                &mut plan,
+                CheckpointArtifactFamily::Adjacency,
+                map_paths(vec![
+                    hawdb_storage::canonical_adjacency::canonical_adjacency_descriptor_page_file(
+                        generation,
+                    ),
+                ])?,
+            )?;
+        } else {
+            plan.mark_family_empty(CheckpointArtifactFamily::Adjacency)
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        }
+        if manifest.property_spill_manifest_encoded_len.is_some() {
+            add(
+                &mut plan,
+                CheckpointArtifactFamily::PropertySpill,
+                map_paths(vec![
+                    property_spill_artifact_generation_file(generation),
+                    hawdb_storage::property_spill::property_spill_descriptor_page_file(generation),
+                    hawdb_storage::property_spill::property_spill_descriptor_root_file(generation),
+                ])?,
+            )?;
+        } else {
+            plan.mark_family_empty(CheckpointArtifactFamily::PropertySpill)
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        }
+        if manifest.property_projection_manifest_encoded_len.is_some() {
+            add(
+                &mut plan,
+                CheckpointArtifactFamily::PropertyProjection,
+                map_paths(vec![
+                    property_projection_artifact_generation_file(generation),
+                    hawdb_storage::property_projection::property_projection_descriptor_page_file(
+                        generation,
+                    ),
+                    hawdb_storage::property_projection::property_projection_descriptor_root_file(
+                        generation,
+                    ),
+                ])?,
+            )?;
+        } else {
+            plan.mark_family_empty(CheckpointArtifactFamily::PropertyProjection)
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        }
+        if let Some(binding) = manifest.relational_overflow_generation_artifacts {
+            let overflow = self.open_bound_relational_overflow()?;
+            let mut generations = BTreeSet::from([overflow.manifest().generation]);
+            overflow
+                .visit_descriptors(|descriptor| {
+                    generations.insert(descriptor.physical_generation);
+                    Ok(())
+                })
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            let mut inputs = vec![input(self.root_path.join(
+                hawdb_storage::relational::relational_overflow_descriptor_file(binding.generation),
+            ))?];
+            inputs.extend(
+                generations
+                    .into_iter()
+                    .map(|generation| {
+                        input(self.root_path.join(
+                            hawdb_storage::relational::relational_overflow_extent_file(generation),
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            );
+            add(
+                &mut plan,
+                CheckpointArtifactFamily::RelationalOverflow,
+                inputs,
+            )?;
+        } else {
+            plan.mark_family_empty(CheckpointArtifactFamily::RelationalOverflow)
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        }
+        if let Some(binding) = manifest.relational_row_generation_artifacts {
+            let overflow = self.open_bound_relational_overflow()?;
+            let rows = self.open_bound_relational_row_pages(&overflow)?;
+            let mut generations = BTreeSet::from([rows.manifest().generation]);
+            for table in rows
+                .manifest()
+                .tables
+                .iter()
+                .map(|table| table.table.clone())
+            {
+                rows.visit_table_pages(&table, |descriptor| {
+                    generations.insert(descriptor.physical_generation);
+                    Ok(())
+                })
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            }
+            let mut inputs = vec![
+                input(self.root_path.join(
+                    hawdb_storage::relational::relational_row_page_root_descriptor_file(
+                        binding.generation,
+                    ),
+                ))?,
+                input(self.root_path.join(
+                    hawdb_storage::relational::relational_row_page_root_key_file(
+                        binding.generation,
+                    ),
+                ))?,
+            ];
+            inputs.extend(
+                generations
+                    .into_iter()
+                    .map(|generation| {
+                        input(self.root_path.join(
+                            hawdb_storage::relational::relational_row_page_artifact_file(
+                                generation,
+                            ),
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            );
+            add(&mut plan, CheckpointArtifactFamily::RelationalRow, inputs)?;
+        } else {
+            plan.mark_family_empty(CheckpointArtifactFamily::RelationalRow)
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        }
+        if let Some(binding) = manifest.relational_index_generation_artifacts {
+            add(
+                &mut plan,
+                CheckpointArtifactFamily::RelationalIndex,
+                vec![input(self.root_path.join(
+                    hawdb_storage::relational::relational_index_shadow_artifact_file(
+                        binding.generation,
+                    ),
+                ))?],
+            )?;
+        } else {
+            plan.mark_family_empty(CheckpointArtifactFamily::RelationalIndex)
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        }
+        if let Some(binding) = manifest.append_generation_artifacts {
+            let reader = AppendGenerationReader::open_bound(
+                &self.root_path,
+                binding,
+                AppendPublicationConfig::default(),
+            )
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            let inputs = reader
+                .segment_bindings()
+                .iter()
+                .map(|segment| input(self.root_path.join(append_segment_file(segment.generation))))
+                .collect::<Result<Vec<_>>>()?;
+            add(&mut plan, CheckpointArtifactFamily::Append, inputs)?;
+        } else {
+            plan.mark_family_empty(CheckpointArtifactFamily::Append)
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        }
+        Ok(plan)
+    }
+
     pub(in crate::store) fn backup_to(&self, destination: &Path) -> Result<StorageBackupReport> {
         let generation = self.checkpoint_epoch;
         if self.checkpoint_encoded_len.is_none() {

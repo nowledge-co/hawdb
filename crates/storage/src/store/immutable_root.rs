@@ -1,7 +1,7 @@
 //! GraphStore integration for immutable-root publication and WAL handoff.
 
 use super::{GraphStore, MANIFEST_FILE};
-use crate::checkpoint_closure::{build_sealed_root, publish_checkpoint_closure};
+use crate::checkpoint_closure::build_sealed_root;
 use crate::durable_manifest::DurableManifest;
 use crate::error::{HawDBError, Result};
 use crate::immutable_object::ImmutableObjectStore;
@@ -64,8 +64,9 @@ impl GraphStore {
         .map_err(|error| HawDBError::Storage(error.to_string()))?;
 
         let manifest = DurableManifest::load(&durable.root_path.join(MANIFEST_FILE))?;
-        let inputs = manifest.manifest_artifact_inputs(&durable.root_path)?;
-        let closure = publish_checkpoint_closure(&mut objects, &inputs)
+        let closure = durable
+            .checkpoint_closure_plan(manifest)?
+            .publish(&mut objects)
             .map_err(|error| HawDBError::Storage(error.to_string()))?;
         let root = build_sealed_root(
             &closure,
