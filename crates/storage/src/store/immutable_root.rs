@@ -79,6 +79,36 @@ impl GraphStore {
         GraphStore::open(destination, catalog)
     }
 
+    /// Opens an immutable root selected by a durable branch-head selector.
+    /// This is the recovery-facing bridge used while the public branch facade
+    /// remains in its separate lifecycle issue.
+    #[doc(hidden)]
+    pub fn open_from_branch_head(
+        source: &GraphStore,
+        head_path: impl AsRef<Path>,
+        immutable_store_root: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        catalog: &mut crate::schema::Catalog,
+    ) -> Result<(GraphStore, branch_head::BranchHead)> {
+        let head = branch_head::read_branch_head(head_path.as_ref())
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let objects = ImmutableObjectStore::open(immutable_store_root.as_ref())
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let root_bytes = objects
+            .read(head.sealed_root)
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let root = SealedRoot::decode(&root_bytes)
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let store = Self::open_from_immutable_root(
+            source,
+            &root,
+            immutable_store_root,
+            destination,
+            catalog,
+        )?;
+        Ok((store, head))
+    }
+
     /// Seals the current active WAL, publishes the validated manifest-bound
     /// checkpoint closure and root, and creates the next private WAL. The
     /// caller must keep the branch publication barrier until
@@ -289,6 +319,28 @@ mod tests {
         assert_eq!(replayed.node_count_for_label(None), 2);
         drop(replayed);
 
+        let head_path = database.join("branch.head");
+        let seed_wal_path = database.join("seed-wal.99");
+        let root_reference = prepared.root.object_reference().expect("root reference");
+        crate::branch_head::create_child_branch_head(
+            &head_path,
+            crate::branch_head::ChildBranchHeadRequest {
+                project_id: [1; 16],
+                branch_id: [2; 16],
+                sealed_root: root_reference,
+                logical_commit_epoch: store.commit_epoch(),
+                active_wal_generation: 99,
+                replay_start_lsn: 1,
+                head_path: head_path.clone(),
+                wal_path: seed_wal_path,
+            },
+            u64::MAX,
+        )
+        .expect("seed branch selector");
+        store
+            .complete_immutable_root_handoff(prepared, &head_path, [1; 16], [2; 16], 1)
+            .expect("complete immutable root handoff");
+
         store
             .create_node(
                 &mut catalog,
@@ -296,16 +348,21 @@ mod tests {
                 BTreeMap::from([("value".into(), Value::Int(3))]),
             )
             .expect("write unrelated branch state");
+        drop(store);
+        let mut reopened_catalog = Catalog::default();
+        let reopened_source =
+            GraphStore::open(&database, &mut reopened_catalog).expect("reopen source database");
         let replay_after_write_database = temp_dir("immutable-root-replay-after-write");
         let mut replay_after_write_catalog = Catalog::default();
-        let replay_after_write = GraphStore::open_from_immutable_root(
-            &store,
-            &prepared.root,
+        let (replay_after_write, reopened_head) = GraphStore::open_from_branch_head(
+            &reopened_source,
+            &head_path,
             &objects,
             &replay_after_write_database,
             &mut replay_after_write_catalog,
         )
-        .expect("replay immutable root after unrelated write");
+        .expect("replay immutable root after selector reopen");
+        assert_eq!(reopened_head.sealed_root, root_reference);
         assert_eq!(replay_after_write.node_count_for_label(None), 2);
 
         let _ = fs::remove_dir_all(database);
