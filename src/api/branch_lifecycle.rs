@@ -14,9 +14,10 @@ use std::path::PathBuf;
 const BRANCH_DIRECTORY: &str = "branches";
 const BRANCH_CATALOG_FILE: &str = "catalog.hawdb";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BranchSelector {
     Id(Uuid),
+    Name(String),
 }
 
 #[cfg(test)]
@@ -40,7 +41,7 @@ mod tests {
         assert_eq!(database.list_branches().unwrap(), vec![main.clone()]);
         assert_eq!(
             database
-                .describe_branch(BranchSelector::Id(main.id))
+                .describe_branch(BranchSelector::Name("main".to_string()))
                 .unwrap(),
             main
         );
@@ -130,6 +131,13 @@ fn info(branch: &storage::BranchRecord) -> BranchInfo {
     }
 }
 
+fn matches_selector(branch: &storage::BranchRecord, selector: &BranchSelector) -> bool {
+    match selector {
+        BranchSelector::Id(id) => branch.id.as_uuid() == *id,
+        BranchSelector::Name(name) => branch.name.as_str() == name,
+    }
+}
+
 impl Database {
     fn branch_catalog_path(&self) -> Result<PathBuf, BranchLifecycleError> {
         let root = self
@@ -189,13 +197,11 @@ impl Database {
         selector: BranchSelector,
     ) -> Result<BranchInfo, BranchLifecycleError> {
         let catalog = self.read_branch_catalog()?;
-        let branch = match selector {
-            BranchSelector::Id(id) => catalog
-                .branches
-                .iter()
-                .find(|branch| branch.id.as_uuid() == id),
-        }
-        .ok_or(BranchLifecycleError::UnknownBranch)?;
+        let branch = catalog
+            .branches
+            .iter()
+            .find(|branch| matches_selector(branch, &selector))
+            .ok_or(BranchLifecycleError::UnknownBranch)?;
         Ok(info(branch))
     }
 
@@ -208,16 +214,12 @@ impl Database {
     ) -> Result<BranchInfo, BranchLifecycleError> {
         let path = self.branch_catalog_path()?;
         let mut catalog = self.read_branch_catalog()?;
-        let id = match selector {
-            BranchSelector::Id(id) => {
-                storage::BranchId::new(id).map_err(BranchLifecycleError::Catalog)?
-            }
-        };
         let branch = catalog
             .branches
             .iter()
-            .find(|branch| branch.id == id)
+            .find(|branch| matches_selector(branch, &selector))
             .ok_or(BranchLifecycleError::UnknownBranch)?;
+        let id = branch.id;
         if branch.name.as_str() == "main" {
             return Err(BranchLifecycleError::RootBranchImmutable);
         }
