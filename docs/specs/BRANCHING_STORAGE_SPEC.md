@@ -26,12 +26,13 @@ require qualification; this document does not claim they pass.
   lost after power failure. Successful checkpoint/seal synchronizes its covered
   committed prefix. There is no fixed time bound on the unsynchronized window.
   Loss may omit whole transactions, never recover partial schema/data changes.
-- The policy belongs to the opened branch's database configuration, applies to
-  its transactions, and is fixed for that handle's lifetime. The proposed
-  configuration-aware branch opener must accept the existing `DurabilityPolicy`.
-  Reopening without an explicit override uses `SyncOnEveryWrite`; creating a
-  child does not silently inherit a parent's relaxed runtime policy. The public
-  API must expose the effective mode. WAL disabling is outside this decision.
+- The effective policy comes from the branch opener's explicit `durability`
+  argument, not `DatabaseConfig` or persisted branch metadata. It applies to that
+  handle's transactions and is fixed for its lifetime. The default opener passes
+  `SyncOnEveryWrite`; reopening without an override and opening a newly created
+  child use that default, regardless of a previous or parent handle's policy.
+  The proposed API below exposes the effective mode. WAL disabling is outside
+  this decision.
 - A response lost after durable publication may leave a committed operation.
   Branch creation retries MUST recover the same idempotent outcome and identity.
   An interrupted transaction MUST recover atomically, never as partial schema
@@ -178,6 +179,51 @@ No public lease renewal API, branch-switching SQL, or per-DDL branch wrapper is
 required. Read-only opening is explicit; a read-only recovery handle alone does
 not meet the writable-branch contract. Project metadata inspection must not
 require opening `main` as a writer merely to access another branch.
+
+The proposed signatures follow the existing single-database opener pattern.
+These are design signatures, not APIs already implemented:
+
+```rust
+impl Database {
+    pub fn open_branch(
+        project_path: impl AsRef<Path>,
+        selector: BranchSelector,
+    ) -> Result<Self>;
+
+    pub fn open_branch_with_durability_and_config(
+        project_path: impl AsRef<Path>,
+        selector: BranchSelector,
+        durability: DurabilityPolicy,
+        config: DatabaseConfig,
+    ) -> Result<Self>;
+
+    pub fn durability_policy(&self) -> DurabilityPolicy;
+}
+```
+
+`open_branch(path, selector)` delegates to the configuration-aware opener with
+`DurabilityPolicy::SyncOnEveryWrite` and `DatabaseConfig::default()`. The explicit
+`durability` argument is the sole policy source; `DatabaseConfig` supplies the
+existing read-only, recovery, and resource settings and does not override it.
+There is no policy lookup from the catalog, environment, or parent handle.
+`durability_policy()` returns the selected effective policy. Setting
+`config.read_only = true` rejects writes regardless of the selected policy.
+
+For example, a host explicitly accepts relaxed transaction durability with:
+
+```rust
+let branch = Database::open_branch_with_durability_and_config(
+    project_path,
+    BranchSelector::Name("dev".into()),
+    DurabilityPolicy::SyncOnCheckpoint,
+    DatabaseConfig::default(),
+)?;
+assert_eq!(branch.durability_policy(), DurabilityPolicy::SyncOnCheckpoint);
+```
+
+Branch metadata publication still uses synchronous durability in this example.
+API qualification must verify the default path, explicit relaxed path, read-only
+rejection, effective-policy reporting, and default reset on reopen/child opening.
 
 Opening validates the selected branch's complete immutable closure and replays
 its sealed WAL plus private active WAL exactly once. It MUST NOT derive schema,
