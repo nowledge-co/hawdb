@@ -376,6 +376,8 @@ this is not yet the complete writable workflow above. Required work includes:
 - removing legacy expiry fields/transitions from the implementation and model;
 - exposing the effective durability mode and auditing platform persistence
   barriers in both modes, including metadata publication and uncertain completion;
+- shared project FD accounting, lazy file residency, and bounded descriptor
+  admission across branch switching and maintenance;
 - branch-aware locking, global GC, and the acceptance scenarios above.
 
 There is no production compatibility obligation for earlier development-only
@@ -719,6 +721,83 @@ implementation may skip sweeping whenever an unrelated branch is leased; it
 MUST NOT guess that an uninspectable owner has no pins. Lock hold time and
 retained debt are observable maintenance results.
 
+## File descriptor budgets and branch residency
+
+Persisted branch count MUST NOT determine the number of resident file descriptors
+(FDs). Creating or listing branches uses bounded temporary descriptors and closes
+them after the operation. An unopened branch retains its durable catalog/head
+and reachable objects without a permanently open per-branch lock, WAL, or data
+file. Open-lock loss or FD-cache eviction never authorizes branch deletion.
+
+Admitted branches retain their required open locks and private active WALs.
+Data files are opened lazily. Within one process/project runtime, immutable
+objects should share cached read handles keyed by their complete object identity
+and canonical project identity; a child must not open a separate persistent
+handle merely because it references the same object as its parent. Shared reads
+must use positional I/O or equivalent synchronization, not a shared mutable file
+offset. Mutable WALs and branch ownership locks are not immutable-cache entries.
+
+A typed Rust resource configuration MUST supply a finite FD budget, with a safe
+finite default, for all engine-owned descriptors in that runtime. Include
+non-evictable branch locks and WALs, immutable-file cache entries, and temporary
+open/recovery/checkpoint/seal/GC descriptors. The file cache uses the remaining
+budget; limiting cache size alone is insufficient. Independently opened contexts
+for the same project in the process must share the accounting domain rather than
+multiply its budget. A budget configuration conflict must fail explicitly.
+Other projects, host files, and other processes consume resources outside this
+domain; do not claim the engine budget prevents every OS descriptor-limit error.
+
+Reserve descriptor capacity before opening files, including transient operations.
+Every failure/cancellation path releases its reservations and temporary handles.
+Idle cached handles may be evicted under pressure; active I/O handles and open
+locks cannot be evicted. When eviction cannot provide capacity, fail with a typed
+resource-limit error and requested/available counts. OS descriptor exhaustion
+must also produce a typed resource error without leaking handles or publishing
+partial branch state. Do not introduce an unbounded wait or an unlimited fallback.
+
+`USE BRANCH` must reserve enough capacity for target admission while preserving
+the source branch. If the target cannot open within budget, release its temporary
+resources and leave the original selection intact. After a successful switch,
+release source ownership when no source reader, job, or other owner needs it.
+An idle branch runtime must not retain non-evictable locks/WALs indefinitely.
+Unsynchronized relaxed-mode writes remain subject to their documented durability
+policy; closing descriptors is not a substitute for a completed sync barrier.
+
+A reader snapshot or durable branch root pins object reachability, not necessarily
+an open descriptor for every object. Evicting a cached FD leaves its logical pin
+in place; reopening the immutable file must validate its identity. Active I/O
+retains its handle until completion. GC must honor both durable roots and reader,
+job, and publication pins regardless of whether the object currently has an FD.
+
+Recovery, branch listing, and GC process heads and object metadata in bounded
+batches, closing temporary handles promptly. They must not open one descriptor
+per catalog entry or descendant at once. Checkpoint and background-maintenance
+concurrency also participates in the same admission budget.
+
+Expose typed metrics for admitted branch runtimes, engine-owned open/reserved FDs,
+non-evictable and cached handles, high-water usage, cache hits/misses/evictions,
+and descriptor-budget/OS-limit rejections. These are engine-domain counts, not
+claims about the total process FD count. Monitoring must not open every branch.
+
+Qualification must use deterministic small budgets and platform FD measurements
+where available to prove:
+
+- Creating/listing many unopened branches does not retain a descriptor per branch;
+  repeated listing, multi-level forks, reopen, and failed creation leak no FDs.
+- Parent/child/sibling reads reuse cached immutable handles, and eviction/reopen
+  preserves identity and data isolation without sharing mutable file offsets.
+- Active locks/WALs count against admission; oversubscription and target-switch
+  failure leave the source usable and descriptor/reservation counts bounded.
+- Repeated switches release unneeded source resources; a surviving snapshot/job
+  keeps its original data reachable even when idle data-file FDs are evicted.
+- Concurrent maintenance, GC, and admission stay within budget, including
+  temporary descriptors. Inject OS-limit and I/O errors after each acquisition
+  and verify no leaks, partial publication, or deletion of referenced objects.
+
+These are implementation and resource-verification requirements; existing open
+helpers and caches are not claimed to satisfy them merely because branches share
+immutable storage.
+
 ## Sealing and create protocol
 
 Sealing holds the source branch's commit/publication barrier, checks the
@@ -943,7 +1022,7 @@ runtime and qualification obligations are complete:
    tests without compatibility migrations for earlier development databases.
 3. **SQL selection and writable recovery (#780, #775):** add AST/dispatch and
    context-local `USE BRANCH`, deferred admission, source-preserving switch
-   failure, and complete private active-WAL replay. Finalize administrative SQL
+   failure, shared project FD budgets, and complete private active-WAL replay. Finalize administrative SQL
    grammar/result budgets and ensure SQL uses the storage lifecycle kernel.
 4. **DDL and durable fork publication (#779, #780):** isolate schema, migration
    records, caches, and checkpoint artifacts; fork from the exact committed
@@ -951,7 +1030,8 @@ runtime and qualification obligations are complete:
 5. **Reclamation and power-loss qualification (#778, #774):** implement bounded
    orphan cleanup after validated recovery, preserve descendants and pending
    publications, and inject lost writes, torn writes, reordering, and interrupted
-   sweep. Register focused regression and local fuzz coverage. Runtime slices
+   sweep. Verify bounded temporary descriptors and orphan-cleanup FD accounting.
+   Register focused regression and local fuzz coverage. Runtime slices
    need their own failure tests; this final slice does not defer their safety.
 
 No issue is complete merely because a model passes; the corresponding runtime
