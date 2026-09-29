@@ -26,13 +26,13 @@ require qualification; this document does not claim they pass.
   lost after power failure. Successful checkpoint/seal synchronizes its covered
   committed prefix. There is no fixed time bound on the unsynchronized window.
   Loss may omit whole transactions, never recover partial schema/data changes.
-- The effective policy comes from the branch opener's explicit `durability`
+- The effective policy comes from the project opener's explicit `durability`
   argument, not `DatabaseConfig` or persisted branch metadata. It applies to that
-  handle's transactions and is fixed for its lifetime. The default opener passes
-  `SyncOnEveryWrite`; reopening without an override and opening a newly created
-  child use that default, regardless of a previous or parent handle's policy.
-  The proposed API below exposes the effective mode. WAL disabling is outside
-  this decision.
+  execution context's transactions and is fixed for its lifetime. Default opening
+  uses `SyncOnEveryWrite`. `USE BRANCH` preserves that context's explicit policy;
+  it never inherits the target branch's previous writer policy. Reopening without
+  an override resets to the synchronous default. WAL disabling is outside this
+  decision.
 - A response lost after durable publication may leave a committed operation.
   Branch creation retries MUST recover the same idempotent outcome and identity.
   An interrupted transaction MUST recover atomically, never as partial schema
@@ -172,58 +172,122 @@ contract; explicit branch deletion does not expire its request receipt.
 
 ## Writable branch API and schema isolation
 
-The proposed `Database::open_branch(project_path, BranchSelector)` returns a
-`Database` permanently bound to the resolved branch UUID. It owns the internal
-OS open lock and reuses ordinary SQL/Cypher, transaction, and checkpoint APIs.
-No public lease renewal API, branch-switching SQL, or per-DDL branch wrapper is
-required. Read-only opening is explicit; a read-only recovery handle alone does
-not meet the writable-branch contract. Project metadata inspection must not
-require opening `main` as a writer merely to access another branch.
+Branch creation, inspection, selection/opening, and deletion are SQL operations
+executed by the embedded query runtime. A dedicated public `open_branch()` method
+is not required. Rust opens the project and configures its execution context;
+SQL selects the branch. The proposed initial selection statement is:
 
-The proposed signatures follow the existing single-database opener pattern.
-These are design signatures, not APIs already implemented:
-
-```rust
-impl Database {
-    pub fn open_branch(
-        project_path: impl AsRef<Path>,
-        selector: BranchSelector,
-    ) -> Result<Self>;
-
-    pub fn open_branch_with_durability_and_config(
-        project_path: impl AsRef<Path>,
-        selector: BranchSelector,
-        durability: DurabilityPolicy,
-        config: DatabaseConfig,
-    ) -> Result<Self>;
-
-    pub fn durability_policy(&self) -> DurabilityPolicy;
-}
+```sql
+USE BRANCH dev;
+USE BRANCH NAME $1;
+USE BRANCH ID $1;
+SHOW CURRENT BRANCH;
 ```
 
-`open_branch(path, selector)` delegates to the configuration-aware opener with
-`DurabilityPolicy::SyncOnEveryWrite` and `DatabaseConfig::default()`. The explicit
-`durability` argument is the sole policy source; `DatabaseConfig` supplies the
-existing read-only, recovery, and resource settings and does not override it.
-There is no policy lookup from the catalog, environment, or parent handle.
-`durability_policy()` returns the selected effective policy. Setting
-`config.read_only = true` rejects writes regardless of the selected policy.
+The first form accepts a validated branch-name identifier (double-quoted when
+needed); the `NAME` and `ID` forms accept a string literal or bound parameter.
+Names remain case-sensitive under the branch-name contract, with no UUID-looking
+name heuristic. UUID values are parsed and validated as UUIDs. Parameters are
+bound as values by the parser/runtime, never interpolated into SQL text.
+`SHOW CURRENT BRANCH` returns one bounded row containing branch UUID, name, and
+effective durability policy; a metadata-only context returns null UUID/name.
 
-For example, a host explicitly accepts relaxed transaction durability with:
+The proposed usage reuses existing Rust query entrypoints; branch SQL itself is
+not yet implemented:
 
 ```rust
-let branch = Database::open_branch_with_durability_and_config(
+let mut db = Database::open(project_path)?; // default: SyncOnEveryWrite
+// Proposed SQL, resolved inside this project:
+db.query_sql("USE BRANCH dev")?;
+db.query_sql("ALTER TABLE documents ADD COLUMN kind TEXT")?;
+db.query_sql("SHOW CURRENT BRANCH")?;
+```
+
+An explicit relaxed context uses the existing configuration-bearing opener:
+
+```rust
+let mut db = Database::open_with_durability_and_config(
     project_path,
-    BranchSelector::Name("dev".into()),
     DurabilityPolicy::SyncOnCheckpoint,
     DatabaseConfig::default(),
 )?;
-assert_eq!(branch.durability_policy(), DurabilityPolicy::SyncOnCheckpoint);
+db.query_sql("USE BRANCH dev")?; // retains the explicitly selected policy
 ```
 
-Branch metadata publication still uses synchronous durability in this example.
-API qualification must verify the default path, explicit relaxed path, read-only
-rejection, effective-policy reporting, and default reset on reopen/child opening.
+`DatabaseConfig` supplies read-only, recovery, and resource settings; the
+separate `DurabilityPolicy` argument is the sole policy source. No environment,
+parent-branch policy, catalog preference, or SQL switch can weaken the default.
+Read-only contexts may select branches but cannot mutate data or branch metadata.
+Branch metadata publication stays synchronously durable even in relaxed mode.
+
+### Selection, locks, and transactions
+
+Selection belongs to a mutable execution context, never a global project setting.
+For direct `Database::query_sql`, that context is the exclusively borrowed
+`Database`. `DatabaseSession` borrows the same context; a successful selection
+remains on that database after the session ends. Independent contexts retain
+their own branch selections. Reopening defaults to `main`, not the last selection.
+Project metadata access must not require obtaining the `main` writer lock:
+validate the project/catalog on open, and defer branch lock acquisition and data
+recovery until `USE BRANCH` or the first data statement against default `main`.
+After default/selected branch admission fails, never silently route to another
+branch. Metadata operations remain possible without an admitted data branch.
+
+`USE BRANCH` performs real open admission: resolve and pin the target identity,
+try its open lock, validate/recover its state, revalidate its catalog identity,
+and only then replace the context's active branch. Do not wait indefinitely for
+a target lock while retaining the source lock: return a typed busy error. A
+failed switch keeps the original context usable; it must not replace the source
+catalog/store before target admission completes. Release the old context's open
+lock only after switching, retaining any independently owned reader/job pins.
+Selecting the already admitted UUID is a no-op after lifecycle revalidation.
+
+Reject selection during an explicit transaction, including read-only transactions;
+never implicitly commit, roll back, or move writes. Existing independent read
+snapshots remain pinned to their original branch. Prepared plans and cached state
+must be invalidated or bound to the branch identity/schema version; a statement
+prepared before switching cannot silently write into the new branch. Background
+jobs retain their original branch identity and ownership until completion.
+
+`ConcurrentDatabase` currently shares one runtime through `Arc`. P0 selection
+happens before converting a mutable database into that shared concurrent runtime;
+`USE BRANCH` on the shared runtime or its transactions returns a typed unsupported
+context error. It must never retarget all clones. Future independently selectable
+concurrent sessions require their own selection state; adding them is separate
+from enabling SQL selection on the mutable embedded context.
+
+### SQL lifecycle surface and implementation boundary
+
+Use `CREATE BRANCH`, `SHOW BRANCHES`, `SHOW BRANCH`, and `DROP BRANCH` for lifecycle
+operations. Creation does not implicitly select its result; `USE BRANCH` never
+creates a missing branch. Creation must expose expected source revision and an
+idempotency key as bound values; deletion must expose expected UUID/revision so
+name reuse cannot redirect a delayed request. Listing requires explicit bounded
+pagination and payload accounting. These grammar details and result schemas must
+be finalized with parser tests before implementation qualification; they must not
+be hidden solely in route-specific Rust methods. Create/drop/use are rejected
+inside user transactions and never implicitly commit them. Dropping the selected
+branch is rejected until the caller switches away; other contexts follow the
+explicit deletion/admission protocol below.
+
+Add explicit SQL AST variants and dispatch lifecycle/selection before the normal
+implicit data-transaction wrapper. Use one storage lifecycle kernel for locking,
+sealing, publication, and recovery. Existing typed helpers may support that kernel
+or compatibility callers, but SQL must exercise the same semantics and error
+classes. Do not implement branch commands by host-side string matching, shelling
+out, or copying a database directory. No new crate is required for this surface.
+
+[Dolt's branch SQL](https://www.dolthub.com/docs/sql-reference/version-control/branches/)
+provides a precedent for session-scoped `USE` and `DOLT_CHECKOUT`; its
+[checkout implementation](https://github.com/dolthub/dolt/blob/main/go/libraries/doltcore/sqle/dprocedures/dolt_checkout.go)
+calls session `SwitchWorkingSet`. HawDB adopts session-scoped selection, not
+Dolt's multi-branch transaction or implicit-commit behavior.
+
+Acceptance must cover parameterized name/UUID selection, missing/busy/corrupt
+targets leaving the source intact, selection in active transactions, cross-context
+isolation, shared-runtime rejection, stale prepared statements, reader/job pins,
+read-only selection, default synchronous policy, explicit relaxed selection, and
+reopen defaulting to `main` with synchronous durability.
 
 Opening validates the selected branch's complete immutable closure and replays
 its sealed WAL plus private active WAL exactly once. It MUST NOT derive schema,
@@ -305,7 +369,8 @@ must distinguish maintenance failure from a definitely aborted transaction.
 The lifecycle facade currently creates nested branch metadata from sealed heads;
 this is not yet the complete writable workflow above. Required work includes:
 
-- branch-selected writable `Database` opening and private active-WAL replay;
+- SQL branch selection/lifecycle AST and dispatch, deferred branch admission,
+  context-local writable opening, and private active-WAL replay;
 - sealing current committed state when a modified child becomes a fork source;
 - branch-local DDL/checkpoint publication, snapshot and plan invalidation;
 - removing legacy expiry fields/transitions from the implementation and model;
@@ -741,7 +806,7 @@ request a new branch.
 | Unknown UUID or name | `UnknownBranch`; never infer a path. |
 | Source token or mutation revision mismatch | `StaleRevision`, no rebasing or implicit retry against newer state. |
 | Open `Creating` | `RecoveryPending`; no partial handle. |
-| Open `Ready` | Acquire/revalidate the open lock, recover the selected state, and return a writable `Database` (or explicitly requested read-only handle). |
+| `USE BRANCH` on `Ready` | Acquire/revalidate the open lock, recover the selected state, and bind the current context, preserving its configured read-only and durability settings. |
 | Open an independently leased UUID | `AlreadyOpen`; other branch UUIDs remain independently openable. |
 | Open `Deleting` / `Deleted` | `Deleting` / `Deleted` by retained UUID; removed names may be unknown. |
 | Delete `Ready` | Publish `Deleting`, reject new opens and new work on its existing handle. |
@@ -752,8 +817,8 @@ request a new branch.
 `describe` and bounded/paginated `list` expose UUID/name, lineage, revision,
 state and owner without mutable paths. Their catalog revision makes
 pagination changes explicit. Owner metadata is descriptive; hosts remain
-responsible for authorization. Limits and all lifecycle errors belong to typed
-Rust library APIs; JSON/CLI wrappers may later derive from those APIs.
+responsible for authorization. Lifecycle statements return bounded query results and typed library errors.
+JSON/CLI wrappers may later derive from the embedded query runtime.
 
 There is no time-based admission or automatic expiry in P0. An explicit delete
 permits already-admitted commits/checkpoints to finish or abort atomically and
