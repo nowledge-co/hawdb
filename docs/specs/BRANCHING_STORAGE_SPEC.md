@@ -2,8 +2,59 @@
 
 Status: active P0 implementation contract for [#774](https://github.com/nowledge-co/hawdb/issues/774).
 This specification defines planned behavior; it does not claim that branching is
-available. The lifecycle model checks the bounded protocol described below.
+available. Earlier lifecycle-model results do not qualify the revised contract.
 Implementation and release qualification remain separate gates.
+
+## Configurable durability decision (2026-09-29)
+
+Power-loss-safe transaction commits are the default (`SyncOnEveryWrite`). Hosts
+may explicitly select `SyncOnCheckpoint` for branch-local DDL/DML through typed
+Rust configuration. Branch metadata publication remains synchronously durable
+in both modes. Existing implementation and historical model evidence still
+require qualification; this document does not claim they pass.
+
+- After `create_branch()` returns success, the same branch UUID and name MUST
+  survive power loss and restart. Branches persist until explicitly deleted;
+  closing a handle, losing an OS lock, or having no open handles MUST NOT delete
+  a branch or make its reachable objects eligible for GC. TTL/automatic expiry
+  is not required at this stage.
+- In `SyncOnEveryWrite`, successful DDL/DML commits MUST survive power loss.
+  Persist WAL and all recovery dependencies, including required directory
+  entries, before acknowledgment. Group commit callers wait for the shared sync.
+- In explicitly selected `SyncOnCheckpoint`, flush the complete transaction WAL
+  to the OS before acknowledgment; recent unsynchronized transactions may be
+  lost after power failure. Successful checkpoint/seal synchronizes its covered
+  committed prefix. There is no fixed time bound on the unsynchronized window.
+  Loss may omit whole transactions, never recover partial schema/data changes.
+- The policy belongs to the opened branch's database configuration, applies to
+  its transactions, and is fixed for that handle's lifetime. The proposed
+  configuration-aware branch opener must accept the existing `DurabilityPolicy`.
+  Reopening without an explicit override uses `SyncOnEveryWrite`; creating a
+  child does not silently inherit a parent's relaxed runtime policy. The public
+  API must expose the effective mode. WAL disabling is outside this decision.
+- A response lost after durable publication may leave a committed operation.
+  Branch creation retries MUST recover the same idempotent outcome and identity.
+  An interrupted transaction MUST recover atomically, never as partial schema
+  or data changes; lack of acknowledgment does not imply rollback.
+- Checkpoint, sealing, and head replacement MUST recover a complete old or new
+  selection with every commit covered by a completed durability barrier
+  recoverable. Recovery MUST NOT mix generations, discard durable commits,
+  or replace damaged state with an empty branch. Ambiguous or corrupt state requires a fail-closed error
+  and preservation of possibly referenced files.
+- Runtime open locks provide concurrency exclusion and are reacquired after
+  restart. Durable catalog/head reachability provides branch retention even
+  without any live lock. The lock file's existence is not proof of a live owner.
+- File writes and atomic rename alone are insufficient. Use the platform's
+  required file/directory persistence barriers and propagate failures without
+  acknowledging a durable commit or metadata publication. The guarantee assumes
+  the filesystem and storage device honor those barriers; platform-specific
+  requirements must be stated.
+- Qualification MUST inject lost unsynchronized writes, torn writes, and write
+  reordering at WAL, object, catalog, head, checkpoint, and GC publication
+  boundaries. Verify synchronous commits and acknowledged metadata operations
+  survive; relaxed recovery preserves all barrier-covered commits and transaction
+  atomicity. Verify retries do not duplicate branches and surviving descendants
+  retain their dependencies. Process termination/reopen tests alone are insufficient.
 
 ## Scope and current implementation boundary
 
@@ -32,7 +83,9 @@ branch objects. Branch-aware storage stays unavailable until all paths that can
 replace, repair, truncate, or reclaim its objects obey this contract.
 
 P0 excludes point-in-time source selection, implicit merge, promotion,
-schema-only branches, remote replication, and historical retention policy.
+schema-only branches, remote replication, TTL/automatic expiry, and historical
+retention policy. Branch-local schema changes and branching from a child are
+required P0 behavior, not schema-only branching.
 Lineage identifies origin; it does not define a merge algorithm. Publishing
 HawDB crates does not authorize stable Mem activation.
 
@@ -62,7 +115,7 @@ with the result identity; retries MUST NOT generate a new UUID or name. Names
 are catalog keys, never filesystem paths. `Foo` and `foo` are distinct even on a
 case-insensitive filesystem because storage paths use canonical UUIDs only.
 
-A name remains reserved in `Creating`, `Ready`, `Expired`, and `Deleting`.
+A name remains reserved in `Creating`, `Ready`, and `Deleting`.
 After `Deleted`, a new UUID may reuse a custom name. A delete by name MUST carry
 the expected UUID as well as revision, so a delayed request cannot delete a new
 incarnation. Deleting or renaming `main` is rejected in P0. Rename is a catalog
@@ -74,7 +127,7 @@ Use three distinct counters, with checked overflow and no wraparound:
 | Token | Meaning and comparison scope |
 | --- | --- |
 | Catalog revision | Monotonic project metadata publication sequence; protects catalog read/modify/write and GC snapshots. |
-| Branch metadata revision | Monotonic per-UUID lifecycle/name/owner/expiry revision; compared by administrative mutations. |
+| Branch metadata revision | Monotonic per-UUID lifecycle/name/owner revision; compared by administrative mutations. |
 | Source revision | `(BranchId, commit_epoch)` from the branch's committed logical state; compared by branch creation. |
 
 Ordinary writes MUST NOT rewrite the project catalog. Physical checkpoint or
@@ -94,7 +147,7 @@ records, name mappings, and create-request outcomes. A branch record contains:
 | `parent_id`, `source_revision` | The resolved source UUID and commit epoch; absent only for bootstrap `main`. |
 | `base_root_digest` | Immutable sealed-root digest captured at create; absent for bootstrap `main`, whose current sealed root is selected by its head. |
 | `metadata_revision`, `state` | Lifecycle compare-and-swap token and state described below. |
-| `owner`, `expires_at` | Optional bounded host metadata and UTC expiration instant; owner is not an authorization mechanism. |
+| `owner` | Optional bounded host metadata; not an authorization mechanism. No expiry field is required by P0. |
 | `create_request_key`, `request_fingerprint` | Stable operation identity and canonical request fingerprint. |
 | `create_outcome` | Reserved UUID/name plus pending, succeeded, or terminal-aborted result; preserved after deletion. |
 
@@ -104,8 +157,8 @@ epoch, and active-WAL identity with replay start LSN. The catalog locates the
 selector by UUID, not by a duplicate copy of its current head digest. This
 avoids a two-file transaction on each normal commit/checkpoint.
 
-Leases, reader pins, publication guards, object-cache entries, GC candidates,
-and clock samples are runtime state. They MUST NOT be inferred from a persisted
+Leases, reader pins, publication guards, object-cache entries, and GC candidates
+are runtime state. They MUST NOT be inferred from a persisted
 PID, cached lease count, or lock-file presence after restart. Active in-process
 handles retain their owning OS lease; a crash releases only that process's
 leases, not leases held by a different process.
@@ -114,7 +167,111 @@ Catalog/name/request data have explicit decode/entry/byte limits. Exceeding a
 limit returns a typed resource error before durable mutation; there is no
 silent eviction of idempotency receipts. Durable tombstones and request receipts
 are retained throughout P0. A future receipt-expiration policy needs a separate
-contract; TTL of a branch is not TTL of its request key.
+contract; explicit branch deletion does not expire its request receipt.
+
+## Writable branch API and schema isolation
+
+The proposed `Database::open_branch(project_path, BranchSelector)` returns a
+`Database` permanently bound to the resolved branch UUID. It owns the internal
+OS open lock and reuses ordinary SQL/Cypher, transaction, and checkpoint APIs.
+No public lease renewal API, branch-switching SQL, or per-DDL branch wrapper is
+required. Read-only opening is explicit; a read-only recovery handle alone does
+not meet the writable-branch contract. Project metadata inspection must not
+require opening `main` as a writer merely to access another branch.
+
+Opening validates the selected branch's complete immutable closure and replays
+its sealed WAL plus private active WAL exactly once. It MUST NOT derive schema,
+artifact paths, or replay intervals from the parent's current manifest. Recovery
+may materialize bounded runtime state, but creating a branch must not copy the
+source dataset. A recovery helper that copies a source directory is not the
+production branch-opening implementation.
+
+Any ready branch can be a source, including one with committed DDL and DML.
+Capture schema and data at one committed source revision. A source revision
+returned for future forks must describe current committed state, not the
+creation-time lineage epoch. Under the source publication barrier, compare the
+requested revision, seal its committed WAL suffix, and publish the child from
+that exact state. Reject stale revisions; do not silently fork an older sealed
+head or include uncommitted changes. Creating a child does not commit an active
+user transaction. An in-transaction fork request must be rejected explicitly.
+
+Schema is branch-owned database state: graph descriptors, relational and append
+table definitions, constraints, index definitions, and migration records are
+captured with the data. A child inherits their committed state at its fork;
+subsequent parent, child, and sibling changes are isolated. The same table or
+index name may have different definitions in different branches. Local object
+IDs are interpreted in their branch/object context, not as global identities.
+
+P0 reuses supported DDL rather than adding new syntax: the current relational
+compiler supports `CREATE TABLE`, `CREATE INDEX`, and `ALTER TABLE ADD COLUMN`;
+graph and append operations retain their existing supported semantics and
+restrictions. Unsupported DDL remains an explicit error. Schema-only branching
+and schema merge are separate capabilities and are not needed for local DDL.
+
+DDL follows the ordinary transaction path:
+
+1. Bind and validate against the transaction's branch schema snapshot.
+2. Prepare schema and associated data changes privately. Serialize schema
+   publication within the branch; detect incompatible concurrent schema changes
+   before committing a writer bound to an older definition.
+3. Append one atomic transaction containing all required schema/data WAL
+   records. Before acknowledgment, synchronize its recovery dependencies in
+   `SyncOnEveryWrite`, or flush the complete WAL transaction to the OS in
+   explicitly selected `SyncOnCheckpoint`. Schema follows the same policy as data.
+4. Publish the committed snapshot and invalidate affected branch-local plans.
+   Readers holding older snapshots retain matching schema/data until release.
+
+Prepared plans and caches must not leak across branch identities or schema
+versions. Initially keep them branch-local, and rebind or invalidate stale plans
+on schema publication. System migration records are inherited at fork and then
+advance independently; existing protections on direct system-table writes apply.
+Engine schema upgrades must use the same branch-local atomic durability path.
+
+DDL that requires row-page checkpointing must publish new branch-owned artifacts
+and switch only that branch's head. Shared schema, pages, indexes, and overflow
+objects remain immutable. Preserve objects reachable from other branches or
+reader snapshots. A checkpoint failure after a durable transaction commit cannot
+undo that commit; recovery must reconstruct it from WAL. Any resulting error
+must distinguish maintenance failure from a definitely aborted transaction.
+
+### Required schema and fork acceptance scenarios
+
+- Fork `main -> dev`, commit an added column and data on `dev`, then fork
+  `dev -> experiment` without requiring a manual checkpoint. The grandchild
+  inherits both changes; `main` and pre-existing siblings do not.
+- Run independent DDL/DML on parent, child, and sibling; checkpoint each and
+  reopen in different orders. Schema, constraints, indexes, and migration
+  records must remain isolated and paired with the correct data.
+- Roll back DDL/data transactions and reject invalid constraints without partial
+  changes. Race DDL publication with fork creation and verify exact-revision
+  success or a typed stale-revision rejection.
+- Execute identical SQL against diverged branch schemas and verify plan-cache
+  isolation; retain an old reader during DDL without mixing schema versions.
+- Delete a parent and sweep while its child/grandchild survives. Reopen the
+  descendants using their own closure, without the parent's directory.
+- Inject power loss before and after commit, seal, checkpoint, and create
+  acknowledgment in both modes. Every acknowledged branch and synchronous
+  transaction survives; relaxed recovery preserves the last completed barrier
+  and transaction atomicity. Idempotent create retries preserve identity.
+
+### Current implementation gaps
+
+The lifecycle facade currently creates nested branch metadata from sealed heads;
+this is not yet the complete writable workflow above. Required work includes:
+
+- branch-selected writable `Database` opening and private active-WAL replay;
+- sealing current committed state when a modified child becomes a fork source;
+- branch-local DDL/checkpoint publication, snapshot and plan invalidation;
+- removing legacy expiry fields/transitions from the implementation and model;
+- exposing the effective durability mode and auditing platform persistence
+  barriers in both modes, including metadata publication and uncertain completion;
+- branch-aware locking, global GC, and the acceptance scenarios above.
+
+There is no production compatibility obligation for earlier development-only
+branch formats. Update the greenfield format deliberately and reject unsupported
+old versions; do not add expiry compatibility migrations solely for old dev data.
+These are implementation gaps, not claims that this documentation fixes runtime
+behavior.
 
 ## On-disk compatibility and immutable objects
 
@@ -407,7 +564,7 @@ new reservation first checks the request receipt, parent identity/state/source
 epoch, UUID/name uniqueness, and checked revision increments. Replaying an
 identical key and fingerprint returns the retained UUID without changing any
 byte; a different fingerprint is a conflict. Completion and abort accept only
-`Creating/Pending`, while rename, expiry, and the two delete phases each accept
+`Creating/Pending`, while rename and the two delete phases each accept
 only their predecessor state and the caller's exact metadata revision. Every
 successful transition increments the catalog revision and the branch revision,
 validates the complete candidate, and swaps it into the handle only after
@@ -432,7 +589,7 @@ needed branch lease/publication barrier first, then take the metadata lock
 briefly and revalidate identity/state/revision. A caller using an already-open
 parent supplies its existing internal lease, rather than recursively opening
 the parent directory. For open-by-name, resolve under metadata serialization,
-release it, acquire the UUID lease, then revalidate the mapping, state and TTL
+release it, acquire the UUID lease, then revalidate the mapping and state
 under metadata serialization before exposing a handle. A changed mapping is a
 conflict, not permission to return the replacement branch.
 
@@ -465,15 +622,19 @@ The old head plus old WAL remains recoverable before the switch. The new head
 references the sealed prefix exactly once and starts the active suffix strictly
 after it. After the switch, append only to the new active WAL. A crash or lost
 acknowledgement may expose either complete head, never a duplicated/lost
-acknowledged prefix. Sealing does not change the source logical commit epoch.
-`SyncOnCheckpoint` writes not yet durable are explicitly flushed by a successful
-seal; a failed seal does not strengthen their prior durability guarantee.
+durable prefix. Sealing does not change the source logical commit epoch.
+In synchronous mode, acknowledged source commits are already durable. In relaxed
+mode, sealing MUST synchronize the complete selected committed prefix before
+publishing either head. Thus a successful fork makes its captured schema/data
+power-loss durable in both parent and child. Failure before completing that
+barrier does not strengthen the earlier relaxed acknowledgments. Publication
+uncertainty requires reopen/recovery, not an assumption that sealing rolled back.
 
 Create then follows these durable transitions:
 
 1. Validate request syntax/limits and consult its idempotency receipt first.
    For a new request, resolve and lock the source; revalidate its expected
-   revision, state and TTL; seal if needed.
+   revision and state; seal if needed.
 2. While the sealed source is pinned, atomically publish a `Creating` catalog
    record with UUID, reserved name, immutable base digest, full request
    fingerprint, and pending outcome. It becomes a global GC root immediately.
@@ -513,15 +674,15 @@ the child's own root references retain the required immutable objects.
 
 Create uses a nonempty, bounded, project-scoped opaque key. Its versioned
 fingerprint covers the caller's typed parent selector, expected source token,
-optional name (including the distinction between absent and explicit), owner,
-and expiry. Encode options and byte lengths unambiguously. Store the resolved
-UUID separately. Retries compare the original request before resolving a name
+optional name (including the distinction between absent and explicit), and owner.
+Encode options and byte lengths unambiguously. Store the resolved UUID separately.
+Retries compare the original request before resolving a name
 again, so rename, deletion, or name reuse cannot redirect a recorded request.
 
 The same key/fingerprint returns the reserved original identity and its current
-pending/succeeded/aborted/deleted outcome. It does not reopen an expired branch
-or recreate a deleted one. Different input with the same key is always
-`IdempotencyConflict`, including after deletion. In-progress create can return
+pending/succeeded/aborted/deleted outcome. It does not recreate a deleted branch.
+Different input with the same key is always `IdempotencyConflict`, including
+after deletion. In-progress create can return
 `RecoveryPending` with the original ID; it cannot report a usable `Ready`
 handle before publication. A terminal-aborted result requires a new key to
 request a new branch.
@@ -534,29 +695,26 @@ request a new branch.
 | Unknown UUID or name | `UnknownBranch`; never infer a path. |
 | Source token or mutation revision mismatch | `StaleRevision`, no rebasing or implicit retry against newer state. |
 | Open `Creating` | `RecoveryPending`; no partial handle. |
-| Open `Ready` before TTL | Acquire/revalidate lease and return the typed embedded database handle. |
+| Open `Ready` | Acquire/revalidate the open lock, recover the selected state, and return a writable `Database` (or explicitly requested read-only handle). |
 | Open an independently leased UUID | `AlreadyOpen`; other branch UUIDs remain independently openable. |
-| Open expired / `Expired` | `Expired`; elapsed TTL blocks admission even before a sweeper persists the state. |
 | Open `Deleting` / `Deleted` | `Deleting` / `Deleted` by retained UUID; removed names may be unknown. |
-| Delete `Ready` / `Expired` | Publish `Deleting`, reject new opens and new work on its existing handle. |
+| Delete `Ready` | Publish `Deleting`, reject new opens and new work on its existing handle. |
 | Delete already `Deleting` / `Deleted` with the same identity | Idempotent current outcome; cannot affect a reused name. |
 | Delete/rename `main` | `ProtectedBranch`. |
 | Decode, checksum, unknown version, or incomplete selected closure | Typed storage integrity error; no usable handle or sweep. |
 
 `describe` and bounded/paginated `list` expose UUID/name, lineage, revision,
-state, owner and expiry without mutable paths. Their catalog revision makes
+state and owner without mutable paths. Their catalog revision makes
 pagination changes explicit. Owner metadata is descriptive; hosts remain
 responsible for authorization. Limits and all lifecycle errors belong to typed
 Rust library APIs; JSON/CLI wrappers may later derive from those APIs.
 
-Expiry affects new admission. A handle admitted before expiry keeps its lease
-and may finish and perform work until it closes, unless explicit deletion has
-begun. A delete permits already-admitted commits/checkpoints to finish or abort
-atomically and rejects new transactions. It MUST NOT revoke a pin, truncate a
-WAL under a reader, or interrupt publication into a partially durable state.
-TTL uses a host-supplied clock policy; a persisted `Expired` state never returns
-to `Ready` after clock rollback. Before that state is recorded, admission is
-relative to the sampled wall clock, not a claim of globally monotonic time.
+There is no time-based admission or automatic expiry in P0. An explicit delete
+permits already-admitted commits/checkpoints to finish or abort atomically and
+rejects new transactions. It MUST NOT revoke a pin, truncate a WAL under a reader,
+or interrupt publication into a partially durable state. A successful logical
+delete requires a durable tombstone before acknowledging success; physical
+cleanup may remain pending without resurrecting the branch after restart.
 
 ## Recovery, deletion and reclamation
 
@@ -568,18 +726,18 @@ revalidates leases; another process's live pending operation is not a crash.
 | --- | --- |
 | Objects/staging exist without a catalog create record | Retain while an owner is live; otherwise mark as orphan candidates. |
 | `Creating`, no durable child head | Publish terminal-aborted `Deleted` with the same receipt/UUID; release name reservation. |
-| `Creating`, complete child head and base closure | Finish `Ready` with the same successful receipt/UUID (or `Expired` if its TTL elapsed). |
+| `Creating`, complete child head and base closure | Finish `Ready` with the same successful receipt/UUID. |
 | `Creating`, existing but corrupt/ambiguous child head | Fail closed; retain all possibly referenced objects and report integrity failure. |
 | Head switch during commit/seal/checkpoint | Use the complete selected old or new head and its exact WAL replay interval; do not mix generations. |
 | `Deleting`, any live owner/publication/snapshot pin | Keep it non-openable and retained; report cleanup pending. |
 | `Deleting`, no remaining owner/pins | Persist `Deleted` before physical cleanup and name reuse. |
 | `Deleted`, interrupted directory cleanup or sweep | Retry bounded cleanup; retain receipt and identity tombstone. |
 
-GC computes the transitive closure of all `Ready` and `Expired` heads/bases,
+GC computes the transitive closure of all `Ready` heads/bases,
 all `Creating`/`Deleting` recovery records, all live leases and reader pins,
 all publication candidates, and any explicitly registered historical pins.
 The catalog itself, active WALs, and stable lock inodes are not ordinary object
-sweep candidates. Expired-but-not-deleted branches retain their complete state.
+sweep candidates. Unopened branches retain their complete state indefinitely.
 Deletion of one branch MUST NOT invalidate a surviving child's or sibling's
 root, even if its parent record is already a tombstone.
 
@@ -612,29 +770,15 @@ in the inventory/root snapshot before invoking this primitive.
 
 ## Model and implementation qualification
 
-[`HawDBBranchLifecycle.tla`](../tla/HawDBBranchLifecycle.tla) models two branches,
-one non-reused child ID, four complete root choices, per-object persistence,
-separate parent/child leases, pinned readers, staged publication, expiry,
-two-phase deletion, crash/recovery, and mark/revalidated sweep. Parent
-checkpoint advancement drops its old checkpoint from the current head while a
-child may still need it. This makes shared-base retention observable.
-
-Checked invariants cover selected-closure durability, pinned and pending-create
-retention, immutable captured lineage, complete logical publication, parent
-isolation from child writes, deletion lease safety, and open admission.
-Negative controls independently permit early head publication, parent mutation,
-omission of a pending create from GC, stale sweep, deletion under lease, and an
-expired open. False-invariant witness configurations require reachable create
-completion/abort after crash, deletion recovery, simultaneous branch leases,
-expiry with an existing handle, and independent parent/child writes. See the
-[model evidence and limitations](../tla/BRANCH_LIFECYCLE_PROOF.md).
-
-The model abstracts atomic metadata replacement and immutable object identity;
-it does not prove byte codecs, hashes, OS locking, clocks, arbitrary branch
-counts, admission bounds, or Rust refinement. Both writers may progress in the
-finite state graph, but no scheduling fairness or latency theorem is claimed.
-Crashes lose both modeled process-local handles; cross-process lease loss must
-be checked separately in implementation tests.
+The [previous model report](../tla/BRANCH_LIFECYCLE_PROOF.md) is superseded as
+qualification evidence for this contract. A revised model must cover persistent
+branches without expiry, multi-level forks, atomic schema/data publication,
+open-lock loss without branch loss, explicit deletion, and GC reachability.
+Model changes require rerunning positive invariants, negative controls, and
+reachability witnesses. Abstract atomic publication does not establish torn-write,
+write-reordering, OS-locking, or filesystem durability behavior; those require
+implementation-level power-loss fault injection. No revised-model result is
+claimed here.
 
 Implementation delivery is specification -> catalog (#777) and immutable
 objects (#779) -> isolated branch opening (#780) -> lifecycle facade (#775)
@@ -647,7 +791,7 @@ and global GC (#778). Each PR targets `main` directly. Before P0 is available:
 - observe branch creation without logical source reads/copy/import, then run
   parent/child/sibling independent writes, checkpoints and reopen in both orders;
 - exercise conflicting same-branch opens, concurrent different-branch leases,
-  expiry/open/delete races, corrupt closure discovery and publication during GC;
+  open/delete races, corrupt closure discovery and publication during GC;
 - cover every canonical artifact family, minimal/default facade profiles,
   focused Cargo/Bazel tests and the repository's required local fuzz command.
 

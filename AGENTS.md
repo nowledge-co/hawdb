@@ -51,6 +51,15 @@
 - Keep storage changes recovery-oriented: WAL, checkpoint, pruning, and scan-filter features need targeted tests that prove replay boundaries, torn-tail handling, and no partial mutation recovery.
 - Do not add broad indexing, filtering, or optimizer features unless they map to active Mem replacement needs for Kuzu, LanceDB, or the graph-first read path.
 
+## Durability and Power-Loss Safety
+
+- Persistent HawDB defaults to power-loss-safe commits (`SyncOnEveryWrite`). Hosts may explicitly select `SyncOnCheckpoint` through typed Rust configuration for DDL/DML, accepting loss of recent acknowledged transactions after power failure. Never silently weaken the default.
+- Branch creation, logical deletion, and head publication must remain power-loss safe in every mode. In synchronous mode, persist all transaction recovery dependencies before acknowledging commit; group commit callers wait for the shared flush. In relaxed mode, acknowledge only after flushing the complete transaction WAL to the OS, document the unsynced loss window, and synchronize covered writes at successful checkpoint/seal boundaries.
+- A lost response may leave a fully committed operation. Preserve atomic recovery and idempotent branch-creation outcomes rather than treating a missing acknowledgment as proof of rollback.
+- Branches remain durable across handle closure, process crashes, and machine restarts until explicitly deleted. Runtime leases/open locks do not determine branch existence; unleased branches remain GC roots. TTL/automatic expiry is not required at this stage.
+- Recovery must preserve complete schema/data transactions and consistent checkpoint/head generations. Corruption or uncertain publication must fail closed and retain evidence; never discard commits covered by a completed durability barrier or recreate an empty branch. Relaxed mode may lose unsynchronized transactions, but never expose partial schema/data transactions.
+- Qualification must model lost unsynchronized writes, torn writes, and write reordering across WAL, catalog, head, checkpoint, and GC boundaries. Process-kill/reopen tests alone do not prove power-loss safety. State platform/storage synchronization assumptions and distinguish required behavior from verified implementation.
+
 ## PR and Branch Workflow
 
 - Follow `CONTRIBUTING.md` and the templates in `.github/ISSUE_TEMPLATE/` and `.github/PULL_REQUEST_TEMPLATE.md` for issue and PR content, titles, validation evidence, and review dispositions.

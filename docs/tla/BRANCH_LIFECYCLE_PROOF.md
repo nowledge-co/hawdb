@@ -6,6 +6,16 @@ The normative contract is
 design model for planned P0 storage. No runtime branch implementation or
 Rust-to-TLA refinement proof is claimed.
 
+## Superseded design evidence
+
+The 2026-09-29 branch contract removes TTL/automatic expiry and requires writable
+branch-local DDL, multi-level forks, and default power-loss-safe commits with
+explicit relaxed durability. Branch metadata remains synchronously durable. The
+model and recorded results below describe the earlier design and do not qualify
+the revised contract. Retain them as historical evidence; revise the model and
+rerun its checks before claiming current coverage. Runtime power-loss fault
+injection remains necessary even after abstract model checks pass.
+
 ## State and abstraction
 
 `HawDBBranchLifecycle` has parent `0`, child `1`, and four immutable root

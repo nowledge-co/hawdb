@@ -1012,9 +1012,24 @@ committed snapshot is published and the request returns. When the WAL is first
 created, its parent directory is synchronized as part of the same durability
 boundary.
 
-`SyncOnCheckpoint` remains available as an explicit relaxed policy. It flushes
-each WAL append to the operating system without synchronizing every entry, so it
-does not satisfy the production response-durability contract.
+`SyncOnEveryWrite` remains the default power-loss-safe mode. Group commit may
+share a flush, but every acknowledged commit must be covered by the completed
+barrier. Required recovery state and file/directory entries must be durable.
+
+Hosts may explicitly select `SyncOnCheckpoint` through the typed Rust durability
+configuration. It flushes complete transaction WAL to the operating system
+before returning but does not synchronize each commit to persistent storage.
+Recent acknowledged DDL/DML transactions can therefore be lost on power failure;
+atomic recovery is still required. A successful checkpoint or branch seal makes
+its covered committed prefix durable. There is no fixed time bound on the loss
+window without such a completed barrier.
+
+Branch creation, logical deletion, and head publication always synchronize their
+recovery dependencies, regardless of the DDL/DML policy. Delaying memtable/data
+page flush or compaction is compatible with power-loss-safe commits when their
+WAL is already durable. See the [branch contract](specs/BRANCHING_STORAGE_SPEC.md)
+for publication and qualification requirements. This policy does not claim that
+all branch paths have already been implemented or qualified.
 
 Callers that need higher ingest throughput SHOULD batch related mutations into
 one transaction and one WAL batch rather than weakening the default durability
