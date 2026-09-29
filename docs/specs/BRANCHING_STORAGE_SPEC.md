@@ -861,6 +861,28 @@ objects protected since mark are retained. Deletions and directory cleanup
 are restart-idempotent, and failure reports retained/reclaimed counts and bytes
 without changing a successful logical-delete receipt into a false failure.
 
+### Unreferenced DDL artifacts after relaxed commits
+
+In `SyncOnCheckpoint`, table/index artifacts may reach disk before their WAL
+transaction becomes durable. Power loss can then recover a catalog that never
+committed those artifacts. Such files are candidates for reclamation, not proof
+of a committed schema change. Startup first recovers and validates catalog,
+heads, and WAL; it must not infer tables or indexes from directory contents.
+
+A subsequent bounded maintenance sweep may reclaim only inventoried candidates
+proven unreachable from every surviving branch, reader/job pin, and pending
+publication. Revalidate under the reachability barrier before unlinking. A file
+unreferenced by the current branch alone is not an orphan: another branch or
+pending create may own it. Unreadable metadata, incomplete recovery, or unknown
+ownership retains the file and reports retry-required evidence. Eager startup
+GC is not required for successful opening; automatic repair/truncation of shared
+WAL remains prohibited. Interrupting cleanup must be restart-idempotent.
+
+Fault injection must cover an unsynchronized DDL transaction with artifacts
+already persisted, a shared artifact still used by a sibling, a pending create
+using the same root, and a crash during cleanup. Recovery must preserve durable
+commits and schema/data atomicity; reclamation must never remove a live dependency.
+
 ### Conservative immutable-object sweep implementation
 
 `ImmutableObjectStore::reclaim_unreachable` implements the storage-only part of
@@ -905,6 +927,32 @@ and global GC (#778). Each PR targets `main` directly. Before P0 is available:
   open/delete races, corrupt closure discovery and publication during GC;
 - cover every canonical artifact family, minimal/default facade profiles,
   focused Cargo/Bazel tests and the repository's required local fuzz command.
+
+### Follow-up delivery slices
+
+Each slice targets `main` directly after its prerequisite lands; none is a
+stacked PR against an unmerged feature branch. Keep the tracker open until the
+runtime and qualification obligations are complete:
+
+1. **Model revision (#776):** remove expiry transitions; add multi-level forks,
+   selection/open-lock loss, and atomic schema/data state. Model synchronous and
+   relaxed acknowledgment separately. Rerun invariants, negative controls, and
+   witnesses; replace historical evidence only with actual results.
+2. **Catalog lifecycle (#777, #775):** remove `expires_at` and `Expired` from
+   requests, codecs, admission, and recovery. Update the greenfield format and
+   tests without compatibility migrations for earlier development databases.
+3. **SQL selection and writable recovery (#780, #775):** add AST/dispatch and
+   context-local `USE BRANCH`, deferred admission, source-preserving switch
+   failure, and complete private active-WAL replay. Finalize administrative SQL
+   grammar/result budgets and ensure SQL uses the storage lifecycle kernel.
+4. **DDL and durable fork publication (#779, #780):** isolate schema, migration
+   records, caches, and checkpoint artifacts; fork from the exact committed
+   state of modified children. Qualify both durability modes and metadata sync.
+5. **Reclamation and power-loss qualification (#778, #774):** implement bounded
+   orphan cleanup after validated recovery, preserve descendants and pending
+   publications, and inject lost writes, torn writes, reordering, and interrupted
+   sweep. Register focused regression and local fuzz coverage. Runtime slices
+   need their own failure tests; this final slice does not defer their safety.
 
 No issue is complete merely because a model passes; the corresponding runtime
 acceptance criteria require source-level and executable implementation evidence.
