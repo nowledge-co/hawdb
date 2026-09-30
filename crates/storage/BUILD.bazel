@@ -27,6 +27,9 @@ rust_library(
 
 rust_test(
     name = "hawdb_storage_tests",
+    # Storage recovery coverage runs concurrently with the crate matrix in CI.
+    # Its measured tail exceeds Bazel's 300-second default under contention.
+    size = "large",
     crate = ":hawdb_storage",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
