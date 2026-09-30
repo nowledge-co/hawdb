@@ -13,9 +13,10 @@
 // limitations under the License.
 
 use crate::{
-    DeleteStatement, ExprKind, InsertStatement, SelectProjection, SelectStatement,
-    SqlArithmeticOperand, SqlAssignment, SqlAssignmentValue, SqlBound, SqlColumnDefault,
-    SqlExpression, SqlStatement, SqlValue, UpdateStatement,
+    BranchSqlSelector, BranchSqlStatement, BranchSqlValue, DeleteStatement, ExprKind,
+    InsertStatement, SelectProjection, SelectStatement, SqlArithmeticOperand, SqlAssignment,
+    SqlAssignmentValue, SqlBound, SqlColumnDefault, SqlExpression, SqlStatement, SqlValue,
+    UpdateStatement,
 };
 use hawdb_core::{HawDBError, Result};
 use std::collections::BTreeSet;
@@ -85,6 +86,24 @@ fn collect_statement_parameters(statement: &SqlStatement, positions: &mut BTreeS
             }
         }
         SqlStatement::CreateIndex(_) => {}
+        SqlStatement::Branch(branch) => collect_branch_parameters(branch, positions),
+    }
+}
+
+fn collect_branch_parameters(branch: &BranchSqlStatement, positions: &mut BTreeSet<usize>) {
+    match branch {
+        BranchSqlStatement::ShowBranches(statement) => {
+            collect_bound_parameter(Some(statement.limit), positions);
+            collect_bound_parameter(statement.offset, positions);
+        }
+        BranchSqlStatement::ShowBranch(statement) => match &statement.selector {
+            BranchSqlSelector::Name(value) | BranchSqlSelector::Id(value) => {
+                if let BranchSqlValue::Parameter(position) = value {
+                    positions.insert(*position);
+                }
+            }
+        },
+        BranchSqlStatement::ShowCurrentBranch => {}
     }
 }
 

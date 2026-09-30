@@ -232,7 +232,7 @@ pub fn statement_writes_system_schema_registry(statement: &SqlStatement) -> bool
         SqlStatement::CreateTable(statement) => Some(&statement.table),
         SqlStatement::CreateIndex(statement) => Some(&statement.table),
         SqlStatement::AlterTableAddColumn(statement) => Some(&statement.table),
-        SqlStatement::Select(_) | SqlStatement::Explain(_) => None,
+        SqlStatement::Select(_) | SqlStatement::Explain(_) | SqlStatement::Branch(_) => None,
     };
     table.is_some_and(|table| {
         table.name == ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE

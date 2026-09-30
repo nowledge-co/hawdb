@@ -232,6 +232,10 @@ fn hawdb_lightning_initial_import_source_fingerprint_key(
 pub struct Database {
     catalog: Catalog,
     store: GraphStore,
+    /// The opener selects durability for this execution context. Branch SQL
+    /// reports and later branch admission preserve this value; it is never
+    /// inferred from durable branch metadata.
+    durability: DurabilityPolicy,
     optimizer: CascadesOptimizer,
     plan_cache: Arc<SharedState<PlanCache>>,
     relational_plan_template_cache: Arc<crate::relational_sql::RelationalPlanTemplateCache>,
@@ -877,6 +881,7 @@ impl Default for Database {
                 store.search_projection_database_identity(),
             ),
             store,
+            durability: DurabilityPolicy::default(),
             optimizer: optimizer_from_database_config(&config),
             plan_cache: Arc::new(SharedState::new(PlanCache::new(
                 config.max_plan_cache_entries,
@@ -960,6 +965,7 @@ impl Database {
                 store.search_projection_database_identity(),
             ),
             store,
+            durability: DurabilityPolicy::default(),
             optimizer,
             plan_cache: Arc::new(SharedState::new(PlanCache::new(
                 config.max_plan_cache_entries,
@@ -1096,6 +1102,7 @@ impl Database {
                 store.search_projection_database_identity(),
             ),
             store,
+            durability,
             optimizer: optimizer_from_database_config(&config),
             plan_cache: Arc::new(SharedState::new(PlanCache::new(
                 config.max_plan_cache_entries,

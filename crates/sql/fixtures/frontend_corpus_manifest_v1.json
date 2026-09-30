@@ -10,7 +10,7 @@
   "sources": [
     {
       "path": "crates/sql/src/tests.rs",
-      "sha256": "0557f6adbef3b966a3a604d7603c01b94288c2be234579829536fd4d1a325266",
+      "sha256": "7306223e657441e8ead92ab0308d0104a170e24fa6ac72899fbe68567007059f",
       "case_ids": [
         "case-0001",
         "case-0002",

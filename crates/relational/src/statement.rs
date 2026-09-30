@@ -339,7 +339,8 @@ fn compile_relational_mutation(
         | SqlStatement::Explain(_)
         | SqlStatement::CreateTable(_)
         | SqlStatement::CreateIndex(_)
-        | SqlStatement::AlterTableAddColumn(_) => {
+        | SqlStatement::AlterTableAddColumn(_)
+        | SqlStatement::Branch(_) => {
             return Err(HawDBError::Semantic(
                 "relational mutation entrypoint requires INSERT, UPDATE, or DELETE".to_string(),
             ));

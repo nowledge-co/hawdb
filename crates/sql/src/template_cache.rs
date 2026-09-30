@@ -101,6 +101,7 @@ fn is_cacheable_query(statement: &SqlStatement) -> bool {
         | SqlStatement::Delete(_)
         | SqlStatement::CreateTable(_)
         | SqlStatement::CreateIndex(_)
-        | SqlStatement::AlterTableAddColumn(_) => false,
+        | SqlStatement::AlterTableAddColumn(_)
+        | SqlStatement::Branch(_) => false,
     }
 }

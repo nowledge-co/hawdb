@@ -22,9 +22,13 @@ use crate::relational_sql::{
     compile_append_explain_sql, compile_append_select_sql, compile_append_statement_sql,
     compile_relational_statement_sql_with_result, format_append_explain, project_append_rows,
 };
-use crate::sql::SqlStatement;
+use crate::sql::{
+    BranchSqlSelector, BranchSqlStatement, BranchSqlValue, ShowBranchesStatement, SqlBound,
+    SqlStatement,
+};
 use crate::telemetry::{QueryTelemetry, TelemetrySink};
 use crate::value::Value;
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
@@ -39,6 +43,7 @@ pub(super) fn sql_statement_kind(statement: &SqlStatement) -> &'static str {
         SqlStatement::CreateIndex(_) => "create_index",
         SqlStatement::AlterTableAddColumn(_) => "alter_table_add_column",
         SqlStatement::Explain(_) => "explain",
+        SqlStatement::Branch(_) => "branch",
     }
 }
 
@@ -300,6 +305,9 @@ impl Database {
     ) -> Result<QueryOutput> {
         let statement_kind = sql_statement_kind(prepared.statement());
         let query_result = (|| {
+            if let SqlStatement::Branch(statement) = prepared.statement() {
+                return self.execute_branch_sql(statement, parameters, max_rows, max_payload_bytes);
+            }
             super::reject_locking_select_without_manager(prepared.statement(), false)?;
             if hawdb_relational::system_schema::statement_writes_system_schema_registry(
                 prepared.statement(),
@@ -485,6 +493,61 @@ impl Database {
         query_result
     }
 
+    fn execute_branch_sql(
+        &self,
+        statement: &BranchSqlStatement,
+        parameters: &[Value],
+        max_rows: Option<usize>,
+        max_payload_bytes: Option<usize>,
+    ) -> Result<QueryOutput> {
+        let rows = match statement {
+            BranchSqlStatement::ShowBranches(statement) => {
+                self.show_branches_sql_rows(statement, parameters, max_rows)?
+            }
+            BranchSqlStatement::ShowBranch(statement) => {
+                enforce_branch_result_budget(1, max_rows)?;
+                let selector = branch_selector_from_sql(&statement.selector, parameters)?;
+                vec![branch_info_row(&self.describe_branch(selector)?)?]
+            }
+            BranchSqlStatement::ShowCurrentBranch => {
+                enforce_branch_result_budget(1, max_rows)?;
+                vec![BTreeMap::from([
+                    ("branch_id".to_string(), Value::Null),
+                    ("name".to_string(), Value::Null),
+                    (
+                        "durability_policy".to_string(),
+                        Value::String(durability_policy_name(self.durability).to_string()),
+                    ),
+                ])]
+            }
+        };
+        let output = QueryOutput::from_rows(rows);
+        enforce_branch_payload_budget(&output, max_payload_bytes)?;
+        Ok(output)
+    }
+
+    fn show_branches_sql_rows(
+        &self,
+        statement: &ShowBranchesStatement,
+        parameters: &[Value],
+        max_rows: Option<usize>,
+    ) -> Result<Vec<crate::executor::Row>> {
+        let limit = branch_bound(&statement.limit, parameters)?;
+        enforce_branch_result_budget(limit, max_rows)?;
+        let offset = statement
+            .offset
+            .as_ref()
+            .map(|offset| branch_bound(offset, parameters))
+            .transpose()?
+            .unwrap_or(0);
+        self.list_branches()?
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .map(|branch| branch_info_row(&branch))
+            .collect::<Result<Vec<_>>>()
+    }
+
     pub fn slow_query_log_jsonl(&self) -> Result<String> {
         self.slow_query_log_jsonl_with_options(&SlowQueryLogExportOptions::default())
     }
@@ -521,5 +584,124 @@ impl Database {
         let mut file = std::fs::File::create(path)?;
         file.write_all(jsonl.as_bytes())?;
         Ok(())
+    }
+}
+
+fn branch_selector_from_sql(
+    selector: &BranchSqlSelector,
+    parameters: &[Value],
+) -> Result<super::BranchSelector> {
+    match selector {
+        BranchSqlSelector::Name(value) => Ok(super::BranchSelector::Name(branch_selector_value(
+            value, parameters,
+        )?)),
+        BranchSqlSelector::Id(value) => {
+            let raw = branch_selector_value(value, parameters)?;
+            let id = raw.parse().map_err(|_| {
+                HawDBError::Semantic("SHOW BRANCH ID requires a valid UUID string".to_string())
+            })?;
+            Ok(super::BranchSelector::Id(id))
+        }
+    }
+}
+
+fn branch_selector_value(value: &BranchSqlValue, parameters: &[Value]) -> Result<String> {
+    match value {
+        BranchSqlValue::Literal(value) => Ok(value.clone()),
+        BranchSqlValue::Parameter(position) => match parameters.get(position.saturating_sub(1)) {
+            Some(Value::String(value)) => Ok(value.clone()),
+            Some(_) => Err(HawDBError::Semantic(format!(
+                "branch SQL parameter ${position} must be a string"
+            ))),
+            None => Err(HawDBError::Semantic(format!(
+                "missing branch SQL parameter ${position}"
+            ))),
+        },
+    }
+}
+
+fn branch_bound(bound: &SqlBound, parameters: &[Value]) -> Result<usize> {
+    let value = match bound {
+        SqlBound::Literal(value) => *value,
+        SqlBound::Parameter(position) => match parameters.get(position.saturating_sub(1)) {
+            Some(Value::Int(value)) if *value >= 0 => *value as u64,
+            Some(Value::Int(_)) => {
+                return Err(HawDBError::Semantic(format!(
+                    "branch SQL parameter ${position} must be non-negative"
+                )))
+            }
+            Some(_) => {
+                return Err(HawDBError::Semantic(format!(
+                    "branch SQL parameter ${position} must be an integer"
+                )))
+            }
+            None => {
+                return Err(HawDBError::Semantic(format!(
+                    "missing branch SQL parameter ${position}"
+                )))
+            }
+        },
+    };
+    usize::try_from(value)
+        .map_err(|_| HawDBError::Semantic("branch SQL bound exceeds platform capacity".to_string()))
+}
+
+fn enforce_branch_result_budget(requested: usize, max_rows: Option<usize>) -> Result<()> {
+    if max_rows.is_some_and(|maximum| requested > maximum) {
+        return Err(HawDBError::Execution(
+            "branch SQL page exceeds the configured result row budget".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn enforce_branch_payload_budget(
+    output: &QueryOutput,
+    max_payload_bytes: Option<usize>,
+) -> Result<()> {
+    if max_payload_bytes.is_some_and(|maximum| output.payload_bytes() > maximum) {
+        return Err(HawDBError::Execution(
+            "branch SQL result exceeds the configured payload budget".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn branch_info_row(branch: &super::BranchInfo) -> Result<crate::executor::Row> {
+    let source_commit_epoch = i64::try_from(branch.source_commit_epoch).map_err(|_| {
+        HawDBError::StorageIntegrity(
+            "branch source commit epoch cannot be represented as PostgreSQL BIGINT".to_string(),
+        )
+    })?;
+    Ok(BTreeMap::from([
+        ("branch_id".to_string(), Value::Uuid(branch.id)),
+        ("name".to_string(), Value::String(branch.name.clone())),
+        (
+            "parent_id".to_string(),
+            branch.parent_id.map(Value::Uuid).unwrap_or(Value::Null),
+        ),
+        (
+            "source_commit_epoch".to_string(),
+            Value::Int(source_commit_epoch),
+        ),
+        (
+            "state".to_string(),
+            Value::String(format!("{:?}", branch.state).to_lowercase()),
+        ),
+        (
+            "owner".to_string(),
+            branch
+                .owner
+                .clone()
+                .map(Value::String)
+                .unwrap_or(Value::Null),
+        ),
+    ]))
+}
+
+fn durability_policy_name(policy: super::DurabilityPolicy) -> &'static str {
+    match policy {
+        super::DurabilityPolicy::SyncOnEveryWrite => "sync_on_every_write",
+        super::DurabilityPolicy::SyncOnCheckpoint => "sync_on_checkpoint",
     }
 }

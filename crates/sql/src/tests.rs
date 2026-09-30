@@ -13,10 +13,11 @@
 // limitations under the License.
 
 use super::{
-    parse_postgres_sql, prepare_postgres_sql, SelectProjection, SqlArithmeticOperand,
-    SqlArithmeticOperator, SqlAssignmentValue, SqlBound, SqlColumnRef, SqlComparisonOp,
-    SqlConflictAction, SqlDataType, SqlFunctionArgument, SqlJoinKind, SqlLikeEscape,
-    SqlLockStrength, SqlOrderDirection, SqlStatement, SqlTableName, SqlValue,
+    parse_postgres_sql, prepare_postgres_sql, BranchSqlSelector, BranchSqlStatement,
+    BranchSqlValue, SelectProjection, ShowBranchStatement, ShowBranchesStatement,
+    SqlArithmeticOperand, SqlArithmeticOperator, SqlAssignmentValue, SqlBound, SqlColumnRef,
+    SqlComparisonOp, SqlConflictAction, SqlDataType, SqlFunctionArgument, SqlJoinKind,
+    SqlLikeEscape, SqlLockStrength, SqlOrderDirection, SqlStatement, SqlTableName, SqlValue,
 };
 use crate::{Expr, ExprKind};
 use hawdb_core::Value;
@@ -26,6 +27,52 @@ mod cross_join;
 mod expression_migration;
 mod frontend_corpus;
 mod having_from;
+
+#[test]
+fn parses_bounded_branch_catalog_inspection_statements() {
+    assert_eq!(
+        parse_postgres_sql("SHOW BRANCHES LIMIT $1 OFFSET 2;").unwrap(),
+        SqlStatement::Branch(BranchSqlStatement::ShowBranches(ShowBranchesStatement {
+            limit: SqlBound::Parameter(1),
+            offset: Some(SqlBound::Literal(2)),
+        }))
+    );
+    assert_eq!(
+        prepare_postgres_sql("SHOW BRANCH NAME $1")
+            .unwrap()
+            .parameters,
+        vec![super::PostgresParameterMetadata { position: 1 }]
+    );
+    assert_eq!(
+        parse_postgres_sql("SHOW BRANCH ID '123e4567-e89b-12d3-a456-426614174000'").unwrap(),
+        SqlStatement::Branch(BranchSqlStatement::ShowBranch(ShowBranchStatement {
+            selector: BranchSqlSelector::Id(BranchSqlValue::Literal(
+                "123e4567-e89b-12d3-a456-426614174000".to_string(),
+            )),
+        }))
+    );
+    assert_eq!(
+        parse_postgres_sql("SHOW CURRENT BRANCH").unwrap(),
+        SqlStatement::Branch(BranchSqlStatement::ShowCurrentBranch)
+    );
+}
+
+#[test]
+fn branch_catalog_inspection_requires_bounded_and_typed_syntax() {
+    for sql in [
+        "SHOW BRANCHES",
+        "SHOW BRANCHES LIMIT -1",
+        "SHOW BRANCH child",
+        "SHOW BRANCH NAME child",
+        "SHOW CURRENT BRANCH trailing",
+    ] {
+        assert!(
+            parse_postgres_sql(sql).is_err(),
+            "expected rejection for {sql}"
+        );
+    }
+    assert!(prepare_postgres_sql("SHOW BRANCHES LIMIT $2").is_err());
+}
 
 #[test]
 fn exposes_owned_postgres_sql_pgq_syntax() {

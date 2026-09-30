@@ -881,7 +881,8 @@ fn sql_statement_uses_snapshot(statement: &SqlStatement) -> bool {
         | SqlStatement::Delete(_)
         | SqlStatement::CreateTable(_)
         | SqlStatement::CreateIndex(_)
-        | SqlStatement::AlterTableAddColumn(_) => false,
+        | SqlStatement::AlterTableAddColumn(_)
+        | SqlStatement::Branch(_) => false,
     }
 }
 
@@ -1085,6 +1086,7 @@ fn sql_lock_requests(
         | SqlStatement::AlterTableAddColumn(_) => {
             Ok(vec![LockRequest::database(LockMode::Exclusive)])
         }
+        SqlStatement::Branch(_) => Ok(Vec::new()),
     }
 }
 

@@ -187,6 +187,7 @@ fn production(sql: &str) -> Result<(Outcome, Option<&'static str>), String> {
                 SqlStatement::CreateTable(_) => "create_table",
                 SqlStatement::CreateIndex(_) => "create_index",
                 SqlStatement::AlterTableAddColumn(_) => "alter_table",
+                SqlStatement::Branch(_) => "branch",
             };
             Ok((
                 Outcome::Accept {

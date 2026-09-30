@@ -31,6 +31,52 @@ pub enum SqlStatement {
     CreateTable(CreateTableStatement),
     CreateIndex(CreateIndexStatement),
     AlterTableAddColumn(AlterTableAddColumnStatement),
+    /// Project-scoped branch lifecycle commands. These are deliberately
+    /// distinct from relational DDL: their executor operates on the durable
+    /// branch catalog rather than a selected branch's schema.
+    Branch(BranchSqlStatement),
+}
+
+/// A branch lifecycle command parsed by the PostgreSQL entrypoint.
+///
+/// Keeping this as an AST family makes branch operations visible to the query
+/// runtime and prevents a host integration from recognizing command strings
+/// itself. Additional lifecycle commands are added here as their durable
+/// admission protocols become available.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BranchSqlStatement {
+    ShowBranches(ShowBranchesStatement),
+    ShowBranch(ShowBranchStatement),
+    ShowCurrentBranch,
+}
+
+/// A bounded page over the durable branch catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShowBranchesStatement {
+    pub limit: SqlBound,
+    pub offset: Option<SqlBound>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShowBranchStatement {
+    pub selector: BranchSqlSelector,
+}
+
+/// A typed selector avoids treating UUID-looking names as identifiers. The
+/// runtime validates `Id` values as UUIDs only after parameter binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BranchSqlSelector {
+    Name(BranchSqlValue),
+    Id(BranchSqlValue),
+}
+
+/// A branch name, UUID, or opaque selector parameter. Branch commands accept
+/// only string literals or PostgreSQL positional parameters, never SQL
+/// expression evaluation or interpolated text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BranchSqlValue {
+    Literal(String),
+    Parameter(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

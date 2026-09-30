@@ -33,6 +33,7 @@ pub struct BranchCreateRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hawdb_core::Value;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -113,6 +114,91 @@ mod tests {
             owner: None,
             idempotency_key: "create-child".to_string(),
         }
+    }
+
+    #[test]
+    fn inspects_the_durable_branch_catalog_through_sql() {
+        let (path, mut database, main) = initialized_database();
+        let child = database.create_branch(create_request(&main)).unwrap();
+
+        let listed = database
+            .query_sql_with_params(
+                "SHOW BRANCHES LIMIT $1 OFFSET $2",
+                &[Value::Int(1), Value::Int(1)],
+            )
+            .unwrap();
+        assert_eq!(listed.rows.len(), 1);
+        assert_eq!(
+            listed.rows[0].get("branch_id"),
+            Some(&Value::Uuid(child.id))
+        );
+        assert_eq!(
+            listed.rows[0].get("name"),
+            Some(&Value::String(child.name.clone()))
+        );
+
+        let described = database
+            .query_sql_with_params("SHOW BRANCH NAME $1", &[Value::String(child.name.clone())])
+            .unwrap();
+        assert_eq!(described.rows.len(), 1);
+        assert_eq!(
+            described.rows[0].get("parent_id"),
+            Some(&Value::Uuid(main.id))
+        );
+
+        let described_by_id = database
+            .query_sql_with_params("SHOW BRANCH ID $1", &[Value::String(child.id.to_string())])
+            .unwrap();
+        assert_eq!(
+            described_by_id.rows[0].get("name"),
+            Some(&Value::String(child.name.clone()))
+        );
+
+        let current = database.query_sql("SHOW CURRENT BRANCH").unwrap();
+        assert_eq!(current.rows.len(), 1);
+        assert_eq!(current.rows[0].get("branch_id"), Some(&Value::Null));
+        assert_eq!(
+            current.rows[0].get("durability_policy"),
+            Some(&Value::String("sync_on_every_write".to_string()))
+        );
+        assert!(database
+            .query_sql_with_params_options(
+                "SHOW BRANCHES LIMIT $1",
+                &[Value::Int(2)],
+                super::super::QueryStreamOptions {
+                    max_rows: Some(1),
+                    max_payload_bytes: None,
+                },
+            )
+            .is_err());
+        assert!(database
+            .query_sql_with_params_options(
+                "SHOW BRANCHES LIMIT $1",
+                &[Value::Int(1)],
+                super::super::QueryStreamOptions {
+                    max_rows: Some(1),
+                    max_payload_bytes: Some(1),
+                },
+            )
+            .is_err());
+
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn reports_the_context_durability_before_branch_selection() {
+        let path = test_directory("branch-sql-durability");
+        let mut database =
+            Database::open_with_durability(&path, super::super::DurabilityPolicy::SyncOnCheckpoint)
+                .unwrap();
+        let current = database.query_sql("SHOW CURRENT BRANCH").unwrap();
+        assert_eq!(
+            current.rows[0].get("durability_policy"),
+            Some(&Value::String("sync_on_checkpoint".to_string()))
+        );
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
