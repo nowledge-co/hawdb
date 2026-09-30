@@ -6954,6 +6954,12 @@ fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f64> {
 
 #[cfg(feature = "vector-search")]
 fn dot_product(left: &[f32], right: &[f32]) -> Option<f64> {
+    // SimSIMD is only an optional acceleration backend for this exact raw-vector
+    // score. It does not define HawDB's vector format, RaBitQ candidate index,
+    // persistence, or branch state. Keep the dependency at this one seam so a
+    // HawDB scalar implementation with platform SIMD dispatch can replace it
+    // without changing search semantics; any replacement must preserve this
+    // function's `Option<f64>` contract.
     f32::dot(left, right)
 }
 
