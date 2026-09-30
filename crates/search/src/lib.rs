@@ -44,8 +44,6 @@ use hawdb_storage::{
 };
 use hawdb_storage::{NodeId, NodeRecord};
 use hawdb_telemetry::{KernelTelemetry, KernelTelemetryOperation, TelemetrySink};
-#[cfg(feature = "vector-search")]
-use simsimd::SpatialSimilarity;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -6952,23 +6950,15 @@ fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f64> {
     Some((dot / (left_norm_squared.sqrt() * right_norm_squared.sqrt())).clamp(0.0, 1.0))
 }
 
-#[cfg(feature = "vector-search")]
-fn dot_product(left: &[f32], right: &[f32]) -> Option<f64> {
-    // SimSIMD is only an optional acceleration backend for this exact raw-vector
-    // score. It does not define HawDB's vector format, RaBitQ candidate index,
-    // persistence, or branch state. Keep the dependency at this one seam so a
-    // HawDB scalar implementation with platform SIMD dispatch can replace it
-    // without changing search semantics; any replacement must preserve this
-    // function's `Option<f64>` contract.
-    f32::dot(left, right)
-}
-
-#[cfg(not(feature = "vector-search"))]
 fn dot_product(left: &[f32], right: &[f32]) -> Option<f64> {
     if left.len() != right.len() || left.is_empty() {
         return None;
     }
 
+    // HawDB owns this exact raw-vector score. It is independent from RaBitQ's
+    // candidate index, persistence, and branch state. Keep a single scalar
+    // implementation here so a future platform-SIMD kernel can be added without
+    // changing the `Option<f64>` search contract.
     Some(left.iter().zip(right).fold(0.0, |sum, (left, right)| {
         sum + f64::from(*left) * f64::from(*right)
     }))

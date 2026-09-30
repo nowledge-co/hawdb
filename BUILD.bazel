@@ -222,15 +222,6 @@ rust_library(
 )
 
 genquery(
-    name = "hawdb_minimal_simsimd_dependency_path",
-    expression = "somepath(//:hawdb_minimal, @crate_index//:simsimd)",
-    scope = [
-        ":hawdb_minimal",
-        "@crate_index//:simsimd",
-    ],
-)
-
-genquery(
     name = "hawdb_minimal_vector_projection_dependency_path",
     expression = "somepath(//:hawdb_minimal, //crates/vector-projection:hawdb_vector_projection)",
     scope = [
@@ -244,11 +235,9 @@ sh_test(
     size = "small",
     srcs = ["scripts/check-empty-query-results.sh"],
     args = [
-        "$(rootpath :hawdb_minimal_simsimd_dependency_path)",
         "$(rootpath :hawdb_minimal_vector_projection_dependency_path)",
     ],
     data = [
-        ":hawdb_minimal_simsimd_dependency_path",
         ":hawdb_minimal_vector_projection_dependency_path",
     ],
 )
@@ -279,7 +268,6 @@ _HAWDB_STORAGE_CRASH_MATRIX_TEST = "api::tests::storage_recovery::subprocess_cra
         scope = [":hawdb_graph_text", dependency],
     )
     for name, dependency in [
-        ("simsimd", "@crate_index//:simsimd"),
         ("vector_projection", "//crates/vector-projection:hawdb_vector_projection"),
         ("tokio_runtime", "//crates/runtime-tokio:hawdb_runtime_tokio"),
     ]
@@ -296,13 +284,11 @@ sh_test(
     size = "small",
     srcs = ["scripts/check-empty-query-results.sh"],
     args = [
-        "$(rootpath :hawdb_graph_text_simsimd_dependency_path)",
         "$(rootpath :hawdb_graph_text_vector_projection_dependency_path)",
         "$(rootpath :hawdb_graph_text_tokio_runtime_dependency_path)",
         "$(rootpath :hawdb_graph_text_incompatible_variants)",
     ],
     data = [
-        ":hawdb_graph_text_simsimd_dependency_path",
         ":hawdb_graph_text_vector_projection_dependency_path",
         ":hawdb_graph_text_tokio_runtime_dependency_path",
         ":hawdb_graph_text_incompatible_variants",

@@ -43,7 +43,6 @@ _SEARCH_BASE_DEPS = [
 ]
 
 _SEARCH_VECTOR_DEPS = [
-    "@crate_index//:simsimd",
     "//crates/vector-projection:hawdb_vector_projection",
 ]
 
@@ -62,7 +61,7 @@ rust_library(
 )
 
 # Matches `hawdb-search = { default-features = false }` for embedded hosts
-# that own another native vector provider in the same process.
+# that exclude the optional vector-projection capability.
 rust_library(
     name = "hawdb_search_minimal",
     crate_name = "hawdb_search",

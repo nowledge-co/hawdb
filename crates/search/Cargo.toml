@@ -19,7 +19,6 @@ regex-automata = { version = "=0.4.16", default-features = false }
 regex-syntax = { version = "=0.8.11", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-simsimd = { version = "6.5", optional = true }
 zstd = "0.13"
 hawdb-core = { path = "../core", version = "0.3.0" }
 hawdb-evidence = { path = "../evidence", version = "0.3.0" }
@@ -44,7 +43,7 @@ background-maintenance = []
 full-text-search = []
 graph-analytics = []
 qualification = []
-vector-search = ["dep:simsimd", "dep:hawdb-vector-projection"]
+vector-search = ["dep:hawdb-vector-projection"]
 
 [dev-dependencies]
 hawdb-vector-projection = { path = "../vector-projection", version = "0.3.0" }

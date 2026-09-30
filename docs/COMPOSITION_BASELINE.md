@@ -14,7 +14,7 @@ are different properties and are checked separately.
 | Optimizer framework and graph/relational planning | Unconditional | Built-in optimizer wiring | `hawdb-cascades` is separate internally; no host-selected optimizer provider |
 | In-memory and persistent storage | Same implementation dependency | Construction/open mode; WASM rejects persistent open | Selecting in-memory on a native host does not remove durable storage code from the dependency graph |
 | Full-text search | `full-text-search` enables capability | Typed unavailable-capability error when disabled | Does not remove `hawdb-search`, Jieba, regex or zstd dependencies |
-| Vector search | `vector-search` plus optional dependencies | Typed unavailable-capability error when disabled | Minimal builds omit `hawdb-vector-projection` and `simsimd` |
+| Vector search | `vector-search` plus optional dependencies | Typed unavailable-capability error when disabled | Minimal builds omit `hawdb-vector-projection` |
 | Graph analytics | `graph-analytics` enables capability | Capability-controlled operations | `hawdb-analytics` remains reachable from storage/executor |
 | Background maintenance | `background-maintenance` enables capability | Library scheduling/admission | Storage/checkpoint implementation remains compiled as a dependency |
 | Tokio adapter | Optional `tokio-runtime` dependency | Host-owned runtime adapter | Minimal builds omit `hawdb-runtime-tokio` and Tokio |
@@ -50,7 +50,7 @@ programs, not upper bounds for every program linking the library.
 The graph/text Bazel facade matches Cargo's `default-features = false` plus
 `features = ["full-text-search"]`. Its bootstrap, application-contract, readiness,
 and search targets share one graph/text search crate identity. The dependency
-boundary test rejects paths to SimSIMD, vector projection, the Tokio adapter,
+boundary test rejects paths to vector projection, the Tokio adapter,
 or a second default/minimal/ACL variant of these owners. The same facade-only
 consumer source runs under minimal, graph/text, and default Bazel targets;
 successful text queries and typed vector rejection are checked separately from

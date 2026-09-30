@@ -27,11 +27,11 @@ def metadata(edges):
 
 class ProfileEvidenceTests(unittest.TestCase):
     def test_absent_optional_dependencies_and_present_baseline_are_both_required(self):
-        policy = {"name": "minimal", "required": ["hawdb", "jieba"], "excluded": ["simsimd"]}
-        edges = [("host", "hawdb", None), ("hawdb", "jieba", None), ("hawdb", "simsimd", "dev")]
+        policy = {"name": "minimal", "required": ["hawdb", "jieba"], "excluded": ["optional-native"]}
+        edges = [("host", "hawdb", None), ("hawdb", "jieba", None), ("hawdb", "optional-native", "dev")]
         profiles.check_profile(metadata(edges), policy)
         with self.assertRaisesRegex(ValueError, "excluded present"):
-            profiles.check_profile(metadata(edges + [("jieba", "simsimd", None)]), policy)
+            profiles.check_profile(metadata(edges + [("jieba", "optional-native", None)]), policy)
         with self.assertRaisesRegex(ValueError, "missing"):
             profiles.check_profile(metadata(edges[:1]), policy)
 
