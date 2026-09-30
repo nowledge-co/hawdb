@@ -1,213 +1,210 @@
 ----------------------- MODULE HawDBBranchLifecycle -----------------------
 EXTENDS Integers, FiniteSets
 
+(* Three branches model main -> child -> grandchild. A root atomically names
+   schema and data, and is never a mutable directory generation. *)
 CONSTANTS PublishEarly, MutateParent, ForgetCreating, SkipSweepRecheck,
-          DeleteLeased, OpenExpired
+          DeleteLeased, AllowSharedWriter, AllowUnsyncedFork, SplitSchemaData
 
-(* Two independent writers and one non-reusable child identity. Roots stand
-   for complete, immutable checkpoint/WAL closures, not individual rows.
-   Parent checkpoint 1 replaces checkpoint 0; child roots retain their base.
-   Per-object persistence permits crashes before a complete closure exists.
-   Catalog/selector replacement is atomic; filesystem refinement is separate. *)
-Branches == {0, 1}
+Branches == 0..2
+NoBranch == -1
 Roots == 0..3
 NoRoot == -1
-States == {"Absent", "Creating", "Ready", "Expired", "Deleting", "Deleted"}
+States == {"Absent", "Creating", "Ready", "Deleting", "Deleted"}
+Policy(b) == IF b = 1 THEN "Relaxed" ELSE "Sync"
+Parent(b) == IF b = 1 THEN 0 ELSE 1
 Closure(r) == CASE r = NoRoot -> {}
                [] r = 0 -> {"root0", "checkpoint0"}
                [] r = 1 -> {"root1", "checkpoint1"}
-               [] r = 2 -> {"root2", "checkpoint0", "childWal0"}
-               [] r = 3 -> {"root3", "checkpoint1", "childWal1"}
-Values(r) == CASE r = NoRoot -> {}
-              [] r = 0 -> {"seed"}
-              [] r = 1 -> {"seed", "parent-write"}
-              [] r = 2 -> {"seed", "child-write"}
-              [] r = 3 -> {"seed", "parent-write", "child-write"}
+               [] r = 2 -> {"root2", "checkpoint0", "child-wal"}
+               [] r = 3 -> {"root3", "checkpoint0", "child-wal", "grandchild-wal"}
+Data(r) == CASE r = 0 -> {"seed"}
+            [] r = 1 -> {"seed", "main-write"}
+            [] r = 2 -> {"seed", "child-write"}
+            [] r = 3 -> {"seed", "child-write", "grandchild-write"}
+Schema(r) == CASE r = 0 -> {"id"}
+              [] r = 1 -> {"id", "main-column"}
+              [] r = 2 -> {"id", "child-column"}
+              [] r = 3 -> {"id", "child-column", "grandchild-column"}
 Files == UNION {Closure(r): r \in Roots}
-Owned(state) == state \notin {"Absent", "Deleted"}
+Live(s, b) == s.state[b] \in {"Creating", "Ready", "Deleting"}
+NextRoot(s, b) == CASE b = 0 /\ s.head[0] = 0 -> 1
+                       [] b = 1 /\ s.head[1] = 0 -> 2
+                       [] b = 2 /\ s.head[2] = 2 -> 3
+                       [] OTHER -> NoRoot
 
 VARIABLE s
 vars == <<s>>
 
-HeadFiles == UNION {IF Owned(s.state[b]) THEN Closure(s.head[b]) ELSE {}:
-                   b \in Branches}
-BaseFiles == IF Owned(s.state[1]) THEN Closure(s.base) ELSE {}
-PinFiles == UNION {Closure(s.pin[b]): b \in Branches}
+HeadFiles == UNION {IF Live(s, b) /\ s.head[b] # NoRoot THEN Closure(s.head[b]) ELSE {}: b \in Branches}
+DurableHeadFiles == UNION {IF Live(s, b) /\ s.durableHead[b] # NoRoot THEN Closure(s.durableHead[b]) ELSE {}: b \in Branches}
+BaseFiles == UNION {IF Live(s, b) /\ s.base[b] # NoRoot THEN Closure(s.base[b]) ELSE {}: b \in Branches}
+LocalPinFiles == UNION {IF s.localOpen[b] THEN Closure(s.head[b]) ELSE {}: b \in Branches}
+ForeignPinFiles == UNION {IF s.foreignOpen[b] THEN Closure(s.foreignPin[b]) ELSE {}: b \in Branches}
+PinFiles == LocalPinFiles \cup ForeignPinFiles
 CandidateFiles == UNION {Closure(s.candidate[b]): b \in Branches}
-Reachable == HeadFiles \cup BaseFiles \cup PinFiles \cup CandidateFiles
-Protected == HeadFiles \cup PinFiles \cup CandidateFiles
-             \cup (IF ForgetCreating /\ s.state[1] = "Creating"
-                   THEN {} ELSE BaseFiles)
+ProtectedBases == IF ForgetCreating
+                     THEN UNION {IF s.state[b] \in {"Ready", "Deleting"} /\ s.base[b] # NoRoot
+                                    THEN Closure(s.base[b]) ELSE {}: b \in Branches}
+                     ELSE BaseFiles
+Protected == HeadFiles \cup DurableHeadFiles \cup ProtectedBases \cup PinFiles \cup CandidateFiles
 
 Init == s = [
-    state |-> [b \in Branches |-> IF b = 0 THEN "Ready" ELSE "Absent"],
-    head |-> [b \in Branches |-> IF b = 0 THEN 0 ELSE NoRoot],
-    expected |-> [b \in Branches |-> IF b = 0 THEN Values(0) ELSE {}],
-    base |-> NoRoot,
-    capturedSource |-> NoRoot,
-    pin |-> [b \in Branches |-> NoRoot],
-    candidate |-> [b \in Branches |-> NoRoot],
-    durable |-> Closure(0),
-    marked |-> {},
-    online |-> TRUE,
-    invalidOpen |-> FALSE,
-    recoveredCreate |-> FALSE,
-    abortedCreate |-> FALSE,
-    recoveredDelete |-> FALSE
-]
+  state |-> [b \in Branches |-> IF b = 0 THEN "Ready" ELSE "Absent"],
+  head |-> [b \in Branches |-> IF b = 0 THEN 0 ELSE NoRoot],
+  durableHead |-> [b \in Branches |-> IF b = 0 THEN 0 ELSE NoRoot],
+  base |-> [b \in Branches |-> NoRoot], capturedSource |-> [b \in Branches |-> NoRoot],
+  candidate |-> [b \in Branches |-> NoRoot], armed |-> [b \in Branches |-> FALSE],
+  expectedData |-> [b \in Branches |-> IF b = 0 THEN Data(0) ELSE {}],
+  expectedSchema |-> [b \in Branches |-> IF b = 0 THEN Schema(0) ELSE {}],
+  acknowledged |-> [b \in Branches |-> NoRoot],
+  localOpen |-> [b \in Branches |-> FALSE], foreignOpen |-> [b \in Branches |-> FALSE],
+  foreignPin |-> [b \in Branches |-> NoRoot],
+  active |-> NoBranch, durable |-> Closure(0), flushed |-> Closure(0), marked |-> {}, online |-> TRUE,
+  switchFailed |-> FALSE, failedSource |-> NoBranch,
+  recoveredCreate |-> FALSE, abortedCreate |-> FALSE, recoveredDelete |-> FALSE,
+  relaxedLossObserved |-> FALSE]
 
-(* Durable Creating reserves identity and pins the exact sealed source before
-   releasing metadata serialization. Installing the head is a separate step. *)
-PrepareCreate ==
-    /\ s.online
-    /\ s.state[1] = "Absent"
-    /\ s' = [s EXCEPT !.state[1] = "Creating",
-                     !.base = s.head[0], !.capturedSource = s.head[0],
-                     !.expected[1] = Values(s.head[0])]
+PrepareCreate(c) ==
+  /\ s.online /\ c \in {1, 2} /\ s.state[c] = "Absent"
+  /\ s.state[Parent(c)] = "Ready" /\ s.candidate[Parent(c)] = NoRoot
+  /\ (AllowUnsyncedFork \/ s.head[Parent(c)] = s.durableHead[Parent(c)])
+  /\ s' = [s EXCEPT !.state[c] = "Creating", !.base[c] = s.head[Parent(c)],
+                    !.capturedSource[c] = s.head[Parent(c)]]
+InstallChildHead(c) ==
+  /\ s.online /\ c \in {1, 2} /\ s.state[c] = "Creating" /\ s.head[c] = NoRoot
+  /\ Closure(s.base[c]) \subseteq s.durable
+  /\ s' = [s EXCEPT !.head[c] = s.base[c], !.durableHead[c] = s.base[c],
+                    !.expectedData[c] = Data(s.base[c]), !.expectedSchema[c] = Schema(s.base[c])]
+PublishCreate(c) == /\ s.online /\ c \in {1, 2} /\ s.state[c] = "Creating" /\ s.head[c] # NoRoot
+                    /\ s' = [s EXCEPT !.state[c] = "Ready"]
 
-InstallChildHead ==
-    /\ s.online
-    /\ s.state[1] = "Creating"
-    /\ s.head[1] = NoRoot
-    /\ Closure(s.base) \subseteq s.durable
-    /\ s' = [s EXCEPT !.head[1] = s.base]
-
-PublishCreate ==
-    /\ s.online
-    /\ s.state[1] = "Creating"
-    /\ s.head[1] = s.base
-    /\ s' = [s EXCEPT !.state[1] = "Ready"]
-
-Open(b) ==
-    /\ s.online
-    /\ s.pin[b] = NoRoot
-    /\ s.state[b] = "Ready" \/ (OpenExpired /\ s.state[b] = "Expired")
-    /\ s' = [s EXCEPT !.pin[b] = s.head[b],
-                     !.invalidOpen = s.invalidOpen \/ s.state[b] # "Ready"]
-
-Close(b) ==
-    /\ s.online
-    /\ s.pin[b] # NoRoot
-    /\ s.candidate[b] = NoRoot
-    /\ s' = [s EXCEPT !.pin[b] = NoRoot]
+Select(b) ==
+  /\ s.online /\ b \in Branches /\ s.state[b] = "Ready" /\ ~s.foreignOpen[b] /\ s.candidate[b] = NoRoot
+  /\ s' = [s EXCEPT !.localOpen = [x \in Branches |-> x = b], !.active = b,
+                    !.switchFailed = FALSE, !.failedSource = NoBranch]
+SelectBusy(b) ==
+  /\ s.online /\ b \in Branches /\ b # s.active /\ s.foreignOpen[b]
+  /\ s' = [s EXCEPT !.switchFailed = TRUE, !.failedSource = s.active]
+OpenForeign(b) ==
+  /\ s.online /\ b \in Branches /\ s.state[b] = "Ready" /\ ~s.foreignOpen[b] /\ s.foreignPin[b] = NoRoot
+  /\ (AllowSharedWriter \/ ~s.localOpen[b])
+  /\ s' = [s EXCEPT !.foreignOpen[b] = TRUE, !.foreignPin[b] = s.head[b]]
+CloseForeign(b) == /\ s.online /\ b \in Branches /\ s.foreignOpen[b]
+                   /\ s' = [s EXCEPT !.foreignOpen[b] = FALSE, !.foreignPin[b] = NoRoot]
 
 PrepareWrite(b) ==
-    /\ s.online
-    /\ s.pin[b] # NoRoot
-    /\ s.state[b] \in {"Ready", "Expired"}
-    /\ s.candidate[b] = NoRoot
-    /\ IF b = 0 THEN s.head[b] = 0 ELSE s.head[b] = s.base
-    /\ s' = [s EXCEPT !.candidate[b] = IF b = 0 THEN 1 ELSE s.base + 2]
-
-PersistObject(b, f) ==
-    /\ s.online
-    /\ s.candidate[b] # NoRoot
-    /\ f \in Closure(s.candidate[b]) \ s.durable
-    /\ s' = [s EXCEPT !.durable = @ \cup {f}]
-
+  /\ s.online /\ s.active = b /\ s.localOpen[b] /\ s.state[b] = "Ready"
+  /\ s.candidate[b] = NoRoot /\ NextRoot(s, b) # NoRoot
+  /\ s' = [s EXCEPT !.candidate[b] = NextRoot(s, b), !.armed[b] = FALSE]
+(* A transaction can leave fully persisted, still-unreferenced artifacts behind.
+   A later write may safely adopt them only while its candidate remains GC-rooted. *)
+StageCandidateClosure(b) ==
+  /\ s.online /\ b \in Branches /\ s.state[b] = "Ready" /\ s.candidate[b] = NoRoot
+  /\ NextRoot(s, b) # NoRoot /\ ~(Closure(NextRoot(s, b)) \subseteq s.durable)
+  /\ s' = [s EXCEPT !.durable = @ \cup Closure(NextRoot(s, b)),
+                    !.flushed = @ \cup Closure(NextRoot(s, b))]
+ArmCandidate(b) ==
+  /\ s.online /\ s.candidate[b] # NoRoot /\ ~s.armed[b]
+  /\ Closure(s.candidate[b]) \subseteq s.durable
+  /\ s' = [s EXCEPT !.armed[b] = TRUE]
+FlushObject(b, f) ==
+  /\ s.online /\ s.candidate[b] # NoRoot /\ f \in Closure(s.candidate[b]) \ s.flushed
+  /\ s' = [s EXCEPT !.flushed = @ \cup {f}]
+SyncObject(b, f) ==
+  /\ s.online /\ s.candidate[b] # NoRoot /\ f \in Closure(s.candidate[b]) \ s.durable
+  /\ s' = [s EXCEPT !.durable = @ \cup {f}, !.flushed = @ \cup {f}]
 PublishHead(b) ==
-    /\ s.online
-    /\ s.candidate[b] # NoRoot
-    /\ PublishEarly \/ Closure(s.candidate[b]) \subseteq s.durable
-    /\ s' = [s EXCEPT !.head[b] = s.candidate[b],
-                     !.head[0] = IF MutateParent /\ b = 1
-                                 THEN s.candidate[b]
-                                 ELSE IF b = 0 THEN s.candidate[b] ELSE @,
-                     !.expected[b] = Values(s.candidate[b]),
-                     !.candidate[b] = NoRoot]
+  /\ s.online /\ s.candidate[b] # NoRoot
+  /\ (PublishEarly \/ Closure(s.candidate[b]) \subseteq s.flushed)
+  /\ (Policy(b) = "Relaxed" \/ Closure(s.candidate[b]) \subseteq s.durable)
+  /\ s' = [s EXCEPT !.head[b] = s.candidate[b],
+       !.durableHead[b] = IF Policy(b) = "Sync" THEN s.candidate[b] ELSE @,
+       !.expectedData[b] = Data(s.candidate[b]),
+       !.expectedSchema[b] = IF SplitSchemaData THEN @ ELSE Schema(s.candidate[b]),
+       !.acknowledged[b] = s.candidate[b], !.candidate[b] = NoRoot, !.armed[b] = FALSE,
+       !.head[0] = IF MutateParent /\ b # 0 THEN s.candidate[b] ELSE @,
+       !.expectedData[0] = IF MutateParent /\ b # 0 THEN Data(s.candidate[b]) ELSE @,
+       !.expectedSchema[0] = IF MutateParent /\ b # 0 THEN Schema(s.candidate[b]) ELSE @]
+SealCheckpoint(b) ==
+  /\ s.online /\ s.state[b] = "Ready" /\ s.candidate[b] = NoRoot /\ s.head[b] # s.durableHead[b]
+  /\ s' = [s EXCEPT !.durable = @ \cup Closure(s.head[b]), !.flushed = @ \cup Closure(s.head[b]),
+                    !.durableHead[b] = s.head[b]]
 
-DiscardWrite(b) ==
-    /\ s.online
-    /\ s.candidate[b] # NoRoot
-    /\ s' = [s EXCEPT !.candidate[b] = NoRoot]
+BeginDelete(b) == /\ s.online /\ b \in {1,2} /\ s.state[b] = "Ready" /\ s.active # b
+                  /\ s' = [s EXCEPT !.state[b] = "Deleting"]
+FinalizeDelete(b) ==
+  /\ s.online /\ b \in {1,2} /\ s.state[b] = "Deleting"
+  /\ (DeleteLeased \/ (~s.localOpen[b] /\ ~s.foreignOpen[b] /\ s.candidate[b] = NoRoot))
+  /\ s' = [s EXCEPT !.state[b] = "Deleted"]
+Mark == /\ s.online /\ s' = [s EXCEPT !.marked = s.durable \ Protected]
+Sweep(f) == /\ s.online /\ f \in s.marked \cap s.durable /\ (SkipSweepRecheck \/ f \notin Protected)
+            /\ s' = [s EXCEPT !.durable = @ \ {f}, !.flushed = @ \ {f}, !.marked = @ \ {f}]
+(* A local process crash releases only its own context. A foreign process can
+   keep a pin on the root it admitted, even while this process recovers. *)
+ProcessCrash ==
+  /\ s.online
+  /\ s' = [s EXCEPT !.online = FALSE,
+       !.candidate = [b \in Branches |-> NoRoot], !.armed = [b \in Branches |-> FALSE],
+       !.localOpen = [b \in Branches |-> FALSE],
+       !.active = NoBranch, !.marked = {}, !.switchFailed = FALSE, !.failedSource = NoBranch]
+(* Power loss kills every owner and can lose any relaxed, merely flushed head. *)
+PowerLoss ==
+  /\ s.online
+  /\ s' = [s EXCEPT !.online = FALSE, !.head = [b \in Branches |-> s.durableHead[b]],
+       !.expectedData = [b \in Branches |-> IF s.durableHead[b] = NoRoot THEN {} ELSE Data(s.durableHead[b])],
+       !.expectedSchema = [b \in Branches |-> IF s.durableHead[b] = NoRoot THEN {} ELSE Schema(s.durableHead[b])],
+       !.candidate = [b \in Branches |-> NoRoot], !.armed = [b \in Branches |-> FALSE],
+       !.localOpen = [b \in Branches |-> FALSE], !.foreignOpen = [b \in Branches |-> FALSE],
+       !.foreignPin = [b \in Branches |-> NoRoot], !.active = NoBranch,
+       !.flushed = s.durable, !.marked = {}, !.switchFailed = FALSE, !.failedSource = NoBranch,
+       !.relaxedLossObserved = @ \/ (s.acknowledged[1] # s.durableHead[1])]
+Recover == /\ ~s.online
+  /\ s' = [s EXCEPT !.online = TRUE,
+       !.state = [b \in Branches |-> CASE @ [b] = "Creating" -> IF s.head[b] = NoRoot THEN "Deleted" ELSE "Ready"
+                                         [] @ [b] = "Deleting" -> IF s.foreignOpen[b] THEN "Deleting" ELSE "Deleted"
+                                         [] OTHER -> @ [b]],
+       !.recoveredCreate = @ \/ (\E b \in {1,2}: s.state[b] = "Creating" /\ s.head[b] # NoRoot),
+       !.abortedCreate = @ \/ (\E b \in {1,2}: s.state[b] = "Creating" /\ s.head[b] = NoRoot),
+       !.recoveredDelete = @ \/ (\E b \in {1,2}: s.state[b] = "Deleting" /\ ~s.foreignOpen[b])]
 
-Expire ==
-    /\ s.online
-    /\ s.state[1] = "Ready"
-    /\ s' = [s EXCEPT !.state[1] = "Expired"]
-
-BeginDelete ==
-    /\ s.online
-    /\ s.state[1] \in {"Ready", "Expired"}
-    /\ s' = [s EXCEPT !.state[1] = "Deleting"]
-
-FinalizeDelete ==
-    /\ s.online
-    /\ s.state[1] = "Deleting"
-    /\ DeleteLeased \/ (s.pin[1] = NoRoot /\ s.candidate[1] = NoRoot)
-    /\ s' = [s EXCEPT !.state[1] = "Deleted"]
-
-Mark ==
-    /\ s.online
-    /\ s' = [s EXCEPT !.marked = s.durable \ Protected]
-
-Sweep(f) ==
-    /\ s.online
-    /\ f \in s.marked \cap s.durable
-    /\ SkipSweepRecheck \/ f \notin Protected
-    /\ s' = [s EXCEPT !.durable = @ \ {f}, !.marked = @ \ {f}]
-
-Crash ==
-    /\ s.online
-    /\ s' = [s EXCEPT !.online = FALSE,
-                     !.pin = [b \in Branches |-> NoRoot],
-                     !.candidate = [b \in Branches |-> NoRoot], !.marked = {}]
-
-(* Recovery takes the durable create decision to one complete outcome. An
-   interrupted delete remains non-openable, then retires after lease loss. *)
-Recover ==
-    /\ ~s.online
-    /\ s' = [s EXCEPT
-          !.online = TRUE,
-          !.state[1] = CASE s.state[1] = "Creating" ->
-                           IF s.head[1] = NoRoot THEN "Deleted" ELSE "Ready"
-                        [] s.state[1] = "Deleting" -> "Deleted"
-                        [] OTHER -> @,
-          !.recoveredCreate = @ \/ (s.state[1] = "Creating" /\ s.head[1] # NoRoot),
-          !.abortedCreate = @ \/ (s.state[1] = "Creating" /\ s.head[1] = NoRoot),
-          !.recoveredDelete = @ \/ s.state[1] = "Deleting"]
-
-Next == PrepareCreate \/ InstallChildHead \/ PublishCreate
-        \/ (\E b \in Branches: Open(b) \/ Close(b) \/ PrepareWrite(b)
-                              \/ PublishHead(b) \/ DiscardWrite(b)
-                              \/ (\E f \in Files: PersistObject(b, f)))
-        \/ Expire \/ BeginDelete \/ FinalizeDelete \/ Mark
-        \/ (\E f \in Files: Sweep(f)) \/ Crash \/ Recover
+Next == (\E c \in {1,2}: PrepareCreate(c) \/ InstallChildHead(c) \/ PublishCreate(c))
+        \/ (\E b \in Branches: Select(b) \/ SelectBusy(b) \/ OpenForeign(b) \/ CloseForeign(b)
+             \/ PrepareWrite(b) \/ StageCandidateClosure(b) \/ ArmCandidate(b) \/ PublishHead(b)
+             \/ SealCheckpoint(b) \/ BeginDelete(b) \/ FinalizeDelete(b)
+             \/ (\E f \in Files: FlushObject(b,f) \/ SyncObject(b,f)))
+        \/ Mark \/ (\E f \in Files: Sweep(f)) \/ ProcessCrash \/ PowerLoss \/ Recover
 Spec == Init /\ [][Next]_vars
 
-TypeOK ==
-    /\ s.state \in [Branches -> States]
-    /\ s.head \in [Branches -> Roots \cup {NoRoot}]
-    /\ s.expected \in [Branches -> SUBSET {"seed", "parent-write", "child-write"}]
-    /\ s.base \in Roots \cup {NoRoot}
-    /\ s.capturedSource \in Roots \cup {NoRoot}
-    /\ s.pin \in [Branches -> Roots \cup {NoRoot}]
-    /\ s.candidate \in [Branches -> Roots \cup {NoRoot}]
-    /\ s.durable \subseteq Files
-    /\ s.marked \subseteq Files
-    /\ s.online \in BOOLEAN
-    /\ s.invalidOpen \in BOOLEAN
-    /\ s.recoveredCreate \in BOOLEAN
-    /\ s.abortedCreate \in BOOLEAN
-    /\ s.recoveredDelete \in BOOLEAN
-
-SelectedRootsComplete == HeadFiles \subseteq s.durable
-PinnedRootsRetained == PinFiles \subseteq s.durable
-CreateSourceRetained == BaseFiles \subseteq s.durable
-LineageImmutable == s.base = s.capturedSource
-BranchIsolation == \A b \in Branches:
-    Owned(s.state[b]) /\ s.head[b] # NoRoot => Values(s.head[b]) = s.expected[b]
-ParentImmutableUnderChildWrites == s.head[0] \in {0, 1}
-DeletedHasNoLease == s.state[1] = "Deleted" => s.pin[1] = NoRoot
-OpenAdmission == ~s.invalidOpen
-ReadyHasRoot == \A b \in Branches:
-    s.state[b] \in {"Ready", "Expired", "Deleting"} => s.head[b] # NoRoot
-
-(* False invariants used only to obtain concrete success/interruption traces. *)
+TypeOK == /\ s.state \in [Branches -> States] /\ s.head \in [Branches -> Roots \cup {NoRoot}]
+          /\ s.durableHead \in [Branches -> Roots \cup {NoRoot}] /\ s.base \in [Branches -> Roots \cup {NoRoot}]
+          /\ s.capturedSource \in [Branches -> Roots \cup {NoRoot}] /\ s.candidate \in [Branches -> Roots \cup {NoRoot}]
+          /\ s.armed \in [Branches -> BOOLEAN]
+          /\ s.expectedData \in [Branches -> SUBSET {"seed", "main-write", "child-write", "grandchild-write"}]
+          /\ s.expectedSchema \in [Branches -> SUBSET {"id", "main-column", "child-column", "grandchild-column"}]
+          /\ s.localOpen \in [Branches -> BOOLEAN] /\ s.foreignOpen \in [Branches -> BOOLEAN]
+          /\ s.foreignPin \in [Branches -> Roots \cup {NoRoot}]
+          /\ s.active \in Branches \cup {NoBranch} /\ s.durable \subseteq Files /\ s.flushed \subseteq Files /\ s.marked \subseteq Files
+          /\ s.online \in BOOLEAN /\ s.switchFailed \in BOOLEAN /\ s.failedSource \in Branches \cup {NoBranch}
+          /\ s.recoveredCreate \in BOOLEAN /\ s.abortedCreate \in BOOLEAN /\ s.recoveredDelete \in BOOLEAN /\ s.relaxedLossObserved \in BOOLEAN
+DurableHeadsComplete == DurableHeadFiles \subseteq s.durable
+VisibleHeadsFlushed == HeadFiles \subseteq s.flushed
+CreateSourcesRetained == BaseFiles \subseteq s.durable
+LineageImmutable == \A b \in Branches: s.base[b] = s.capturedSource[b]
+BranchStateAtomic == \A b \in Branches: Live(s,b) /\ s.head[b] # NoRoot => /\ s.expectedData[b] = Data(s.head[b]) /\ s.expectedSchema[b] = Schema(s.head[b])
+ParentImmutableUnderDescendantWrites == s.head[0] \in {0,1}
+DeletedHasNoLease == \A b \in Branches: s.state[b] = "Deleted" => ~s.localOpen[b] /\ ~s.foreignOpen[b]
+SingleWriterPerBranch == \A b \in Branches: ~(s.localOpen[b] /\ s.foreignOpen[b])
+SourcePreservedOnBusy == s.switchFailed => s.active = s.failedSource
+SyncAcknowledgementsDurable == \A b \in Branches: Policy(b) = "Sync" /\ s.state[b] # "Deleted" /\ s.acknowledged[b] # NoRoot => Closure(s.acknowledged[b]) \subseteq s.durable
+ReadyHasDurableHead == \A b \in Branches: s.state[b] = "Ready" => s.head[b] # NoRoot /\ s.durableHead[b] # NoRoot
+ArmedCandidatesComplete == \A b \in Branches: s.armed[b] => Closure(s.candidate[b]) \subseteq s.durable
+ForeignPinsFlushed == ForeignPinFiles \subseteq s.flushed
 NoCreateRecovery == ~s.recoveredCreate
 NoAbortedCreate == ~s.abortedCreate
 NoDeleteRecovery == ~s.recoveredDelete
-NoConcurrentWriters == s.pin[0] = NoRoot \/ s.pin[1] = NoRoot
-NoExpiredHandle == s.state[1] # "Expired" \/ s.pin[1] = NoRoot
-NoIndependentWrites == s.head[0] # 1 \/ s.head[1] \notin {2, 3}
+NoConcurrentBranchWriters == \A a,b \in Branches: a # b => ~(s.localOpen[a] /\ s.foreignOpen[b])
+NoNestedFork == s.state[2] # "Ready"
+NoLiveDescendantAfterParentDelete == ~(s.state[1] = "Deleted" /\ s.state[2] = "Ready")
+NoRelaxedAcknowledgementLoss == ~s.relaxedLossObserved
 =============================================================================

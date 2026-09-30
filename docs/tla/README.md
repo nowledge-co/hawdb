@@ -1849,13 +1849,15 @@ the composed model is the three-replica instance that does not terminate.
 
 ## Durable branch lifecycle
 
-`HawDBBranchLifecycle.tla` models a parent and child sharing sealed immutable
-roots while holding independent writer leases. It separates durable create
-reservation, child head installation and catalog publication, and checks
-per-object persistence before root selection, expiry admission, two-phase
-deletion, recovery and mark/revalidated sweep. It is the P0 design model for
-[#776](https://github.com/nowledge-co/hawdb/issues/776), not proof that runtime
-branching exists. The [contract](../specs/BRANCHING_STORAGE_SPEC.md) and
+`HawDBBranchLifecycle.tla` models a bootstrap branch, child, and grandchild
+sharing sealed immutable roots while holding independent writer leases. It
+separates durable create reservation, child-head installation and catalog
+publication; verifies synchronous versus relaxed acknowledgement; preserves the
+source selection after a busy `USE BRANCH`; and checks atomic schema/data state,
+explicit deletion, recovery, and mark/revalidated sweep. It is the P0 design
+model for [#774](https://github.com/nowledge-co/hawdb/issues/774), not proof
+that runtime branching exists. The
+[contract](../specs/BRANCHING_STORAGE_SPEC.md) and
 [proof scope, controls and traces](BRANCH_LIFECYCLE_PROOF.md) define the
 implementation obligations and finite-model limits.
 
