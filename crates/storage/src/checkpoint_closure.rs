@@ -81,29 +81,6 @@ impl CheckpointClosurePlan {
         Ok(())
     }
 
-    /// Adds a family's physical artifacts while coalescing files with the
-    /// same immutable content identity. Multiple physical generations may
-    /// legitimately share one content-addressed object.
-    pub fn add_family_artifacts_deduplicating(
-        &mut self,
-        family: CheckpointArtifactFamily,
-        inputs: impl IntoIterator<Item = CheckpointArtifactInput>,
-    ) -> Result<(), CheckpointClosureError> {
-        self.complete_family(family)?;
-        let existing = self
-            .inputs
-            .iter()
-            .map(|input| input.reference)
-            .collect::<BTreeSet<_>>();
-        let mut references = existing;
-        self.inputs.extend(
-            inputs
-                .into_iter()
-                .filter(|input| references.insert(input.reference)),
-        );
-        Ok(())
-    }
-
     pub fn inputs(&self) -> &[CheckpointArtifactInput] {
         &self.inputs
     }
@@ -169,7 +146,6 @@ pub fn build_sealed_root(
 pub enum CheckpointClosureError {
     Empty,
     DuplicatePath(PathBuf),
-    DuplicateReference(ObjectReference),
     InvalidKind(ObjectKind),
     FamilyAlreadyBound(CheckpointArtifactFamily),
     Incomplete {
@@ -187,9 +163,6 @@ impl Display for CheckpointClosureError {
         match self {
             Self::Empty => f.write_str("checkpoint closure is empty"),
             Self::DuplicatePath(path) => write!(f, "checkpoint closure repeats {}", path.display()),
-            Self::DuplicateReference(reference) => {
-                write!(f, "checkpoint closure repeats {reference:?}")
-            }
             Self::InvalidKind(kind) => write!(f, "invalid checkpoint closure object kind {kind:?}"),
             Self::FamilyAlreadyBound(family) => {
                 write!(f, "checkpoint closure family is already bound: {family:?}")
@@ -233,14 +206,10 @@ pub fn publish_checkpoint_closure(
         if !paths.insert(input.path.clone()) {
             return Err(CheckpointClosureError::DuplicatePath(input.path.clone()));
         }
-        if !references.insert(input.reference) {
-            return Err(CheckpointClosureError::DuplicateReference(input.reference));
-        }
         let bytes = fs::read(&input.path).map_err(|source| CheckpointClosureError::Io {
             path: input.path.clone(),
             source,
         })?;
-        total_bytes = total_bytes.saturating_add(bytes.len() as u64);
         let computed = ObjectReference::for_bytes(
             input.reference.kind,
             input.reference.format_version,
@@ -251,10 +220,13 @@ pub fn publish_checkpoint_closure(
                 ImmutableObjectError::ReferenceMismatch,
             ));
         }
-        store
-            .publish(input.reference, &bytes)
-            .map_err(CheckpointClosureError::Publish)?;
-        published.push(input.reference);
+        if references.insert(input.reference) {
+            total_bytes = total_bytes.saturating_add(bytes.len() as u64);
+            store
+                .publish(input.reference, &bytes)
+                .map_err(CheckpointClosureError::Publish)?;
+            published.push(input.reference);
+        }
     }
     published.sort_unstable();
     Ok(PublishedCheckpointClosure {
@@ -387,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn deduplicating_family_coalesces_identical_physical_artifacts() {
+    fn family_keeps_identical_physical_artifacts_for_path_bindings() {
         let dir = TempDir::new();
         let checkpoint = dir.path().join("checkpoint");
         let first = dir.path().join("first");
@@ -400,7 +372,7 @@ mod tests {
             ObjectKind::Checkpoint,
             b"checkpoint",
         )]);
-        plan.add_family_artifacts_deduplicating(
+        plan.add_family_artifacts(
             CheckpointArtifactFamily::Canonical,
             vec![
                 input(first, ObjectKind::CheckpointArtifact, b"same-bytes"),
@@ -422,5 +394,9 @@ mod tests {
         let mut store = ImmutableObjectStore::open(dir.path().join("objects")).unwrap();
         let closure = plan.publish(&mut store).unwrap();
         assert_eq!(closure.references.len(), 2);
+        assert_eq!(
+            closure.total_bytes,
+            b"checkpoint".len() as u64 + b"same-bytes".len() as u64
+        );
     }
 }

@@ -134,7 +134,9 @@ The instance has one identity at each lineage depth, a fixed set of four
 closures, no sibling, and one logical update per branch. It abstracts catalog
 and head serialization, cross-process locks, object decoding, checksum
 validation, WAL byte framing, OS/file-system barriers, torn writes, write
-reordering, descriptor budgets, and physical descriptor counts. It also does
+reordering, descriptor budgets, and physical descriptor counts. The separate
+`HawDBImmutableRootBindings` model checks that multiple physical paths may map
+to one immutable object without losing a recovery binding. This model also does
 not model SQL parsing, transaction-scoped selection rejection, complete
 active-WAL replay, or the Rust file-descriptor budget.
 

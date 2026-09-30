@@ -96,6 +96,21 @@ in the correct shard. Partial shards never receive a full-campaign manifest.
 The separate mutant gate remains mandatory. CI keeps one shard by default;
 timeouts and resource settings are unchanged.
 
+## Immutable root artifact bindings
+
+`HawDBImmutableRootBindings` models the manifest-to-object relation used by a
+sealed root. Its finite instance has three required physical paths, two of
+which map to one content-addressed immutable object. The checked invariants
+require a sealed root to retain every manifest path even when reference
+coverage alone is satisfied, and require recovery to materialize every retained
+path. Its negative control drops one of the same-content paths; TLC rejects it
+with `RootBindsEveryManifestPath`.
+
+The model abstracts object bytes, filesystem barriers, path decoding, and
+manifest parsing. The Rust regression in `store::immutable_root` exercises the
+corresponding closure publication and path materialization with identical
+artifact bytes.
+
 ## Durable WAL and Checkpoint Publication
 
 `HawDBStorageDurability.tla` models the default `SyncOnEveryWrite` path. A WAL

@@ -19,6 +19,7 @@
 
 use crate::immutable_object::{ObjectKind, ObjectReference};
 use hawdb_integrity::{crc32c, Sha256Digest};
+use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
 use std::path::{Component, Path};
 
@@ -159,13 +160,12 @@ impl SealedRoot {
             previous_checkpoint = Some(*reference);
         }
 
-        if self.checkpoint_bindings.len() != self.checkpoint_references.len()
-            || self.checkpoint_bindings.len() > MAX_CHECKPOINT_BINDINGS
-        {
+        if self.checkpoint_bindings.len() > MAX_CHECKPOINT_BINDINGS {
             return Err(SealedRootError::TooManyCheckpointBindings);
         }
 
         let mut previous_path: Option<&str> = None;
+        let mut bound_references = BTreeSet::new();
         for binding in &self.checkpoint_bindings {
             validate_artifact_path(&binding.relative_path)?;
             if previous_path.is_some_and(|previous| previous >= binding.relative_path.as_str()) {
@@ -182,14 +182,11 @@ impl SealedRoot {
             {
                 return Err(SealedRootError::BindingReferenceNotInClosure);
             }
+            bound_references.insert(binding.reference);
             previous_path = Some(&binding.relative_path);
         }
         for reference in &self.checkpoint_references {
-            if !self
-                .checkpoint_bindings
-                .iter()
-                .any(|binding| binding.reference == *reference)
-            {
+            if !bound_references.contains(reference) {
                 return Err(SealedRootError::ClosureReferenceWithoutBinding);
             }
         }
@@ -310,7 +307,7 @@ impl SealedRoot {
         if wal_count > MAX_WAL_REFERENCES {
             return Err(SealedRootError::TooManyWalReferences);
         }
-        if binding_count != checkpoint_count || binding_count > MAX_CHECKPOINT_BINDINGS {
+        if binding_count > MAX_CHECKPOINT_BINDINGS {
             return Err(SealedRootError::TooManyCheckpointBindings);
         }
         let mut checkpoint_references = Vec::with_capacity(checkpoint_count);
@@ -649,7 +646,21 @@ mod tests {
         root.checkpoint_bindings.clear();
         assert_eq!(
             root.validate(),
-            Err(SealedRootError::TooManyCheckpointBindings)
+            Err(SealedRootError::ClosureReferenceWithoutBinding)
         );
+    }
+
+    #[test]
+    fn one_checkpoint_object_can_bind_multiple_physical_artifact_paths() {
+        let mut root = sample();
+        root.checkpoint_bindings.push(CheckpointArtifactBinding {
+            relative_path: "checkpoint-copy.7.hawdb".to_string(),
+            reference: root.checkpoint_references[0],
+        });
+        root.checkpoint_bindings
+            .sort_unstable_by(|left, right| left.relative_path.cmp(&right.relative_path));
+
+        let encoded = root.encode().expect("encode multiple path bindings");
+        assert_eq!(SealedRoot::decode(&encoded), Ok(root));
     }
 }

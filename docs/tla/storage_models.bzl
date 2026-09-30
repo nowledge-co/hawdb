@@ -32,6 +32,7 @@ STORAGE_MODELS = [
     "HawDBGovernedWriterProgress",
     "HawDBGraphDescriptorPaging",
     "HawDBGraphIndexQualification",
+    "HawDBImmutableRootBindings",
     "HawDBIndexPublication",
     "HawDBIndexRecovery",
     "HawDBIndexStatistics",

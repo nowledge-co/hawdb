@@ -73,7 +73,7 @@ impl DurableStore {
         };
         let add =
             |plan: &mut CheckpointClosurePlan, family, inputs: Vec<CheckpointArtifactInput>| {
-                plan.add_family_artifacts_deduplicating(family, inputs)
+                plan.add_family_artifacts(family, inputs)
                     .map_err(|error| HawDBError::Storage(error.to_string()))
             };
         if manifest.canonical_manifest_encoded_len.is_some() {

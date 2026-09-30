@@ -433,7 +433,7 @@ are not a substitute for reachability accounting.
 
 A sealed root binds an immutable copy of its durable manifest, an ordered,
 validated checkpoint closure, canonical normalized relative-path bindings for
-every object in that closure, zero or more ordered sealed WAL objects with exact
+every manifest-required physical artifact in that closure, zero or more ordered sealed WAL objects with exact
 non-overlapping LSN intervals, and the resulting commit epoch. The manifest
 object and path bindings let recovery resolve the exact root-owned checkpoint
 state without consulting the source database's current manifest or current
@@ -503,12 +503,15 @@ The codec proof follows the reader offset by induction. Every fixed-width read
 checks the remaining slice before advancing, so each decoded field belongs to
 the checksum-covered prefix. The declared counts are checked against bounded
 limits before vector allocation. Checkpoint references must be strictly
-increasing under their complete typed identity. Each such reference must have
-exactly one canonical, bounded, non-traversing relative-path binding, and the
-root's durable-manifest reference must be a valid immutable manifest object.
-The WAL invariant carries the expected next LSN from one record to the next;
-therefore duplicates, overlaps, gaps, unbound artifacts, and source-manifest
-substitution cannot enter a validated root. Exact-end checking rejects unparsed
+increasing under their complete typed identity. Each reference must have at
+least one canonical, bounded, non-traversing relative-path binding; multiple
+distinct physical paths may bind one immutable reference when their bytes are
+identical. Paths remain unique, and every binding must name a reference in the
+closure. The root's durable-manifest reference must be a valid immutable
+manifest object. The WAL invariant carries the expected next LSN from one
+record to the next; therefore duplicate paths, overlaps, gaps, unbound
+artifacts, and source-manifest substitution cannot enter a validated root.
+Exact-end checking rejects unparsed
 bytes, and the CRC32C footer rejects mutations before validation. The encoder
 emits the same field order and validated lists, so equivalent roots have one
 byte representation and their sealed-root object identity is deterministic.
@@ -524,24 +527,28 @@ remain integration obligations of #779.
 validated durable manifest and immutable object publication. The caller gives
 one input for every manifest-bound artifact; the publisher never scans the
 directory and never derives a dependency from a filename. For each input it
-first proves path and typed-reference uniqueness, reads the complete file,
-recomputes the domain-separated object identity, and only then invokes the
-exclusive immutable publisher. Therefore induction over the input list gives:
+first proves path uniqueness, reads the complete file, recomputes the
+domain-separated object identity, and then invokes the exclusive immutable
+publisher once per distinct object reference. Therefore induction over the
+input list gives:
 
-1. every returned reference denotes exactly the bytes named by one explicit
-   manifest binding;
-2. a missing file, wrong kind, digest/length mismatch, duplicate path, or
-   duplicate reference aborts before that binding is acknowledged; and
-3. the returned references are a deterministic sorted set suitable for the
-   sealed-root encoder, while already-published earlier objects remain safe to
-   share and are never replaced.
+1. every returned reference denotes exactly the bytes named by one or more
+   explicit manifest bindings;
+2. a missing file, wrong kind, digest/length mismatch, or duplicate path
+   aborts before that binding is acknowledged; and
+3. identical bytes at distinct paths share one returned immutable reference,
+   while the path-binding list retains every physical path for the sealed-root
+   encoder. The returned references are a deterministic sorted set, and
+   already-published earlier objects remain safe to share and are never
+   replaced.
 
 This proof covers the no-inference and per-artifact identity boundary. It does
 not claim that the caller has enumerated every artifact family; the manifest
 reader and the eventual active-writer/head handoff must provide that complete
 list before a root or selector can be published. The root publisher snapshots
 the validated durable-manifest bytes as a distinct immutable object and derives
-one normalized relative-path binding for every closure input.
+one normalized relative-path binding for every closure input, including paths
+whose content-addressed reference is shared with another input.
 `build_sealed_root` then accepts only that returned canonical reference set
 together with those bindings and delegates manifest, epoch, and WAL-interval
 validation to the sealed-root codec. Thus root construction cannot silently add

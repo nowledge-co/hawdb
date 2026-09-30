@@ -111,16 +111,7 @@ impl GraphStore {
             .map_err(|error| HawDBError::Storage(error.to_string()))?;
         fs::write(destination.join(MANIFEST_FILE), manifest_bytes)?;
         let manifest = DurableManifest::load(&destination.join(MANIFEST_FILE))?;
-        for binding in &root.checkpoint_bindings {
-            let bytes = objects
-                .read(binding.reference)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
-            let path = destination.join(&binding.relative_path);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(path, bytes)?;
-        }
+        materialize_checkpoint_bindings(&objects, destination, &root.checkpoint_bindings)?;
         if root.sealed_wals.len() != 1 {
             return Err(HawDBError::Storage(
                 "immutable root replay currently requires one sealed WAL interval".to_string(),
@@ -428,6 +419,24 @@ fn checkpoint_artifact_bindings(
     Ok(bindings)
 }
 
+fn materialize_checkpoint_bindings(
+    objects: &ImmutableObjectStore,
+    destination: &Path,
+    bindings: &[CheckpointArtifactBinding],
+) -> Result<()> {
+    for binding in bindings {
+        let bytes = objects
+            .read(binding.reference)
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let path = destination.join(&binding.relative_path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, bytes)?;
+    }
+    Ok(())
+}
+
 fn copy_recovery_container(source: &Path, destination: &Path) -> Result<()> {
     if destination.exists() {
         fs::remove_dir_all(destination)?;
@@ -469,6 +478,95 @@ mod tests {
     }
 
     #[test]
+    fn sealed_root_retains_every_path_for_duplicate_content_artifacts() {
+        let database = temp_dir("duplicate-content-bindings");
+        let immutable = database.join("immutable");
+        let checkpoint = database.join("checkpoint.hawdb");
+        let first = database.join("generations/overflow-11.hawdb");
+        let second = database.join("generations/overflow-12.hawdb");
+        let shared = b"identical empty overflow generation";
+        fs::create_dir_all(first.parent().expect("first parent")).expect("create artifacts");
+        fs::write(&checkpoint, b"checkpoint").expect("write checkpoint");
+        fs::write(&first, shared).expect("write first artifact");
+        fs::write(&second, shared).expect("write second artifact");
+
+        let mut plan =
+            crate::checkpoint_closure::CheckpointClosurePlan::new(vec![CheckpointArtifactInput {
+                path: checkpoint,
+                reference: ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, b"checkpoint"),
+            }]);
+        let shared_reference =
+            ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, shared);
+        plan.add_family_artifacts(
+            crate::checkpoint_closure::CheckpointArtifactFamily::RelationalOverflow,
+            vec![
+                CheckpointArtifactInput {
+                    path: first.clone(),
+                    reference: shared_reference,
+                },
+                CheckpointArtifactInput {
+                    path: second.clone(),
+                    reference: shared_reference,
+                },
+            ],
+        )
+        .expect("bind overflow artifacts");
+        for family in [
+            crate::checkpoint_closure::CheckpointArtifactFamily::Canonical,
+            crate::checkpoint_closure::CheckpointArtifactFamily::Adjacency,
+            crate::checkpoint_closure::CheckpointArtifactFamily::PropertySpill,
+            crate::checkpoint_closure::CheckpointArtifactFamily::PropertyProjection,
+            crate::checkpoint_closure::CheckpointArtifactFamily::RelationalRow,
+            crate::checkpoint_closure::CheckpointArtifactFamily::RelationalIndex,
+            crate::checkpoint_closure::CheckpointArtifactFamily::Append,
+        ] {
+            plan.mark_family_empty(family).expect("complete family");
+        }
+
+        let bindings = checkpoint_artifact_bindings(&database, plan.inputs())
+            .expect("derive every physical path binding");
+        assert_eq!(bindings.len(), 3);
+        assert_eq!(
+            bindings
+                .iter()
+                .filter(|binding| binding.reference == shared_reference)
+                .count(),
+            2
+        );
+        let mut objects = ImmutableObjectStore::open(&immutable).expect("open immutable objects");
+        let closure = plan
+            .publish(&mut objects)
+            .expect("publish deduplicated objects");
+        assert_eq!(closure.references.len(), 2);
+        let root = build_sealed_root(
+            &closure,
+            1,
+            1,
+            1,
+            ObjectReference::for_bytes(ObjectKind::DurableManifest, 1, b"manifest"),
+            bindings,
+            Vec::new(),
+        )
+        .expect("build sealed root");
+        root.validate().expect("validate sealed root");
+
+        let destination = temp_dir("duplicate-content-bindings-recovery");
+        materialize_checkpoint_bindings(&objects, &destination, &root.checkpoint_bindings)
+            .expect("materialize every checkpoint binding");
+        assert_eq!(
+            fs::read(destination.join("generations/overflow-11.hawdb")).unwrap(),
+            shared
+        );
+        assert_eq!(
+            fs::read(destination.join("generations/overflow-12.hawdb")).unwrap(),
+            shared
+        );
+
+        let _ = fs::remove_dir_all(database);
+        let _ = fs::remove_dir_all(destination);
+    }
+
+    #[test]
     fn graph_store_prepares_root_and_private_successor_wal() {
         let database = temp_dir("immutable-root");
         let objects = database.join("immutable");
@@ -495,9 +593,8 @@ mod tests {
             .expect("prepare immutable root");
         prepared.root.validate().expect("valid root");
         assert!(!prepared.root.checkpoint_references.is_empty());
-        assert_eq!(
-            prepared.root.checkpoint_bindings.len(),
-            prepared.root.checkpoint_references.len()
+        assert!(
+            prepared.root.checkpoint_bindings.len() >= prepared.root.checkpoint_references.len()
         );
         let root_manifest = ImmutableObjectStore::open(&objects)
             .expect("open immutable objects")
