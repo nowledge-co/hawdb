@@ -27,22 +27,31 @@ pub struct BranchCreateRequest {
     pub parent: BranchSelector,
     pub expected_source_commit_epoch: u64,
     pub owner: Option<String>,
-    pub expires_at_unix_seconds: Option<i64>,
     pub idempotency_key: String,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[test]
-    fn initializes_and_lists_a_typed_root_branch() {
-        let suffix = SystemTime::now()
+    fn test_directory(name: &str) -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("hawdb-branch-api-{suffix}"));
+        std::env::temp_dir().join(format!(
+            "hawdb-{name}-{}-{nanos}-{sequence}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn initializes_and_lists_a_typed_root_branch() {
+        let path = test_directory("branch-api");
         let database = Database::open(&path).expect("open database");
         let main = database
             .initialize_branch_catalog(Uuid::from_u128(1), Uuid::from_u128(2))
@@ -66,11 +75,7 @@ mod tests {
 
     #[test]
     fn seals_and_publishes_the_initial_main_head_explicitly() {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("hawdb-main-head-{suffix}"));
+        let path = test_directory("main-head");
         let mut database = Database::open(&path).expect("open database");
         database.checkpoint().expect("create initial checkpoint");
         database
@@ -90,11 +95,7 @@ mod tests {
     }
 
     fn initialized_database() -> (PathBuf, Database, BranchInfo) {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("hawdb-branch-retry-{suffix}"));
+        let path = test_directory("branch-retry");
         let mut database = Database::open(&path).unwrap();
         database.checkpoint().unwrap();
         database.query("CREATE (:Memory {id: 'root'})").unwrap();
@@ -110,7 +111,6 @@ mod tests {
             parent: BranchSelector::Id(main.id),
             expected_source_commit_epoch: main.source_commit_epoch,
             owner: None,
-            expires_at_unix_seconds: None,
             idempotency_key: "create-child".to_string(),
         }
     }
@@ -140,11 +140,11 @@ mod tests {
     }
 
     #[test]
-    fn create_rejects_changed_expiry_with_the_same_key() {
+    fn create_rejects_changed_owner_with_the_same_key() {
         let (path, mut database, main) = initialized_database();
         let mut request = create_request(&main);
         database.create_branch(request.clone()).unwrap();
-        request.expires_at_unix_seconds = Some(0);
+        request.owner = Some("another-owner".to_string());
         assert!(matches!(
             database.create_branch(request),
             Err(BranchLifecycleError::Transition(
@@ -192,6 +192,50 @@ mod tests {
         assert_eq!(deleted.state, BranchLifecycleState::Deleted);
         std::fs::remove_file(database.branch_head_path(custom.id).unwrap()).unwrap();
         assert_eq!(database.create_branch(request).unwrap(), child);
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn persistent_lineage_and_receipts_survive_reopen_without_handles() {
+        let (path, mut database, main) = initialized_database();
+        let request = create_request(&main);
+        let child = database.create_branch(request.clone()).unwrap();
+        let mut descendant_request = create_request(&child);
+        descendant_request.name = Some("descendant".to_string());
+        descendant_request.idempotency_key = "create-descendant".to_string();
+        let descendant = database.create_branch(descendant_request.clone()).unwrap();
+        let catalog_path = database.branch_catalog_path().unwrap();
+        let before = std::fs::read(&catalog_path).unwrap();
+        drop(database);
+
+        let mut database = Database::open(&path).unwrap();
+        assert_eq!(std::fs::read(&catalog_path).unwrap(), before);
+        assert_eq!(database.create_branch(request.clone()).unwrap(), child);
+        assert_eq!(
+            database.create_branch(descendant_request.clone()).unwrap(),
+            descendant
+        );
+        assert_eq!(database.list_branches().unwrap().len(), 3);
+        let deleted = database
+            .delete_branch(BranchSelector::Id(child.id))
+            .unwrap();
+        assert_eq!(deleted.state, BranchLifecycleState::Deleted);
+        drop(database);
+
+        let mut database = Database::open(&path).unwrap();
+        assert_eq!(database.create_branch(request).unwrap(), deleted);
+        assert_eq!(
+            database.create_branch(descendant_request).unwrap(),
+            descendant
+        );
+        assert_eq!(
+            database
+                .describe_branch(BranchSelector::Id(descendant.id))
+                .unwrap()
+                .state,
+            BranchLifecycleState::Ready
+        );
         drop(database);
         std::fs::remove_dir_all(path).unwrap();
     }
@@ -309,7 +353,6 @@ mod tests {
 pub enum BranchLifecycleState {
     Creating,
     Ready,
-    Expired,
     Deleting,
     Deleted,
 }
@@ -322,7 +365,6 @@ pub struct BranchInfo {
     pub source_commit_epoch: u64,
     pub state: BranchLifecycleState,
     pub owner: Option<String>,
-    pub expires_at_unix_seconds: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -368,7 +410,6 @@ fn state(state: storage::BranchState) -> BranchLifecycleState {
     match state {
         storage::BranchState::Creating => BranchLifecycleState::Creating,
         storage::BranchState::Ready => BranchLifecycleState::Ready,
-        storage::BranchState::Expired => BranchLifecycleState::Expired,
         storage::BranchState::Deleting => BranchLifecycleState::Deleting,
         storage::BranchState::Deleted => BranchLifecycleState::Deleted,
     }
@@ -382,7 +423,6 @@ fn info(branch: &storage::BranchRecord) -> BranchInfo {
         source_commit_epoch: branch.source_commit_epoch,
         state: state(branch.state),
         owner: branch.owner.clone(),
-        expires_at_unix_seconds: branch.expires_at_unix_seconds,
     }
 }
 
@@ -400,12 +440,11 @@ fn request_fingerprint(request: &BranchCreateRequest) -> [u8; 32] {
     };
     // Preserve option tags and field boundaries in the durable request identity.
     let encoded = serde_json::to_vec(&(
-        "hawdb-branch-create-v1",
+        "hawdb-branch-create-v2",
         &request.name,
         parent,
         request.expected_source_commit_epoch,
         &request.owner,
-        request.expires_at_unix_seconds,
         &request.idempotency_key,
     ))
     .expect("branch request contains only JSON-serializable scalar fields");
@@ -751,7 +790,6 @@ impl Database {
             source_commit_epoch: request.expected_source_commit_epoch,
             base_root_digest: *parent_head.sealed_root.sha256.as_bytes(),
             owner: request.owner,
-            expires_at_unix_seconds: request.expires_at_unix_seconds,
             request_key: request.idempotency_key,
             request_fingerprint: fingerprint,
         };

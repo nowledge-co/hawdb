@@ -1,10 +1,11 @@
 //! Bounded, deterministic identity and catalog records for project branches.
 //!
 //! This module is the storage-owned codec seam for the branching contract.  It
-//! deliberately does not open branches or publish files yet; those operations
-//! will build on these validated records.  The wire format is versioned and
-//! checksummed so a future publisher can reject an incomplete or ambiguous
-//! catalog before changing any durable selector.
+//! owns durable lifecycle publication without opening the logical dataset.
+//! Catalog v2 removes development-only expiry metadata; v1 is rejected rather
+//! than migrated. State tag 2 remains invalid instead of being reinterpreted.
+//! The wire format is versioned and checksummed so publication can reject an
+//! incomplete or ambiguous catalog before changing any durable selector.
 
 use crate::branch_head::{
     create_child_branch_head_from_parent, read_branch_head, BranchHead, BranchHeadError,
@@ -25,8 +26,8 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const MAGIC: &[u8; 8] = b"HBCATV1\0";
-const VERSION: u16 = 1;
+const MAGIC: &[u8; 8] = b"HBCATV2\0";
+const VERSION: u16 = 2;
 const MAX_CATALOG_BYTES: usize = 16 * 1024 * 1024;
 const MAX_BRANCHES: u32 = 100_000;
 const MAX_NAME_BYTES: usize = 128;
@@ -104,7 +105,6 @@ pub enum BranchSelector<'a> {
 pub enum BranchState {
     Creating,
     Ready,
-    Expired,
     Deleting,
     Deleted,
 }
@@ -126,7 +126,6 @@ pub struct BranchRecord {
     pub metadata_revision: u64,
     pub state: BranchState,
     pub owner: Option<String>,
-    pub expires_at_unix_seconds: Option<i64>,
     pub create_request_key: String,
     pub request_fingerprint: [u8; DIGEST_BYTES],
     pub create_outcome: CreateOutcome,
@@ -147,7 +146,6 @@ pub struct CreateRequest {
     pub source_commit_epoch: u64,
     pub base_root_digest: [u8; DIGEST_BYTES],
     pub owner: Option<String>,
-    pub expires_at_unix_seconds: Option<i64>,
     pub request_key: String,
     pub request_fingerprint: [u8; DIGEST_BYTES],
 }
@@ -211,7 +209,6 @@ impl Catalog {
                 metadata_revision: 1,
                 state: BranchState::Ready,
                 owner: None,
-                expires_at_unix_seconds: None,
                 create_request_key: "bootstrap".to_string(),
                 request_fingerprint: [0; DIGEST_BYTES],
                 create_outcome: CreateOutcome::Succeeded,
@@ -355,7 +352,6 @@ impl Catalog {
             metadata_revision: 1,
             state: BranchState::Creating,
             owner: request.owner,
-            expires_at_unix_seconds: request.expires_at_unix_seconds,
             create_request_key: request.request_key,
             request_fingerprint: request.request_fingerprint,
             create_outcome: CreateOutcome::Pending,
@@ -435,12 +431,9 @@ impl Catalog {
             return Err(CatalogTransitionError::Conflict("name is reserved"));
         }
         let index = self.index_at_revision(id, expected_metadata_revision)?;
-        if !matches!(
-            self.branches[index].state,
-            BranchState::Ready | BranchState::Expired
-        ) {
+        if self.branches[index].state != BranchState::Ready {
             return Err(CatalogTransitionError::InvalidState(
-                "only a ready or expired branch can be renamed",
+                "only a ready branch can be renamed",
             ));
         }
         if self.branches.iter().any(|branch| {
@@ -459,35 +452,6 @@ impl Catalog {
         Ok(())
     }
 
-    pub fn expire(
-        &mut self,
-        id: BranchId,
-        expected_metadata_revision: u64,
-        now_unix_seconds: i64,
-    ) -> Result<(), CatalogTransitionError> {
-        let index = self.index_at_revision(id, expected_metadata_revision)?;
-        let branch = &self.branches[index];
-        if branch.name.as_str() == "main" {
-            return Err(CatalogTransitionError::InvalidState(
-                "main branch cannot expire",
-            ));
-        }
-        if branch.state != BranchState::Ready {
-            return Err(CatalogTransitionError::InvalidState(
-                "only a ready branch can expire",
-            ));
-        }
-        if branch
-            .expires_at_unix_seconds
-            .is_none_or(|expires_at| expires_at > now_unix_seconds)
-        {
-            return Err(CatalogTransitionError::InvalidState(
-                "branch expiry is not due",
-            ));
-        }
-        self.transition_state(index, BranchState::Expired)
-    }
-
     pub fn begin_delete(
         &mut self,
         id: BranchId,
@@ -500,7 +464,7 @@ impl Catalog {
                 "main branch is protected",
             ));
         }
-        if !matches!(branch.state, BranchState::Ready | BranchState::Expired) {
+        if branch.state != BranchState::Ready {
             return Err(CatalogTransitionError::InvalidState(
                 "branch is not deletable",
             ));
@@ -1248,13 +1212,6 @@ fn encode_branch(output: &mut Vec<u8>, branch: &BranchRecord) -> Result<(), Cata
     put_u64(output, branch.metadata_revision);
     output.push(state_byte(branch.state));
     put_optional_string(output, branch.owner.as_deref(), MAX_OWNER_BYTES, "owner")?;
-    match branch.expires_at_unix_seconds {
-        Some(value) => {
-            output.push(1);
-            put_i64(output, value);
-        }
-        None => output.push(0),
-    }
     put_string(
         output,
         &branch.create_request_key,
@@ -1275,11 +1232,6 @@ fn decode_branch(reader: &mut Reader<'_>) -> Result<BranchRecord, CatalogError> 
     let metadata_revision = reader.u64()?;
     let state = parse_state(reader.byte()?)?;
     let owner = reader.optional_string(MAX_OWNER_BYTES, "owner")?;
-    let expires_at_unix_seconds = if reader.byte()? == 1 {
-        Some(reader.i64()?)
-    } else {
-        None
-    };
     let create_request_key = reader.string(MAX_REQUEST_KEY_BYTES, "create request key")?;
     let request_fingerprint = reader.array()?;
     let create_outcome = parse_outcome(reader.byte()?)?;
@@ -1292,7 +1244,6 @@ fn decode_branch(reader: &mut Reader<'_>) -> Result<BranchRecord, CatalogError> 
         metadata_revision,
         state,
         owner,
-        expires_at_unix_seconds,
         create_request_key,
         request_fingerprint,
         create_outcome,
@@ -1303,7 +1254,6 @@ fn state_byte(value: BranchState) -> u8 {
     match value {
         BranchState::Creating => 0,
         BranchState::Ready => 1,
-        BranchState::Expired => 2,
         BranchState::Deleting => 3,
         BranchState::Deleted => 4,
     }
@@ -1313,7 +1263,6 @@ fn parse_state(value: u8) -> Result<BranchState, CatalogError> {
     match value {
         0 => Ok(BranchState::Creating),
         1 => Ok(BranchState::Ready),
-        2 => Ok(BranchState::Expired),
         3 => Ok(BranchState::Deleting),
         4 => Ok(BranchState::Deleted),
         _ => Err(CatalogError::InvalidEnum("branch state")),
@@ -1346,10 +1295,6 @@ fn put_u32(output: &mut Vec<u8>, value: u32) {
 }
 
 fn put_u64(output: &mut Vec<u8>, value: u64) {
-    output.extend_from_slice(&value.to_le_bytes());
-}
-
-fn put_i64(output: &mut Vec<u8>, value: i64) {
     output.extend_from_slice(&value.to_le_bytes());
 }
 
@@ -1447,14 +1392,6 @@ impl<'a> Reader<'a> {
 
     fn u64(&mut self) -> Result<u64, CatalogError> {
         Ok(u64::from_le_bytes(
-            self.take(8)?
-                .try_into()
-                .map_err(|_| CatalogError::Truncated)?,
-        ))
-    }
-
-    fn i64(&mut self) -> Result<i64, CatalogError> {
-        Ok(i64::from_le_bytes(
             self.take(8)?
                 .try_into()
                 .map_err(|_| CatalogError::Truncated)?,
@@ -1571,7 +1508,6 @@ mod tests {
             metadata_revision: 3,
             state: BranchState::Ready,
             owner: Some("agent-1".to_string()),
-            expires_at_unix_seconds: Some(42),
             create_request_key: format!("request-{byte}"),
             request_fingerprint: [byte.wrapping_add(1); DIGEST_BYTES],
             create_outcome: CreateOutcome::Succeeded,
@@ -1594,7 +1530,6 @@ mod tests {
             source_commit_epoch: 7,
             base_root_digest: [3; DIGEST_BYTES],
             owner: Some("worker-1".to_string()),
-            expires_at_unix_seconds: Some(100),
             request_key: "create-third".to_string(),
             request_fingerprint: [9; DIGEST_BYTES],
         }
@@ -1730,7 +1665,6 @@ mod tests {
             source_commit_epoch: 7,
             base_root_digest: [byte; DIGEST_BYTES],
             owner: Some("worker-1".to_string()),
-            expires_at_unix_seconds: Some(100),
             request_key: format!("create-{byte}"),
             request_fingerprint: [byte.wrapping_add(10); DIGEST_BYTES],
         }
@@ -2162,6 +2096,46 @@ mod tests {
     }
 
     #[test]
+    fn codec_rejects_old_headers_versions_and_retired_state_tag() {
+        let encoded = catalog().encode().unwrap();
+        assert_eq!(&encoded[..8], b"HBCATV2\0");
+        for (offset, replacement) in [(0, b"HBCATV1\0".as_slice()), (8, &[1, 0])] {
+            let mut old = encoded.clone();
+            old[offset..offset + replacement.len()].copy_from_slice(replacement);
+            let checksum_offset = old.len() - 4;
+            let checksum = crc32c(&old[..checksum_offset]).get();
+            old[checksum_offset..].copy_from_slice(&checksum.to_le_bytes());
+            assert_eq!(Catalog::decode(&old), Err(CatalogError::Version));
+        }
+
+        // Build a record with the retired state tag and a valid envelope checksum.
+        let branch = record(1, "first");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC);
+        put_u16(&mut bytes, VERSION);
+        bytes.extend_from_slice(id(99).as_uuid().as_bytes());
+        put_u64(&mut bytes, 1);
+        put_u32(&mut bytes, 1);
+        let record_start = bytes.len();
+        encode_branch(&mut bytes, &branch).unwrap();
+        let mut reader = Reader::new(&bytes[record_start..]);
+        let _ = reader.array::<16>().unwrap();
+        let _ = reader.string(MAX_NAME_BYTES, "branch name").unwrap();
+        let _ = reader.optional_uuid().unwrap();
+        let _ = reader.u64().unwrap();
+        let _ = reader.optional_array().unwrap();
+        let _ = reader.u64().unwrap();
+        let state_offset = reader.offset;
+        bytes[record_start + state_offset] = 2;
+        let checksum = crc32c(&bytes).get();
+        put_u32(&mut bytes, checksum);
+        assert_eq!(
+            Catalog::decode(&bytes),
+            Err(CatalogError::InvalidEnum("branch state"))
+        );
+    }
+
+    #[test]
     fn lifecycle_transitions_are_idempotent_and_revision_bound() {
         let mut catalog = catalog();
         let request = create_request();
@@ -2185,9 +2159,8 @@ mod tests {
         catalog
             .rename(id(3), 2, BranchName::new("renamed").unwrap())
             .unwrap();
-        catalog.expire(id(3), 3, 100).unwrap();
-        catalog.begin_delete(id(3), 4).unwrap();
-        catalog.finish_delete(id(3), 5).unwrap();
+        catalog.begin_delete(id(3), 3).unwrap();
+        catalog.finish_delete(id(3), 4).unwrap();
         assert_eq!(catalog.branches[2].state, BranchState::Deleted);
 
         let mut reused = create_request();

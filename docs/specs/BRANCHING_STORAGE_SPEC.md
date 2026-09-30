@@ -373,7 +373,8 @@ this is not yet the complete writable workflow above. Required work includes:
   context-local writable opening, and private active-WAL replay;
 - sealing current committed state when a modified child becomes a fork source;
 - branch-local DDL/checkpoint publication, snapshot and plan invalidation;
-- removing legacy expiry fields/transitions from the implementation and model;
+- updating the historical expiry-bearing model; runtime catalog/facade expiry
+  fields and transitions have been removed in catalog v2;
 - exposing the effective durability mode and auditing platform persistence
   barriers in both modes, including metadata publication and uncertain completion;
 - shared project FD accounting, lazy file residency, and bounded descriptor
@@ -389,9 +390,10 @@ behavior.
 ## On-disk compatibility and immutable objects
 
 The project selector uses a distinct `HAWDB_BRANCH_PROJECT_V1` header in
-`manifest.hawdb`. Branch catalogs, sealed roots, and branch heads each have
-their own v1 format tag. An older single-root engine MUST reject the project
-header before opening a WAL or running generation reclamation. Readers MUST
+`manifest.hawdb`. Branch catalogs use the v2 format described below; sealed roots
+and branch heads retain their own v1 format tags. An older single-root engine
+MUST reject the project header before opening a WAL or running generation
+reclamation. Readers MUST
 reject unknown versions, duplicate fields, invalid identities, and incomplete
 references; absence/corruption of the catalog MUST NOT trigger legacy fallback.
 
@@ -441,7 +443,7 @@ object/branch context, never as project-global IDs.
 Root and catalog encodings MUST be deterministic, versioned, checksummed, and
 bounded. Physical byte encoding is owned by the respective catalog/object
 implementation; it MUST preserve the fields, identity hashing, ordering, and
-reject behavior here and document its exact v1 codec alongside its decoder.
+reject behavior here and document its exact codec version alongside its decoder.
 Object publication requires private staging, complete encoding, file sync,
 checksum/length validation, exclusive immutable-name installation, and durable
 directory publication before a selector can refer to it. Existing
@@ -647,15 +649,24 @@ tests in the branch-opening work.
 
 ### Catalog codec invariants
 
-The first storage implementation slice uses a fixed v1 header, little-endian
-integer fields, length-prefixed bounded ASCII strings, UUID-order branch
-records, and a CRC32C over every byte before the checksum footer. Decoding
+The catalog codec uses `HBCATV2\0` and version 2, little-endian integer fields,
+length-prefixed bounded ASCII strings, UUID-order branch records, and a CRC32C
+over every byte before the checksum footer. Decoding
 rejects an unknown header/version, a truncated field, an invalid UTF-8 or
 out-of-limit string, an unknown enum or optional-value marker, duplicate UUIDs
 or names, a checksum mismatch, and trailing bytes. The project UUID is not a
 branch UUID; `main` is parentless; generated `agent/` names are accepted only
 as already-generated catalog values, while the custom-name constructor rejects
 both reserved forms.
+
+Catalog v2 removes the expiry timestamp field and the `Expired` state. State
+bytes are `Creating=0`, `Ready=1`, `Deleting=3`, and `Deleted=4`; retired tag 2 is
+rejected rather than reassigned. Both the old v1 header and an old version under
+the new header are rejected. Development-only v1 catalogs require database
+recreation; no compatibility decoder or automatic migration is provided. Branch
+create fingerprints use the `hawdb-branch-create-v2` domain and omit expiry.
+Reopen tests cover ready descendants, explicit parent deletion, and retained
+idempotency receipts; these tests are not whole-system power-loss qualification.
 
 The codec's safety argument is by induction over the record stream. The reader
 starts at the header boundary and advances only after a checked slice exists;

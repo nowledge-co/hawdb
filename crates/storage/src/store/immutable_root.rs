@@ -609,7 +609,6 @@ mod tests {
                 metadata_revision: 1,
                 state: crate::branch_catalog::BranchState::Ready,
                 owner: None,
-                expires_at_unix_seconds: None,
                 create_request_key: "parent-create".to_string(),
                 request_fingerprint: [1; 32],
                 create_outcome: crate::branch_catalog::CreateOutcome::Succeeded,
@@ -624,7 +623,6 @@ mod tests {
             source_commit_epoch: 7,
             base_root_digest: *parent_root.sha256.as_bytes(),
             owner: None,
-            expires_at_unix_seconds: None,
             request_key: "child-create".to_string(),
             request_fingerprint: [2; 32],
         };
