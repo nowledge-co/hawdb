@@ -20,12 +20,15 @@
 use crate::immutable_object::{ObjectKind, ObjectReference};
 use hawdb_integrity::{crc32c, Sha256Digest};
 use std::fmt::{self, Display, Formatter};
+use std::path::{Component, Path};
 
-const MAGIC: &[u8; 12] = b"HAWDBROOTV1\0";
+const MAGIC: &[u8; 12] = b"HAWDBROOTV2\0";
 const REFERENCE_BYTES: usize = 1 + 2 + 8 + 32;
 const MAX_CHECKPOINT_REFERENCES: usize = 4096;
+const MAX_CHECKPOINT_BINDINGS: usize = 4096;
 const MAX_WAL_REFERENCES: usize = 1_000_000;
 const MAX_ENCODED_BYTES: usize = 64 * 1024 * 1024;
+const MAX_ARTIFACT_PATH_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedWalReference {
@@ -34,12 +37,24 @@ pub struct SealedWalReference {
     pub object: ObjectReference,
 }
 
+/// Binds a root-closure object to the exact path named by its durable
+/// manifest.  Paths are relative to the database directory and have a
+/// canonical portable representation so a root can be materialized without
+/// consulting the source database's current manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckpointArtifactBinding {
+    pub relative_path: String,
+    pub reference: ObjectReference,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedRoot {
     pub checkpoint_epoch: u64,
     pub commit_epoch: u64,
     pub wal_replay_start_lsn: u64,
+    pub durable_manifest: ObjectReference,
     pub checkpoint_references: Vec<ObjectReference>,
+    pub checkpoint_bindings: Vec<CheckpointArtifactBinding>,
     pub sealed_wals: Vec<SealedWalReference>,
 }
 
@@ -50,6 +65,7 @@ pub enum SealedRootError {
     ChecksumMismatch,
     TrailingBytes,
     TooManyCheckpointReferences,
+    TooManyCheckpointBindings,
     TooManyWalReferences,
     EncodedTooLarge,
     InvalidEpochs,
@@ -57,6 +73,11 @@ pub enum SealedRootError {
     InvalidObjectVersion,
     DuplicateCheckpointReference,
     UnorderedCheckpointReferences,
+    DuplicateArtifactPath,
+    UnorderedArtifactBindings,
+    InvalidArtifactPath,
+    BindingReferenceNotInClosure,
+    ClosureReferenceWithoutBinding,
     InvalidWalInterval,
     UnorderedWalIntervals,
     NonContiguousWalIntervals,
@@ -72,6 +93,7 @@ impl Display for SealedRootError {
             Self::ChecksumMismatch => "sealed root checksum mismatch",
             Self::TrailingBytes => "sealed root has trailing bytes",
             Self::TooManyCheckpointReferences => "sealed root has too many checkpoint references",
+            Self::TooManyCheckpointBindings => "sealed root has too many checkpoint bindings",
             Self::TooManyWalReferences => "sealed root has too many sealed WAL references",
             Self::EncodedTooLarge => "sealed root encoding exceeds its byte limit",
             Self::InvalidEpochs => "sealed root epochs are inconsistent",
@@ -80,6 +102,15 @@ impl Display for SealedRootError {
             Self::DuplicateCheckpointReference => "sealed root repeats a checkpoint reference",
             Self::UnorderedCheckpointReferences => {
                 "sealed root checkpoint references are not canonical"
+            }
+            Self::DuplicateArtifactPath => "sealed root repeats an artifact path",
+            Self::UnorderedArtifactBindings => "sealed root artifact bindings are not canonical",
+            Self::InvalidArtifactPath => "sealed root contains an invalid artifact path",
+            Self::BindingReferenceNotInClosure => {
+                "sealed root artifact binding is absent from the checkpoint closure"
+            }
+            Self::ClosureReferenceWithoutBinding => {
+                "sealed root checkpoint closure has no artifact path binding"
             }
             Self::InvalidWalInterval => "sealed root contains an empty or overflowing WAL interval",
             Self::UnorderedWalIntervals => "sealed root WAL intervals are not ordered",
@@ -107,8 +138,11 @@ impl SealedRoot {
             return Err(SealedRootError::TooManyWalReferences);
         }
 
+        validate_reference_kind(self.durable_manifest, ObjectKind::DurableManifest)?;
+
         let mut previous_checkpoint: Option<ObjectReference> = None;
         for reference in &self.checkpoint_references {
+            validate_reference(*reference)?;
             if !matches!(
                 reference.kind,
                 ObjectKind::Checkpoint | ObjectKind::CheckpointArtifact
@@ -123,6 +157,41 @@ impl SealedRoot {
                 };
             }
             previous_checkpoint = Some(*reference);
+        }
+
+        if self.checkpoint_bindings.len() != self.checkpoint_references.len()
+            || self.checkpoint_bindings.len() > MAX_CHECKPOINT_BINDINGS
+        {
+            return Err(SealedRootError::TooManyCheckpointBindings);
+        }
+
+        let mut previous_path: Option<&str> = None;
+        for binding in &self.checkpoint_bindings {
+            validate_artifact_path(&binding.relative_path)?;
+            if previous_path.is_some_and(|previous| previous >= binding.relative_path.as_str()) {
+                return if previous_path == Some(binding.relative_path.as_str()) {
+                    Err(SealedRootError::DuplicateArtifactPath)
+                } else {
+                    Err(SealedRootError::UnorderedArtifactBindings)
+                };
+            }
+            if self
+                .checkpoint_references
+                .binary_search(&binding.reference)
+                .is_err()
+            {
+                return Err(SealedRootError::BindingReferenceNotInClosure);
+            }
+            previous_path = Some(&binding.relative_path);
+        }
+        for reference in &self.checkpoint_references {
+            if !self
+                .checkpoint_bindings
+                .iter()
+                .any(|binding| binding.reference == *reference)
+            {
+                return Err(SealedRootError::ClosureReferenceWithoutBinding);
+            }
         }
 
         let mut expected_start = self.wal_replay_start_lsn;
@@ -151,17 +220,31 @@ impl SealedRoot {
         self.validate()?;
         let checkpoint_count = u32::try_from(self.checkpoint_references.len())
             .map_err(|_| SealedRootError::TooManyCheckpointReferences)?;
+        let binding_count = u32::try_from(self.checkpoint_bindings.len())
+            .map_err(|_| SealedRootError::TooManyCheckpointBindings)?;
         let wal_count = u32::try_from(self.sealed_wals.len())
             .map_err(|_| SealedRootError::TooManyWalReferences)?;
         let record_bytes = self
             .checkpoint_references
             .len()
             .saturating_mul(REFERENCE_BYTES)
+            .saturating_add(
+                self.checkpoint_bindings
+                    .iter()
+                    .map(|binding| 4usize.saturating_add(binding.relative_path.len()))
+                    .sum::<usize>()
+                    .saturating_add(
+                        self.checkpoint_bindings
+                            .len()
+                            .saturating_mul(REFERENCE_BYTES),
+                    ),
+            )
             .saturating_add(self.sealed_wals.len().saturating_mul(16 + REFERENCE_BYTES));
         let total = MAGIC
             .len()
             .saturating_add(8 * 3)
-            .saturating_add(4 * 2)
+            .saturating_add(REFERENCE_BYTES)
+            .saturating_add(4 * 3)
             .saturating_add(record_bytes)
             .saturating_add(4);
         if total > MAX_ENCODED_BYTES {
@@ -172,10 +255,18 @@ impl SealedRoot {
         encoded.extend_from_slice(&self.checkpoint_epoch.to_le_bytes());
         encoded.extend_from_slice(&self.commit_epoch.to_le_bytes());
         encoded.extend_from_slice(&self.wal_replay_start_lsn.to_le_bytes());
+        encode_reference(&mut encoded, self.durable_manifest);
         encoded.extend_from_slice(&checkpoint_count.to_le_bytes());
+        encoded.extend_from_slice(&binding_count.to_le_bytes());
         encoded.extend_from_slice(&wal_count.to_le_bytes());
         for reference in &self.checkpoint_references {
             encode_reference(&mut encoded, *reference);
+        }
+        for binding in &self.checkpoint_bindings {
+            let path = binding.relative_path.as_bytes();
+            encoded.extend_from_slice(&(path.len() as u32).to_le_bytes());
+            encoded.extend_from_slice(path);
+            encode_reference(&mut encoded, binding.reference);
         }
         for wal in &self.sealed_wals {
             encoded.extend_from_slice(&wal.start_lsn.to_le_bytes());
@@ -209,7 +300,9 @@ impl SealedRoot {
         let checkpoint_epoch = reader.u64()?;
         let commit_epoch = reader.u64()?;
         let wal_replay_start_lsn = reader.u64()?;
+        let durable_manifest = decode_reference(&mut reader)?;
         let checkpoint_count = reader.u32()? as usize;
+        let binding_count = reader.u32()? as usize;
         let wal_count = reader.u32()? as usize;
         if checkpoint_count == 0 || checkpoint_count > MAX_CHECKPOINT_REFERENCES {
             return Err(SealedRootError::TooManyCheckpointReferences);
@@ -217,9 +310,26 @@ impl SealedRoot {
         if wal_count > MAX_WAL_REFERENCES {
             return Err(SealedRootError::TooManyWalReferences);
         }
+        if binding_count != checkpoint_count || binding_count > MAX_CHECKPOINT_BINDINGS {
+            return Err(SealedRootError::TooManyCheckpointBindings);
+        }
         let mut checkpoint_references = Vec::with_capacity(checkpoint_count);
         for _ in 0..checkpoint_count {
             checkpoint_references.push(decode_reference(&mut reader)?);
+        }
+        let mut checkpoint_bindings = Vec::with_capacity(binding_count);
+        for _ in 0..binding_count {
+            let path_length = reader.u32()? as usize;
+            if path_length == 0 || path_length > MAX_ARTIFACT_PATH_BYTES {
+                return Err(SealedRootError::InvalidArtifactPath);
+            }
+            let path = std::str::from_utf8(reader.bytes(path_length)?)
+                .map_err(|_| SealedRootError::InvalidArtifactPath)?
+                .to_owned();
+            checkpoint_bindings.push(CheckpointArtifactBinding {
+                relative_path: path,
+                reference: decode_reference(&mut reader)?,
+            });
         }
         let mut sealed_wals = Vec::with_capacity(wal_count);
         for _ in 0..wal_count {
@@ -236,7 +346,9 @@ impl SealedRoot {
             checkpoint_epoch,
             commit_epoch,
             wal_replay_start_lsn,
+            durable_manifest,
             checkpoint_references,
+            checkpoint_bindings,
             sealed_wals,
         };
         root.validate()?;
@@ -247,10 +359,32 @@ impl SealedRoot {
         let encoded = self.encode()?;
         Ok(ObjectReference::for_bytes(
             ObjectKind::SealedRoot,
-            1,
+            2,
             &encoded,
         ))
     }
+}
+
+fn validate_artifact_path(path: &str) -> Result<(), SealedRootError> {
+    if path.is_empty()
+        || path.len() > MAX_ARTIFACT_PATH_BYTES
+        || path.as_bytes().contains(&0)
+        || path.contains('\\')
+        || path
+            .split('/')
+            .any(|component| component.is_empty() || matches!(component, "." | ".."))
+    {
+        return Err(SealedRootError::InvalidArtifactPath);
+    }
+    let path = Path::new(path);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(SealedRootError::InvalidArtifactPath);
+    }
+    Ok(())
 }
 
 fn validate_reference_kind(
@@ -260,6 +394,10 @@ fn validate_reference_kind(
     if reference.kind != expected_kind {
         return Err(SealedRootError::InvalidObjectKind);
     }
+    validate_reference(reference)
+}
+
+fn validate_reference(reference: ObjectReference) -> Result<(), SealedRootError> {
     if reference.format_version == 0 {
         return Err(SealedRootError::InvalidObjectVersion);
     }
@@ -282,6 +420,7 @@ fn decode_reference(reader: &mut Reader<'_>) -> Result<ObjectReference, SealedRo
         2 => ObjectKind::SealedWal,
         3 => ObjectKind::SealedRoot,
         4 => ObjectKind::CheckpointArtifact,
+        5 => ObjectKind::DurableManifest,
         _ => return Err(SealedRootError::InvalidObjectKind),
     };
     let format_version = reader.u16()?;
@@ -368,11 +507,17 @@ mod tests {
     }
 
     fn sample() -> SealedRoot {
+        let checkpoint = reference(ObjectKind::Checkpoint, 1);
         SealedRoot {
             checkpoint_epoch: 7,
             commit_epoch: 9,
             wal_replay_start_lsn: 40,
-            checkpoint_references: vec![reference(ObjectKind::Checkpoint, 1)],
+            durable_manifest: reference(ObjectKind::DurableManifest, 4),
+            checkpoint_references: vec![checkpoint],
+            checkpoint_bindings: vec![CheckpointArtifactBinding {
+                relative_path: "checkpoint.7.hawdb".to_string(),
+                reference: checkpoint,
+            }],
             sealed_wals: vec![
                 SealedWalReference {
                     start_lsn: 40,
@@ -398,6 +543,7 @@ mod tests {
             root.object_reference().unwrap().kind,
             ObjectKind::SealedRoot
         );
+        assert_eq!(root.object_reference().unwrap().format_version, 2);
     }
 
     #[test]
@@ -415,6 +561,9 @@ mod tests {
     #[test]
     fn rejects_wrong_kinds_duplicate_refs_and_epoch_drift() {
         let mut root = sample();
+        root.durable_manifest = reference(ObjectKind::Checkpoint, 4);
+        assert_eq!(root.validate(), Err(SealedRootError::InvalidObjectKind));
+        root = sample();
         root.checkpoint_references[0] = reference(ObjectKind::SealedWal, 1);
         assert_eq!(root.validate(), Err(SealedRootError::InvalidObjectKind));
         root = sample();
@@ -454,6 +603,19 @@ mod tests {
     }
 
     #[test]
+    fn rejects_the_retired_v1_root_codec() {
+        let mut encoded = sample().encode().unwrap();
+        encoded[..MAGIC.len()].copy_from_slice(b"HAWDBROOTV1\0");
+        let checksum_offset = encoded.len() - 4;
+        let checksum = crc32c(&encoded[..checksum_offset]).get().to_le_bytes();
+        encoded[checksum_offset..].copy_from_slice(&checksum);
+        assert_eq!(
+            SealedRoot::decode(&encoded),
+            Err(SealedRootError::InvalidMagic)
+        );
+    }
+
+    #[test]
     fn canonical_checkpoint_order_is_required() {
         let mut root = sample();
         let first = reference(ObjectKind::Checkpoint, 0);
@@ -467,6 +629,27 @@ mod tests {
         assert_eq!(
             root.validate(),
             Err(SealedRootError::UnorderedCheckpointReferences)
+        );
+    }
+
+    #[test]
+    fn artifact_bindings_must_be_complete_canonical_and_safe() {
+        let mut root = sample();
+        root.checkpoint_bindings[0].relative_path = "../checkpoint".to_string();
+        assert_eq!(root.validate(), Err(SealedRootError::InvalidArtifactPath));
+
+        root = sample();
+        root.checkpoint_bindings[0].reference = reference(ObjectKind::CheckpointArtifact, 9);
+        assert_eq!(
+            root.validate(),
+            Err(SealedRootError::BindingReferenceNotInClosure)
+        );
+
+        root = sample();
+        root.checkpoint_bindings.clear();
+        assert_eq!(
+            root.validate(),
+            Err(SealedRootError::TooManyCheckpointBindings)
         );
     }
 }

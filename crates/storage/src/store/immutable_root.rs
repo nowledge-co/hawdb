@@ -1,14 +1,17 @@
 //! GraphStore integration for immutable-root publication and WAL handoff.
 
 use super::{GraphStore, MANIFEST_FILE};
-use crate::checkpoint_closure::build_sealed_root;
+use crate::checkpoint_closure::{build_sealed_root, CheckpointArtifactInput};
 use crate::durable_manifest::DurableManifest;
 use crate::error::{HawDBError, Result};
-use crate::immutable_object::ImmutableObjectStore;
+use crate::immutable_object::{ImmutableObjectStore, ObjectKind, ObjectReference};
 use crate::sealed_wal::{
     prepare_wal_rotation, seal_wal_file, PreparedWalRotation, SealedWalPublication,
 };
-use crate::{branch_catalog, branch_head, sealed_root::SealedRoot};
+use crate::{
+    branch_catalog, branch_head,
+    sealed_root::{CheckpointArtifactBinding, SealedRoot},
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -83,8 +86,9 @@ impl GraphStore {
 
     /// Reconstructs a read/write GraphStore from immutable root objects for
     /// recovery qualification. The source directory is copied only as a
-    /// container for non-checkpoint metadata; every root-bound checkpoint
-    /// artifact and sealed WAL is read from the immutable object store.
+    /// container for non-checkpoint metadata; the root's manifest,
+    /// checkpoint artifacts, and sealed WAL are all read from immutable
+    /// objects. The current source manifest is never consulted.
     #[doc(hidden)]
     pub fn open_from_immutable_root(
         source: &GraphStore,
@@ -98,25 +102,24 @@ impl GraphStore {
         let source_durable = source.durable.as_ref().ok_or_else(|| {
             HawDBError::Storage("immutable root replay requires durable storage".to_string())
         })?;
-        let manifest = DurableManifest::load(&source_durable.root_path.join(MANIFEST_FILE))?;
         let destination = destination.as_ref();
         copy_recovery_container(&source_durable.root_path, destination)?;
         let objects = ImmutableObjectStore::open(immutable_store_root.as_ref())
             .map_err(|error| HawDBError::Storage(error.to_string()))?;
-        let plan = source_durable.checkpoint_closure_plan(manifest)?;
-        for input in plan.inputs() {
-            if !root.checkpoint_references.contains(&input.reference) {
-                return Err(HawDBError::Storage(
-                    "immutable root is missing a checkpoint closure artifact".to_string(),
-                ));
-            }
+        let manifest_bytes = objects
+            .read(root.durable_manifest)
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        fs::write(destination.join(MANIFEST_FILE), manifest_bytes)?;
+        let manifest = DurableManifest::load(&destination.join(MANIFEST_FILE))?;
+        for binding in &root.checkpoint_bindings {
             let bytes = objects
-                .read(input.reference)
+                .read(binding.reference)
                 .map_err(|error| HawDBError::Storage(error.to_string()))?;
-            let name = input.path.file_name().ok_or_else(|| {
-                HawDBError::Storage("checkpoint closure artifact has no file name".to_string())
-            })?;
-            fs::write(destination.join(name), bytes)?;
+            let path = destination.join(&binding.relative_path);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(path, bytes)?;
         }
         if root.sealed_wals.len() != 1 {
             return Err(HawDBError::Storage(
@@ -126,17 +129,11 @@ impl GraphStore {
         let wal = objects
             .read(root.sealed_wals[0].object)
             .map_err(|error| HawDBError::Storage(error.to_string()))?;
-        fs::write(
-            destination.join(
-                manifest
-                    .wal_path(&source_durable.root_path)
-                    .file_name()
-                    .ok_or_else(|| {
-                        HawDBError::Storage("manifest WAL path has no file name".to_string())
-                    })?,
-            ),
-            wal,
-        )?;
+        let wal_path = manifest.wal_path(destination);
+        if let Some(parent) = wal_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(wal_path, wal)?;
         GraphStore::open(destination, catalog)
     }
 
@@ -362,9 +359,20 @@ fn publish_sealed_root(
     sealed: SealedWalPublication,
     objects: &mut ImmutableObjectStore,
 ) -> Result<SealedRoot> {
-    let manifest = DurableManifest::load(&durable.root_path.join(MANIFEST_FILE))?;
-    let closure = durable
-        .checkpoint_closure_plan(manifest)?
+    let manifest_path = durable.root_path.join(MANIFEST_FILE);
+    let manifest_bytes = fs::read(&manifest_path)?;
+    let manifest =
+        DurableManifest::decode(std::str::from_utf8(&manifest_bytes).map_err(|error| {
+            HawDBError::Storage(format!("decode durable manifest bytes: {error}"))
+        })?)?;
+    let durable_manifest =
+        ObjectReference::for_bytes(ObjectKind::DurableManifest, 1, &manifest_bytes);
+    objects
+        .publish(durable_manifest, &manifest_bytes)
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+    let plan = durable.checkpoint_closure_plan(manifest)?;
+    let checkpoint_bindings = checkpoint_artifact_bindings(&durable.root_path, plan.inputs())?;
+    let closure = plan
         .publish(objects)
         .map_err(|error| HawDBError::Storage(error.to_string()))?;
     let root = build_sealed_root(
@@ -372,6 +380,8 @@ fn publish_sealed_root(
         manifest.checkpoint_epoch,
         commit_epoch,
         manifest.wal_replay_start_lsn,
+        durable_manifest,
+        checkpoint_bindings,
         vec![crate::sealed_root::SealedWalReference {
             start_lsn: sealed.start_lsn,
             end_lsn: sealed.end_lsn,
@@ -389,6 +399,33 @@ fn publish_sealed_root(
         .publish(root_reference, &encoded)
         .map_err(|error| HawDBError::Storage(error.to_string()))?;
     Ok(root)
+}
+
+fn checkpoint_artifact_bindings(
+    database_root: &Path,
+    inputs: &[CheckpointArtifactInput],
+) -> Result<Vec<CheckpointArtifactBinding>> {
+    let mut bindings = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        let relative_path = input.path.strip_prefix(database_root).map_err(|_| {
+            HawDBError::Storage(format!(
+                "checkpoint closure artifact {} is outside the database directory",
+                input.path.display()
+            ))
+        })?;
+        let relative_path = relative_path.to_str().ok_or_else(|| {
+            HawDBError::Storage(format!(
+                "checkpoint closure artifact {} has a non-UTF-8 path",
+                input.path.display()
+            ))
+        })?;
+        bindings.push(CheckpointArtifactBinding {
+            relative_path: relative_path.to_string(),
+            reference: input.reference,
+        });
+    }
+    bindings.sort_unstable_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    Ok(bindings)
 }
 
 fn copy_recovery_container(source: &Path, destination: &Path) -> Result<()> {
@@ -458,6 +495,18 @@ mod tests {
             .expect("prepare immutable root");
         prepared.root.validate().expect("valid root");
         assert!(!prepared.root.checkpoint_references.is_empty());
+        assert_eq!(
+            prepared.root.checkpoint_bindings.len(),
+            prepared.root.checkpoint_references.len()
+        );
+        let root_manifest = ImmutableObjectStore::open(&objects)
+            .expect("open immutable objects")
+            .read(prepared.root.durable_manifest)
+            .expect("read root-bound manifest");
+        assert_eq!(
+            root_manifest,
+            fs::read(database.join(MANIFEST_FILE)).unwrap()
+        );
         assert!(prepared.rotation.next_generation > prepared.rotation.sealed.generation);
         assert!(prepared.rotation.next_wal_path.exists());
         assert!(objects.join("objects").exists());
@@ -504,7 +553,14 @@ mod tests {
                 BTreeMap::from([("value".into(), Value::Int(3))]),
             )
             .expect("write unrelated branch state");
+        store
+            .checkpoint(&catalog)
+            .expect("advance source checkpoint after root sealing");
         drop(store);
+        assert_ne!(
+            root_manifest,
+            fs::read(database.join(MANIFEST_FILE)).unwrap()
+        );
         let mut reopened_catalog = Catalog::default();
         let mut reopened_source =
             GraphStore::open(&database, &mut reopened_catalog).expect("reopen source database");

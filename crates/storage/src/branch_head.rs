@@ -732,7 +732,7 @@ mod tests {
     use crate::immutable_object::ImmutableObjectStore;
     use crate::immutable_object::ObjectKind;
     use crate::immutable_object::PublishOutcome;
-    use crate::sealed_root::{SealedRoot, SealedWalReference};
+    use crate::sealed_root::{CheckpointArtifactBinding, SealedRoot, SealedWalReference};
     use crate::sealed_wal::SealedWalPublication;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1008,6 +1008,7 @@ mod tests {
         let checkpoint_ref = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, checkpoint);
         objects.publish(checkpoint_ref, checkpoint).unwrap();
         let sealed = ObjectReference::for_bytes(ObjectKind::SealedWal, 1, b"sealed");
+        let manifest = ObjectReference::for_bytes(ObjectKind::DurableManifest, 1, b"manifest");
         let prepared = PreparedWalRotation {
             sealed: SealedWalPublication {
                 generation: old.active_wal.generation,
@@ -1024,7 +1025,12 @@ mod tests {
             checkpoint_epoch: 9,
             commit_epoch: 10,
             wal_replay_start_lsn: 20,
+            durable_manifest: manifest,
             checkpoint_references: vec![checkpoint_ref],
+            checkpoint_bindings: vec![CheckpointArtifactBinding {
+                relative_path: "checkpoint.hawdb".to_string(),
+                reference: checkpoint_ref,
+            }],
             sealed_wals: vec![SealedWalReference {
                 start_lsn: 20,
                 end_lsn: 42,
@@ -1063,6 +1069,7 @@ mod tests {
         fs::write(&next_path, b"successor").unwrap();
         let mut objects = ImmutableObjectStore::open(&object_root).unwrap();
         let checkpoint_ref = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, b"checkpoint");
+        let manifest = ObjectReference::for_bytes(ObjectKind::DurableManifest, 1, b"manifest");
         objects.publish(checkpoint_ref, b"checkpoint").unwrap();
         let prepared = PreparedWalRotation {
             sealed: SealedWalPublication {
@@ -1080,7 +1087,12 @@ mod tests {
             checkpoint_epoch: 9,
             commit_epoch: 10,
             wal_replay_start_lsn: 20,
+            durable_manifest: manifest,
             checkpoint_references: vec![checkpoint_ref],
+            checkpoint_bindings: vec![CheckpointArtifactBinding {
+                relative_path: "checkpoint.hawdb".to_string(),
+                reference: checkpoint_ref,
+            }],
             sealed_wals: Vec::new(),
         };
         assert!(matches!(

@@ -41,6 +41,7 @@ pub enum ObjectKind {
     SealedWal = 2,
     SealedRoot = 3,
     CheckpointArtifact = 4,
+    DurableManifest = 5,
 }
 
 impl ObjectKind {
@@ -50,6 +51,7 @@ impl ObjectKind {
             Self::SealedWal => "sealed-wal",
             Self::SealedRoot => "sealed-root",
             Self::CheckpointArtifact => "checkpoint-artifact",
+            Self::DurableManifest => "durable-manifest",
         }
     }
 }
@@ -295,6 +297,7 @@ impl ImmutableObjectStore {
             if reference.kind == ObjectKind::SealedRoot {
                 let root = crate::sealed_root::SealedRoot::decode(&bytes)
                     .map_err(|source| ImmutableObjectError::InvalidSealedRoot { source })?;
+                pending.push(root.durable_manifest);
                 pending.extend(root.checkpoint_references);
                 pending.extend(root.sealed_wals.into_iter().map(|wal| wal.object));
             }
@@ -596,7 +599,7 @@ fn fail_next_publication_sync() -> PublicationSyncFailureGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sealed_root::{SealedRoot, SealedWalReference};
+    use crate::sealed_root::{CheckpointArtifactBinding, SealedRoot, SealedWalReference};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_root(label: &str) -> PathBuf {
@@ -761,13 +764,21 @@ mod tests {
         let checkpoint_reference =
             ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, checkpoint);
         let wal_reference = ObjectReference::for_bytes(ObjectKind::SealedWal, 1, wal);
+        let manifest = b"manifest bytes";
+        let manifest_reference =
+            ObjectReference::for_bytes(ObjectKind::DurableManifest, 1, manifest);
         let orphan_reference =
             ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, orphan);
         let sealed_root = SealedRoot {
             checkpoint_epoch: 1,
             commit_epoch: 1,
             wal_replay_start_lsn: 0,
+            durable_manifest: manifest_reference,
             checkpoint_references: vec![checkpoint_reference],
+            checkpoint_bindings: vec![CheckpointArtifactBinding {
+                relative_path: "checkpoint.hawdb".to_string(),
+                reference: checkpoint_reference,
+            }],
             sealed_wals: vec![SealedWalReference {
                 start_lsn: 0,
                 end_lsn: 1,
@@ -776,10 +787,11 @@ mod tests {
         };
         let sealed_root_bytes = sealed_root.encode().unwrap();
         let sealed_root_reference =
-            ObjectReference::for_bytes(ObjectKind::SealedRoot, 1, &sealed_root_bytes);
+            ObjectReference::for_bytes(ObjectKind::SealedRoot, 2, &sealed_root_bytes);
 
         store.publish(checkpoint_reference, checkpoint).unwrap();
         store.publish(wal_reference, wal).unwrap();
+        store.publish(manifest_reference, manifest).unwrap();
         store.publish(orphan_reference, orphan).unwrap();
         store
             .publish(sealed_root_reference, &sealed_root_bytes)
@@ -789,6 +801,7 @@ mod tests {
             .reclaim_unreachable(
                 &[
                     sealed_root_reference,
+                    manifest_reference,
                     checkpoint_reference,
                     wal_reference,
                     orphan_reference,
@@ -796,10 +809,11 @@ mod tests {
                 &[sealed_root_reference],
             )
             .unwrap();
-        assert_eq!(report.retained_objects, 3);
+        assert_eq!(report.retained_objects, 4);
         assert_eq!(report.reclaimed_objects, 1);
         assert_eq!(report.reclaimed_bytes, orphan.len() as u64);
         assert!(store.read(sealed_root_reference).is_ok());
+        assert!(store.read(manifest_reference).is_ok());
         assert!(store.read(checkpoint_reference).is_ok());
         assert!(store.read(wal_reference).is_ok());
         assert!(matches!(
@@ -858,13 +872,21 @@ mod tests {
         let mut store = ImmutableObjectStore::open(&root).unwrap();
         let checkpoint_reference = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, b"base");
         let wal_reference = ObjectReference::for_bytes(ObjectKind::SealedWal, 1, b"wal");
+        let manifest_reference =
+            ObjectReference::for_bytes(ObjectKind::DurableManifest, 1, b"manifest");
         store.publish(checkpoint_reference, b"base").unwrap();
         store.publish(wal_reference, b"wal").unwrap();
+        store.publish(manifest_reference, b"manifest").unwrap();
         let live_root = SealedRoot {
             checkpoint_epoch: 1,
             commit_epoch: 1,
             wal_replay_start_lsn: 0,
+            durable_manifest: manifest_reference,
             checkpoint_references: vec![checkpoint_reference],
+            checkpoint_bindings: vec![CheckpointArtifactBinding {
+                relative_path: "checkpoint.hawdb".to_string(),
+                reference: checkpoint_reference,
+            }],
             sealed_wals: vec![SealedWalReference {
                 start_lsn: 0,
                 end_lsn: 3,
@@ -873,7 +895,7 @@ mod tests {
         };
         let live_root_bytes = live_root.encode().unwrap();
         let live_root_reference =
-            ObjectReference::for_bytes(ObjectKind::SealedRoot, 1, &live_root_bytes);
+            ObjectReference::for_bytes(ObjectKind::SealedRoot, 2, &live_root_bytes);
         let orphan_reference = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, b"orphan");
         store
             .publish(live_root_reference, &live_root_bytes)
@@ -887,6 +909,7 @@ mod tests {
             .reclaim_branches(&BranchReclamationInventory {
                 objects: vec![
                     live_root_reference,
+                    manifest_reference,
                     checkpoint_reference,
                     wal_reference,
                     orphan_reference,
@@ -907,7 +930,7 @@ mod tests {
                 ],
             })
             .unwrap();
-        assert_eq!(report.retained_objects, 3);
+        assert_eq!(report.retained_objects, 4);
         assert_eq!(report.reclaimed_objects, 1);
         assert!(!deleted_directory.exists());
         assert!(store.read(live_root_reference).is_ok());

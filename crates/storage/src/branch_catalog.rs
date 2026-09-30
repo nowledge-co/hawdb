@@ -1972,13 +1972,20 @@ mod tests {
         let mut objects = ImmutableObjectStore::open(&object_root).unwrap();
         let checkpoint = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, b"checkpoint");
         let wal = ObjectReference::for_bytes(ObjectKind::SealedWal, 1, b"wal");
+        let manifest = ObjectReference::for_bytes(ObjectKind::DurableManifest, 1, b"manifest");
         objects.publish(checkpoint, b"checkpoint").unwrap();
         objects.publish(wal, b"wal").unwrap();
+        objects.publish(manifest, b"manifest").unwrap();
         let sealed_root = crate::sealed_root::SealedRoot {
             checkpoint_epoch: 1,
             commit_epoch: 1,
             wal_replay_start_lsn: 0,
+            durable_manifest: manifest,
             checkpoint_references: vec![checkpoint],
+            checkpoint_bindings: vec![crate::sealed_root::CheckpointArtifactBinding {
+                relative_path: "checkpoint.hawdb".to_string(),
+                reference: checkpoint,
+            }],
             sealed_wals: vec![crate::sealed_root::SealedWalReference {
                 start_lsn: 0,
                 end_lsn: 3,
@@ -1987,7 +1994,7 @@ mod tests {
         };
         let sealed_root_bytes = sealed_root.encode().unwrap();
         let root_reference =
-            ObjectReference::for_bytes(ObjectKind::SealedRoot, 1, &sealed_root_bytes);
+            ObjectReference::for_bytes(ObjectKind::SealedRoot, 2, &sealed_root_bytes);
         let orphan = ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, b"orphan");
         objects.publish(root_reference, &sealed_root_bytes).unwrap();
         objects.publish(orphan, b"orphan").unwrap();
@@ -2034,7 +2041,7 @@ mod tests {
         let report = reclaim_catalog_branches(
             &catalog_path,
             &mut objects,
-            &[root_reference, checkpoint, wal, orphan],
+            &[root_reference, manifest, checkpoint, wal, orphan],
             &[
                 BranchReclamationPath {
                     id: id(1),
@@ -2049,7 +2056,7 @@ mod tests {
             ],
         )
         .unwrap();
-        assert_eq!(report.retained_objects, 3);
+        assert_eq!(report.retained_objects, 4);
         assert_eq!(report.reclaimed_objects, 1);
         assert!(!deleted_directory.exists());
         fs::remove_dir_all(directory).unwrap();

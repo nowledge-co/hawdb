@@ -390,8 +390,9 @@ behavior.
 ## On-disk compatibility and immutable objects
 
 The project selector uses a distinct `HAWDB_BRANCH_PROJECT_V1` header in
-`manifest.hawdb`. Branch catalogs use the v2 format described below; sealed roots
-and branch heads retain their own v1 format tags. An older single-root engine
+`manifest.hawdb`. Branch catalogs use the v2 format described below; sealed
+roots use the v2 format and branch heads retain their own v1 format tag. An
+older single-root engine
 MUST reject the project header before opening a WAL or running generation
 reclamation. Readers MUST
 reject unknown versions, duplicate fields, invalid identities, and incomplete
@@ -430,15 +431,19 @@ collision and MUST fail closed, never overwrite. Never mutate a hard-linked
 shared file, including during repair. Immutable reuse is allowed; hard links
 are not a substitute for reachability accounting.
 
-A sealed root binds an ordered, validated checkpoint closure, zero or more
-ordered sealed WAL objects with exact non-overlapping LSN intervals, and the
-resulting commit epoch. All authoritative graph, relational, append, schema,
-property-spill, and overflow dependencies MUST be included transitively. A
-root MUST NOT name mutable paths or depend on a parent's current head. Derived
-indexes/caches may be omitted and rebuilt branch-locally; any included immutable
-derived object obeys the same identity and reachability rules. Local generation
-numbers and physical record IDs are interpreted within their recorded source
-object/branch context, never as project-global IDs.
+A sealed root binds an immutable copy of its durable manifest, an ordered,
+validated checkpoint closure, canonical normalized relative-path bindings for
+every object in that closure, zero or more ordered sealed WAL objects with exact
+non-overlapping LSN intervals, and the resulting commit epoch. The manifest
+object and path bindings let recovery resolve the exact root-owned checkpoint
+state without consulting the source database's current manifest or current
+head. The root
+does not name a mutable selector path. All authoritative graph, relational,
+append, schema, property-spill, and overflow dependencies MUST be included
+transitively. Derived indexes/caches may be omitted and rebuilt branch-locally;
+any included immutable derived object obeys the same identity and reachability
+rules. Local generation numbers and physical record IDs are interpreted within
+their recorded source object/branch context, never as project-global IDs.
 
 Root and catalog encodings MUST be deterministic, versioned, checksummed, and
 bounded. Physical byte encoding is owned by the respective catalog/object
@@ -498,13 +503,15 @@ The codec proof follows the reader offset by induction. Every fixed-width read
 checks the remaining slice before advancing, so each decoded field belongs to
 the checksum-covered prefix. The declared counts are checked against bounded
 limits before vector allocation. Checkpoint references must be strictly
-increasing under their complete typed identity, while the WAL invariant carries
-the expected next LSN from one record to the next; therefore duplicates,
-overlaps, and gaps cannot enter a validated root. Exact-end checking rejects
-unparsed bytes, and the CRC32C footer rejects mutations before validation. The
-encoder emits the same field order and validated lists, so equivalent roots
-have one byte representation and their sealed-root object identity is
-deterministic.
+increasing under their complete typed identity. Each such reference must have
+exactly one canonical, bounded, non-traversing relative-path binding, and the
+root's durable-manifest reference must be a valid immutable manifest object.
+The WAL invariant carries the expected next LSN from one record to the next;
+therefore duplicates, overlaps, gaps, unbound artifacts, and source-manifest
+substitution cannot enter a validated root. Exact-end checking rejects unparsed
+bytes, and the CRC32C footer rejects mutations before validation. The encoder
+emits the same field order and validated lists, so equivalent roots have one
+byte representation and their sealed-root object identity is deterministic.
 
 This proves codec boundaries and interval admission only. The references are
 not yet populated from every live checkpoint artifact family, and the codec
@@ -532,10 +539,14 @@ exclusive immutable publisher. Therefore induction over the input list gives:
 This proof covers the no-inference and per-artifact identity boundary. It does
 not claim that the caller has enumerated every artifact family; the manifest
 reader and the eventual active-writer/head handoff must provide that complete
-list before a root or selector can be published. `build_sealed_root` then
-copies only that returned canonical reference set and delegates epoch and WAL
-interval validation to the sealed-root codec. Thus root construction cannot
-silently add an unpublished checkpoint dependency or bypass interval checks.
+list before a root or selector can be published. The root publisher snapshots
+the validated durable-manifest bytes as a distinct immutable object and derives
+one normalized relative-path binding for every closure input.
+`build_sealed_root` then accepts only that returned canonical reference set
+together with those bindings and delegates manifest, epoch, and WAL-interval
+validation to the sealed-root codec. Thus root construction cannot silently add
+an unpublished checkpoint dependency, substitute a later source manifest, or
+bypass interval checks.
 
 `DurableManifest::manifest_artifact_inputs` is the first manifest-side
 population boundary. It derives the known checkpoint, manifest, adjacency,
@@ -981,10 +992,10 @@ owned by the catalog/lease layer and the sealed-root references that survived
 the mark phase; the object store never treats a directory listing or a
 filename as an ownership proof. Before unlinking anything it reads and
 identity-validates every reachable root, recursively decodes each sealed root
-to mark its checkpoint and sealed-WAL references, and validates every
-inventoried candidate. Therefore an unreadable root, closure member, or
-candidate fails before the first deletion, while files outside the explicit
-inventory remain untouched. A missing unreachable candidate is accepted as an
+to mark its durable-manifest, checkpoint, and sealed-WAL references, and
+validates every inventoried candidate. Therefore an unreadable root, closure
+member, or candidate fails before the first deletion, while files outside the
+explicit inventory remain untouched. A missing unreachable candidate is accepted as an
 already-completed unlink, so retry after a crash is idempotent; a missing
 reachable object remains fatal. The returned typed report counts retained
 inventory entries and reclaimed objects/bytes. Branch leases, pending catalog

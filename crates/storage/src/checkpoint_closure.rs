@@ -10,7 +10,9 @@
 use crate::immutable_object::{
     ImmutableObjectError, ImmutableObjectStore, ObjectKind, ObjectReference,
 };
-use crate::sealed_root::{SealedRoot, SealedRootError, SealedWalReference};
+use crate::sealed_root::{
+    CheckpointArtifactBinding, SealedRoot, SealedRootError, SealedWalReference,
+};
 use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
 use std::fs;
@@ -146,13 +148,17 @@ pub fn build_sealed_root(
     checkpoint_epoch: u64,
     commit_epoch: u64,
     wal_replay_start_lsn: u64,
+    durable_manifest: ObjectReference,
+    checkpoint_bindings: Vec<CheckpointArtifactBinding>,
     sealed_wals: Vec<SealedWalReference>,
 ) -> Result<SealedRoot, SealedRootError> {
     let root = SealedRoot {
         checkpoint_epoch,
         commit_epoch,
         wal_replay_start_lsn,
+        durable_manifest,
         checkpoint_references: closure.references.clone(),
+        checkpoint_bindings,
         sealed_wals,
     };
     root.validate()?;
@@ -346,7 +352,20 @@ mod tests {
             &[input(file, ObjectKind::Checkpoint, b"checkpoint")],
         )
         .unwrap();
-        let root = build_sealed_root(&closure, 3, 4, 10, Vec::new()).unwrap();
+        let reference = ObjectReference::for_bytes(ObjectKind::DurableManifest, 1, b"manifest");
+        let root = build_sealed_root(
+            &closure,
+            3,
+            4,
+            10,
+            reference,
+            vec![CheckpointArtifactBinding {
+                relative_path: "checkpoint".to_string(),
+                reference: closure.references[0],
+            }],
+            Vec::new(),
+        )
+        .unwrap();
         assert_eq!(root.checkpoint_references, closure.references);
     }
 
