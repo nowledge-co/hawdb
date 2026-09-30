@@ -621,27 +621,10 @@ fn branch_selector_value(value: &BranchSqlValue, parameters: &[Value]) -> Result
 }
 
 fn branch_bound(bound: &SqlBound, parameters: &[Value]) -> Result<usize> {
-    let value = match bound {
-        SqlBound::Literal(value) => *value,
-        SqlBound::Parameter(position) => match parameters.get(position.saturating_sub(1)) {
-            Some(Value::Int(value)) if *value >= 0 => *value as u64,
-            Some(Value::Int(_)) => {
-                return Err(HawDBError::Semantic(format!(
-                    "branch SQL parameter ${position} must be non-negative"
-                )))
-            }
-            Some(_) => {
-                return Err(HawDBError::Semantic(format!(
-                    "branch SQL parameter ${position} must be an integer"
-                )))
-            }
-            None => {
-                return Err(HawDBError::Semantic(format!(
-                    "missing branch SQL parameter ${position}"
-                )))
-            }
-        },
-    };
+    let value = hawdb_relational::query_value::bind_bound(Some(*bound), parameters, "branch SQL")?
+        .ok_or_else(|| {
+            HawDBError::Semantic("branch SQL bound was unexpectedly absent".to_string())
+        })?;
     usize::try_from(value)
         .map_err(|_| HawDBError::Semantic("branch SQL bound exceeds platform capacity".to_string()))
 }

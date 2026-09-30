@@ -139,11 +139,16 @@ impl BranchParser<'_> {
     }
 
     fn consume_keyword(&mut self, expected: &str) -> bool {
-        self.tokens
+        if self
+            .tokens
             .get(self.cursor)
             .is_some_and(|token| is_keyword(token, expected))
-            .then(|| self.cursor += 1)
-            .is_some()
+        {
+            self.cursor += 1;
+            true
+        } else {
+            false
+        }
     }
 
     fn expect_keyword(&mut self, expected: &str) -> Result<()> {

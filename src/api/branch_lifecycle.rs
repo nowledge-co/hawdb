@@ -181,6 +181,19 @@ mod tests {
                 },
             )
             .is_err());
+        for value in [Value::Int(-1), Value::String("one".to_string())] {
+            let error = database
+                .query_sql_with_params("SHOW BRANCHES LIMIT $1", &[value])
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("PostgreSQL branch SQL parameter $1 must be a non-negative integer"));
+        }
+        assert!(database
+            .query_sql_with_params("SHOW BRANCHES LIMIT $1 OFFSET $2", &[Value::Int(1)])
+            .unwrap_err()
+            .to_string()
+            .contains("missing PostgreSQL parameter $2"));
 
         drop(database);
         std::fs::remove_dir_all(path).unwrap();
