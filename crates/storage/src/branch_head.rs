@@ -551,6 +551,39 @@ pub fn active_wal_identity_from_file(
     })
 }
 
+/// Verifies the durable active-WAL prefix selected by a branch head.
+///
+/// A head is advanced when a sealed root adopts a newly prepared successor
+/// WAL. Ordinary commits append complete records to that successor and do not
+/// rewrite the selector. The recorded identity therefore authenticates the
+/// stable prefix at the handoff boundary, while a longer file is the normal
+/// mutable suffix that recovery must replay. Both the prefix and the complete
+/// file are bounded before any bytes are allocated.
+pub fn validate_active_wal_prefix_from_file(
+    path: &Path,
+    expected: ActiveWalIdentity,
+    max_bytes: u64,
+) -> Result<(), BranchHeadError> {
+    if expected.generation == 0 || expected.byte_length > max_bytes {
+        return Err(BranchHeadError::InvalidWalIdentity);
+    }
+    let length = map_io("read active WAL metadata", fs::metadata(path))?.len();
+    if length < expected.byte_length || length > max_bytes {
+        return Err(BranchHeadError::InvalidWalIdentity);
+    }
+    let prefix_len =
+        usize::try_from(expected.byte_length).map_err(|_| BranchHeadError::InvalidWalIdentity)?;
+    let mut prefix = vec![0; prefix_len];
+    let mut file = map_io("open active WAL", File::open(path))?;
+    map_io("read active WAL prefix", file.read_exact(&mut prefix))?;
+    let mut hasher = IntegrityHasher::new();
+    hasher.update(&prefix);
+    if hasher.finish().sha256 != expected.sha256 {
+        return Err(BranchHeadError::InvalidWalIdentity);
+    }
+    Ok(())
+}
+
 /// Switches a branch head after [`PreparedWalRotation`] has made the
 /// successor WAL header durable.  The caller must hold the source publication
 /// barrier and must have published the sealed root before calling this
@@ -858,6 +891,23 @@ mod tests {
         assert_eq!(identity.sha256, hawdb_integrity::sha256(bytes));
         assert!(matches!(
             active_wal_identity_from_file(&file, 7, 42, 1),
+            Err(BranchHeadError::InvalidWalIdentity)
+        ));
+        fs::remove_file(file).unwrap();
+    }
+
+    #[test]
+    fn active_wal_prefix_allows_an_append_only_mutable_suffix() {
+        let file = path("active-wal-prefix");
+        let prefix = b"durable-successor-header";
+        fs::write(&file, prefix).unwrap();
+        let identity = active_wal_identity_from_file(&file, 7, 42, 1024).unwrap();
+        fs::write(&file, [prefix.as_slice(), b"-committed-record"].concat()).unwrap();
+        validate_active_wal_prefix_from_file(&file, identity, 1024).unwrap();
+
+        fs::write(&file, b"corrupt-prefix-committed-record").unwrap();
+        assert!(matches!(
+            validate_active_wal_prefix_from_file(&file, identity, 1024),
             Err(BranchHeadError::InvalidWalIdentity)
         ));
         fs::remove_file(file).unwrap();

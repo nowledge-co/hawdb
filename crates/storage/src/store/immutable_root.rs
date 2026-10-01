@@ -2,9 +2,11 @@
 
 use super::{GraphStore, MANIFEST_FILE};
 use crate::checkpoint_closure::{build_sealed_root, CheckpointArtifactInput};
+use crate::config::{DurabilityPolicy, RecoveryMode, WalReplayConfig};
 use crate::durable_manifest::DurableManifest;
 use crate::error::{HawDBError, Result};
 use crate::immutable_object::{ImmutableObjectStore, ObjectKind, ObjectReference};
+use crate::ownership::{DatabaseDirectoryLease, DatabaseDirectoryLeaseError};
 use crate::sealed_wal::{
     prepare_wal_rotation, seal_wal_file, PreparedWalRotation, SealedWalPublication,
 };
@@ -14,6 +16,7 @@ use crate::{
 };
 use std::collections::{btree_map::Entry, BTreeMap};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 /// A prepared immutable-root handoff. The successor WAL exists and is durable,
@@ -23,6 +26,107 @@ pub struct PreparedImmutableRootHandoff {
     pub root: SealedRoot,
     pub rotation: PreparedWalRotation,
     pub immutable_store_root: PathBuf,
+}
+
+/// Inputs to storage-owned branch admission.
+///
+/// The caller resolves a branch name before constructing this request, then
+/// supplies the observed UUID and metadata revision.  The admission kernel
+/// revalidates both around its potentially slow recovery work, so name reuse
+/// or a concurrent lifecycle transition cannot expose the wrong runtime.
+#[doc(hidden)]
+pub struct BranchAdmissionRequest<'a> {
+    pub catalog_path: &'a Path,
+    pub branch_id: branch_catalog::BranchId,
+    pub expected_metadata_revision: u64,
+    pub head_path: &'a Path,
+    pub immutable_store_root: &'a Path,
+    pub durability: DurabilityPolicy,
+    pub replay_config: WalReplayConfig,
+}
+
+/// A recovered branch runtime that retains the target branch writer lease.
+///
+/// The immutable root is materialized only into a disposable runtime directory
+/// below the target branch. The authoritative state remains the branch head,
+/// its private WAL, and immutable objects; closing this value never deletes or
+/// expires the branch.
+#[derive(Debug)]
+#[doc(hidden)]
+pub struct AdmittedBranchStore {
+    store: GraphStore,
+    catalog: crate::schema::Catalog,
+    head: branch_head::BranchHead,
+    _branch_lease: DatabaseDirectoryLease,
+}
+
+impl AdmittedBranchStore {
+    pub fn store(&self) -> &GraphStore {
+        &self.store
+    }
+
+    pub fn store_mut(&mut self) -> &mut GraphStore {
+        &mut self.store
+    }
+
+    pub fn catalog(&self) -> &crate::schema::Catalog {
+        &self.catalog
+    }
+
+    pub fn store_and_catalog_mut(&mut self) -> (&mut GraphStore, &mut crate::schema::Catalog) {
+        (&mut self.store, &mut self.catalog)
+    }
+
+    pub const fn head(&self) -> &branch_head::BranchHead {
+        &self.head
+    }
+}
+
+/// Typed rejection classes for direct branch admission.
+#[derive(Debug)]
+#[doc(hidden)]
+pub enum BranchAdmissionError {
+    Busy(&'static str),
+    Lease(DatabaseDirectoryLeaseError),
+    Catalog(io::Error),
+    UnknownBranch,
+    InvalidState(branch_catalog::BranchState),
+    StaleMetadataRevision { expected: u64, actual: u64 },
+    IdentityMismatch(&'static str),
+    Recovery(HawDBError),
+}
+
+impl std::fmt::Display for BranchAdmissionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy(resource) => write!(formatter, "branch admission is busy: {resource}"),
+            Self::Lease(error) => write!(formatter, "branch admission lease failed: {error}"),
+            Self::Catalog(error) => write!(formatter, "branch admission catalog failed: {error}"),
+            Self::UnknownBranch => formatter.write_str("branch admission target is unknown"),
+            Self::InvalidState(state) => {
+                write!(formatter, "branch admission target is not ready: {state:?}")
+            }
+            Self::StaleMetadataRevision { expected, actual } => write!(
+                formatter,
+                "branch admission metadata revision is stale: expected {expected}, found {actual}"
+            ),
+            Self::IdentityMismatch(reason) => {
+                write!(formatter, "branch admission identity mismatch: {reason}")
+            }
+            Self::Recovery(error) => write!(formatter, "branch admission recovery failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for BranchAdmissionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Lease(error) => Some(error),
+            Self::Catalog(error) => Some(error),
+            Self::Recovery(error) => Some(error),
+            _ => None,
+        }
+    }
 }
 
 impl GraphStore {
@@ -83,6 +187,88 @@ impl GraphStore {
             request,
         )
         .map_err(|error| HawDBError::Storage(error.to_string()))
+    }
+
+    /// Admits a ready branch directly from its own selector, immutable root,
+    /// and private active WAL.
+    ///
+    /// This is deliberately separate from [`Self::open_from_branch_head`]. The
+    /// latter remains a recovery-qualification helper because it copies a
+    /// source directory; this admission path never reads that directory. The
+    /// target branch directory is leased before recovery and the catalog is
+    /// checked again after recovery, so a busy or remapped target cannot
+    /// replace an already-active caller context.
+    #[doc(hidden)]
+    pub fn admit_branch_from_head(
+        request: BranchAdmissionRequest<'_>,
+    ) -> std::result::Result<AdmittedBranchStore, BranchAdmissionError> {
+        let before = ready_branch_record(
+            request.catalog_path,
+            request.branch_id,
+            request.expected_metadata_revision,
+        )?;
+        let branch_directory =
+            request
+                .head_path
+                .parent()
+                .ok_or(BranchAdmissionError::IdentityMismatch(
+                    "branch head has no branch directory",
+                ))?;
+        let branch_lease = DatabaseDirectoryLease::acquire(branch_directory)
+            .map_err(BranchAdmissionError::Lease)?;
+        let head = branch_head::read_branch_head(request.head_path).map_err(|error| {
+            BranchAdmissionError::Recovery(HawDBError::Storage(error.to_string()))
+        })?;
+        let objects =
+            ImmutableObjectStore::open(request.immutable_store_root).map_err(|error| {
+                BranchAdmissionError::Recovery(HawDBError::Storage(error.to_string()))
+            })?;
+        let root_bytes = objects.read(head.sealed_root).map_err(|error| {
+            BranchAdmissionError::Recovery(HawDBError::Storage(error.to_string()))
+        })?;
+        let root = SealedRoot::decode(&root_bytes).map_err(|error| {
+            BranchAdmissionError::Recovery(HawDBError::Storage(error.to_string()))
+        })?;
+        validate_admission_binding(&before, &head, &root)?;
+
+        let active_wal_path = branch_directory.join(crate::artifact_files::wal_generation_file(
+            head.active_wal.generation,
+        ));
+        let max_wal_bytes = request.replay_config.max_bytes.unwrap_or(u64::MAX);
+        branch_head::validate_active_wal_prefix_from_file(
+            &active_wal_path,
+            head.active_wal,
+            max_wal_bytes,
+        )
+        .map_err(|error| BranchAdmissionError::Recovery(HawDBError::Storage(error.to_string())))?;
+
+        let runtime_directory = branch_directory.join("runtime");
+        materialize_branch_runtime(&objects, &root, &runtime_directory)
+            .map_err(BranchAdmissionError::Recovery)?;
+        let mut catalog = crate::schema::Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &runtime_directory,
+            &mut catalog,
+            request.durability,
+            request.replay_config,
+        )
+        .map_err(BranchAdmissionError::Recovery)?;
+        store
+            .replay_branch_active_wal(&mut catalog, &head, &active_wal_path, request.replay_config)
+            .map_err(BranchAdmissionError::Recovery)?;
+
+        let after = ready_branch_record(
+            request.catalog_path,
+            request.branch_id,
+            request.expected_metadata_revision,
+        )?;
+        validate_admission_binding(&after, &head, &root)?;
+        Ok(AdmittedBranchStore {
+            store,
+            catalog,
+            head,
+            _branch_lease: branch_lease,
+        })
     }
 
     /// Reconstructs a read/write GraphStore from immutable root objects for
@@ -259,6 +445,53 @@ impl GraphStore {
         Ok(head)
     }
 
+    /// Replays the target branch's active WAL after opening the sealed root
+    /// materialization. The root's sealed WAL has already been replayed by the
+    /// ordinary durable opener; the private WAL must start at exactly that
+    /// replay boundary and is then adopted as the mutable WAL for this runtime.
+    fn replay_branch_active_wal(
+        &mut self,
+        catalog: &mut crate::schema::Catalog,
+        head: &branch_head::BranchHead,
+        active_wal_path: &Path,
+        replay_config: WalReplayConfig,
+    ) -> Result<()> {
+        if replay_config.recovery_mode == RecoveryMode::AutoRepairTornTail {
+            return Err(HawDBError::Storage(
+                "automatic repair of a branch private WAL requires branch-aware repair publication"
+                    .to_string(),
+            ));
+        }
+        let durable = self.durable.as_mut().ok_or_else(|| {
+            HawDBError::Storage("branch admission requires durable storage".to_string())
+        })?;
+        if durable.next_lsn != head.active_wal.replay_start_lsn {
+            return Err(HawDBError::Storage(format!(
+                "branch active WAL starts at {}, but sealed-root replay ended at {}",
+                head.active_wal.replay_start_lsn, durable.next_lsn
+            )));
+        }
+        durable.wal_path = active_wal_path.to_path_buf();
+        durable.wal_append_file = None;
+        durable.wal_generation = head.active_wal.generation;
+        durable.wal_replay_start_lsn = head.active_wal.replay_start_lsn;
+        durable.wal_bytes = fs::metadata(active_wal_path)?.len();
+        durable.wal_tail_repair = None;
+
+        let report = self.replay_wal(catalog, replay_config)?;
+        if self.commit_epoch < head.logical_commit_epoch {
+            return Err(HawDBError::Storage(format!(
+                "branch head commit epoch {} exceeds recovered epoch {}",
+                head.logical_commit_epoch, self.commit_epoch
+            )));
+        }
+        self.validate_authoritative_relational_index_open()?;
+        self.validate_relationship_endpoints()?;
+        self.refresh_basic_statistics_epoch();
+        self.storage_recovery_report = report;
+        Ok(())
+    }
+
     /// Publishes an initial sealed snapshot with a private empty WAL.
     /// The ordinary database remains manifest-owned: changing its writer here
     /// would lose subsequent writes when ordinary open replays the manifest WAL.
@@ -418,6 +651,135 @@ fn checkpoint_artifact_bindings(
     }
     bindings.sort_unstable_by(|left, right| left.relative_path.cmp(&right.relative_path));
     Ok(bindings)
+}
+
+#[derive(Clone)]
+struct ReadyBranchRecord {
+    project_id: branch_catalog::BranchId,
+    branch: branch_catalog::BranchRecord,
+}
+
+fn ready_branch_record(
+    catalog_path: &Path,
+    branch_id: branch_catalog::BranchId,
+    expected_metadata_revision: u64,
+) -> std::result::Result<ReadyBranchRecord, BranchAdmissionError> {
+    let project_directory = catalog_path
+        .parent()
+        .ok_or(BranchAdmissionError::IdentityMismatch(
+            "branch catalog has no project directory",
+        ))?;
+    let _metadata_lease = match branch_catalog::CatalogMetadataLease::acquire(project_directory) {
+        Ok(lease) => lease,
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            return Err(BranchAdmissionError::Busy("branch catalog metadata"));
+        }
+        Err(error) => return Err(BranchAdmissionError::Catalog(error)),
+    };
+    let catalog =
+        branch_catalog::read_catalog(catalog_path).map_err(BranchAdmissionError::Catalog)?;
+    let branch = catalog
+        .branches
+        .iter()
+        .find(|branch| branch.id == branch_id)
+        .cloned()
+        .ok_or(BranchAdmissionError::UnknownBranch)?;
+    if branch.metadata_revision != expected_metadata_revision {
+        return Err(BranchAdmissionError::StaleMetadataRevision {
+            expected: expected_metadata_revision,
+            actual: branch.metadata_revision,
+        });
+    }
+    if branch.state != branch_catalog::BranchState::Ready {
+        return Err(BranchAdmissionError::InvalidState(branch.state));
+    }
+    Ok(ReadyBranchRecord {
+        project_id: catalog.project_id,
+        branch,
+    })
+}
+
+fn validate_admission_binding(
+    record: &ReadyBranchRecord,
+    head: &branch_head::BranchHead,
+    root: &SealedRoot,
+) -> std::result::Result<(), BranchAdmissionError> {
+    let root_reference = root
+        .object_reference()
+        .map_err(|error| BranchAdmissionError::Recovery(HawDBError::Storage(error.to_string())))?;
+    if head.project_id != *record.project_id.as_uuid().as_bytes() {
+        return Err(BranchAdmissionError::IdentityMismatch(
+            "catalog project UUID does not match branch head",
+        ));
+    }
+    if head.branch_id != *record.branch.id.as_uuid().as_bytes() {
+        return Err(BranchAdmissionError::IdentityMismatch(
+            "catalog branch UUID does not match branch head",
+        ));
+    }
+    if head.sealed_root != root_reference {
+        return Err(BranchAdmissionError::IdentityMismatch(
+            "branch head root reference does not match immutable root",
+        ));
+    }
+    if record.branch.base_root_digest != Some(*head.sealed_root.sha256.as_bytes()) {
+        return Err(BranchAdmissionError::IdentityMismatch(
+            "catalog root digest does not match branch head",
+        ));
+    }
+    if record.branch.source_commit_epoch != root.commit_epoch {
+        return Err(BranchAdmissionError::IdentityMismatch(
+            "catalog source epoch does not match the sealed root",
+        ));
+    }
+    if head.logical_commit_epoch < root.commit_epoch {
+        return Err(BranchAdmissionError::IdentityMismatch(
+            "branch head precedes its sealed root commit epoch",
+        ));
+    }
+    let sealed_end_lsn = root.sealed_wals.last().map(|wal| wal.end_lsn).ok_or(
+        BranchAdmissionError::IdentityMismatch("sealed root has no WAL interval"),
+    )?;
+    if sealed_end_lsn != head.active_wal.replay_start_lsn {
+        return Err(BranchAdmissionError::IdentityMismatch(
+            "branch private WAL does not begin after the sealed root",
+        ));
+    }
+    Ok(())
+}
+
+fn materialize_branch_runtime(
+    objects: &ImmutableObjectStore,
+    root: &SealedRoot,
+    runtime_directory: &Path,
+) -> Result<()> {
+    root.validate()
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+    if root.sealed_wals.len() != 1 {
+        return Err(HawDBError::Storage(
+            "branch admission currently requires one sealed WAL interval".to_string(),
+        ));
+    }
+    if runtime_directory.exists() {
+        fs::remove_dir_all(runtime_directory)?;
+    }
+    fs::create_dir_all(runtime_directory)?;
+    let manifest_bytes = objects
+        .read(root.durable_manifest)
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+    let manifest_path = runtime_directory.join(MANIFEST_FILE);
+    fs::write(&manifest_path, manifest_bytes)?;
+    let manifest = DurableManifest::load(&manifest_path)?;
+    materialize_checkpoint_bindings(objects, runtime_directory, &root.checkpoint_bindings)?;
+    let sealed = objects
+        .read(root.sealed_wals[0].object)
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+    let sealed_wal_path = manifest.wal_path(runtime_directory);
+    if let Some(parent) = sealed_wal_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(sealed_wal_path, sealed)?;
+    Ok(())
 }
 
 fn materialize_checkpoint_bindings(
@@ -822,5 +1184,197 @@ mod tests {
         assert_eq!(child_record.parent_id, Some(parent_id));
 
         let _ = fs::remove_dir_all(database);
+    }
+
+    #[test]
+    fn admits_a_child_directly_from_its_head_after_parent_directory_removal() {
+        let project = temp_dir("direct-branch-admission");
+        let parent_directory = project.join("former-parent");
+        let objects = project.join("objects");
+        let catalog_path = project.join("catalog.hawdb");
+        let child_directory = project.join("branches/child");
+        let child_head_path = child_directory.join("branch.head");
+        let sibling_directory = project.join("branches/sibling");
+        let sibling_head_path = sibling_directory.join("branch.head");
+        fs::create_dir_all(&child_directory).expect("create child directory");
+        fs::create_dir_all(&sibling_directory).expect("create sibling directory");
+
+        let project_id = crate::branch_catalog::BranchId::new(hawdb_core::Uuid::from_u128(91))
+            .expect("project id");
+        let child_id = crate::branch_catalog::BranchId::new(hawdb_core::Uuid::from_u128(92))
+            .expect("child id");
+        let sibling_id = crate::branch_catalog::BranchId::new(hawdb_core::Uuid::from_u128(93))
+            .expect("sibling id");
+        let mut source_catalog = Catalog::default();
+        let mut source =
+            GraphStore::open(&parent_directory, &mut source_catalog).expect("open parent");
+        source
+            .create_node(
+                &mut source_catalog,
+                "Memory",
+                BTreeMap::from([("id".into(), Value::Int(1))]),
+            )
+            .expect("create checkpoint node");
+        source
+            .checkpoint(&source_catalog)
+            .expect("publish checkpoint");
+        source
+            .create_node(
+                &mut source_catalog,
+                "Memory",
+                BTreeMap::from([("id".into(), Value::Int(2))]),
+            )
+            .expect("create sealed-WAL node");
+        let prepared = source
+            .prepare_immutable_root_handoff(&objects)
+            .expect("prepare immutable root");
+        let root_reference = prepared.root.object_reference().expect("root reference");
+        let active_generation = prepared.rotation.next_generation;
+        let active_wal_path = child_directory.join(crate::artifact_files::wal_generation_file(
+            active_generation,
+        ));
+        crate::branch_head::create_child_branch_head(
+            &child_head_path,
+            crate::branch_head::ChildBranchHeadRequest {
+                project_id: *project_id.as_uuid().as_bytes(),
+                branch_id: *child_id.as_uuid().as_bytes(),
+                sealed_root: root_reference,
+                logical_commit_epoch: prepared.root.commit_epoch,
+                active_wal_generation: active_generation,
+                replay_start_lsn: prepared.root.sealed_wals[0].end_lsn,
+                head_path: child_head_path.clone(),
+                wal_path: active_wal_path,
+            },
+            u64::MAX,
+        )
+        .expect("create child head");
+        let sibling_active_wal_path = sibling_directory.join(
+            crate::artifact_files::wal_generation_file(active_generation),
+        );
+        crate::branch_head::create_child_branch_head(
+            &sibling_head_path,
+            crate::branch_head::ChildBranchHeadRequest {
+                project_id: *project_id.as_uuid().as_bytes(),
+                branch_id: *sibling_id.as_uuid().as_bytes(),
+                sealed_root: root_reference,
+                logical_commit_epoch: prepared.root.commit_epoch,
+                active_wal_generation: active_generation,
+                replay_start_lsn: prepared.root.sealed_wals[0].end_lsn,
+                head_path: sibling_head_path.clone(),
+                wal_path: sibling_active_wal_path,
+            },
+            u64::MAX,
+        )
+        .expect("create sibling head");
+        let catalog = crate::branch_catalog::Catalog {
+            project_id,
+            revision: 1,
+            branches: vec![
+                crate::branch_catalog::BranchRecord {
+                    id: child_id,
+                    name: crate::branch_catalog::BranchName::new("child")
+                        .expect("child branch name"),
+                    parent_id: None,
+                    source_commit_epoch: prepared.root.commit_epoch,
+                    base_root_digest: Some(*root_reference.sha256.as_bytes()),
+                    metadata_revision: 1,
+                    state: crate::branch_catalog::BranchState::Ready,
+                    owner: None,
+                    create_request_key: "child-create".to_string(),
+                    request_fingerprint: [9; 32],
+                    create_outcome: crate::branch_catalog::CreateOutcome::Succeeded,
+                },
+                crate::branch_catalog::BranchRecord {
+                    id: sibling_id,
+                    name: crate::branch_catalog::BranchName::new("sibling")
+                        .expect("sibling branch name"),
+                    parent_id: None,
+                    source_commit_epoch: prepared.root.commit_epoch,
+                    base_root_digest: Some(*root_reference.sha256.as_bytes()),
+                    metadata_revision: 1,
+                    state: crate::branch_catalog::BranchState::Ready,
+                    owner: None,
+                    create_request_key: "sibling-create".to_string(),
+                    request_fingerprint: [10; 32],
+                    create_outcome: crate::branch_catalog::CreateOutcome::Succeeded,
+                },
+            ],
+        };
+        crate::branch_catalog::write_catalog(&catalog_path, &catalog).expect("write catalog");
+        drop(source);
+        fs::remove_dir_all(&parent_directory).expect("remove parent directory");
+
+        let request = BranchAdmissionRequest {
+            catalog_path: &catalog_path,
+            branch_id: child_id,
+            expected_metadata_revision: 1,
+            head_path: &child_head_path,
+            immutable_store_root: &objects,
+            durability: DurabilityPolicy::default(),
+            replay_config: WalReplayConfig::default(),
+        };
+        let mut admitted =
+            GraphStore::admit_branch_from_head(request).expect("admit child directly");
+        assert_eq!(admitted.store().node_count_for_label(None), 2);
+        assert_eq!(admitted.head().sealed_root, root_reference);
+        let sibling = GraphStore::admit_branch_from_head(BranchAdmissionRequest {
+            catalog_path: &catalog_path,
+            branch_id: sibling_id,
+            expected_metadata_revision: 1,
+            head_path: &sibling_head_path,
+            immutable_store_root: &objects,
+            durability: DurabilityPolicy::default(),
+            replay_config: WalReplayConfig::default(),
+        })
+        .expect("admit sibling while child has its own writer lease");
+        assert_eq!(sibling.store().node_count_for_label(None), 2);
+        assert!(matches!(
+            GraphStore::admit_branch_from_head(BranchAdmissionRequest {
+                catalog_path: &catalog_path,
+                branch_id: child_id,
+                expected_metadata_revision: 1,
+                head_path: &child_head_path,
+                immutable_store_root: &objects,
+                durability: DurabilityPolicy::default(),
+                replay_config: WalReplayConfig::default(),
+            }),
+            Err(BranchAdmissionError::Lease(
+                DatabaseDirectoryLeaseError::AlreadyOpen
+            ))
+        ));
+        drop(sibling);
+
+        {
+            let (store, catalog) = admitted.store_and_catalog_mut();
+            store
+                .create_node(
+                    catalog,
+                    "Memory",
+                    BTreeMap::from([("id".into(), Value::Int(3))]),
+                )
+                .expect("write child private WAL");
+        }
+        let child_head_before_reopen = *admitted.head();
+        drop(admitted);
+
+        let reopened = GraphStore::admit_branch_from_head(BranchAdmissionRequest {
+            catalog_path: &catalog_path,
+            branch_id: child_id,
+            expected_metadata_revision: 1,
+            head_path: &child_head_path,
+            immutable_store_root: &objects,
+            durability: DurabilityPolicy::default(),
+            replay_config: WalReplayConfig::default(),
+        })
+        .expect("reopen child directly");
+        assert_eq!(reopened.store().node_count_for_label(None), 3);
+        assert_eq!(
+            *reopened.head(),
+            child_head_before_reopen,
+            "ordinary child DML extends the private WAL without rewriting its head"
+        );
+
+        drop(reopened);
+        let _ = fs::remove_dir_all(project);
     }
 }

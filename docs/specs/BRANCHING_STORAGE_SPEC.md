@@ -154,9 +154,13 @@ records, name mappings, and create-request outcomes. A branch record contains:
 
 The branch-local head selector contains its own format version, project and
 branch UUIDs, monotonic physical generation, sealed-root digest, logical commit
-epoch, and active-WAL identity with replay start LSN. The catalog locates the
-selector by UUID, not by a duplicate copy of its current head digest. This
-avoids a two-file transaction on each normal commit/checkpoint.
+epoch, and active-WAL prefix identity with replay start LSN. The selector binds
+the fully synchronized successor WAL image created at a seal/rotation boundary;
+ordinary commits append complete records after that prefix without rewriting the
+head. Recovery verifies the selected prefix, then replays the bounded
+append-only suffix exactly once. The catalog locates the selector by UUID, not
+by a duplicate copy of its current head digest. This avoids a two-file
+transaction on each normal commit/checkpoint.
 
 Leases, reader pins, publication guards, object-cache entries, and GC candidates
 are runtime state. They MUST NOT be inferred from a persisted
@@ -316,6 +320,19 @@ may materialize bounded runtime state, but creating a branch must not copy the
 source dataset. A recovery helper that copies a source directory is not the
 production branch-opening implementation.
 
+`GraphStore::admit_branch_from_head` is the storage admission kernel for this
+boundary. It resolves the expected UUID/revision under the metadata lease,
+releases that lease before acquiring the target branch lease, then reads only
+the target head, immutable root, and private active WAL. It materializes the
+root manifest/closure into the target's disposable runtime directory, replays
+the sealed WAL through the normal durable opener, then replays the verified
+private WAL from the exact sealed-root LSN boundary. It rechecks the catalog
+after recovery before exposing the runtime. The legacy
+`open_from_branch_head` helper still copies a source directory and remains
+recovery-qualification-only. SQL session selection and branch-local head
+publication remain separate work; an automatic repair request for a private
+WAL currently fails closed until it has branch-aware repair publication.
+
 Any ready branch can be a source, including one with committed DDL and DML.
 Capture schema and data at one committed source revision. A source revision
 returned for future forks must describe current committed state, not the
@@ -387,10 +404,13 @@ must distinguish maintenance failure from a definitely aborted transaction.
 ### Current implementation gaps
 
 The lifecycle facade currently creates nested branch metadata from sealed heads;
-this is not yet the complete writable workflow above. Required work includes:
+this is not yet the complete writable workflow above. The storage admission
+kernel now directly recovers a ready target from its immutable root and
+append-only private WAL without copying its parent directory. Required work
+includes:
 
-- SQL branch selection/lifecycle AST and dispatch, deferred branch admission,
-  context-local writable opening, and private active-WAL replay;
+- SQL branch selection/lifecycle AST and dispatch, deferred admission through
+  the storage kernel, and context-local writable opening;
 - sealing current committed state when a modified child becomes a fork source;
 - branch-local DDL/checkpoint publication, snapshot and plan invalidation;
 - updating the historical expiry-bearing model; runtime catalog/facade expiry
@@ -652,13 +672,15 @@ selected. A successful replacement selects one complete old or new selector;
 the later crash-recovery integration must still prove how an uncertain
 filesystem result is poisoned and reopened.
 
-`active_wal_identity_from_file` supplies the active-WAL binding used by that
-selector. It reads the complete bounded successor file and hashes those exact
-bytes; the path and metadata length are never sufficient evidence. Thus, if a
-rotation preparation has made the successor header durable, the recorded
-length and digest identify the same byte image that recovery will open. A
-length-limit failure occurs before an identity is returned, preserving the
-old head as the only acknowledged selector.
+`active_wal_identity_from_file` supplies the active-WAL prefix binding used by
+that selector. At rotation, it reads the complete bounded successor file and
+hashes those exact bytes; the path and metadata length are never sufficient
+evidence. Later ordinary commits may extend that image. Admission first
+re-hashes exactly the recorded prefix and requires that the complete WAL is at
+least that long and within the replay bound, then replays the append-only
+suffix. A changed or shortened prefix fails closed. A length-limit failure
+occurs before an identity is accepted, preserving the old head as the only
+acknowledged selector.
 
 `publish_prepared_wal_rotation` is the final handoff operation. It first
 re-reads the current head and checks the caller's generation and branch
@@ -901,9 +923,11 @@ or WAL is a known incomplete operation and becomes terminal `Deleted`; a
 complete pair must match the catalog project/branch identity, source epoch,
 root digest, WAL generation, start LSN, length, and digest before `Creating`
 can become `Ready`. Any mismatch or uncertain I/O leaves `Creating` unchanged
-and retains the candidate for a later retry. This proves the implementation's
-old-or-new admission boundary, while full logical-data replay remains a
-database integration obligation.
+and retains the candidate for a later retry. `admit_branch_from_head` then
+uses a ready record only after validating its root/identity twice around direct
+recovery; its sealed and private WAL replay does not consult the parent
+directory. Branch-local DDL/DML and checkpoint head publication remain database
+integration obligations.
 
 If the parent advances or is subsequently deleted, the child's base digest and
 parent UUID remain unchanged. Lineage does not retain the parent's directory;

@@ -4,7 +4,9 @@ The normative contract is
 [`BRANCHING_STORAGE_SPEC.md`](../specs/BRANCHING_STORAGE_SPEC.md), tracked by
 [#774](https://github.com/nowledge-co/hawdb/issues/774). This is an executable
 design model for planned P0 storage. It does not claim that runtime branch
-opening, SQL selection, or a Rust-to-TLA refinement proof exists.
+selection or a Rust-to-TLA refinement proof exists. The storage layer has a
+direct head-admission kernel, but SQL session selection and branch-local head
+publication remain separate implementation work.
 
 ## State and abstraction
 
@@ -37,6 +39,15 @@ unleased branch; `SelectBusy` records a failed target admission and preserves
 the source context. One branch may have only one writer, while separately leased
 branches can be open at the same time. A foreign lease pins the exact root it
 admitted, rather than following a later current-head change.
+
+`GraphStore::admit_branch_from_head` is source-level evidence for the
+admission portion of this model. It validates a ready UUID/revision, acquires
+the target lease without holding catalog metadata serialization, recovers from
+the target's immutable root and private WAL, validates the sealed successor
+prefix before replaying its append-only suffix, then revalidates the same
+catalog identity before exposing the runtime. This linkage does not establish a full
+Rust-to-TLA refinement, nor does it implement SQL `USE BRANCH`, DDL/DML head
+publication, or physical reclamation.
 
 `s.candidate` is an unpublished root and `s.armed` records a candidate whose
 complete closure is already durable. `StageCandidateClosure` models an
