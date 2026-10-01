@@ -1243,7 +1243,7 @@ mod tests {
                 active_wal_generation: active_generation,
                 replay_start_lsn: prepared.root.sealed_wals[0].end_lsn,
                 head_path: child_head_path.clone(),
-                wal_path: active_wal_path,
+                wal_path: active_wal_path.clone(),
             },
             u64::MAX,
         )
@@ -1375,6 +1375,77 @@ mod tests {
         );
 
         drop(reopened);
+
+        let mut remapped = crate::branch_catalog::read_catalog(&catalog_path)
+            .expect("read catalog before remapping child");
+        remapped
+            .branches
+            .iter_mut()
+            .find(|branch| branch.id == child_id)
+            .expect("child catalog record before remapping")
+            .metadata_revision = 2;
+        remapped.revision = 2;
+        crate::branch_catalog::write_catalog(&catalog_path, &remapped)
+            .expect("publish remapped catalog revision");
+        assert!(matches!(
+            GraphStore::admit_branch_from_head(BranchAdmissionRequest {
+                catalog_path: &catalog_path,
+                branch_id: child_id,
+                expected_metadata_revision: 1,
+                head_path: &child_head_path,
+                immutable_store_root: &objects,
+                durability: DurabilityPolicy::default(),
+                replay_config: WalReplayConfig::default(),
+            }),
+            Err(BranchAdmissionError::StaleMetadataRevision {
+                expected: 1,
+                actual: 2,
+            })
+        ));
+
+        let deleting_child = remapped
+            .branches
+            .iter_mut()
+            .find(|branch| branch.id == child_id)
+            .expect("child catalog record before deletion");
+        deleting_child.metadata_revision = 3;
+        deleting_child.state = crate::branch_catalog::BranchState::Deleting;
+        remapped.revision = 3;
+        crate::branch_catalog::write_catalog(&catalog_path, &remapped)
+            .expect("publish deleting catalog revision");
+        assert!(matches!(
+            GraphStore::admit_branch_from_head(BranchAdmissionRequest {
+                catalog_path: &catalog_path,
+                branch_id: child_id,
+                expected_metadata_revision: 3,
+                head_path: &child_head_path,
+                immutable_store_root: &objects,
+                durability: DurabilityPolicy::default(),
+                replay_config: WalReplayConfig::default(),
+            }),
+            Err(BranchAdmissionError::InvalidState(
+                crate::branch_catalog::BranchState::Deleting
+            ))
+        ));
+
+        crate::branch_catalog::write_catalog(&catalog_path, &catalog)
+            .expect("restore ready catalog before WAL corruption test");
+        let mut corrupted_private_wal = fs::read(&active_wal_path).expect("read child private WAL");
+        corrupted_private_wal[0] ^= 0x01;
+        fs::write(&active_wal_path, corrupted_private_wal).expect("corrupt child private WAL");
+        assert!(matches!(
+            GraphStore::admit_branch_from_head(BranchAdmissionRequest {
+                catalog_path: &catalog_path,
+                branch_id: child_id,
+                expected_metadata_revision: 1,
+                head_path: &child_head_path,
+                immutable_store_root: &objects,
+                durability: DurabilityPolicy::default(),
+                replay_config: WalReplayConfig::default(),
+            }),
+            Err(BranchAdmissionError::Recovery(_))
+        ));
+
         let _ = fs::remove_dir_all(project);
     }
 }
