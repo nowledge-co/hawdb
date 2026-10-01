@@ -38,6 +38,15 @@ the source context. One branch may have only one writer, while separately leased
 branches can be open at the same time. A foreign lease pins the exact root it
 admitted, rather than following a later current-head change.
 
+The Rust catalog subprotocol now has direct counterparts to `BeginDelete` and
+`FinalizeDelete`: `begin_delete_file` persists the `Deleting` state while
+holding the metadata lease, and `finish_delete_file` persists the tombstone
+only from that state. `Database::delete_branch` uses a temporary branch-lock
+admission probe before `BeginDelete` and releases it before finalization. This
+is source linkage for the catalog state machine, not a Rust-to-TLA refinement:
+#780 still has to make an opener revalidate after acquiring its target lock,
+and #778 still owns physical cleanup and pin-aware reclamation.
+
 `s.candidate` is an unpublished root and `s.armed` records a candidate whose
 complete closure is already durable. `StageCandidateClosure` models an
 unreferenced, fully persisted DDL/DML artifact that a later publication can

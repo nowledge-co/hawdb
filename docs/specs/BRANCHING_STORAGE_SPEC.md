@@ -905,6 +905,19 @@ and retains the candidate for a later retry. This proves the implementation's
 old-or-new admission boundary, while full logical-data replay remains a
 database integration obligation.
 
+`begin_delete_file` and `finish_delete_file` make the catalog half of deletion
+equally explicit. Each takes the metadata lease before reading the current
+catalog and keeps it through validation and candidate replacement.
+`DeleteRequest` carries the resolved immutable UUID and the observed metadata
+revision, never a name, so a delayed request cannot target a later name
+incarnation. The first transition durably publishes `Deleting`; a retry returns
+that same reservation, and finalization publishes the same UUID's `Deleted`
+tombstone. The facade first proves that no current branch writer owns the
+target lease, then releases its temporary admission probe before finalization.
+This implements the catalog transition only: #780 must make target admission
+revalidate `Deleting` before exposing a runtime, and #778 remains responsible
+for physical cleanup and reachability checks.
+
 If the parent advances or is subsequently deleted, the child's base digest and
 parent UUID remain unchanged. Lineage does not retain the parent's directory;
 the child's own root references retain the required immutable objects.

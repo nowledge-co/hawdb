@@ -9,6 +9,7 @@ use crate::error::HawDBError;
 use hawdb_core::Uuid;
 use hawdb_storage::branch_catalog as storage;
 use hawdb_storage::branch_head;
+use hawdb_storage::ownership::DatabaseDirectoryLease;
 use std::fmt::{self, Display, Formatter};
 use std::path::PathBuf;
 
@@ -366,6 +367,85 @@ mod tests {
     }
 
     #[test]
+    fn delete_resumes_a_durable_deleting_transition_after_restart_boundary() {
+        let (path, mut database, main) = initialized_database();
+        let child = database.create_branch(create_request(&main)).unwrap();
+        let catalog_path = database.branch_catalog_path().unwrap();
+        let child_record = database
+            .read_branch_catalog()
+            .unwrap()
+            .branches
+            .into_iter()
+            .find(|branch| branch.id.as_uuid() == child.id)
+            .unwrap();
+        let reservation = match storage::begin_delete_file(
+            &catalog_path,
+            storage::DeleteRequest {
+                id: child_record.id,
+                expected_metadata_revision: child_record.metadata_revision,
+            },
+        )
+        .unwrap()
+        {
+            storage::DeleteBeginOutcome::Deleting(reservation) => reservation,
+            storage::DeleteBeginOutcome::Deleted(_) => panic!("child must begin deletion"),
+        };
+        assert!(matches!(
+            database
+                .read_branch_catalog()
+                .unwrap()
+                .branches
+                .iter()
+                .find(|branch| branch.id == child_record.id)
+                .map(|branch| branch.state),
+            Some(storage::BranchState::Deleting)
+        ));
+
+        drop(database);
+        let database = Database::open(&path).unwrap();
+        let deleted = database
+            .delete_branch(BranchSelector::Id(child.id))
+            .unwrap();
+        assert_eq!(deleted.state, BranchLifecycleState::Deleted);
+        assert_eq!(
+            database
+                .delete_branch(BranchSelector::Id(child.id))
+                .unwrap(),
+            deleted
+        );
+        assert_eq!(
+            storage::finish_delete_file(&catalog_path, reservation)
+                .unwrap()
+                .state,
+            storage::BranchState::Deleted
+        );
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn delete_rejects_a_branch_with_a_live_writer_lease() {
+        let (path, mut database, main) = initialized_database();
+        let child = database.create_branch(create_request(&main)).unwrap();
+        let lease =
+            DatabaseDirectoryLease::acquire(&database.branch_directory(child.id).unwrap()).unwrap();
+        assert!(matches!(
+            database.delete_branch(BranchSelector::Id(child.id)),
+            Err(BranchLifecycleError::LeaseUnavailable(_))
+        ));
+        drop(lease);
+        assert_eq!(
+            database
+                .delete_branch(BranchSelector::Id(child.id))
+                .unwrap()
+                .state,
+            BranchLifecycleState::Deleted
+        );
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn persistent_lineage_and_receipts_survive_reopen_without_handles() {
         let (path, mut database, main) = initialized_database();
         let request = create_request(&main);
@@ -543,6 +623,7 @@ pub enum BranchLifecycleError {
     CatalogIo(std::io::Error),
     Catalog(storage::CatalogError),
     Transition(storage::CatalogTransitionError),
+    LeaseUnavailable(String),
     UnknownBranch,
     RootBranchImmutable,
 }
@@ -561,6 +642,12 @@ impl Display for BranchLifecycleError {
             Self::Transition(error) => {
                 write!(formatter, "branch lifecycle transition failed: {error}")
             }
+            Self::LeaseUnavailable(error) => {
+                write!(
+                    formatter,
+                    "branch lifecycle branch lease is unavailable: {error}"
+                )
+            }
             Self::UnknownBranch => formatter.write_str("branch does not exist"),
             Self::RootBranchImmutable => formatter.write_str("the root branch cannot be deleted"),
         }
@@ -568,6 +655,15 @@ impl Display for BranchLifecycleError {
 }
 
 impl std::error::Error for BranchLifecycleError {}
+
+impl From<storage::CatalogFileTransitionError> for BranchLifecycleError {
+    fn from(error: storage::CatalogFileTransitionError) -> Self {
+        match error {
+            storage::CatalogFileTransitionError::Io(error) => Self::CatalogIo(error),
+            storage::CatalogFileTransitionError::Transition(error) => Self::Transition(error),
+        }
+    }
+}
 
 impl From<BranchLifecycleError> for HawDBError {
     fn from(error: BranchLifecycleError) -> Self {
@@ -838,50 +934,54 @@ impl Database {
         Ok(branch_info(branch))
     }
 
-    /// Marks a non-root branch as deleting and then deleted using the catalog
-    /// CAS transitions. Physical head/object cleanup is performed by storage
-    /// reclamation after leases and roots have been checked.
+    /// Publishes a durable delete transition for one resolved branch identity.
+    ///
+    /// The branch lease is acquired before the metadata transition, and the
+    /// storage kernel revalidates the observed revision while holding the
+    /// metadata lease. After `Deleting` is durable the temporary lease is
+    /// released before finalization: admission must reject the tombstoned
+    /// branch, and a `Deleted` record must never coexist with an active writer
+    /// lease. A crash after `Deleting` is published can be resumed by retrying
+    /// this operation; the branch UUID is never reused.
     pub fn delete_branch(
         &self,
         selector: BranchSelector,
     ) -> Result<BranchInfo, BranchLifecycleError> {
         self.ensure_branch_writable()?;
         let path = self.branch_catalog_path()?;
-        let mut catalog = self.read_branch_catalog()?;
-        let id = catalog
+        let catalog = self.read_branch_catalog()?;
+        let branch = catalog
             .branches
             .iter()
             .find(|branch| selector_matches(branch, &selector))
-            .map(|branch| branch.id)
+            .cloned()
             .ok_or(BranchLifecycleError::UnknownBranch)?;
-        let branch = catalog
-            .branches
-            .iter()
-            .find(|branch| branch.id == id)
-            .expect("branch selector resolved above");
         if branch.name.as_str() == "main" {
             return Err(BranchLifecycleError::RootBranchImmutable);
         }
-        let revision = branch.metadata_revision;
-        catalog
-            .begin_delete(id, revision)
-            .map_err(BranchLifecycleError::Transition)?;
-        let deleting_revision = catalog
-            .branches
-            .iter()
-            .find(|branch| branch.id == id)
-            .expect("deleting branch remains in catalog")
-            .metadata_revision;
-        catalog
-            .finish_delete(id, deleting_revision)
-            .map_err(BranchLifecycleError::Transition)?;
-        storage::write_catalog(&path, &catalog).map_err(BranchLifecycleError::CatalogIo)?;
-        let branch = catalog
-            .branches
-            .iter()
-            .find(|branch| branch.id == id)
-            .ok_or(BranchLifecycleError::UnknownBranch)?;
-        Ok(branch_info(branch))
+        if branch.state == storage::BranchState::Deleted {
+            return Ok(branch_info(&branch));
+        }
+        if branch.state == storage::BranchState::Creating {
+            return Err(BranchLifecycleError::Transition(
+                storage::CatalogTransitionError::InvalidState("branch creation is not complete"),
+            ));
+        }
+
+        let branch_lease =
+            DatabaseDirectoryLease::acquire(&self.branch_directory(branch.id.as_uuid())?)
+                .map_err(|error| BranchLifecycleError::LeaseUnavailable(error.to_string()))?;
+        let request = storage::DeleteRequest {
+            id: branch.id,
+            expected_metadata_revision: branch.metadata_revision,
+        };
+        let reservation = match storage::begin_delete_file(&path, request)? {
+            storage::DeleteBeginOutcome::Deleting(reservation) => reservation,
+            storage::DeleteBeginOutcome::Deleted(branch) => return Ok(branch_info(&branch)),
+        };
+        drop(branch_lease);
+        let deleted = storage::finish_delete_file(&path, reservation)?;
+        Ok(branch_info(&deleted))
     }
 
     /// Creates an isolated child branch from a sealed parent head. The
