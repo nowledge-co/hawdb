@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use super::{
-    system_sql, Database, QueryOutput, QueryStreamOptions, SharedState, SlowQueryLogExportOptions,
-    SlowQueryLogRecordSummary, StatementExecutionContext,
+    system_sql, BranchInfo, Database, QueryOutput, QueryStreamOptions, SharedState,
+    SlowQueryLogExportOptions, SlowQueryLogRecordSummary, StatementExecutionContext,
 };
 use crate::error::{HawDBError, Result};
 use crate::executor;
@@ -28,6 +28,7 @@ use crate::sql::{
 };
 use crate::telemetry::{QueryTelemetry, TelemetrySink};
 use crate::value::Value;
+use hawdb_storage::branch_catalog as storage;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
@@ -306,7 +307,14 @@ impl Database {
         let statement_kind = sql_statement_kind(prepared.statement());
         let query_result = (|| {
             if let SqlStatement::Branch(statement) = prepared.statement() {
-                return self.execute_branch_sql(statement, parameters, max_rows, max_payload_bytes);
+                let catalog_path = self.branch_catalog_path().ok();
+                return execute_branch_sql_at_path(
+                    catalog_path.as_deref(),
+                    statement,
+                    parameters,
+                    max_rows,
+                    max_payload_bytes,
+                );
             }
             super::reject_locking_select_without_manager(prepared.statement(), false)?;
             if hawdb_relational::system_schema::statement_writes_system_schema_registry(
@@ -493,61 +501,6 @@ impl Database {
         query_result
     }
 
-    fn execute_branch_sql(
-        &self,
-        statement: &BranchSqlStatement,
-        parameters: &[Value],
-        max_rows: Option<usize>,
-        max_payload_bytes: Option<usize>,
-    ) -> Result<QueryOutput> {
-        let rows = match statement {
-            BranchSqlStatement::ShowBranches(statement) => {
-                self.show_branches_sql_rows(statement, parameters, max_rows)?
-            }
-            BranchSqlStatement::ShowBranch(statement) => {
-                enforce_branch_result_budget(1, max_rows)?;
-                let selector = branch_selector_from_sql(&statement.selector, parameters)?;
-                vec![branch_info_row(&self.describe_branch(selector)?)?]
-            }
-            BranchSqlStatement::ShowCurrentBranch => {
-                enforce_branch_result_budget(1, max_rows)?;
-                vec![BTreeMap::from([
-                    ("branch_id".to_string(), Value::Null),
-                    ("name".to_string(), Value::Null),
-                    (
-                        "durability_policy".to_string(),
-                        Value::String(durability_policy_name(self.durability).to_string()),
-                    ),
-                ])]
-            }
-        };
-        let output = QueryOutput::from_rows(rows);
-        enforce_branch_payload_budget(&output, max_payload_bytes)?;
-        Ok(output)
-    }
-
-    fn show_branches_sql_rows(
-        &self,
-        statement: &ShowBranchesStatement,
-        parameters: &[Value],
-        max_rows: Option<usize>,
-    ) -> Result<Vec<crate::executor::Row>> {
-        let limit = branch_bound(&statement.limit, parameters)?;
-        enforce_branch_result_budget(limit, max_rows)?;
-        let offset = statement
-            .offset
-            .as_ref()
-            .map(|offset| branch_bound(offset, parameters))
-            .transpose()?
-            .unwrap_or(0);
-        self.list_branches()?
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .map(|branch| branch_info_row(&branch))
-            .collect::<Result<Vec<_>>>()
-    }
-
     pub fn slow_query_log_jsonl(&self) -> Result<String> {
         self.slow_query_log_jsonl_with_options(&SlowQueryLogExportOptions::default())
     }
@@ -584,6 +537,80 @@ impl Database {
         let mut file = std::fs::File::create(path)?;
         file.write_all(jsonl.as_bytes())?;
         Ok(())
+    }
+}
+
+/// Executes the read-only branch catalog SQL surface against the durable
+/// catalog selected when the caller acquired its database read view. Branch
+/// selection is intentionally absent until `USE BRANCH` has a durable session
+/// state, so every currently supported branch statement is metadata-only.
+pub(super) fn execute_branch_sql_at_path(
+    catalog_path: Option<&Path>,
+    statement: &BranchSqlStatement,
+    parameters: &[Value],
+    max_rows: Option<usize>,
+    max_payload_bytes: Option<usize>,
+) -> Result<QueryOutput> {
+    let branches = read_branch_catalog(catalog_path)?;
+    let rows = match statement {
+        BranchSqlStatement::ShowBranches(statement) => {
+            show_branches_sql_rows(branches, statement, parameters)?
+        }
+        BranchSqlStatement::ShowBranch(statement) => {
+            let selector = branch_selector_from_sql(&statement.selector, parameters)?;
+            let branch = branches
+                .into_iter()
+                .find(|branch| branch_matches_selector(branch, &selector))
+                .ok_or_else(|| HawDBError::Semantic("branch does not exist".to_string()))?;
+            vec![branch_info_row(&branch)?]
+        }
+    };
+    enforce_branch_result_budget(rows.len(), max_rows)?;
+    let output = QueryOutput::from_rows(rows);
+    enforce_branch_payload_budget(&output, max_payload_bytes)?;
+    Ok(output)
+}
+
+fn read_branch_catalog(catalog_path: Option<&Path>) -> Result<Vec<BranchInfo>> {
+    let catalog_path = catalog_path.ok_or_else(|| {
+        HawDBError::Execution("branch lifecycle requires a durable database".to_string())
+    })?;
+    if !catalog_path.exists() {
+        return Ok(Vec::new());
+    }
+    let catalog = storage::read_catalog(catalog_path)
+        .map_err(|error| HawDBError::Storage(format!("branch catalog I/O failed: {error}")))?;
+    Ok(catalog
+        .branches
+        .iter()
+        .map(super::branch_lifecycle::branch_info)
+        .collect())
+}
+
+fn show_branches_sql_rows(
+    branches: Vec<BranchInfo>,
+    statement: &ShowBranchesStatement,
+    parameters: &[Value],
+) -> Result<Vec<crate::executor::Row>> {
+    let limit = branch_bound(&statement.limit, parameters)?;
+    let offset = statement
+        .offset
+        .as_ref()
+        .map(|offset| branch_bound(offset, parameters))
+        .transpose()?
+        .unwrap_or(0);
+    branches
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|branch| branch_info_row(&branch))
+        .collect()
+}
+
+fn branch_matches_selector(branch: &BranchInfo, selector: &super::BranchSelector) -> bool {
+    match selector {
+        super::BranchSelector::Id(id) => branch.id == *id,
+        super::BranchSelector::Name(name) => branch.name == *name,
     }
 }
 
@@ -680,11 +707,4 @@ fn branch_info_row(branch: &super::BranchInfo) -> Result<crate::executor::Row> {
                 .unwrap_or(Value::Null),
         ),
     ]))
-}
-
-fn durability_policy_name(policy: super::DurabilityPolicy) -> &'static str {
-    match policy {
-        super::DurabilityPolicy::SyncOnEveryWrite => "sync_on_every_write",
-        super::DurabilityPolicy::SyncOnCheckpoint => "sync_on_checkpoint",
-    }
 }

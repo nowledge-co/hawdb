@@ -38,6 +38,13 @@ fn parses_bounded_branch_catalog_inspection_statements() {
         }))
     );
     assert_eq!(
+        parse_postgres_sql("SHOW BRANCHES OFFSET 2 LIMIT 10_000").unwrap(),
+        SqlStatement::Branch(BranchSqlStatement::ShowBranches(ShowBranchesStatement {
+            limit: SqlBound::Literal(10_000),
+            offset: Some(SqlBound::Literal(2)),
+        }))
+    );
+    assert_eq!(
         prepare_postgres_sql("SHOW BRANCH NAME $1")
             .unwrap()
             .parameters,
@@ -51,10 +58,6 @@ fn parses_bounded_branch_catalog_inspection_statements() {
             )),
         }))
     );
-    assert_eq!(
-        parse_postgres_sql("SHOW CURRENT BRANCH").unwrap(),
-        SqlStatement::Branch(BranchSqlStatement::ShowCurrentBranch)
-    );
 }
 
 #[test]
@@ -64,7 +67,9 @@ fn branch_catalog_inspection_requires_bounded_and_typed_syntax() {
         "SHOW BRANCHES LIMIT -1",
         "SHOW BRANCH child",
         "SHOW BRANCH NAME child",
-        "SHOW CURRENT BRANCH trailing",
+        "SHOW CURRENT BRANCH",
+        "SHOW BRANCHES OFFSET 1",
+        "SHOW BRANCHES LIMIT 1 OFFSET 2 LIMIT 3",
     ] {
         assert!(
             parse_postgres_sql(sql).is_err(),

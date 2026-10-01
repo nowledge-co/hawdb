@@ -27,6 +27,9 @@ use sqlparser::{
 /// commands, so this consumes its token stream and produces the same public
 /// HawDB SQL AST used by normal statement dispatch.
 pub(super) fn parse_branch_statement(input: &str) -> Result<Option<SqlStatement>> {
+    if !is_branch_command_candidate(input) {
+        return Ok(None);
+    }
     let dialect = PostgreSqlDialect {};
     let tokens = Tokenizer::new(&dialect, input)
         .tokenize()
@@ -54,7 +57,7 @@ pub(super) fn parse_branch_statement(input: &str) -> Result<Option<SqlStatement>
     let Some(second) = tokens.get(1) else {
         return Ok(None);
     };
-    if !matches_keyword(second, &["BRANCHES", "BRANCH", "CURRENT"]) {
+    if !matches_keyword(second, &["BRANCHES", "BRANCH"]) {
         return Ok(None);
     }
 
@@ -64,21 +67,16 @@ pub(super) fn parse_branch_statement(input: &str) -> Result<Option<SqlStatement>
     };
     parser.expect_keyword("SHOW")?;
     let statement = if parser.consume_keyword("BRANCHES") {
-        let limit = parser.parse_required_bound("LIMIT")?;
-        let offset = if parser.consume_keyword("OFFSET") {
-            Some(parser.parse_bound()?)
-        } else {
-            None
-        };
+        let (limit, offset) = parser.parse_page_bounds()?;
         BranchSqlStatement::ShowBranches(ShowBranchesStatement { limit, offset })
     } else if parser.consume_keyword("BRANCH") {
         BranchSqlStatement::ShowBranch(ShowBranchStatement {
             selector: parser.parse_selector()?,
         })
     } else {
-        parser.expect_keyword("CURRENT")?;
-        parser.expect_keyword("BRANCH")?;
-        BranchSqlStatement::ShowCurrentBranch
+        return Err(HawDBError::Parse(
+            "SHOW supports only BRANCHES or BRANCH in the current branch SQL surface".to_string(),
+        ));
     };
     parser.expect_end()?;
     Ok(Some(SqlStatement::Branch(statement)))
@@ -90,21 +88,48 @@ struct BranchParser<'a> {
 }
 
 impl BranchParser<'_> {
-    fn parse_required_bound(&mut self, keyword: &str) -> Result<SqlBound> {
-        self.expect_keyword(keyword)?;
-        self.parse_bound()
+    fn parse_page_bounds(&mut self) -> Result<(SqlBound, Option<SqlBound>)> {
+        let mut limit = None;
+        let mut offset = None;
+        while !self.at_end() {
+            if self.consume_keyword("LIMIT") {
+                if limit.replace(self.parse_bound()?).is_some() {
+                    return Err(HawDBError::Parse(
+                        "SHOW BRANCHES accepts LIMIT only once".to_string(),
+                    ));
+                }
+            } else if self.consume_keyword("OFFSET") {
+                if offset.replace(self.parse_bound()?).is_some() {
+                    return Err(HawDBError::Parse(
+                        "SHOW BRANCHES accepts OFFSET only once".to_string(),
+                    ));
+                }
+            } else {
+                return Err(HawDBError::Parse(
+                    "SHOW BRANCHES expects LIMIT or OFFSET".to_string(),
+                ));
+            }
+        }
+        let limit = limit.ok_or_else(|| {
+            HawDBError::Parse("SHOW BRANCHES requires an explicit LIMIT".to_string())
+        })?;
+        Ok((limit, offset))
     }
 
     fn parse_bound(&mut self) -> Result<SqlBound> {
         match self.next() {
-            Some(Token::Number(value, false)) => {
-                value.parse::<u64>().map(SqlBound::Literal).map_err(|_| {
+            Some(Token::Number(value, false)) => value
+                .replace('_', "")
+                .parse::<u64>()
+                .map(SqlBound::Literal)
+                .map_err(|_| {
                     HawDBError::Parse(format!(
                         "branch SQL bound {value} is outside the supported range"
                     ))
-                })
+                }),
+            Some(Token::Placeholder(value)) => {
+                super::postgres_parameter_position(value).map(SqlBound::Parameter)
             }
-            Some(Token::Placeholder(value)) => parse_parameter(value).map(SqlBound::Parameter),
             _ => Err(HawDBError::Parse(
                 "branch SQL bounds must be an unsigned integer literal or positional parameter"
                     .to_string(),
@@ -129,7 +154,7 @@ impl BranchParser<'_> {
         match self.next() {
             Some(Token::SingleQuotedString(value)) => Ok(BranchSqlValue::Literal(value.clone())),
             Some(Token::Placeholder(value)) => {
-                parse_parameter(value).map(BranchSqlValue::Parameter)
+                super::postgres_parameter_position(value).map(BranchSqlValue::Parameter)
             }
             _ => Err(HawDBError::Parse(
                 "branch selector values must be a string literal or positional parameter"
@@ -183,19 +208,40 @@ impl BranchParser<'_> {
             ))
         }
     }
+
+    fn at_end(&self) -> bool {
+        self.tokens
+            .get(self.cursor)
+            .is_none_or(|token| matches!(token, Token::SemiColon))
+    }
 }
 
-fn parse_parameter(value: &str) -> Result<usize> {
-    let position = value
-        .strip_prefix('$')
-        .and_then(|position| position.parse::<usize>().ok())
-        .filter(|position| *position > 0)
-        .ok_or_else(|| {
-            HawDBError::Parse(format!(
-                "branch SQL parameter {value} must be a positive PostgreSQL positional parameter"
-            ))
-        })?;
-    Ok(position)
+fn is_branch_command_candidate(mut input: &str) -> bool {
+    loop {
+        input = input.trim_start();
+        if let Some(comment) = input.strip_prefix("--") {
+            input = comment.split_once('\n').map_or("", |(_, rest)| rest);
+            continue;
+        }
+        if let Some(comment) = input.strip_prefix("/*") {
+            let Some((_, rest)) = comment.split_once("*/") else {
+                return false;
+            };
+            input = rest;
+            continue;
+        }
+        break;
+    }
+    let Some(keyword) = input.get(..4) else {
+        return false;
+    };
+    if !keyword.eq_ignore_ascii_case("SHOW") {
+        return false;
+    }
+    input
+        .get(4..)
+        .and_then(|rest| rest.chars().next())
+        .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_')
 }
 
 fn is_keyword(token: &Token, expected: &str) -> bool {

@@ -881,8 +881,11 @@ fn sql_statement_uses_snapshot(statement: &SqlStatement) -> bool {
         | SqlStatement::Delete(_)
         | SqlStatement::CreateTable(_)
         | SqlStatement::CreateIndex(_)
-        | SqlStatement::AlterTableAddColumn(_)
-        | SqlStatement::Branch(_) => false,
+        | SqlStatement::AlterTableAddColumn(_) => false,
+        // The current branch AST is inspection-only. It executes through a
+        // `DatabaseReadTransaction`, so autocommit catalog reads do not take
+        // the write sequencer's exclusive database lock.
+        SqlStatement::Branch(_) => true,
     }
 }
 
@@ -1086,7 +1089,10 @@ fn sql_lock_requests(
         | SqlStatement::AlterTableAddColumn(_) => {
             Ok(vec![LockRequest::database(LockMode::Exclusive)])
         }
-        SqlStatement::Branch(_) => Ok(Vec::new()),
+        // Keep explicit transactions coordinated with future branch lifecycle
+        // mutations. Do not add mutating branch variants to this read-only
+        // arm; they require an explicit exclusive-lock case and protocol.
+        SqlStatement::Branch(_) => Ok(vec![LockRequest::database(LockMode::Shared)]),
     }
 }
 

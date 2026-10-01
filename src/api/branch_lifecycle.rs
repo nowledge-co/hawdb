@@ -33,8 +33,10 @@ pub struct BranchCreateRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::ConcurrentTransactionOptions;
     use hawdb_core::Value;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{mpsc, Arc, Condvar, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_directory(name: &str) -> PathBuf {
@@ -154,13 +156,6 @@ mod tests {
             Some(&Value::String(child.name.clone()))
         );
 
-        let current = database.query_sql("SHOW CURRENT BRANCH").unwrap();
-        assert_eq!(current.rows.len(), 1);
-        assert_eq!(current.rows[0].get("branch_id"), Some(&Value::Null));
-        assert_eq!(
-            current.rows[0].get("durability_policy"),
-            Some(&Value::String("sync_on_every_write".to_string()))
-        );
         assert!(database
             .query_sql_with_params_options(
                 "SHOW BRANCHES LIMIT $1",
@@ -171,6 +166,24 @@ mod tests {
                 },
             )
             .is_err());
+        let large_page = database
+            .query_sql_with_params_options(
+                "SHOW BRANCHES OFFSET 0 LIMIT 1_000",
+                &[],
+                super::super::QueryStreamOptions {
+                    max_rows: Some(2),
+                    max_payload_bytes: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(large_page.rows.len(), 2);
+        let cache_before = database.relational_plan_template_cache_stats();
+        database.query_sql("SHOW BRANCHES LIMIT 2").unwrap();
+        let cache_after_miss = database.relational_plan_template_cache_stats();
+        database.query_sql("SHOW BRANCHES LIMIT 2").unwrap();
+        let cache_after_hit = database.relational_plan_template_cache_stats();
+        assert_eq!(cache_after_miss.entries, cache_before.entries + 1);
+        assert_eq!(cache_after_hit.hits, cache_after_miss.hits + 1);
         assert!(database
             .query_sql_with_params_options(
                 "SHOW BRANCHES LIMIT $1",
@@ -194,22 +207,79 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("missing PostgreSQL parameter $2"));
+        assert!(database
+            .query_sql_with_params(
+                "SHOW BRANCH NAME $1",
+                &[Value::String("missing".to_string())]
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("branch does not exist"));
+
+        let mut transaction = database.begin_transaction();
+        assert_eq!(
+            transaction
+                .query_sql("SHOW BRANCHES LIMIT 2")
+                .unwrap()
+                .rows
+                .len(),
+            2
+        );
+        assert_eq!(
+            transaction
+                .query_sql_with_params("SHOW BRANCH NAME $1", &[Value::String(child.name.clone())],)
+                .unwrap()
+                .rows[0]
+                .get("branch_id"),
+            Some(&Value::Uuid(child.id))
+        );
+        transaction.commit().unwrap();
 
         drop(database);
         std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
-    fn reports_the_context_durability_before_branch_selection() {
-        let path = test_directory("branch-sql-durability");
-        let mut database =
-            Database::open_with_durability(&path, super::super::DurabilityPolicy::SyncOnCheckpoint)
-                .unwrap();
-        let current = database.query_sql("SHOW CURRENT BRANCH").unwrap();
+    fn concurrent_branch_inspection_uses_a_snapshot_and_executes_in_transactions() {
+        let (path, mut database, main) = initialized_database();
+        let child = database.create_branch(create_request(&main)).unwrap();
+        let database = database.into_concurrent();
+        let (snapshot_acquired, snapshots) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        database
+            .set_autocommit_read_gate(snapshot_acquired, Arc::clone(&release))
+            .unwrap();
+        let reader = database.clone();
+        let inspection = std::thread::spawn(move || reader.query_sql("SHOW BRANCHES LIMIT 2"));
+        snapshots
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("branch inspection must acquire a read snapshot");
+        database.clear_autocommit_read_gate().unwrap();
+        let (released, available) = &*release;
+        *released.lock().unwrap() = true;
+        available.notify_all();
+        assert_eq!(inspection.join().unwrap().unwrap().rows.len(), 2);
+
+        let mut transaction = database
+            .begin_transaction(ConcurrentTransactionOptions::default())
+            .unwrap();
         assert_eq!(
-            current.rows[0].get("durability_policy"),
-            Some(&Value::String("sync_on_checkpoint".to_string()))
+            transaction
+                .query_sql_with_params("SHOW BRANCH NAME $1", &[Value::String(child.name.clone())],)
+                .unwrap()
+                .rows[0]
+                .get("branch_id"),
+            Some(&Value::Uuid(child.id))
         );
+        transaction
+            .query_sql("CREATE TABLE branch_lock_probe (id BIGINT PRIMARY KEY)")
+            .unwrap();
+        transaction.commit().unwrap();
+        assert!(database
+            .query_sql("SELECT id FROM branch_lock_probe")
+            .unwrap()
+            .rows
+            .is_empty());
         drop(database);
         std::fs::remove_dir_all(path).unwrap();
     }
@@ -514,7 +584,7 @@ fn state(state: storage::BranchState) -> BranchLifecycleState {
     }
 }
 
-fn info(branch: &storage::BranchRecord) -> BranchInfo {
+pub(super) fn branch_info(branch: &storage::BranchRecord) -> BranchInfo {
     BranchInfo {
         id: branch.id.as_uuid(),
         name: branch.name.as_str().to_string(),
@@ -562,7 +632,7 @@ impl Database {
         Ok(())
     }
 
-    fn branch_catalog_path(&self) -> Result<PathBuf, BranchLifecycleError> {
+    pub(super) fn branch_catalog_path(&self) -> Result<PathBuf, BranchLifecycleError> {
         let root = self
             .store
             .durable_root_path()
@@ -608,7 +678,7 @@ impl Database {
                 .branches
                 .into_iter()
                 .find(|branch| branch.name.as_str() == "main")
-                .map(|branch| info(&branch))
+                .map(|branch| branch_info(&branch))
                 .ok_or(BranchLifecycleError::UnknownBranch);
         }
         let project = storage::BranchId::new(project_id).map_err(BranchLifecycleError::Catalog)?;
@@ -618,7 +688,7 @@ impl Database {
         let directory = path.parent().expect("branch catalog has a parent");
         std::fs::create_dir_all(directory).map_err(BranchLifecycleError::CatalogIo)?;
         storage::write_catalog(&path, &catalog).map_err(BranchLifecycleError::CatalogIo)?;
-        Ok(info(&catalog.branches[0]))
+        Ok(branch_info(&catalog.branches[0]))
     }
 
     /// Publishes the current durable state as the initial sealed `main` snapshot.
@@ -721,7 +791,7 @@ impl Database {
                     "main catalog binding does not match its sealed head".to_string(),
                 ));
             }
-            return Ok(info(branch));
+            return Ok(branch_info(branch));
         }
         branch.base_root_digest = Some(*head.sealed_root.sha256.as_bytes());
         branch.source_commit_epoch = head.logical_commit_epoch;
@@ -745,7 +815,7 @@ impl Database {
             .read_branch_catalog()?
             .branches
             .iter()
-            .map(info)
+            .map(branch_info)
             .collect())
     }
 
@@ -765,7 +835,7 @@ impl Database {
                 .find(|branch| branch.name.as_str() == name),
         }
         .ok_or(BranchLifecycleError::UnknownBranch)?;
-        Ok(info(branch))
+        Ok(branch_info(branch))
     }
 
     /// Marks a non-root branch as deleting and then deleted using the catalog
@@ -811,7 +881,7 @@ impl Database {
             .iter()
             .find(|branch| branch.id == id)
             .ok_or(BranchLifecycleError::UnknownBranch)?;
-        Ok(info(branch))
+        Ok(branch_info(branch))
     }
 
     /// Creates an isolated child branch from a sealed parent head. The
@@ -838,7 +908,7 @@ impl Database {
                 ));
             }
             match existing.create_outcome {
-                storage::CreateOutcome::Succeeded => return Ok(info(existing)),
+                storage::CreateOutcome::Succeeded => return Ok(branch_info(existing)),
                 storage::CreateOutcome::Aborted => {
                     return Err(BranchLifecycleError::Transition(
                         storage::CatalogTransitionError::InvalidState(

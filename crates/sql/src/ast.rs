@@ -47,7 +47,6 @@ pub enum SqlStatement {
 pub enum BranchSqlStatement {
     ShowBranches(ShowBranchesStatement),
     ShowBranch(ShowBranchStatement),
-    ShowCurrentBranch,
 }
 
 /// A bounded page over the durable branch catalog.

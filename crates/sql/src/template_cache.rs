@@ -92,7 +92,7 @@ impl RelationalPlanTemplateCache {
 
 fn is_cacheable_query(statement: &SqlStatement) -> bool {
     match statement {
-        SqlStatement::Select(_) => true,
+        SqlStatement::Select(_) | SqlStatement::Branch(_) => true,
         SqlStatement::Explain(explain) => {
             matches!(explain.statement.as_ref(), SqlStatement::Select(_))
         }
@@ -101,7 +101,6 @@ fn is_cacheable_query(statement: &SqlStatement) -> bool {
         | SqlStatement::Delete(_)
         | SqlStatement::CreateTable(_)
         | SqlStatement::CreateIndex(_)
-        | SqlStatement::AlterTableAddColumn(_)
-        | SqlStatement::Branch(_) => false,
+        | SqlStatement::AlterTableAddColumn(_) => false,
     }
 }

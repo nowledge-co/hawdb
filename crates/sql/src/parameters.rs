@@ -103,7 +103,6 @@ fn collect_branch_parameters(branch: &BranchSqlStatement, positions: &mut BTreeS
                 }
             }
         },
-        BranchSqlStatement::ShowCurrentBranch => {}
     }
 }
 

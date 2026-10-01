@@ -73,7 +73,7 @@ use plan_cache::{
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::num::NonZeroUsize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 #[cfg(not(test))]
@@ -232,10 +232,6 @@ fn hawdb_lightning_initial_import_source_fingerprint_key(
 pub struct Database {
     catalog: Catalog,
     store: GraphStore,
-    /// The opener selects durability for this execution context. Branch SQL
-    /// reports and later branch admission preserve this value; it is never
-    /// inferred from durable branch metadata.
-    durability: DurabilityPolicy,
     optimizer: CascadesOptimizer,
     plan_cache: Arc<SharedState<PlanCache>>,
     relational_plan_template_cache: Arc<crate::relational_sql::RelationalPlanTemplateCache>,
@@ -726,6 +722,7 @@ pub(super) struct DatabaseTransactionRuntime {
     optimizer_planning_cache: SharedState<OptimizerPlanningCache>,
     config: DatabaseConfig,
     system_variables: QuerySystemVariables,
+    branch_catalog_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -779,6 +776,7 @@ pub struct DatabaseReadTransaction<S: crate::executor::ExecutionStore = GraphSto
     slow_query_snapshot: Vec<system_sql::SlowQueryRecord>,
     statement_summary_snapshot: Vec<system_sql::StatementSummaryRecord>,
     config: DatabaseConfig,
+    branch_catalog_path: Option<PathBuf>,
     projection_relational: Option<ProjectionRelationalReadSnapshot>,
     task_context: Option<hawdb_core::RuntimeTaskContext>,
     _pin: Arc<ReaderPin>,
@@ -815,6 +813,7 @@ impl DatabaseReadSnapshot {
             slow_query_snapshot: source.slow_query_snapshot.clone(),
             statement_summary_snapshot: source.statement_summary_snapshot.clone(),
             config: source.config.clone(),
+            branch_catalog_path: source.branch_catalog_path.clone(),
             projection_relational: None,
             task_context: Some(task_context.clone()),
             _pin: Arc::clone(&source._pin),
@@ -881,7 +880,6 @@ impl Default for Database {
                 store.search_projection_database_identity(),
             ),
             store,
-            durability: DurabilityPolicy::default(),
             optimizer: optimizer_from_database_config(&config),
             plan_cache: Arc::new(SharedState::new(PlanCache::new(
                 config.max_plan_cache_entries,
@@ -965,7 +963,6 @@ impl Database {
                 store.search_projection_database_identity(),
             ),
             store,
-            durability: DurabilityPolicy::default(),
             optimizer,
             plan_cache: Arc::new(SharedState::new(PlanCache::new(
                 config.max_plan_cache_entries,
@@ -1102,7 +1099,6 @@ impl Database {
                 store.search_projection_database_identity(),
             ),
             store,
-            durability,
             optimizer: optimizer_from_database_config(&config),
             plan_cache: Arc::new(SharedState::new(PlanCache::new(
                 config.max_plan_cache_entries,
@@ -1376,6 +1372,7 @@ impl Database {
             slow_query_snapshot: self.slow_query_log.borrow().snapshot(),
             statement_summary_snapshot: self.statement_summary.borrow().snapshot(),
             config: self.config.clone(),
+            branch_catalog_path: self.branch_catalog_path().ok(),
             projection_relational,
             task_context,
             _pin: Arc::new(pin),
@@ -19471,6 +19468,7 @@ impl DatabaseTransactionRuntime {
             ),
             config: db.config.clone(),
             system_variables,
+            branch_catalog_path: db.branch_catalog_path().ok(),
         }
     }
 
@@ -19862,6 +19860,16 @@ pub(super) fn execute_database_transaction_prepared_sql(
         (configured, admitted) => configured.or(admitted),
     };
     reject_locking_select_without_manager(prepared.statement(), options.allow_locking_select)?;
+    if let crate::sql::SqlStatement::Branch(statement) = prepared.statement() {
+        return observability::execute_branch_sql_at_path(
+            runtime.branch_catalog_path.as_deref(),
+            statement,
+            parameters,
+            runtime.config.max_read_result_rows,
+            max_read_result_payload_bytes,
+        )
+        .map(sql_query_result);
+    }
     if !options.allow_system_schema_registry_write
         && hawdb_relational::system_schema::statement_writes_system_schema_registry(
             prepared.statement(),
@@ -21617,6 +21625,15 @@ where
             join_planning,
         } = options;
         reject_locking_select_without_manager(prepared.statement(), false)?;
+        if let crate::sql::SqlStatement::Branch(statement) = prepared.statement() {
+            return observability::execute_branch_sql_at_path(
+                self.branch_catalog_path.as_deref(),
+                statement,
+                parameters,
+                max_rows,
+                max_payload_bytes,
+            );
+        }
         if matches!(
             prepared.statement(),
             crate::sql::SqlStatement::Select(select)
