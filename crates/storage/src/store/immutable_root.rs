@@ -12,6 +12,7 @@ use crate::{
     branch_catalog, branch_head,
     sealed_root::{CheckpointArtifactBinding, SealedRoot},
 };
+use std::collections::{btree_map::Entry, BTreeMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -424,10 +425,16 @@ fn materialize_checkpoint_bindings(
     destination: &Path,
     bindings: &[CheckpointArtifactBinding],
 ) -> Result<()> {
+    let mut objects_by_reference = BTreeMap::new();
     for binding in bindings {
-        let bytes = objects
-            .read(binding.reference)
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let bytes = match objects_by_reference.entry(binding.reference) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(
+                objects
+                    .read(binding.reference)
+                    .map_err(|error| HawDBError::Storage(error.to_string()))?,
+            ),
+        };
         let path = destination.join(&binding.relative_path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;

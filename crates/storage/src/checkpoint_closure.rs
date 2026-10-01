@@ -71,6 +71,13 @@ impl CheckpointClosurePlan {
         }
     }
 
+    /// Adds the physical artifacts verified by one manifest-bound family.
+    ///
+    /// Content-addressed references may repeat across paths and families: for
+    /// example, empty descriptors from adjacency and property spill share one
+    /// immutable object. The sealing boundary preserves every path binding,
+    /// while publication stores the shared object once. Repeating a physical
+    /// path remains an error during publication.
     pub fn add_family_artifacts(
         &mut self,
         family: CheckpointArtifactFamily,
@@ -103,7 +110,7 @@ impl CheckpointClosurePlan {
         if !missing.is_empty() {
             return Err(CheckpointClosureError::Incomplete { missing });
         }
-        publish_checkpoint_closure(store, &self.inputs)
+        publish_checkpoint_closure_with_bound_duplicates(store, &self.inputs)
     }
 
     fn complete_family(
@@ -146,6 +153,7 @@ pub fn build_sealed_root(
 pub enum CheckpointClosureError {
     Empty,
     DuplicatePath(PathBuf),
+    DuplicateReference(ObjectReference),
     InvalidKind(ObjectKind),
     FamilyAlreadyBound(CheckpointArtifactFamily),
     Incomplete {
@@ -163,6 +171,9 @@ impl Display for CheckpointClosureError {
         match self {
             Self::Empty => f.write_str("checkpoint closure is empty"),
             Self::DuplicatePath(path) => write!(f, "checkpoint closure repeats {}", path.display()),
+            Self::DuplicateReference(reference) => {
+                write!(f, "checkpoint closure repeats {reference:?}")
+            }
             Self::InvalidKind(kind) => write!(f, "invalid checkpoint closure object kind {kind:?}"),
             Self::FamilyAlreadyBound(family) => {
                 write!(f, "checkpoint closure family is already bound: {family:?}")
@@ -187,6 +198,21 @@ impl std::error::Error for CheckpointClosureError {}
 pub fn publish_checkpoint_closure(
     store: &mut ImmutableObjectStore,
     inputs: &[CheckpointArtifactInput],
+) -> Result<PublishedCheckpointClosure, CheckpointClosureError> {
+    publish_checkpoint_closure_inner(store, inputs, false)
+}
+
+fn publish_checkpoint_closure_with_bound_duplicates(
+    store: &mut ImmutableObjectStore,
+    inputs: &[CheckpointArtifactInput],
+) -> Result<PublishedCheckpointClosure, CheckpointClosureError> {
+    publish_checkpoint_closure_inner(store, inputs, true)
+}
+
+fn publish_checkpoint_closure_inner(
+    store: &mut ImmutableObjectStore,
+    inputs: &[CheckpointArtifactInput],
+    retain_duplicate_bindings: bool,
 ) -> Result<PublishedCheckpointClosure, CheckpointClosureError> {
     if inputs.is_empty() {
         return Err(CheckpointClosureError::Empty);
@@ -226,6 +252,8 @@ pub fn publish_checkpoint_closure(
                 .publish(input.reference, &bytes)
                 .map_err(CheckpointClosureError::Publish)?;
             published.push(input.reference);
+        } else if !retain_duplicate_bindings {
+            return Err(CheckpointClosureError::DuplicateReference(input.reference));
         }
     }
     published.sort_unstable();
@@ -359,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn family_keeps_identical_physical_artifacts_for_path_bindings() {
+    fn relational_overflow_keeps_identical_physical_artifacts_for_path_bindings() {
         let dir = TempDir::new();
         let checkpoint = dir.path().join("checkpoint");
         let first = dir.path().join("first");
@@ -373,7 +401,7 @@ mod tests {
             b"checkpoint",
         )]);
         plan.add_family_artifacts(
-            CheckpointArtifactFamily::Canonical,
+            CheckpointArtifactFamily::RelationalOverflow,
             vec![
                 input(first, ObjectKind::CheckpointArtifact, b"same-bytes"),
                 input(second, ObjectKind::CheckpointArtifact, b"same-bytes"),
@@ -381,11 +409,62 @@ mod tests {
         )
         .unwrap();
         for family in [
+            CheckpointArtifactFamily::Canonical,
             CheckpointArtifactFamily::Adjacency,
             CheckpointArtifactFamily::PropertySpill,
             CheckpointArtifactFamily::PropertyProjection,
             CheckpointArtifactFamily::RelationalRow,
+            CheckpointArtifactFamily::RelationalIndex,
+            CheckpointArtifactFamily::Append,
+        ] {
+            plan.mark_family_empty(family).unwrap();
+        }
+        let mut store = ImmutableObjectStore::open(dir.path().join("objects")).unwrap();
+        let closure = plan.publish(&mut store).unwrap();
+        assert_eq!(closure.references.len(), 2);
+        assert_eq!(
+            closure.total_bytes,
+            b"checkpoint".len() as u64 + b"same-bytes".len() as u64
+        );
+    }
+
+    #[test]
+    fn retains_duplicate_references_across_artifact_families() {
+        let dir = TempDir::new();
+        let checkpoint = dir.path().join("checkpoint");
+        let canonical = dir.path().join("canonical");
+        let overflow = dir.path().join("overflow");
+        fs::write(&checkpoint, b"checkpoint").unwrap();
+        fs::write(&canonical, b"same-bytes").unwrap();
+        fs::write(&overflow, b"same-bytes").unwrap();
+        let duplicate =
+            ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, b"same-bytes");
+        let mut plan = CheckpointClosurePlan::new(vec![input(
+            checkpoint,
+            ObjectKind::Checkpoint,
+            b"checkpoint",
+        )]);
+        plan.add_family_artifacts(
+            CheckpointArtifactFamily::Canonical,
+            vec![CheckpointArtifactInput {
+                path: canonical,
+                reference: duplicate,
+            }],
+        )
+        .unwrap();
+        plan.add_family_artifacts(
             CheckpointArtifactFamily::RelationalOverflow,
+            vec![CheckpointArtifactInput {
+                path: overflow,
+                reference: duplicate,
+            }],
+        )
+        .unwrap();
+        for family in [
+            CheckpointArtifactFamily::Adjacency,
+            CheckpointArtifactFamily::PropertySpill,
+            CheckpointArtifactFamily::PropertyProjection,
+            CheckpointArtifactFamily::RelationalRow,
             CheckpointArtifactFamily::RelationalIndex,
             CheckpointArtifactFamily::Append,
         ] {
