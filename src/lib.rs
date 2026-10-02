@@ -225,7 +225,7 @@ pub use embedded::{
 pub use embedded_tokio::{
     HawDBTokioEmbedded, HawDBTokioEmbeddedError, TokioQueryBatchStream, TokioQueryStreamOptions,
 };
-pub use error::{HawDBError, Result};
+pub use error::{FileDescriptorError, HawDBError, Result};
 pub use executor::{
     QueryRow, QueryRowRef, QueryRows, QuerySchema, ReadExecutionProfile, Row, RowRef,
 };
@@ -299,6 +299,7 @@ pub use hawdb_runtime_tokio::{
     TokioRuntimeAdapter, TokioRuntimeConfig, TokioRuntimeError, TokioRuntimeOwnership,
     TokioSegmentReadExecutionError, TokioSegmentReadExecutor, TokioTaskError,
 };
+pub use hawdb_storage::file_descriptors::FileDescriptorMetrics;
 pub use hawdb_storage::projection_generation::{
     decode_projection_relational_member, encode_projection_relational_member,
     ProjectionGenerationBatchLimits, ProjectionGenerationBegin, ProjectionGenerationCursor,

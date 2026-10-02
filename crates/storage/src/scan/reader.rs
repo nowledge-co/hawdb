@@ -17,12 +17,12 @@ use crate::cache::{
     content_digest, ManifestGeneration, RepresentationKind, SegmentBytes, SegmentCache,
     SegmentCacheError, SegmentCacheKey, StoreId,
 };
+use crate::file_io::File;
 use crate::io::read_exact_at;
 use hawdb_core::{RuntimeCancellationReason, RuntimeIoWaveError, RuntimeTaskContext};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
-use std::fs::File;
 use std::num::NonZeroU64;
 use std::num::NonZeroUsize;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
@@ -32,7 +32,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-const SHARED_SEGMENT_READ_WORKER_LIMIT: usize = 16;
+pub(crate) const SHARED_SEGMENT_READ_WORKER_LIMIT: usize = 16;
 
 #[derive(Debug)]
 pub enum SegmentReadError {
@@ -180,6 +180,14 @@ pub struct FileSegmentRangeReader {
 struct RegisteredArtifact {
     path: PathBuf,
     file: OnceLock<File>,
+    registration: std::io::Result<ArtifactFileRegistration>,
+}
+
+#[derive(Debug)]
+struct ArtifactFileRegistration {
+    context: crate::file_descriptors::FileOpenContext,
+    handles: Arc<crate::immutable_files::ImmutableFileHandles>,
+    binding: Option<crate::immutable_files::ImmutableFileBinding>,
 }
 
 impl FileSegmentRangeReader {
@@ -200,12 +208,24 @@ impl FileSegmentRangeReader {
     }
 
     pub fn register(&mut self, artifact_id: u64, path: impl Into<PathBuf>) -> Option<PathBuf> {
+        let path = path.into();
+        let registration = (|| {
+            let context = crate::file_descriptors::context_for_path(&path)?;
+            let handles = context.state.immutable_handles();
+            let binding = handles.binding(&path)?;
+            Ok(ArtifactFileRegistration {
+                context,
+                handles,
+                binding,
+            })
+        })();
         self.artifacts
             .insert(
                 artifact_id,
                 Arc::new(RegisteredArtifact {
-                    path: path.into(),
+                    path,
                     file: OnceLock::new(),
+                    registration,
                 }),
             )
             .map(|artifact| artifact.path.clone())
@@ -250,16 +270,35 @@ impl FileSegmentRangeReader {
                 artifact_id: range.artifact_id,
                 length: range.length.get(),
             })?;
-        let file = match artifact.file.get() {
-            Some(file) => file,
-            None => {
-                let opened =
-                    File::open(&artifact.path).map_err(|source| range_io_error(range, source))?;
-                let _ = artifact.file.set(opened);
-                artifact
-                    .file
-                    .get()
-                    .expect("the current or a concurrent reader opened the artifact")
+        let registration = artifact.registration.as_ref().map_err(|source| {
+            let error = match hawdb_core::error::file_descriptor_error(source) {
+                Some(error) => std::io::Error::other(error),
+                None => std::io::Error::new(source.kind(), source.to_string()),
+            };
+            range_io_error(range, error)
+        })?;
+        let shared = registration
+            .binding
+            .as_ref()
+            .map(|binding| registration.handles.get(binding, &registration.context))
+            .transpose()
+            .map_err(|source| range_io_error(range, source))?;
+        let file = if let Some(file) = &shared {
+            file.as_ref()
+        } else {
+            match artifact.file.get() {
+                Some(file) => file,
+                None => {
+                    let opened = crate::file_io::OpenOptions::new()
+                        .read(true)
+                        .open_with_context(&artifact.path, &registration.context)
+                        .map_err(|source| range_io_error(range, source))?;
+                    let _ = artifact.file.set(opened);
+                    artifact
+                        .file
+                        .get()
+                        .expect("the current or a concurrent reader opened the artifact")
+                }
             }
         };
         let mut payload = vec![0; length];

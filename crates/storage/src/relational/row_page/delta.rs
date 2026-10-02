@@ -243,6 +243,7 @@ pub enum RelationalRowDeltaError {
     Admission(String),
     Corrupt(String),
     Durability(String),
+    FileDescriptors(hawdb_core::error::FileDescriptorError),
     RequiresCheckpoint {
         tables: Vec<String>,
     },
@@ -264,6 +265,7 @@ impl fmt::Display for RelationalRowDeltaError {
         match self {
             Self::Admission(message) => write!(formatter, "relational row delta admission failed: {message}"),
             Self::Corrupt(message) => write!(formatter, "corrupt relational row delta: {message}"),
+            Self::FileDescriptors(error) => fmt::Display::fmt(error, formatter),
             Self::Durability(message) => write!(formatter, "relational row delta durability failed: {message}"),
             Self::RequiresCheckpoint { tables } => write!(
                 formatter,
@@ -291,6 +293,7 @@ impl fmt::Display for RelationalRowDeltaError {
 impl std::error::Error for RelationalRowDeltaError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::FileDescriptors(error) => Some(error),
             Self::Publication(error) => Some(error),
             Self::Row(error) => Some(error),
             Self::Admission(_)
@@ -361,7 +364,10 @@ struct RowDeltaRunContext<'a> {
 }
 
 fn durability(context: &'static str) -> impl FnOnce(std::io::Error) -> RelationalRowDeltaError {
-    move |error| RelationalRowDeltaError::Durability(format!("{context}: {error}"))
+    move |error| match hawdb_core::error::file_descriptor_error(&error) {
+        Some(error) => RelationalRowDeltaError::FileDescriptors(error),
+        None => RelationalRowDeltaError::Durability(format!("{context}: {error}")),
+    }
 }
 
 #[cfg(test)]

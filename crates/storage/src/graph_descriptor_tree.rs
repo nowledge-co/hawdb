@@ -21,13 +21,13 @@
 //! and the small selecting root is replaced last.
 
 use crate::durability::durable_replace_file;
+use crate::file_io::{self as fs, File};
 use crate::graph_descriptor_page::{
     decode_page_ref, encode_page_ref, GraphDescriptorKind, GraphDescriptorPageError,
     GraphDescriptorPageLimits, GraphDescriptorPageRef,
 };
 use hawdb_integrity::{integrity_digest, Crc32c, IntegrityHasher, Sha256Digest};
 use std::fmt::{self, Display, Formatter};
-use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};

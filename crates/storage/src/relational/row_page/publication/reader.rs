@@ -23,13 +23,13 @@ use crate::cache::{
     ContentDigest, ManifestGeneration, RepresentationKind, SegmentCache, SegmentCacheError,
     SegmentCacheKey, StoreId,
 };
+use crate::file_io::{self as fs, File};
 use crate::relational::row_page::{VerifiedRowPage, VerifiedRowPageMetadata};
 use crate::relational::{
     ordered_key::encode_ordered_relational_key, ImmutableRelationalRowPage, RelationalKey,
     RelationalOverflowRootBinding, RelationalOverflowRootReader, RelationalRowPageView,
 };
 use hawdb_integrity::integrity_digest;
-use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

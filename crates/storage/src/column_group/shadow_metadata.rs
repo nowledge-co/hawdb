@@ -19,10 +19,10 @@
 //! and the admission token remain in the embedded facade.
 
 use crate::durability::durable_replace_file;
+use crate::file_io::{self as fs, File};
 use hawdb_core::{HawDBError, PropertyId, Result, Value};
 use hawdb_integrity::crc32c;
 use std::collections::BTreeMap;
-use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
 

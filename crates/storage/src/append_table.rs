@@ -73,6 +73,7 @@ pub enum AppendTableError {
         requested: usize,
     },
     Durability(String),
+    FileDescriptors(hawdb_core::error::FileDescriptorError),
     Corruption(String),
 }
 
@@ -92,6 +93,7 @@ impl fmt::Display for AppendTableError {
                 formatter,
                 "append generated order sequence exhausted for table {table}: watermark={watermark}, requested={requested}"
             ),
+            Self::FileDescriptors(error) => fmt::Display::fmt(error, formatter),
             Self::Durability(message) => {
                 write!(formatter, "append durability error: {message}")
             }
@@ -100,7 +102,23 @@ impl fmt::Display for AppendTableError {
     }
 }
 
-impl std::error::Error for AppendTableError {}
+impl std::error::Error for AppendTableError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::FileDescriptors(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl AppendTableError {
+    pub(crate) fn from_io(context: &str, error: std::io::Error) -> Self {
+        match hawdb_core::error::file_descriptor_error(&error) {
+            Some(error) => Self::FileDescriptors(error),
+            None => Self::Durability(format!("{context}: {error}")),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum AppendOrderMode {

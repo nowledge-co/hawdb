@@ -708,7 +708,7 @@ impl GraphStore {
             }
             WalOp::Relational { record } => {
                 let batch = decode_relational_wal_batch(&record, RelationalDecodeLimits::wal())
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                    .map_err(HawDBError::from_storage_error)?;
                 let expected_epoch = self.commit_epoch.saturating_add(1);
                 if batch.epoch != expected_epoch {
                     return Err(HawDBError::Storage(format!(
@@ -735,7 +735,7 @@ impl GraphStore {
                         batch.replay_access,
                         expected_epoch,
                     )
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                    .map_err(HawDBError::from_storage_error)?;
                 }
             }
             WalOp::RelationalSnapshot { record } => {
@@ -751,7 +751,7 @@ impl GraphStore {
                     RelationalDecodeLimits::checkpoint(),
                     index_load,
                 )
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
                 let expected_epoch = self.commit_epoch.saturating_add(1);
                 if checkpoint.epoch != expected_epoch {
                     return Err(HawDBError::Storage(format!(
@@ -771,7 +771,7 @@ impl GraphStore {
             }
             WalOp::Append { record } => {
                 let batch = decode_append_wal_batch(&record, AppendDecodeLimits::wal())
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                    .map_err(HawDBError::from_storage_error)?;
                 let expected_epoch = self.commit_epoch.saturating_add(1);
                 if batch.epoch != expected_epoch {
                     return Err(HawDBError::Storage(format!(
@@ -782,7 +782,7 @@ impl GraphStore {
                 self.append_state = self
                     .append_state
                     .apply_recovered_transaction(&batch.transaction, self.append_mutation_limits)
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                    .map_err(HawDBError::from_storage_error)?;
             }
             WalOp::Batch(ops) => {
                 for op in ops {

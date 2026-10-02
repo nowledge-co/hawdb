@@ -222,7 +222,7 @@ pub fn encode_bytes(input: &[u8]) -> String {
 
 pub fn decode_string(input: &str) -> Result<String> {
     let bytes = decode_bytes(input)?;
-    String::from_utf8(bytes).map_err(|error| HawDBError::Storage(error.to_string()))
+    String::from_utf8(bytes).map_err(HawDBError::from_storage_error)
 }
 
 pub fn decode_bytes(input: &str) -> Result<Vec<u8>> {

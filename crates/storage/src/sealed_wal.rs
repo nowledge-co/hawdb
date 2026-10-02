@@ -18,12 +18,12 @@
 //! [`seal_wal_file`].  This module validates a stable prefix and publishes its
 //! bytes, but deliberately does not rotate the active writer or switch a head.
 
+use crate::file_io::{self as fs, File, OpenOptions};
 use crate::immutable_object::{
     ImmutableObjectError, ImmutableObjectStore, ObjectKind, ObjectReference, PublishOutcome,
 };
 use crate::wal::{WalCursorEvent, WalOpenOutcome, WalRecordCursor};
 use std::fmt::{self, Display, Formatter};
-use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 

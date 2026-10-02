@@ -87,6 +87,7 @@ fn qualification_probe_error(
         "relational index qualification probe {ordinal} on {table}.{index} failed: {error}"
     );
     match error {
+        RelationalIndexShadowError::FileDescriptors(error) => HawDBError::FileDescriptors(error),
         RelationalIndexShadowError::Corrupt(_) => HawDBError::StorageIntegrity(context),
         RelationalIndexShadowError::Admission(_)
         | RelationalIndexShadowError::Durability(_)
@@ -734,7 +735,7 @@ impl GraphStore {
     ) -> crate::Result<RelationalIndexViewQualificationReport> {
         self.relational_state
             .require_materialized_rows("relational index differential qualification")
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
         let view = self
             .relational_index_shadow
             .current_read_view(self.commit_epoch)

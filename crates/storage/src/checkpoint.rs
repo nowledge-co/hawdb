@@ -69,7 +69,7 @@ pub fn encode_search_projection_relational_primary_key_changes(
                     .map(|key| {
                         encode_relational_primary_key(key)
                             .map(|encoded| encode_bytes(&encoded))
-                            .map_err(|error| HawDBError::Storage(error.to_string()))
+                            .map_err(HawDBError::from_storage_error)
                     })
                     .collect::<Result<Vec<_>>>()?;
                 encoded_tables.push(format!(
@@ -632,7 +632,7 @@ pub fn decode_search_projection_relational_primary_key_changes(
             for raw_key in raw_keys.split(':') {
                 let key_bytes = crate::text::decode_bytes(raw_key)?;
                 let key = decode_relational_primary_key(&key_bytes)
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                    .map_err(HawDBError::from_storage_error)?;
                 encoded_bytes = encoded_bytes
                     .checked_add(KEY_FIXED_BYTES)
                     .and_then(|bytes| bytes.checked_add(key_bytes.len()))

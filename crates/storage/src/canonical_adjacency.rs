@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::canonical::{decode_relationship, encode_relationship, CanonicalScanControl};
+use crate::file_io::{self as fs, File};
 use crate::graph_descriptor_tree::demand::{
     GraphDescriptorTreeDemandReader, GraphDescriptorTreeReadLimits, GraphDescriptorTreeReadReport,
     GraphDescriptorTreeScanControl,
@@ -36,7 +37,6 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
-use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};

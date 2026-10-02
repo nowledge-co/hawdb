@@ -43,7 +43,7 @@ fn row_compaction_publication_error(
         hawdb_storage::relational::RelationalRowPagePublicationError::Corrupt(_) => {
             HawDBError::StorageIntegrity(error.to_string())
         }
-        _ => HawDBError::Storage(error.to_string()),
+        _ => HawDBError::from_storage_error(error),
     }
 }
 
@@ -52,6 +52,9 @@ fn exact_overflow_publication_error(
 ) -> HawDBError {
     let message = error.to_string();
     match error {
+        hawdb_storage::relational::RelationalOverflowPublicationError::FileDescriptors(error) => {
+            HawDBError::FileDescriptors(error)
+        }
         hawdb_storage::relational::RelationalOverflowPublicationError::Corrupt(_)
         | hawdb_storage::relational::RelationalOverflowPublicationError::MissingExtent(_) => {
             HawDBError::StorageIntegrity(message)
@@ -74,7 +77,7 @@ fn push_property_projection_definition(
 ) -> Result<()> {
     admission
         .admit(&definition)
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        .map_err(HawDBError::from_storage_error)?;
     definitions.push(definition);
     Ok(())
 }
@@ -120,13 +123,13 @@ impl GraphStore {
             binding,
             self.append_publication_config,
         )
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        .map_err(HawDBError::from_storage_error)?;
         self.append_state = AppendState::from_checkpoint_with_generated_order_watermarks(
             reader.manifest().schemas.clone(),
             reader.watermarks(),
             reader.generated_order_watermarks().clone(),
         )
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        .map_err(HawDBError::from_storage_error)?;
         self.append_generation_reader = Some(reader);
         Ok(())
     }
@@ -565,7 +568,7 @@ impl GraphStore {
         }
         for index in catalog.composite_property_indexes() {
             let property = persistent_composite_property_identity(&index.properties)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
             push_property_projection_definition(
                 &mut property_projection_definitions,
                 &mut property_projection_definition_admission,
@@ -643,7 +646,7 @@ impl GraphStore {
             let append_rows = self
                 .append_state
                 .checkpoint_rows(self.append_publication_config.segment.max_rows)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
             let append_report = AppendPublisher::publish_candidate_with_state(
                 durable.root_path(),
                 generation,
@@ -656,13 +659,13 @@ impl GraphStore {
                 &append_rows,
                 self.append_publication_config,
             )
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
             let checkpoint_append_reader = AppendGenerationReader::open_bound(
                 durable.root_path(),
                 append_report.generation_artifacts,
                 self.append_publication_config,
             )
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
             if let Some(encoded) = projected_graph_artifacts.as_deref() {
                 durable.write_projected_graph_artifacts_to(
                     &staging_path.join(PROJECTED_GRAPHS_FILE),
@@ -747,7 +750,7 @@ impl GraphStore {
                         index_load,
                     )
                     .map(|checkpoint| checkpoint.state)
-                    .map_err(|error| HawDBError::Storage(error.to_string()))
+                    .map_err(HawDBError::from_storage_error)
                 })
                 .transpose()?;
             let mut overflow_publication_config = RelationalOverflowPublicationConfig::default();
@@ -831,7 +834,7 @@ impl GraphStore {
                 let overflow_inputs = self
                     .relational_state
                     .overflow_delta_generation_inputs(&row_plan.deltas)
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                    .map_err(HawDBError::from_storage_error)?;
                 overflow_publisher
                     .persist_generation_retaining_base(
                         durable.root_path(),
@@ -841,7 +844,7 @@ impl GraphStore {
                         base.manifest().generation,
                         overflow_inputs,
                     )
-                    .map_err(|error| HawDBError::Storage(error.to_string()))
+                    .map_err(HawDBError::from_storage_error)
             } else {
                 let overflow_inputs = self
                     .relational_state
@@ -849,7 +852,7 @@ impl GraphStore {
                         previous_overflow.is_some(),
                         max_materialized_overflow_bytes,
                     )
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                    .map_err(HawDBError::from_storage_error)?;
                 overflow_publisher
                     .persist_generation(
                         durable.root_path(),
@@ -861,7 +864,7 @@ impl GraphStore {
                             .map(|binding| binding.generation),
                         overflow_inputs,
                     )
-                    .map_err(|error| HawDBError::Storage(error.to_string()))
+                    .map_err(HawDBError::from_storage_error)
             }?;
             let relational_overflow_compaction_report =
                 exact_overflow
@@ -905,7 +908,7 @@ impl GraphStore {
                     generation,
                     overflow_publication_config,
                 )
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
 
             let row_request = RelationalRowPageGenerationRequest {
                 directory: durable.root_path(),
@@ -932,7 +935,7 @@ impl GraphStore {
                 }
                 None => row_publisher
                     .persist_generation(row_request, row_plan.deltas)
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?,
+                    .map_err(HawDBError::from_storage_error)?,
             };
             let relational_row_compaction_report = row_compaction
                 .as_ref()
@@ -1174,7 +1177,7 @@ impl GraphStore {
                 .generated_order_watermarks()
                 .clone(),
         )
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        .map_err(HawDBError::from_storage_error)?;
         self.append_generation_reader = Some(prepared.checkpoint_append_reader);
         if prepared.checkpoint_out_of_core {
             self.canonical_base = durable.canonical_segments.clone();

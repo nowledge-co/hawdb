@@ -189,7 +189,7 @@ impl GraphStore {
             .ok_or_else(|| HawDBError::Storage("commit epoch overflow".to_string()))?;
         let relational_record =
             encode_relational_checkpoint(target_commit_epoch, &relational_state)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
         let mut ops = Vec::with_capacity(nodes.len() + relationships.len() + 2);
         ops.push(WalOp::MarkInitialImportSource { source_fingerprint });
         ops.push(WalOp::RelationalSnapshot {
@@ -419,7 +419,7 @@ impl GraphStore {
                     RelationalDecodeLimits::checkpoint(),
                     index_load,
                 )
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
                 if checkpoint.epoch != self.commit_epoch {
                     return Err(HawDBError::Storage(format!(
                         "relational checkpoint epoch {} does not match graph commit epoch {}",
@@ -437,7 +437,7 @@ impl GraphStore {
                 )));
             }
             self.relational_state = RelationalState::from_canonical_row_root(row_root)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
         }
         match loaded_search_projection_change_log_start_epoch {
             Some(start_epoch) => {
@@ -483,7 +483,7 @@ impl GraphStore {
                         );
                         Ok(())
                     })
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                    .map_err(HawDBError::from_storage_error)?;
                 reader
                     .scan_relationships(|relationship| {
                         self.apply_create_relationship(
@@ -495,7 +495,7 @@ impl GraphStore {
                         );
                         Ok(())
                     })
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                    .map_err(HawDBError::from_storage_error)?;
             } else {
                 self.basic_statistics.node_count = reader.manifest().node_count;
                 self.basic_statistics.relationship_count = reader.manifest().relationship_count;

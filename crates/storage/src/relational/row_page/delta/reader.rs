@@ -19,6 +19,7 @@ use super::{
     RelationalRowDeltaTableMetadata, RowDeltaRunContext, RowDeltaRunDescriptor, RowDeltaValue,
     RELATIONAL_ROW_DELTA_MANIFEST_FILE,
 };
+use crate::file_io::File;
 use crate::io::read_exact_at;
 use crate::relational::row_page::demand::RelationalRowPageProjectedOverlayValue;
 use crate::relational::row_page::RelationalRowPageRecoveredValue;
@@ -31,7 +32,6 @@ use crate::relational::{
 };
 use hawdb_integrity::{IntegrityDigest, IntegrityHasher};
 use std::collections::VecDeque;
-use std::fs::File;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -764,6 +764,7 @@ pub(super) fn validate_candidate_overflow_closure(
                 }
                 Err(error) => {
                     closure_error = Some(match error {
+                        crate::relational::RelationalOverflowPublicationError::FileDescriptors(error) => RelationalRowDeltaError::FileDescriptors(error),
                         crate::relational::RelationalOverflowPublicationError::Admission(
                             message,
                         ) => RelationalRowDeltaError::Admission(message),

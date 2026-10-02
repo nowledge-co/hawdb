@@ -12,6 +12,7 @@ use crate::branch_head::{
     ChildBranchHeadRequest, ChildBranchSourceExpectation,
 };
 use crate::durability;
+use crate::file_io::{self as fs, File, OpenOptions, TryLockError};
 use crate::immutable_object::{
     BranchReclamationEntry, BranchReclamationInventory, ImmutableObjectError, ImmutableObjectStore,
     ObjectReference, ReclamationReport,
@@ -21,7 +22,6 @@ use hawdb_core::Uuid;
 use hawdb_integrity::crc32c;
 use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
-use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -801,7 +801,14 @@ impl Display for CatalogFileTransitionError {
     }
 }
 
-impl std::error::Error for CatalogFileTransitionError {}
+impl std::error::Error for CatalogFileTransitionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::Transition(error) => Some(error),
+        }
+    }
+}
 
 struct CatalogMutation<T> {
     value: T,
@@ -1067,7 +1074,16 @@ impl Display for BranchCreateError {
     }
 }
 
-impl std::error::Error for BranchCreateError {}
+impl std::error::Error for BranchCreateError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Catalog(error) => Some(error),
+            Self::Head(error) => Some(error),
+            Self::Lease(error) => Some(error),
+            Self::InconsistentRequest(_) => None,
+        }
+    }
+}
 
 /// Reserves the catalog record, creates the isolated child head/WAL, and
 /// completes the record only after both files are durable. Known child-file

@@ -287,6 +287,150 @@ mod tests {
     }
 
     #[test]
+    fn sql_branch_descriptor_rejection_preserves_source_and_releases_admission_quota() {
+        let path = test_directory("sql-branch-fd-admission");
+        let config = crate::DatabaseConfig {
+            max_open_files: 32,
+            ..Default::default()
+        };
+        let mut database = Database::open_with_config(&path, config).unwrap();
+        database.checkpoint().unwrap();
+        database.query("CREATE (:Memory {id: 'source'})").unwrap();
+        let main = database
+            .initialize_main_branch(Uuid::from_u128(11), Uuid::from_u128(12))
+            .unwrap();
+        let child = database.create_branch(create_request(&main)).unwrap();
+        database.query_sql("USE BRANCH main").unwrap();
+        let target_head = database.branch_head_path(child.id).unwrap();
+        let head_before = std::fs::read(&target_head).unwrap();
+        let runtime = database.branch_directory(child.id).unwrap().join("runtime");
+        assert!(!runtime.exists());
+        let mut held = Vec::new();
+        while database.file_descriptor_metrics().unwrap().open < 32
+            || database.file_descriptor_metrics().unwrap().cached_handles > 0
+        {
+            held.push(
+                hawdb_storage::file_io::File::create(path.join(format!("held-{}", held.len())))
+                    .unwrap(),
+            );
+        }
+        let held_count = held.len();
+        for query in ["SHOW BRANCHES LIMIT 2", "SHOW BRANCH NAME 'main'"] {
+            let result = database.query_sql(query);
+            assert!(
+                matches!(
+                    &result,
+                    Err(HawDBError::FileDescriptors(
+                        hawdb_core::error::FileDescriptorError::BudgetExceeded {
+                            available: 0,
+                            limit: 32,
+                            ..
+                        }
+                    ))
+                ),
+                "unexpected result for {query}: {result:?}"
+            );
+        }
+        assert_eq!(
+            database
+                .query_sql("SHOW CURRENT BRANCH")
+                .unwrap()
+                .rows
+                .len(),
+            1
+        );
+        for _ in 0..4 {
+            drop(held.pop().unwrap());
+        }
+        let before = database.file_descriptor_metrics().unwrap();
+        let error = database
+            .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(child.id)])
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                HawDBError::FileDescriptors(
+                    hawdb_core::error::FileDescriptorError::BudgetExceeded {
+                        requested: 23,
+                        available: 4,
+                        limit: 32
+                    }
+                )
+            ),
+            "unexpected rejection: {error:?}"
+        );
+        let after = database.file_descriptor_metrics().unwrap();
+        assert_eq!(after.open, before.open);
+        assert_eq!(after.reserved, 0);
+        assert_eq!(std::fs::read(&target_head).unwrap(), head_before);
+        assert!(!runtime.exists());
+        assert_eq!(database.current_branch().unwrap().info.id, main.id);
+        database
+            .query("CREATE (:Memory {id: 'after-rejection'})")
+            .unwrap();
+        assert_eq!(
+            database
+                .query("MATCH (m:Memory) RETURN m.id")
+                .unwrap()
+                .rows
+                .len(),
+            2
+        );
+        drop(held);
+        assert!(held_count > 4);
+        for _ in 0..3 {
+            database.query_sql("USE BRANCH child").unwrap();
+            assert_eq!(
+                database
+                    .query("MATCH (m:Memory) RETURN m.id")
+                    .unwrap()
+                    .rows
+                    .len(),
+                1
+            );
+            let metrics = database.file_descriptor_metrics().unwrap();
+            assert_eq!(metrics.reserved, 0);
+            assert_eq!(metrics.ownership_locks, 2);
+            assert_eq!(metrics.admitted_runtimes, 1);
+            database.query_sql("USE BRANCH main").unwrap();
+            assert_eq!(
+                database
+                    .query("MATCH (m:Memory) RETURN m.id")
+                    .unwrap()
+                    .rows
+                    .len(),
+                2
+            );
+            let metrics = database.file_descriptor_metrics().unwrap();
+            assert_eq!(metrics.reserved, 0);
+            assert_eq!(metrics.ownership_locks, 2);
+            assert!(metrics.high_water <= 32);
+        }
+        let mut snapshot = database.begin_read_transaction();
+        database.query_sql("USE BRANCH child").unwrap();
+        let metrics = database.file_descriptor_metrics().unwrap();
+        assert_eq!(metrics.admitted_runtimes, 2);
+        // The snapshot retains the UUID lease. Its source runtime directory
+        // lock and mutable WAL close with the original execution context.
+        assert_eq!(metrics.ownership_locks, 3);
+        assert_eq!(
+            snapshot
+                .query("MATCH (m:Memory) RETURN m.id")
+                .unwrap()
+                .rows
+                .len(),
+            2
+        );
+        drop(snapshot);
+        let metrics = database.file_descriptor_metrics().unwrap();
+        assert_eq!(metrics.admitted_runtimes, 1);
+        assert_eq!(metrics.ownership_locks, 2);
+        assert_eq!(metrics.reserved, 0);
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn sql_branch_failed_selection_and_transaction_rejection_preserve_source() {
         let (path, mut database, main) = initialized_database();
         let child = database.create_branch(create_request(&main)).unwrap();
@@ -1427,10 +1571,11 @@ pub struct BranchInfo {
 pub enum BranchLifecycleError {
     InMemoryDatabase,
     Storage(String),
+    Runtime(HawDBError),
     CatalogIo(std::io::Error),
     Catalog(storage::CatalogError),
     Transition(storage::CatalogTransitionError),
-    LeaseUnavailable(String),
+    LeaseUnavailable(hawdb_storage::ownership::DatabaseDirectoryLeaseError),
     UnknownBranch,
     RootBranchImmutable,
     Admission(hawdb_storage::store::BranchAdmissionError),
@@ -1446,6 +1591,7 @@ impl Display for BranchLifecycleError {
             Self::Storage(message) => {
                 write!(formatter, "branch storage operation failed: {message}")
             }
+            Self::Runtime(error) => Display::fmt(error, formatter),
             Self::CatalogIo(error) => write!(formatter, "branch catalog I/O failed: {error}"),
             Self::Catalog(error) => write!(formatter, "branch catalog is invalid: {error}"),
             Self::Transition(error) => {
@@ -1465,7 +1611,25 @@ impl Display for BranchLifecycleError {
     }
 }
 
-impl std::error::Error for BranchLifecycleError {}
+impl std::error::Error for BranchLifecycleError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Runtime(error) => Some(error),
+            Self::CatalogIo(error) => Some(error),
+            Self::Catalog(error) => Some(error),
+            Self::Transition(error) => Some(error),
+            Self::LeaseUnavailable(error) => Some(error),
+            Self::Admission(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl BranchLifecycleError {
+    fn storage(error: impl std::error::Error + 'static) -> Self {
+        Self::Runtime(HawDBError::from_storage_error(error))
+    }
+}
 
 impl From<storage::CatalogFileTransitionError> for BranchLifecycleError {
     fn from(error: storage::CatalogFileTransitionError) -> Self {
@@ -1478,6 +1642,9 @@ impl From<storage::CatalogFileTransitionError> for BranchLifecycleError {
 
 impl From<BranchLifecycleError> for HawDBError {
     fn from(error: BranchLifecycleError) -> Self {
+        if let BranchLifecycleError::Runtime(error) = error {
+            return error;
+        }
         if let BranchLifecycleError::SourceBusy(resource) = error {
             return HawDBError::BranchBusy { resource };
         }
@@ -1500,7 +1667,7 @@ impl From<BranchLifecycleError> for HawDBError {
         {
             return error;
         }
-        HawDBError::Storage(error.to_string())
+        HawDBError::from_storage_error(error)
     }
 }
 
@@ -1633,25 +1800,7 @@ impl Database {
         .map_err(BranchLifecycleError::Admission)
     }
     fn branch_replay_config(&self) -> hawdb_storage::config::WalReplayConfig {
-        let config = &self.config;
-        hawdb_storage::config::WalReplayConfig {
-            recovery_mode: config.recovery_mode,
-            max_entries: config.max_wal_replay_entries,
-            max_bytes: config.max_wal_replay_bytes,
-            max_branch_sealed_wal_intervals: config.max_branch_sealed_wal_intervals,
-            max_quarantine_bytes: config.max_wal_quarantine_bytes,
-            max_record_bytes: config.max_wal_record_bytes,
-            max_batch_operations: config.max_wal_batch_operations,
-            max_checkpoint_encoded_bytes: config.max_checkpoint_encoded_bytes,
-            max_checkpoint_decoded_bytes: config.max_checkpoint_decoded_bytes,
-            segment_cache_capacity_bytes: config.segment_cache_capacity_bytes,
-            max_graph_manifest_open_bytes: config.max_graph_manifest_open_bytes,
-            residency_mode: config.storage_residency_mode,
-            auto_materialize_checkpoint_bytes: config.auto_materialize_checkpoint_bytes,
-            max_out_of_core_delta_bytes: config.max_out_of_core_delta_bytes,
-            graph_columnar_shadow_checkpoint: config.graph_columnar_shadow_checkpoint,
-            relational_index_mode: config.relational_index_mode,
-        }
+        self.config.wal_replay_config()
     }
 
     pub(super) fn use_branch(
@@ -1660,7 +1809,7 @@ impl Database {
     ) -> Result<(), BranchLifecycleError> {
         self.store
             .ensure_usable()
-            .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+            .map_err(BranchLifecycleError::storage)?;
         let catalog = self.read_branch_catalog()?;
         let record = catalog
             .branches
@@ -1701,12 +1850,16 @@ impl Database {
                 "unfinished background work",
             ));
         }
+        let _admission_resources = self
+            .store
+            .reserve_branch_admission_resources()
+            .map_err(BranchLifecycleError::Runtime)?;
         let admitted = self.admit_branch_record(&record)?;
         let (mut store, schema) = admitted.into_parts();
         if self.config.read_only {
             store
                 .make_admitted_branch_read_only()
-                .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+                .map_err(BranchLifecycleError::storage)?;
         }
         // The candidate owns its lease before anything on the source is
         // replaced. Schema maintenance and validation can fail independently.
@@ -1725,11 +1878,11 @@ impl Database {
         if !candidate.config.read_only {
             candidate
                 .complete_required_relational_row_checkpoint("branch selection")
-                .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+                .map_err(BranchLifecycleError::storage)?;
         }
         candidate
             .apply_engine_system_schema()
-            .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+            .map_err(BranchLifecycleError::storage)?;
         candidate.projection_consumers = super::search_projection_consumer::ConsumerRegistry::load(
             candidate.store.search_projection_registry_root(),
             candidate.store.search_projection_database_identity(),
@@ -1817,12 +1970,11 @@ impl Database {
         self.ensure_branch_writable()?;
         let main = self.initialize_branch_catalog_record(project_id, main_branch_id)?;
         let head_path = self.branch_head_path(main.id.as_uuid())?;
-        let head = if head_path
-            .try_exists()
+        let head = if hawdb_storage::file_io::try_exists(&head_path)
             .map_err(BranchLifecycleError::CatalogIo)?
         {
-            let head = branch_head::read_branch_head(&head_path)
-                .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+            let head =
+                branch_head::read_branch_head(&head_path).map_err(BranchLifecycleError::storage)?;
             if head.project_id != *project_id.as_bytes()
                 || head.branch_id != *main_branch_id.as_bytes()
             {
@@ -1840,7 +1992,8 @@ impl Database {
             let branch_directory = head_path
                 .parent()
                 .expect("branch head has a parent directory");
-            std::fs::create_dir_all(branch_directory).map_err(BranchLifecycleError::CatalogIo)?;
+            hawdb_storage::file_io::create_dir_all(branch_directory)
+                .map_err(BranchLifecycleError::CatalogIo)?;
             let objects = self
                 .branch_catalog_path()?
                 .parent()
@@ -1853,7 +2006,7 @@ impl Database {
                     *project_id.as_bytes(),
                     *main_branch_id.as_bytes(),
                 )
-                .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?
+                .map_err(BranchLifecycleError::storage)?
         };
         let catalog_path = self.branch_catalog_path()?;
         let objects = hawdb_storage::immutable_object::ImmutableObjectStore::open(
@@ -1862,19 +2015,19 @@ impl Database {
                 .expect("branch catalog has a parent")
                 .join("objects"),
         )
-        .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+        .map_err(BranchLifecycleError::storage)?;
         let root_bytes = objects
             .read(head.sealed_root)
-            .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+            .map_err(BranchLifecycleError::storage)?;
         let root = hawdb_storage::sealed_root::SealedRoot::decode(&root_bytes)
-            .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+            .map_err(BranchLifecycleError::storage)?;
         let wal = branch_head::active_wal_identity_from_file(
             &self.branch_wal_path(main.id.as_uuid(), head.active_wal.generation)?,
             head.active_wal.generation,
             head.active_wal.replay_start_lsn,
             head.active_wal.byte_length,
         )
-        .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+        .map_err(BranchLifecycleError::storage)?;
         if root.commit_epoch != head.logical_commit_epoch || wal != head.active_wal {
             return Err(BranchLifecycleError::Storage(
                 "initial main root/WAL does not match its head".to_string(),
@@ -1894,7 +2047,7 @@ impl Database {
 
     pub fn list_branches(&self) -> Result<Vec<BranchInfo>, BranchLifecycleError> {
         let path = self.branch_catalog_path()?;
-        if !path.exists() {
+        if !hawdb_storage::file_io::try_exists(&path).map_err(BranchLifecycleError::CatalogIo)? {
             return Ok(Vec::new());
         }
         Ok(self
@@ -1997,9 +2150,7 @@ impl Database {
                     // Report its current outcome without finalizing under an owner.
                     return self.describe_branch(BranchSelector::Id(branch.id.as_uuid()));
                 }
-                Err(error) => {
-                    return Err(BranchLifecycleError::LeaseUnavailable(error.to_string()))
-                }
+                Err(error) => return Err(BranchLifecycleError::LeaseUnavailable(error)),
             };
         let request = storage::DeleteRequest {
             id: branch.id,
@@ -2097,7 +2248,7 @@ impl Database {
                         storage::BranchCreateError::Lease(
                             hawdb_storage::ownership::DatabaseDirectoryLeaseError::AlreadyOpen,
                         ) => BranchLifecycleError::SourceBusy("pending child creation"),
-                        error => BranchLifecycleError::Storage(error.to_string()),
+                        error => BranchLifecycleError::storage(error),
                     })?;
                     return match outcome {
                         storage::CreateRecoveryOutcome::Completed => Ok(completed),
@@ -2131,7 +2282,7 @@ impl Database {
         {
             self.store
                 .seal_admitted_branch(request.expected_source_commit_epoch)
-                .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+                .map_err(BranchLifecycleError::storage)?;
             None
         } else {
             let objects = catalog_path

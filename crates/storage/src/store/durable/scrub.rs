@@ -16,6 +16,7 @@
 
 use super::{stable_identity_error, DurableManifest, DurableStore};
 use crate::error::{HawDBError, Result};
+use crate::file_io as fs;
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checkpoint_generation_file, file_checksum,
@@ -43,7 +44,6 @@ use hawdb_storage::{
     relational::{decode_relational_checkpoint_file, RelationalDecodeLimits},
 };
 use std::collections::BTreeSet;
-use std::fs::{self};
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Arc;
@@ -136,7 +136,7 @@ impl DurableStore {
             )?;
             let checkpoint =
                 decode_relational_checkpoint_file(&path, RelationalDecodeLimits::checkpoint())
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                    .map_err(HawDBError::from_storage_error)?;
             if checkpoint.epoch != self.checkpoint_commit_epoch {
                 return Err(HawDBError::Storage(format!(
                     "relational checkpoint epoch {} does not match manifest checkpoint commit epoch {}",
@@ -178,7 +178,7 @@ impl DurableStore {
                 },
                 hawdb_storage::relational::RelationalIndexShadowConfig::default(),
             )
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
             if reader.manifest().catalog_schema_digest != binding.catalog_schema_digest
                 || reader.manifest().root_set_digest != binding.root_set_digest
             {
@@ -204,7 +204,7 @@ impl DurableStore {
                 binding,
                 AppendPublicationConfig::default(),
             )
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
             for segment in reader.segment_bindings() {
                 scrub.verify_path(
                     &self.root_path.join(append_segment_file(segment.generation)),
@@ -216,7 +216,7 @@ impl DurableStore {
             }
             reader
                 .deep_scrub()
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
         }
 
         let overflow_root = self.open_bound_relational_overflow()?;
@@ -329,7 +329,7 @@ impl DurableStore {
                 "canonical manifest",
             )?;
             let artifact = CanonicalSegmentManifest::decode(&fs::read_to_string(&manifest_path)?)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
             if artifact.generation != ManifestGeneration(generation)
                 || artifact.source_commit_epoch != manifest.checkpoint_commit_epoch
             {
@@ -491,7 +491,7 @@ impl DurableStore {
                 "property spill manifest",
             )?;
             let artifact = PropertySpillManifest::decode(&fs::read_to_string(&manifest_path)?)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
             if artifact.generation != ManifestGeneration(generation)
                 || artifact.source_commit_epoch != manifest.checkpoint_commit_epoch
             {
@@ -579,7 +579,7 @@ impl DurableStore {
             )?;
             let artifact =
                 PersistentPropertyProjectionManifest::decode(&fs::read_to_string(&manifest_path)?)
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                    .map_err(HawDBError::from_storage_error)?;
             scrub.verify_path(
                 &self
                     .root_path
@@ -687,7 +687,7 @@ impl DurableStore {
                 }
                 Ok(())
             })
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
         let older_overflow_files = overflow_extent_generations
             .iter()
             .filter(|generation| **generation != overflow_binding.generation)
@@ -699,7 +699,7 @@ impl DurableStore {
 
         row_root
             .scrub_physical_pages()
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
         let older_generations = row_root
             .manifest()
             .physical_generations

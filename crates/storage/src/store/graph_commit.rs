@@ -1878,7 +1878,7 @@ impl GraphStore {
                 replay_access.as_ref(),
                 &staged.primary_key_changes,
             )
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
             staged_relational_primary_key_changes = Some(encoded.primary_key_changes);
             ops.push(WalOp::Relational {
                 record: Arc::from(encoded.record),
@@ -1892,7 +1892,7 @@ impl GraphStore {
             collect_append_version_writes(&mut version_writes, &prepared.materialized_transaction)?;
             let record =
                 encode_append_wal_batch(next_commit_epoch, &prepared.materialized_transaction)
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                    .map_err(HawDBError::from_storage_error)?;
             staged_append_state = Some(prepared.state);
             append_mutation_outcomes = prepared.mutation_outcomes;
             ops.push(WalOp::Append {
@@ -2879,11 +2879,12 @@ fn record_tombstone_version(writes: &mut VersionWriteSet, key: VersionKey) -> Re
 
 fn map_relational_staging_error(error: RelationalError) -> HawDBError {
     match error {
+        RelationalError::FileDescriptors(error) => HawDBError::FileDescriptors(error),
         RelationalError::Corruption(_) => HawDBError::StorageIntegrity(error.to_string()),
         RelationalError::Admission(_)
         | RelationalError::Schema(_)
         | RelationalError::Constraint(_)
-        | RelationalError::Durability(_) => HawDBError::Storage(error.to_string()),
+        | RelationalError::Durability(_) => HawDBError::from_storage_error(error),
     }
 }
 
@@ -2898,7 +2899,7 @@ fn map_append_staging_error(error: hawdb_storage::append_table::AppendTableError
             watermark,
             requested,
         },
-        error => HawDBError::Storage(error.to_string()),
+        error => HawDBError::from_storage_error(error),
     }
 }
 

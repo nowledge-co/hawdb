@@ -17,11 +17,11 @@ use super::{
     RelationalRowDeltaManifest, RelationalRowDeltaTableMetadata, RowDeltaBound, RowDeltaKey,
     RowDeltaRunDescriptor, RowDeltaValue,
 };
+use crate::file_io::{self as fs, File, OpenOptions};
 use crate::relational::row_page::{RelationalRowPageRootReader, RelationalRowPageTableRoot};
 use crate::relational::{RelationalRecoverySourceIdentity, RELATIONAL_RECOVERY_SOURCE_BYTES};
 use hawdb_integrity::{IntegrityDigest, IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 

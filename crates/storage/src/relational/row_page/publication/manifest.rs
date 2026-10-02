@@ -17,8 +17,8 @@ use super::{
     RelationalRowPagePublicationConfig, RelationalRowPagePublicationError,
     RelationalRowPageRootManifest, RelationalRowPageTableRoot,
 };
+use crate::file_io::{self as fs, File};
 use hawdb_integrity::{integrity_digest, IntegrityHasher, Sha256Digest, SHA256_BYTES};
-use std::fs::{self, File};
 use std::io::Read;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::Path;
@@ -721,6 +721,9 @@ fn map_schema_encode_error(
     error: crate::relational::RelationalError,
 ) -> RelationalRowPagePublicationError {
     match error {
+        crate::relational::RelationalError::FileDescriptors(error) => {
+            RelationalRowPagePublicationError::FileDescriptors(error)
+        }
         crate::relational::RelationalError::Admission(message)
         | crate::relational::RelationalError::Schema(message)
         | crate::relational::RelationalError::Constraint(message) => {
@@ -739,6 +742,9 @@ fn map_schema_decode_error(
     error: crate::relational::RelationalError,
 ) -> RelationalRowPagePublicationError {
     match error {
+        crate::relational::RelationalError::FileDescriptors(error) => {
+            RelationalRowPagePublicationError::FileDescriptors(error)
+        }
         crate::relational::RelationalError::Admission(message) => {
             RelationalRowPagePublicationError::Admission(message)
         }

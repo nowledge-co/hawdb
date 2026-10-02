@@ -22,7 +22,38 @@ use std::io::{self, ErrorKind};
 /// The range must have a representable exclusive end. On error, the buffer may
 /// contain a partial read and must not be consumed as a complete payload.
 /// Unix preserves the file cursor; Windows uses `seek_read`, which moves it.
-pub fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<()> {
+pub fn read_exact_at(
+    file: &impl PositionedReadFile,
+    buffer: &mut [u8],
+    offset: u64,
+) -> io::Result<()> {
+    file.read_exact_at(buffer, offset)
+}
+
+/// Internal positioned IO contract shared by native and admitted file handles.
+pub trait PositionedReadFile {
+    fn read_exact_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<()>;
+}
+
+impl<T: PositionedReadFile + ?Sized> PositionedReadFile for std::sync::Arc<T> {
+    fn read_exact_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<()> {
+        (**self).read_exact_at(buffer, offset)
+    }
+}
+
+impl PositionedReadFile for File {
+    fn read_exact_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<()> {
+        read_native_exact_at(self, buffer, offset)
+    }
+}
+
+impl PositionedReadFile for crate::file_io::File {
+    fn read_exact_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<()> {
+        self.with_native(|file| read_native_exact_at(file, buffer, offset))
+    }
+}
+
+fn read_native_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileExt;

@@ -16,6 +16,7 @@ use super::{
     encode_relational_key, IndexLeafEntry, RelationalIndexShadowConfig, RelationalIndexShadowError,
     TreeWriter,
 };
+use crate::file_io::{self as fs, File};
 use crate::relational::{
     column_positions, index_includes_key, row_key, RelationalIndexDefinition, RelationalIndexRole,
     RelationalIndexRowSource, RelationalTableSchema,
@@ -23,7 +24,6 @@ use crate::relational::{
 use hawdb_integrity::Crc32cHasher;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
-use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};

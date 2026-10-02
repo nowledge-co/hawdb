@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::file_io::{self as fs, File, OpenOptions, TryLockError};
 use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, MutexGuard};
@@ -116,6 +116,7 @@ impl Drop for DatabaseDirectoryLease {
 fn open_lock_file(canonical_path: &Path) -> io::Result<File> {
     let lock_path = canonical_path.join(DATABASE_DIRECTORY_LOCK_FILE);
     OpenOptions::new()
+        .descriptor_kind(crate::file_descriptors::DescriptorKind::OwnershipLock)
         .read(true)
         .write(true)
         .create(true)
@@ -123,7 +124,10 @@ fn open_lock_file(canonical_path: &Path) -> io::Result<File> {
         .open(&lock_path)
         .or_else(|error| {
             if error.kind() == io::ErrorKind::PermissionDenied {
-                OpenOptions::new().read(true).open(lock_path)
+                OpenOptions::new()
+                    .descriptor_kind(crate::file_descriptors::DescriptorKind::OwnershipLock)
+                    .read(true)
+                    .open(lock_path)
             } else {
                 Err(error)
             }

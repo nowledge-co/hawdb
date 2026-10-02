@@ -29,6 +29,7 @@ use super::{
     RelationalIndexGenerationIdentity, RelationalIndexReadLimits, RelationalIndexReadReport,
     RelationalIndexShadowConfig, RelationalIndexShadowError, RelationalIndexShadowReader,
 };
+use crate::file_io::{self as fs, File};
 use crate::{
     cache::{
         ContentDigest, ManifestGeneration, RepresentationKind, SegmentCache, SegmentCacheError,
@@ -38,7 +39,6 @@ use crate::{
 };
 use hawdb_integrity::{IntegrityDigest, IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
 use std::io::Write;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -557,9 +557,7 @@ impl RelationalIndexRecoveryBuilder {
             ));
         }
         fs::create_dir_all(directory).map_err(|error| {
-            RelationalIndexShadowError::Durability(format!(
-                "create relational index recovery directory: {error}"
-            ))
+            RelationalIndexShadowError::from_io("create relational index recovery directory", error)
         })?;
         Ok(Self {
             directory: directory.to_path_buf(),
@@ -689,9 +687,7 @@ impl RelationalIndexRecoveryBuilder {
         let manifest_tmp = manifest_path.with_extension("hawdb.tmp");
         write_synced(&manifest_tmp, &encoded_manifest, "write recovery manifest")?;
         durable_replace_file(&manifest_tmp, &manifest_path).map_err(|error| {
-            RelationalIndexShadowError::Durability(format!(
-                "publish relational index recovery manifest: {error}"
-            ))
+            RelationalIndexShadowError::from_io("publish relational index recovery manifest", error)
         })?;
         Ok(RelationalIndexRecoveryReport {
             base_generation: manifest.base_generation,
@@ -756,9 +752,10 @@ impl RelationalIndexRecoveryBuilder {
             self.config,
         )?;
         durable_replace_file(&tmp_path, &final_path).map_err(|error| {
-            RelationalIndexShadowError::Durability(format!(
-                "publish relational index recovery delta page: {error}"
-            ))
+            RelationalIndexShadowError::from_io(
+                "publish relational index recovery delta page",
+                error,
+            )
         })?;
         self.pages.push(DeltaPageDescriptor {
             ordinal,
@@ -1866,22 +1863,16 @@ fn write_delta_page(
     debug_assert_eq!(header.len(), DELTA_PAGE_HEADER_BYTES);
 
     let mut file = File::create(path).map_err(|error| {
-        RelationalIndexShadowError::Durability(format!(
-            "create relational index recovery delta page: {error}"
-        ))
+        RelationalIndexShadowError::from_io("create relational index recovery delta page", error)
     })?;
     let mut artifact_hasher = IntegrityHasher::new();
     file.write_all(&header).map_err(|error| {
-        RelationalIndexShadowError::Durability(format!(
-            "write relational index recovery delta header: {error}"
-        ))
+        RelationalIndexShadowError::from_io("write relational index recovery delta header", error)
     })?;
     artifact_hasher.update(&header);
     write_delta_entries(&mut file, &mut artifact_hasher, page.entries)?;
     file.sync_all().map_err(|error| {
-        RelationalIndexShadowError::Durability(format!(
-            "sync relational index recovery delta page: {error}"
-        ))
+        RelationalIndexShadowError::from_io("sync relational index recovery delta page", error)
     })?;
     let encoded_len = (DELTA_PAGE_HEADER_BYTES as u64)
         .checked_add(payload_len)
@@ -1958,9 +1949,7 @@ fn write_hashed(
     bytes: &[u8],
 ) -> Result<(), RelationalIndexShadowError> {
     file.write_all(bytes).map_err(|error| {
-        RelationalIndexShadowError::Durability(format!(
-            "write relational index recovery delta entry: {error}"
-        ))
+        RelationalIndexShadowError::from_io("write relational index recovery delta entry", error)
     })?;
     hasher.update(bytes);
     Ok(())
@@ -2173,12 +2162,12 @@ fn write_synced(
     encoded: &[u8],
     context: &str,
 ) -> Result<(), RelationalIndexShadowError> {
-    let mut file = File::create(path)
-        .map_err(|error| RelationalIndexShadowError::Durability(format!("{context}: {error}")))?;
+    let mut file =
+        File::create(path).map_err(|error| RelationalIndexShadowError::from_io(context, error))?;
     file.write_all(encoded)
-        .map_err(|error| RelationalIndexShadowError::Durability(format!("{context}: {error}")))?;
+        .map_err(|error| RelationalIndexShadowError::from_io(context, error))?;
     file.sync_all()
-        .map_err(|error| RelationalIndexShadowError::Durability(format!("{context}: {error}")))
+        .map_err(|error| RelationalIndexShadowError::from_io(context, error))
 }
 
 fn admission(message: impl Into<String>) -> RelationalIndexShadowError {

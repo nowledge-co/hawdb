@@ -19,10 +19,10 @@
 //! objects are accepted only when their complete bytes match the requested
 //! reference; an immutable path is never replaced.
 
+use crate::file_io::{self as fs, File, OpenOptions};
 use hawdb_integrity::{IntegrityHasher, Sha256Digest};
 use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
-use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -556,13 +556,22 @@ fn validate_file(
 }
 
 fn identity_digest(kind: ObjectKind, format_version: u16, bytes: &[u8]) -> Sha256Digest {
+    let mut hasher = identity_hasher(kind, format_version, bytes.len() as u64);
+    hasher.update(bytes);
+    hasher.finish().sha256
+}
+
+pub(crate) fn identity_hasher(
+    kind: ObjectKind,
+    format_version: u16,
+    byte_length: u64,
+) -> IntegrityHasher {
     let mut hasher = IntegrityHasher::new();
     hasher.update(IDENTITY_DOMAIN);
     hasher.update(&[kind as u8]);
     hasher.update(&format_version.to_le_bytes());
-    hasher.update(&(bytes.len() as u64).to_le_bytes());
-    hasher.update(bytes);
-    hasher.finish().sha256
+    hasher.update(&byte_length.to_le_bytes());
+    hasher
 }
 
 fn map_io<T>(operation: &'static str, result: io::Result<T>) -> Result<T, ImmutableObjectError> {

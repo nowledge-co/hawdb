@@ -17,6 +17,7 @@
 pub mod binary;
 pub mod frame;
 pub mod group_commit;
+use crate::file_io::{self as fs, File, OpenOptions};
 use crate::text::{
     encode_nullable, encode_properties, encode_property_type, encode_schema_object_state,
     encode_string, encode_string_vec, encode_table_kind, encode_value,
@@ -37,7 +38,6 @@ use hawdb_core::{PropertyType, SchemaObjectState, TableKind};
 use hawdb_integrity::{IntegrityHasher, Sha256Digest};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

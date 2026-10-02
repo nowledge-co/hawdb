@@ -85,8 +85,8 @@ pub struct ResidualRowBlob<'a> {
 
 impl<'a> ResidualRowBlob<'a> {
     pub fn new(entries: &'a [(u32, &'a Value)]) -> Result<Self> {
-        let encoded_len = residual_row_properties_encoded_len(entries)
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let encoded_len =
+            residual_row_properties_encoded_len(entries).map_err(HawDBError::from_storage_error)?;
         Ok(Self {
             entries,
             encoded_len,

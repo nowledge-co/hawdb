@@ -5,6 +5,7 @@ use crate::checkpoint_closure::CheckpointArtifactInput;
 use crate::config::{DurabilityPolicy, RecoveryMode, WalReplayConfig};
 use crate::durable_manifest::DurableManifest;
 use crate::error::{HawDBError, Result};
+use crate::file_io as fs;
 use crate::immutable_object::{ImmutableObjectStore, ObjectKind, ObjectReference};
 use crate::ownership::{DatabaseDirectoryLease, DatabaseDirectoryLeaseError};
 use crate::relational::RelationalRecoverySourceBuilder;
@@ -16,10 +17,15 @@ use crate::{
     sealed_root::{CheckpointArtifactBinding, SealedRoot},
 };
 use std::collections::{btree_map::Entry, BTreeMap};
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+// Three retained target handles (UUID/runtime locks and mutable WAL), the
+// bounded segment-read wave, and four catalog/publication temporary handles.
+// Additional retained recovery artifacts still obey the same project cap.
+const MIN_BRANCH_ADMISSION_DESCRIPTORS: usize =
+    3 + crate::scan::SHARED_SEGMENT_READ_WORKER_LIMIT + 4;
 
 /// A sealed source with ownership retained until child publication completes.
 /// No graph/schema runtime or checkpoint data is materialized by this path.
@@ -190,6 +196,27 @@ impl std::error::Error for BranchAdmissionError {
 }
 
 impl GraphStore {
+    #[doc(hidden)]
+    pub fn reserve_branch_admission_resources(
+        &self,
+    ) -> Result<crate::file_descriptors::DescriptorReservation> {
+        let durable = self.durable.as_ref().ok_or_else(|| {
+            HawDBError::Storage("branch admission requires a durable project".into())
+        })?;
+        durable.reserve_branch_admission_resources(MIN_BRANCH_ADMISSION_DESCRIPTORS)
+    }
+    pub fn file_descriptor_metrics(
+        &self,
+    ) -> Option<crate::file_descriptors::FileDescriptorMetrics> {
+        self.durable
+            .as_ref()
+            .map(|durable| durable.file_descriptor_metrics())
+            .or_else(|| {
+                self.branch_runtime_owner
+                    .as_ref()
+                    .map(|owner| owner.metrics())
+            })
+    }
     /// Seals a closed source from its selector and complete private WAL only.
     /// Existing immutable checkpoint references are reused without recovery.
     /// The lease also pins immutable candidates against catalog-backed GC.
@@ -198,6 +225,23 @@ impl GraphStore {
         request: BranchAdmissionRequest<'_>,
         expected_commit_epoch: u64,
     ) -> std::result::Result<SealedBranchSource, BranchAdmissionError> {
+        let project_path =
+            request
+                .catalog_path
+                .parent()
+                .ok_or(BranchAdmissionError::IdentityMismatch(
+                    "catalog has no project directory",
+                ))?;
+        let project_files = crate::file_descriptors::ProjectFileDescriptors::acquire_containing(
+            project_path,
+            request.replay_config.max_open_files,
+        )
+        .map_err(BranchAdmissionError::Recovery)?;
+        let _admission_resources = project_files
+            .reserve_admission(MIN_BRANCH_ADMISSION_DESCRIPTORS)
+            .map_err(|error| {
+                BranchAdmissionError::Recovery(HawDBError::from_storage_error(error))
+            })?;
         if matches!(
             request.replay_config.recovery_mode,
             RecoveryMode::AutoRepairTornTail | RecoveryMode::DoctorRepairTornTail
@@ -223,19 +267,18 @@ impl GraphStore {
             DatabaseDirectoryLease::acquire(directory).map_err(BranchAdmissionError::Lease)?;
         let (head, mut root, mut objects) = (|| -> Result<_> {
             let head = branch_head::read_branch_head(request.head_path)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
             let objects = ImmutableObjectStore::open(request.immutable_store_root)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
             let bytes = objects
                 .read(head.sealed_root)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
-            let root = SealedRoot::decode(&bytes)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
+            let root = SealedRoot::decode(&bytes).map_err(HawDBError::from_storage_error)?;
             Ok((head, root, objects))
         })()
         .map_err(BranchAdmissionError::Recovery)?;
         let reference = root.object_reference().map_err(|error| {
-            BranchAdmissionError::Recovery(HawDBError::Storage(error.to_string()))
+            BranchAdmissionError::Recovery(HawDBError::from_storage_error(error))
         })?;
         validate_admission_binding(&before, &head, &root, reference)?;
         if root.sealed_wals.len() > request.replay_config.max_branch_sealed_wal_intervals {
@@ -337,7 +380,7 @@ impl GraphStore {
     ) -> Result<branch_catalog::BranchCreateResult> {
         self.ensure_usable()?;
         let parent = branch_head::read_branch_head(parent_head_path.as_ref())
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
         if let Some(selected) = self.admitted_branch_head()
             && (selected != &parent || self.commit_epoch != request.source_commit_epoch)
         {
@@ -382,6 +425,23 @@ impl GraphStore {
         request: BranchAdmissionRequest<'_>,
         cleanup: impl FnOnce(&Path),
     ) -> std::result::Result<AdmittedBranchStore, BranchAdmissionError> {
+        let project_path =
+            request
+                .catalog_path
+                .parent()
+                .ok_or(BranchAdmissionError::IdentityMismatch(
+                    "catalog has no project directory",
+                ))?;
+        let project_files = crate::file_descriptors::ProjectFileDescriptors::acquire_containing(
+            project_path,
+            request.replay_config.max_open_files,
+        )
+        .map_err(BranchAdmissionError::Recovery)?;
+        let _admission_resources = project_files
+            .reserve_admission(MIN_BRANCH_ADMISSION_DESCRIPTORS)
+            .map_err(|error| {
+                BranchAdmissionError::Recovery(HawDBError::from_storage_error(error))
+            })?;
         let total_open_started = std::time::Instant::now();
         if matches!(
             request.replay_config.recovery_mode,
@@ -407,20 +467,20 @@ impl GraphStore {
         let branch_lease = DatabaseDirectoryLease::acquire(branch_directory)
             .map_err(BranchAdmissionError::Lease)?;
         let head = branch_head::read_branch_head(request.head_path).map_err(|error| {
-            BranchAdmissionError::Recovery(HawDBError::Storage(error.to_string()))
+            BranchAdmissionError::Recovery(HawDBError::from_storage_error(error))
         })?;
         let objects =
             ImmutableObjectStore::open(request.immutable_store_root).map_err(|error| {
-                BranchAdmissionError::Recovery(HawDBError::Storage(error.to_string()))
+                BranchAdmissionError::Recovery(HawDBError::from_storage_error(error))
             })?;
         let root_bytes = objects.read(head.sealed_root).map_err(|error| {
-            BranchAdmissionError::Recovery(HawDBError::Storage(error.to_string()))
+            BranchAdmissionError::Recovery(HawDBError::from_storage_error(error))
         })?;
         let root = SealedRoot::decode(&root_bytes).map_err(|error| {
-            BranchAdmissionError::Recovery(HawDBError::Storage(error.to_string()))
+            BranchAdmissionError::Recovery(HawDBError::from_storage_error(error))
         })?;
         let root_reference = root.object_reference().map_err(|error| {
-            BranchAdmissionError::Recovery(HawDBError::Storage(error.to_string()))
+            BranchAdmissionError::Recovery(HawDBError::from_storage_error(error))
         })?;
         validate_admission_binding(&before, &head, &root, root_reference)?;
         if root.sealed_wals.len() > request.replay_config.max_branch_sealed_wal_intervals {
@@ -439,7 +499,7 @@ impl GraphStore {
             head.active_wal,
             max_wal_bytes,
         )
-        .map_err(|error| BranchAdmissionError::Recovery(HawDBError::Storage(error.to_string())))?;
+        .map_err(|error| BranchAdmissionError::Recovery(HawDBError::from_storage_error(error)))?;
 
         let runtime_directory = branch_directory.join("runtime");
         // Mutable WAL dependencies survive disposable-runtime cleanup. They
@@ -528,6 +588,7 @@ impl GraphStore {
                     .durable
                     .as_mut()
                     .expect("admission opened a durable store");
+                let runtime_owner = durable.retain_admitted_runtime();
                 durable.branch_runtime = Some(BranchRuntimeBinding {
                     catalog_path: request.catalog_path.to_path_buf(),
                     immutable_store_root: request.immutable_store_root.to_path_buf(),
@@ -538,6 +599,7 @@ impl GraphStore {
                     checkpoint_generation: durable.checkpoint_epoch,
                     max_sealed_wal_intervals: request.replay_config.max_branch_sealed_wal_intervals,
                 });
+                store.branch_runtime_owner = Some(runtime_owner);
                 Ok(AdmittedBranchStore { store, catalog })
             }
             Err(error) => {
@@ -560,18 +622,25 @@ impl GraphStore {
         destination: impl AsRef<Path>,
         catalog: &mut crate::schema::Catalog,
     ) -> Result<GraphStore> {
-        root.validate()
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        root.validate().map_err(HawDBError::from_storage_error)?;
         let source_durable = source.durable.as_ref().ok_or_else(|| {
             HawDBError::Storage("immutable root replay requires durable storage".to_string())
         })?;
         let destination = destination.as_ref();
+        let _project_files =
+            match crate::file_descriptors::ProjectFileDescriptors::containing(destination)? {
+                Some(project) => project,
+                None => crate::file_descriptors::ProjectFileDescriptors::acquire(
+                    destination,
+                    crate::file_descriptors::DEFAULT_MAX_OPEN_FILES,
+                )?,
+            };
         copy_recovery_container(&source_durable.root_path, destination)?;
         let objects = ImmutableObjectStore::open(immutable_store_root.as_ref())
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
         let manifest_bytes = objects
             .read(root.durable_manifest)
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
         fs::write(destination.join(MANIFEST_FILE), manifest_bytes)?;
         let manifest = DurableManifest::load(&destination.join(MANIFEST_FILE))?;
         materialize_checkpoint_bindings(&objects, destination, &root.checkpoint_bindings)?;
@@ -582,7 +651,7 @@ impl GraphStore {
         }
         let wal = objects
             .read(root.sealed_wals[0].object)
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
         let wal_path = manifest.wal_path(destination);
         if let Some(parent) = wal_path.parent() {
             fs::create_dir_all(parent)?;
@@ -603,14 +672,13 @@ impl GraphStore {
         catalog: &mut crate::schema::Catalog,
     ) -> Result<(GraphStore, branch_head::BranchHead)> {
         let head = branch_head::read_branch_head(head_path.as_ref())
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
         let objects = ImmutableObjectStore::open(immutable_store_root.as_ref())
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
         let root_bytes = objects
             .read(head.sealed_root)
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
-        let root = SealedRoot::decode(&root_bytes)
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
+        let root = SealedRoot::decode(&root_bytes).map_err(HawDBError::from_storage_error)?;
         let store = Self::open_from_immutable_root(
             source,
             &root,
@@ -655,7 +723,7 @@ impl GraphStore {
         let max_active_wal_bytes = durable.max_wal_bytes.unwrap_or(u64::MAX);
         let immutable_store_root = immutable_store_root.as_ref().to_path_buf();
         let mut objects = ImmutableObjectStore::open(&immutable_store_root)
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
         let rotation = match &durable.branch_runtime {
             Some(branch) => {
                 let directory = branch.head_path.parent().ok_or_else(|| {
@@ -687,7 +755,7 @@ impl GraphStore {
                     max_active_wal_bytes,
                     &mut objects,
                 )
-                .map_err(|error| HawDBError::Storage(error.to_string()))?
+                .map_err(HawDBError::from_storage_error)?
             }
         };
 
@@ -736,9 +804,9 @@ impl GraphStore {
         let root_reference = prepared
             .root
             .object_reference()
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
         let mut objects = ImmutableObjectStore::open(&prepared.immutable_store_root)
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
         let head = branch_head::publish_prepared_wal_rotation_with_root(
             head_path,
             branch_head::PreparedWalRootPublicationRequest {
@@ -832,10 +900,10 @@ impl GraphStore {
         ready_branch_record(
             &branch.catalog_path,
             branch_catalog::BranchId::new(hawdb_core::Uuid::from_bytes(branch.head.branch_id))
-                .map_err(|error| HawDBError::Storage(error.to_string()))?,
+                .map_err(HawDBError::from_storage_error)?,
             branch.metadata_revision,
         )
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        .map_err(HawDBError::from_storage_error)?;
         let prepared = self.prepare_immutable_root_handoff(&branch.immutable_store_root)?;
         self.complete_immutable_root_handoff(
             prepared,
@@ -887,7 +955,7 @@ impl GraphStore {
         for interval in &root.sealed_wals {
             let bytes = objects
                 .read(interval.object)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
             let (generation, start_lsn) = crate::wal::frame::decode_binary_wal_header(&bytes)?;
             if start_lsn != interval.start_lsn {
                 return Err(HawDBError::Storage(
@@ -992,7 +1060,7 @@ impl GraphStore {
         }
         let max_active_wal_bytes = durable.max_wal_bytes.unwrap_or(u64::MAX);
         let mut objects = ImmutableObjectStore::open(immutable_store_root.as_ref())
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
         let sealed = seal_wal_file(
             &durable.wal_path,
             durable.wal_generation,
@@ -1000,11 +1068,11 @@ impl GraphStore {
             max_active_wal_bytes,
             &mut objects,
         )
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        .map_err(HawDBError::from_storage_error)?;
         let root = publish_sealed_root(durable, self.commit_epoch, sealed, &mut objects)?;
         let root_reference = root
             .object_reference()
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
         let generation = durable.wal_generation.checked_add(1).ok_or_else(|| {
             HawDBError::Storage("initial branch WAL generation overflow".to_string())
         })?;
@@ -1035,7 +1103,7 @@ impl GraphStore {
                     max_active_wal_bytes,
                 },
             )
-            .map_err(|error| HawDBError::Storage(error.to_string()));
+            .map_err(HawDBError::from_storage_error);
         }
         branch_head::create_child_branch_head(
             head_path,
@@ -1051,7 +1119,7 @@ impl GraphStore {
             },
             max_active_wal_bytes,
         )
-        .map_err(|error| HawDBError::Storage(error.to_string()))
+        .map_err(HawDBError::from_storage_error)
     }
 }
 
@@ -1062,7 +1130,7 @@ fn wal_rotation_publication_error(error: branch_head::WalRotationPublicationErro
         ) => HawDBError::StorageIntegrity(format!(
             "branch head publication is uncertain; close and reopen the branch: {error}"
         )),
-        _ => HawDBError::Storage(error.to_string()),
+        _ => HawDBError::from_storage_error(error),
     }
 }
 
@@ -1096,7 +1164,7 @@ fn prepare_fresh_branch_wal_rotation(
                     .checked_add(1)
                     .ok_or_else(|| HawDBError::Storage("WAL generation overflow".into()))?;
             }
-            Err(error) => return Err(HawDBError::Storage(error.to_string())),
+            Err(error) => return Err(HawDBError::from_storage_error(error)),
         }
     }
 }
@@ -1112,9 +1180,9 @@ fn validate_source_wal(
 ) -> Result<(u64, u64)> {
     let bytes = objects
         .read(root.durable_manifest)
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        .map_err(HawDBError::from_storage_error)?;
     let manifest = DurableManifest::decode(
-        std::str::from_utf8(&bytes).map_err(|error| HawDBError::Storage(error.to_string()))?,
+        std::str::from_utf8(&bytes).map_err(HawDBError::from_storage_error)?,
     )?;
     if manifest.checkpoint_commit_epoch != root.checkpoint_epoch
         || manifest.wal_replay_start_lsn != root.wal_replay_start_lsn
@@ -1145,7 +1213,7 @@ fn validate_source_wal(
         head.active_wal,
         config.max_bytes.unwrap_or(u64::MAX),
     )
-    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+    .map_err(HawDBError::from_storage_error)?;
     let mut cursor = match crate::wal::WalRecordCursor::open(path, config.max_record_bytes)? {
         crate::wal::WalOpenOutcome::Cursor(cursor) => cursor,
         _ => {
@@ -1231,7 +1299,7 @@ fn validate_source_wal_op(
                 record,
                 crate::relational::RelationalDecodeLimits::wal(),
             )
-            .map_err(|error| HawDBError::Storage(error.to_string()))?
+            .map_err(HawDBError::from_storage_error)?
             .epoch,
         ),
         WalOp::RelationalSnapshot { record } => Some(
@@ -1239,7 +1307,7 @@ fn validate_source_wal_op(
                 record,
                 crate::relational::RelationalDecodeLimits::checkpoint(),
             )
-            .map_err(|error| HawDBError::Storage(error.to_string()))?
+            .map_err(HawDBError::from_storage_error)?
             .epoch,
         ),
         WalOp::Append { record } => Some(
@@ -1247,7 +1315,7 @@ fn validate_source_wal_op(
                 record,
                 crate::append_table::AppendDecodeLimits::wal(),
             )
-            .map_err(|error| HawDBError::Storage(error.to_string()))?
+            .map_err(HawDBError::from_storage_error)?
             .epoch,
         ),
         WalOp::Batch(ops) => {
@@ -1317,7 +1385,7 @@ fn create_child_from_sealed_head(
         max_active_wal_bytes,
         request,
     )
-    .map_err(|error| HawDBError::Storage(error.to_string()))
+    .map_err(HawDBError::from_storage_error)
 }
 
 fn publish_sealed_root(
@@ -1335,7 +1403,7 @@ fn publish_sealed_root(
         ObjectReference::for_bytes(ObjectKind::DurableManifest, 1, &manifest_bytes);
     objects
         .publish(durable_manifest, &manifest_bytes)
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        .map_err(HawDBError::from_storage_error)?;
     // Admission/publication already validated this root, and the runtime
     // lease pins its immutable closure against reclamation.
     let previous = durable.branch_runtime.as_ref().map(|branch| &branch.root);
@@ -1359,7 +1427,7 @@ fn publish_sealed_root(
         let bindings = checkpoint_artifact_bindings(&durable.root_path, plan.inputs())?;
         let closure = plan
             .publish(objects)
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
         // A new manifest includes its checkpoint replay boundary. Previously
         // sealed intervals are covered and must not be replayed a second time.
         (closure.references, bindings, Vec::new())
@@ -1391,13 +1459,11 @@ fn publish_sealed_root(
     };
     let root_reference = root
         .object_reference()
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
-    let encoded = root
-        .encode()
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        .map_err(HawDBError::from_storage_error)?;
+    let encoded = root.encode().map_err(HawDBError::from_storage_error)?;
     objects
         .publish(root_reference, &encoded)
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        .map_err(HawDBError::from_storage_error)?;
     Ok(root)
 }
 
@@ -1531,8 +1597,7 @@ fn materialize_branch_runtime(
     runtime_directory: &Path,
     artifact_directory: &Path,
 ) -> Result<()> {
-    root.validate()
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+    root.validate().map_err(HawDBError::from_storage_error)?;
     if runtime_directory.exists() {
         fs::remove_dir_all(runtime_directory)?;
     }
@@ -1543,7 +1608,7 @@ fn materialize_branch_runtime(
     crate::durability::sync_parent_directory(artifact_directory)?;
     let manifest_bytes = objects
         .read(root.durable_manifest)
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        .map_err(HawDBError::from_storage_error)?;
     let manifest_path = runtime_directory.join(MANIFEST_FILE);
     fs::write(&manifest_path, manifest_bytes)?;
     let manifest = DurableManifest::load(&manifest_path)?;
@@ -1575,6 +1640,14 @@ fn materialize_checkpoint_bindings(
     destination: &Path,
     bindings: &[CheckpointArtifactBinding],
 ) -> Result<()> {
+    let _project_files =
+        match crate::file_descriptors::ProjectFileDescriptors::containing(destination)? {
+            Some(project) => project,
+            None => crate::file_descriptors::ProjectFileDescriptors::acquire(
+                destination,
+                crate::file_descriptors::DEFAULT_MAX_OPEN_FILES,
+            )?,
+        };
     let mut objects_by_reference = BTreeMap::new();
     for binding in bindings {
         let bytes = match objects_by_reference.entry(binding.reference) {
@@ -1582,14 +1655,23 @@ fn materialize_checkpoint_bindings(
             Entry::Vacant(entry) => entry.insert(
                 objects
                     .read(binding.reference)
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?,
+                    .map_err(HawDBError::from_storage_error)?,
             ),
         };
         let path = destination.join(&binding.relative_path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(path, bytes)?;
+        fs::write(&path, bytes)?;
+        crate::file_descriptors::ProjectFileDescriptors::registered(&path)?
+            .immutable_handles
+            .bind(
+                &path,
+                crate::immutable_files::ImmutableFileBinding {
+                    reference: binding.reference,
+                    object_path: objects.object_path(binding.reference),
+                },
+            )?;
     }
     Ok(())
 }

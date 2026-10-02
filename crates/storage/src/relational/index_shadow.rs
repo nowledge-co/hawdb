@@ -23,6 +23,7 @@ use super::{
     RELATIONAL_PRIMARY_INDEX_NAME, RELATIONAL_UNIQUE_INDEX_PREFIX,
 };
 use crate::cache::SegmentCacheIdentity;
+use crate::file_io::{self as fs, File, OpenOptions};
 use crate::io::read_exact_at;
 use crate::{
     cache::{
@@ -41,7 +42,6 @@ use hawdb_integrity::{
     integrity_digest, IntegrityDigest, IntegrityHasher, Sha256Digest, SHA256_BYTES,
 };
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
@@ -709,6 +709,7 @@ pub enum RelationalIndexShadowError {
     Admission(String),
     Corrupt(String),
     Durability(String),
+    FileDescriptors(hawdb_core::error::FileDescriptorError),
     MissingIndex {
         table: String,
         index: String,
@@ -726,6 +727,7 @@ impl fmt::Display for RelationalIndexShadowError {
                 write!(formatter, "relational index shadow admission failed: {message}")
             }
             Self::Corrupt(message) => write!(formatter, "corrupt relational index shadow: {message}"),
+            Self::FileDescriptors(error) => fmt::Display::fmt(error, formatter),
             Self::Durability(message) => {
                 write!(formatter, "relational index shadow durability failed: {message}")
             }
@@ -743,7 +745,23 @@ impl fmt::Display for RelationalIndexShadowError {
     }
 }
 
-impl std::error::Error for RelationalIndexShadowError {}
+impl std::error::Error for RelationalIndexShadowError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::FileDescriptors(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl RelationalIndexShadowError {
+    pub(super) fn from_io(context: &str, error: std::io::Error) -> Self {
+        match hawdb_core::error::file_descriptor_error(&error) {
+            Some(error) => Self::FileDescriptors(error),
+            None => Self::Durability(format!("{context}: {error}")),
+        }
+    }
+}
 
 impl From<ImmutableIndexPageError> for RelationalIndexShadowError {
     fn from(error: ImmutableIndexPageError) -> Self {
@@ -1450,10 +1468,13 @@ impl RelationalIndexShadowReader {
             ));
         }
         let result = self.read_page_inner(page_id, max_file_bytes);
-        if result
-            .as_ref()
-            .is_err_and(|error| !matches!(error, RelationalIndexShadowError::Admission(_)))
-        {
+        if result.as_ref().is_err_and(|error| {
+            !matches!(
+                error,
+                RelationalIndexShadowError::Admission(_)
+                    | RelationalIndexShadowError::FileDescriptors(_)
+            )
+        }) {
             self.poison();
         }
         result
@@ -2791,7 +2812,7 @@ fn page_id(value: u64, context: &str) -> Result<IndexPageId, RelationalIndexShad
 }
 
 fn durability(context: &'static str) -> impl FnOnce(std::io::Error) -> RelationalIndexShadowError {
-    move |error| RelationalIndexShadowError::Durability(format!("{context}: {error}"))
+    move |error| RelationalIndexShadowError::from_io(context, error)
 }
 
 fn read_u16(bytes: &[u8]) -> u16 {
@@ -2808,7 +2829,10 @@ fn read_u64(bytes: &[u8]) -> u64 {
 
 impl From<RelationalError> for RelationalIndexShadowError {
     fn from(error: RelationalError) -> Self {
-        Self::Corrupt(error.to_string())
+        match error {
+            RelationalError::FileDescriptors(error) => Self::FileDescriptors(error),
+            error => Self::Corrupt(error.to_string()),
+        }
     }
 }
 

@@ -14,8 +14,9 @@
 
 //! Contracts exercised through each real publication-lock acquisition path.
 
+use crate::file_io::File;
 use std::fmt::Debug;
-use std::fs::{self, File, OpenOptions, TryLockError};
+use std::fs::{self, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -160,7 +161,7 @@ fn assert_contended(path: &Path) {
     probe(path, true);
 }
 
-fn open_sidecar(path: &Path) -> File {
+fn open_sidecar(path: &Path) -> std::fs::File {
     OpenOptions::new()
         .create(true)
         .truncate(false)

@@ -502,7 +502,7 @@ impl ShadowCheckpointBuilder {
                 .collect::<Vec<_>>();
             Some(
                 encode_residual_row_properties(&residual_entries)
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?,
+                    .map_err(HawDBError::from_storage_error)?,
             )
         };
 

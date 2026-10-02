@@ -45,6 +45,7 @@ use super::{
     PROPERTY_SPILL_MANIFEST_MAX_BYTES, STABLE_ID_MAPPING_FILE,
 };
 use crate::error::{HawDBError, Result};
+use crate::file_io::{self as fs, File};
 use crate::schema::GraphStatistics;
 use hawdb_integrity::Sha256Digest;
 use hawdb_storage::{
@@ -66,18 +67,18 @@ use hawdb_storage::{
     telemetry::StorageTelemetrySink,
 };
 use std::collections::BTreeMap;
-use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const WAL_FREE_SPACE_PROBE_INTERVAL_BYTES: u64 = 64 * 1024 * 1024;
 
 fn stable_identity_error(error: StableIdentityMappingError) -> HawDBError {
-    HawDBError::Storage(error.to_string())
+    HawDBError::from_storage_error(error)
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct DurableStore {
+    project_files: crate::file_descriptors::ProjectFileDescriptors,
     _directory_lease: Arc<DatabaseDirectoryLease>,
     pub(super) branch_runtime: Option<super::immutable_root::BranchRuntimeBinding>,
     pub(super) root_path: PathBuf,
@@ -230,6 +231,9 @@ pub(super) enum DurableOpenMode {
 }
 
 impl DurableStore {
+    pub(super) fn file_descriptor_metrics(&self) -> crate::file_descriptors::FileDescriptorMetrics {
+        self.project_files.metrics()
+    }
     pub(super) fn open(
         path: &Path,
         durability: DurabilityPolicy,
@@ -384,8 +388,9 @@ impl DurableStore {
                 "max_graph_manifest_open_bytes must be non-zero".to_string(),
             ));
         }
-        let directory_lease = DatabaseDirectoryLease::acquire(path)
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let project_files = crate::file_descriptors::ProjectFileDescriptors::registered(path)?;
+        let directory_lease =
+            DatabaseDirectoryLease::acquire(path).map_err(HawDBError::from_storage_error)?;
         if load_rebuildable_artifacts {
             derived_repair::reject_pending_derived_artifact_repair(path)?;
         }
@@ -397,7 +402,7 @@ impl DurableStore {
             }
         };
         let manifest_path = path.join(MANIFEST_FILE);
-        let manifest = if manifest_path.exists() {
+        let manifest = if fs::try_exists(&manifest_path)? {
             DurableManifest::load(&manifest_path)?
         } else if has_storage_artifacts(path)? {
             return Err(HawDBError::Storage(
@@ -418,9 +423,11 @@ impl DurableStore {
         }
         let checkpoint_path = manifest.checkpoint_path(artifact_path);
         let wal_path = manifest.wal_path(path);
-        let wal_bytes = fs::metadata(&wal_path)
-            .map(|metadata| metadata.len())
-            .unwrap_or_default();
+        let wal_bytes = match fs::metadata(&wal_path) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(error) => return Err(error.into()),
+        };
         let segment_cache = Arc::new(SegmentCache::new(segment_cache_capacity_bytes));
         let store_id = store_id_for_path(artifact_path)?;
         let mut graph_manifest_budget = GraphManifestOpenBudget::new(max_graph_manifest_open_bytes);
@@ -473,6 +480,7 @@ impl DurableStore {
             artifact_path.join(source_scan::SOURCE_SCAN_PAYLOAD_FILE),
         );
         Ok(Self {
+            project_files,
             _directory_lease: Arc::new(directory_lease),
             branch_runtime: None,
             root_path: artifact_path.to_path_buf(),
@@ -544,6 +552,21 @@ impl DurableStore {
 
     pub(super) fn root_path(&self) -> &Path {
         &self.root_path
+    }
+
+    pub(super) fn reserve_branch_admission_resources(
+        &self,
+        minimum: usize,
+    ) -> Result<crate::file_descriptors::DescriptorReservation> {
+        self.project_files
+            .reserve_admission(minimum)
+            .map_err(HawDBError::from_storage_error)
+    }
+
+    pub(super) fn retain_admitted_runtime(
+        &self,
+    ) -> Arc<crate::file_descriptors::AdmittedRuntimeOwner> {
+        self.project_files.retain_admitted_runtime()
     }
 
     pub(super) fn manifest_path(&self) -> &Path {

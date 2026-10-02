@@ -22,9 +22,9 @@ use super::{
     RelationalOverflowPublicationConfig, RelationalOverflowPublicationError,
     RelationalOverflowRootManifest, RELATIONAL_OVERFLOW_MANIFEST_FILE,
 };
+use crate::file_io::{self as fs, File};
 use crate::relational::{RelationalError, RelationalScalarType, RelationalValue};
 use hawdb_integrity::{integrity_digest, IntegrityHasher, Sha256Digest};
-use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -282,6 +282,9 @@ impl RelationalOverflowRootReader {
 
 fn publication_error(error: RelationalError) -> RelationalOverflowPublicationError {
     match error {
+        RelationalError::FileDescriptors(error) => {
+            RelationalOverflowPublicationError::FileDescriptors(error)
+        }
         RelationalError::Admission(message) => {
             RelationalOverflowPublicationError::Admission(message)
         }

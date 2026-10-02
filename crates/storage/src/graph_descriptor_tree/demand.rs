@@ -23,6 +23,7 @@ use crate::cache::{
     content_digest, ManifestGeneration, RepresentationKind, SegmentCache, SegmentCacheError,
     SegmentCacheKey, StoreId,
 };
+use crate::file_io::File;
 use crate::graph_descriptor_page::{
     GraphDescriptorKind, GraphDescriptorPageError, GraphDescriptorPageRef,
     ImmutableGraphDescriptorPage, ImmutableGraphDescriptorPageBody,
@@ -30,7 +31,6 @@ use crate::graph_descriptor_page::{
 use hawdb_integrity::IntegrityHasher;
 use std::collections::BTreeSet;
 use std::fmt::{self, Debug, Formatter};
-use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::PathBuf;

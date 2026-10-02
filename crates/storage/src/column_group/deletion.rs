@@ -36,7 +36,7 @@ use super::encoding::Cursor;
 use super::{corrupt, unsupported, ColumnGroupError, DeletionVectorBinding, DELETION_VECTOR_MAGIC};
 use crate::cache::ManifestGeneration;
 use crate::durability::durable_replace_file;
-use std::fs::{self, File};
+use crate::file_io::{self as fs, File};
 use std::io::Write;
 use std::path::Path;
 

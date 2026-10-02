@@ -15,6 +15,7 @@
 //! Versioned branch-head selector and generation-checked publication.
 
 use crate::durability::durable_replace_file;
+use crate::file_io::{self as fs, File, OpenOptions};
 use crate::immutable_object::{
     ImmutableObjectError, ImmutableObjectStore, ObjectKind, ObjectReference,
 };
@@ -22,7 +23,6 @@ use crate::sealed_root::{SealedRoot, SealedRootError};
 use crate::sealed_wal::PreparedWalRotation;
 use hawdb_integrity::{crc32c, IntegrityHasher, Sha256Digest};
 use std::fmt::{self, Display, Formatter};
-use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -93,7 +93,16 @@ impl Display for WalRotationPublicationError {
     }
 }
 
-impl std::error::Error for WalRotationPublicationError {}
+impl std::error::Error for WalRotationPublicationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Root(error) => Some(error),
+            Self::Immutable(error) => Some(error),
+            Self::Head(error) => Some(error),
+            Self::SealedWalMissing => None,
+        }
+    }
+}
 
 /// Publishes a sealed root and adopts the prepared successor WAL atomically
 /// from the selector's point of view.

@@ -19,6 +19,7 @@ use super::{
     GraphDescriptorTreeBuildReport, GraphDescriptorTreeError, GraphDescriptorTreePaths,
     GraphDescriptorTreeRoot, PreparedGraphDescriptorTree, ROOT_HEADER_BYTES,
 };
+use crate::file_io::{self as fs, File};
 use crate::graph_descriptor_page::{
     decode_page_ref, encode_page_ref, GraphDescriptorInteriorEntry, GraphDescriptorKind,
     GraphDescriptorLeafEntry, GraphDescriptorPageId, GraphDescriptorPageLimits,
@@ -27,7 +28,6 @@ use crate::graph_descriptor_page::{
 };
 use hawdb_integrity::IntegrityHasher;
 use std::collections::BTreeSet;
-use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};

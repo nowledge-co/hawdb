@@ -14,9 +14,9 @@
 
 //! Bound artifact admission and integrity checks for durable storage orchestration.
 
+use crate::file_io::File;
 use hawdb_core::{HawDBError, Result};
 use hawdb_integrity::{integrity_digest, Sha256Digest};
-use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 

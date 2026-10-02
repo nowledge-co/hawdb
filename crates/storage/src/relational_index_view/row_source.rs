@@ -125,6 +125,9 @@ pub fn map_index_row_snapshot_error(
     error: RelationalRowPageSnapshotReadError,
 ) -> RelationalIndexShadowError {
     match error {
+        RelationalRowPageSnapshotReadError::FileDescriptors(error) => {
+            RelationalIndexShadowError::FileDescriptors(error)
+        }
         RelationalRowPageSnapshotReadError::Admission(message) => {
             RelationalIndexShadowError::Admission(message)
         }

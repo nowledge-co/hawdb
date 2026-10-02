@@ -630,6 +630,9 @@ fn map_sparse_live_state_to_demand_error(
     error: RelationalError,
 ) -> RelationalRowPageDemandReadError {
     match error {
+        RelationalError::FileDescriptors(error) => {
+            RelationalRowPageDemandReadError::FileDescriptors(error)
+        }
         RelationalError::Admission(message) => RelationalRowPageDemandReadError::Admission(message),
         RelationalError::Durability(message) => {
             RelationalRowPageDemandReadError::Durability(message)
@@ -644,6 +647,9 @@ fn map_sparse_live_state_to_demand_error(
 
 fn map_sparse_live_snapshot_error(error: RelationalRowPageSnapshotReadError) -> RelationalError {
     match error {
+        RelationalRowPageSnapshotReadError::FileDescriptors(error) => {
+            RelationalError::FileDescriptors(error)
+        }
         RelationalRowPageSnapshotReadError::Admission(message) => {
             RelationalError::Admission(message)
         }

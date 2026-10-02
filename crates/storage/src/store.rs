@@ -125,6 +125,7 @@ pub mod relational_row_pages;
 mod statistics_refresh;
 #[path = "store/wal_codec.rs"]
 mod wal_codec;
+use crate::file_io as fs;
 pub use backup::restore_storage_backup;
 use backup::{remove_source_scan_artifacts, validate_backup_files};
 pub use derived_repair::{
@@ -349,7 +350,6 @@ use relational_row_pages::RelationalRowPageState;
 #[doc(hidden)]
 pub use relational_row_pages::RelationalTransactionRowView;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -564,7 +564,7 @@ pub fn append_stale_generation_wal_fragment(path: &Path) -> Result<()> {
         b"recycled-region-record-from-a-previous-generation",
         position,
     );
-    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+    let mut file = crate::file_io::OpenOptions::new().append(true).open(path)?;
     file.write_all(&framed)?;
     file.sync_all()?;
     Ok(())
@@ -834,6 +834,7 @@ pub struct GraphStore {
     /// work can request admission. The store never constructs its own.
     runtime_governor: Option<Arc<dyn hawdb_storage::background::BackgroundWorkAdmission>>,
     branch_lease: Option<Arc<hawdb_storage::ownership::DatabaseDirectoryLease>>,
+    branch_runtime_owner: Option<Arc<crate::file_descriptors::AdmittedRuntimeOwner>>,
     durable: Option<DurableStore>,
 }
 
@@ -1598,6 +1599,25 @@ impl GraphStore {
             ));
         }
         let total_open_started = std::time::Instant::now();
+        if replay_config.max_graph_manifest_open_bytes == 0 {
+            return Err(HawDBError::Storage(
+                "max_graph_manifest_open_bytes must be non-zero".into(),
+            ));
+        }
+        let _project_files = match mode {
+            DurableOpenMode::CreateIfMissing => {
+                crate::file_descriptors::ProjectFileDescriptors::acquire(
+                    path.as_ref(),
+                    replay_config.max_open_files,
+                )?
+            }
+            DurableOpenMode::ExistingOnly => {
+                crate::file_descriptors::ProjectFileDescriptors::acquire_existing(
+                    path.as_ref(),
+                    replay_config.max_open_files,
+                )?
+            }
+        };
         let durable_manifest_open_started = std::time::Instant::now();
         let durable = match mode {
             DurableOpenMode::CreateIfMissing => {
@@ -1664,7 +1684,7 @@ impl GraphStore {
                     hawdb_storage::projection_generation::ProjectionGenerationStore::open_existing(
                         &projection_generation_root,
                     )
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?,
+                    .map_err(HawDBError::from_storage_error)?,
                 )
             } else {
                 None
@@ -1674,7 +1694,7 @@ impl GraphStore {
                 hawdb_storage::projection_generation::ProjectionGenerationStore::open(
                     &projection_generation_root,
                 )
-                .map_err(|error| HawDBError::Storage(error.to_string()))?,
+                .map_err(HawDBError::from_storage_error)?,
             )
         };
         let mut store = Self {
@@ -1735,6 +1755,7 @@ impl GraphStore {
             projection_generations,
             runtime_governor: None,
             branch_lease: None,
+            branch_runtime_owner: None,
             durable: Some(durable),
         };
         if replay_config
@@ -1785,6 +1806,10 @@ impl GraphStore {
                 "derived repair requires strict WAL replay".to_string(),
             ));
         }
+        let _project_files = crate::file_descriptors::ProjectFileDescriptors::acquire_containing(
+            path,
+            replay_config.max_open_files,
+        )?;
         let total_open_started = std::time::Instant::now();
         let durable_manifest_open_started = std::time::Instant::now();
         let durable = DurableStore::open_for_derived_repair(
@@ -2160,6 +2185,7 @@ impl GraphStore {
             projection_generations: None,
             runtime_governor: self.runtime_governor.clone(),
             branch_lease: self.branch_lease.clone(),
+            branch_runtime_owner: self.branch_runtime_owner.clone(),
             durable: None,
         }
     }

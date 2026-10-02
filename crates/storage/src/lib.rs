@@ -50,6 +50,10 @@ pub mod durability;
 #[doc(hidden)]
 pub mod durable_manifest;
 #[doc(hidden)]
+pub mod file_descriptors;
+#[doc(hidden)]
+pub mod file_io;
+#[doc(hidden)]
 pub mod graph_constraints;
 pub mod graph_descriptor_page;
 pub mod graph_descriptor_tree;
@@ -63,6 +67,7 @@ pub mod graph_index_metrics;
 pub mod graph_overlay;
 pub use hawdb_core::ids;
 pub use hawdb_core::ids::{NodeId, NodeRecord, ProjectedNodeRecord, RelId, RelRecord};
+mod immutable_files;
 #[doc(hidden)]
 pub mod immutable_object;
 pub mod index_page;

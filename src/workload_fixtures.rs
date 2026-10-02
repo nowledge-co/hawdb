@@ -682,6 +682,7 @@ fn error_class(error: &crate::HawDBError) -> String {
         | crate::HawDBError::TransactionConflict { .. }
         | crate::HawDBError::BranchCommandUnsupported { .. } => "execution",
         crate::HawDBError::Storage(_)
+        | crate::HawDBError::FileDescriptors(_)
         | crate::HawDBError::StorageIntegrity(_)
         | crate::HawDBError::AppendSequenceExhausted { .. }
         | crate::HawDBError::BranchBusy { .. } => "storage",

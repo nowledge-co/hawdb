@@ -13,13 +13,13 @@
 // limitations under the License.
 
 use super::ROOT_DESCRIPTOR_BINDING_OFFSET;
+use crate::file_io::File;
 use crate::relational::row_page::publication::{
     durability, RelationalRowPagePublicationConfig, RelationalRowPagePublicationError,
     RelationalRowPageRootDescriptor, RelationalRowPageRootManifest, RelationalRowPageSlotIntegrity,
 };
 use crate::relational::RelationalRowPageId;
 use hawdb_integrity::{IntegrityHasher, Sha256Digest};
-use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::num::NonZeroU64;
 

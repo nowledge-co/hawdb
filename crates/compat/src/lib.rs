@@ -422,6 +422,7 @@ impl ExpectedErrorClass {
             HawDBError::Parse(_) => Self::Parse,
             HawDBError::Semantic(_) => Self::Semantic,
             HawDBError::Storage(_)
+            | HawDBError::FileDescriptors(_)
             | HawDBError::StorageIntegrity(_)
             | HawDBError::AppendSequenceExhausted { .. }
             | HawDBError::BranchBusy { .. } => Self::Storage,

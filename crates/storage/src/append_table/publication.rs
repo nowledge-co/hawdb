@@ -22,10 +22,10 @@ use super::{
     AppendSegmentReadReport, AppendSegmentReader, AppendSegmentWriter, AppendTableError,
     AppendTableRow, AppendTableSchema, AppendTransaction, AppendWrite,
 };
+use crate::file_io::{self as fs, File};
 use crate::{durability::durable_replace_file, relational::RelationalKey};
 use hawdb_integrity::{integrity_digest, Sha256Digest, SHA256_BYTES};
 use std::collections::BTreeMap;
-use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1038,7 +1038,10 @@ fn verify_artifact(
 }
 
 fn durability(context: &'static str) -> impl FnOnce(std::io::Error) -> AppendTableError {
-    move |error| AppendTableError::Durability(format!("{context}: {error}"))
+    move |error| match hawdb_core::error::file_descriptor_error(&error) {
+        Some(error) => AppendTableError::FileDescriptors(error),
+        None => AppendTableError::Durability(format!("{context}: {error}")),
+    }
 }
 
 #[cfg(test)]
@@ -1090,6 +1093,63 @@ mod tests {
                 RelationalValue::BigInt(sequence),
             ]),
         }
+    }
+
+    #[test]
+    fn descriptor_exhaustion_preserves_bound_append_generation_for_retry() {
+        use crate::file_descriptors::ProjectFileDescriptors;
+        use hawdb_core::error::{file_descriptor_error, FileDescriptorError, HawDBError};
+
+        let directory = directory("descriptor-retry");
+        let project = ProjectFileDescriptors::acquire(&directory, 16).unwrap();
+        let config = AppendPublicationConfig::default();
+        let report = AppendPublisher::publish_candidate(
+            &directory,
+            1,
+            1,
+            None,
+            &BTreeMap::from([("events".to_string(), schema())]),
+            &[row(1), row(2)],
+            config,
+        )
+        .unwrap();
+        let path = directory.join("held-descriptor");
+        std::fs::write(&path, b"held").unwrap();
+        let held = (0..16)
+            .map(|_| crate::file_io::File::open(&path).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(project.metrics().open, 16);
+        let error =
+            AppendGenerationReader::open_bound(&directory, report.generation_artifacts, config)
+                .unwrap_err();
+        let expected = FileDescriptorError::BudgetExceeded {
+            requested: 1,
+            available: 0,
+            limit: 16,
+        };
+        assert_eq!(file_descriptor_error(&error), Some(expected.clone()));
+        assert_eq!(
+            HawDBError::from_storage_error(error),
+            HawDBError::FileDescriptors(expected)
+        );
+        assert_eq!(project.metrics().open, 16);
+        assert_eq!(project.metrics().reserved, 0);
+        drop(held);
+        let reader =
+            AppendGenerationReader::open_bound(&directory, report.generation_artifacts, config)
+                .unwrap();
+        let rows = reader
+            .read_partition(
+                "events",
+                &RelationalKey(vec![RelationalValue::Text("alpha".to_string())]),
+                None,
+                10,
+            )
+            .unwrap();
+        assert_eq!(rows.rows.len(), 2);
+        drop(reader);
+        assert_eq!(project.metrics().open, 0);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

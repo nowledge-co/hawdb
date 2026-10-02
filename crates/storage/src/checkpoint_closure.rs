@@ -7,6 +7,7 @@
 //! manifest.  This module deliberately never scans a storage directory or
 //! infers dependencies from filenames.
 
+use crate::file_io as fs;
 use crate::immutable_object::{
     ImmutableObjectError, ImmutableObjectStore, ObjectKind, ObjectReference,
 };
@@ -15,7 +16,6 @@ use crate::sealed_root::{
 };
 use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
-use std::fs;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]

@@ -16,8 +16,8 @@ use super::{
     durability, RelationalOverflowArtifactMetadata, RelationalOverflowPublicationConfig,
     RelationalOverflowPublicationError, RelationalOverflowRootManifest,
 };
+use crate::file_io::{self as fs, File};
 use hawdb_integrity::{integrity_digest, Sha256Digest, SHA256_BYTES};
-use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
 

@@ -34,6 +34,65 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[test]
+fn descriptor_exhaustion_preserves_snapshot_reader_for_retry() {
+    use crate::file_descriptors::ProjectFileDescriptors;
+    use hawdb_core::error::{file_descriptor_error, FileDescriptorError, HawDBError};
+
+    let fixture = SnapshotFixture::new("descriptor-retry");
+    let project = ProjectFileDescriptors::acquire(&fixture.directory, 16).unwrap();
+    let path = fixture.directory.join("held-descriptor");
+    fs::write(&path, b"held").unwrap();
+    let held = (0..16)
+        .map(|_| crate::file_io::File::open(&path).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(project.metrics().open, 16);
+    let initial = RelationalHydrationBudget::default();
+    let mut hydration = initial;
+    let error = fixture
+        .reader
+        .point_projected(
+            "documents",
+            &key(0),
+            &[1],
+            RelationalRowPageSnapshotReadLimits::default(),
+            &mut hydration,
+            &RuntimeTaskContext::default(),
+        )
+        .unwrap_err();
+    let expected = FileDescriptorError::BudgetExceeded {
+        requested: 1,
+        available: 0,
+        limit: 16,
+    };
+    assert_eq!(file_descriptor_error(&error), Some(expected.clone()));
+    assert_eq!(
+        HawDBError::from_storage_error(error),
+        HawDBError::FileDescriptors(expected)
+    );
+    assert!(!fixture.reader.is_poisoned());
+    assert_eq!(hydration, initial);
+    assert_eq!(project.metrics().open, 16);
+    assert_eq!(project.metrics().reserved, 0);
+    drop(held);
+    let (row, report) = fixture
+        .reader
+        .point_projected(
+            "documents",
+            &key(0),
+            &[1],
+            RelationalRowPageSnapshotReadLimits::default(),
+            &mut hydration,
+            &RuntimeTaskContext::default(),
+        )
+        .unwrap();
+    assert_eq!(projected_body(row.as_ref()), Some("zero"));
+    assert_eq!(report.identity.visible_commit_epoch, 15);
+    assert!(!fixture.reader.is_poisoned());
+    assert_eq!(project.metrics().open, 0);
+    fixture.remove();
+}
+
+#[test]
 fn point_reads_select_live_recovery_checkpoint_and_tombstones() {
     let fixture = SnapshotFixture::new("point-precedence");
     let expected = [

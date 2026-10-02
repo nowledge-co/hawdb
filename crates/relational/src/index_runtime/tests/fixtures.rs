@@ -37,7 +37,7 @@ pub(super) fn key(values: &[i64]) -> RelationalKey {
 }
 
 pub(super) struct Fixture {
-    directory: PathBuf,
+    pub directory: PathBuf,
     pub state: RelationalState,
     pub oracle: Oracle,
     pub reader: Reader,
@@ -45,11 +45,31 @@ pub(super) struct Fixture {
 
 impl Fixture {
     pub fn new() -> Self {
-        let directory = std::env::temp_dir().join(format!(
+        Self::in_directory(Self::directory())
+    }
+
+    pub fn with_descriptor_budget(
+        limit: usize,
+    ) -> (
+        Self,
+        hawdb_storage::file_descriptors::ProjectFileDescriptors,
+    ) {
+        let directory = Self::directory();
+        let project =
+            hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire(&directory, limit)
+                .unwrap();
+        (Self::in_directory(directory), project)
+    }
+
+    fn directory() -> PathBuf {
+        std::env::temp_dir().join(format!(
             "hawdb-index-runtime-{}",
             hawdb_core::generate_uuidv7().unwrap()
-        ));
-        std::fs::create_dir(&directory).unwrap();
+        ))
+    }
+
+    fn in_directory(directory: PathBuf) -> Self {
+        std::fs::create_dir_all(&directory).unwrap();
         let mut state = RelationalState::default();
         apply(
             &mut state,

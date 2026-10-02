@@ -31,6 +31,7 @@ use super::{
     STABLE_ID_MAPPING_FILE,
 };
 use crate::error::{HawDBError, Result};
+use crate::file_io as fs;
 use hawdb_storage::{
     append_table::{
         append_generation_manifest_file, append_segment_file, AppendGenerationReader,
@@ -61,7 +62,6 @@ use hawdb_storage::{
     stable_identity::{StableIdentityMappingConfig, StableIdentityMappingReader},
 };
 use std::collections::BTreeSet;
-use std::fs;
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Arc;
@@ -165,7 +165,7 @@ pub(super) fn validate_backup_files(
                 &root.join(&relational_name),
                 RelationalDecodeLimits::checkpoint(),
             )
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
             if relational_checkpoint.epoch != manifest.checkpoint_commit_epoch {
                 return Err(HawDBError::Storage(format!(
                     "backup relational checkpoint epoch {} does not match checkpoint commit epoch {}",
@@ -219,7 +219,7 @@ pub(super) fn validate_backup_files(
         }
         let canonical_manifest_text = fs::read_to_string(root.join(&canonical_manifest_name))?;
         let canonical_manifest = CanonicalSegmentManifest::decode(&canonical_manifest_text)
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
         if canonical_manifest.generation != ManifestGeneration(generation)
             || canonical_manifest.source_commit_epoch != manifest.checkpoint_commit_epoch
         {
@@ -455,7 +455,7 @@ pub(super) fn validate_backup_files(
         let projection_manifest_text = fs::read_to_string(root.join(&projection_manifest_name))?;
         let projection_manifest =
             PersistentPropertyProjectionManifest::decode(&projection_manifest_text)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
         let projection_artifact = files
             .iter()
             .find(|file| file.name == projection_artifact_name)
@@ -547,7 +547,7 @@ fn validate_backup_stable_identity(root: &Path, names: &BTreeSet<&str>) -> Resul
         &root.join(STABLE_ID_MAPPING_FILE),
         StableIdentityMappingConfig::default(),
     )
-    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+    .map_err(HawDBError::from_storage_error)?;
     let selected_name = reader
         .artifact_path()
         .file_name()
@@ -604,7 +604,7 @@ fn validate_backup_append_generation(
 
     let reader =
         AppendGenerationReader::open_bound(root, binding, AppendPublicationConfig::default())
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
     for segment in reader.segment_bindings() {
         let name = append_segment_file(segment.generation);
         if !names.contains(name.as_str()) {
@@ -627,7 +627,7 @@ fn validate_backup_append_generation(
     }
     reader
         .deep_scrub()
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        .map_err(HawDBError::from_storage_error)?;
     Ok(())
 }
 
@@ -684,7 +684,7 @@ fn validate_backup_property_spills(
     }
     let property_manifest_text = fs::read_to_string(root.join(&property_manifest_name))?;
     let property_manifest = PropertySpillManifest::decode(&property_manifest_text)
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        .map_err(HawDBError::from_storage_error)?;
     if property_manifest.generation != ManifestGeneration(generation)
         || property_manifest.source_commit_epoch != manifest.checkpoint_commit_epoch
     {
@@ -818,7 +818,7 @@ fn validate_backup_relational_roots(
         overflow_binding.generation,
         hawdb_storage::relational::RelationalOverflowPublicationConfig::default(),
     )
-    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+    .map_err(HawDBError::from_storage_error)?;
     if overflow.manifest().source_commit_epoch != overflow_binding.source_commit_epoch
         || overflow.manifest().root_set_digest != overflow_binding.root_set_digest
     {
@@ -867,7 +867,7 @@ fn validate_backup_relational_roots(
             )?;
             Ok(())
         })
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        .map_err(HawDBError::from_storage_error)?;
     if overflow_files != expected_overflow_files {
         return Err(HawDBError::Storage(
             "backup relational overflow files do not match the bound physical closure".to_string(),
@@ -892,7 +892,7 @@ fn validate_backup_relational_roots(
         row_binding.generation,
         hawdb_storage::relational::RelationalRowPagePublicationConfig::default(),
     )
-    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+    .map_err(HawDBError::from_storage_error)?;
     if row.manifest().source_commit_epoch != row_binding.source_commit_epoch
         || row.manifest().root_set_digest != row_binding.root_set_digest
     {
@@ -901,7 +901,7 @@ fn validate_backup_relational_roots(
         ));
     }
     row.validate_overflow_root(&overflow)
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        .map_err(HawDBError::from_storage_error)?;
     for (name, metadata) in [
         (
             hawdb_storage::relational::relational_row_page_artifact_file(row_binding.generation),
@@ -950,7 +950,7 @@ fn validate_backup_relational_roots(
             row.read_page(descriptor)?;
             Ok(())
         })
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        .map_err(HawDBError::from_storage_error)?;
     }
     if row_files != expected_row_files {
         return Err(HawDBError::Storage(
@@ -1023,7 +1023,7 @@ fn validate_backup_relational_index_generation(
         },
         RelationalIndexShadowConfig::default(),
     )
-    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+    .map_err(HawDBError::from_storage_error)?;
     if reader.manifest().catalog_schema_digest != binding.catalog_schema_digest
         || reader.manifest().root_set_digest != binding.root_set_digest
     {

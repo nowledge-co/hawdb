@@ -17,6 +17,7 @@
 //! The graph checkpoint remains authoritative. This sidecar is eligible only
 //! when the checkpoint manifest publishes the same graph epoch.
 
+use crate::file_io::{self as fs, File};
 use crate::text::envelope::{encode_durable_text, read_durable_text_bytes};
 use crate::text::{
     decode_properties, decode_string, decode_value, encode_properties, encode_string, encode_value,
@@ -36,7 +37,6 @@ use hawdb_core::schema::LabelId;
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_integrity::checksum_u64 as checksum_bytes;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::num::NonZeroU64;
 use std::path::Path;
@@ -416,7 +416,7 @@ pub fn load(
         .collect::<Result<Vec<_>>>()?;
     ScanSegmentManifest::new(expected_graph_epoch, segments)
         .map(Some)
-        .map_err(|error| HawDBError::Storage(error.to_string()))
+        .map_err(HawDBError::from_storage_error)
 }
 
 pub fn decode_payload(payload: &[u8]) -> Result<Vec<SourceScanRow>> {

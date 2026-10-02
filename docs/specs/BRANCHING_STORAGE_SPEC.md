@@ -973,6 +973,54 @@ These are implementation and resource-verification requirements; existing open
 helpers and caches are not claimed to satisfy them merely because branches share
 immutable storage.
 
+### Current descriptor integration boundary
+
+`DatabaseConfig::max_open_files` supplies a finite default of 256. Storage file,
+directory-iterator, clone, ownership-lock, and WAL operations use the admitted
+file wrapper. Independently acquired canonical project contexts share the
+budget and reject conflicting configuration. Immutable checkpoint bindings
+retain logical file references; their cache uses the complete object identity,
+validates content on cold open, retains active reads, and evicts idle handles.
+Clones share a logical sequential cursor, while separately opened references
+and positioned reads preserve their own offsets. Mutable path opens invalidate
+future immutable bindings without changing references captured by snapshots.
+
+The accounting argument is local to these routed operations. A native open or
+clone obtains capacity before acquiring its handle; failure drops the permit.
+Native handles close before their permits return capacity. Directory entries
+share the iterator permit until their final owner closes. An operation quota
+converts reserved capacity to open capacity and returns it on temporary closure;
+dropping the quota releases its unused capacity. Each transition is serialized
+by the budget mutex, preserving `open + reserved <= limit`. Opaque filesystem
+operations conservatively account for temporary handle capacity, so these
+metrics are admission counts, not an exact process-wide native-handle census.
+This is a source-level conservation argument, not a machine-checked proof of
+the complete runtime.
+
+`USE BRANCH` retains a target reservation through recovery and facade validation.
+The current reservation covers three lock/WAL handles, the bounded shared read
+worker limit, and four catalog/publication temporaries. Nested admission borrows
+the reservation; independent work can use the remaining project capacity.
+Snapshots share the admitted-runtime counter and retain the UUID lease after
+the source execution context closes its runtime-directory lock and mutable WAL.
+Resource rejection preserves the source selection and releases candidate quota.
+
+Descriptor rejections also retain their typed cause through append and relational
+checkpoint, row-page, overflow, delta, index, and query-runtime error conversion.
+An exhausted read budget does not poison a generation-pinned reader or become a
+corruption error. The focused exhaustion regressions verify the reached limit,
+unchanged recovery artifacts and quota, and successful reads after capacity is
+released. Catalog `SHOW` commands propagate the same resource error; selected
+branch identity remains available without reading the catalog.
+
+#819 remains open. Complete qualification must still audit filesystem operations
+outside the storage wrapper, cold existing-root alias resolution on Windows,
+data-dependent retained recovery/checkpoint handles, validation-read IO budgets,
+and resource failures at every acquisition/publication boundary. The legacy
+single-root opener, independent job pins, and the complete power-loss matrix
+also remain separate implementation obligations; the current accounting tests
+do not prove those requirements.
+
 ## Sealing and create protocol
 
 Sealing holds the source branch's commit/publication barrier, checks the

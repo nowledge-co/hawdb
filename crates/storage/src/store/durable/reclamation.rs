@@ -16,6 +16,7 @@
 
 use super::{DurableStore, GenerationReclamationDebt};
 use crate::error::{HawDBError, Result};
+use crate::file_io as fs;
 use crate::store::{
     parse_append_segment_generation_file, parse_relational_overflow_extent_generation_file,
     parse_relational_row_page_artifact_generation_file, remove_generation_reclamation_candidate,
@@ -25,7 +26,6 @@ use hawdb_storage::append_table::{
     append_generation_manifest_file, AppendGenerationManifest, AppendPublicationConfig,
 };
 use std::collections::BTreeSet;
-use std::fs::{self};
 
 impl DurableStore {
     pub(in crate::store) fn obsolete_generation_bytes(
@@ -157,13 +157,13 @@ impl DurableStore {
                         generation,
                         hawdb_storage::relational::RelationalOverflowPublicationConfig::default(),
                     )
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                    .map_err(HawDBError::from_storage_error)?;
                 overflow
                     .visit_descriptors(|descriptor| {
                         overflow_extent_generations.insert(descriptor.physical_generation);
                         Ok(())
                     })
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                    .map_err(HawDBError::from_storage_error)?;
             }
 
             let row_manifest = self.root_path.join(
@@ -175,7 +175,7 @@ impl DurableStore {
                     generation,
                     hawdb_storage::relational::RelationalRowPagePublicationConfig::default(),
                 )
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
                 let tables = rows
                     .manifest()
                     .tables
@@ -187,7 +187,7 @@ impl DurableStore {
                         row_page_generations.insert(descriptor.physical_generation);
                         Ok(())
                     })
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                    .map_err(HawDBError::from_storage_error)?;
                 }
             }
         }
@@ -212,7 +212,7 @@ impl DurableStore {
                 generation,
                 AppendPublicationConfig::default(),
             )
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
             segment_generations.extend(manifest.segments.iter().map(|segment| segment.generation));
         }
         Ok(segment_generations)

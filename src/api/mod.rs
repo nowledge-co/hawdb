@@ -298,6 +298,9 @@ pub struct DatabaseConfig {
     /// Maximum sealed WAL generations recovered for one branch admission.
     /// Checkpoint compaction resets the chain; default is 256.
     pub max_branch_sealed_wal_intervals: usize,
+    /// Finite shared ceiling for all engine-owned project file descriptors.
+    /// Independent contexts for one canonical project must request the same value.
+    pub max_open_files: usize,
     pub max_wal_quarantine_bytes: u64,
     pub max_wal_record_bytes: Option<usize>,
     pub max_wal_batch_operations: Option<usize>,
@@ -489,6 +492,30 @@ fn relational_index_read_mode<
     }
 }
 
+impl DatabaseConfig {
+    fn wal_replay_config(&self) -> WalReplayConfig {
+        WalReplayConfig {
+            max_open_files: self.max_open_files,
+            recovery_mode: self.recovery_mode,
+            max_entries: self.max_wal_replay_entries,
+            max_bytes: self.max_wal_replay_bytes,
+            max_branch_sealed_wal_intervals: self.max_branch_sealed_wal_intervals,
+            max_quarantine_bytes: self.max_wal_quarantine_bytes,
+            max_record_bytes: self.max_wal_record_bytes,
+            max_batch_operations: self.max_wal_batch_operations,
+            max_checkpoint_encoded_bytes: self.max_checkpoint_encoded_bytes,
+            max_checkpoint_decoded_bytes: self.max_checkpoint_decoded_bytes,
+            segment_cache_capacity_bytes: self.segment_cache_capacity_bytes,
+            max_graph_manifest_open_bytes: self.max_graph_manifest_open_bytes,
+            residency_mode: self.storage_residency_mode,
+            auto_materialize_checkpoint_bytes: self.auto_materialize_checkpoint_bytes,
+            max_out_of_core_delta_bytes: self.max_out_of_core_delta_bytes,
+            graph_columnar_shadow_checkpoint: self.graph_columnar_shadow_checkpoint,
+            relational_index_mode: self.relational_index_mode,
+        }
+    }
+}
+
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
@@ -504,6 +531,7 @@ impl Default for DatabaseConfig {
             max_wal_replay_bytes: Some(hawdb_storage::config::DEFAULT_MAX_WAL_REPLAY_BYTES),
             max_branch_sealed_wal_intervals:
                 hawdb_storage::config::DEFAULT_MAX_BRANCH_SEALED_WAL_INTERVALS,
+            max_open_files: hawdb_storage::file_descriptors::DEFAULT_MAX_OPEN_FILES,
             max_wal_quarantine_bytes: hawdb_storage::config::DEFAULT_MAX_WAL_QUARANTINE_BYTES,
             max_wal_record_bytes: Some(hawdb_storage::config::DEFAULT_MAX_WAL_RECORD_BYTES),
             max_wal_batch_operations: Some(hawdb_storage::config::DEFAULT_MAX_WAL_BATCH_OPERATIONS),
@@ -1076,24 +1104,7 @@ impl Database {
         let local_qos_scheduler = LocalQosScheduler::new(config.local_qos_policy);
         let mut catalog = Catalog::default();
         let project_root_path = path.as_ref().to_path_buf();
-        let replay_config = WalReplayConfig {
-            recovery_mode: config.recovery_mode,
-            max_entries: config.max_wal_replay_entries,
-            max_bytes: config.max_wal_replay_bytes,
-            max_branch_sealed_wal_intervals: config.max_branch_sealed_wal_intervals,
-            max_quarantine_bytes: config.max_wal_quarantine_bytes,
-            max_record_bytes: config.max_wal_record_bytes,
-            max_batch_operations: config.max_wal_batch_operations,
-            max_checkpoint_encoded_bytes: config.max_checkpoint_encoded_bytes,
-            max_checkpoint_decoded_bytes: config.max_checkpoint_decoded_bytes,
-            segment_cache_capacity_bytes: config.segment_cache_capacity_bytes,
-            max_graph_manifest_open_bytes: config.max_graph_manifest_open_bytes,
-            residency_mode: config.storage_residency_mode,
-            auto_materialize_checkpoint_bytes: config.auto_materialize_checkpoint_bytes,
-            max_out_of_core_delta_bytes: config.max_out_of_core_delta_bytes,
-            graph_columnar_shadow_checkpoint: config.graph_columnar_shadow_checkpoint,
-            relational_index_mode: config.relational_index_mode,
-        };
+        let replay_config = config.wal_replay_config();
         let mut store = if config.read_only {
             GraphStore::open_read_only_with_durability_and_replay_config(
                 path,
@@ -1109,7 +1120,7 @@ impl Database {
                 replay_config,
             )?
         };
-        let project_root_path = std::fs::canonicalize(project_root_path)?;
+        let project_root_path = hawdb_storage::file_io::canonicalize(&project_root_path)?;
         configure_search_projection_changefeed(&mut store, &config);
         configure_relational_fast_paths(&mut store, &config);
         let mut database = Self {
@@ -1153,6 +1164,13 @@ impl Database {
 
     pub fn config(&self) -> &DatabaseConfig {
         &self.config
+    }
+
+    /// Engine-owned descriptors and reservations shared by this canonical project.
+    pub fn file_descriptor_metrics(
+        &self,
+    ) -> Option<hawdb_storage::file_descriptors::FileDescriptorMetrics> {
+        self.store.file_descriptor_metrics()
     }
 
     /// Returns a handle to the database-owned runtime QoS scheduler.
@@ -20353,6 +20371,9 @@ fn map_transaction_append_error(
     error: hawdb_storage::append_table::AppendTableError,
 ) -> HawDBError {
     match error {
+        hawdb_storage::append_table::AppendTableError::FileDescriptors(error) => {
+            HawDBError::FileDescriptors(error)
+        }
         hawdb_storage::append_table::AppendTableError::SequenceExhausted {
             table,
             watermark,
@@ -20378,6 +20399,9 @@ fn map_transaction_relational_error(
     error: hawdb_storage::relational::RelationalError,
 ) -> HawDBError {
     match error {
+        hawdb_storage::relational::RelationalError::FileDescriptors(error) => {
+            HawDBError::FileDescriptors(error)
+        }
         hawdb_storage::relational::RelationalError::Corruption(message)
         | hawdb_storage::relational::RelationalError::Durability(message) => {
             HawDBError::StorageIntegrity(message)

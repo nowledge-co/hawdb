@@ -100,6 +100,8 @@ impl RelationalIndexMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WalReplayConfig {
+    /// Shared finite descriptor ceiling for the canonical project.
+    pub max_open_files: usize,
     pub recovery_mode: RecoveryMode,
     pub max_entries: Option<usize>,
     pub max_bytes: Option<u64>,
@@ -131,6 +133,7 @@ pub struct WalReplayConfig {
 impl Default for WalReplayConfig {
     fn default() -> Self {
         Self {
+            max_open_files: crate::file_descriptors::DEFAULT_MAX_OPEN_FILES,
             recovery_mode: RecoveryMode::default(),
             max_entries: Some(DEFAULT_MAX_WAL_REPLAY_ENTRIES),
             max_bytes: Some(DEFAULT_MAX_WAL_REPLAY_BYTES),

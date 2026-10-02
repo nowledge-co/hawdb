@@ -690,11 +690,10 @@ fn read_branch_catalog(catalog_path: Option<&Path>) -> Result<Vec<BranchInfo>> {
     let catalog_path = catalog_path.ok_or_else(|| {
         HawDBError::Execution("branch lifecycle requires a durable database".to_string())
     })?;
-    if !catalog_path.exists() {
+    if !hawdb_storage::file_io::try_exists(catalog_path).map_err(HawDBError::from_storage_error)? {
         return Ok(Vec::new());
     }
-    let catalog = storage::read_catalog(catalog_path)
-        .map_err(|error| HawDBError::Storage(format!("branch catalog I/O failed: {error}")))?;
+    let catalog = storage::read_catalog(catalog_path).map_err(HawDBError::from_storage_error)?;
     Ok(catalog
         .branches
         .iter()

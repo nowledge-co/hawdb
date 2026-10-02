@@ -17,6 +17,7 @@
 //! Root storage owns graph traversal, user-option validation, epoch checks, and
 //! publication. These kernels consume facts and return unpublished statistics.
 
+use crate::file_io::{self as fs, File, OpenOptions};
 use crate::text::{decode_string, decode_value, encode_string, encode_value};
 use crate::{NodeId, NodeRecord};
 use hawdb_core::{
@@ -25,7 +26,6 @@ use hawdb_core::{
 };
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
-use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Lines, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};

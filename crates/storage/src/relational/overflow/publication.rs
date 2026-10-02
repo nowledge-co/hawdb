@@ -220,6 +220,7 @@ pub enum RelationalOverflowPublicationError {
     Admission(String),
     Corrupt(String),
     Durability(String),
+    FileDescriptors(hawdb_core::error::FileDescriptorError),
     MissingExtent(Sha256Digest),
     Stopped(hawdb_core::RuntimeCancellationReason),
     StaleGeneration {
@@ -237,6 +238,7 @@ impl fmt::Display for RelationalOverflowPublicationError {
             Self::Corrupt(message) => {
                 write!(formatter, "corrupt relational overflow publication: {message}")
             }
+            Self::FileDescriptors(error) => fmt::Display::fmt(error, formatter),
             Self::Durability(message) => {
                 write!(formatter, "relational overflow publication durability failed: {message}")
             }
@@ -257,12 +259,22 @@ impl fmt::Display for RelationalOverflowPublicationError {
     }
 }
 
-impl std::error::Error for RelationalOverflowPublicationError {}
+impl std::error::Error for RelationalOverflowPublicationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::FileDescriptors(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 fn durability(
     context: &'static str,
 ) -> impl FnOnce(std::io::Error) -> RelationalOverflowPublicationError {
-    move |error| RelationalOverflowPublicationError::Durability(format!("{context}: {error}"))
+    move |error| match hawdb_core::error::file_descriptor_error(&error) {
+        Some(error) => RelationalOverflowPublicationError::FileDescriptors(error),
+        None => RelationalOverflowPublicationError::Durability(format!("{context}: {error}")),
+    }
 }
 
 #[cfg(test)]

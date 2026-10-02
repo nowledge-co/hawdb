@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(not(windows))]
+use crate::file_io as fs;
 #[cfg(test)]
 use std::ffi::OsString;
-#[cfg(not(windows))]
-use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -215,7 +215,7 @@ pub fn sync_directory(directory: &Path) -> io::Result<()> {
     }
     #[cfg(not(windows))]
     {
-        use std::fs::File;
+        use crate::file_io::File;
 
         File::open(directory)?.sync_all()
     }
