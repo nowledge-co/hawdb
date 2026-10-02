@@ -1354,6 +1354,52 @@ pub fn recover_create_file(
     child_wal_path: &Path,
     max_active_wal_bytes: u64,
 ) -> Result<CreateRecoveryOutcome, BranchCreateError> {
+    recover_create_file_inner(
+        catalog_path,
+        branch_id,
+        child_head_path,
+        Some(child_wal_path),
+        max_active_wal_bytes,
+    )
+}
+
+/// Resumes a reserved child without consulting its parent's current state.
+/// The child's UUID lease protects validation and catalog completion; the WAL
+/// identity comes from its durable head, never a later parent generation.
+pub fn recover_create_from_head_file(
+    catalog_path: &Path,
+    branch_id: BranchId,
+    child_head_path: &Path,
+    max_active_wal_bytes: u64,
+) -> Result<CreateRecoveryOutcome, BranchCreateError> {
+    let directory = child_head_path
+        .parent()
+        .ok_or(BranchCreateError::InconsistentRequest(
+            "child head has no branch directory",
+        ))?;
+    fs::create_dir_all(directory).map_err(|source| {
+        BranchCreateError::Head(BranchHeadError::Io {
+            operation: "create pending child lease directory",
+            source,
+        })
+    })?;
+    let _lease = DatabaseDirectoryLease::acquire(directory).map_err(BranchCreateError::Lease)?;
+    recover_create_file_inner(
+        catalog_path,
+        branch_id,
+        child_head_path,
+        None,
+        max_active_wal_bytes,
+    )
+}
+
+fn recover_create_file_inner(
+    catalog_path: &Path,
+    branch_id: BranchId,
+    child_head_path: &Path,
+    child_wal_path: Option<&Path>,
+    max_active_wal_bytes: u64,
+) -> Result<CreateRecoveryOutcome, BranchCreateError> {
     let catalog = read_catalog(catalog_path)
         .map_err(|error| BranchCreateError::Catalog(CatalogFileTransitionError::Io(error)))?;
     let branch = catalog
@@ -1392,6 +1438,10 @@ pub fn recover_create_file(
             "pending child metadata does not match its head",
         ));
     }
+    let derived_wal_path = child_head_path.with_file_name(
+        crate::artifact_files::wal_generation_file(head.active_wal.generation),
+    );
+    let child_wal_path = child_wal_path.unwrap_or(&derived_wal_path);
     match fs::metadata(child_wal_path) {
         Ok(_) => {}
         Err(source) if source.kind() == io::ErrorKind::NotFound => {

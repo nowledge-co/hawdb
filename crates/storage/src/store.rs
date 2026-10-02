@@ -113,7 +113,8 @@ mod graph_recovery;
 mod immutable_root;
 #[doc(hidden)]
 pub use immutable_root::{
-    AdmittedBranchStore, BranchAdmissionError, BranchAdmissionRequest, PreparedImmutableRootHandoff,
+    AdmittedBranchStore, BranchAdmissionError, BranchAdmissionRequest,
+    PreparedImmutableRootHandoff, SealedBranchSource,
 };
 #[path = "store/relational_index_shadow.rs"]
 mod relational_index_shadow;

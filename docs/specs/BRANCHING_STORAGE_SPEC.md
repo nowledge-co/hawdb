@@ -1039,10 +1039,30 @@ after local manifest publication but before head handoff. Recovery retains the
 selected head/WAL and candidate evidence. Generation reclamation follows a
 successful head handoff.
 
+Facade retries dispatch a matching pending receipt directly to
+`recover_create_from_head_file`. This recovery owns the child's UUID lease and
+derives its WAL path from the child's head; it never resolves or seals the
+parent again. Parent advancement, deletion, directory loss, or human-name reuse
+cannot change the original reserved child's identity or captured revision.
+Fingerprint conflicts reject before recovery, and SQL result admission uses the
+prospective completion revision before changing the catalog.
+
 An unchanged checkpoint is identified by its exact durable-manifest reference
 and recovery boundary. Seal reuses the validated root's checkpoint references
 and bindings, held under the runtime lease, and publishes only the new WAL
 suffix/root metadata. A changed checkpoint publishes a newly verified closure.
+For an unselected source, `seal_branch_from_head` holds the source UUID lease
+and validates head/root/manifest recovery boundaries plus complete private WAL
+frames, contiguous LSNs, and embedded transaction epochs. One WAL record advances
+one commit epoch, including a batch containing both schema and data changes.
+It reuses the previously published immutable checkpoint references without
+materializing a graph/schema runtime or reading checkpoint payloads. Cumulative
+sealed/private WAL entry and byte limits apply before publication. The source
+lease remains held through child creation, and the caller's selected runtime is
+unchanged. A torn suffix or stale revision fails without rotating the head or
+discarding WAL evidence; an uncertain head publication retains candidates for
+reopen. This path does not validate logical mutations against a recovered
+dataset or replace the immutable closure's original publication validation.
 `DatabaseConfig::max_branch_sealed_wal_intervals` defaults to 256, independently
 of WAL byte/entry replay limits. Admission checks this cap before materializing
 or replaying data, and sealing cannot grow a selected runtime beyond its cap;
