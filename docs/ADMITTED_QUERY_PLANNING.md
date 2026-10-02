@@ -46,8 +46,10 @@ Both planning and execution must satisfy the library, host/cgroup, and process
 policy bounds. Work already admitted keeps its permit when RSS rises. A successful
 reservation is not an allocator cap and cannot prevent unrelated host allocations
 or underestimated active work from exceeding the process limit.
-The policy gates admitted query methods. Opening the database and raw `Database`
-calls retain their existing host-managed resource boundaries.
+**The policy gates admitted query methods only.** Opening the database and calls
+through `database()` / `database_mut()` bypass process-RSS admission, including
+raw `CREATE` and `SET` queries. Hosts that use these APIs must provide an admission
+boundary for them; attaching a policy to the facade does not protect raw calls.
 
 ```rust,ignore
 let policy = ProcessMemoryPolicy::from_current_process(
@@ -67,6 +69,11 @@ Sampling remains owned by the host. Refresh at a bounded cadence shorter than
 `refresh_runtime_resources` and Tokio's `resource_refresh_interval` refresh host
 and cgroup resources, not RSS. They preserve caller-pinned resource snapshots;
 explicit `update_runtime_resources` still applies while retaining the pin.
+This changes earlier facade behavior: an explicit refresh no longer overrides a
+pin. Hosts that want to replace pinned resources can call
+`update_runtime_resources(RuntimeResourceSnapshot::detect())` explicitly.
+`runtime_resources()` reads the shared governor's current CPU/memory report, so
+Tokio periodic updates are visible without a separate facade refresh.
 RSS policy updates remain independent of resource pinning and wake queued Tokio
 work even when periodic resource detection is pinned off.
 
@@ -93,7 +100,12 @@ and Windows, a subprocess touches and releases a bounded 64 MiB anonymous mappin
 and checks current-RSS-driven rejection and recovery through actual synchronous
 and Tokio queries without cgroups. It emits `hawdb-process-rss-native-v1` with the
 observed byte counts. The local-only state-machine campaign compares 32 seeded,
-512-step sequences with an independent interval-debt oracle.
+512-step sequences with an independent interval-debt oracle. That campaign
+disables sample expiry to isolate RSS/reservation transitions; the consumer suite
+tests stale-sample rejection separately. Released claims are removed so every
+selected release exercises a live reservation. The native recovery deadline is
+bounded at 30 seconds to allow for delayed OS accounting on loaded runners; a
+missing RSS rise or recovery still fails qualification rather than being skipped.
 
 ```sh
 cargo test --locked -p hawdb --test process_memory_policy_contract -- --nocapture

@@ -14,6 +14,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::generator::DeterministicRng;
     use hawdb::{
         IoConcurrencyBudget, ProcessMemoryCapabilities, ProcessMemoryPolicy,
         ProcessMemoryPolicyConfig, ProcessMemorySnapshot, RuntimeAdmissionCode, RuntimeGovernor,
@@ -30,7 +31,7 @@ mod tests {
         governor: usize,
         original: u64,
         unseen: u64,
-        permit: Option<RuntimePermit>,
+        _permit: RuntimePermit,
     }
 
     #[derive(Default)]
@@ -98,13 +99,6 @@ mod tests {
         }
     }
 
-    fn next(random: &mut u64) -> u64 {
-        *random ^= *random << 13;
-        *random ^= *random >> 7;
-        *random ^= *random << 17;
-        *random
-    }
-
     #[test]
     fn process_memory_state_machine_matches_interval_oracle() {
         let mut actions = [0_usize; 7];
@@ -112,11 +106,14 @@ mod tests {
         let mut pressure_rejections = 0;
         let mut capacity_rejections = 0;
         let mut recoveries = 0;
+        let mut live_releases = 0;
         for seed in 1..=32 {
             let policy = ProcessMemoryPolicy::new(
                 ProcessMemoryPolicyConfig::new(NonZeroU64::new(LIMIT).unwrap())
                     .with_recovery_headroom(RECOVERY)
-                    .with_sample_max_age(Duration::from_secs(60)),
+                    // Staleness is tested separately by the public consumer suite.
+                    // This oracle models RSS transitions independently of wall time.
+                    .with_sample_max_age(Duration::MAX),
             );
             let governors = std::array::from_fn::<_, 2, _>(|_| {
                 let governor = RuntimeGovernor::new_with_process_memory_policy(
@@ -135,22 +132,16 @@ mod tests {
                 paused: true,
                 ..Model::default()
             };
-            let mut random = seed;
+            let mut random = DeterministicRng::new(seed);
             for step in 0..512 {
-                let mut action = usize::try_from(next(&mut random) % 7).unwrap();
-                if model
-                    .claims
-                    .iter()
-                    .filter(|claim| claim.permit.is_some())
-                    .count()
-                    >= 16
-                {
+                let mut action = usize::try_from(random.next_u64() % 7).unwrap();
+                if model.claims.len() >= 16 {
                     action = 3;
                 }
                 actions[action] += 1;
                 match action {
                     0 => {
-                        let rss = next(&mut random) % (LIMIT + LIMIT / 2 + 1);
+                        let rss = random.next_u64() % (LIMIT + LIMIT / 2 + 1);
                         let was_paused = model.paused;
                         model.sample(rss);
                         policy.update(sample(rss, true));
@@ -158,7 +149,7 @@ mod tests {
                     }
                     1 | 2 => {
                         let governor = action - 1;
-                        let bytes = next(&mut random) % (2 * LIMIT + 1);
+                        let bytes = random.next_u64() % (2 * LIMIT + 1);
                         let expected = model.admission(bytes);
                         let actual = governors[governor].try_admit(
                             RuntimeWorkRequest::new(
@@ -170,7 +161,7 @@ mod tests {
                         match (expected, actual) {
                             (Ok(()), Ok(permit)) => {
                                 admitted += 1;
-                                model.claims.push(Claim { governor, original: bytes, unseen: bytes, permit: Some(permit) });
+                                model.claims.push(Claim { governor, original: bytes, unseen: bytes, _permit: permit });
                             }
                             (Err((code, retryable)), Err(error)) => {
                                 assert_eq!((error.code, error.is_retryable()), (code, retryable), "seed={seed} step={step}");
@@ -183,10 +174,10 @@ mod tests {
                     3 => {
                         if !model.claims.is_empty() {
                             let index =
-                                usize::try_from(next(&mut random) % model.claims.len() as u64)
+                                usize::try_from(random.next_u64() % model.claims.len() as u64)
                                     .unwrap();
-                            model.claims[index].unseen = 0;
-                            drop(model.claims[index].permit.take());
+                            drop(model.claims.remove(index));
+                            live_releases += 1;
                         }
                     }
                     4 | 5 => {
@@ -200,7 +191,7 @@ mod tests {
                     }
                     6 => {
                         for governor in &governors {
-                            let cpu = if next(&mut random).is_multiple_of(2) {
+                            let cpu = if random.next_u64().is_multiple_of(2) {
                                 64
                             } else {
                                 128
@@ -237,7 +228,7 @@ mod tests {
                     let live: Vec<_> = model
                         .claims
                         .iter()
-                        .filter(|claim| claim.governor == index && claim.permit.is_some())
+                        .filter(|claim| claim.governor == index)
                         .collect();
                     let snapshot = governor.snapshot();
                     assert_eq!(
@@ -264,8 +255,12 @@ mod tests {
         }
         assert!(actions.iter().all(|count| *count > 0));
         assert!(
-            admitted > 0 && pressure_rejections > 0 && capacity_rejections > 0 && recoveries > 0
+            admitted > 0
+                && pressure_rejections > 0
+                && capacity_rejections > 0
+                && recoveries > 0
+                && live_releases > 0
         );
-        println!("hawdb-process-memory-oracle-v1 seeds=32 steps_per_seed=512 admitted={admitted} pressure_rejections={pressure_rejections} capacity_rejections={capacity_rejections} recoveries={recoveries} actions={actions:?}");
+        println!("hawdb-process-memory-oracle-v1 seeds=32 steps_per_seed=512 admitted={admitted} pressure_rejections={pressure_rejections} capacity_rejections={capacity_rejections} recoveries={recoveries} live_releases={live_releases} actions={actions:?}");
     }
 }

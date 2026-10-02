@@ -445,7 +445,6 @@ rust_test(
 # External embedded-library consumer for the host-owned RSS policy contract.
 rust_test(
     name = "hawdb_process_memory_policy_contract_tests",
-    args = ["--nocapture"],
     crate_root = "tests/process_memory_policy_contract.rs",
     crate_features = _HAWDB_DEFAULT_FEATURES,
     srcs = ["tests/process_memory_policy_contract.rs"],

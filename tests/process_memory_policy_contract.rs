@@ -203,6 +203,23 @@ fn embedded_refresh_preserves_pinned_resources_and_host_owned_rss_samples() {
 }
 
 #[test]
+fn embedded_resource_report_observes_shared_governor_updates_without_facade_refresh() {
+    let directory = TestDirectory::new();
+    let embedded = HawDBEmbedded::open_with_options(directory.options()).unwrap();
+    let initial = embedded.runtime_resources();
+    let updated = RuntimeResourceSnapshot::from_parts(initial.cpu, resources().memory);
+    let shared = embedded.runtime_governor().clone();
+    assert!(shared.update_resources(updated));
+    assert_eq!(embedded.runtime_resources().memory, updated.memory);
+    assert_eq!(embedded.runtime_resources().cpu, updated.cpu);
+    assert_eq!(embedded.runtime_resources().storage_io, initial.storage_io);
+    assert_eq!(
+        embedded.runtime_resources().storage_device,
+        initial.storage_device
+    );
+}
+
+#[test]
 fn embedded_instances_share_reservations_without_charging_observed_growth_twice() {
     let first_directory = TestDirectory::new();
     let second_directory = TestDirectory::new();
@@ -503,7 +520,7 @@ mod asynchronous {
         ));
 
         drop(allocation);
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             policy.refresh_from_host().unwrap();
             if !policy.snapshot().admission_paused {
