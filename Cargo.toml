@@ -53,6 +53,7 @@ libc = "0.2"
 hawdb-storage = { path = "crates/storage", version = "0.3.0", features = ["test-support"] }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+wasm-bindgen = "0.2.126"
 wasm-bindgen-test = "0.3"
 
 [features]
@@ -169,6 +170,12 @@ rpath = false
 [[bench]]
 name = "optimizer_smoke"
 harness = false
+
+[[example]]
+name = "wasm_playground"
+path = "examples/wasm_playground.rs"
+crate-type = ["cdylib"]
+test = true
 
 [[bench]]
 name = "relational_join_planning"

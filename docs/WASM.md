@@ -16,10 +16,89 @@ Construct `Database::new()` or `Database::new_with_config(...)`, then use
 starts empty. The database lasts only as long as the WASM instance.
 `Database::open*` rejects persistent storage on this target.
 
-The JS query bridge and playground are separate work (#734 and #735), and may
-live in the consuming frontend repository. This change supplies no Worker
-message protocol or deployment. A browser **Dedicated Web Worker** is the
-intended host; it runs on the user's device, not in Cloudflare Workers.
+The development example in `examples/wasm_playground.rs` supplies a thin
+wasm-bindgen query bridge (#734). `examples/wasm-playground/` supplies the page
+and a single **Dedicated Web Worker** (#735). It runs on the user's device,
+not in Cloudflare Workers. Neither is a production browser SDK.
+
+## Query playground
+
+Install the pinned Rust toolchain, `wasm32-unknown-unknown` target, LLVM tools,
+Python 3, Clang with a WASM backend, and the wasm-bindgen CLI matching
+`Cargo.lock` (currently `0.2.126`):
+
+```sh
+rustup target add wasm32-unknown-unknown
+rustup component add llvm-tools
+cargo install wasm-bindgen-cli --version 0.2.126 --locked
+bash scripts/build-wasm-playground.sh
+python3 -m http.server 8080 --bind 127.0.0.1 --directory examples/wasm-playground
+```
+
+Open `http://127.0.0.1:8080/`. The build script uses locked dependencies,
+disables default features, links a real `cdylib` example, and generates the
+JS/WASM files into the ignored `examples/wasm-playground/pkg/` directory. It
+selects Rust's LLVM archiver to avoid Apple's incompatible archive layout;
+target-specific `CC_wasm32_unknown_unknown` and `AR_wasm32_unknown_unknown`
+overrides remain available. Generated files are local build output, not a
+public deployment or a release artifact.
+
+Use **Create graph**, then **Read nodes** or **Traverse**, and press **Run
+query** after selecting each example. One in-memory `Database` remains in one
+Worker across submissions. Initialization and queries share one serial queue;
+the page disables Run while a request is pending. Reloading creates an empty
+database. Invalid queries display a structured error and allow another query.
+The page inserts result text through `textContent`.
+
+The Worker accepts `{id, type: "initialize"}` or
+`{id, type: "execute", query: "..."}`. Initialization returns
+`{id, status: "ready"}`. Execution returns either
+`{id, status: "ok", columns: [...], rows: [[...]]}` or
+`{id, status: "error", error: {kind, message}}`. Rows retain the facade's
+column order and write outcomes. Every value uses `{type, value}`:
+
+- `int64` and `float64` carry decimal strings; integers never pass through a
+  JavaScript Number. Non-finite floats retain their string representation.
+- `null`, `bool`, and `string` retain their corresponding JSON values.
+- `binary` carries an array of byte values; `uuid` carries its canonical string.
+- `list` and `map` contain recursively tagged values, including returned graph
+  values. Rust database handles remain internal.
+
+The example limits query input to 64 KiB, read results to 256 rows and 1 MiB
+of engine-accounted payload, and encoded display output to 8 MiB. It supplies
+a five-second cooperative query deadline through the existing runtime.
+Limit failures return errors without partial rows. Successful writes remain
+committed even if their response cannot fit the display limit. These controls
+are not a whole-process heap bound or preemptive cancellation guarantee.
+
+### Repeatable playground smoke
+
+After building and serving the page, run in the browser's developer console:
+
+```js
+await (await import("./smoke.js")).runSmoke()
+```
+
+This creates a separate real Worker and in-memory database, submits requests
+before initialization completes, and checks serial write/read ordering,
+relationship traversal, int64 precision, scalar/null/graph values,
+parse/protocol error recovery, input admission, and result-limit failure with
+subsequent recovery. It terminates its Worker afterward and returns the
+browser user agent and request count. To check the page itself, submit the
+three examples, an invalid query followed by a valid query, and then reload
+and read again to confirm empty rows.
+
+On 2026-10-02, the linked debug artifact and page were exercised in Chrome
+155 on macOS ARM64: the Worker smoke returned `passed` for 267 requests. The
+page's write/read/traversal/error loop disabled Run during each submission;
+the maximum int64 remained `9223372036854775807`. Reloading the page and reading
+the prior fixture returned zero rows. Native bridge regressions are available
+with:
+
+```sh
+cargo test --locked -p hawdb --no-default-features --example wasm_playground
+bazel test //:hawdb_wasm_playground_bridge_tests //:hawdb_in_memory_portable_tests
+```
 
 ## Build
 
@@ -31,7 +110,8 @@ cargo build --locked -p hawdb --lib --no-default-features --target wasm32-unknow
 ```
 
 This builds a Rust library for a consuming WASM package; the consumer owns its
-`cdylib` and wasm-bindgen JS exports. It does not produce a standalone query UI.
+`cdylib` and wasm-bindgen JS exports. The playground build script above is the
+standalone example using this same library.
 
 The existing compression dependency still builds C code. A Clang with a
 `wasm32` backend and an LLVM archiver are required. On macOS, Apple's `ar` can

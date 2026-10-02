@@ -392,6 +392,7 @@ dependencies = [
  "serde",
  "serde_json",
  "unicode-width",
+ "wasm-bindgen",
  "wasm-bindgen-test",
  "zstd",
 ]

@@ -733,13 +733,14 @@ fn write_catalog_locked(path: &Path, catalog: &Catalog) -> io::Result<()> {
         sequence
     ));
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&candidate)?;
-        file.write_all(&encoded)?;
-        file.sync_all()?;
-        drop(file);
+        {
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&candidate)?;
+            file.write_all(&encoded)?;
+            file.sync_all()?;
+        }
         durability::durable_replace_file(&candidate, path)
     })();
     if result.is_err() {
