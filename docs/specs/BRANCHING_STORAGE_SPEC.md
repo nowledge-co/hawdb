@@ -314,10 +314,9 @@ registry. Prepared Cypher execution is bound to its original branch UUID.
 Readonly selection reconstructs derived recovery files but cannot append the
 private WAL, publish a head, or change the catalog. Ordinary writes remain on
 the selected private WAL, and a selected source is sealed at the requested
-current revision before a nested fork. An unselected source is temporarily
-admitted under its own lease; a busy source fails without retargeting the caller.
-That temporary admission still reconstructs the source dataset: a storage-owned
-WAL-only sealing path for cheap unselected-source creation remains #780 work.
+current revision before a nested fork. An unselected source is sealed from its
+head, immutable manifest, and complete private WAL under its UUID lease without
+materializing its dataset. A busy source fails without retargeting the caller.
 
 The ordinary opener still uses the legacy single-root path, and bootstrap,
 metadata-only project open, deferred default `main` admission, and automatic
@@ -329,6 +328,13 @@ required. Finite FD admission and complete
 power-loss qualification remain #819/#820 work. These implementation limits do
 not weaken the required project-opening, resource, or job-ownership contracts
 above and below.
+The storage-owned project selector codec and metadata admission seam now validate
+project/main identity without retaining branch descriptors or taking a writer
+lease. Main initialization reserves those UUIDs durably before catalog/head
+publication, reuses an existing development catalog's identity, and rejects
+conflicting or damaged bootstrap evidence. The facade's default opener has not
+yet switched to this seam; identity reservation does not publish the selector
+or prove that the complete default project-opening workflow is implemented.
 The SQL fixtures use default residency/index settings; existing authoritative
 index restrictions on live schema-changing transactions and DDL WAL admission
 remain fail-closed. Enabling branch selection does not bypass those restrictions.
@@ -465,8 +471,8 @@ append-only private WAL without copying its parent directory. Its admitted
 head at checkpoint/seal boundaries, and can fork an advanced child from its
 exact sealed revision. Required work includes:
 
-- metadata-only project open, deferred default-main admission, authoritative
-  bootstrap/reopen, and cheap WAL-only sealing of an unselected source;
+- connecting metadata-only project admission to the ordinary opener, deferred
+  default-main admission, and authoritative bootstrap/reopen;
 - independent ownership for background jobs across session switches;
 - qualification of supported residency/index configurations, including existing
   authoritative-index restrictions on live DDL and schema-WAL replay;
@@ -542,6 +548,17 @@ reclamation. Readers MUST
 reject unknown versions, duplicate fields, invalid identities, and incomplete
 references; absence/corruption of the catalog MUST NOT trigger legacy fallback.
 
+The storage seam's exact v1 selector encoding is five newline-terminated ASCII
+lines in this order: the header, `project_id`, `main_branch_id`, `catalog_format`,
+and `checksum`. Fields use one tab separator. UUIDs use canonical lowercase
+hyphenated encoding; project and main UUIDs are non-nil and distinct. Catalog
+format is `2`. The checksum is decimal CRC32C over the first four lines, including
+their newlines. The decoder enforces a 512-byte limit, exact canonical bytes,
+field order, and no trailing fields. A bootstrap intent uses the same fields with
+the distinct `HAWDB_BRANCH_BOOTSTRAP_V1` header; it is identity reservation, never
+a substitute for a published project selector. A recognized legacy header only
+selects the legacy decoder; it does not bypass its complete manifest validation.
+
 New empty projects bootstrap `main` directly. When adopting an existing
 development-only database, hold its directory lease, durably create a catalog
 and `main` head referencing the existing complete manifest/artifacts, then
@@ -557,6 +574,7 @@ Logical layout (paths are internal, not part of the facade API):
 ```text
 project/
   manifest.hawdb                 # branch-project selector, published last
+  branch-bootstrap.hawdb         # durable bootstrap UUID reservation, not readiness
   metadata.hawdb.lock            # stable project metadata lock inode
   catalog.hawdb                  # checksummed catalog, atomically replaced
   objects/<kind>/<sha256>        # immutable payloads and sealed roots

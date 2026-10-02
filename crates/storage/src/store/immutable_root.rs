@@ -197,6 +197,20 @@ impl std::error::Error for BranchAdmissionError {
 
 impl GraphStore {
     #[doc(hidden)]
+    pub fn reserve_branch_project_identity(
+        &self,
+        proposed: crate::branch_project::ProjectSelector,
+    ) -> Result<crate::branch_project::ProjectSelector> {
+        self.ensure_usable()?;
+        self.durable
+            .as_ref()
+            .ok_or_else(|| {
+                HawDBError::Storage("project bootstrap requires durable storage".into())
+            })?
+            .reserve_project_bootstrap_identity(proposed)
+    }
+
+    #[doc(hidden)]
     pub fn reserve_branch_admission_resources(
         &self,
     ) -> Result<crate::file_descriptors::DescriptorReservation> {

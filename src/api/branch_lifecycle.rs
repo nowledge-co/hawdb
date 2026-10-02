@@ -57,6 +57,72 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_main_bootstrap_retains_identity_and_legacy_data() {
+        let path = test_directory("branch-bootstrap-identity");
+        let mut database = Database::open(&path).unwrap();
+        database.query("CREATE (:Memory {id: 'retained'})").unwrap();
+        database.checkpoint().unwrap();
+        let project = Uuid::from_u128(301);
+        let main = Uuid::from_u128(302);
+        let selector = hawdb_storage::branch_project::ProjectSelector::new(
+            storage::BranchId::new(project).unwrap(),
+            storage::BranchId::new(main).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            database
+                .store
+                .reserve_branch_project_identity(selector)
+                .unwrap(),
+            selector,
+        );
+        let intent = std::fs::read(path.join("branch-bootstrap.hawdb")).unwrap();
+        assert!(!database.branch_catalog_path().unwrap().exists());
+        drop(database);
+
+        let mut database = Database::open(&path).unwrap();
+        assert!(database
+            .initialize_main_branch(Uuid::from_u128(303), Uuid::from_u128(304))
+            .is_err());
+        assert!(!database.branch_catalog_path().unwrap().exists());
+        assert_eq!(
+            std::fs::read(path.join("branch-bootstrap.hawdb")).unwrap(),
+            intent,
+        );
+        assert_eq!(
+            database
+                .query("MATCH (m:Memory) RETURN m.id AS id")
+                .unwrap()
+                .rows,
+            vec![BTreeMap::from([(
+                "id".into(),
+                Value::String("retained".into())
+            )])],
+        );
+        let initialized = database.initialize_main_branch(project, main).unwrap();
+        let head_path = database.branch_head_path(main).unwrap();
+        let head = std::fs::read(&head_path).unwrap();
+        assert_eq!(
+            database.initialize_main_branch(project, main).unwrap(),
+            initialized
+        );
+        assert_eq!(std::fs::read(&head_path).unwrap(), head);
+        database.query_sql("USE BRANCH main").unwrap();
+        assert_eq!(
+            database
+                .query("MATCH (m:Memory) RETURN m.id AS id")
+                .unwrap()
+                .rows,
+            vec![BTreeMap::from([(
+                "id".into(),
+                Value::String("retained".into())
+            )])],
+        );
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn sql_branch_switch_retains_job_outcomes_and_never_reuses_ids() {
         let (path, mut database, main) = initialized_database();
         let child = database.create_branch(create_request(&main)).unwrap();
@@ -2112,6 +2178,20 @@ impl Database {
         main_branch_id: Uuid,
     ) -> Result<BranchInfo, BranchLifecycleError> {
         self.ensure_branch_writable()?;
+        let proposed = hawdb_storage::branch_project::ProjectSelector::new(
+            storage::BranchId::new(project_id).map_err(BranchLifecycleError::Catalog)?,
+            storage::BranchId::new(main_branch_id).map_err(BranchLifecycleError::Catalog)?,
+        )
+        .map_err(BranchLifecycleError::Runtime)?;
+        let reserved = self
+            .store
+            .reserve_branch_project_identity(proposed)
+            .map_err(BranchLifecycleError::Runtime)?;
+        if reserved != proposed {
+            return Err(BranchLifecycleError::Storage(
+                "main initialization differs from the durable bootstrap identity".into(),
+            ));
+        }
         let main = self.initialize_branch_catalog_record(project_id, main_branch_id)?;
         let head_path = self.branch_head_path(main.id.as_uuid())?;
         let head = if hawdb_storage::file_io::try_exists(&head_path)

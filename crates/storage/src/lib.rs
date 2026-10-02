@@ -31,6 +31,8 @@ pub mod backup;
 pub mod branch_catalog;
 #[doc(hidden)]
 pub mod branch_head;
+#[doc(hidden)]
+pub mod branch_project;
 pub mod cache;
 pub mod canonical;
 pub mod canonical_adjacency;

@@ -614,9 +614,10 @@ pub fn read_catalog(path: &Path) -> io::Result<Catalog> {
     if length > MAX_CATALOG_BYTES as u64 {
         return Err(invalid_data("branch catalog exceeds its byte limit"));
     }
-    let mut file = fs::File::open(path)?;
+    let file = fs::File::open(path)?;
     let mut encoded = Vec::with_capacity(length as usize);
-    file.read_to_end(&mut encoded)?;
+    file.take((MAX_CATALOG_BYTES + 1) as u64)
+        .read_to_end(&mut encoded)?;
     Catalog::decode(&encoded).map_err(|error| invalid_data(error.to_string()))
 }
 

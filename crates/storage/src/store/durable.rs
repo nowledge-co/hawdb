@@ -231,6 +231,21 @@ pub(super) enum DurableOpenMode {
 }
 
 impl DurableStore {
+    pub(super) fn reserve_project_bootstrap_identity(
+        &self,
+        proposed: crate::branch_project::ProjectSelector,
+    ) -> Result<crate::branch_project::ProjectSelector> {
+        if self.read_only || self.branch_runtime.is_some() {
+            return Err(HawDBError::Storage(
+                "project bootstrap requires the writable legacy directory lease".into(),
+            ));
+        }
+        // This DurableStore owns the original directory lease. Keep it alive
+        // while choosing identities for metadata adoption; no source copy or
+        // second branch runtime is needed.
+        crate::branch_project::reserve_bootstrap_identity(&self.project_files, proposed)
+    }
+
     pub(super) fn file_descriptor_context(&self) -> crate::file_descriptors::FileOpenContext {
         self.project_files.io_context()
     }
