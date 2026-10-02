@@ -912,8 +912,18 @@ catalog and keeps it through validation and candidate replacement.
 revision, never a name, so a delayed request cannot target a later name
 incarnation. The first transition durably publishes `Deleting`; a retry returns
 that same reservation, and finalization publishes the same UUID's `Deleted`
-tombstone. The facade first proves that no current branch writer owns the
+tombstone. Revision CAS applies when changing `Ready -> Deleting` or
+`Deleting -> Deleted`. Reading an existing reservation or completed tombstone
+for the same UUID intentionally accepts the older request revision, since a
+lost response can leave the original revision stale after successful
+publication. Replays never mutate a newer `Ready` revision or resolve a reused
+name to a different UUID.
+
+The facade first proves that no current branch writer owns the
 target lease, then releases its temporary admission probe before finalization.
+If an already-`Deleting` branch still has a lease owner, a retry returns its
+current pending state without changing the catalog. `Deleted` confirms
+finalization; a retry after lease release can finish the same UUID's deletion.
 This implements the catalog transition only: #780 must make target admission
 revalidate `Deleting` before exposing a runtime, and #778 remains responsible
 for physical cleanup and reachability checks.

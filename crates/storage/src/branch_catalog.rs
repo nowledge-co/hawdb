@@ -923,6 +923,11 @@ pub fn abort_create_file(
 /// interrupted deletion of the same durable branch identity. The reservation
 /// is intentionally published before physical cleanup so new branch admission
 /// can reject the target after a crash or lost response.
+///
+/// Revision CAS applies to the first `Ready -> Deleting` transition. For an
+/// already-`Deleting` or `Deleted` UUID, return its current outcome without
+/// another mutation: a lost response leaves the caller's original revision
+/// stale. The immutable UUID, rather than a reusable name, binds that replay.
 pub fn begin_delete_file(
     path: &Path,
     request: DeleteRequest,
@@ -972,6 +977,9 @@ pub fn begin_delete_file(
 /// Publishes `Deleting -> Deleted` under one metadata lease. Retrying after a
 /// completed publication returns the same durable tombstone without creating a
 /// new branch identity.
+/// The reservation revision is checked while changing `Deleting` to `Deleted`;
+/// after publication, the same UUID's tombstone is an idempotent read even
+/// though completing that transition advanced its revision.
 pub fn finish_delete_file(
     path: &Path,
     reservation: DeleteReservation,
@@ -1905,6 +1913,80 @@ mod tests {
             DeleteBeginOutcome::Deleted(deleted)
         );
 
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn delete_revision_cas_applies_before_transition_and_replays_keep_uuid_identity() {
+        let (directory, path) = temporary_catalog_path();
+        let mut initial = catalog();
+        initial
+            .rename(id(1), 3, BranchName::new("reusable").unwrap())
+            .unwrap();
+        write_catalog(&path, &initial).unwrap();
+        let before = fs::read(&path).unwrap();
+        let request = DeleteRequest {
+            id: id(1),
+            expected_metadata_revision: 3,
+        };
+        assert!(matches!(
+            begin_delete_file(&path, request),
+            Err(CatalogFileTransitionError::Transition(
+                CatalogTransitionError::StaleRevision {
+                    expected: 3,
+                    actual: 4,
+                }
+            ))
+        ));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let reservation = match begin_delete_file(
+            &path,
+            DeleteRequest {
+                expected_metadata_revision: 4,
+                ..request
+            },
+        )
+        .unwrap()
+        {
+            DeleteBeginOutcome::Deleting(reservation) => reservation,
+            DeleteBeginOutcome::Deleted(_) => panic!("ready branch must begin deletion"),
+        };
+        assert!(matches!(
+            finish_delete_file(
+                &path,
+                DeleteReservation {
+                    metadata_revision: 4,
+                    ..reservation
+                }
+            ),
+            Err(CatalogFileTransitionError::Transition(
+                CatalogTransitionError::StaleRevision {
+                    expected: 4,
+                    actual: 5,
+                }
+            ))
+        ));
+        let deleted = finish_delete_file(&path, reservation).unwrap();
+        let mut reused = read_catalog(&path).unwrap();
+        reused.branches.push(record(9, "reusable"));
+        write_catalog(&path, &reused).unwrap();
+        let before_replay = fs::read(&path).unwrap();
+        assert_eq!(
+            begin_delete_file(&path, request).unwrap(),
+            DeleteBeginOutcome::Deleted(deleted.clone())
+        );
+        assert_eq!(finish_delete_file(&path, reservation).unwrap(), deleted);
+        assert_eq!(fs::read(&path).unwrap(), before_replay);
+        assert_eq!(
+            read_catalog(&path)
+                .unwrap()
+                .branches
+                .iter()
+                .find(|branch| branch.id == id(9))
+                .unwrap()
+                .state,
+            BranchState::Ready
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 

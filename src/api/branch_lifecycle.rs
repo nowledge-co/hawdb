@@ -446,6 +446,52 @@ mod tests {
     }
 
     #[test]
+    fn delete_retry_reports_pending_while_deleting_branch_is_leased() {
+        let (path, mut database, main) = initialized_database();
+        let child = database.create_branch(create_request(&main)).unwrap();
+        let catalog_path = database.branch_catalog_path().unwrap();
+        let child_record = database
+            .read_branch_catalog()
+            .unwrap()
+            .branches
+            .into_iter()
+            .find(|branch| branch.id.as_uuid() == child.id)
+            .unwrap();
+        let lease =
+            DatabaseDirectoryLease::acquire(&database.branch_directory(child.id).unwrap()).unwrap();
+        storage::begin_delete_file(
+            &catalog_path,
+            storage::DeleteRequest {
+                id: child_record.id,
+                expected_metadata_revision: child_record.metadata_revision,
+            },
+        )
+        .unwrap();
+        let before = std::fs::read(&catalog_path).unwrap();
+
+        let pending = database
+            .delete_branch(BranchSelector::Id(child.id))
+            .unwrap();
+        assert_eq!(pending.id, child.id);
+        assert_eq!(pending.state, BranchLifecycleState::Deleting);
+        assert_eq!(std::fs::read(&catalog_path).unwrap(), before);
+        assert!(matches!(
+            DatabaseDirectoryLease::acquire(&database.branch_directory(child.id).unwrap()),
+            Err(hawdb_storage::ownership::DatabaseDirectoryLeaseError::AlreadyOpen)
+        ));
+        drop(lease);
+        assert_eq!(
+            database
+                .delete_branch(BranchSelector::Id(child.id))
+                .unwrap()
+                .state,
+            BranchLifecycleState::Deleted
+        );
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn persistent_lineage_and_receipts_survive_reopen_without_handles() {
         let (path, mut database, main) = initialized_database();
         let request = create_request(&main);
@@ -912,6 +958,10 @@ impl Database {
     /// target lease, and admission must reject the durable tombstone. A crash
     /// after `Deleting` is published can be resumed by retrying this operation;
     /// the branch UUID is never reused.
+    ///
+    /// Retrying an already-`Deleting` branch while its lease is held returns
+    /// its current pending state. Only `Deleted` confirms finalization; after
+    /// the lease is released a retry can finish that same deletion.
     pub fn delete_branch(
         &self,
         selector: BranchSelector,
@@ -938,8 +988,19 @@ impl Database {
         }
 
         let branch_lease =
-            DatabaseDirectoryLease::acquire(&self.branch_directory(branch.id.as_uuid())?)
-                .map_err(|error| BranchLifecycleError::LeaseUnavailable(error.to_string()))?;
+            match DatabaseDirectoryLease::acquire(&self.branch_directory(branch.id.as_uuid())?) {
+                Ok(lease) => lease,
+                Err(hawdb_storage::ownership::DatabaseDirectoryLeaseError::AlreadyOpen)
+                    if branch.state == storage::BranchState::Deleting =>
+                {
+                    // Deleting is already durable and cannot become Ready again.
+                    // Report its current outcome without finalizing under an owner.
+                    return self.describe_branch(BranchSelector::Id(branch.id.as_uuid()));
+                }
+                Err(error) => {
+                    return Err(BranchLifecycleError::LeaseUnavailable(error.to_string()))
+                }
+            };
         let request = storage::DeleteRequest {
             id: branch.id,
             expected_metadata_revision: branch.metadata_revision,
