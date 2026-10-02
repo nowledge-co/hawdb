@@ -766,25 +766,22 @@ impl Database {
         project_id: Uuid,
         main_branch_id: Uuid,
     ) -> Result<BranchInfo, BranchLifecycleError> {
+        Ok(branch_info(&self.initialize_branch_catalog_record(
+            project_id,
+            main_branch_id,
+        )?))
+    }
+
+    fn initialize_branch_catalog_record(
+        &self,
+        project_id: Uuid,
+        main_branch_id: Uuid,
+    ) -> Result<storage::BranchRecord, BranchLifecycleError> {
         self.ensure_branch_writable()?;
         let path = self.branch_catalog_path()?;
-        if path.exists() {
-            return self
-                .read_branch_catalog()?
-                .branches
-                .into_iter()
-                .find(|branch| branch.name.as_str() == "main")
-                .map(|branch| branch_info(&branch))
-                .ok_or(BranchLifecycleError::UnknownBranch);
-        }
         let project = storage::BranchId::new(project_id).map_err(BranchLifecycleError::Catalog)?;
         let main = storage::BranchId::new(main_branch_id).map_err(BranchLifecycleError::Catalog)?;
-        let catalog =
-            storage::Catalog::bootstrap(project, main).map_err(BranchLifecycleError::Catalog)?;
-        let directory = path.parent().expect("branch catalog has a parent");
-        std::fs::create_dir_all(directory).map_err(BranchLifecycleError::CatalogIo)?;
-        storage::write_catalog(&path, &catalog).map_err(BranchLifecycleError::CatalogIo)?;
-        Ok(branch_info(&catalog.branches[0]))
+        storage::initialize_catalog_file(&path, project, main).map_err(Into::into)
     }
 
     /// Publishes the current durable state as the initial sealed `main` snapshot.
@@ -797,16 +794,8 @@ impl Database {
         main_branch_id: Uuid,
     ) -> Result<BranchInfo, BranchLifecycleError> {
         self.ensure_branch_writable()?;
-        let main = self.initialize_branch_catalog(project_id, main_branch_id)?;
-        let mut catalog = self.read_branch_catalog()?;
-        if main.id != main_branch_id || catalog.project_id.as_uuid() != project_id {
-            return Err(BranchLifecycleError::Transition(
-                storage::CatalogTransitionError::Conflict(
-                    "initial main identity does not match the catalog",
-                ),
-            ));
-        }
-        let head_path = self.branch_head_path(main.id)?;
+        let main = self.initialize_branch_catalog_record(project_id, main_branch_id)?;
+        let head_path = self.branch_head_path(main.id.as_uuid())?;
         let head = if head_path
             .try_exists()
             .map_err(BranchLifecycleError::CatalogIo)?
@@ -822,11 +811,7 @@ impl Database {
             }
             head
         } else {
-            if catalog
-                .branches
-                .iter()
-                .any(|branch| branch.id.as_uuid() == main.id && branch.base_root_digest.is_some())
-            {
+            if main.base_root_digest.is_some() {
                 return Err(BranchLifecycleError::Storage(
                     "initialized main branch is missing its head".to_string(),
                 ));
@@ -863,7 +848,7 @@ impl Database {
         let root = hawdb_storage::sealed_root::SealedRoot::decode(&root_bytes)
             .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
         let wal = branch_head::active_wal_identity_from_file(
-            &self.branch_wal_path(main.id, head.active_wal.generation)?,
+            &self.branch_wal_path(main.id.as_uuid(), head.active_wal.generation)?,
             head.active_wal.generation,
             head.active_wal.replay_start_lsn,
             head.active_wal.byte_length,
@@ -874,32 +859,16 @@ impl Database {
                 "initial main root/WAL does not match its head".to_string(),
             ));
         }
-        let branch = catalog
-            .branches
-            .iter_mut()
-            .find(|branch| branch.id.as_uuid() == main_branch_id)
-            .ok_or(BranchLifecycleError::UnknownBranch)?;
-        if let Some(digest) = branch.base_root_digest {
-            if digest != *head.sealed_root.sha256.as_bytes()
-                || branch.source_commit_epoch != head.logical_commit_epoch
-            {
-                return Err(BranchLifecycleError::Storage(
-                    "main catalog binding does not match its sealed head".to_string(),
-                ));
-            }
-            return Ok(branch_info(branch));
-        }
-        branch.base_root_digest = Some(*head.sealed_root.sha256.as_bytes());
-        branch.source_commit_epoch = head.logical_commit_epoch;
-        branch.metadata_revision = branch.metadata_revision.checked_add(1).ok_or_else(|| {
-            BranchLifecycleError::Storage("main metadata revision overflow".to_string())
-        })?;
-        catalog.revision = catalog.revision.checked_add(1).ok_or_else(|| {
-            BranchLifecycleError::Storage("catalog revision overflow".to_string())
-        })?;
-        catalog.validate().map_err(BranchLifecycleError::Catalog)?;
-        storage::write_catalog(&catalog_path, &catalog).map_err(BranchLifecycleError::CatalogIo)?;
-        self.describe_branch(BranchSelector::Id(main_branch_id))
+        let project = storage::BranchId::new(project_id).map_err(BranchLifecycleError::Catalog)?;
+        let main = storage::BranchId::new(main_branch_id).map_err(BranchLifecycleError::Catalog)?;
+        let branch = storage::bind_main_head_file(
+            &catalog_path,
+            project,
+            main,
+            *head.sealed_root.sha256.as_bytes(),
+            head.logical_commit_epoch,
+        )?;
+        Ok(branch_info(&branch))
     }
 
     pub fn list_branches(&self) -> Result<Vec<BranchInfo>, BranchLifecycleError> {
@@ -939,10 +908,10 @@ impl Database {
     /// The branch lease is acquired before the metadata transition, and the
     /// storage kernel revalidates the observed revision while holding the
     /// metadata lease. After `Deleting` is durable the temporary lease is
-    /// released before finalization: admission must reject the tombstoned
-    /// branch, and a `Deleted` record must never coexist with an active writer
-    /// lease. A crash after `Deleting` is published can be resumed by retrying
-    /// this operation; the branch UUID is never reused.
+    /// released before finalization. An admitted runtime retains this same
+    /// target lease, and admission must reject the durable tombstone. A crash
+    /// after `Deleting` is published can be resumed by retrying this operation;
+    /// the branch UUID is never reused.
     pub fn delete_branch(
         &self,
         selector: BranchSelector,

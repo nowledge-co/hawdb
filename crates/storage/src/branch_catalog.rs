@@ -632,6 +632,86 @@ pub fn write_catalog(path: &Path, catalog: &Catalog) -> io::Result<()> {
     write_catalog_locked(path, catalog)
 }
 
+/// Creates the root catalog once, or reopens the same root identity, while
+/// holding the metadata lease across the existence check and publication.
+///
+/// A caller must not infer that a missing catalog is still missing after a
+/// separate read: another initializer can publish it in that interval. This
+/// helper returns the one validated `main` record observed under the lease.
+pub fn initialize_catalog_file(
+    path: &Path,
+    project_id: BranchId,
+    main_id: BranchId,
+) -> Result<BranchRecord, CatalogFileTransitionError> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            CatalogFileTransitionError::Io(invalid_data("branch catalog destination has no parent"))
+        })?;
+    fs::create_dir_all(parent).map_err(CatalogFileTransitionError::Io)?;
+    let _metadata_lock =
+        CatalogMetadataLease::acquire_blocking(parent).map_err(CatalogFileTransitionError::Io)?;
+    match read_catalog(path) {
+        Ok(catalog) => main_record(&catalog, project_id, main_id),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let catalog = Catalog::bootstrap(project_id, main_id)
+                .map_err(|error| CatalogFileTransitionError::Io(invalid_data(error.to_string())))?;
+            let main = catalog.branches[0].clone();
+            write_catalog_locked(path, &catalog).map_err(CatalogFileTransitionError::Io)?;
+            Ok(main)
+        }
+        Err(error) => Err(CatalogFileTransitionError::Io(error)),
+    }
+}
+
+/// Binds the root catalog record to the exact immutable root selected by its
+/// initial branch head. The catalog read, validation, and publication occur
+/// under one metadata lease, so a concurrent lifecycle transition cannot be
+/// overwritten by a stale in-memory catalog image.
+pub fn bind_main_head_file(
+    path: &Path,
+    project_id: BranchId,
+    main_id: BranchId,
+    sealed_root_digest: [u8; DIGEST_BYTES],
+    source_commit_epoch: u64,
+) -> Result<BranchRecord, CatalogFileTransitionError> {
+    mutate_catalog_file(path, |catalog| {
+        let index = main_record_index(catalog, project_id, main_id)?;
+        let branch = &catalog.branches[index];
+        if let Some(digest) = branch.base_root_digest {
+            if digest != sealed_root_digest || branch.source_commit_epoch != source_commit_epoch {
+                return Err(CatalogTransitionError::Conflict(
+                    "main catalog binding does not match its sealed head",
+                ));
+            }
+            return Ok(CatalogMutation {
+                value: branch.clone(),
+                changed: false,
+            });
+        }
+        if branch.state != BranchState::Ready {
+            return Err(CatalogTransitionError::InvalidState(
+                "main branch is not ready for head binding",
+            ));
+        }
+        let next_catalog_revision = catalog.next_revision()?;
+        let next_metadata_revision = catalog.next_metadata_revision(index)?;
+        let branch = &mut catalog.branches[index];
+        branch.base_root_digest = Some(sealed_root_digest);
+        branch.source_commit_epoch = source_commit_epoch;
+        branch.metadata_revision = next_metadata_revision;
+        catalog.revision = next_catalog_revision;
+        catalog
+            .validate()
+            .map_err(CatalogTransitionError::Validation)?;
+        Ok(CatalogMutation {
+            value: catalog.branches[index].clone(),
+            changed: true,
+        })
+    })
+}
+
 /// Publishes a catalog while the caller owns the project metadata lease.
 /// Keeping the lock acquisition outside the read/modify/write sequence lets
 /// catalog transitions serialize their read and publication as one operation.
@@ -746,6 +826,39 @@ fn mutate_catalog_file<T>(
         write_catalog_locked(path, &catalog).map_err(CatalogFileTransitionError::Io)?;
     }
     Ok(mutation.value)
+}
+
+fn main_record(
+    catalog: &Catalog,
+    project_id: BranchId,
+    main_id: BranchId,
+) -> Result<BranchRecord, CatalogFileTransitionError> {
+    let index = main_record_index(catalog, project_id, main_id)
+        .map_err(CatalogFileTransitionError::Transition)?;
+    Ok(catalog.branches[index].clone())
+}
+
+fn main_record_index(
+    catalog: &Catalog,
+    project_id: BranchId,
+    main_id: BranchId,
+) -> Result<usize, CatalogTransitionError> {
+    if catalog.project_id != project_id {
+        return Err(CatalogTransitionError::Conflict(
+            "catalog project identity does not match root initialization",
+        ));
+    }
+    let index = catalog
+        .branches
+        .iter()
+        .position(|branch| branch.id == main_id)
+        .ok_or(CatalogTransitionError::MissingBranch)?;
+    if catalog.branches[index].name.as_str() != "main" {
+        return Err(CatalogTransitionError::Conflict(
+            "root branch identity does not name main",
+        ));
+    }
+    Ok(index)
 }
 
 /// Reserves a child branch in the durable catalog before child files are made.
@@ -2176,6 +2289,40 @@ mod tests {
         drop(first);
         CatalogMetadataLease::acquire(&directory).unwrap();
         assert!(directory.join(METADATA_LOCK_FILE).is_file());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn root_initialization_and_head_binding_share_one_catalog_transition() {
+        let (directory, path) = temporary_catalog_path();
+        let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let first_path = path.clone();
+        let first_start = std::sync::Arc::clone(&start);
+        let first = std::thread::spawn(move || {
+            first_start.wait();
+            initialize_catalog_file(&first_path, id(90), id(91)).unwrap()
+        });
+        start.wait();
+        let second = initialize_catalog_file(&path, id(90), id(91)).unwrap();
+        let first = first.join().unwrap();
+        assert_eq!(first, second);
+        assert_eq!(read_catalog(&path).unwrap().branches, vec![first.clone()]);
+
+        let bound = bind_main_head_file(&path, id(90), id(91), [7; DIGEST_BYTES], 12).unwrap();
+        assert_eq!(bound.base_root_digest, Some([7; DIGEST_BYTES]));
+        assert_eq!(bound.source_commit_epoch, 12);
+        assert_eq!(bound.metadata_revision, first.metadata_revision + 1);
+        assert_eq!(read_catalog(&path).unwrap().revision, 2);
+        assert_eq!(
+            bind_main_head_file(&path, id(90), id(91), [7; DIGEST_BYTES], 12).unwrap(),
+            bound
+        );
+        assert!(matches!(
+            bind_main_head_file(&path, id(90), id(91), [8; DIGEST_BYTES], 12),
+            Err(CatalogFileTransitionError::Transition(
+                CatalogTransitionError::Conflict(_)
+            ))
+        ));
         fs::remove_dir_all(directory).unwrap();
     }
 
