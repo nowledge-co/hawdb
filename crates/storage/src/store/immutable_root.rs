@@ -202,6 +202,15 @@ impl GraphStore {
     pub fn admit_branch_from_head(
         request: BranchAdmissionRequest<'_>,
     ) -> std::result::Result<AdmittedBranchStore, BranchAdmissionError> {
+        Self::admit_branch_from_head_with_cleanup(request, |runtime_directory| {
+            let _ = fs::remove_dir_all(runtime_directory);
+        })
+    }
+
+    fn admit_branch_from_head_with_cleanup(
+        request: BranchAdmissionRequest<'_>,
+        cleanup: impl FnOnce(&Path),
+    ) -> std::result::Result<AdmittedBranchStore, BranchAdmissionError> {
         if request.replay_config.recovery_mode == RecoveryMode::AutoRepairTornTail {
             return Err(BranchAdmissionError::Recovery(HawDBError::Storage(
                 "automatic repair of a branch private WAL requires branch-aware repair publication"
@@ -235,7 +244,10 @@ impl GraphStore {
         let root = SealedRoot::decode(&root_bytes).map_err(|error| {
             BranchAdmissionError::Recovery(HawDBError::Storage(error.to_string()))
         })?;
-        validate_admission_binding(&before, &head, &root)?;
+        let root_reference = root.object_reference().map_err(|error| {
+            BranchAdmissionError::Recovery(HawDBError::Storage(error.to_string()))
+        })?;
+        validate_admission_binding(&before, &head, &root, root_reference)?;
 
         let active_wal_path = branch_directory.join(crate::artifact_files::wal_generation_file(
             head.active_wal.generation,
@@ -274,18 +286,23 @@ impl GraphStore {
                 request.branch_id,
                 request.expected_metadata_revision,
             )?;
-            validate_admission_binding(&after, &head, &root)?;
-            Ok(AdmittedBranchStore {
+            validate_admission_binding(&after, &head, &root, root_reference)?;
+            Ok((store, catalog))
+        })();
+        // Keep the target lease outside recovery: a failure must finish runtime
+        // cleanup before another opener can acquire ownership of this UUID.
+        match result {
+            Ok((store, catalog)) => Ok(AdmittedBranchStore {
                 store,
                 catalog,
                 head,
                 _branch_lease: branch_lease,
-            })
-        })();
-        if result.is_err() {
-            let _ = fs::remove_dir_all(&runtime_directory);
+            }),
+            Err(error) => {
+                cleanup(&runtime_directory);
+                Err(error)
+            }
         }
-        result
     }
 
     /// Reconstructs a read/write GraphStore from immutable root objects for
@@ -718,10 +735,8 @@ fn validate_admission_binding(
     record: &ReadyBranchRecord,
     head: &branch_head::BranchHead,
     root: &SealedRoot,
+    root_reference: ObjectReference,
 ) -> std::result::Result<(), BranchAdmissionError> {
-    let root_reference = root
-        .object_reference()
-        .map_err(|error| BranchAdmissionError::Recovery(HawDBError::Storage(error.to_string())))?;
     if head.project_id != *record.project_id.as_uuid().as_bytes() {
         return Err(BranchAdmissionError::IdentityMismatch(
             "catalog project UUID does not match branch head",
@@ -1546,7 +1561,7 @@ mod tests {
             Err(BranchAdmissionError::Recovery(_))
         ));
 
-        fs::write(&active_wal_path, original_private_wal)
+        fs::write(&active_wal_path, &original_private_wal)
             .expect("restore child private WAL before torn-tail test");
         let runtime_directory = child_directory.join("runtime");
         fs::remove_dir_all(&runtime_directory).expect("remove prior successful runtime");
@@ -1556,22 +1571,45 @@ mod tests {
             .expect("open child private WAL for torn suffix")
             .write_all(&[0x01])
             .expect("append torn private WAL suffix");
+        let torn_request = || BranchAdmissionRequest {
+            catalog_path: &catalog_path,
+            branch_id: child_id,
+            expected_metadata_revision: 1,
+            head_path: &child_head_path,
+            immutable_store_root: &objects,
+            durability: DurabilityPolicy::default(),
+            replay_config: WalReplayConfig::default(),
+        };
+        let mut cleaned = false;
         assert!(matches!(
-            GraphStore::admit_branch_from_head(BranchAdmissionRequest {
-                catalog_path: &catalog_path,
-                branch_id: child_id,
-                expected_metadata_revision: 1,
-                head_path: &child_head_path,
-                immutable_store_root: &objects,
-                durability: DurabilityPolicy::default(),
-                replay_config: WalReplayConfig::default(),
+            GraphStore::admit_branch_from_head_with_cleanup(torn_request(), |runtime| {
+                assert!(runtime.exists(), "recovery materialized the failed runtime");
+                // Pause at the cleanup boundary and run a contending opener on
+                // another thread. It must fail before touching runtime files.
+                std::thread::scope(|scope| {
+                    let retry = scope.spawn(|| GraphStore::admit_branch_from_head(torn_request()));
+                    assert!(matches!(
+                        retry.join().expect("contending opener must not panic"),
+                        Err(BranchAdmissionError::Lease(
+                            DatabaseDirectoryLeaseError::AlreadyOpen
+                        ))
+                    ));
+                });
+                fs::remove_dir_all(runtime).expect("cleanup failed branch runtime");
+                cleaned = true;
             }),
             Err(BranchAdmissionError::Recovery(_))
         ));
+        assert!(cleaned, "torn-tail failure must reach the cleanup boundary");
         assert!(
             !runtime_directory.exists(),
             "failed admission must remove its materialized runtime"
         );
+        fs::write(&active_wal_path, original_private_wal).expect("restore valid private WAL");
+        let retried = GraphStore::admit_branch_from_head(torn_request())
+            .expect("retry admission after cleanup releases the target lease");
+        assert_eq!(retried.store().node_count_for_label(None), 3);
+        drop(retried);
 
         let _ = fs::remove_dir_all(project);
     }
