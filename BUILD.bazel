@@ -417,6 +417,7 @@ test_suite(
         ":hawdb_search_projection_consumer_minimal_tests",
         ":hawdb_execution_request_contract_tests",
         ":hawdb_process_memory_policy_contract_tests",
+        ":hawdb_process_memory_policy_contract_minimal_tests",
         ":hawdb_search_lexical_corpus_qualification_tests",
         ":hawdb_unit_fast_tests",
         ":hawdb_unit_storage_crash_matrix_tests",
@@ -444,10 +445,20 @@ rust_test(
 # External embedded-library consumer for the host-owned RSS policy contract.
 rust_test(
     name = "hawdb_process_memory_policy_contract_tests",
+    args = ["--nocapture"],
+    crate_root = "tests/process_memory_policy_contract.rs",
+    crate_features = _HAWDB_DEFAULT_FEATURES,
+    srcs = ["tests/process_memory_policy_contract.rs"],
+    edition = "2024",
+    deps = [":hawdb", "@crate_index//:memmap2"],
+)
+
+rust_test(
+    name = "hawdb_process_memory_policy_contract_minimal_tests",
     crate_root = "tests/process_memory_policy_contract.rs",
     srcs = ["tests/process_memory_policy_contract.rs"],
     edition = "2024",
-    deps = [":hawdb"],
+    deps = [":hawdb_minimal"],
 )
 
 # External generation consumers in both supported dependency profiles.

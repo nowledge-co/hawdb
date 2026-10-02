@@ -30,6 +30,81 @@ limits and lifetime. The default planning priority is foreground; an explicit
 Tokio work request supplies its own planning priority. Statement-level hints
 take effect after the admitted parse, when constructing execution admission.
 
+## Host-owned process RSS feedback
+
+Hosts can attach a shared `ProcessMemoryPolicy` with
+`HawDBEmbedded::open_with_process_memory_policy(options, policy.clone())`.
+Pass the resulting handle to `HawDBTokioEmbedded::from_owned` or `from_borrowed`
+to preserve that policy in the Tokio entrypoints. Existing openers retain their
+previous admission behavior. The additive opener leaves public options, the
+library work-memory ceiling, and the persistent format unchanged.
+
+The host chooses a process-wide resident limit independently of each instance's
+`RuntimeGovernorConfig::memory_budget_bytes`. Clone one policy for every instance
+that shares this limit; separate policies would each spend the same RSS headroom.
+Both planning and execution must satisfy the library, host/cgroup, and process
+policy bounds. Work already admitted keeps its permit when RSS rises. A successful
+reservation is not an allocator cap and cannot prevent unrelated host allocations
+or underestimated active work from exceeding the process limit.
+The policy gates admitted query methods. Opening the database and raw `Database`
+calls retain their existing host-managed resource boundaries.
+
+```rust,ignore
+let policy = ProcessMemoryPolicy::from_current_process(
+    ProcessMemoryPolicyConfig::new(NonZeroU64::new(process_limit_bytes).unwrap())
+        .with_recovery_headroom(8 * 1024 * 1024)
+        .with_sample_max_age(Duration::from_secs(5)),
+)?;
+let embedded = HawDBEmbedded::open_with_process_memory_policy(options, policy.clone())?;
+let runtime_config = TokioRuntimeConfig::from_governor(embedded.runtime_governor());
+let embedded = HawDBTokioEmbedded::from_owned(embedded, runtime_config)?;
+// Refresh from the host's existing timer, for example once per second.
+policy.refresh_from_host()?;
+```
+
+Sampling remains owned by the host. Refresh at a bounded cadence shorter than
+`sample_max_age`; neither the opener nor query admission starts a polling thread.
+`refresh_runtime_resources` and Tokio's `resource_refresh_interval` refresh host
+and cgroup resources, not RSS. They preserve caller-pinned resource snapshots;
+explicit `update_runtime_resources` still applies while retaining the pin.
+RSS policy updates remain independent of resource pinning and wake queued Tokio
+work even when periodic resource detection is pinned off.
+
+Current RSS, rather than lifetime peak RSS, consumes the shared process headroom.
+Reservations cover estimated growth not yet observed in RSS. Positive observed
+growth consumes outstanding reservation charges in admission order, avoiding a
+second charge for the same growth. Releasing a permit removes only its remaining
+unobserved charge; measured resident memory stays charged until a later sample.
+This is a conservative feedback convention, not ownership attribution for every
+allocation in the host process.
+
+Missing, unsupported, failed, or stale samples fail closed for new work with a
+retryable `MemoryPressure` error. RSS saturation returns retryable
+`MemorySaturated`; a request above the stable resident limit is nonretryable.
+After saturation, a fresh sample must show the configured recovery headroom before
+admission resumes. Synchronous queries return the admission error before mutation.
+Tokio waits for policy notification, cancellation, or its deadline; it does not
+discard active permits or spin while waiting for a sample.
+
+The public consumer tests cover both default and minimal profiles, shared
+instances, resource pinning, hysteresis, missing/unsupported/stale samples,
+owned/borrowed Tokio recovery, and cancellation before mutation. On Linux, macOS,
+and Windows, a subprocess touches and releases a bounded 64 MiB anonymous mapping
+and checks current-RSS-driven rejection and recovery through actual synchronous
+and Tokio queries without cgroups. It emits `hawdb-process-rss-native-v1` with the
+observed byte counts. The local-only state-machine campaign compares 32 seeded,
+512-step sequences with an independent interval-debt oracle.
+
+```sh
+cargo test --locked -p hawdb --test process_memory_policy_contract -- --nocapture
+cargo test --locked -p hawdb --no-default-features --test process_memory_policy_contract
+cargo test --locked -p hawdb-fuzz --lib process_memory_state_machine_matches_interval_oracle -- --nocapture
+bazel test //:hawdb_process_memory_policy_contract_tests \
+  //:hawdb_process_memory_policy_contract_minimal_tests \
+  //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests \
+  //:hawdb_linux_ci_fuzz_smoke_test
+```
+
 ## Snapshot and freshness boundaries
 
 Planner snapshots own reader pins, so checkpoints and cleanup cannot invalidate

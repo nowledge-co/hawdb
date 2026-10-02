@@ -28,6 +28,7 @@ mod generator;
 mod output;
 mod parser_oracle;
 mod predicate_rewrite;
+mod process_memory_oracle;
 mod query_ast;
 mod row_page_oracle;
 mod sql_oracle;

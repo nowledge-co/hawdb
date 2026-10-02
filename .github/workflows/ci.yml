@@ -47,6 +47,11 @@ jobs:
       - name: Test process memory metrics
         run: cargo test -p hawdb-qos process_memory::tests
 
+      - name: Test embedded process RSS admission and native recovery
+        run: |
+          cargo clippy --locked -p hawdb --features tokio-runtime --test process_memory_policy_contract -- -D warnings
+          cargo test --locked -p hawdb --features tokio-runtime --test process_memory_policy_contract -- --nocapture
+
       - name: Test Tokio adapter
         run: cargo test -p hawdb-runtime-tokio
 
