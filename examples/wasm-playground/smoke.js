@@ -1,30 +1,18 @@
 // Run in a real browser after building the WASM artifact:
 // await (await import("./smoke.js")).runSmoke()
+import { createWorkerClient } from "./client.js";
+
 export async function runSmoke() {
   const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
-  const pending = new Map();
   const responseOrder = [];
-  let nextId = 0;
+  const client = createWorkerClient(worker, {
+    onResponse: (output) => responseOrder.push(output.id),
+  });
   const assert = (condition, message) => { if (!condition) throw new Error(message); };
   const timeout = setTimeout(() => {
-    for (const entry of pending.values()) entry.reject(new Error("Browser smoke timed out."));
-    pending.clear();
+    client.close(new Error("Browser smoke timed out."));
   }, 30000);
-  worker.onmessage = ({ data }) => {
-    responseOrder.push(data.id);
-    const entry = pending.get(data.id);
-    pending.delete(data.id);
-    entry?.resolve(data);
-  };
-  worker.onerror = (event) => {
-    for (const entry of pending.values()) entry.reject(new Error(event.message));
-    pending.clear();
-  };
-  const send = (message) => new Promise((resolve, reject) => {
-    const id = ++nextId;
-    pending.set(id, { resolve, reject });
-    worker.postMessage({ id, ...message });
-  });
+  const send = (message) => client.request(message);
   const query = (text) => send({ type: "execute", query: text });
   const value = (output, name) => output.rows[0][output.columns.indexOf(name)];
   try {
@@ -64,11 +52,11 @@ export async function runSmoke() {
     return {
       status: "passed",
       browser: navigator.userAgent,
-      requests: nextId,
+      requests: responseOrder.length,
       checks: ["queued initialization", "serial writes/reads", "int64 precision", "traversal", "graph/scalar/null values", "parse/protocol recovery", "query input limit", "result limit without partial rows"],
     };
   } finally {
     clearTimeout(timeout);
-    worker.terminate();
+    client.close();
   }
 }

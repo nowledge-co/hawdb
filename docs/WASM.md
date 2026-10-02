@@ -49,6 +49,11 @@ Worker across submissions. Initialization and queries share one serial queue;
 the page disables Run while a request is pending. Reloading creates an empty
 database. Invalid queries display a structured error and allow another query.
 The page inserts result text through `textContent`.
+The page and smoke use the same Worker client. A WASM trap or unexpected bridge
+exception permanently stops that Worker, rejects pending requests, and disables
+Run. It never silently creates a replacement database. Reload is required and
+clears the in-memory data; a query interrupted by a trap has an uncertain outcome.
+Ordinary structured parse, query, and limit errors remain recoverable.
 
 The Worker accepts `{id, type: "initialize"}` or
 `{id, type: "execute", query: "..."}`. Initialization returns
@@ -65,7 +70,13 @@ column order and write outcomes. Every value uses `{type, value}`:
   values. Rust database handles remain internal.
 
 The example limits query input to 64 KiB, read results to 256 rows and 1 MiB
-of engine-accounted payload, and encoded display output to 8 MiB. It supplies
+of engine-accounted payload, and encoded display output to 8 MiB. These are
+independent budgets: value tags, column names, JSON escaping and nested values
+add display overhead absent from the engine payload estimate. Wide boolean/null
+results can therefore pass engine admission and fail the display limit. A
+`response_limit` error explicitly reports `engine_query_succeeded: true` and
+`max_encoded_bytes`, with no partial rows; return fewer columns/rows or smaller
+nested values. The response buffer never grows past its encoded limit. It supplies
 a five-second cooperative query deadline through the existing runtime.
 Limit failures return errors without partial rows. Successful writes remain
 committed even if their response cannot fit the display limit. These controls
@@ -88,16 +99,23 @@ browser user agent and request count. To check the page itself, submit the
 three examples, an invalid query followed by a valid query, and then reload
 and read again to confirm empty rows.
 
-On 2026-10-02, the linked debug artifact and page were exercised in Chrome
+On 2026-10-02, the initial playground (`d320f426`) was exercised in Chrome
 155 on macOS ARM64: the Worker smoke returned `passed` for 267 requests. The
 page's write/read/traversal/error loop disabled Run during each submission;
 the maximum int64 remained `9223372036854775807`. Reloading the page and reading
-the prior fixture returned zero rows. Native bridge regressions are available
-with:
+the prior fixture returned zero rows. The review follow-up artifact was also
+exercised through the actual page: write/read/traversal, parse recovery, an
+engine-admitted nested result exceeding the display budget, smaller-read recovery,
+and reload-to-empty all passed. Seven JavaScript regressions use the same client
+and queue implementation, injecting a `WebAssembly.RuntimeError` to check stopped
+instances, pending-request rejection and initialization/transport failures. This
+injection is not qualification of an actual engine panic. Native bridge and
+JavaScript regressions (Node.js 22 or newer) are available with:
 
 ```sh
 cargo test --locked -p hawdb --no-default-features --example wasm_playground
 bazel test //:hawdb_wasm_playground_bridge_tests //:hawdb_in_memory_portable_tests
+node --test examples/wasm-playground/worker.test.js
 ```
 
 ## Build

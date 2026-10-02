@@ -65,10 +65,15 @@ impl QueryBridge {
             Ok(output) => {
                 let mut writer = BoundedJson(Vec::new());
                 if serde_json::to_writer(&mut writer, &DisplayOutput(&output)).is_err() {
-                    return error_response(
-                        "response_limit",
-                        "Response exceeds the 8 MiB display limit. A successful write remains committed.",
-                    );
+                    return serde_json::json!({
+                        "status": "error",
+                        "error": {
+                            "kind": "response_limit",
+                            "engine_query_succeeded": true,
+                            "max_encoded_bytes": MAX_RESPONSE_BYTES,
+                            "message": "The engine query succeeded, but tagged JSON exceeds the separate 8 MiB display limit. Return fewer columns/rows or smaller nested values. Successful writes remain committed.",
+                        },
+                    }).to_string();
                 }
                 String::from_utf8(writer.0).expect("JSON serialization emits UTF-8")
             }
@@ -306,6 +311,30 @@ mod tests {
         let mut writer = BoundedJson(vec![0; MAX_RESPONSE_BYTES]);
         assert!(writer.write_all(b"x").is_err());
         assert_eq!(writer.0.len(), MAX_RESPONSE_BYTES);
+    }
+
+    #[test]
+    fn nested_tagged_results_have_an_explicit_display_budget_and_allow_recovery() {
+        let mut bridge = QueryBridge::new();
+        for index in 0..256 {
+            assert_eq!(
+                execute(&mut bridge, &format!("CREATE (:Wide {{id: {index}}})"))["status"],
+                "ok"
+            );
+        }
+        let values = vec!["true"; 1365].join(", ");
+        let output = execute(
+            &mut bridge,
+            &format!("MATCH (n:Wide) RETURN [{values}] AS values"),
+        );
+        assert_eq!(output["error"]["kind"], "response_limit", "{output}");
+        assert_eq!(output["error"]["engine_query_succeeded"], true);
+        assert_eq!(output["error"]["max_encoded_bytes"], MAX_RESPONSE_BYTES);
+        assert!(output.get("rows").is_none());
+        assert_eq!(
+            execute(&mut bridge, "MATCH (n:Wide) RETURN true AS value LIMIT 1")["status"],
+            "ok"
+        );
     }
 
     #[test]

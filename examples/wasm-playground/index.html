@@ -21,7 +21,7 @@
   <body>
     <h1>HawDB query playground</h1>
     <p>Run Cypher locally in a dedicated browser Worker. Experimental, in-memory storage: <strong>reloading this page clears all data.</strong></p>
-    <p class="note">Run the create example first, then read or traverse it. Results use typed JSON; int64 and float64 values are strings to preserve precision. Each query allows 256 result rows, 1 MiB of result payload, and a 5-second cooperative deadline.</p>
+    <p class="note">Run the create example first, then read or traverse it. Results use typed JSON; int64 and float64 values are strings to preserve precision. Queries allow 256 result rows and 1 MiB of engine payload; encoded JSON has a separate 8 MiB display limit. Wide or nested results can reach the display limit first. The cooperative query deadline is 5 seconds.</p>
     <nav aria-label="Example queries">
       <button type="button" data-query="CREATE (:Memory {id: 9223372036854775807, title: 'Browser memory'})-[:MENTIONS]-&gt;(:Entity {name: 'HawDB'})">1. Create graph</button>
       <button type="button" data-query="MATCH (m:Memory) RETURN m.id AS id, m.title AS title">2. Read nodes</button>
