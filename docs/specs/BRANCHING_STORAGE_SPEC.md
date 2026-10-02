@@ -324,13 +324,15 @@ production branch-opening implementation.
 boundary. It resolves the expected UUID/revision under the metadata lease,
 releases that lease before acquiring the target branch lease, then reads only
 the target head, immutable root, and private active WAL. It materializes the
-root manifest/closure into the target's disposable runtime directory, replays
-the sealed WAL through the normal durable opener, then replays the verified
-private WAL from the exact sealed-root LSN boundary. It rechecks the catalog
+root manifest into the target's disposable runtime directory and checkpoint
+bindings into its persistent data directory. It replays the ordered sealed WAL
+generations and verified private suffix in one recovery pass, starting from
+the exact checkpoint LSN boundary. It rechecks the catalog
 after recovery before exposing the runtime. The legacy
 `open_from_branch_head` helper still copies a source directory and remains
-recovery-qualification-only. SQL session selection and branch-local head
-publication remain separate work; an automatic repair request for a private
+recovery-qualification-only. SQL session selection remains separate work;
+branch-local checkpoint/seal publication is described below. An automatic
+repair request for a private
 WAL currently fails closed until it has branch-aware repair publication.
 
 Any ready branch can be a source, including one with committed DDL and DML.
@@ -406,13 +408,17 @@ must distinguish maintenance failure from a definitely aborted transaction.
 The lifecycle facade currently creates nested branch metadata from sealed heads;
 this is not yet the complete writable workflow above. The storage admission
 kernel now directly recovers a ready target from its immutable root and
-append-only private WAL without copying its parent directory. Required work
-includes:
+append-only private WAL without copying its parent directory. Its admitted
+`GraphStore` now routes ordinary commits to the private WAL, publishes a new
+head at checkpoint/seal boundaries, and can fork an advanced child from its
+exact sealed revision. This storage kernel is not yet wired into `Database`
+session selection. Required work includes:
 
 - SQL branch selection/lifecycle AST and dispatch, deferred admission through
   the storage kernel, and context-local writable opening;
-- sealing current committed state when a modified child becomes a fork source;
-- branch-local DDL/checkpoint publication, snapshot and plan invalidation;
+- invoking exact-revision source sealing from the lifecycle/session facade;
+- routing supported DDL/checkpoints through admitted session stores, and
+  isolating or invalidating session plans and caches;
 - updating the historical expiry-bearing model; runtime catalog/facade expiry
   fields and transitions have been removed in catalog v2;
 - exposing the effective durability mode and auditing platform persistence
@@ -426,6 +432,51 @@ branch formats. Update the greenfield format deliberately and reject unsupported
 old versions; do not add expiry compatibility migrations solely for old dev data.
 These are implementation gaps, not claims that this documentation fixes runtime
 behavior.
+
+### Storage runtime implementation boundary
+
+Direct admission leases the target UUID and materializes only its immutable
+closure. The branch's `runtime/` directory holds the disposable manifest and
+WAL replay files. Its persistent `data/` directory retains branch-local mutable
+recovery dependencies; its authoritative private WAL stays beside `branch.head`.
+Failed admission may clean `runtime/` but must retain `data/`, the private WAL,
+the head, and immutable evidence. A transferred store and its read snapshots
+retain the branch lease until their last owner releases it.
+Admission synchronizes the persistent data directory's parent entry before
+exposing a writable runtime. Synchronizing a later dependency file alone must
+not leave its containing directory creation outside the durability barrier.
+
+The sealed root's `checkpoint_epoch` is the **logical commit epoch** covered by
+the checkpoint. The manifest separately binds the physical checkpoint generation.
+A branch may seal repeatedly without a new commit, so physical generation must
+not be compared to commit epoch. An entirely checkpoint-covered root has no
+sealed-WAL intervals. Otherwise recovery replays the ordered intervals using
+each generation's own header, then the private suffix. Recovery builds one
+relational row/index overlay for the whole suffix and charges all intervals
+against the configured replay entry and byte limits.
+
+Checkpoint publication rotates branch-local artifacts, publishes the complete
+immutable closure, and then switches that UUID's head to a private successor WAL.
+An uncertain head publication or a failed checkpoint after local WAL rotation
+requires closing and reopening the handle. Recovery uses the authoritative old
+or new head and its WAL; it never adopts the disposable manifest as authority.
+Unselected successor WALs left by a failed publication are retained, and retry
+uses a fresh identity.
+
+Catalog reservation records immutable creation lineage. The requested current
+source revision is checked against the selected parent head during reservation
+and rechecked before child file publication; it is not compared for equality to
+the parent's creation epoch. Admitted callers must seal their exact current
+revision before invoking the child-publication kernel.
+
+Catalog-backed GC holds metadata serialization through its sweep and reports
+`deferred_for_active_leases` whenever a runtime or snapshot owner may have
+unpublished candidates or older reader generations. This conservative policy
+retains every candidate while such an owner exists. Fine-grained concurrent
+reclamation, project FD accounting (#819), session integration (#775/#780),
+and deterministic power-loss qualification (#820) remain open. Reopen and
+publication-failure tests are source-level recovery evidence, not a complete
+power-loss qualification or a Rust-to-TLA refinement proof.
 
 ## On-disk compatibility and immutable objects
 

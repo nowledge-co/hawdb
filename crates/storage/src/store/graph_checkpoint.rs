@@ -343,7 +343,7 @@ impl GraphStore {
             ),
             None => None,
         };
-        let generation = durable.checkpoint_epoch.saturating_add(1);
+        let generation = durable.next_checkpoint_generation()?;
         let (references, scan) =
             self.collect_exact_relational_overflow_closure(generation, config, task)?;
         task.checkpoint().map_err(|reason| {
@@ -637,7 +637,7 @@ impl GraphStore {
         } else {
             self.statistics(catalog)
         };
-        let generation = durable.checkpoint_epoch.saturating_add(1);
+        let generation = durable.next_checkpoint_generation()?;
         let staging_path = durable.prepare_checkpoint_staging(generation)?;
         let prepared = (|| {
             let append_rows = self
@@ -1092,6 +1092,18 @@ impl GraphStore {
             pinned_reader_generations,
             shadow_admission,
         );
+        if result.is_err()
+            && self.durable.as_ref().is_some_and(|durable| {
+                durable.branch_runtime.as_ref().is_some_and(|_| {
+                    self.admitted_branch_head()
+                        .is_some_and(|head| durable.wal_generation != head.active_wal.generation)
+                })
+            })
+        {
+            // A local manifest rotation is not authoritative until the branch
+            // head selects it. Further writes must wait for recovery.
+            self.integrity_poisoned.store(true, AtomicOrdering::Release);
+        }
         self.poison_on_storage_error(&result);
         result
     }
@@ -1198,6 +1210,9 @@ impl GraphStore {
             durable.reclaim_old_generations(generation, pinned_reader_generations);
         }
         self.reclaim_version_history();
+        if self.admitted_branch_head().is_some() {
+            self.publish_admitted_branch_root()?;
+        }
         Ok(())
     }
 

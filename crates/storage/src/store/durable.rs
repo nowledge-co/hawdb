@@ -79,6 +79,7 @@ fn stable_identity_error(error: StableIdentityMappingError) -> HawDBError {
 #[derive(Debug, Clone)]
 pub(super) struct DurableStore {
     _directory_lease: Arc<DatabaseDirectoryLease>,
+    pub(super) branch_runtime: Option<super::immutable_root::BranchRuntimeBinding>,
     pub(super) root_path: PathBuf,
     pub(super) checkpoint_path: PathBuf,
     manifest_path: PathBuf,
@@ -334,6 +335,39 @@ impl DurableStore {
         durability: DurabilityPolicy,
         options: DurableStoreOpenOptions,
     ) -> Result<Self> {
+        Self::open_existing_with_artifacts(path, path, durability, options)
+    }
+
+    pub(super) fn open_branch_runtime(
+        runtime_path: &Path,
+        artifact_path: &Path,
+        durability: DurabilityPolicy,
+        replay_config: WalReplayConfig,
+    ) -> Result<Self> {
+        Self::open_existing_with_artifacts(
+            runtime_path,
+            artifact_path,
+            durability,
+            DurableStoreOpenOptions {
+                read_only: false,
+                initialize_if_empty: false,
+                load_rebuildable_artifacts: true,
+                segment_cache_capacity_bytes: replay_config.segment_cache_capacity_bytes,
+                max_graph_manifest_open_bytes: replay_config.max_graph_manifest_open_bytes,
+                max_wal_bytes: replay_config.max_bytes,
+                max_record_bytes: replay_config.max_record_bytes,
+                max_batch_operations: replay_config.max_batch_operations,
+                automatic_tail_repair: None,
+            },
+        )
+    }
+
+    fn open_existing_with_artifacts(
+        path: &Path,
+        artifact_path: &Path,
+        durability: DurabilityPolicy,
+        options: DurableStoreOpenOptions,
+    ) -> Result<Self> {
         let DurableStoreOpenOptions {
             read_only,
             initialize_if_empty,
@@ -380,18 +414,18 @@ impl DurableStore {
         };
         manifest.validate()?;
         if !read_only {
-            cleanup_abandoned_checkpoint_preparations(path, manifest.checkpoint_epoch)?;
+            cleanup_abandoned_checkpoint_preparations(artifact_path, manifest.checkpoint_epoch)?;
         }
-        let checkpoint_path = manifest.checkpoint_path(path);
+        let checkpoint_path = manifest.checkpoint_path(artifact_path);
         let wal_path = manifest.wal_path(path);
         let wal_bytes = fs::metadata(&wal_path)
             .map(|metadata| metadata.len())
             .unwrap_or_default();
         let segment_cache = Arc::new(SegmentCache::new(segment_cache_capacity_bytes));
-        let store_id = store_id_for_path(path)?;
+        let store_id = store_id_for_path(artifact_path)?;
         let mut graph_manifest_budget = GraphManifestOpenBudget::new(max_graph_manifest_open_bytes);
         let canonical_segments = load_published_canonical_segments(
-            path,
+            artifact_path,
             manifest,
             Arc::clone(&segment_cache),
             store_id,
@@ -400,7 +434,7 @@ impl DurableStore {
         let canonical_adjacency = load_rebuildable_artifacts
             .then(|| {
                 load_published_canonical_adjacency(
-                    path,
+                    artifact_path,
                     manifest,
                     Arc::clone(&segment_cache),
                     store_id,
@@ -412,7 +446,7 @@ impl DurableStore {
         let persistent_property_projection = load_rebuildable_artifacts
             .then(|| {
                 load_published_property_projection(
-                    path,
+                    artifact_path,
                     manifest,
                     Arc::clone(&segment_cache),
                     store_id,
@@ -436,15 +470,16 @@ impl DurableStore {
         );
         source_scan_reader.register(
             source_scan::SOURCE_SCAN_ARTIFACT_ID,
-            path.join(source_scan::SOURCE_SCAN_PAYLOAD_FILE),
+            artifact_path.join(source_scan::SOURCE_SCAN_PAYLOAD_FILE),
         );
         Ok(Self {
             _directory_lease: Arc::new(directory_lease),
-            root_path: path.to_path_buf(),
+            branch_runtime: None,
+            root_path: artifact_path.to_path_buf(),
             checkpoint_path,
             manifest_path,
-            projected_graphs_path: path.join(PROJECTED_GRAPHS_FILE),
-            stable_id_mapping_path: path.join(STABLE_ID_MAPPING_FILE),
+            projected_graphs_path: artifact_path.join(PROJECTED_GRAPHS_FILE),
+            stable_id_mapping_path: artifact_path.join(STABLE_ID_MAPPING_FILE),
             wal_path,
             wal_append_file: None,
             #[cfg(test)]
@@ -509,6 +544,21 @@ impl DurableStore {
 
     pub(super) fn root_path(&self) -> &Path {
         &self.root_path
+    }
+
+    pub(super) fn manifest_path(&self) -> &Path {
+        &self.manifest_path
+    }
+
+    pub(super) fn next_checkpoint_generation(&self) -> Result<u64> {
+        let current = if self.branch_runtime.is_some() {
+            self.checkpoint_epoch.max(self.wal_generation)
+        } else {
+            self.checkpoint_epoch
+        };
+        current
+            .checked_add(1)
+            .ok_or_else(|| HawDBError::Storage("checkpoint generation overflow".to_string()))
     }
 
     pub(super) const fn generation_reclamation_debt(&self) -> GenerationReclamationDebt {

@@ -5,8 +5,8 @@ The normative contract is
 [#774](https://github.com/nowledge-co/hawdb/issues/774). This is an executable
 design model for planned P0 storage. It does not claim that runtime branch
 selection or a Rust-to-TLA refinement proof exists. The storage layer has a
-direct head-admission kernel, but SQL session selection and branch-local head
-publication remain separate implementation work.
+direct head-admission kernel and branch-local checkpoint/seal publication, but
+SQL session selection remains separate implementation work.
 
 ## State and abstraction
 
@@ -54,10 +54,25 @@ prefix before replaying its append-only suffix, then revalidates the same
 catalog identity before exposing the runtime. The target lease stays held
 through failed-admission cleanup or for the admitted runtime's lifetime.
 
-These are source-level links to the catalog and admission state machines,
-not a full Rust-to-TLA refinement. SQL `USE BRANCH` and DDL/DML head publication
-remain separate implementation work, and #778 still owns physical cleanup
-and pin-aware reclamation.
+`GraphStore::seal_admitted_branch` checks the exact current commit epoch, seals
+the append-only WAL suffix, and publishes the next head. Checkpoint publication
+also selects a new root/private WAL for that UUID; ordinary transactions leave
+the selector unchanged. Catalog `source_commit_epoch` remains creation lineage,
+while child reservation and publication validate the current selected source
+head. Direct admission preserves mutable WAL dependencies outside disposable
+runtime materialization and finalizes relational recovery only after replaying
+all sealed generations and the private suffix.
+
+Catalog-backed GC serializes metadata through sweep and conservatively defers
+all reclamation while any branch lease remains active. The admitted store and
+read snapshots retain that lease, protecting unpublished candidate closures
+and older reader roots. The returned report exposes this deferral.
+
+These are source-level links to the catalog, admission, and publication state
+machines, not a full Rust-to-TLA refinement. SQL `USE BRANCH`, session cache/plan
+isolation, project FD accounting (#819), and deterministic power-loss runtime
+qualification (#820) remain separate implementation work; #778 still owns
+fine-grained physical cleanup and pin-aware reclamation.
 
 `s.candidate` is an unpublished root and `s.armed` records a candidate whose
 complete closure is already durable. `StageCandidateClosure` models an

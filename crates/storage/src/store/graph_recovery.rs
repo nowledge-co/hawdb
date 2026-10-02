@@ -530,6 +530,45 @@ impl GraphStore {
         let Some(durable) = &self.durable else {
             return Ok(StorageRecoveryReport::default());
         };
+        let mut source = RelationalRecoverySourceBuilder::new(
+            durable.wal_generation,
+            durable.wal_replay_start_lsn,
+        );
+        let report = self.replay_wal_interval(catalog, config, &mut source)?;
+        self.finish_wal_recovery(source, report.replayed_wal_entries)?;
+        Ok(report)
+    }
+
+    pub(super) fn finish_wal_recovery(
+        &mut self,
+        source: RelationalRecoverySourceBuilder,
+        replayed_entries: usize,
+    ) -> Result<()> {
+        let identity = if replayed_entries == 0 {
+            None
+        } else {
+            Some(
+                source
+                    .finish()
+                    .map_err(|reason| HawDBError::Storage(reason.to_string()))?,
+            )
+        };
+        self.finish_relational_row_page_recovery(identity);
+        self.finish_relational_index_recovery(identity);
+        Ok(())
+    }
+
+    // A branch's validated WAL closure may span physical generations. Keep
+    // recovery builders alive until the complete contiguous suffix is applied.
+    pub(super) fn replay_wal_interval(
+        &mut self,
+        catalog: &mut Catalog,
+        config: WalReplayConfig,
+        relational_recovery_source: &mut RelationalRecoverySourceBuilder,
+    ) -> Result<StorageRecoveryReport> {
+        let Some(durable) = &self.durable else {
+            return Ok(StorageRecoveryReport::default());
+        };
         let wal_path = durable.wal_path.clone();
         let checkpoint_epoch = durable.checkpoint_epoch;
         let checkpoint_commit_epoch = durable.checkpoint_commit_epoch;
@@ -608,8 +647,6 @@ impl GraphStore {
             )));
         }
         let mut expected_lsn = wal_replay_start_lsn;
-        let mut relational_recovery_source =
-            RelationalRecoverySourceBuilder::new(wal_generation, wal_replay_start_lsn);
         loop {
             let (entry, record_start, record_encoded_len, payload_len, payload_sha256) =
                 match cursor.next()? {
@@ -732,17 +769,6 @@ impl GraphStore {
                 }
             }
         }
-        let relational_recovery_source = if replayed_entries == 0 {
-            None
-        } else {
-            Some(
-                relational_recovery_source
-                    .finish()
-                    .map_err(|reason| HawDBError::Storage(reason.to_string()))?,
-            )
-        };
-        self.finish_relational_row_page_recovery(relational_recovery_source);
-        self.finish_relational_index_recovery(relational_recovery_source);
         if let Some(durable) = &mut self.durable {
             durable.next_lsn = expected_lsn;
             durable.wal_commit_epoch = self.commit_epoch;

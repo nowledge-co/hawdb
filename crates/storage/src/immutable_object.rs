@@ -174,6 +174,8 @@ pub struct ReclamationReport {
     pub retained_objects: u64,
     pub reclaimed_objects: u64,
     pub reclaimed_bytes: u64,
+    /// Active owners may hold unpublished roots or reader generations.
+    pub deferred_for_active_leases: bool,
 }
 
 /// Durable branch metadata supplied by the catalog/lease owner to a global
@@ -320,6 +322,7 @@ impl ImmutableObjectStore {
             retained_objects: inventory.intersection(&reachable).count() as u64,
             reclaimed_objects: 0,
             reclaimed_bytes: 0,
+            deferred_for_active_leases: false,
         };
         for reference in inventory.difference(&reachable) {
             let path = self.object_path(*reference);
@@ -353,6 +356,17 @@ impl ImmutableObjectStore {
         &mut self,
         inventory: &BranchReclamationInventory,
     ) -> Result<ReclamationReport, ImmutableObjectError> {
+        if inventory.branches.iter().any(|branch| branch.active_lease) {
+            // A head alone cannot describe an owner's unpublished candidate
+            // or old reader pins. Retain every candidate until all owners are
+            // absent; the catalog caller serializes new admission with sweep.
+            return Ok(ReclamationReport {
+                retained_objects: inventory.objects.len() as u64,
+                reclaimed_objects: 0,
+                reclaimed_bytes: 0,
+                deferred_for_active_leases: true,
+            });
+        }
         let mut roots = Vec::new();
         for branch in &inventory.branches {
             let removable = matches!(branch.state, crate::branch_catalog::BranchState::Deleted)
@@ -919,7 +933,7 @@ mod tests {
                         state: crate::branch_catalog::BranchState::Ready,
                         sealed_root: Some(live_root_reference),
                         directory: root.join("branches").join("live"),
-                        active_lease: true,
+                        active_lease: false,
                     },
                     BranchReclamationEntry {
                         state: crate::branch_catalog::BranchState::Deleted,

@@ -832,6 +832,7 @@ pub struct GraphStore {
     /// layer (`HawDBEmbedded` / `NowledgeMemGraph`) so background shadow
     /// work can request admission. The store never constructs its own.
     runtime_governor: Option<Arc<dyn hawdb_storage::background::BackgroundWorkAdmission>>,
+    branch_lease: Option<Arc<hawdb_storage::ownership::DatabaseDirectoryLease>>,
     durable: Option<DurableStore>,
 }
 
@@ -1639,6 +1640,22 @@ impl GraphStore {
         replay_config: WalReplayConfig,
         durable_manifest_open_micros: u64,
     ) -> Result<(Self, Catalog)> {
+        Self::finish_open_with_replay(
+            durable,
+            catalog,
+            replay_config,
+            durable_manifest_open_micros,
+            |store, catalog, replay_config| store.replay_wal(catalog, replay_config),
+        )
+    }
+
+    fn finish_open_with_replay(
+        durable: DurableStore,
+        catalog: &mut Catalog,
+        replay_config: WalReplayConfig,
+        durable_manifest_open_micros: u64,
+        replay: impl FnOnce(&mut Self, &mut Catalog, WalReplayConfig) -> Result<StorageRecoveryReport>,
+    ) -> Result<(Self, Catalog)> {
         let projection_generation_root = durable.root_path.join("projection-generations");
         let projection_generations = if durable.read_only {
             if projection_generation_root.exists() {
@@ -1716,6 +1733,7 @@ impl GraphStore {
             relational_row_pages: RelationalRowPageState::default(),
             projection_generations,
             runtime_governor: None,
+            branch_lease: None,
             durable: Some(durable),
         };
         if replay_config
@@ -1737,7 +1755,7 @@ impl GraphStore {
         let checkpoint_root_open_micros = elapsed_micros(checkpoint_root_open_started);
         let checkpoint_catalog = catalog.clone();
         let wal_replay_started = std::time::Instant::now();
-        let mut storage_recovery_report = store.replay_wal(catalog, replay_config)?;
+        let mut storage_recovery_report = replay(&mut store, catalog, replay_config)?;
         let wal_replay_micros = elapsed_micros(wal_replay_started);
         let post_replay_open_started = std::time::Instant::now();
         store.validate_authoritative_relational_index_open()?;
@@ -2140,6 +2158,7 @@ impl GraphStore {
                 .snapshot_at_epoch(self.commit_epoch),
             projection_generations: None,
             runtime_governor: self.runtime_governor.clone(),
+            branch_lease: self.branch_lease.clone(),
             durable: None,
         }
     }

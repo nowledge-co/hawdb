@@ -50,6 +50,8 @@ pub struct CheckpointArtifactBinding {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedRoot {
+    /// Logical commit epoch covered by the checkpoint. Its physical generation
+    /// is bound by `durable_manifest` and may advance independently of commits.
     pub checkpoint_epoch: u64,
     pub commit_epoch: u64,
     pub wal_replay_start_lsn: u64,

@@ -7,6 +7,7 @@ use crate::durable_manifest::DurableManifest;
 use crate::error::{HawDBError, Result};
 use crate::immutable_object::{ImmutableObjectStore, ObjectKind, ObjectReference};
 use crate::ownership::{DatabaseDirectoryLease, DatabaseDirectoryLeaseError};
+use crate::relational::RelationalRecoverySourceBuilder;
 use crate::sealed_wal::{
     prepare_wal_rotation, seal_wal_file, PreparedWalRotation, SealedWalPublication,
 };
@@ -18,6 +19,17 @@ use std::collections::{btree_map::Entry, BTreeMap};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+/// The selected mutable branch binding, separate from its immutable lineage.
+#[derive(Debug, Clone)]
+pub(super) struct BranchRuntimeBinding {
+    catalog_path: PathBuf,
+    immutable_store_root: PathBuf,
+    head_path: PathBuf,
+    metadata_revision: u64,
+    head: branch_head::BranchHead,
+}
 
 /// A prepared immutable-root handoff. The successor WAL exists and is durable,
 /// but the branch selector has not been switched yet.
@@ -47,17 +59,15 @@ pub struct BranchAdmissionRequest<'a> {
 
 /// A recovered branch runtime that retains the target branch writer lease.
 ///
-/// The immutable root is materialized only into a disposable runtime directory
-/// below the target branch. The authoritative state remains the branch head,
-/// its private WAL, and immutable objects; closing this value never deletes or
-/// expires the branch.
+/// Immutable bindings are materialized below the target branch; WAL recovery
+/// dependencies remain in its persistent data directory. The runtime selector
+/// is disposable, but the branch head, private WAL, immutable objects, and
+/// mutable recovery dependencies survive closure of the handle.
 #[derive(Debug)]
 #[doc(hidden)]
 pub struct AdmittedBranchStore {
     store: GraphStore,
     catalog: crate::schema::Catalog,
-    head: branch_head::BranchHead,
-    _branch_lease: DatabaseDirectoryLease,
 }
 
 impl AdmittedBranchStore {
@@ -77,8 +87,15 @@ impl AdmittedBranchStore {
         (&mut self.store, &mut self.catalog)
     }
 
-    pub const fn head(&self) -> &branch_head::BranchHead {
-        &self.head
+    pub fn head(&self) -> &branch_head::BranchHead {
+        self.store
+            .admitted_branch_head()
+            .expect("admitted store retains its branch binding")
+    }
+
+    /// Transfers the recovered runtime and schema while preserving ownership.
+    pub fn into_parts(self) -> (GraphStore, crate::schema::Catalog) {
+        (self.store, self.catalog)
     }
 }
 
@@ -143,8 +160,17 @@ impl GraphStore {
         child_wal_path: impl AsRef<Path>,
         request: branch_catalog::CreateRequest,
     ) -> Result<branch_catalog::BranchCreateResult> {
+        self.ensure_usable()?;
         let parent = branch_head::read_branch_head(parent_head_path.as_ref())
             .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        if let Some(selected) = self.admitted_branch_head()
+            && (selected != &parent || self.commit_epoch != request.source_commit_epoch)
+        {
+            return Err(HawDBError::Semantic(
+                "child source must be the selected branch sealed at its current revision"
+                    .to_string(),
+            ));
+        }
         if request.base_root_digest != *parent.sealed_root.sha256.as_bytes()
             || request.source_commit_epoch != parent.logical_commit_epoch
         {
@@ -211,7 +237,11 @@ impl GraphStore {
         request: BranchAdmissionRequest<'_>,
         cleanup: impl FnOnce(&Path),
     ) -> std::result::Result<AdmittedBranchStore, BranchAdmissionError> {
-        if request.replay_config.recovery_mode == RecoveryMode::AutoRepairTornTail {
+        let total_open_started = std::time::Instant::now();
+        if matches!(
+            request.replay_config.recovery_mode,
+            RecoveryMode::AutoRepairTornTail | RecoveryMode::DoctorRepairTornTail
+        ) {
             return Err(BranchAdmissionError::Recovery(HawDBError::Storage(
                 "automatic repair of a branch private WAL requires branch-aware repair publication"
                     .to_string(),
@@ -261,25 +291,72 @@ impl GraphStore {
         .map_err(|error| BranchAdmissionError::Recovery(HawDBError::Storage(error.to_string())))?;
 
         let runtime_directory = branch_directory.join("runtime");
+        // Mutable WAL dependencies survive disposable-runtime cleanup. They
+        // belong to this UUID, never to its parent or to the materialization.
+        let artifact_directory = branch_directory.join("data");
         let result = (|| {
-            materialize_branch_runtime(&objects, &root, &runtime_directory)
+            materialize_branch_runtime(&objects, &root, &runtime_directory, &artifact_directory)
                 .map_err(BranchAdmissionError::Recovery)?;
             let mut catalog = crate::schema::Catalog::default();
-            let mut store = GraphStore::open_with_durability_and_replay_config(
+            let manifest_open_started = std::time::Instant::now();
+            let durable = super::durable::DurableStore::open_branch_runtime(
                 &runtime_directory,
-                &mut catalog,
+                &artifact_directory,
                 request.durability,
                 request.replay_config,
             )
             .map_err(BranchAdmissionError::Recovery)?;
+            let (mut store, _) = GraphStore::finish_open_with_replay(
+                durable,
+                &mut catalog,
+                request.replay_config,
+                super::elapsed_micros(manifest_open_started),
+                |store, catalog, replay_config| {
+                    let durable = store.durable.as_ref().expect("opened durable store");
+                    // Anchor the recovery identity at the manifest generation
+                    // and hash every validated record in contiguous LSN order,
+                    // across sealed generations and the private suffix.
+                    let mut source = RelationalRecoverySourceBuilder::new(
+                        durable.wal_generation,
+                        durable.wal_replay_start_lsn,
+                    );
+                    store.storage_recovery_report =
+                        store.replay_wal_interval(catalog, replay_config, &mut source)?;
+                    store.replay_sealed_wals(
+                        catalog,
+                        &root,
+                        &objects,
+                        &runtime_directory,
+                        replay_config,
+                        &mut source,
+                    )?;
+                    store.replay_branch_active_wal(
+                        catalog,
+                        &head,
+                        &active_wal_path,
+                        replay_config,
+                        &mut source,
+                    )?;
+                    store.finish_wal_recovery(
+                        source,
+                        store.storage_recovery_report.replayed_wal_entries,
+                    )?;
+                    Ok(std::mem::take(&mut store.storage_recovery_report))
+                },
+            )
+            .map_err(BranchAdmissionError::Recovery)?;
+            let activation_started = std::time::Instant::now();
             store
-                .replay_branch_active_wal(
-                    &mut catalog,
-                    &head,
-                    &active_wal_path,
-                    request.replay_config,
-                )
+                .activate_out_of_core_relational_rows()
                 .map_err(BranchAdmissionError::Recovery)?;
+            store
+                .storage_recovery_report
+                .open_timings
+                .post_replay_open_micros = store
+                .storage_recovery_report
+                .open_timings
+                .post_replay_open_micros
+                .saturating_add(super::elapsed_micros(activation_started));
 
             let after = ready_branch_record(
                 request.catalog_path,
@@ -287,17 +364,28 @@ impl GraphStore {
                 request.expected_metadata_revision,
             )?;
             validate_admission_binding(&after, &head, &root, root_reference)?;
+            store.storage_recovery_report.open_timings.total_open_micros =
+                super::elapsed_micros(total_open_started);
             Ok((store, catalog))
         })();
         // Keep the target lease outside recovery: a failure must finish runtime
         // cleanup before another opener can acquire ownership of this UUID.
         match result {
-            Ok((store, catalog)) => Ok(AdmittedBranchStore {
-                store,
-                catalog,
-                head,
-                _branch_lease: branch_lease,
-            }),
+            Ok((mut store, catalog)) => {
+                store.branch_lease = Some(Arc::new(branch_lease));
+                store
+                    .durable
+                    .as_mut()
+                    .expect("admission opened a durable store")
+                    .branch_runtime = Some(BranchRuntimeBinding {
+                    catalog_path: request.catalog_path.to_path_buf(),
+                    immutable_store_root: request.immutable_store_root.to_path_buf(),
+                    head_path: request.head_path.to_path_buf(),
+                    metadata_revision: request.expected_metadata_revision,
+                    head,
+                });
+                Ok(AdmittedBranchStore { store, catalog })
+            }
             Err(error) => {
                 cleanup(&runtime_directory);
                 Err(error)
@@ -404,13 +492,30 @@ impl GraphStore {
         let immutable_store_root = immutable_store_root.as_ref().to_path_buf();
         let mut objects = ImmutableObjectStore::open(&immutable_store_root)
             .map_err(|error| HawDBError::Storage(error.to_string()))?;
-        let next_generation = durable
+        let mut next_generation = durable
             .wal_generation
             .checked_add(1)
             .ok_or_else(|| HawDBError::Storage("WAL generation overflow".to_string()))?;
-        let next_wal_path = durable
-            .root_path
-            .join(crate::artifact_files::wal_generation_file(next_generation));
+        let wal_directory = match &durable.branch_runtime {
+            Some(branch) => branch
+                .head_path
+                .parent()
+                .expect("admitted head has a branch directory"),
+            None => &durable.root_path,
+        };
+        let mut next_wal_path =
+            wal_directory.join(crate::artifact_files::wal_generation_file(next_generation));
+        if durable.branch_runtime.is_some() {
+            // Failed publication can leave a durable unselected successor.
+            // Retain its evidence and choose a fresh identity on retry.
+            while next_wal_path.try_exists()? {
+                next_generation = next_generation
+                    .checked_add(1)
+                    .ok_or_else(|| HawDBError::Storage("WAL generation overflow".to_string()))?;
+                next_wal_path =
+                    wal_directory.join(crate::artifact_files::wal_generation_file(next_generation));
+            }
+        }
         let rotation = prepare_wal_rotation(
             &durable.wal_path,
             &next_wal_path,
@@ -464,7 +569,14 @@ impl GraphStore {
             &prepared.root,
             &mut objects,
         )
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        .map_err(|error| match error {
+            branch_head::WalRotationPublicationError::Head(
+                branch_head::BranchHeadError::CandidatePublicationUncertain { .. },
+            ) => HawDBError::StorageIntegrity(format!(
+                "branch head publication is uncertain; close and reopen the branch: {error}"
+            )),
+            _ => HawDBError::Storage(error.to_string()),
+        })?;
         if head.sealed_root != root_reference {
             return Err(HawDBError::Storage(
                 "published branch head selected an unexpected immutable root".to_string(),
@@ -476,7 +588,67 @@ impl GraphStore {
         durable.wal_replay_start_lsn = prepared.rotation.next_start_lsn;
         durable.wal_bytes = fs::metadata(&durable.wal_path)?.len();
         durable.wal_commit_epoch = self.commit_epoch;
+        durable.wal_tail_repair = None;
+        if let Some(branch) = &mut durable.branch_runtime {
+            branch.head = head;
+        }
         Ok(head)
+    }
+
+    /// The current seal/rotation selector of an admitted branch.
+    #[doc(hidden)]
+    pub fn admitted_branch_head(&self) -> Option<&branch_head::BranchHead> {
+        self.durable
+            .as_ref()
+            .and_then(|durable| durable.branch_runtime.as_ref())
+            .map(|branch| &branch.head)
+    }
+
+    /// Seals the exact committed revision while exclusive runtime access
+    /// prevents concurrent writes. Ordinary commits continue to append WAL.
+    #[doc(hidden)]
+    pub fn seal_admitted_branch(
+        &mut self,
+        expected_commit_epoch: u64,
+    ) -> Result<branch_head::BranchHead> {
+        self.ensure_usable()?;
+        if self.commit_epoch != expected_commit_epoch {
+            return Err(HawDBError::Semantic(format!(
+                "branch source revision is stale: expected {expected_commit_epoch}, found {}",
+                self.commit_epoch
+            )));
+        }
+        if let Some(head) = self.admitted_branch_head()
+            && head.logical_commit_epoch == self.commit_epoch
+        {
+            return Ok(*head);
+        }
+        let result = self.publish_admitted_branch_root();
+        self.poison_on_storage_error(&result);
+        result
+    }
+
+    pub(super) fn publish_admitted_branch_root(&mut self) -> Result<branch_head::BranchHead> {
+        let branch = self
+            .durable
+            .as_ref()
+            .and_then(|durable| durable.branch_runtime.clone())
+            .ok_or_else(|| HawDBError::Storage("store has no admitted branch".to_string()))?;
+        ready_branch_record(
+            &branch.catalog_path,
+            branch_catalog::BranchId::new(hawdb_core::Uuid::from_bytes(branch.head.branch_id))
+                .map_err(|error| HawDBError::Storage(error.to_string()))?,
+            branch.metadata_revision,
+        )
+        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let prepared = self.prepare_immutable_root_handoff(&branch.immutable_store_root)?;
+        self.complete_immutable_root_handoff(
+            prepared,
+            &branch.head_path,
+            branch.head.project_id,
+            branch.head.branch_id,
+            branch.head.physical_generation,
+        )
     }
 
     /// Replays the target branch's active WAL after opening the sealed root
@@ -489,37 +661,115 @@ impl GraphStore {
         head: &branch_head::BranchHead,
         active_wal_path: &Path,
         replay_config: WalReplayConfig,
+        source: &mut RelationalRecoverySourceBuilder,
     ) -> Result<()> {
-        let durable = self.durable.as_mut().ok_or_else(|| {
-            HawDBError::Storage("branch admission requires durable storage".to_string())
-        })?;
-        if durable.next_lsn != head.active_wal.replay_start_lsn {
-            return Err(HawDBError::Storage(format!(
-                "branch active WAL starts at {}, but sealed-root replay ended at {}",
-                head.active_wal.replay_start_lsn, durable.next_lsn
-            )));
-        }
-        durable.wal_path = active_wal_path.to_path_buf();
-        durable.wal_append_file = None;
-        durable.wal_generation = head.active_wal.generation;
-        durable.wal_replay_start_lsn = head.active_wal.replay_start_lsn;
-        durable.wal_bytes = fs::metadata(active_wal_path)?.len();
-        durable.wal_tail_repair = None;
-
-        let report = combine_recovery_reports(
-            self.storage_recovery_report.clone(),
-            self.replay_wal(catalog, replay_config)?,
-        );
+        self.replay_branch_wal_interval(
+            catalog,
+            active_wal_path,
+            head.active_wal.generation,
+            head.active_wal.replay_start_lsn,
+            replay_config,
+            source,
+        )?;
         if self.commit_epoch < head.logical_commit_epoch {
             return Err(HawDBError::Storage(format!(
                 "branch head commit epoch {} exceeds recovered epoch {}",
                 head.logical_commit_epoch, self.commit_epoch
             )));
         }
-        self.validate_authoritative_relational_index_open()?;
-        self.validate_relationship_endpoints()?;
-        self.refresh_basic_statistics_epoch();
-        self.storage_recovery_report = report;
+        Ok(())
+    }
+
+    fn replay_sealed_wals(
+        &mut self,
+        catalog: &mut crate::schema::Catalog,
+        root: &SealedRoot,
+        objects: &ImmutableObjectStore,
+        runtime_directory: &Path,
+        replay_config: WalReplayConfig,
+        source: &mut RelationalRecoverySourceBuilder,
+    ) -> Result<()> {
+        for interval in &root.sealed_wals {
+            let bytes = objects
+                .read(interval.object)
+                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            let (generation, start_lsn) = crate::wal::frame::decode_binary_wal_header(&bytes)?;
+            if start_lsn != interval.start_lsn {
+                return Err(HawDBError::Storage(
+                    "sealed WAL header differs from its declared interval".to_string(),
+                ));
+            }
+            let path = runtime_directory.join("replay.hawdb");
+            fs::write(&path, bytes)?;
+            self.replay_branch_wal_interval(
+                catalog,
+                &path,
+                generation,
+                start_lsn,
+                replay_config,
+                source,
+            )?;
+            if self.durable.as_ref().map(|durable| durable.next_lsn) != Some(interval.end_lsn) {
+                return Err(HawDBError::Storage(
+                    "sealed WAL replay does not reach the declared interval boundary".to_string(),
+                ));
+            }
+        }
+        if self.commit_epoch != root.commit_epoch {
+            return Err(HawDBError::Storage(
+                "sealed WAL replay does not recover the declared root epoch".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn replay_branch_wal_interval(
+        &mut self,
+        catalog: &mut crate::schema::Catalog,
+        path: &Path,
+        generation: u64,
+        start_lsn: u64,
+        mut replay_config: WalReplayConfig,
+        source: &mut RelationalRecoverySourceBuilder,
+    ) -> Result<()> {
+        let before = self.storage_recovery_report.clone();
+        replay_config.max_entries = replay_config
+            .max_entries
+            .map(|limit| {
+                limit
+                    .checked_sub(before.replayed_wal_entries)
+                    .ok_or_else(|| {
+                        HawDBError::Storage("branch WAL replay entry budget exceeded".to_string())
+                    })
+            })
+            .transpose()?;
+        replay_config.max_bytes = replay_config
+            .max_bytes
+            .map(|limit| {
+                limit.checked_sub(before.replayed_wal_bytes).ok_or_else(|| {
+                    HawDBError::Storage("branch WAL replay byte budget exceeded".to_string())
+                })
+            })
+            .transpose()?;
+        let durable = self.durable.as_mut().ok_or_else(|| {
+            HawDBError::Storage("branch admission requires durable storage".to_string())
+        })?;
+        if durable.next_lsn != start_lsn {
+            return Err(HawDBError::Storage(format!(
+                "branch WAL starts at {start_lsn}, but preceding replay ended at {}",
+                durable.next_lsn
+            )));
+        }
+        durable.wal_path = path.to_path_buf();
+        durable.wal_append_file = None;
+        durable.wal_generation = generation;
+        durable.wal_replay_start_lsn = start_lsn;
+        durable.wal_bytes = fs::metadata(path)?.len();
+        durable.wal_tail_repair = None;
+        self.storage_recovery_report = combine_recovery_reports(
+            before,
+            self.replay_wal_interval(catalog, replay_config, source)?,
+        );
         Ok(())
     }
 
@@ -616,8 +866,7 @@ fn publish_sealed_root(
     sealed: SealedWalPublication,
     objects: &mut ImmutableObjectStore,
 ) -> Result<SealedRoot> {
-    let manifest_path = durable.root_path.join(MANIFEST_FILE);
-    let manifest_bytes = fs::read(&manifest_path)?;
+    let manifest_bytes = fs::read(durable.manifest_path())?;
     let manifest =
         DurableManifest::decode(std::str::from_utf8(&manifest_bytes).map_err(|error| {
             HawDBError::Storage(format!("decode durable manifest bytes: {error}"))
@@ -632,18 +881,32 @@ fn publish_sealed_root(
     let closure = plan
         .publish(objects)
         .map_err(|error| HawDBError::Storage(error.to_string()))?;
+    let mut sealed_wals = Vec::new();
+    if let Some(branch) = &durable.branch_runtime {
+        let previous_bytes = objects
+            .read(branch.head.sealed_root)
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let previous = SealedRoot::decode(&previous_bytes)
+            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        if manifest.checkpoint_commit_epoch == previous.checkpoint_epoch {
+            sealed_wals = previous.sealed_wals;
+        }
+    }
+    if sealed.start_lsn < sealed.end_lsn {
+        sealed_wals.push(crate::sealed_root::SealedWalReference {
+            start_lsn: sealed.start_lsn,
+            end_lsn: sealed.end_lsn,
+            object: sealed.object,
+        });
+    }
     let root = build_sealed_root(
         &closure,
-        manifest.checkpoint_epoch,
+        manifest.checkpoint_commit_epoch,
         commit_epoch,
         manifest.wal_replay_start_lsn,
         durable_manifest,
         checkpoint_bindings,
-        vec![crate::sealed_root::SealedWalReference {
-            start_lsn: sealed.start_lsn,
-            end_lsn: sealed.end_lsn,
-            object: sealed.object,
-        }],
+        sealed_wals,
     )
     .map_err(|error| HawDBError::Storage(error.to_string()))?;
     let root_reference = root
@@ -752,24 +1015,29 @@ fn validate_admission_binding(
             "branch head root reference does not match immutable root",
         ));
     }
-    if record.branch.base_root_digest != Some(*head.sealed_root.sha256.as_bytes()) {
+    if head.physical_generation == 1
+        && record.branch.base_root_digest != Some(*head.sealed_root.sha256.as_bytes())
+    {
         return Err(BranchAdmissionError::IdentityMismatch(
             "catalog root digest does not match branch head",
         ));
     }
-    if record.branch.source_commit_epoch != root.commit_epoch {
+    if root.commit_epoch < record.branch.source_commit_epoch
+        || (head.physical_generation == 1 && record.branch.source_commit_epoch != root.commit_epoch)
+    {
         return Err(BranchAdmissionError::IdentityMismatch(
             "catalog source epoch does not match the sealed root",
         ));
     }
-    if head.logical_commit_epoch < root.commit_epoch {
+    if head.logical_commit_epoch != root.commit_epoch {
         return Err(BranchAdmissionError::IdentityMismatch(
-            "branch head precedes its sealed root commit epoch",
+            "branch head commit epoch differs from its sealed root",
         ));
     }
-    let sealed_end_lsn = root.sealed_wals.last().map(|wal| wal.end_lsn).ok_or(
-        BranchAdmissionError::IdentityMismatch("sealed root has no WAL interval"),
-    )?;
+    let sealed_end_lsn = root
+        .sealed_wals
+        .last()
+        .map_or(root.wal_replay_start_lsn, |wal| wal.end_lsn);
     if sealed_end_lsn != head.active_wal.replay_start_lsn {
         return Err(BranchAdmissionError::IdentityMismatch(
             "branch private WAL does not begin after the sealed root",
@@ -782,28 +1050,39 @@ fn materialize_branch_runtime(
     objects: &ImmutableObjectStore,
     root: &SealedRoot,
     runtime_directory: &Path,
+    artifact_directory: &Path,
 ) -> Result<()> {
     root.validate()
         .map_err(|error| HawDBError::Storage(error.to_string()))?;
-    if root.sealed_wals.len() != 1 {
-        return Err(HawDBError::Storage(
-            "branch admission currently requires one sealed WAL interval".to_string(),
-        ));
-    }
     if runtime_directory.exists() {
         fs::remove_dir_all(runtime_directory)?;
     }
     fs::create_dir_all(runtime_directory)?;
+    fs::create_dir_all(artifact_directory)?;
+    // Future synchronous commits may depend on files in this directory. Make
+    // its parent entry durable before exposing a writable branch runtime.
+    crate::durability::sync_parent_directory(artifact_directory)?;
     let manifest_bytes = objects
         .read(root.durable_manifest)
         .map_err(|error| HawDBError::Storage(error.to_string()))?;
     let manifest_path = runtime_directory.join(MANIFEST_FILE);
     fs::write(&manifest_path, manifest_bytes)?;
     let manifest = DurableManifest::load(&manifest_path)?;
-    materialize_checkpoint_bindings(objects, runtime_directory, &root.checkpoint_bindings)?;
-    let sealed = objects
-        .read(root.sealed_wals[0].object)
-        .map_err(|error| HawDBError::Storage(error.to_string()))?;
+    if manifest.checkpoint_commit_epoch != root.checkpoint_epoch
+        || manifest.wal_replay_start_lsn != root.wal_replay_start_lsn
+    {
+        return Err(HawDBError::Storage(
+            "sealed root differs from its checkpoint manifest recovery boundary".to_string(),
+        ));
+    }
+    materialize_checkpoint_bindings(objects, artifact_directory, &root.checkpoint_bindings)?;
+    // The manifest names the checkpoint's original WAL generation. A seal
+    // can omit that empty generation and begin at a newer private generation.
+    // Mount an empty anchor, then replay each root interval with its own header.
+    let sealed = crate::wal::frame::encode_binary_wal_header(
+        manifest.wal_generation,
+        root.wal_replay_start_lsn,
+    );
     let sealed_wal_path = manifest.wal_path(runtime_directory);
     if let Some(parent) = sealed_wal_path.parent() {
         fs::create_dir_all(parent)?;
@@ -898,7 +1177,12 @@ fn copy_recovery_container(source: &Path, destination: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::relational::{
+        RelationalColumnSchema, RelationalInsertMode, RelationalRow, RelationalScalarType,
+        RelationalTableSchema, RelationalTransaction, RelationalValue, RelationalWrite,
+    };
     use crate::schema::Catalog;
+    use crate::store::{GraphMutation, MutationLimits};
     use crate::value::Value;
     use std::collections::BTreeMap;
     use std::io::Write;
@@ -912,6 +1196,552 @@ mod tests {
         let path = std::env::temp_dir().join(format!("hawdb-{label}-{suffix}"));
         fs::create_dir_all(&path).expect("create test directory");
         path
+    }
+
+    struct BranchFixture {
+        project: PathBuf,
+        objects: PathBuf,
+        catalog_path: PathBuf,
+        main: branch_catalog::BranchId,
+    }
+
+    impl BranchFixture {
+        fn new() -> Self {
+            let project = temp_dir("branch-runtime");
+            let fixture = Self {
+                objects: project.join("immutable"),
+                catalog_path: project.join("catalog.hawdb"),
+                main: branch_id(1),
+                project,
+            };
+            let source_directory = fixture.project.join("former-parent");
+            let mut catalog = Catalog::default();
+            let mut source = GraphStore::open(&source_directory, &mut catalog).unwrap();
+            source
+                .create_node(&mut catalog, "Seed", BTreeMap::new())
+                .unwrap();
+            source.checkpoint(&catalog).unwrap();
+            source
+                .create_node(&mut catalog, "Seed", BTreeMap::new())
+                .unwrap();
+            let head_path = fixture.head_path(fixture.main);
+            fs::create_dir_all(head_path.parent().unwrap()).unwrap();
+            let project_id = branch_id(90);
+            let head = source
+                .initialize_immutable_root_head(
+                    &fixture.objects,
+                    &head_path,
+                    *project_id.as_uuid().as_bytes(),
+                    *fixture.main.as_uuid().as_bytes(),
+                )
+                .unwrap();
+            branch_catalog::initialize_catalog_file(
+                &fixture.catalog_path,
+                project_id,
+                fixture.main,
+            )
+            .unwrap();
+            branch_catalog::bind_main_head_file(
+                &fixture.catalog_path,
+                project_id,
+                fixture.main,
+                *head.sealed_root.sha256.as_bytes(),
+                head.logical_commit_epoch,
+            )
+            .unwrap();
+            drop(source);
+            fs::remove_dir_all(source_directory).unwrap();
+            fixture
+        }
+
+        fn head_path(&self, id: branch_catalog::BranchId) -> PathBuf {
+            self.project
+                .join("branches")
+                .join(id.as_uuid().to_string())
+                .join("branch.head")
+        }
+
+        fn admit(
+            &self,
+            id: branch_catalog::BranchId,
+            durability: DurabilityPolicy,
+        ) -> AdmittedBranchStore {
+            self.try_admit(id, durability, WalReplayConfig::default())
+                .unwrap()
+        }
+
+        fn try_admit(
+            &self,
+            id: branch_catalog::BranchId,
+            durability: DurabilityPolicy,
+            replay_config: WalReplayConfig,
+        ) -> std::result::Result<AdmittedBranchStore, BranchAdmissionError> {
+            let catalog = branch_catalog::read_catalog(&self.catalog_path).unwrap();
+            let record = catalog
+                .branches
+                .iter()
+                .find(|branch| branch.id == id)
+                .unwrap();
+            GraphStore::admit_branch_from_head(BranchAdmissionRequest {
+                catalog_path: &self.catalog_path,
+                branch_id: id,
+                expected_metadata_revision: record.metadata_revision,
+                head_path: &self.head_path(id),
+                immutable_store_root: &self.objects,
+                durability,
+                replay_config,
+            })
+        }
+
+        fn fork(&self, source: &AdmittedBranchStore, child: branch_catalog::BranchId, name: &str) {
+            self.try_fork(source, child, name).unwrap();
+        }
+
+        fn try_fork(
+            &self,
+            source: &AdmittedBranchStore,
+            child: branch_catalog::BranchId,
+            name: &str,
+        ) -> Result<branch_catalog::BranchCreateResult> {
+            let head = source.head();
+            let child_head = self.head_path(child);
+            let child_wal = child_head.with_file_name(crate::artifact_files::wal_generation_file(
+                head.active_wal.generation + 1,
+            ));
+            let parent =
+                branch_catalog::BranchId::new(hawdb_core::Uuid::from_bytes(head.branch_id))
+                    .unwrap();
+            source.store().create_isolated_branch_from_parent_head(
+                &self.catalog_path,
+                self.head_path(parent),
+                &child_head,
+                &child_wal,
+                branch_catalog::CreateRequest {
+                    id: child,
+                    name: branch_catalog::BranchName::new(name).unwrap(),
+                    parent_id: parent,
+                    source_commit_epoch: source.store().commit_epoch(),
+                    base_root_digest: *head.sealed_root.sha256.as_bytes(),
+                    owner: None,
+                    request_key: format!("create-{name}"),
+                    request_fingerprint: *hawdb_integrity::sha256(name.as_bytes()).as_bytes(),
+                },
+            )
+        }
+    }
+
+    impl Drop for BranchFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.project);
+        }
+    }
+
+    fn branch_id(value: u128) -> branch_catalog::BranchId {
+        branch_catalog::BranchId::new(hawdb_core::Uuid::from_u128(value)).unwrap()
+    }
+
+    fn write_schema_and_graph(branch: &mut AdmittedBranchStore) {
+        let table = RelationalTableSchema {
+            name: "messages".into(),
+            columns: vec![RelationalColumnSchema {
+                name: "body".into(),
+                scalar_type: RelationalScalarType::Text,
+                nullable: false,
+                default: None,
+            }],
+            primary_key: vec!["body".into()],
+            unique_constraints: vec![],
+            foreign_keys: vec![],
+            indexes: vec![],
+        };
+        let (store, catalog) = branch.store_and_catalog_mut();
+        store
+            .commit_mutations_and_relational(
+                catalog,
+                vec![GraphMutation::CreateNode {
+                    label: "Marker".into(),
+                    properties: BTreeMap::new(),
+                }],
+                RelationalTransaction {
+                    writes: vec![
+                        RelationalWrite::CreateTable(table),
+                        RelationalWrite::Insert {
+                            table: "messages".into(),
+                            rows: vec![RelationalRow::new(vec![RelationalValue::Text(
+                                "payload".repeat(1_024),
+                            )])],
+                            mode: RelationalInsertMode::Error,
+                        },
+                    ],
+                },
+                MutationLimits::default(),
+            )
+            .unwrap();
+    }
+
+    fn write_row(branch: &mut AdmittedBranchStore, body: &str) {
+        let (store, catalog) = branch.store_and_catalog_mut();
+        store
+            .commit_relational_transaction(
+                catalog,
+                RelationalTransaction {
+                    writes: vec![RelationalWrite::Insert {
+                        table: "messages".into(),
+                        rows: vec![RelationalRow::new(vec![RelationalValue::Text(body.into())])],
+                        mode: RelationalInsertMode::Error,
+                    }],
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn branch_checkpoint_preserves_schema_data_and_private_wal_after_reopen() {
+        for durability in [
+            DurabilityPolicy::SyncOnEveryWrite,
+            DurabilityPolicy::SyncOnCheckpoint,
+        ] {
+            let fixture = BranchFixture::new();
+            let main = fixture.admit(fixture.main, durability);
+            fixture.fork(&main, branch_id(2), "child");
+            fixture.fork(&main, branch_id(3), "sibling");
+            let mut child = fixture.admit(branch_id(2), durability);
+            let initial_head = *child.head();
+            let initial_catalog = fs::read(&fixture.catalog_path).unwrap();
+            write_schema_and_graph(&mut child);
+            assert_eq!(
+                *child.head(),
+                initial_head,
+                "ordinary commits append the private WAL"
+            );
+            drop(child);
+            let mut child = fixture.admit(branch_id(2), durability);
+            assert_eq!(child.store().node_count_for_label(None), 3);
+            assert_eq!(child.store().relational_state().row_count("messages"), 1);
+            let (store, catalog) = child.store_and_catalog_mut();
+            store.checkpoint(catalog).unwrap();
+            assert!(child.head().physical_generation > initial_head.physical_generation);
+            assert_eq!(
+                child.head().logical_commit_epoch,
+                child.store().commit_epoch()
+            );
+            let branch_directory = fixture
+                .head_path(branch_id(2))
+                .parent()
+                .unwrap()
+                .to_path_buf();
+            assert_eq!(
+                child.store().durable.as_ref().unwrap().wal_path.parent(),
+                Some(branch_directory.as_path())
+            );
+            assert_eq!(
+                fs::read(&fixture.catalog_path).unwrap(),
+                initial_catalog,
+                "lineage stays immutable"
+            );
+            write_row(&mut child, "after-checkpoint");
+            let expected_epoch = child.store().commit_epoch();
+            drop(child);
+            let child = fixture.admit(branch_id(2), durability);
+            assert_eq!(child.store().commit_epoch(), expected_epoch);
+            assert_eq!(child.store().relational_state().row_count("messages"), 2);
+            assert_eq!(child.store().node_count_for_label(None), 3);
+            assert!(main
+                .store()
+                .relational_state()
+                .table_schema("messages")
+                .is_none());
+            let sibling = fixture.admit(branch_id(3), durability);
+            assert_eq!(sibling.store().node_count_for_label(None), 2);
+            assert!(sibling
+                .store()
+                .relational_state()
+                .table_schema("messages")
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn modified_child_can_fork_grandchild_after_multiple_wal_seals() {
+        let fixture = BranchFixture::new();
+        let main = fixture.admit(fixture.main, DurabilityPolicy::default());
+        fixture.fork(&main, branch_id(2), "child");
+        let mut child = fixture.admit(branch_id(2), DurabilityPolicy::default());
+        write_schema_and_graph(&mut child);
+        let (store, catalog) = child.store_and_catalog_mut();
+        store.checkpoint(catalog).unwrap();
+        write_row(&mut child, "first-sealed-row");
+        let epoch = child.store().commit_epoch();
+        child.store_mut().seal_admitted_branch(epoch).unwrap();
+        write_row(&mut child, "sealed-row");
+        let epoch = child.store().commit_epoch();
+        child.store_mut().seal_admitted_branch(epoch).unwrap();
+        let head_bytes = fs::read(fixture.head_path(branch_id(2))).unwrap();
+        assert!(child.store_mut().seal_admitted_branch(epoch - 1).is_err());
+        assert_eq!(
+            fs::read(fixture.head_path(branch_id(2))).unwrap(),
+            head_bytes
+        );
+        let objects = ImmutableObjectStore::open(&fixture.objects).unwrap();
+        let root = SealedRoot::decode(&objects.read(child.head().sealed_root).unwrap()).unwrap();
+        assert_eq!(root.sealed_wals.len(), 2);
+        fixture.fork(&child, branch_id(4), "grandchild");
+        let grandchild = fixture.admit(branch_id(4), DurabilityPolicy::default());
+        assert_eq!(grandchild.store().commit_epoch(), epoch);
+        assert_eq!(grandchild.store().node_count_for_label(None), 3);
+        assert_eq!(
+            grandchild.store().relational_state().row_count("messages"),
+            3
+        );
+        write_row(&mut child, "child-only");
+        assert_eq!(
+            grandchild.store().relational_state().row_count("messages"),
+            3
+        );
+        drop(child);
+        let child = fixture.admit(branch_id(2), DurabilityPolicy::default());
+        assert_eq!(child.store().relational_state().row_count("messages"), 4);
+        assert!(main
+            .store()
+            .relational_state()
+            .table_schema("messages")
+            .is_none());
+    }
+
+    #[test]
+    fn failed_checkpoint_head_publication_recovers_the_acknowledged_transaction() {
+        for durability in [
+            DurabilityPolicy::SyncOnEveryWrite,
+            DurabilityPolicy::SyncOnCheckpoint,
+        ] {
+            let fixture = BranchFixture::new();
+            let mut branch = fixture.admit(fixture.main, durability);
+            write_schema_and_graph(&mut branch);
+            let expected_epoch = branch.store().commit_epoch();
+            let head_path = fixture.head_path(fixture.main);
+            let old_head = fs::read(&head_path).unwrap();
+            {
+                let _failure = crate::durability::fail_durable_replace_for_destination(
+                    head_path.file_name().unwrap(),
+                );
+                let (store, catalog) = branch.store_and_catalog_mut();
+                assert!(store.checkpoint(catalog).is_err());
+            }
+            assert_eq!(fs::read(&head_path).unwrap(), old_head);
+            assert!(
+                branch
+                    .store_mut()
+                    .seal_admitted_branch(expected_epoch)
+                    .is_err(),
+                "uncertain handle fails closed"
+            );
+            let error = fixture
+                .try_fork(&branch, branch_id(2), "poisoned-source")
+                .unwrap_err();
+            assert!(error.to_string().contains("poisoned"), "{error}");
+            drop(branch);
+            let mut branch = fixture.admit(fixture.main, durability);
+            assert_eq!(branch.store().commit_epoch(), expected_epoch);
+            assert_eq!(branch.store().node_count_for_label(None), 3);
+            assert_eq!(branch.store().relational_state().row_count("messages"), 1);
+            let (store, catalog) = branch.store_and_catalog_mut();
+            store.checkpoint(catalog).unwrap();
+            drop(branch);
+            let branch = fixture.admit(fixture.main, durability);
+            assert_eq!(branch.store().commit_epoch(), expected_epoch);
+            assert_eq!(branch.store().relational_state().row_count("messages"), 1);
+        }
+    }
+
+    #[test]
+    fn branch_snapshot_and_transferred_store_retain_the_writer_lease() {
+        let fixture = BranchFixture::new();
+        let branch = fixture.admit(fixture.main, DurabilityPolicy::default());
+        let (store, _catalog) = branch.into_parts();
+        let snapshot = store.snapshot_for_read();
+        drop(store);
+        assert!(matches!(
+            fixture.try_admit(
+                fixture.main,
+                DurabilityPolicy::default(),
+                WalReplayConfig::default()
+            ),
+            Err(BranchAdmissionError::Lease(
+                DatabaseDirectoryLeaseError::AlreadyOpen
+            ))
+        ));
+        drop(snapshot);
+        fixture.admit(fixture.main, DurabilityPolicy::default());
+    }
+
+    #[test]
+    fn branch_admission_requires_a_durable_data_directory_and_preserves_its_source() {
+        let fixture = BranchFixture::new();
+        let mut main = fixture.admit(fixture.main, DurabilityPolicy::default());
+        fixture.fork(&main, branch_id(2), "child");
+        let child_head = fixture.head_path(branch_id(2));
+        let child_directory = child_head.parent().unwrap();
+        let head_bytes = fs::read(&child_head).unwrap();
+        let catalog_bytes = fs::read(&fixture.catalog_path).unwrap();
+        {
+            let _failure = crate::durability::fail_sync_directory_for(child_directory);
+            let error = fixture
+                .try_admit(
+                    branch_id(2),
+                    DurabilityPolicy::default(),
+                    WalReplayConfig::default(),
+                )
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("injected directory sync failure"),
+                "{error}"
+            );
+        }
+        assert_eq!(fs::read(&child_head).unwrap(), head_bytes);
+        assert_eq!(fs::read(&fixture.catalog_path).unwrap(), catalog_bytes);
+        assert!(!child_directory.join("runtime").exists());
+        let (store, catalog) = main.store_and_catalog_mut();
+        store
+            .create_node(catalog, "SourceStillWritable", BTreeMap::new())
+            .unwrap();
+        assert_eq!(main.store().node_count_for_label(None), 3);
+        let child = fixture.admit(branch_id(2), DurabilityPolicy::default());
+        assert_eq!(child.store().node_count_for_label(None), 2);
+    }
+
+    #[test]
+    fn branch_replay_budget_covers_every_sealed_and_private_interval() {
+        let fixture = BranchFixture::new();
+        let mut branch = fixture.admit(fixture.main, DurabilityPolicy::default());
+        write_schema_and_graph(&mut branch);
+        let (store, catalog) = branch.store_and_catalog_mut();
+        store.checkpoint(catalog).unwrap();
+        for body in ["sealed-one", "sealed-two"] {
+            write_row(&mut branch, body);
+            let epoch = branch.store().commit_epoch();
+            branch.store_mut().seal_admitted_branch(epoch).unwrap();
+        }
+        write_row(&mut branch, "private-three");
+        let expected_epoch = branch.store().commit_epoch();
+        let head_path = fixture.head_path(fixture.main);
+        let old_head = fs::read(&head_path).unwrap();
+        let wal_path = branch.store().durable.as_ref().unwrap().wal_path.clone();
+        let old_wal = fs::read(&wal_path).unwrap();
+        let evidence_path = head_path.parent().unwrap().join("data/recovery-evidence");
+        fs::write(&evidence_path, b"persistent dependency").unwrap();
+        drop(branch);
+        let error = fixture
+            .try_admit(
+                fixture.main,
+                DurabilityPolicy::default(),
+                WalReplayConfig {
+                    max_entries: Some(2),
+                    ..WalReplayConfig::default()
+                },
+            )
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("entry limit exceeded"),
+            "{error}"
+        );
+        assert_eq!(fs::read(&head_path).unwrap(), old_head);
+        assert_eq!(fs::read(&wal_path).unwrap(), old_wal);
+        assert_eq!(fs::read(&evidence_path).unwrap(), b"persistent dependency");
+        assert!(!head_path.parent().unwrap().join("runtime").exists());
+        let branch = fixture.admit(fixture.main, DurabilityPolicy::default());
+        assert_eq!(branch.store().commit_epoch(), expected_epoch);
+        assert_eq!(branch.store().relational_state().row_count("messages"), 4);
+        assert_eq!(
+            branch.store().storage_recovery_report.replayed_wal_entries,
+            3
+        );
+    }
+
+    #[test]
+    fn catalog_sweep_defers_for_publication_candidates_and_reader_leases() {
+        let fixture = BranchFixture::new();
+        let mut branch = fixture.admit(fixture.main, DurabilityPolicy::default());
+        let old_head = *branch.head();
+        let snapshot = branch.store().snapshot_for_read();
+        write_schema_and_graph(&mut branch);
+        let prepared = branch
+            .store_mut()
+            .prepare_immutable_root_handoff(&fixture.objects)
+            .unwrap();
+        let new_root = prepared.root.object_reference().unwrap();
+        let mut objects = ImmutableObjectStore::open(&fixture.objects).unwrap();
+        let orphan = ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, b"orphan");
+        objects.publish(orphan, b"orphan").unwrap();
+        let mut inventory = vec![
+            old_head.sealed_root,
+            new_root,
+            orphan,
+            prepared.root.durable_manifest,
+        ];
+        inventory.extend_from_slice(&prepared.root.checkpoint_references);
+        inventory.extend(prepared.root.sealed_wals.iter().map(|wal| wal.object));
+        let paths = vec![branch_catalog::BranchReclamationPath {
+            id: fixture.main,
+            directory: fixture
+                .head_path(fixture.main)
+                .parent()
+                .unwrap()
+                .to_path_buf(),
+            head_path: fixture.head_path(fixture.main),
+        }];
+        let report = branch_catalog::reclaim_catalog_branches(
+            &fixture.catalog_path,
+            &mut objects,
+            &inventory,
+            &paths,
+        )
+        .unwrap();
+        assert!(report.deferred_for_active_leases);
+        assert_eq!(report.reclaimed_objects, 0);
+        assert!(
+            objects.read(new_root).is_ok(),
+            "unpublished candidate stays protected"
+        );
+        branch
+            .store_mut()
+            .complete_immutable_root_handoff(
+                prepared,
+                fixture.head_path(fixture.main),
+                old_head.project_id,
+                old_head.branch_id,
+                old_head.physical_generation,
+            )
+            .unwrap();
+        drop(branch);
+        let report = branch_catalog::reclaim_catalog_branches(
+            &fixture.catalog_path,
+            &mut objects,
+            &inventory,
+            &paths,
+        )
+        .unwrap();
+        assert!(
+            report.deferred_for_active_leases,
+            "old snapshot keeps its lease"
+        );
+        assert!(objects.read(old_head.sealed_root).is_ok());
+        drop(snapshot);
+        let report = branch_catalog::reclaim_catalog_branches(
+            &fixture.catalog_path,
+            &mut objects,
+            &inventory,
+            &paths,
+        )
+        .unwrap();
+        assert!(!report.deferred_for_active_leases);
+        assert!(report.reclaimed_objects > 0);
+        assert!(objects.read(new_root).is_ok());
+        assert!(objects.read(orphan).is_err());
+        let branch = fixture.admit(fixture.main, DurabilityPolicy::default());
+        assert_eq!(branch.store().node_count_for_label(None), 3);
+        assert_eq!(branch.store().relational_state().row_count("messages"), 1);
     }
 
     #[test]

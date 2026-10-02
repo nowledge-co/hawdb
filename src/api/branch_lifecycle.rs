@@ -879,7 +879,8 @@ impl Database {
     }
 
     /// Publishes the current durable state as the initial sealed `main` snapshot.
-    /// Requires a checkpoint and a non-empty active WAL. The snapshot has its own
+    /// Requires a checkpoint; a fully checkpoint-covered snapshot needs no
+    /// sealed WAL interval. The snapshot has its own
     /// private WAL; ordinary database writes and reopen remain manifest-owned.
     /// Later ordinary writes do not advance this sealed branch source.
     pub fn initialize_main_branch(

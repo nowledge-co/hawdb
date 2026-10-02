@@ -297,6 +297,9 @@ impl Catalog {
     /// Reserve a branch identity and name before any child files are created.
     /// Replaying the same request key and fingerprint returns the original ID;
     /// a reused key with different input is always a conflict.
+    /// The parent's source epoch records creation lineage, not its current
+    /// revision. Callers must bind the requested revision to the live head;
+    /// this metadata-only transition can reject only revisions before birth.
     pub fn reserve_create(
         &mut self,
         request: CreateRequest,
@@ -323,7 +326,7 @@ impl Catalog {
                 "create parent is not ready",
             ));
         }
-        if parent.source_commit_epoch != request.source_commit_epoch {
+        if request.source_commit_epoch < parent.source_commit_epoch {
             return Err(CatalogTransitionError::Conflict(
                 "create source revision is stale",
             ));
@@ -812,6 +815,15 @@ fn mutate_catalog_file<T>(
     path: &Path,
     transition: impl FnOnce(&mut Catalog) -> Result<CatalogMutation<T>, CatalogTransitionError>,
 ) -> Result<T, CatalogFileTransitionError> {
+    mutate_catalog_file_with_io(path, |catalog| {
+        transition(catalog).map_err(CatalogFileTransitionError::Transition)
+    })
+}
+
+fn mutate_catalog_file_with_io<T>(
+    path: &Path,
+    transition: impl FnOnce(&mut Catalog) -> Result<CatalogMutation<T>, CatalogFileTransitionError>,
+) -> Result<T, CatalogFileTransitionError> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -821,7 +833,7 @@ fn mutate_catalog_file<T>(
     let _metadata_lock =
         CatalogMetadataLease::acquire_blocking(parent).map_err(CatalogFileTransitionError::Io)?;
     let mut catalog = read_catalog(path).map_err(CatalogFileTransitionError::Io)?;
-    let mutation = transition(&mut catalog).map_err(CatalogFileTransitionError::Transition)?;
+    let mutation = transition(&mut catalog)?;
     if mutation.changed {
         write_catalog_locked(path, &catalog).map_err(CatalogFileTransitionError::Io)?;
     }
@@ -867,19 +879,36 @@ pub fn reserve_create_file(
     path: &Path,
     request: CreateRequest,
 ) -> Result<CreateReservation, CatalogFileTransitionError> {
-    mutate_catalog_file(path, move |catalog| {
+    reserve_create_file_with_source(path, request, |_| Ok(()))
+}
+
+fn reserve_create_file_with_source(
+    path: &Path,
+    request: CreateRequest,
+    validate_source: impl FnOnce(&Catalog) -> Result<(), CatalogFileTransitionError>,
+) -> Result<CreateReservation, CatalogFileTransitionError> {
+    mutate_catalog_file_with_io(path, move |catalog| {
         let replayed = catalog
             .branches
             .iter()
             .any(|branch| branch.create_request_key == request.request_key);
+        // An idempotent retry resolves the original outcome even if its
+        // source has advanced since publication of the child.
+        if !replayed {
+            validate_source(catalog)?;
+        }
         let revision = catalog.revision;
-        let id = catalog.reserve_create(request)?;
+        let id = catalog
+            .reserve_create(request)
+            .map_err(CatalogFileTransitionError::Transition)?;
         let metadata_revision = catalog
             .branches
             .iter()
             .find(|branch| branch.id == id)
             .map(|branch| branch.metadata_revision)
-            .ok_or(CatalogTransitionError::MissingBranch)?;
+            .ok_or(CatalogFileTransitionError::Transition(
+                CatalogTransitionError::MissingBranch,
+            ))?;
         Ok(CatalogMutation {
             value: CreateReservation {
                 id,
@@ -1064,8 +1093,30 @@ pub fn create_branch_from_parent(
             "catalog parent and selected parent head differ",
         ));
     }
-    let reservation =
-        reserve_create_file(catalog_path, request).map_err(BranchCreateError::Catalog)?;
+    if request.source_commit_epoch != expected_parent.logical_commit_epoch
+        || request.source_commit_epoch != child_head_request.logical_commit_epoch
+        || child_head_request.sealed_root != expected_parent.sealed_root
+    {
+        return Err(BranchCreateError::InconsistentRequest(
+            "catalog source revision and selected parent head differ",
+        ));
+    }
+    let reservation = reserve_create_file_with_source(catalog_path, request, |catalog| {
+        let parent = crate::branch_head::read_branch_head(parent_head_path)
+            .map_err(|error| CatalogFileTransitionError::Io(invalid_data(error.to_string())))?;
+        if parent.project_id != *catalog.project_id.as_uuid().as_bytes()
+            || parent.branch_id != expected_parent.branch_id
+            || parent.physical_generation != expected_parent.physical_generation
+            || parent.logical_commit_epoch != expected_parent.logical_commit_epoch
+            || parent.sealed_root != expected_parent.sealed_root
+        {
+            return Err(CatalogFileTransitionError::Transition(
+                CatalogTransitionError::Conflict("create source revision is stale"),
+            ));
+        }
+        Ok(())
+    })
+    .map_err(BranchCreateError::Catalog)?;
     let child_head_path = child_head_request.head_path.clone();
     let child_directory = child_head_path
         .parent()
@@ -1227,6 +1278,15 @@ pub fn reclaim_catalog_branches(
     objects: &[ObjectReference],
     paths: &[BranchReclamationPath],
 ) -> Result<ReclamationReport, BranchReclamationError> {
+    let project_directory = catalog_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| BranchReclamationError::Catalog(invalid_data("catalog has no parent")))?;
+    // Admission validates metadata before exposing a runtime. Holding this
+    // lease through sweep prevents a new owner from publishing candidates
+    // after the lease inventory was inspected.
+    let _metadata_lease = CatalogMetadataLease::acquire_blocking(project_directory)
+        .map_err(BranchReclamationError::Catalog)?;
     let catalog = read_catalog(catalog_path).map_err(BranchReclamationError::Catalog)?;
     let mut branches = Vec::with_capacity(catalog.branches.len());
     for record in &catalog.branches {
@@ -2646,7 +2706,7 @@ mod tests {
     fn failed_reservation_and_cas_leave_catalog_bytes_unchanged() {
         let mut catalog = catalog();
         let mut request = create_request();
-        request.source_commit_epoch = 8;
+        request.source_commit_epoch = 6;
         let before = catalog.encode().unwrap();
         assert_eq!(
             catalog.reserve_create(request),
