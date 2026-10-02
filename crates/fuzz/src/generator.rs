@@ -803,16 +803,16 @@ fn entity_id(index: usize) -> Value {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct DeterministicRng {
+pub(crate) struct DeterministicRng {
     state: u64,
 }
 
 impl DeterministicRng {
-    const fn new(seed: u64) -> Self {
+    pub(crate) const fn new(seed: u64) -> Self {
         Self { state: seed }
     }
 
-    fn next_u64(&mut self) -> u64 {
+    pub(crate) fn next_u64(&mut self) -> u64 {
         self.state = self
             .state
             .wrapping_mul(6364136223846793005)

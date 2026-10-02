@@ -389,6 +389,7 @@ dependencies = [
  "hawdb-telemetry",
  "hawdb-vector-projection",
  "libc",
+ "memmap2",
  "serde",
  "serde_json",
  "unicode-width",

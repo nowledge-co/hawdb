@@ -3,6 +3,22 @@
 `hawdb-fuzz` is a development-only correctness harness over HawDB's public embedded API. The
 production `hawdb` crate does not depend on it.
 
+The local process-memory state-machine campaign exercises 32 seeds with 512
+sample/reserve/release/resource-refresh steps each through two shared governors.
+An independent interval-debt model checks admission, hysteresis, missing and
+unsupported samples, stable-capacity errors, reservation release, pinned
+resources, and observed-growth accounting. Lifetime peak RSS is deliberately
+above the limit so accidental peak-based admission fails the oracle.
+
+```console
+cargo test --locked -p hawdb-fuzz --lib process_memory_state_machine_matches_interval_oracle -- --nocapture
+```
+
+The campaign is included in `//crates/fuzz:hawdb_fuzz_tests` and remains local-only.
+Native OS metrics and embedded query recovery are qualified separately by
+`tests/process_memory_policy_contract.rs`; the deterministic oracle does not
+claim platform RSS or allocator evidence.
+
 The [DST scoping recommendation](../../docs/DST_SCOPING.md) explains the existing
 I/O and scheduling seams, the limits of seeded replay, and the decision gates for
 a possible storage-only simulator. It does not authorize simulator implementation

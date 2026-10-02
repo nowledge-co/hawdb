@@ -23,8 +23,9 @@ use crate::{
 };
 use hawdb_core::{RuntimeCancellationReason, RuntimeTaskContext};
 use hawdb_qos::{
-    IoConcurrencyBudget, RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorConfig,
-    RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot, StorageDeviceProfile,
+    IoConcurrencyBudget, ProcessMemoryPolicy, RuntimeAdmissionError, RuntimeGovernor,
+    RuntimeGovernorConfig, RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot,
+    StorageDeviceProfile,
 };
 #[cfg(test)]
 use hawdb_readiness::embedded_query_path::EMBEDDED_QUERY_PATH_READINESS_PROTOCOL;
@@ -197,6 +198,31 @@ impl HawDBEmbedded {
     }
 
     pub fn open_with_options(options: HawDBEmbeddedOpenOptions) -> Result<Self> {
+        Self::open_with_runtime_policy(options, None)
+    }
+
+    /// Opens with a host-owned process RSS policy shared across embedded instances.
+    ///
+    /// The host must refresh the policy at a cadence shorter than its sample maximum
+    /// age. Missing or stale samples reject new admitted work; active permits remain
+    /// valid. Resource detection and the library work-memory budget stay separate.
+    /// Tokio hosts can pass this handle to `HawDBTokioEmbedded::from_owned` or
+    /// `HawDBTokioEmbedded::from_borrowed` to retain the same policy.
+    ///
+    /// This policy gates admitted queries only. Database opening and calls through
+    /// `database()` or `database_mut()`, including raw mutations, bypass RSS
+    /// admission and require a host-provided admission boundary.
+    pub fn open_with_process_memory_policy(
+        options: HawDBEmbeddedOpenOptions,
+        process_memory_policy: ProcessMemoryPolicy,
+    ) -> Result<Self> {
+        Self::open_with_runtime_policy(options, Some(process_memory_policy))
+    }
+
+    fn open_with_runtime_policy(
+        options: HawDBEmbeddedOpenOptions,
+        process_memory_policy: Option<ProcessMemoryPolicy>,
+    ) -> Result<Self> {
         let resource_snapshot_pinned = options.resource_snapshot.is_some();
         let resource_snapshot = options
             .resource_snapshot
@@ -208,13 +234,18 @@ impl HawDBEmbedded {
         let storage_io = options
             .storage_io
             .unwrap_or_else(|| default_io_budget(options.deployment_profile, storage_device));
-        let runtime_governor = RuntimeGovernor::new(
-            options
-                .runtime_governor_config
-                .unwrap_or_else(|| default_runtime_governor_config(options.deployment_profile)),
-            resource_snapshot,
-            storage_io,
-        );
+        let governor_config = options
+            .runtime_governor_config
+            .unwrap_or_else(|| default_runtime_governor_config(options.deployment_profile));
+        let runtime_governor = match process_memory_policy {
+            Some(policy) => RuntimeGovernor::new_with_process_memory_policy(
+                governor_config,
+                resource_snapshot,
+                storage_io,
+                policy,
+            ),
+            None => RuntimeGovernor::new(governor_config, resource_snapshot, storage_io),
+        };
         if resource_snapshot_pinned {
             runtime_governor.pin_resources();
         }
@@ -252,24 +283,31 @@ impl HawDBEmbedded {
         self.deployment_profile
     }
 
+    /// Returns current governor resources, including updates made by Tokio refresh.
     pub fn runtime_resources(&self) -> EmbeddedRuntimeResources {
-        self.runtime_resources
+        let resources = self.runtime_governor.snapshot().resources;
+        EmbeddedRuntimeResources {
+            cpu: resources.cpu,
+            memory: resources.memory,
+            ..self.runtime_resources
+        }
     }
 
     pub fn runtime_governor(&self) -> &RuntimeGovernor {
         &self.runtime_governor
     }
 
+    /// Refreshes host/cgroup resources unless the caller pinned the snapshot.
+    ///
+    /// Unlike earlier facade versions, explicit refresh also preserves a pin.
+    /// To replace a pinned snapshot, call `update_runtime_resources`, optionally
+    /// with `RuntimeResourceSnapshot::detect()`. Neither method samples process RSS.
     pub fn refresh_runtime_resources(&mut self) -> bool {
-        self.update_runtime_resources(RuntimeResourceSnapshot::detect())
+        self.runtime_governor.refresh_from_host()
     }
 
     pub fn update_runtime_resources(&mut self, resources: RuntimeResourceSnapshot) -> bool {
-        let changed = self.runtime_governor.update_resources(resources);
-        let snapshot = self.runtime_governor.snapshot();
-        self.runtime_resources.cpu = snapshot.resources.cpu;
-        self.runtime_resources.memory = snapshot.resources.memory;
-        changed
+        self.runtime_governor.update_resources(resources)
     }
 
     pub(crate) fn runtime_capabilities(&self) -> RuntimeCapabilities {
@@ -409,10 +447,13 @@ impl HawDBEmbedded {
         })
     }
 
+    /// Returns the raw database, whose queries bypass facade admission policies.
     pub fn database(&self) -> &Database {
         &self.database
     }
 
+    /// Returns the raw database, whose queries and mutations bypass facade
+    /// admission policies. Hosts must provide their own boundary for these calls.
     pub fn database_mut(&mut self) -> &mut Database {
         &mut self.database
     }
