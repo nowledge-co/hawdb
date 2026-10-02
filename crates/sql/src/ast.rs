@@ -41,12 +41,51 @@ pub enum SqlStatement {
 ///
 /// Keeping this as an AST family makes branch operations visible to the query
 /// runtime and prevents a host integration from recognizing command strings
-/// itself. Additional lifecycle commands are added here as their durable
-/// admission protocols become available.
+/// itself. Lifecycle and selection commands dispatch outside ordinary implicit
+/// data transactions through the storage-owned admission/publication kernel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BranchSqlStatement {
     ShowBranches(ShowBranchesStatement),
     ShowBranch(ShowBranchStatement),
+    ShowCurrentBranch,
+    UseBranch(BranchSqlSelector),
+    CreateBranch(CreateBranchStatement),
+    DropBranch(DropBranchStatement),
+}
+
+impl BranchSqlStatement {
+    pub const fn changes_context_or_catalog(&self) -> bool {
+        matches!(
+            self,
+            Self::UseBranch(_) | Self::CreateBranch(_) | Self::DropBranch(_)
+        )
+    }
+
+    pub const fn command(&self) -> &'static str {
+        match self {
+            Self::ShowBranches(_) => "SHOW BRANCHES",
+            Self::ShowBranch(_) => "SHOW BRANCH",
+            Self::ShowCurrentBranch => "SHOW CURRENT BRANCH",
+            Self::UseBranch(_) => "USE BRANCH",
+            Self::CreateBranch(_) => "CREATE BRANCH",
+            Self::DropBranch(_) => "DROP BRANCH",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateBranchStatement {
+    pub name: Option<BranchSqlValue>,
+    pub source: BranchSqlSelector,
+    pub expected_source_revision: SqlBound,
+    pub request_key: BranchSqlValue,
+    pub owner: Option<BranchSqlValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropBranchStatement {
+    pub id: BranchSqlValue,
+    pub expected_metadata_revision: SqlBound,
 }
 
 /// A bounded page over the durable branch catalog.

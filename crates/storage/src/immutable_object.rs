@@ -356,17 +356,6 @@ impl ImmutableObjectStore {
         &mut self,
         inventory: &BranchReclamationInventory,
     ) -> Result<ReclamationReport, ImmutableObjectError> {
-        if inventory.branches.iter().any(|branch| branch.active_lease) {
-            // A head alone cannot describe an owner's unpublished candidate
-            // or old reader pins. Retain every candidate until all owners are
-            // absent; the catalog caller serializes new admission with sweep.
-            return Ok(ReclamationReport {
-                retained_objects: inventory.objects.len() as u64,
-                reclaimed_objects: 0,
-                reclaimed_bytes: 0,
-                deferred_for_active_leases: true,
-            });
-        }
         let mut roots = Vec::new();
         for branch in &inventory.branches {
             let removable = matches!(branch.state, crate::branch_catalog::BranchState::Deleted)
@@ -378,6 +367,17 @@ impl ImmutableObjectStore {
                     ),
                 )?);
             }
+        }
+        if inventory.branches.iter().any(|branch| branch.active_lease) {
+            // A lease prevents removal, never metadata validation. A head
+            // cannot describe unpublished candidates or old reader pins, so
+            // retain them while any owner is active.
+            return Ok(ReclamationReport {
+                retained_objects: inventory.objects.len() as u64,
+                reclaimed_objects: 0,
+                reclaimed_bytes: 0,
+                deferred_for_active_leases: true,
+            });
         }
         let report = self.reclaim_unreachable(&inventory.objects, &roots)?;
         for branch in &inventory.branches {
@@ -918,6 +918,32 @@ mod tests {
         let deleted_directory = root.join("branches").join("deleted");
         fs::create_dir_all(&deleted_directory).unwrap();
         fs::write(deleted_directory.join("head"), b"old").unwrap();
+
+        let error = store
+            .reclaim_branches(&BranchReclamationInventory {
+                objects: vec![live_root_reference, orphan_reference],
+                branches: vec![
+                    BranchReclamationEntry {
+                        state: crate::branch_catalog::BranchState::Ready,
+                        sealed_root: Some(live_root_reference),
+                        directory: root.join("branches").join("live"),
+                        active_lease: true,
+                    },
+                    BranchReclamationEntry {
+                        state: crate::branch_catalog::BranchState::Ready,
+                        sealed_root: None,
+                        directory: root.join("branches").join("corrupt-child"),
+                        active_lease: false,
+                    },
+                ],
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            ImmutableObjectError::BranchMetadataIncomplete(_)
+        ));
+        assert!(store.object_path(orphan_reference).exists());
+        assert!(deleted_directory.exists());
 
         let report = store
             .reclaim_branches(&BranchReclamationInventory {

@@ -307,14 +307,7 @@ impl Database {
         let statement_kind = sql_statement_kind(prepared.statement());
         let query_result = (|| {
             if let SqlStatement::Branch(statement) = prepared.statement() {
-                let catalog_path = self.branch_catalog_path().ok();
-                return execute_branch_sql_at_path(
-                    catalog_path.as_deref(),
-                    statement,
-                    parameters,
-                    max_rows,
-                    max_payload_bytes,
-                );
+                return self.execute_branch_sql(statement, parameters, max_rows, max_payload_bytes);
             }
             super::reject_locking_select_without_manager(prepared.statement(), false)?;
             if hawdb_relational::system_schema::statement_writes_system_schema_registry(
@@ -540,17 +533,138 @@ impl Database {
     }
 }
 
-/// Executes the read-only branch catalog SQL surface against the durable
-/// catalog selected when the caller acquired its database read view. Branch
-/// selection is intentionally absent until `USE BRANCH` has a durable session
-/// state, so every currently supported branch statement is metadata-only.
+impl Database {
+    fn execute_branch_sql(
+        &mut self,
+        statement: &BranchSqlStatement,
+        parameters: &[Value],
+        max_rows: Option<usize>,
+        max_payload_bytes: Option<usize>,
+    ) -> Result<QueryOutput> {
+        let output = match statement {
+            BranchSqlStatement::UseBranch(selector) => {
+                self.use_branch(branch_selector_from_sql(selector, parameters)?)?;
+                QueryOutput::from_rows(Vec::new())
+            }
+            BranchSqlStatement::CreateBranch(statement) => {
+                enforce_branch_result_budget(1, max_rows)?;
+                let request = super::BranchCreateRequest {
+                    name: statement
+                        .name
+                        .as_ref()
+                        .map(|value| branch_selector_value(value, parameters))
+                        .transpose()?,
+                    parent: branch_selector_from_sql(&statement.source, parameters)?,
+                    expected_source_commit_epoch: branch_revision(
+                        statement.expected_source_revision,
+                        parameters,
+                    )?,
+                    owner: statement
+                        .owner
+                        .as_ref()
+                        .map(|value| branch_selector_value(value, parameters))
+                        .transpose()?,
+                    idempotency_key: branch_selector_value(&statement.request_key, parameters)?,
+                };
+                let preview = self.preview_create_branch(&request)?;
+                enforce_branch_payload_budget(
+                    &QueryOutput::from_rows(vec![branch_info_row(&preview)?]),
+                    max_payload_bytes,
+                )?;
+                let branch = self.create_branch(request)?;
+                QueryOutput::from_rows(vec![branch_info_row(&branch)?])
+            }
+            BranchSqlStatement::DropBranch(statement) => {
+                enforce_branch_result_budget(1, max_rows)?;
+                let super::BranchSelector::Id(id) = branch_selector_from_sql(
+                    &BranchSqlSelector::Id(statement.id.clone()),
+                    parameters,
+                )?
+                else {
+                    unreachable!("typed ID selector")
+                };
+                let revision = branch_revision(statement.expected_metadata_revision, parameters)?;
+                let mut preview = self.describe_branch(super::BranchSelector::Id(id))?;
+                preview.state = super::BranchLifecycleState::Deleting;
+                enforce_branch_payload_budget(
+                    &QueryOutput::from_rows(vec![branch_info_row(&preview)?]),
+                    max_payload_bytes,
+                )?;
+                let branch = self.delete_branch_at_revision(id, revision)?;
+                QueryOutput::from_rows(vec![branch_info_row(&branch)?])
+            }
+            _ => {
+                let catalog_path = self.branch_catalog_path().ok();
+                return execute_branch_sql_at_path(
+                    catalog_path.as_deref(),
+                    self.current_branch().as_ref(),
+                    "mutable database",
+                    statement,
+                    parameters,
+                    max_rows,
+                    max_payload_bytes,
+                );
+            }
+        };
+        enforce_branch_result_budget(output.rows.len(), max_rows)?;
+        enforce_branch_payload_budget(&output, max_payload_bytes)?;
+        Ok(output)
+    }
+}
+
+fn branch_revision(bound: SqlBound, parameters: &[Value]) -> Result<u64> {
+    hawdb_relational::query_value::bind_bound(Some(bound), parameters, "branch revision")?
+        .ok_or_else(|| HawDBError::Semantic("branch revision is required".into()))
+}
+
+fn current_branch_row(
+    current: &super::branch_lifecycle::CurrentBranch,
+) -> Result<crate::executor::Row> {
+    let mut row = branch_info_row(&current.info)?;
+    row.insert(
+        "commit_epoch".into(),
+        Value::Int(i64::try_from(current.commit_epoch).map_err(|_| {
+            HawDBError::StorageIntegrity("branch commit epoch exceeds PostgreSQL BIGINT".into())
+        })?),
+    );
+    row.insert(
+        "durability".into(),
+        Value::String(
+            match current.durability {
+                hawdb_storage::config::DurabilityPolicy::SyncOnEveryWrite => "sync_on_every_write",
+                hawdb_storage::config::DurabilityPolicy::SyncOnCheckpoint => "sync_on_checkpoint",
+            }
+            .into(),
+        ),
+    );
+    Ok(row)
+}
+
+/// Metadata statements observe the catalog and selected identity captured by
+/// the caller. Explicit transactions and snapshots cannot retarget a runtime.
 pub(super) fn execute_branch_sql_at_path(
     catalog_path: Option<&Path>,
+    current: Option<&super::branch_lifecycle::CurrentBranch>,
+    context: &'static str,
     statement: &BranchSqlStatement,
     parameters: &[Value],
     max_rows: Option<usize>,
     max_payload_bytes: Option<usize>,
 ) -> Result<QueryOutput> {
+    if statement.changes_context_or_catalog() {
+        return Err(HawDBError::BranchCommandUnsupported {
+            command: statement.command(),
+            context,
+        });
+    }
+    if matches!(statement, BranchSqlStatement::ShowCurrentBranch) {
+        let current =
+            current.ok_or_else(|| HawDBError::Execution("no branch runtime is selected".into()))?;
+        let output = QueryOutput::from_rows(vec![current_branch_row(current)?]);
+        enforce_branch_result_budget(1, max_rows)?;
+        enforce_branch_payload_budget(&output, max_payload_bytes)?;
+        return Ok(output);
+    }
     let branches = read_branch_catalog(catalog_path)?;
     let rows = match statement {
         BranchSqlStatement::ShowBranches(statement) => {
@@ -564,6 +678,7 @@ pub(super) fn execute_branch_sql_at_path(
                 .ok_or_else(|| HawDBError::Semantic("branch does not exist".to_string()))?;
             vec![branch_info_row(&branch)?]
         }
+        _ => unreachable!("context commands and current branch are handled before catalog reads"),
     };
     enforce_branch_result_budget(rows.len(), max_rows)?;
     let output = QueryOutput::from_rows(rows);
@@ -614,7 +729,7 @@ fn branch_matches_selector(branch: &BranchInfo, selector: &super::BranchSelector
     }
 }
 
-fn branch_selector_from_sql(
+pub(super) fn branch_selector_from_sql(
     selector: &BranchSqlSelector,
     parameters: &[Value],
 ) -> Result<super::BranchSelector> {
@@ -623,9 +738,16 @@ fn branch_selector_from_sql(
             value, parameters,
         )?)),
         BranchSqlSelector::Id(value) => {
+            if let BranchSqlValue::Parameter(position) = value
+                && let Some(Value::Uuid(id)) = parameters.get(position.saturating_sub(1))
+            {
+                return Ok(super::BranchSelector::Id(*id));
+            }
             let raw = branch_selector_value(value, parameters)?;
             let id = raw.parse().map_err(|_| {
-                HawDBError::Semantic("SHOW BRANCH ID requires a valid UUID string".to_string())
+                HawDBError::Semantic(
+                    "branch ID requires a valid UUID string or UUID parameter".to_string(),
+                )
             })?;
             Ok(super::BranchSelector::Id(id))
         }
@@ -686,6 +808,14 @@ fn branch_info_row(branch: &super::BranchInfo) -> Result<crate::executor::Row> {
     Ok(BTreeMap::from([
         ("branch_id".to_string(), Value::Uuid(branch.id)),
         ("name".to_string(), Value::String(branch.name.clone())),
+        (
+            "metadata_revision".to_string(),
+            Value::Int(i64::try_from(branch.metadata_revision).map_err(|_| {
+                HawDBError::StorageIntegrity(
+                    "branch metadata revision exceeds PostgreSQL BIGINT".into(),
+                )
+            })?),
+        ),
         (
             "parent_id".to_string(),
             branch.parent_id.map(Value::Uuid).unwrap_or(Value::Null),

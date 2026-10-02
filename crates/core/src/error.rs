@@ -35,6 +35,13 @@ pub enum HawDBError {
     CapabilityUnavailable {
         capability: RuntimeCapability,
     },
+    BranchCommandUnsupported {
+        command: &'static str,
+        context: &'static str,
+    },
+    BranchBusy {
+        resource: &'static str,
+    },
 }
 
 impl Display for HawDBError {
@@ -66,6 +73,10 @@ impl Display for HawDBError {
             HawDBError::CapabilityUnavailable { capability } => {
                 write!(f, "capability unavailable: {}", capability.as_str())
             }
+            HawDBError::BranchCommandUnsupported { command, context } => {
+                write!(f, "{command} is unavailable in {context}")
+            }
+            HawDBError::BranchBusy { resource } => write!(f, "branch is busy: {resource}"),
         }
     }
 }

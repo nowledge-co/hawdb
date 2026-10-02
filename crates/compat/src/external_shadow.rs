@@ -457,6 +457,8 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
         HawDBError::Execution(message) => json_error("execution", message),
         error @ HawDBError::TransactionConflict { .. } => json_error("execution", error),
         error @ HawDBError::AppendSequenceExhausted { .. } => json_error("storage", error),
+        error @ HawDBError::BranchBusy { .. } => json_error("storage", error),
+        error @ HawDBError::BranchCommandUnsupported { .. } => json_error("execution", error),
         HawDBError::CapabilityUnavailable { capability } => {
             json_error("capability_unavailable", capability.as_str())
         }

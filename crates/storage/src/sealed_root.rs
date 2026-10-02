@@ -128,6 +128,13 @@ impl Display for SealedRootError {
 impl std::error::Error for SealedRootError {}
 
 impl SealedRoot {
+    /// Exclusive end of the contiguous WAL prefix covered by this root.
+    pub fn replay_end_lsn(&self) -> u64 {
+        self.sealed_wals
+            .last()
+            .map_or(self.wal_replay_start_lsn, |wal| wal.end_lsn)
+    }
+
     pub fn validate(&self) -> Result<(), SealedRootError> {
         if self.checkpoint_epoch > self.commit_epoch {
             return Err(SealedRootError::InvalidEpochs);

@@ -873,9 +873,11 @@ fn main_record_index(
     Ok(index)
 }
 
-/// Reserves a child branch in the durable catalog before child files are made.
-/// The returned metadata revision binds the later completion transition.
-pub fn reserve_create_file(
+// Isolated catalog-transition fixture helper. Production callers must use
+// create_branch_from_parent, which validates the live source under this same
+// metadata lease before reserving the child.
+#[cfg(test)]
+fn reserve_create_file(
     path: &Path,
     request: CreateRequest,
 ) -> Result<CreateReservation, CatalogFileTransitionError> {

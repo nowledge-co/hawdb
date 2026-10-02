@@ -423,8 +423,11 @@ impl ExpectedErrorClass {
             HawDBError::Semantic(_) => Self::Semantic,
             HawDBError::Storage(_)
             | HawDBError::StorageIntegrity(_)
-            | HawDBError::AppendSequenceExhausted { .. } => Self::Storage,
-            HawDBError::Execution(_) | HawDBError::TransactionConflict { .. } => Self::Execution,
+            | HawDBError::AppendSequenceExhausted { .. }
+            | HawDBError::BranchBusy { .. } => Self::Storage,
+            HawDBError::Execution(_)
+            | HawDBError::TransactionConflict { .. }
+            | HawDBError::BranchCommandUnsupported { .. } => Self::Execution,
             HawDBError::CapabilityUnavailable { .. } => Self::CapabilityUnavailable,
         }
     }

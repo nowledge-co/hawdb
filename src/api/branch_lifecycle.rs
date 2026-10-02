@@ -38,6 +38,7 @@ mod tests {
     use hawdb_core::Value;
     use hawdb_storage::config::{DurabilityPolicy, WalReplayConfig};
     use hawdb_storage::store::{BranchAdmissionRequest, GraphStore};
+    use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{mpsc, Arc, Condvar, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -53,6 +54,543 @@ mod tests {
             "hawdb-{name}-{}-{nanos}-{sequence}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn sql_branch_switch_retains_job_outcomes_and_never_reuses_ids() {
+        let (path, mut database, main) = initialized_database();
+        let child = database.create_branch(create_request(&main)).unwrap();
+        database.query_sql("USE BRANCH main").unwrap();
+        let job = database.derived_artifact_jobs.enqueue(
+            "content_artifact",
+            "document",
+            "parse",
+            BTreeMap::new(),
+        );
+        let claim = database
+            .derived_artifact_jobs
+            .claim_external_by_id(job.id)
+            .unwrap();
+        database
+            .derived_artifact_jobs
+            .complete(claim, Err(HawDBError::Execution("fixture failure".into())));
+        assert!(matches!(
+            database.query_sql("USE BRANCH child"),
+            Err(HawDBError::BranchBusy { .. })
+        ));
+        assert_eq!(database.current_branch().unwrap().info.id, main.id);
+        database
+            .derived_artifact_jobs
+            .retry_failed_external(job.id, None)
+            .unwrap();
+        let claim = database
+            .derived_artifact_jobs
+            .claim_external_by_id(job.id)
+            .unwrap();
+        let completed = database
+            .derived_artifact_jobs
+            .complete(claim, Ok(crate::QueryOutput::from_rows(Vec::new())));
+        database.query_sql("USE BRANCH child").unwrap();
+        assert_eq!(database.current_branch().unwrap().info.id, child.id);
+        assert_eq!(database.derived_artifact_jobs.jobs(), vec![completed.job]);
+        let next = database.derived_artifact_jobs.enqueue(
+            "content_artifact",
+            "document",
+            "parse",
+            BTreeMap::new(),
+        );
+        assert!(next.id > job.id);
+        let claim = database
+            .derived_artifact_jobs
+            .claim_external_by_id(next.id)
+            .unwrap();
+        database.derived_artifact_jobs.complete(
+            claim,
+            Err(HawDBError::Execution("new branch failure".into())),
+        );
+        assert!(database
+            .derived_artifact_jobs
+            .retry_failed_external(job.id, None)
+            .is_none());
+        assert_eq!(
+            database.derived_artifact_jobs.failed_external(1)[0].id,
+            next.id
+        );
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn sql_branch_selection_isolates_ddl_and_data_bearing_nested_forks() {
+        for durability in [
+            DurabilityPolicy::SyncOnEveryWrite,
+            DurabilityPolicy::SyncOnCheckpoint,
+        ] {
+            let path = test_directory("sql-selected-branch");
+            let mut database = Database::open_with_durability(&path, durability).unwrap();
+            database.checkpoint().unwrap();
+            database.query("CREATE (:Memory {id: 'seed'})").unwrap();
+            let main = database
+                .initialize_main_branch(Uuid::from_u128(11), Uuid::from_u128(12))
+                .unwrap();
+            database.query_sql("USE BRANCH NAME 'main'").unwrap();
+            let create_sql = "CREATE BRANCH NAME $1 FROM ID $2 AT REVISION $3 REQUEST KEY $4";
+            let request = [
+                Value::String("dev".into()),
+                Value::Uuid(main.id),
+                Value::Int(database.commit_epoch() as i64),
+                Value::String("sql-dev".into()),
+            ];
+            let created = database
+                .query_sql_with_params(create_sql, &request)
+                .unwrap();
+            let Value::Uuid(child) = created.rows[0]["branch_id"] else {
+                panic!("created UUID")
+            };
+            assert_eq!(
+                database
+                    .query_sql_with_params(create_sql, &request)
+                    .unwrap(),
+                created
+            );
+            database
+                .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(child)])
+                .unwrap();
+            let current = database.query_sql("SHOW CURRENT BRANCH").unwrap();
+            assert_eq!(current.rows[0]["branch_id"], Value::Uuid(child));
+            assert_eq!(
+                current.rows[0]["durability"],
+                Value::String(
+                    match durability {
+                        DurabilityPolicy::SyncOnEveryWrite => "sync_on_every_write",
+                        DurabilityPolicy::SyncOnCheckpoint => "sync_on_checkpoint",
+                    }
+                    .into()
+                )
+            );
+            database
+                .query_sql("CREATE TABLE documents (id BIGINT PRIMARY KEY, content TEXT)")
+                .unwrap();
+            let child_head = database.branch_head_path(child).unwrap();
+            let before_write = std::fs::read(&child_head).unwrap();
+            database
+                .query_sql("INSERT INTO documents (id, content) VALUES (1, 'child')")
+                .unwrap();
+            assert_eq!(std::fs::read(&child_head).unwrap(), before_write);
+            database
+                .query_sql("ALTER TABLE documents ADD COLUMN tag TEXT")
+                .unwrap();
+            database
+                .query_sql("CREATE INDEX documents_content ON documents (content)")
+                .unwrap();
+            let overflow_body = "wal-overflow".repeat(4_096);
+            database
+                .query_sql_with_params(
+                    "UPDATE documents SET content = $1 WHERE id = $2",
+                    &[Value::String(overflow_body.clone()), Value::Int(1)],
+                )
+                .unwrap();
+            let epoch = database.commit_epoch();
+            let grandchild = database
+                .query_sql_with_params(
+                    create_sql,
+                    &[
+                        Value::String("grandchild".into()),
+                        Value::Uuid(child),
+                        Value::Int(epoch as i64),
+                        Value::String("sql-grandchild".into()),
+                    ],
+                )
+                .unwrap();
+            let Value::Uuid(grandchild) = grandchild.rows[0]["branch_id"] else {
+                panic!("grandchild UUID")
+            };
+            let prepared_write = database
+                .prepare_runtime_query(
+                    "CREATE (:Memory {id: 'stale-plan'})".into(),
+                    &Default::default(),
+                )
+                .unwrap();
+            database
+                .query_sql("INSERT INTO documents (id, content) VALUES (2, 'later-child')")
+                .unwrap();
+            let snapshot = database.begin_read_transaction();
+            database
+                .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(grandchild)])
+                .unwrap();
+            assert!(database
+                .query_prepared_with_params(prepared_write, &Default::default())
+                .unwrap_err()
+                .to_string()
+                .contains("different branch"));
+            let inherited = database
+                .query_sql("SELECT id, content, tag FROM documents ORDER BY id")
+                .unwrap();
+            assert_eq!(inherited.rows.len(), 1);
+            assert_eq!(inherited.rows[0]["content"], Value::String(overflow_body));
+            assert_eq!(
+                snapshot
+                    .query_sql("SELECT id FROM documents ORDER BY id")
+                    .unwrap()
+                    .rows
+                    .len(),
+                2
+            );
+            assert_eq!(
+                snapshot.query_sql("SHOW CURRENT BRANCH").unwrap().rows[0]["branch_id"],
+                Value::Uuid(child)
+            );
+            assert!(matches!(
+                database.query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(child)]),
+                Err(HawDBError::BranchBusy { .. })
+            ));
+            assert_eq!(
+                database.query_sql("SHOW CURRENT BRANCH").unwrap().rows[0]["branch_id"],
+                Value::Uuid(grandchild)
+            );
+            drop(snapshot);
+            database
+                .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(child)])
+                .unwrap();
+            assert_eq!(
+                database
+                    .query_sql("SELECT id FROM documents ORDER BY id")
+                    .unwrap()
+                    .rows
+                    .len(),
+                2
+            );
+            assert!(database
+                .query_sql_with_params(
+                    "DROP BRANCH ID $1 AT REVISION $2",
+                    &[Value::Uuid(child), Value::Int(2)]
+                )
+                .is_err());
+            database.query_sql("USE BRANCH NAME 'main'").unwrap();
+            assert!(database.query_sql("SELECT id FROM documents").is_err());
+            drop(database);
+            let mut database = Database::open_with_durability(&path, durability).unwrap();
+            database
+                .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(grandchild)])
+                .unwrap();
+            assert_eq!(
+                database
+                    .query_sql("SELECT id FROM documents")
+                    .unwrap()
+                    .rows
+                    .len(),
+                1
+            );
+            drop(database);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn sql_branch_failed_selection_and_transaction_rejection_preserve_source() {
+        let (path, mut database, main) = initialized_database();
+        let child = database.create_branch(create_request(&main)).unwrap();
+        database.query_sql("USE BRANCH NAME 'main'").unwrap();
+        let lease =
+            DatabaseDirectoryLease::acquire(&database.branch_directory(child.id).unwrap()).unwrap();
+        assert!(matches!(
+            database.query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(child.id)]),
+            Err(HawDBError::BranchBusy { .. })
+        ));
+        database
+            .query("CREATE (:Memory {id: 'after-busy'})")
+            .unwrap();
+        drop(lease);
+        let head_path = database.branch_head_path(child.id).unwrap();
+        let head = std::fs::read(&head_path).unwrap();
+        std::fs::write(&head_path, b"corrupt").unwrap();
+        assert!(database
+            .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(child.id)])
+            .is_err());
+        assert!(database.query_sql("USE BRANCH NAME 'missing'").is_err());
+        assert_eq!(
+            database.query_sql("SHOW CURRENT BRANCH").unwrap().rows[0]["branch_id"],
+            Value::Uuid(main.id)
+        );
+        database
+            .query_sql("CREATE TABLE source_probe (id BIGINT PRIMARY KEY)")
+            .unwrap();
+        let mut transaction = database.begin_transaction();
+        transaction
+            .query_sql("INSERT INTO source_probe (id) VALUES (1)")
+            .unwrap();
+        for sql in [
+            "USE BRANCH NAME 'main'",
+            "CREATE BRANCH NAME 'forbidden' FROM NAME 'main' AT REVISION 1 REQUEST KEY 'forbidden'",
+            "DROP BRANCH ID '00000000-0000-0000-0000-000000000012' AT REVISION 2",
+        ] {
+            assert!(matches!(
+                transaction.query_sql(sql),
+                Err(HawDBError::BranchCommandUnsupported {
+                    context: "explicit transaction",
+                    ..
+                })
+            ));
+        }
+        assert_eq!(
+            transaction
+                .query_sql("SELECT id FROM source_probe")
+                .unwrap()
+                .rows
+                .len(),
+            1
+        );
+        transaction.commit().unwrap();
+        std::fs::write(&head_path, head).unwrap();
+        {
+            let mut session = database.session();
+            session.query("BEGIN TRANSACTION").unwrap();
+            assert!(matches!(
+                session.query_sql("USE BRANCH NAME 'main'"),
+                Err(HawDBError::BranchCommandUnsupported { .. })
+            ));
+            session.query("ROLLBACK").unwrap();
+        }
+        let shared = database.into_concurrent();
+        assert!(matches!(
+            shared.clone().query_sql("USE BRANCH NAME 'main'"),
+            Err(HawDBError::BranchCommandUnsupported {
+                context: "shared concurrent runtime",
+                ..
+            })
+        ));
+        assert_eq!(
+            shared.query_sql("SHOW CURRENT BRANCH").unwrap().rows[0]["branch_id"],
+            Value::Uuid(main.id)
+        );
+        assert_eq!(
+            shared
+                .query_sql("SELECT id FROM source_probe")
+                .unwrap()
+                .rows
+                .len(),
+            1
+        );
+        drop(shared);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn sql_branch_budget_rejection_and_exact_delete_survive_name_reuse() {
+        let (path, mut database, main) = initialized_database();
+        let sql = "CREATE BRANCH NAME $1 FROM ID $2 AT REVISION $3 REQUEST KEY $4";
+        let mut parameters = [
+            Value::String("reusable".into()),
+            Value::Uuid(main.id),
+            Value::Int(main.source_commit_epoch as i64),
+            Value::String("first-identity".into()),
+        ];
+        let catalog_path = database.branch_catalog_path().unwrap();
+        let before = std::fs::read(&catalog_path).unwrap();
+        for options in [
+            super::super::QueryStreamOptions {
+                max_rows: Some(0),
+                max_payload_bytes: None,
+            },
+            super::super::QueryStreamOptions {
+                max_rows: None,
+                max_payload_bytes: Some(1),
+            },
+        ] {
+            assert!(database
+                .query_sql_with_params_options(sql, &parameters, options)
+                .is_err());
+            assert_eq!(std::fs::read(&catalog_path).unwrap(), before);
+        }
+        let created = database.query_sql_with_params(sql, &parameters).unwrap();
+        let Value::Uuid(first) = created.rows[0]["branch_id"] else {
+            panic!("created UUID")
+        };
+        let revision = created.rows[0]["metadata_revision"].clone();
+        let drop_sql = "DROP BRANCH ID $1 AT REVISION $2";
+        assert!(database
+            .query_sql_with_params(drop_sql, &[Value::Uuid(first), Value::Int(1)])
+            .is_err());
+        assert_eq!(
+            database
+                .describe_branch(BranchSelector::Id(first))
+                .unwrap()
+                .state,
+            BranchLifecycleState::Ready
+        );
+        let deleted = database
+            .query_sql_with_params(drop_sql, &[Value::Uuid(first), revision.clone()])
+            .unwrap();
+        assert_eq!(deleted.rows[0]["state"], Value::String("deleted".into()));
+        parameters[3] = Value::String("second-identity".into());
+        let recreated = database.query_sql_with_params(sql, &parameters).unwrap();
+        assert_ne!(recreated.rows[0]["branch_id"], Value::Uuid(first));
+        assert_eq!(
+            database
+                .query_sql_with_params(drop_sql, &[Value::Uuid(first), revision])
+                .unwrap(),
+            deleted
+        );
+        assert_eq!(
+            database
+                .describe_branch(BranchSelector::Name("reusable".into()))
+                .unwrap()
+                .state,
+            BranchLifecycleState::Ready
+        );
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn sql_branch_readonly_selection_reconstructs_private_wal_without_logical_writes() {
+        let (path, mut writer, main) = initialized_database();
+        let child = writer.create_branch(create_request(&main)).unwrap();
+        writer
+            .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(child.id)])
+            .unwrap();
+        writer
+            .query_sql("CREATE TABLE readonly_probe (id BIGINT PRIMARY KEY)")
+            .unwrap();
+        writer
+            .query_sql("INSERT INTO readonly_probe (id) VALUES (1)")
+            .unwrap();
+        let head_path = writer.branch_head_path(child.id).unwrap();
+        let head = std::fs::read(&head_path).unwrap();
+        let active = branch_head::read_branch_head(&head_path).unwrap();
+        let wal_path = writer
+            .branch_wal_path(child.id, active.active_wal.generation)
+            .unwrap();
+        let wal = std::fs::read(&wal_path).unwrap();
+        let catalog_path = writer.branch_catalog_path().unwrap();
+        let catalog = std::fs::read(&catalog_path).unwrap();
+        drop(writer);
+        let mut reader = Database::open_with_config(
+            &path,
+            super::super::DatabaseConfig {
+                read_only: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        reader.query_sql("USE BRANCH NAME 'child'").unwrap();
+        assert_eq!(
+            reader
+                .query_sql("SELECT id FROM readonly_probe")
+                .unwrap()
+                .rows
+                .len(),
+            1
+        );
+        assert!(reader
+            .query_sql("INSERT INTO readonly_probe (id) VALUES (2)")
+            .is_err());
+        assert!(reader
+            .query_sql("CREATE TABLE forbidden (id BIGINT PRIMARY KEY)")
+            .is_err());
+        assert!(reader.checkpoint().is_err());
+        let epoch = reader.commit_epoch();
+        assert!(reader
+            .store
+            .seal_admitted_branch(epoch)
+            .unwrap_err()
+            .to_string()
+            .contains("read-only"));
+        assert_eq!(std::fs::read(&catalog_path).unwrap(), catalog);
+        assert_eq!(std::fs::read(&head_path).unwrap(), head);
+        assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+        reader.query_sql("USE BRANCH main").unwrap();
+        assert!(reader.query_sql("SELECT id FROM readonly_probe").is_err());
+        drop(reader);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn sql_branch_contexts_and_unselected_sources_keep_independent_ownership() {
+        let (path, mut parent_context, main) = initialized_database();
+        let child = parent_context.create_branch(create_request(&main)).unwrap();
+        parent_context.query_sql("USE BRANCH main").unwrap();
+        let mut child_context = Database::open(&path).unwrap();
+        child_context.query_sql("USE BRANCH child").unwrap();
+        assert!(matches!(
+            child_context.query_sql("USE BRANCH main"),
+            Err(HawDBError::BranchBusy { .. })
+        ));
+        let fork = "CREATE BRANCH experiment FROM ID $1 AT REVISION $2 REQUEST KEY $3";
+        assert!(matches!(
+            child_context.query_sql_with_params(
+                fork,
+                &[
+                    Value::Uuid(main.id),
+                    Value::Int(main.source_commit_epoch as i64),
+                    Value::String("busy-source".into())
+                ]
+            ),
+            Err(HawDBError::BranchBusy { .. })
+        ));
+        child_context
+            .query("CREATE (:Memory {id: 'child-write'})")
+            .unwrap();
+        assert_eq!(
+            parent_context
+                .query("MATCH (m:Memory) RETURN m.id")
+                .unwrap()
+                .rows
+                .len(),
+            1
+        );
+        assert_eq!(
+            child_context
+                .query("MATCH (m:Memory) RETURN m.id")
+                .unwrap()
+                .rows
+                .len(),
+            2
+        );
+        let job = child_context.schedule_derived_artifact_rebuild();
+        assert!(matches!(
+            child_context.query_sql("USE BRANCH main"),
+            Err(HawDBError::BranchBusy {
+                resource: "unfinished background work"
+            })
+        ));
+        assert_eq!(child_context.derived_artifact_jobs(), vec![job]);
+        child_context.run_next_derived_artifact_job().unwrap();
+        let epoch = child_context.commit_epoch();
+        drop(child_context);
+        let created = parent_context
+            .query_sql_with_params(
+                fork,
+                &[
+                    Value::Uuid(child.id),
+                    Value::Int(epoch as i64),
+                    Value::String("unselected-source".into()),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            parent_context
+                .query_sql("SHOW CURRENT BRANCH")
+                .unwrap()
+                .rows[0]["branch_id"],
+            Value::Uuid(main.id)
+        );
+        let Value::Uuid(experiment) = created.rows[0]["branch_id"] else {
+            panic!("created UUID")
+        };
+        parent_context
+            .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(experiment)])
+            .unwrap();
+        assert_eq!(
+            parent_context
+                .query("MATCH (m:Memory) RETURN m.id")
+                .unwrap()
+                .rows
+                .len(),
+            2
+        );
+        drop(parent_context);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
@@ -595,7 +1133,9 @@ mod tests {
         branch.state = storage::BranchState::Creating;
         branch.create_outcome = storage::CreateOutcome::Pending;
         storage::write_catalog(&database.branch_catalog_path().unwrap(), &catalog).unwrap();
-        assert_eq!(database.create_branch(request).unwrap(), child);
+        let mut completed = child;
+        completed.metadata_revision += 1;
+        assert_eq!(database.create_branch(request).unwrap(), completed);
         drop(database);
         std::fs::remove_dir_all(path).unwrap();
     }
@@ -671,11 +1211,13 @@ mod tests {
         catalog.branches[0].source_commit_epoch = 0;
         storage::write_catalog(&catalog_path, &catalog).unwrap();
         std::fs::remove_file(&head_path).unwrap();
+        let mut rebound = main.clone();
+        rebound.metadata_revision += 1;
         assert_eq!(
             database
                 .initialize_main_branch(Uuid::from_u128(11), main.id)
                 .unwrap(),
-            main
+            rebound
         );
         assert_eq!(branch_head::read_branch_head(&head_path).unwrap(), head);
         storage::write_catalog(&catalog_path, &catalog).unwrap();
@@ -704,6 +1246,7 @@ pub struct BranchInfo {
     pub name: String,
     pub parent_id: Option<Uuid>,
     pub source_commit_epoch: u64,
+    pub metadata_revision: u64,
     pub state: BranchLifecycleState,
     pub owner: Option<String>,
 }
@@ -718,6 +1261,8 @@ pub enum BranchLifecycleError {
     LeaseUnavailable(String),
     UnknownBranch,
     RootBranchImmutable,
+    Admission(hawdb_storage::store::BranchAdmissionError),
+    SourceBusy(&'static str),
 }
 
 impl Display for BranchLifecycleError {
@@ -742,6 +1287,8 @@ impl Display for BranchLifecycleError {
             }
             Self::UnknownBranch => formatter.write_str("branch does not exist"),
             Self::RootBranchImmutable => formatter.write_str("the root branch cannot be deleted"),
+            Self::Admission(error) => Display::fmt(error, formatter),
+            Self::SourceBusy(resource) => write!(formatter, "source branch is busy: {resource}"),
         }
     }
 }
@@ -759,6 +1306,28 @@ impl From<storage::CatalogFileTransitionError> for BranchLifecycleError {
 
 impl From<BranchLifecycleError> for HawDBError {
     fn from(error: BranchLifecycleError) -> Self {
+        if let BranchLifecycleError::SourceBusy(resource) = error {
+            return HawDBError::BranchBusy { resource };
+        }
+        if matches!(
+            error,
+            BranchLifecycleError::Admission(hawdb_storage::store::BranchAdmissionError::Busy(_))
+                | BranchLifecycleError::Admission(
+                    hawdb_storage::store::BranchAdmissionError::Lease(
+                        hawdb_storage::ownership::DatabaseDirectoryLeaseError::AlreadyOpen
+                    )
+                )
+        ) {
+            return HawDBError::BranchBusy {
+                resource: "target runtime or project metadata",
+            };
+        }
+        if let BranchLifecycleError::Admission(
+            hawdb_storage::store::BranchAdmissionError::Recovery(error),
+        ) = error
+        {
+            return error;
+        }
         HawDBError::Storage(error.to_string())
     }
 }
@@ -778,9 +1347,22 @@ pub(super) fn branch_info(branch: &storage::BranchRecord) -> BranchInfo {
         name: branch.name.as_str().to_string(),
         parent_id: branch.parent_id.map(storage::BranchId::as_uuid),
         source_commit_epoch: branch.source_commit_epoch,
+        metadata_revision: branch.metadata_revision,
         state: state(branch.state),
         owner: branch.owner.clone(),
     }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct BranchSelection {
+    record: storage::BranchRecord,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct CurrentBranch {
+    pub info: BranchInfo,
+    pub commit_epoch: u64,
+    pub durability: hawdb_storage::config::DurabilityPolicy,
 }
 
 fn selector_matches(branch: &storage::BranchRecord, selector: &BranchSelector) -> bool {
@@ -822,10 +1404,163 @@ impl Database {
 
     pub(super) fn branch_catalog_path(&self) -> Result<PathBuf, BranchLifecycleError> {
         let root = self
-            .store
-            .durable_root_path()
+            .project_root_path
+            .as_deref()
+            .or_else(|| self.store.durable_root_path())
             .ok_or(BranchLifecycleError::InMemoryDatabase)?;
         Ok(root.join(BRANCH_DIRECTORY).join(BRANCH_CATALOG_FILE))
+    }
+
+    pub(super) fn current_branch(&self) -> Option<CurrentBranch> {
+        self.branch_selection
+            .as_ref()
+            .map(|selection| CurrentBranch {
+                info: branch_info(&selection.record),
+                commit_epoch: self.store.commit_epoch(),
+                durability: self.durability,
+            })
+    }
+
+    fn admit_branch_record(
+        &self,
+        record: &storage::BranchRecord,
+    ) -> Result<hawdb_storage::store::AdmittedBranchStore, BranchLifecycleError> {
+        let catalog_path = self.branch_catalog_path()?;
+        let head_path = self.branch_head_path(record.id.as_uuid())?;
+        let objects = catalog_path
+            .parent()
+            .expect("catalog parent")
+            .join("objects");
+        let config = &self.config;
+        hawdb_storage::store::GraphStore::admit_branch_from_head(
+            hawdb_storage::store::BranchAdmissionRequest {
+                catalog_path: &catalog_path,
+                branch_id: record.id,
+                expected_metadata_revision: record.metadata_revision,
+                head_path: &head_path,
+                immutable_store_root: &objects,
+                durability: self.durability,
+                replay_config: hawdb_storage::config::WalReplayConfig {
+                    recovery_mode: config.recovery_mode,
+                    max_entries: config.max_wal_replay_entries,
+                    max_bytes: config.max_wal_replay_bytes,
+                    max_branch_sealed_wal_intervals: config.max_branch_sealed_wal_intervals,
+                    max_quarantine_bytes: config.max_wal_quarantine_bytes,
+                    max_record_bytes: config.max_wal_record_bytes,
+                    max_batch_operations: config.max_wal_batch_operations,
+                    max_checkpoint_encoded_bytes: config.max_checkpoint_encoded_bytes,
+                    max_checkpoint_decoded_bytes: config.max_checkpoint_decoded_bytes,
+                    segment_cache_capacity_bytes: config.segment_cache_capacity_bytes,
+                    max_graph_manifest_open_bytes: config.max_graph_manifest_open_bytes,
+                    residency_mode: config.storage_residency_mode,
+                    auto_materialize_checkpoint_bytes: config.auto_materialize_checkpoint_bytes,
+                    max_out_of_core_delta_bytes: config.max_out_of_core_delta_bytes,
+                    graph_columnar_shadow_checkpoint: config.graph_columnar_shadow_checkpoint,
+                    relational_index_mode: config.relational_index_mode,
+                },
+            },
+        )
+        .map_err(BranchLifecycleError::Admission)
+    }
+
+    pub(super) fn use_branch(
+        &mut self,
+        selector: BranchSelector,
+    ) -> Result<(), BranchLifecycleError> {
+        self.store
+            .ensure_usable()
+            .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+        let catalog = self.read_branch_catalog()?;
+        let record = catalog
+            .branches
+            .iter()
+            .find(|record| selector_matches(record, &selector))
+            .cloned()
+            .ok_or(BranchLifecycleError::UnknownBranch)?;
+        if record.state != storage::BranchState::Ready {
+            return Err(BranchLifecycleError::Transition(
+                storage::CatalogTransitionError::InvalidState("selection target is not ready"),
+            ));
+        }
+        if let Some(selection) = &self.branch_selection
+            && selection.record.id == record.id
+        {
+            if selection.record.metadata_revision != record.metadata_revision {
+                return Err(BranchLifecycleError::Transition(
+                    storage::CatalogTransitionError::StaleRevision {
+                        expected: selection.record.metadata_revision,
+                        actual: record.metadata_revision,
+                    },
+                ));
+            }
+            return Ok(());
+        }
+        // Until background claims own independently pinned branch runtimes,
+        // keep unfinished work on its original context. A successful switch
+        // must never silently drop a pending or externally claimed job.
+        if self.derived_artifact_jobs.jobs().iter().any(|job| {
+            matches!(
+                job.status,
+                hawdb_artifact::DerivedArtifactJobStatus::Pending
+                    | hawdb_artifact::DerivedArtifactJobStatus::Running
+                    | hawdb_artifact::DerivedArtifactJobStatus::Failed
+            )
+        }) {
+            return Err(BranchLifecycleError::SourceBusy(
+                "unfinished background work",
+            ));
+        }
+        let admitted = self.admit_branch_record(&record)?;
+        let (mut store, schema) = admitted.into_parts();
+        if self.config.read_only {
+            store
+                .make_admitted_branch_read_only()
+                .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+        }
+        // The candidate owns its lease before anything on the source is
+        // replaced. Schema maintenance and validation can fail independently.
+        let mut candidate = Self::new_with_config(self.config.clone());
+        candidate.catalog = schema;
+        candidate.store = store;
+        candidate.project_root_path = self.project_root_path.clone();
+        candidate.branch_selection = Some(BranchSelection { record });
+        candidate.durability = self.durability;
+        candidate.local_qos_scheduler = self.local_qos_scheduler.clone();
+        super::configure_search_projection_changefeed(&mut candidate.store, &candidate.config);
+        super::configure_relational_fast_paths(&mut candidate.store, &candidate.config);
+        if let Some(governor) = &self.runtime_governor {
+            candidate.set_runtime_governor(governor.clone());
+        }
+        if !candidate.config.read_only {
+            candidate
+                .complete_required_relational_row_checkpoint("branch selection")
+                .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+        }
+        candidate
+            .apply_engine_system_schema()
+            .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+        candidate.projection_consumers = super::search_projection_consumer::ConsumerRegistry::load(
+            candidate.store.search_projection_registry_root(),
+            candidate.store.search_projection_database_identity(),
+        );
+        crate::store::StoreTelemetry::set_telemetry_sink(
+            &mut candidate.store,
+            self.telemetry.clone(),
+        );
+        self.catalog = candidate.catalog;
+        self.store = candidate.store;
+        self.branch_selection = candidate.branch_selection;
+        self.optimizer = candidate.optimizer;
+        self.plan_cache = candidate.plan_cache;
+        self.relational_plan_template_cache = candidate.relational_plan_template_cache;
+        self.optimizer_planning_cache = candidate.optimizer_planning_cache;
+        self.reader_pins = candidate.reader_pins;
+        // Completed jobs and their ID allocator belong to this host handle.
+        // Replacing the queue would allow stale IDs to address a new branch's
+        // job. Retryable/active jobs are guarded above until they own separate
+        // branch runtime pins.
+        self.projection_consumers = candidate.projection_consumers;
+        Ok(())
     }
 
     fn branch_directory(&self, id: Uuid) -> Result<PathBuf, BranchLifecycleError> {
@@ -1015,6 +1750,22 @@ impl Database {
         &self,
         selector: BranchSelector,
     ) -> Result<BranchInfo, BranchLifecycleError> {
+        self.delete_branch_with_revision(selector, None)
+    }
+
+    pub(super) fn delete_branch_at_revision(
+        &self,
+        id: Uuid,
+        expected_metadata_revision: u64,
+    ) -> Result<BranchInfo, BranchLifecycleError> {
+        self.delete_branch_with_revision(BranchSelector::Id(id), Some(expected_metadata_revision))
+    }
+
+    fn delete_branch_with_revision(
+        &self,
+        selector: BranchSelector,
+        expected_metadata_revision: Option<u64>,
+    ) -> Result<BranchInfo, BranchLifecycleError> {
         self.ensure_branch_writable()?;
         let path = self.branch_catalog_path()?;
         let catalog = self.read_branch_catalog()?;
@@ -1024,6 +1775,15 @@ impl Database {
             .find(|branch| selector_matches(branch, &selector))
             .cloned()
             .ok_or(BranchLifecycleError::UnknownBranch)?;
+        if self
+            .branch_selection
+            .as_ref()
+            .is_some_and(|selection| selection.record.id == branch.id)
+        {
+            return Err(BranchLifecycleError::Transition(
+                storage::CatalogTransitionError::InvalidState("selected branch cannot be deleted"),
+            ));
+        }
         if branch.name.as_str() == "main" {
             return Err(BranchLifecycleError::RootBranchImmutable);
         }
@@ -1052,7 +1812,8 @@ impl Database {
             };
         let request = storage::DeleteRequest {
             id: branch.id,
-            expected_metadata_revision: branch.metadata_revision,
+            expected_metadata_revision: expected_metadata_revision
+                .unwrap_or(branch.metadata_revision),
         };
         let reservation = match storage::begin_delete_file(&path, request)? {
             storage::DeleteBeginOutcome::Deleting(reservation) => reservation,
@@ -1063,7 +1824,45 @@ impl Database {
         Ok(branch_info(&deleted))
     }
 
-    /// Creates an isolated child branch from a sealed parent head. The
+    /// Computes the prospective result before SQL payload admission.
+    pub(super) fn preview_create_branch(
+        &self,
+        request: &BranchCreateRequest,
+    ) -> Result<BranchInfo, BranchLifecycleError> {
+        let catalog = self.read_branch_catalog()?;
+        if let Some(existing) = catalog
+            .branches
+            .iter()
+            .find(|branch| branch.create_request_key == request.idempotency_key)
+        {
+            return Ok(branch_info(existing));
+        }
+        let id_bytes = *hawdb_integrity::sha256(request.idempotency_key.as_bytes()).as_bytes();
+        let id = Uuid::from_bytes(id_bytes[..16].try_into().expect("UUID width"));
+        let branch_id = storage::BranchId::new(id).map_err(BranchLifecycleError::Catalog)?;
+        let name = match &request.name {
+            Some(name) => {
+                storage::BranchName::new(name.clone()).map_err(BranchLifecycleError::Catalog)?
+            }
+            None => storage::BranchName::generated_agent(branch_id),
+        };
+        let parent = catalog
+            .branches
+            .iter()
+            .find(|branch| selector_matches(branch, &request.parent))
+            .ok_or(BranchLifecycleError::UnknownBranch)?;
+        Ok(BranchInfo {
+            id,
+            name: name.as_str().into(),
+            parent_id: Some(parent.id.as_uuid()),
+            source_commit_epoch: request.expected_source_commit_epoch,
+            metadata_revision: 2,
+            state: BranchLifecycleState::Ready,
+            owner: request.owner.clone(),
+        })
+    }
+
+    /// Creates an isolated child branch from an exact committed source. The
     /// idempotency key is retained by the catalog, so retrying the same
     /// request returns the existing record without creating another head.
     pub fn create_branch(
@@ -1110,6 +1909,21 @@ impl Database {
         }
         let parent_id = parent.id;
         let parent_head_path = self.branch_head_path(parent_id.as_uuid())?;
+        let mut temporary_source = None;
+        if let Some(selected_head) = self.store.admitted_branch_head() {
+            if selected_head.branch_id == *parent_id.as_uuid().as_bytes() {
+                self.store
+                    .seal_admitted_branch(request.expected_source_commit_epoch)
+                    .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+            } else {
+                let mut source = self.admit_branch_record(parent)?;
+                source
+                    .store_mut()
+                    .seal_admitted_branch(request.expected_source_commit_epoch)
+                    .map_err(|error| BranchLifecycleError::Storage(error.to_string()))?;
+                temporary_source = Some(source);
+            }
+        }
         let parent_head = branch_head::read_branch_head(&parent_head_path)
             .map_err(|error| BranchLifecycleError::CatalogIo(std::io::Error::other(error)))?;
         if parent_head.logical_commit_epoch != request.expected_source_commit_epoch {
@@ -1145,7 +1959,10 @@ impl Database {
         candidate
             .reserve_create(create_request.clone())
             .map_err(BranchLifecycleError::Transition)?;
-        self.store
+        let source = temporary_source
+            .as_ref()
+            .map_or(&self.store, |source| source.store());
+        source
             .create_isolated_branch_from_parent_head(
                 &catalog_path,
                 &parent_head_path,

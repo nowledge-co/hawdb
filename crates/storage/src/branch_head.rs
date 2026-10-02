@@ -112,10 +112,7 @@ pub fn publish_prepared_wal_rotation_with_root(
 ) -> Result<BranchHead, WalRotationPublicationError> {
     root.validate().map_err(WalRotationPublicationError::Root)?;
     let sealed = &request.prepared.sealed;
-    let replay_end = root
-        .sealed_wals
-        .last()
-        .map_or(root.wal_replay_start_lsn, |wal| wal.end_lsn);
+    let replay_end = root.replay_end_lsn();
     let sealed_is_bound = if sealed.start_lsn == sealed.end_lsn {
         replay_end == sealed.end_lsn
     } else {

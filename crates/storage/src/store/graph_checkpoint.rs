@@ -1094,9 +1094,8 @@ impl GraphStore {
         );
         if result.is_err()
             && self.durable.as_ref().is_some_and(|durable| {
-                durable.branch_runtime.as_ref().is_some_and(|_| {
-                    self.admitted_branch_head()
-                        .is_some_and(|head| durable.wal_generation != head.active_wal.generation)
+                durable.branch_runtime.as_ref().is_some_and(|branch| {
+                    durable.wal_generation != branch.head.active_wal.generation
                 })
             })
         {
@@ -1203,6 +1202,9 @@ impl GraphStore {
         // shadow report with dirty state preserved, and the next checkpoint
         // retries.
         self.record_columnar_shadow_checkpoint(prepared.source_commit_epoch, shadow_admission);
+        if self.admitted_branch_head().is_some() {
+            self.publish_admitted_branch_root()?;
+        }
         // Generation reclamation is post-commit maintenance. It must run only
         // after every in-memory view has adopted the published generation, and
         // its failure must not change the checkpoint outcome.
@@ -1210,9 +1212,6 @@ impl GraphStore {
             durable.reclaim_old_generations(generation, pinned_reader_generations);
         }
         self.reclaim_version_history();
-        if self.admitted_branch_head().is_some() {
-            self.publish_admitted_branch_root()?;
-        }
         Ok(())
     }
 

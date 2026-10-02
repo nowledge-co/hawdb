@@ -398,6 +398,14 @@ impl ConcurrentDatabase {
         let database = self.inner.commits.lock()?;
         let started = Instant::now();
         let prepared = database.relational_plan_template_cache.prepare(sql_text)?;
+        if let SqlStatement::Branch(crate::sql::BranchSqlStatement::UseBranch(_)) =
+            prepared.statement()
+        {
+            return Err(HawDBError::BranchCommandUnsupported {
+                command: "USE BRANCH",
+                context: "shared concurrent runtime",
+            });
+        }
         if !sql_statement_uses_snapshot(prepared.statement()) {
             drop(database);
             return self.with_autocommit_exclusive(move |database| {
@@ -885,7 +893,7 @@ fn sql_statement_uses_snapshot(statement: &SqlStatement) -> bool {
         // The current branch AST is inspection-only. It executes through a
         // `DatabaseReadTransaction`, so autocommit catalog reads do not take
         // the write sequencer's exclusive database lock.
-        SqlStatement::Branch(_) => true,
+        SqlStatement::Branch(statement) => !statement.changes_context_or_catalog(),
     }
 }
 

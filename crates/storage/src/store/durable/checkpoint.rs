@@ -301,8 +301,21 @@ impl DurableStore {
             source_scan_descriptor_checksum,
         };
         manifest.validate()?;
-        manifest.write(&self.manifest_path)?;
-        checkpoint_publish_failpoint(CheckpointPublishStage::ManifestPublished)?;
+        let publication = manifest
+            .write(&self.manifest_path)
+            .and_then(|()| checkpoint_publish_failpoint(CheckpointPublishStage::ManifestPublished));
+        if let Err(error) = publication {
+            // The disposable manifest may already select the candidate while
+            // the authoritative branch head still selects the old closure.
+            // Retain both and require head-based recovery before more writes.
+            return Err(if self.branch_runtime.is_some() {
+                HawDBError::StorageIntegrity(format!(
+                    "branch checkpoint publication failed; close and reopen the branch: {error}"
+                ))
+            } else {
+                error
+            });
+        }
 
         self.wal_append_file = None;
         self.checkpoint_path = manifest.checkpoint_path(&self.root_path);
