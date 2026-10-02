@@ -26,7 +26,7 @@ use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
 use hawdb_integrity::Crc32cHasher;
 use hawdb_storage::durability::durable_replace_file;
-use std::fs::File;
+use hawdb_storage::file_io::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
 use std::path::Path;

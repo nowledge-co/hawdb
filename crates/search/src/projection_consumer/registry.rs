@@ -15,9 +15,9 @@
 use super::{SearchProjectionConsumerId, SearchProjectionConsumerState};
 use hawdb_core::{HawDBError, Result, Uuid};
 use hawdb_integrity::IntegrityHasher;
+use hawdb_storage::file_io::{File, OpenOptions};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -150,7 +150,7 @@ impl ConsumerRegistry {
         let target = root.join(REGISTRY_FILE);
         let temporary = target.with_extension("meta.tmp");
         // Database writer exclusion owns this fixed temporary across restarts.
-        match std::fs::remove_file(&temporary) {
+        match hawdb_storage::file_io::remove_file(&temporary) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
@@ -210,7 +210,7 @@ impl ConsumerRegistry {
 struct Temporary(PathBuf);
 impl Drop for Temporary {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        let _ = hawdb_storage::file_io::remove_file(&self.0);
     }
 }
 

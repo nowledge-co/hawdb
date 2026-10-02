@@ -287,6 +287,150 @@ mod tests {
     }
 
     #[test]
+    fn durable_read_snapshot_query_spill_retains_project_descriptor_context() {
+        use std::num::{NonZeroU64, NonZeroUsize};
+
+        let path = test_directory("snapshot-query-spill-descriptors");
+        let spill_path = path.with_extension("spill");
+        let mut database = Database::open_with_config(
+            &path,
+            crate::DatabaseConfig {
+                max_open_files: 16,
+                execution_memory: crate::executor::ExecutionMemoryConfig {
+                    blocking_operator_bytes: NonZeroUsize::new(2048).unwrap(),
+                    min_spill_free_bytes: NonZeroU64::MIN,
+                    spill_directory: spill_path.clone(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for value in 0..10 {
+            database
+                .query(&format!(
+                    "CREATE (:Memory {{title: '{value}-{}'}})",
+                    "x".repeat(96)
+                ))
+                .unwrap();
+        }
+        let mut snapshot = database.begin_read_transaction();
+        let query = "MATCH (m:Memory) RETURN DISTINCT m.title AS title";
+        let expected = snapshot
+            .query_with_params_bounded_profile(query, &BTreeMap::new(), None)
+            .unwrap();
+        assert!(expected
+            .execution_profile
+            .blocking_operator_memory_reports
+            .iter()
+            .any(|report| report.spill_run_count > 0));
+        let mut held = Vec::new();
+        while database.file_descriptor_metrics().unwrap().open < 16 {
+            held.push(
+                hawdb_storage::file_io::File::create(path.join(format!("held-{}", held.len())))
+                    .unwrap(),
+            );
+        }
+        assert!(matches!(
+            snapshot.query(query),
+            Err(HawDBError::FileDescriptors(_))
+        ));
+        drop(held);
+        assert_eq!(snapshot.query(query).unwrap().rows, expected.output.rows);
+        drop(snapshot);
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+        std::fs::remove_dir_all(spill_path).unwrap();
+    }
+
+    #[test]
+    fn selected_branch_query_spill_uses_project_descriptor_budget() {
+        use hawdb_core::error::FileDescriptorError;
+        use std::num::{NonZeroU64, NonZeroUsize};
+
+        let path = test_directory("branch-query-spill-descriptors");
+        let spill_path = path.with_extension("spill");
+        let config = crate::DatabaseConfig {
+            max_open_files: 32,
+            storage_residency_mode: hawdb_storage::config::StorageResidencyMode::Materialized,
+            execution_memory: crate::executor::ExecutionMemoryConfig {
+                blocking_operator_bytes: NonZeroUsize::new(2048).unwrap(),
+                min_spill_free_bytes: NonZeroU64::MIN,
+                spill_directory: spill_path.clone(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut database = Database::open_with_config(&path, config).unwrap();
+        for value in 0..10 {
+            database
+                .query(&format!(
+                    "CREATE (:Memory {{title: '{value}-{}'}})",
+                    "x".repeat(96)
+                ))
+                .unwrap();
+        }
+        database.checkpoint().unwrap();
+        let main = database
+            .initialize_main_branch(Uuid::from_u128(211), Uuid::from_u128(212))
+            .unwrap();
+        database.query_sql("USE BRANCH main").unwrap();
+        let query = "MATCH (m:Memory) RETURN DISTINCT m.title AS title";
+        let expected = database
+            .begin_read_transaction()
+            .query_with_params_bounded_profile(query, &BTreeMap::new(), None)
+            .unwrap();
+        assert_eq!(expected.output.rows.len(), 10);
+        assert!(expected
+            .execution_profile
+            .blocking_operator_memory_reports
+            .iter()
+            .any(|report| report.spill_run_count > 0));
+        let epoch = database.commit_epoch();
+        let head_path = database.branch_head_path(main.id).unwrap();
+        let head_before = std::fs::read(&head_path).unwrap();
+        let mut held = Vec::new();
+        while database.file_descriptor_metrics().unwrap().open < 32
+            || database.file_descriptor_metrics().unwrap().cached_handles > 0
+        {
+            held.push(
+                hawdb_storage::file_io::File::create(path.join(format!("held-{}", held.len())))
+                    .unwrap(),
+            );
+        }
+        assert!(matches!(
+            database.query(query),
+            Err(HawDBError::FileDescriptors(
+                FileDescriptorError::BudgetExceeded {
+                    available: 0,
+                    limit: 32,
+                    ..
+                }
+            ))
+        ));
+        assert_eq!(database.commit_epoch(), epoch);
+        assert_eq!(database.current_branch().unwrap().info.id, main.id);
+        assert_eq!(std::fs::read(&head_path).unwrap(), head_before);
+        assert_eq!(
+            database
+                .query("MATCH (m:Memory) RETURN count(m) AS total")
+                .unwrap()
+                .rows[0]["total"],
+            Value::Int(10)
+        );
+        drop(held);
+        let retried = database.query(query).unwrap();
+        assert_eq!(retried.rows, expected.output.rows);
+        assert_eq!(database.file_descriptor_metrics().unwrap().reserved, 0);
+        database
+            .query("CREATE (:Memory {title: 'after-resource-rejection'})")
+            .unwrap();
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+        std::fs::remove_dir_all(spill_path).unwrap();
+    }
+
+    #[test]
     fn sql_branch_descriptor_rejection_preserves_source_and_releases_admission_quota() {
         let path = test_directory("sql-branch-fd-admission");
         let config = crate::DatabaseConfig {

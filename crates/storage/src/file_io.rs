@@ -57,6 +57,10 @@ struct ImmutableFile {
 }
 
 impl File {
+    pub fn options() -> OpenOptions {
+        OpenOptions::new()
+    }
+
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         OpenOptions::new().read(true).open(path)
     }
@@ -319,18 +323,20 @@ impl OpenOptions {
         path: &Path,
         context: &FileOpenContext,
     ) -> io::Result<File> {
-        let handles = context.state.immutable_handles();
+        // Unbound native files do not need an immutable cache allocation.
+        let handles = context.state.existing_immutable_handles();
         let mutable = self.mutable.iter().any(|flag| *flag);
         if self.read
             && !mutable
             && !self.native_options
             && self.kind == DescriptorKind::Transient
+            && let Some(handles) = handles.as_ref()
             && let Some(binding) = handles.binding(path)?
         {
             return Ok(File {
                 backing: FileBacking::Immutable(Box::new(ImmutableFile {
                     binding,
-                    handles,
+                    handles: handles.clone(),
                     context: context.clone(),
                     cursor: Arc::new(std::sync::Mutex::new(0)),
                 })),
@@ -343,7 +349,9 @@ impl OpenOptions {
             .map_err(|error| context.map_open_error(error))?;
         // Later readers must see the mutable path. Existing logical readers
         // retain their captured immutable identity and remain snapshot-safe.
-        if mutable || self.native_options {
+        if (mutable || self.native_options)
+            && let Some(handles) = handles
+        {
             handles.unbind(path)?;
         }
         Ok(File {
@@ -492,6 +500,10 @@ pub struct DirEntry {
 pub fn read_dir(path: impl AsRef<Path>) -> io::Result<ReadDir> {
     let path = path.as_ref();
     let context = context_for_path(path)?;
+    read_dir_with_context(path, &context)
+}
+
+pub(crate) fn read_dir_with_context(path: &Path, context: &FileOpenContext) -> io::Result<ReadDir> {
     let permit = Arc::new(context.acquire(DescriptorKind::Transient)?);
     let inner = std::fs::read_dir(path).map_err(|error| context.map_open_error(error))?;
     Ok(ReadDir { inner, permit })

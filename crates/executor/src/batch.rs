@@ -366,6 +366,14 @@ pub fn execute_prepared_binding_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
+    let memory_ledger = context
+        .memory_ledger
+        .clone()
+        .with_file_descriptors(context.store.file_descriptor_context());
+    let context = BatchReadContext {
+        memory_ledger: &memory_ledger,
+        ..context
+    };
     runtime_checkpoint(context.task_context)?;
     if execution_limit.output_rows == Some(0) {
         return Ok(BatchControl::Continue);

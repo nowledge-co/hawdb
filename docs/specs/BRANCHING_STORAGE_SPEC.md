@@ -1013,8 +1013,23 @@ unchanged recovery artifacts and quota, and successful reads after capacity is
 released. Catalog `SHOW` commands propagate the same resource error; selected
 branch identity remains available without reading the catalog.
 
+Graph query execution binds its memory ledger to the selected store's descriptor
+context. Spill pools retain that context per query/run, including external
+temporary directories and worker-thread reads; sharing a spill directory does
+not merge distinct projects' descriptor domains. Pool admission is lazy and
+only successful admission is cached. Failed file creation returns both operator
+and pool run quota, and readers retain the run until their file handles close.
+Search file opens, clones, publication locks, and directory operations use the
+same storage wrapper. Persistent search indexes and out-of-core readers retain
+their containing project domain; independent search roots retain their own
+finite default domain rather than sharing the low-level standalone fallback.
+Descriptor errors bypass corruption/rebuild fallback in
+the snapshot/segment admission paths. Ordinary unbound files do not allocate an
+immutable cache, and absolute-path domain lookup borrows the existing path.
+
 #819 remains open. Complete qualification must still audit filesystem operations
-outside the storage wrapper, cold existing-root alias resolution on Windows,
+outside the storage wrapper (including native generated-stage deletion and
+projection dependencies), relative-path lookup scratch, cold existing-root alias resolution on Windows,
 data-dependent retained recovery/checkpoint handles, validation-read IO budgets,
 and resource failures at every acquisition/publication boundary. The legacy
 single-root opener, independent job pins, and the complete power-loss matrix

@@ -217,6 +217,19 @@ impl GraphStore {
                     .map(|owner| owner.metrics())
             })
     }
+
+    #[doc(hidden)]
+    pub fn file_descriptor_context(&self) -> Option<crate::file_descriptors::FileOpenContext> {
+        self.durable
+            .as_ref()
+            .map(|durable| durable.file_descriptor_context())
+            .or_else(|| {
+                self.branch_runtime_owner
+                    .as_ref()
+                    .map(|owner| owner.io_context())
+            })
+            .or_else(|| self.snapshot_file_context.clone())
+    }
     /// Seals a closed source from its selector and complete private WAL only.
     /// Existing immutable checkpoint references are reused without recovery.
     /// The lease also pins immutable candidates against catalog-backed GC.

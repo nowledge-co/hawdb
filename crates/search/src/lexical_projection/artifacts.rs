@@ -23,7 +23,7 @@ use crate::build_control::{checkpoint, CheckedWriter};
 use crate::build_memory::{checked_add, grow_slots, path::OwnedPath, BuildMemory};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
-use std::fs::File;
+use hawdb_storage::file_io::File;
 use std::io::{BufWriter, Read, Write};
 use std::path::Path;
 #[cfg(test)]

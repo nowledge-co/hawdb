@@ -35,8 +35,8 @@ use crate::{
 };
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
+use hawdb_storage::file_io::File;
 use std::collections::BTreeSet;
-use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 

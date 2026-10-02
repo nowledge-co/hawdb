@@ -65,6 +65,35 @@ impl Drop for Directory {
 }
 
 #[test]
+fn descriptor_exhaustion_preserves_search_artifact_and_allows_retry() {
+    use hawdb_core::{error::FileDescriptorError, HawDBError};
+    use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+
+    let directory = Directory::new();
+    let project = ProjectFileDescriptors::acquire(&directory.0.join("project"), 1).unwrap();
+    let path = project.root().join("artifact");
+    fs::write(&path, b"original").unwrap();
+    let full = hawdb_storage::file_io::File::open(&path).unwrap();
+    assert!(matches!(
+        read_bounded_file(&path, 16),
+        Err(HawDBError::FileDescriptors(
+            FileDescriptorError::BudgetExceeded {
+                requested: 1,
+                available: 0,
+                limit: 1,
+            }
+        ))
+    ));
+    assert_eq!(fs::read(&path).unwrap(), b"original");
+    assert_eq!(project.metrics().open, 1);
+    drop(full);
+    assert_eq!(read_bounded_file(&path, 16).unwrap(), b"original");
+    assert_eq!(project.metrics().open, 0);
+    assert_eq!(project.metrics().reserved, 0);
+    assert!(project.metrics().high_water <= 1);
+}
+
+#[test]
 fn file_growth_after_admission_cannot_escape_the_byte_limit() {
     let directory = Directory::new();
     let path = directory.0.join("artifact");

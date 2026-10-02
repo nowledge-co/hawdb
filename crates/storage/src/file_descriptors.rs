@@ -21,6 +21,7 @@ use std::io;
 use std::marker::PhantomData;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 pub const DEFAULT_MAX_OPEN_FILES: usize = 256;
@@ -96,6 +97,7 @@ pub(crate) struct BudgetState {
     counts: Mutex<Counts>,
     cache: Mutex<Option<Weak<dyn DescriptorCache>>>,
     immutable_handles: Mutex<Weak<crate::immutable_files::ImmutableFileHandles>>,
+    active_reservations: AtomicUsize,
 }
 
 impl BudgetState {
@@ -106,6 +108,7 @@ impl BudgetState {
             counts: Mutex::new(Counts::default()),
             cache: Mutex::new(None),
             immutable_handles: Mutex::new(Weak::new()),
+            active_reservations: AtomicUsize::new(0),
         }
     }
 
@@ -197,6 +200,15 @@ impl BudgetState {
             .unwrap_or_else(|error| error.into_inner())
             .cache_evictions += count as u64;
     }
+    pub(crate) fn existing_immutable_handles(
+        &self,
+    ) -> Option<Arc<crate::immutable_files::ImmutableFileHandles>> {
+        self.immutable_handles
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .upgrade()
+    }
+
     pub(crate) fn immutable_handles(
         self: &Arc<Self>,
     ) -> Arc<crate::immutable_files::ImmutableFileHandles> {
@@ -237,6 +249,16 @@ impl ProjectFileDescriptors {
 
     pub fn acquire_existing(root: &Path, limit: usize) -> Result<Self, HawDBError> {
         Self::acquire_root(root, limit, false)
+    }
+
+    /// Persistent components borrow an existing project domain, including its
+    /// configured limit. Standalone component roots get the finite default.
+    #[doc(hidden)]
+    pub fn acquire_component(root: &Path, create: bool) -> Result<Self, HawDBError> {
+        match Self::containing(root)? {
+            Some(project) => Ok(project),
+            None => Self::acquire_root(root, DEFAULT_MAX_OPEN_FILES, create),
+        }
     }
 
     /// Internal runtimes and maintenance borrow the containing project domain.
@@ -330,6 +352,13 @@ impl ProjectFileDescriptors {
         self.state.metrics()
     }
 
+    /// Capture this project's admission domain for query-owned external IO.
+    /// The context retains accounting, not an open descriptor or branch lease.
+    #[doc(hidden)]
+    pub fn io_context(&self) -> FileOpenContext {
+        FileOpenContext::from_state(self.state.clone())
+    }
+
     pub(crate) fn retain_admitted_runtime(&self) -> Arc<AdmittedRuntimeOwner> {
         self.state
             .counts
@@ -379,6 +408,9 @@ impl ProjectFileDescriptors {
             }),
         });
         RESERVATIONS.with(|scopes| scopes.borrow_mut().push(Arc::downgrade(&inventory)));
+        self.state
+            .active_reservations
+            .fetch_add(1, Ordering::Release);
         DescriptorReservation {
             inventory,
             owns_inventory: true,
@@ -413,6 +445,10 @@ pub(crate) struct AdmittedRuntimeOwner {
 impl AdmittedRuntimeOwner {
     pub(crate) fn metrics(&self) -> FileDescriptorMetrics {
         self.state.metrics()
+    }
+
+    pub(crate) fn io_context(&self) -> FileOpenContext {
+        FileOpenContext::from_state(self.state.clone())
     }
 }
 
@@ -464,7 +500,16 @@ pub(crate) fn absolute_path(path: &Path) -> io::Result<PathBuf> {
 }
 
 pub(crate) fn context_for_path(path: &Path) -> io::Result<FileOpenContext> {
-    let absolute = absolute_path(path)?;
+    // Path comparisons already normalize separators and CurDir components.
+    // Borrow absolute paths so admission does not allocate an unaccounted path
+    // copy on every query IO. Relative paths still require a cwd-owned prefix.
+    let owned;
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        owned = absolute_path(path)?;
+        &owned
+    };
     let projects = PROJECTS.lock().unwrap_or_else(|error| error.into_inner());
     let state = projects
         .iter()
@@ -478,6 +523,14 @@ pub(crate) fn context_for_path(path: &Path) -> io::Result<FileOpenContext> {
         .map(|(_, state)| state)
         .unwrap_or_else(|| STANDALONE.clone());
     Ok(FileOpenContext::from_state(state))
+}
+
+pub(crate) fn absolute_path_ref(path: &Path) -> io::Result<std::borrow::Cow<'_, Path>> {
+    if path.is_absolute() {
+        Ok(std::borrow::Cow::Borrowed(path))
+    } else {
+        Ok(std::borrow::Cow::Owned(absolute_path(path)?))
+    }
 }
 
 thread_local! {
@@ -521,6 +574,10 @@ impl Drop for DescriptorReservation {
             .unwrap_or_else(|error| error.into_inner())
             .reserved -= inventory.remaining;
         inventory.remaining = 0;
+        self.inventory
+            .state
+            .active_reservations
+            .fetch_sub(1, Ordering::Release);
         RESERVATIONS.with(|scopes| {
             scopes.borrow_mut().retain(|scope| {
                 scope
@@ -532,21 +589,62 @@ impl Drop for DescriptorReservation {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct FileOpenContext {
+#[doc(hidden)]
+pub struct FileOpenContext {
     pub(crate) state: Arc<BudgetState>,
     inventory: Option<Arc<Inventory>>,
 }
 
 impl FileOpenContext {
+    pub fn for_path(path: &Path) -> io::Result<Self> {
+        context_for_path(path)
+    }
+
+    pub fn open(
+        &self,
+        options: &crate::file_io::OpenOptions,
+        path: &Path,
+    ) -> io::Result<crate::file_io::File> {
+        options.open_with_context(path, self)
+    }
+
+    fn temporary<T>(&self, operation: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+        let _permit = self.acquire(DescriptorKind::Transient)?;
+        operation().map_err(|error| self.map_open_error(error))
+    }
+
+    pub fn create_dir_all(&self, path: &Path) -> io::Result<()> {
+        self.temporary(|| std::fs::create_dir_all(path))
+    }
+
+    pub fn canonicalize(&self, path: &Path) -> io::Result<PathBuf> {
+        self.temporary(|| std::fs::canonicalize(path))
+    }
+
+    pub fn remove_file(&self, path: &Path) -> io::Result<()> {
+        self.temporary(|| std::fs::remove_file(path))
+    }
+
+    pub fn read_dir(&self, path: &Path) -> io::Result<crate::file_io::ReadDir> {
+        crate::file_io::read_dir_with_context(path, self)
+    }
+
     fn from_state(state: Arc<BudgetState>) -> Self {
-        let inventory = RESERVATIONS.with(|scopes| {
-            scopes
-                .borrow()
-                .iter()
-                .rev()
-                .filter_map(Weak::upgrade)
-                .find(|inventory| Arc::ptr_eq(&inventory.state, &state))
-        });
+        // Most query IO has no operation quota. Avoid initializing a droppable
+        // thread-local Vec (and its native destructor registry allocation) for
+        // every read worker when there is no reservation to inherit.
+        let inventory = if state.active_reservations.load(Ordering::Acquire) == 0 {
+            None
+        } else {
+            RESERVATIONS.with(|scopes| {
+                scopes
+                    .borrow()
+                    .iter()
+                    .rev()
+                    .filter_map(Weak::upgrade)
+                    .find(|inventory| Arc::ptr_eq(&inventory.state, &state))
+            })
+        };
         Self { state, inventory }
     }
 

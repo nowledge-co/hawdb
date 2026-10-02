@@ -21,7 +21,7 @@ use crate::build_memory::{
 };
 use crate::{Result, SEARCH_COMPRESSION_HEADER, SEARCH_SNAPSHOT_FILE};
 use hawdb_core::RuntimeTaskContext;
-use std::fs::File;
+use hawdb_storage::file_io::File;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
 

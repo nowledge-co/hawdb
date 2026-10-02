@@ -16,7 +16,7 @@
 
 use super::{checked_add as add, checked_mul as mul, path, reserved::native_path};
 use crate::Result;
-use std::fs;
+use hawdb_storage::file_io as fs;
 use std::mem::size_of;
 use std::path::{Component, Path};
 

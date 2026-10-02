@@ -35,6 +35,7 @@ use crate::{
 use artifacts::SegmentArtifactBuilder;
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
+use hawdb_storage::file_io::{self as fs, File, OpenOptions};
 #[cfg(test)]
 use publication::file_len_checksum;
 use publication::{publish_generation, ActiveManifestUpdate, PublishGenerationInput};
@@ -44,7 +45,6 @@ use serde::Serialize;
 pub(crate) use spool::read_evidence as analyzer_read_evidence;
 use spool::{SpoolSource, StageDirectory, SPOOL_FRAME_HEADER_BYTES, SPOOL_HEADER};
 use std::collections::BTreeSet;
-use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::Path;

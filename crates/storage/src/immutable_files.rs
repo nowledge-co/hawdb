@@ -55,19 +55,21 @@ impl ImmutableFileHandles {
     }
 
     pub(crate) fn binding(&self, path: &Path) -> io::Result<Option<ImmutableFileBinding>> {
+        let path = crate::file_descriptors::absolute_path_ref(path)?;
         Ok(self
             .bindings
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .get(&crate::file_descriptors::absolute_path(path)?)
+            .get(path.as_ref())
             .cloned())
     }
 
     pub(crate) fn unbind(&self, path: &Path) -> io::Result<()> {
+        let path = crate::file_descriptors::absolute_path_ref(path)?;
         self.bindings
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .remove(&crate::file_descriptors::absolute_path(path)?);
+            .remove(path.as_ref());
         Ok(())
     }
 

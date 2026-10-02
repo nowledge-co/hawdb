@@ -231,6 +231,10 @@ pub(super) enum DurableOpenMode {
 }
 
 impl DurableStore {
+    pub(super) fn file_descriptor_context(&self) -> crate::file_descriptors::FileOpenContext {
+        self.project_files.io_context()
+    }
+
     pub(super) fn file_descriptor_metrics(&self) -> crate::file_descriptors::FileDescriptorMetrics {
         self.project_files.metrics()
     }

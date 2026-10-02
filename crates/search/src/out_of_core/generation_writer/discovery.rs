@@ -23,7 +23,7 @@ use crate::out_of_core::{
 };
 use crate::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
-use std::fs;
+use hawdb_storage::file_io as fs;
 use std::path::Path;
 
 pub(super) fn active(

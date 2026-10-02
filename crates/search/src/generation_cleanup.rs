@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use hawdb_storage::file_io as fs;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs;
 use std::io;
 use std::num::NonZeroUsize;
 use std::path::Path;
