@@ -36,6 +36,8 @@ mod tests {
     use super::*;
     use crate::api::ConcurrentTransactionOptions;
     use hawdb_core::Value;
+    use hawdb_storage::config::{DurabilityPolicy, WalReplayConfig};
+    use hawdb_storage::store::{BranchAdmissionRequest, GraphStore};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{mpsc, Arc, Condvar, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -94,6 +96,50 @@ mod tests {
             .join(main.id.to_string())
             .join("branch.head")
             .is_file());
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn admits_a_facade_created_child_from_its_private_wal() {
+        let (path, mut database, main) = initialized_database();
+        let child = database
+            .create_branch(create_request(&main))
+            .expect("create child through facade");
+        let catalog_path = database.branch_catalog_path().expect("branch catalog path");
+        let child_record = database
+            .read_branch_catalog()
+            .expect("read child catalog record")
+            .branches
+            .into_iter()
+            .find(|branch| branch.id.as_uuid() == child.id)
+            .expect("child catalog record");
+        let head_path = database
+            .branch_head_path(child.id)
+            .expect("child head path");
+        let immutable_store_root = catalog_path
+            .parent()
+            .expect("branch catalog parent")
+            .join("objects");
+
+        let admitted = GraphStore::admit_branch_from_head(BranchAdmissionRequest {
+            catalog_path: &catalog_path,
+            branch_id: child_record.id,
+            expected_metadata_revision: child_record.metadata_revision,
+            head_path: &head_path,
+            immutable_store_root: &immutable_store_root,
+            durability: DurabilityPolicy::default(),
+            replay_config: WalReplayConfig::default(),
+        })
+        .expect("admit child through its facade-created private WAL");
+
+        assert_eq!(
+            admitted.head().branch_id,
+            *child.id.as_bytes(),
+            "admission must select the child head created by the facade"
+        );
+        assert_eq!(admitted.store().node_count_for_label(None), 1);
+        drop(admitted);
         drop(database);
         std::fs::remove_dir_all(path).unwrap();
     }
@@ -797,7 +843,9 @@ impl Database {
     fn branch_wal_path(&self, id: Uuid, generation: u64) -> Result<PathBuf, BranchLifecycleError> {
         Ok(self
             .branch_directory(id)?
-            .join(format!("wal-{generation}.hawdb")))
+            .join(hawdb_storage::artifact_files::wal_generation_file(
+                generation,
+            )))
     }
 
     fn read_branch_catalog(&self) -> Result<storage::Catalog, BranchLifecycleError> {

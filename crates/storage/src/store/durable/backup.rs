@@ -51,8 +51,6 @@ impl DurableStore {
         let generation = manifest.checkpoint_generation.ok_or_else(|| {
             HawDBError::Storage("checkpoint closure requires a checkpoint generation".into())
         })?;
-        let mut plan =
-            CheckpointClosurePlan::new(manifest.manifest_artifact_inputs(&self.root_path)?);
         let input = |path: PathBuf| -> Result<CheckpointArtifactInput> {
             let bytes = fs::read(&path).map_err(|error| {
                 HawDBError::Storage(format!(
@@ -65,6 +63,48 @@ impl DurableStore {
                 reference: ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, &bytes),
             })
         };
+        let mut manifest_inputs = manifest.manifest_artifact_inputs(&self.root_path)?;
+        match (
+            self.relational_checkpoint_encoded_len,
+            self.relational_checkpoint_encoded_checksum,
+            self.relational_checkpoint_encoded_sha256,
+        ) {
+            (None, None, None) => {}
+            (Some(encoded_len), Some(encoded_checksum), Some(encoded_sha256)) => {
+                let relational_checkpoint = self
+                    .root_path
+                    .join(relational_checkpoint_generation_file(generation));
+                let bytes = fs::read(&relational_checkpoint).map_err(|error| {
+                    HawDBError::Storage(format!(
+                        "read relational checkpoint closure artifact {}: {error}",
+                        relational_checkpoint.display()
+                    ))
+                })?;
+                if bytes.len() as u64 != encoded_len
+                    || u64::from(hawdb_integrity::crc32c(&bytes).get()) != encoded_checksum
+                    || hawdb_integrity::sha256(&bytes) != encoded_sha256
+                {
+                    return Err(HawDBError::Storage(format!(
+                        "relational checkpoint closure artifact {} differs from its checkpoint binding",
+                        relational_checkpoint.display()
+                    )));
+                }
+                manifest_inputs.push(CheckpointArtifactInput {
+                    path: relational_checkpoint,
+                    reference: ObjectReference::for_bytes(
+                        ObjectKind::CheckpointArtifact,
+                        1,
+                        &bytes,
+                    ),
+                });
+            }
+            _ => {
+                return Err(HawDBError::Storage(
+                    "relational checkpoint closure metadata is incomplete".to_string(),
+                ));
+            }
+        }
+        let mut plan = CheckpointClosurePlan::new(manifest_inputs);
         let map_paths = |names: Vec<String>| {
             names
                 .iter()
