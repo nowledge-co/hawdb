@@ -202,6 +202,12 @@ impl GraphStore {
     pub fn admit_branch_from_head(
         request: BranchAdmissionRequest<'_>,
     ) -> std::result::Result<AdmittedBranchStore, BranchAdmissionError> {
+        if request.replay_config.recovery_mode == RecoveryMode::AutoRepairTornTail {
+            return Err(BranchAdmissionError::Recovery(HawDBError::Storage(
+                "automatic repair of a branch private WAL requires branch-aware repair publication"
+                    .to_string(),
+            )));
+        }
         let before = ready_branch_record(
             request.catalog_path,
             request.branch_id,
@@ -243,32 +249,43 @@ impl GraphStore {
         .map_err(|error| BranchAdmissionError::Recovery(HawDBError::Storage(error.to_string())))?;
 
         let runtime_directory = branch_directory.join("runtime");
-        materialize_branch_runtime(&objects, &root, &runtime_directory)
+        let result = (|| {
+            materialize_branch_runtime(&objects, &root, &runtime_directory)
+                .map_err(BranchAdmissionError::Recovery)?;
+            let mut catalog = crate::schema::Catalog::default();
+            let mut store = GraphStore::open_with_durability_and_replay_config(
+                &runtime_directory,
+                &mut catalog,
+                request.durability,
+                request.replay_config,
+            )
             .map_err(BranchAdmissionError::Recovery)?;
-        let mut catalog = crate::schema::Catalog::default();
-        let mut store = GraphStore::open_with_durability_and_replay_config(
-            &runtime_directory,
-            &mut catalog,
-            request.durability,
-            request.replay_config,
-        )
-        .map_err(BranchAdmissionError::Recovery)?;
-        store
-            .replay_branch_active_wal(&mut catalog, &head, &active_wal_path, request.replay_config)
-            .map_err(BranchAdmissionError::Recovery)?;
+            store
+                .replay_branch_active_wal(
+                    &mut catalog,
+                    &head,
+                    &active_wal_path,
+                    request.replay_config,
+                )
+                .map_err(BranchAdmissionError::Recovery)?;
 
-        let after = ready_branch_record(
-            request.catalog_path,
-            request.branch_id,
-            request.expected_metadata_revision,
-        )?;
-        validate_admission_binding(&after, &head, &root)?;
-        Ok(AdmittedBranchStore {
-            store,
-            catalog,
-            head,
-            _branch_lease: branch_lease,
-        })
+            let after = ready_branch_record(
+                request.catalog_path,
+                request.branch_id,
+                request.expected_metadata_revision,
+            )?;
+            validate_admission_binding(&after, &head, &root)?;
+            Ok(AdmittedBranchStore {
+                store,
+                catalog,
+                head,
+                _branch_lease: branch_lease,
+            })
+        })();
+        if result.is_err() {
+            let _ = fs::remove_dir_all(&runtime_directory);
+        }
+        result
     }
 
     /// Reconstructs a read/write GraphStore from immutable root objects for
@@ -456,12 +473,6 @@ impl GraphStore {
         active_wal_path: &Path,
         replay_config: WalReplayConfig,
     ) -> Result<()> {
-        if replay_config.recovery_mode == RecoveryMode::AutoRepairTornTail {
-            return Err(HawDBError::Storage(
-                "automatic repair of a branch private WAL requires branch-aware repair publication"
-                    .to_string(),
-            ));
-        }
         let durable = self.durable.as_mut().ok_or_else(|| {
             HawDBError::Storage("branch admission requires durable storage".to_string())
         })?;
@@ -478,7 +489,10 @@ impl GraphStore {
         durable.wal_bytes = fs::metadata(active_wal_path)?.len();
         durable.wal_tail_repair = None;
 
-        let report = self.replay_wal(catalog, replay_config)?;
+        let report = combine_recovery_reports(
+            self.storage_recovery_report.clone(),
+            self.replay_wal(catalog, replay_config)?,
+        );
         if self.commit_epoch < head.logical_commit_epoch {
             return Err(HawDBError::Storage(format!(
                 "branch head commit epoch {} exceeds recovered epoch {}",
@@ -533,7 +547,8 @@ impl GraphStore {
             HawDBError::Storage("initial branch WAL generation overflow".to_string())
         })?;
         let head_path = head_path.as_ref();
-        let wal_path = head_path.with_file_name(format!("wal-{generation}.hawdb"));
+        let wal_path =
+            head_path.with_file_name(crate::artifact_files::wal_generation_file(generation));
         if wal_path.try_exists()? {
             // A crash may leave the private WAL before publishing the selector.
             // Only an exact empty successor can be reused; never adopt data.
@@ -806,6 +821,43 @@ fn materialize_checkpoint_bindings(
     Ok(())
 }
 
+fn combine_recovery_reports(
+    mut sealed_root: crate::projection::StorageRecoveryReport,
+    private_wal: crate::projection::StorageRecoveryReport,
+) -> crate::projection::StorageRecoveryReport {
+    sealed_root.wal_present |= private_wal.wal_present;
+    sealed_root.wal_generation = private_wal.wal_generation.or(sealed_root.wal_generation);
+    sealed_root.wal_replay_start_lsn = private_wal
+        .wal_replay_start_lsn
+        .or(sealed_root.wal_replay_start_lsn);
+    sealed_root.next_lsn_after_replay = private_wal
+        .next_lsn_after_replay
+        .or(sealed_root.next_lsn_after_replay);
+    sealed_root.replayed_wal_entries = sealed_root
+        .replayed_wal_entries
+        .saturating_add(private_wal.replayed_wal_entries);
+    sealed_root.replayed_wal_bytes = sealed_root
+        .replayed_wal_bytes
+        .saturating_add(private_wal.replayed_wal_bytes);
+    sealed_root.torn_tail_ignored |= private_wal.torn_tail_ignored;
+    sealed_root.torn_tail_repaired |= private_wal.torn_tail_repaired;
+    sealed_root.discarded_wal_tail_bytes = sealed_root
+        .discarded_wal_tail_bytes
+        .saturating_add(private_wal.discarded_wal_tail_bytes);
+    sealed_root.torn_tail_reason =
+        match (sealed_root.torn_tail_reason, private_wal.torn_tail_reason) {
+            (Some(sealed), Some(private)) => {
+                Some(format!("sealed root WAL: {sealed}; private WAL: {private}"))
+            }
+            (Some(reason), None) | (None, Some(reason)) => Some(reason),
+            (None, None) => None,
+        };
+    sealed_root.recovered_commit_epoch = sealed_root
+        .recovered_commit_epoch
+        .max(private_wal.recovered_commit_epoch);
+    sealed_root
+}
+
 fn copy_recovery_container(source: &Path, destination: &Path) -> Result<()> {
     if destination.exists() {
         fs::remove_dir_all(destination)?;
@@ -834,6 +886,7 @@ mod tests {
     use crate::schema::Catalog;
     use crate::value::Value;
     use std::collections::BTreeMap;
+    use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_dir(label: &str) -> PathBuf {
@@ -1187,6 +1240,52 @@ mod tests {
     }
 
     #[test]
+    fn combines_sealed_and_private_wal_recovery_evidence() {
+        let sealed = crate::projection::StorageRecoveryReport {
+            wal_present: true,
+            wal_generation: Some(7),
+            wal_replay_start_lsn: Some(3),
+            next_lsn_after_replay: Some(9),
+            replayed_wal_entries: 4,
+            replayed_wal_bytes: 80,
+            torn_tail_ignored: true,
+            discarded_wal_tail_bytes: 6,
+            torn_tail_reason: Some("sealed tail".to_string()),
+            recovered_commit_epoch: 8,
+            ..Default::default()
+        };
+        let private = crate::projection::StorageRecoveryReport {
+            wal_present: true,
+            wal_generation: Some(8),
+            wal_replay_start_lsn: Some(9),
+            next_lsn_after_replay: Some(11),
+            replayed_wal_entries: 2,
+            replayed_wal_bytes: 40,
+            torn_tail_repaired: true,
+            discarded_wal_tail_bytes: 3,
+            torn_tail_reason: Some("private tail".to_string()),
+            recovered_commit_epoch: 10,
+            ..Default::default()
+        };
+
+        let combined = combine_recovery_reports(sealed, private);
+
+        assert_eq!(combined.wal_generation, Some(8));
+        assert_eq!(combined.wal_replay_start_lsn, Some(9));
+        assert_eq!(combined.next_lsn_after_replay, Some(11));
+        assert_eq!(combined.replayed_wal_entries, 6);
+        assert_eq!(combined.replayed_wal_bytes, 120);
+        assert!(combined.torn_tail_ignored);
+        assert!(combined.torn_tail_repaired);
+        assert_eq!(combined.discarded_wal_tail_bytes, 9);
+        assert_eq!(
+            combined.torn_tail_reason.as_deref(),
+            Some("sealed root WAL: sealed tail; private WAL: private tail")
+        );
+        assert_eq!(combined.recovered_commit_epoch, 10);
+    }
+
+    #[test]
     fn admits_a_child_directly_from_its_head_after_parent_directory_removal() {
         let project = temp_dir("direct-branch-admission");
         let parent_directory = project.join("former-parent");
@@ -1430,7 +1529,8 @@ mod tests {
 
         crate::branch_catalog::write_catalog(&catalog_path, &catalog)
             .expect("restore ready catalog before WAL corruption test");
-        let mut corrupted_private_wal = fs::read(&active_wal_path).expect("read child private WAL");
+        let original_private_wal = fs::read(&active_wal_path).expect("read child private WAL");
+        let mut corrupted_private_wal = original_private_wal.clone();
         corrupted_private_wal[0] ^= 0x01;
         fs::write(&active_wal_path, corrupted_private_wal).expect("corrupt child private WAL");
         assert!(matches!(
@@ -1445,6 +1545,33 @@ mod tests {
             }),
             Err(BranchAdmissionError::Recovery(_))
         ));
+
+        fs::write(&active_wal_path, original_private_wal)
+            .expect("restore child private WAL before torn-tail test");
+        let runtime_directory = child_directory.join("runtime");
+        fs::remove_dir_all(&runtime_directory).expect("remove prior successful runtime");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&active_wal_path)
+            .expect("open child private WAL for torn suffix")
+            .write_all(&[0x01])
+            .expect("append torn private WAL suffix");
+        assert!(matches!(
+            GraphStore::admit_branch_from_head(BranchAdmissionRequest {
+                catalog_path: &catalog_path,
+                branch_id: child_id,
+                expected_metadata_revision: 1,
+                head_path: &child_head_path,
+                immutable_store_root: &objects,
+                durability: DurabilityPolicy::default(),
+                replay_config: WalReplayConfig::default(),
+            }),
+            Err(BranchAdmissionError::Recovery(_))
+        ));
+        assert!(
+            !runtime_directory.exists(),
+            "failed admission must remove its materialized runtime"
+        );
 
         let _ = fs::remove_dir_all(project);
     }

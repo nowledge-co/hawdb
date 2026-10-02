@@ -111,7 +111,10 @@ mod graph_read;
 mod graph_recovery;
 #[path = "store/immutable_root.rs"]
 mod immutable_root;
-pub use immutable_root::PreparedImmutableRootHandoff;
+#[doc(hidden)]
+pub use immutable_root::{
+    AdmittedBranchStore, BranchAdmissionError, BranchAdmissionRequest, PreparedImmutableRootHandoff,
+};
 #[path = "store/relational_index_shadow.rs"]
 mod relational_index_shadow;
 #[path = "store/relational_row_pages.rs"]
