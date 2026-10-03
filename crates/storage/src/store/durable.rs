@@ -292,18 +292,7 @@ impl DurableStore {
         max_record_bytes: Option<usize>,
         max_batch_operations: Option<usize>,
     ) -> Result<Self> {
-        if !path.exists() {
-            return Err(HawDBError::Storage(format!(
-                "read-only database path does not exist: {}",
-                path.display()
-            )));
-        }
-        if !path.is_dir() {
-            return Err(HawDBError::Storage(format!(
-                "read-only database path is not a directory: {}",
-                path.display()
-            )));
-        }
+        Self::validate_read_only_path(path)?;
         Self::open_existing(
             path,
             durability,
@@ -319,6 +308,22 @@ impl DurableStore {
                 max_batch_operations,
             },
         )
+    }
+
+    pub(super) fn validate_read_only_path(path: &Path) -> Result<()> {
+        if !path.exists() {
+            return Err(HawDBError::Storage(format!(
+                "read-only database path does not exist: {}",
+                path.display()
+            )));
+        }
+        if !path.is_dir() {
+            return Err(HawDBError::Storage(format!(
+                "read-only database path is not a directory: {}",
+                path.display()
+            )));
+        }
+        Ok(())
     }
 
     pub(super) fn open_for_derived_repair(

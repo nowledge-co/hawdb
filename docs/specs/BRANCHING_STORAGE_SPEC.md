@@ -302,6 +302,11 @@ revision and metadata revision are nonnegative integer literals or positional
 parameters; request key and optional owner are string literals or parameters.
 The source token identifies committed state, not the catalog's birth epoch.
 `DROP` requires a UUID and metadata revision; no name-only delete is accepted.
+`AT REVISION` fences the first `Ready -> Deleting` transition. Once that exact
+UUID is `Deleting` or `Deleted`, deletion is a monotonic, idempotent request to
+finish or observe its existing outcome, including requests from another caller.
+It does not identify an individual caller's operation. A stale request against
+a still-`Ready` UUID fails, and a reused name never retargets an old request.
 Creating and dropping return the resulting catalog row, with one-row and
 payload admission checked before starting the mutation. A lost response may
 still leave a committed operation; create-key and exact-UUID retries recover

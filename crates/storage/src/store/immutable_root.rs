@@ -918,6 +918,30 @@ impl GraphStore {
         result
     }
 
+    /// Refresh administrative metadata without replacing a live branch runtime.
+    /// Its admitted head/root identity remains authoritative for the data plane.
+    #[doc(hidden)]
+    pub fn refresh_admitted_branch_metadata(
+        &mut self,
+        expected_metadata_revision: u64,
+    ) -> std::result::Result<(), BranchAdmissionError> {
+        self.ensure_usable()
+            .map_err(BranchAdmissionError::Recovery)?;
+        let branch = self
+            .durable
+            .as_mut()
+            .and_then(|durable| durable.branch_runtime.as_mut())
+            .ok_or(BranchAdmissionError::IdentityMismatch(
+                "store has no admitted branch",
+            ))?;
+        let id = branch_catalog::BranchId::new(hawdb_core::Uuid::from_bytes(branch.head.branch_id))
+            .map_err(|_| BranchAdmissionError::IdentityMismatch("invalid admitted branch UUID"))?;
+        let record = ready_branch_record(&branch.catalog_path, id, expected_metadata_revision)?;
+        validate_admission_binding(&record, &branch.head, &branch.root, branch.head.sealed_root)?;
+        branch.metadata_revision = expected_metadata_revision;
+        Ok(())
+    }
+
     pub(super) fn publish_admitted_branch_root(&mut self) -> Result<branch_head::BranchHead> {
         let branch = self
             .durable
@@ -2426,6 +2450,42 @@ mod tests {
             head
         );
         assert!(branch.store_mut().seal_admitted_branch(epoch).is_err());
+        drop(branch);
+        let branch = fixture.admit(fixture.main, DurabilityPolicy::default());
+        assert_eq!(branch.store().commit_epoch(), epoch);
+        assert_eq!(branch.store().node_count_for_label(None), 3);
+        assert_eq!(branch.store().relational_state().row_count("messages"), 1);
+    }
+
+    #[test]
+    fn stale_catalog_after_checkpoint_installation_poisons_before_head_handoff() {
+        let fixture = BranchFixture::new();
+        let mut branch = fixture.admit(fixture.main, DurabilityPolicy::default());
+        write_schema_and_graph(&mut branch);
+        let epoch = branch.store().commit_epoch();
+        let head = *branch.head();
+        let mut catalog = branch_catalog::read_catalog(&fixture.catalog_path).unwrap();
+        let record = catalog
+            .branches
+            .iter_mut()
+            .find(|record| record.id == fixture.main)
+            .unwrap();
+        record.metadata_revision += 1;
+        branch_catalog::write_catalog(&fixture.catalog_path, &catalog).unwrap();
+
+        let (store, schema) = branch.store_and_catalog_mut();
+        let error = store.checkpoint(schema).unwrap_err();
+        assert!(matches!(error, HawDBError::Storage(_)), "{error}");
+        assert!(store.storage_handle_poisoned());
+        assert_ne!(
+            store.durable.as_ref().unwrap().wal_generation,
+            head.active_wal.generation
+        );
+        assert_eq!(
+            branch_head::read_branch_head(&fixture.head_path(fixture.main)).unwrap(),
+            head
+        );
+        assert!(store.seal_admitted_branch(epoch).is_err());
         drop(branch);
         let branch = fixture.admit(fixture.main, DurabilityPolicy::default());
         assert_eq!(branch.store().commit_epoch(), epoch);

@@ -130,6 +130,7 @@ pub enum ExpectedErrorClass {
     Parse,
     Semantic,
     Storage,
+    FileDescriptors,
     Execution,
     CapabilityUnavailable,
 }
@@ -421,8 +422,8 @@ impl ExpectedErrorClass {
         match error {
             HawDBError::Parse(_) => Self::Parse,
             HawDBError::Semantic(_) => Self::Semantic,
+            HawDBError::FileDescriptors(_) => Self::FileDescriptors,
             HawDBError::Storage(_)
-            | HawDBError::FileDescriptors(_)
             | HawDBError::StorageIntegrity(_)
             | HawDBError::AppendSequenceExhausted { .. }
             | HawDBError::BranchBusy { .. } => Self::Storage,

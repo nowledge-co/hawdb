@@ -500,3 +500,57 @@ fn a_new_project_can_start_while_an_independent_project_is_full() {
     assert_eq!(second.project.metrics().high_water, 1);
     drop((first_owner, second_owner));
 }
+
+#[test]
+fn nested_admission_rejects_insufficient_remaining_quota_before_opening() {
+    let fixture = Fixture::new(3);
+    let outer = fixture.project.reserve_admission(2).unwrap();
+    let held = File::create(fixture.root.join("held")).unwrap();
+    let error = fixture.project.reserve_admission(2).unwrap_err();
+    assert_eq!(
+        file_descriptor_error(&error),
+        Some(FileDescriptorError::BudgetExceeded {
+            requested: 2,
+            available: 1,
+            limit: 3,
+        })
+    );
+    assert_eq!(fixture.project.metrics().open, 1);
+    assert_eq!(fixture.project.metrics().reserved, 1);
+    drop(held);
+    let nested = fixture.project.reserve_admission(2).unwrap();
+    assert_eq!(fixture.project.metrics().reserved, 2);
+    drop(nested);
+    drop(outer);
+    assert_eq!(fixture.project.metrics().reserved, 0);
+}
+
+#[test]
+fn failed_mutable_open_invalidates_binding_before_native_io() {
+    let fixture = Fixture::new(2);
+    let binding = fixture.binding("object", b"snapshot");
+    let alias = fixture.root.join("missing-directory/logical");
+    fixture
+        .project
+        .immutable_handles
+        .bind(&alias, binding)
+        .unwrap();
+    let mut snapshot = File::open(&alias).unwrap();
+    assert_eq!(
+        File::create(&alias).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert!(fixture
+        .project
+        .immutable_handles
+        .binding(&alias)
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        File::open(&alias).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    let mut text = String::new();
+    snapshot.read_to_string(&mut text).unwrap();
+    assert_eq!(text, "snapshot");
+}

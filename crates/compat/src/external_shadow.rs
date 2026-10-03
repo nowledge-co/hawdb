@@ -17,6 +17,7 @@ use super::{
     ProjectedGraphFixtureCheck, ProjectedGraphShadowOutput, ProjectedGraphShadowResult,
     ShadowRequestContext, ShadowRequestPhase, EXTERNAL_SHADOW_PROTOCOL_VERSION,
 };
+use hawdb_core::error::FileDescriptorError;
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_executor::{QueryOutput, Row};
 use std::collections::BTreeMap;
@@ -163,6 +164,7 @@ enum ExternalShadowErrorClass {
     Parse,
     Semantic,
     Storage,
+    FileDescriptors,
     Execution,
 }
 
@@ -458,7 +460,32 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
         error @ HawDBError::TransactionConflict { .. } => json_error("execution", error),
         error @ HawDBError::AppendSequenceExhausted { .. } => json_error("storage", error),
         error @ HawDBError::BranchBusy { .. } => json_error("storage", error),
-        error @ HawDBError::FileDescriptors(_) => json_error("storage", error),
+        HawDBError::FileDescriptors(error) => {
+            let details = match &error {
+                FileDescriptorError::InvalidBudget { limit } => serde_json::json!({
+                    "kind": "invalid_budget", "limit": limit,
+                }),
+                FileDescriptorError::ConfigurationConflict {
+                    configured,
+                    requested,
+                } => serde_json::json!({
+                    "kind": "configuration_conflict", "configured": configured, "requested": requested,
+                }),
+                FileDescriptorError::BudgetExceeded {
+                    requested,
+                    available,
+                    limit,
+                } => serde_json::json!({
+                    "kind": "budget_exceeded", "requested": requested, "available": available, "limit": limit,
+                }),
+                FileDescriptorError::OsLimit { requested, os_code } => serde_json::json!({
+                    "kind": "os_limit", "requested": requested, "os_code": os_code,
+                }),
+            };
+            let mut response = json_error("file_descriptors", &error);
+            response["error"]["details"] = details;
+            response
+        }
         error @ HawDBError::BranchCommandUnsupported { .. } => json_error("execution", error),
         HawDBError::CapabilityUnavailable { capability } => {
             json_error("capability_unavailable", capability.as_str())
@@ -1508,6 +1535,11 @@ fn error_from_external_response(engine_name: &str, error: &serde_json::Value) ->
         ExternalShadowErrorClass::Parse => HawDBError::Parse(message),
         ExternalShadowErrorClass::Semantic => HawDBError::Semantic(message),
         ExternalShadowErrorClass::Storage => HawDBError::Storage(message),
+        ExternalShadowErrorClass::FileDescriptors => descriptor_error_from_json(&error["details"])
+            .map(HawDBError::FileDescriptors)
+            .unwrap_or_else(|| {
+                HawDBError::Execution(format!("{message}: invalid descriptor error details"))
+            }),
         ExternalShadowErrorClass::Execution => HawDBError::Execution(message),
     }
 }
@@ -1518,10 +1550,37 @@ impl ExternalShadowErrorClass {
             "parse" => Some(Self::Parse),
             "semantic" => Some(Self::Semantic),
             "storage" => Some(Self::Storage),
+            "file_descriptors" => Some(Self::FileDescriptors),
             "execution" => Some(Self::Execution),
             _ => None,
         }
     }
+}
+
+fn descriptor_error_from_json(details: &serde_json::Value) -> Option<FileDescriptorError> {
+    let count = |name: &str| usize::try_from(details.get(name)?.as_u64()?).ok();
+    Some(match details.get("kind")?.as_str()? {
+        "invalid_budget" => FileDescriptorError::InvalidBudget {
+            limit: count("limit")?,
+        },
+        "configuration_conflict" => FileDescriptorError::ConfigurationConflict {
+            configured: count("configured")?,
+            requested: count("requested")?,
+        },
+        "budget_exceeded" => FileDescriptorError::BudgetExceeded {
+            requested: count("requested")?,
+            available: count("available")?,
+            limit: count("limit")?,
+        },
+        "os_limit" => FileDescriptorError::OsLimit {
+            requested: count("requested")?,
+            os_code: match details.get("os_code")? {
+                serde_json::Value::Null => None,
+                code => Some(i32::try_from(code.as_i64()?).ok()?),
+            },
+        },
+        _ => return None,
+    })
 }
 
 fn rows_from_json(engine_name: &str, value: &serde_json::Value) -> Result<Vec<Row>> {
@@ -1784,6 +1843,49 @@ fn tuple_error(engine_name: &str, field: &str) -> HawDBError {
 #[cfg(test)]
 mod protocol_server_tests {
     use super::*;
+
+    #[test]
+    fn descriptor_errors_round_trip_without_becoming_storage_corruption() {
+        for error in [
+            FileDescriptorError::InvalidBudget { limit: 0 },
+            FileDescriptorError::ConfigurationConflict {
+                configured: 64,
+                requested: 256,
+            },
+            FileDescriptorError::BudgetExceeded {
+                requested: 23,
+                available: 2,
+                limit: 64,
+            },
+            FileDescriptorError::OsLimit {
+                requested: 1,
+                os_code: Some(24),
+            },
+            FileDescriptorError::OsLimit {
+                requested: 1,
+                os_code: None,
+            },
+        ] {
+            let original = HawDBError::FileDescriptors(error);
+            let response = json_error_from_hawdb(original.clone());
+            assert_eq!(response["error"]["class"], "file_descriptors");
+            assert_eq!(
+                error_from_external_response("test", &response["error"]),
+                original
+            );
+            assert_eq!(
+                crate::ExpectedErrorClass::from_error(&original),
+                crate::ExpectedErrorClass::FileDescriptors
+            );
+        }
+        let corrupt = json_error_from_hawdb(HawDBError::StorageIntegrity("corrupt".into()));
+        assert_eq!(corrupt["error"]["class"], "storage");
+        let malformed = serde_json::json!({ "class": "file_descriptors", "details": { "kind": "budget_exceeded", "limit": -1 }});
+        assert!(matches!(
+            error_from_external_response("test", &malformed),
+            HawDBError::Execution(_)
+        ));
+    }
 
     #[derive(Default)]
     struct StubPreviousWrapperBackend {

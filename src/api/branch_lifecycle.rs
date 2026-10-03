@@ -1087,6 +1087,100 @@ mod tests {
     }
 
     #[test]
+    fn reselect_refreshes_ready_metadata_without_losing_private_wal_writes() {
+        let (path, mut database, main) = initialized_database();
+        let child = database.create_branch(create_request(&main)).unwrap();
+        database.use_branch(BranchSelector::Id(child.id)).unwrap();
+        database
+            .query("CREATE (:Memory {id: 'child-write'})")
+            .unwrap();
+        let epoch = database.commit_epoch();
+        let catalog_path = database.branch_catalog_path().unwrap();
+        let mut catalog = storage::read_catalog(&catalog_path).unwrap();
+        catalog
+            .rename(
+                storage::BranchId::new(child.id).unwrap(),
+                child.metadata_revision,
+                storage::BranchName::new("renamed").unwrap(),
+            )
+            .unwrap();
+        storage::write_catalog(&catalog_path, &catalog).unwrap();
+        database
+            .use_branch(BranchSelector::Name("renamed".into()))
+            .unwrap();
+        let current = database.current_branch().unwrap();
+        assert_eq!(current.info.name, "renamed");
+        assert_eq!(current.info.metadata_revision, child.metadata_revision + 1);
+        assert_eq!(database.commit_epoch(), epoch);
+        database.checkpoint().unwrap();
+        drop(database);
+        let mut database = Database::open(&path).unwrap();
+        database.use_branch(BranchSelector::Id(child.id)).unwrap();
+        assert_eq!(
+            database
+                .query("MATCH (m:Memory {id: 'child-write'}) RETURN m.id AS id")
+                .unwrap()
+                .rows
+                .len(),
+            1
+        );
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn create_preview_matches_completion_and_rejects_conflicting_receipts() {
+        let (path, mut database, main) = initialized_database();
+        let request = create_request(&main);
+        let preview = database.preview_create_branch(&request).unwrap();
+        let created = database.create_branch(request.clone()).unwrap();
+        assert_eq!(preview, created);
+        assert_eq!(database.preview_create_branch(&request).unwrap(), created);
+        let mut conflicting = request.clone();
+        conflicting.owner = Some("different-owner".into());
+        assert!(matches!(
+            database.preview_create_branch(&conflicting),
+            Err(BranchLifecycleError::Transition(
+                storage::CatalogTransitionError::Conflict(_)
+            ))
+        ));
+        let catalog_path = database.branch_catalog_path().unwrap();
+        let mut catalog = storage::read_catalog(&catalog_path).unwrap();
+        let record = catalog
+            .branches
+            .iter_mut()
+            .find(|record| record.id.as_uuid() == created.id)
+            .unwrap();
+        record.state = storage::BranchState::Creating;
+        record.create_outcome = storage::CreateOutcome::Pending;
+        record.metadata_revision = 9;
+        storage::write_catalog(&catalog_path, &catalog).unwrap();
+        assert_eq!(
+            database
+                .preview_create_branch(&request)
+                .unwrap()
+                .metadata_revision,
+            10
+        );
+        let record = catalog
+            .branches
+            .iter_mut()
+            .find(|record| record.id.as_uuid() == created.id)
+            .unwrap();
+        record.state = storage::BranchState::Deleted;
+        record.create_outcome = storage::CreateOutcome::Aborted;
+        storage::write_catalog(&catalog_path, &catalog).unwrap();
+        assert!(matches!(
+            database.preview_create_branch(&request),
+            Err(BranchLifecycleError::Transition(
+                storage::CatalogTransitionError::InvalidState(_)
+            ))
+        ));
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn inspects_the_durable_branch_catalog_through_sql() {
         let (path, mut database, main) = initialized_database();
         let child = database.create_branch(create_request(&main)).unwrap();
@@ -1915,6 +2009,11 @@ pub(super) struct CurrentBranch {
 }
 
 fn create_result_info(branch: &storage::BranchRecord) -> Result<BranchInfo, BranchLifecycleError> {
+    if branch.create_outcome == storage::CreateOutcome::Aborted {
+        return Err(BranchLifecycleError::Transition(
+            storage::CatalogTransitionError::InvalidState("branch creation was aborted"),
+        ));
+    }
     let mut info = branch_info(branch);
     if branch.create_outcome == storage::CreateOutcome::Pending {
         info.state = BranchLifecycleState::Ready;
@@ -2036,13 +2135,11 @@ impl Database {
             && selection.record.id == record.id
         {
             if selection.record.metadata_revision != record.metadata_revision {
-                return Err(BranchLifecycleError::Transition(
-                    storage::CatalogTransitionError::StaleRevision {
-                        expected: selection.record.metadata_revision,
-                        actual: record.metadata_revision,
-                    },
-                ));
+                self.store
+                    .refresh_admitted_branch_metadata(record.metadata_revision)
+                    .map_err(BranchLifecycleError::Admission)?;
             }
+            self.branch_selection = Some(BranchSelection { record });
             return Ok(());
         }
         // Until background claims own independently pinned branch runtimes,
@@ -2401,6 +2498,13 @@ impl Database {
             .iter()
             .find(|branch| branch.create_request_key == request.idempotency_key)
         {
+            if existing.request_fingerprint != request_fingerprint(request) {
+                return Err(BranchLifecycleError::Transition(
+                    storage::CatalogTransitionError::Conflict(
+                        "create request key has a different fingerprint",
+                    ),
+                ));
+            }
             return create_result_info(existing);
         }
         let id_bytes = *hawdb_integrity::sha256(request.idempotency_key.as_bytes()).as_bytes();
@@ -2417,15 +2521,32 @@ impl Database {
             .iter()
             .find(|branch| selector_matches(branch, &request.parent))
             .ok_or(BranchLifecycleError::UnknownBranch)?;
-        Ok(BranchInfo {
-            id,
-            name: name.as_str().into(),
-            parent_id: Some(parent.id.as_uuid()),
+        let create = storage::CreateRequest {
+            id: branch_id,
+            name,
+            parent_id: parent.id,
             source_commit_epoch: request.expected_source_commit_epoch,
-            metadata_revision: 2,
-            state: BranchLifecycleState::Ready,
+            base_root_digest: parent
+                .base_root_digest
+                .ok_or(BranchLifecycleError::Transition(
+                    storage::CatalogTransitionError::InvalidState(
+                        "create parent has no sealed root",
+                    ),
+                ))?,
             owner: request.owner.clone(),
-        })
+            request_key: request.idempotency_key.clone(),
+            request_fingerprint: request_fingerprint(request),
+        };
+        let mut candidate = catalog;
+        candidate
+            .reserve_create(create)
+            .map_err(BranchLifecycleError::Transition)?;
+        let reserved = candidate
+            .branches
+            .iter()
+            .find(|branch| branch.id == branch_id)
+            .ok_or(BranchLifecycleError::UnknownBranch)?;
+        create_result_info(reserved)
     }
 
     /// Creates an isolated child branch from an exact committed source. The

@@ -27,7 +27,7 @@ use std::num::NonZeroU64;
 use std::num::NonZeroUsize;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -180,7 +180,7 @@ pub struct FileSegmentRangeReader {
 struct RegisteredArtifact {
     path: PathBuf,
     file: OnceLock<File>,
-    registration: std::io::Result<ArtifactFileRegistration>,
+    registration: OnceLock<ArtifactFileRegistration>,
 }
 
 #[derive(Debug)]
@@ -188,6 +188,33 @@ struct ArtifactFileRegistration {
     context: crate::file_descriptors::FileOpenContext,
     handles: Arc<crate::immutable_files::ImmutableFileHandles>,
     binding: Option<crate::immutable_files::ImmutableFileBinding>,
+}
+
+impl ArtifactFileRegistration {
+    fn capture(path: &Path) -> std::io::Result<Self> {
+        let context = crate::file_descriptors::context_for_path(path)?;
+        let handles = context.state.immutable_handles();
+        let binding = handles.binding(path)?;
+        Ok(Self {
+            context,
+            handles,
+            binding,
+        })
+    }
+}
+
+impl RegisteredArtifact {
+    fn registration(&self) -> std::io::Result<&ArtifactFileRegistration> {
+        if let Some(registration) = self.registration.get() {
+            return Ok(registration);
+        }
+        let registration = ArtifactFileRegistration::capture(&self.path)?;
+        let _ = self.registration.set(registration);
+        Ok(self
+            .registration
+            .get()
+            .expect("the current or a concurrent reader registered the artifact"))
+    }
 }
 
 impl FileSegmentRangeReader {
@@ -209,16 +236,12 @@ impl FileSegmentRangeReader {
 
     pub fn register(&mut self, artifact_id: u64, path: impl Into<PathBuf>) -> Option<PathBuf> {
         let path = path.into();
-        let registration = (|| {
-            let context = crate::file_descriptors::context_for_path(&path)?;
-            let handles = context.state.immutable_handles();
-            let binding = handles.binding(&path)?;
-            Ok(ArtifactFileRegistration {
-                context,
-                handles,
-                binding,
-            })
-        })();
+        // Preserve a captured snapshot identity, but retry transient failures
+        // on read instead of poisoning the artifact for its entire lifetime.
+        let registration = OnceLock::new();
+        if let Ok(captured) = ArtifactFileRegistration::capture(&path) {
+            let _ = registration.set(captured);
+        }
         self.artifacts
             .insert(
                 artifact_id,
@@ -270,13 +293,9 @@ impl FileSegmentRangeReader {
                 artifact_id: range.artifact_id,
                 length: range.length.get(),
             })?;
-        let registration = artifact.registration.as_ref().map_err(|source| {
-            let error = match hawdb_core::error::file_descriptor_error(source) {
-                Some(error) => std::io::Error::other(error),
-                None => std::io::Error::new(source.kind(), source.to_string()),
-            };
-            range_io_error(range, error)
-        })?;
+        let registration = artifact
+            .registration()
+            .map_err(|source| range_io_error(range, source))?;
         let shared = registration
             .binding
             .as_ref()
@@ -1387,5 +1406,37 @@ mod tests {
             std::process::id(),
             nonce
         ))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn registration_retries_after_current_directory_resolution_failure() {
+        const CHILD_MARKER: &str = "HAWDB_READER_REGISTRATION_RETRY_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "scan::reader::tests::registration_retries_after_current_directory_resolution_failure", "--nocapture", "--test-threads=1"])
+                .env(CHILD_MARKER, "1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        // Isolate the process-wide cwd fault from other parallel tests.
+        let original = std::env::current_dir().unwrap();
+        let directory = unique_test_file("registration-retry");
+        let removed = directory.join("removed");
+        std::fs::create_dir_all(&removed).unwrap();
+        std::env::set_current_dir(&removed).unwrap();
+        std::fs::remove_dir(&removed).unwrap();
+        assert!(std::env::current_dir().is_err());
+        let mut reader = FileSegmentRangeReader::new();
+        reader.register(7, "artifact");
+        let range = SegmentReadRange::new(7, 1, 0, NonZeroU64::new(4).unwrap());
+        assert!(reader.read_range(&range).is_err());
+        std::env::set_current_dir(&directory).unwrap();
+        std::fs::write("artifact", b"data").unwrap();
+        let bytes = reader.read_range(&range).unwrap();
+        assert_eq!(bytes.as_ref(), b"data");
+        drop(reader);
+        std::env::set_current_dir(original).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

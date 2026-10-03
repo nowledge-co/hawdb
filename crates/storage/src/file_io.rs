@@ -343,17 +343,18 @@ impl OpenOptions {
             });
         }
         let permit = context.acquire(self.kind)?;
-        let inner = self
-            .inner
-            .open(path)
-            .map_err(|error| context.map_open_error(error))?;
         // Later readers must see the mutable path. Existing logical readers
         // retain their captured immutable identity and remain snapshot-safe.
+        // Invalidate before the native open can truncate or modify the path.
         if (mutable || self.native_options)
             && let Some(handles) = handles
         {
             handles.unbind(path)?;
         }
+        let inner = self
+            .inner
+            .open(path)
+            .map_err(|error| context.map_open_error(error))?;
         Ok(File {
             backing: FileBacking::Native(NativeFile { inner, permit }),
         })

@@ -383,18 +383,27 @@ impl ProjectFileDescriptors {
     /// candidate validation. Nested storage calls borrow the outer operation's
     /// quota; independent contexts can use the remaining project capacity.
     pub(crate) fn reserve_admission(&self, minimum: usize) -> io::Result<DescriptorReservation> {
-        if let Some(inventory) = FileOpenContext::from_state(self.state.clone()).inventory
-            && inventory
+        if let Some(inventory) = FileOpenContext::from_state(self.state.clone()).inventory {
+            let inner = inventory
                 .inner
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .active
-        {
-            return Ok(DescriptorReservation {
-                inventory,
-                owns_inventory: false,
-                _thread: PhantomData,
-            });
+                .unwrap_or_else(|error| error.into_inner());
+            if inner.active {
+                if inner.remaining < minimum {
+                    self.state.record_budget_rejection();
+                    return Err(io::Error::other(FileDescriptorError::BudgetExceeded {
+                        requested: minimum,
+                        available: inner.remaining,
+                        limit: self.state.limit,
+                    }));
+                }
+                drop(inner);
+                return Ok(DescriptorReservation {
+                    inventory,
+                    owns_inventory: false,
+                    _thread: PhantomData,
+                });
+            }
         }
         self.reserve(minimum)
     }

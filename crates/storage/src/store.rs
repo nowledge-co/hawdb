@@ -1613,6 +1613,9 @@ impl GraphStore {
                 )?
             }
             DurableOpenMode::ExistingOnly => {
+                // Preserve the read-only path contract before descriptor-domain
+                // canonicalization can replace it with an unclassified IO error.
+                DurableStore::validate_read_only_path(path.as_ref())?;
                 crate::file_descriptors::ProjectFileDescriptors::acquire_existing(
                     path.as_ref(),
                     replay_config.max_open_files,
@@ -1808,10 +1811,8 @@ impl GraphStore {
                 "derived repair requires strict WAL replay".to_string(),
             ));
         }
-        let _project_files = crate::file_descriptors::ProjectFileDescriptors::acquire_containing(
-            path,
-            replay_config.max_open_files,
-        )?;
+        let _project_files =
+            crate::file_descriptors::ProjectFileDescriptors::acquire_component(path, false)?;
         let total_open_started = std::time::Instant::now();
         let durable_manifest_open_started = std::time::Instant::now();
         let durable = DurableStore::open_for_derived_repair(
@@ -3263,6 +3264,42 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn derived_repair_borrows_existing_custom_descriptor_budget() {
+        let path = unique_test_dir("derived_repair_custom_descriptors");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            WalReplayConfig {
+                max_open_files: 64,
+                ..WalReplayConfig::default()
+            },
+        )
+        .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        let domain =
+            crate::file_descriptors::ProjectFileDescriptors::acquire_existing(&path, 64).unwrap();
+        drop(store);
+        let (repaired, _, _) =
+            GraphStore::open_for_derived_repair(&path, WalReplayConfig::default()).unwrap();
+        assert_eq!(repaired.file_descriptor_metrics().unwrap().limit, 64);
+        assert!(matches!(
+            crate::file_descriptors::ProjectFileDescriptors::acquire_existing(&path, 256),
+            Err(HawDBError::FileDescriptors(
+                hawdb_core::error::FileDescriptorError::ConfigurationConflict {
+                    configured: 64,
+                    requested: 256
+                }
+            ))
+        ));
+        drop(repaired);
+        assert_eq!(domain.metrics().open, 0);
+        drop(domain);
+        fs::remove_dir_all(path).unwrap();
+    }
 
     use super::{
         canonical_adjacency_artifact_generation_file, canonical_manifest_generation_file,

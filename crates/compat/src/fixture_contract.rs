@@ -196,6 +196,7 @@ fn expected_error_contract_json(error: ExpectedErrorClass) -> &'static str {
         ExpectedErrorClass::Parse => "parse",
         ExpectedErrorClass::Semantic => "semantic",
         ExpectedErrorClass::Storage => "storage",
+        ExpectedErrorClass::FileDescriptors => "file_descriptors",
         ExpectedErrorClass::Execution => "execution",
         ExpectedErrorClass::CapabilityUnavailable => "capability_unavailable",
     }
