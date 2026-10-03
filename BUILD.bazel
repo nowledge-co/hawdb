@@ -419,6 +419,7 @@ test_suite(
         ":hawdb_process_memory_policy_contract_tests",
         ":hawdb_process_memory_policy_contract_minimal_tests",
         ":hawdb_search_lexical_corpus_qualification_tests",
+        ":hawdb_wasm_playground_bridge_tests",
         ":hawdb_unit_fast_tests",
         ":hawdb_unit_storage_crash_matrix_tests",
     ],
@@ -431,6 +432,14 @@ rust_test(
     srcs = ["tests/in_memory_portable.rs"],
     edition = "2024",
     deps = [":hawdb_minimal"],
+)
+
+rust_test(
+    name = "hawdb_wasm_playground_bridge_tests",
+    crate_root = "examples/wasm_playground.rs",
+    srcs = ["examples/wasm_playground.rs"],
+    edition = "2024",
+    deps = [":hawdb_minimal"] + all_crate_deps(normal = True),
 )
 
 # External embedded-library consumer; no internal owner imports.

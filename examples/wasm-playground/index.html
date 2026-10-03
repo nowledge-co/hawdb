@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>HawDB · Browser query playground</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      body { max-width: 960px; margin: 3rem auto; padding: 0 1.25rem; }
+      h1 { margin-bottom: .5rem; }
+      p { line-height: 1.6; }
+      textarea, pre { box-sizing: border-box; width: 100%; padding: 1rem; border: 1px solid #888; border-radius: .4rem; font: .95rem/1.5 ui-monospace, monospace; }
+      textarea { min-height: 9rem; resize: vertical; }
+      pre { min-height: 10rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+      button { padding: .65rem 1rem; margin: .5rem .5rem .5rem 0; cursor: pointer; }
+      button:disabled { cursor: wait; }
+      #status { display: inline-block; }
+      .note { border-left: 3px solid #b48b47; padding-left: 1rem; }
+    </style>
+  </head>
+  <body>
+    <h1>HawDB query playground</h1>
+    <p>Run Cypher locally in a dedicated browser Worker. Experimental, in-memory storage: <strong>reloading this page clears all data.</strong></p>
+    <p class="note">Run the create example first, then read or traverse it. Results use typed JSON; int64 and float64 values are strings to preserve precision. Queries allow 256 result rows and 1 MiB of engine payload; encoded JSON has a separate 8 MiB display limit. Wide or nested results can reach the display limit first. The cooperative query deadline is 5 seconds.</p>
+    <nav aria-label="Example queries">
+      <button type="button" data-query="CREATE (:Memory {id: 9223372036854775807, title: 'Browser memory'})-[:MENTIONS]-&gt;(:Entity {name: 'HawDB'})">1. Create graph</button>
+      <button type="button" data-query="MATCH (m:Memory) RETURN m.id AS id, m.title AS title">2. Read nodes</button>
+      <button type="button" data-query="MATCH (m:Memory)-[:MENTIONS]-&gt;(e:Entity) RETURN m.title AS title, e.name AS name">3. Traverse</button>
+    </nav>
+    <form>
+      <label for="query">Cypher query</label>
+      <textarea id="query" spellcheck="false">CREATE (:Memory {id: 9223372036854775807, title: 'Browser memory'})-[:MENTIONS]-&gt;(:Entity {name: 'HawDB'})</textarea>
+      <button type="submit" disabled>Run query</button>
+      <span id="status" role="status" aria-live="polite">Loading HawDB…</span>
+    </form>
+    <h2>Result</h2>
+    <pre id="result" aria-label="Query result">No query submitted.</pre>
+    <p>No persistence, search extensions, or database server. Reload after a Worker failure. <a href="https://github.com/nowledge-co/hawdb/blob/main/docs/WASM.md">Build instructions and supported scope</a></p>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

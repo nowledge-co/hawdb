@@ -372,6 +372,9 @@ impl ImmutableObjectStore {
             // A lease prevents removal, never metadata validation. A head
             // cannot describe unpublished candidates or old reader pins, so
             // retain them while any owner is active.
+            // Tracking precise publication and historical-reader roots across
+            // owners is follow-up #778. A publication-only flag cannot protect
+            // snapshots of an older head after publication has completed.
             return Ok(ReclamationReport {
                 retained_objects: inventory.objects.len() as u64,
                 reclaimed_objects: 0,
