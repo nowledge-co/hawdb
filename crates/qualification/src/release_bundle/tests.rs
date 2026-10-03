@@ -369,6 +369,100 @@ fn top_level_ready_cannot_hide_invalid_raw_storage_evidence() {
 }
 
 #[test]
+fn graph_storage_profile_rejects_unbound_identity() {
+    let expected = identity("linux", "x86_64");
+    for (pointer, replacement, blocker) in [
+        ("/evidence_binding", Value::Null, "evidence_binding_invalid"),
+        (
+            "/evidence_binding/identity/source_revision",
+            serde_json::json!("b".repeat(40)),
+            "evidence_binding_mismatch",
+        ),
+        (
+            "/evidence_binding/generated_at_unix_seconds",
+            serde_json::json!(0),
+            "evidence_binding_mismatch",
+        ),
+        (
+            "/expected_identity",
+            Value::Null,
+            "storage_profile_expected_identity_mismatch",
+        ),
+        (
+            "/expected_identity/dataset_fingerprint",
+            serde_json::json!("another-dataset"),
+            "storage_profile_expected_identity_mismatch",
+        ),
+        (
+            "/canonical_graph_commit_epoch",
+            serde_json::json!(expected.canonical_graph_commit_epoch + 1),
+            "storage_profile_graph_epoch_mismatch",
+        ),
+    ] {
+        let mut artifact = graph(&expected);
+        *artifact["storage_resource_profile"]
+            .pointer_mut(pointer)
+            .expect("profile field exists") = replacement;
+        let blockers = graph_search::validate_graph(&artifact, &expected);
+        assert!(
+            blockers.iter().any(|code| code == blocker),
+            "profile {pointer} was not rejected: {blockers:?}"
+        );
+    }
+}
+
+#[test]
+fn graph_storage_profile_recomputes_larger_than_cache() {
+    let expected = identity("linux", "x86_64");
+    let mut valid = graph(&expected);
+    valid["storage_resource_profile"]["storage"]["segment_cache_capacity_bytes"] =
+        serde_json::json!(1_999);
+    assert!(graph_search::validate_graph(&valid, &expected).is_empty());
+    for capacity in [
+        serde_json::json!(2_000),
+        serde_json::json!(2_001),
+        Value::Null,
+    ] {
+        let mut artifact = graph(&expected);
+        artifact["storage_resource_profile"]["storage"]["segment_cache_capacity_bytes"] =
+            capacity.clone();
+        let blockers = graph_search::validate_graph(&artifact, &expected);
+        assert!(
+            blockers
+                .iter()
+                .any(|code| code == "canonical_does_not_exceed_cache"),
+            "cache capacity {capacity} was not rejected: {blockers:?}"
+        );
+    }
+}
+
+#[test]
+fn graph_index_matrix_rejects_a_profile_from_another_release() {
+    let expected = identity("linux", "x86_64");
+    let mut stale = expected.clone();
+    stale.source_revision = "b".repeat(40);
+    let mut artifact = graph_index_matrix(&expected);
+    let profile = &mut artifact["cases"][0]["storage_resource_profile"];
+    profile["evidence_binding"] = binding(&stale);
+    profile["expected_identity"] = stale.json();
+    let report = evaluate_production_release_qualification_bundle(
+        ProductionReleaseQualificationArtifacts {
+            graph_index_matrix: Some(artifact),
+            ..ProductionReleaseQualificationArtifacts::default()
+        },
+        expected,
+        ProductionReleaseQualificationPolicy::default(),
+    );
+
+    assert!(!report.graph_index_matrix.ready);
+    assert!(report
+        .graph_index_matrix
+        .blocker_codes
+        .iter()
+        .any(|code| code.ends_with("_evidence_binding_mismatch")));
+}
+
+#[test]
 fn graph_resource_series_cannot_drop_the_cold_run() {
     let expected = identity("linux", "x86_64");
     let mut artifact = graph(&expected);
@@ -1654,6 +1748,9 @@ fn graph(identity: &ProductionQualificationIdentity) -> Value {
             "resource_ready": true,
             "ready": true,
             "blocker_codes": [],
+            "evidence_binding": binding(identity),
+            "expected_identity": identity.json(),
+            "canonical_graph_commit_epoch": identity.canonical_graph_commit_epoch,
             "identity_matches_expected": true,
             "limits": {
                 "min_canonical_artifact_bytes": 1_000,
