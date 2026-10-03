@@ -19994,8 +19994,8 @@ pub(super) fn execute_database_transaction_prepared_sql(
             pending_generated_read_table.expect("pending generated table was checked")
         )));
     }
-    if let Some(plan) = crate::relational_sql::compile_append_select_sql(
-        sql_text,
+    if let Some(plan) = crate::relational_sql::compile_prepared_append_select_sql(
+        &prepared.template,
         parameters,
         &state.append_state,
         runtime.config.max_read_result_rows.unwrap_or(usize::MAX),
@@ -20017,8 +20017,8 @@ pub(super) fn execute_database_transaction_prepared_sql(
             rows: crate::relational_sql::project_append_rows(&plan, &output.rows)?.into(),
         }));
     }
-    if let Some(plan) = crate::relational_sql::compile_append_explain_sql(
-        sql_text,
+    if let Some(plan) = crate::relational_sql::compile_prepared_append_explain_sql(
+        &prepared.template,
         parameters,
         &state.append_state,
         runtime.config.max_read_result_rows.unwrap_or(usize::MAX),
@@ -21767,8 +21767,8 @@ where
             return Ok(output);
         }
 
-        if let Some(plan) = crate::relational_sql::compile_append_select_sql(
-            sql_text,
+        if let Some(plan) = crate::relational_sql::compile_prepared_append_select_sql(
+            &prepared.template,
             parameters,
             self.store.append_state(),
             max_rows.unwrap_or(usize::MAX),
@@ -21785,8 +21785,8 @@ where
                 rows: crate::relational_sql::project_append_rows(&plan, &output.rows)?.into(),
             });
         }
-        if let Some(plan) = crate::relational_sql::compile_append_explain_sql(
-            sql_text,
+        if let Some(plan) = crate::relational_sql::compile_prepared_append_explain_sql(
+            &prepared.template,
             parameters,
             self.store.append_state(),
             max_rows.unwrap_or(usize::MAX),
