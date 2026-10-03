@@ -667,3 +667,110 @@ invocation passed 97 targets and timed out graph-projection residency fuzz at
 retained. The new prepared-dispatch regression also passes directly in its
 Bazel-built relational test binary (one passed, 162 filtered). The abstract
 TLC result is not a Rust refinement proof; the publication protocol is unchanged.
+
+## Row-root descriptor reuse follow-up: October 3, 2026 (UTC)
+
+The [complete recording](CONCURRENT_ROW_DESCRIPTOR_REUSE_DIAGNOSTIC.json)
+isolates this change against preceding PR runtime `dc552573`, which includes the
+checkpoint/WAL generation correction. Candidate runtime is
+`6d180c14aa700dffdf6201c9d711420c3f4ff628`; source SHA-256 is
+`fbcbb115eb40820cf4554b325e90325b7d53141babc6a78acb95514a0fafd695`. This comparison is against the preceding
+PR, rather than main. The historical current-main latency failures remain recorded.
+
+The existing row-root binary search formerly read its selected descriptor again
+after locating it. It now reuses a verified candidate and stops as soon as the
+key falls within a visited page's nonoverlapping bounds. Keys below the table,
+in gaps, and above the table retain their previous descriptor-selection behavior.
+Every visited descriptor still verifies its binding and physical-generation
+metadata. The change adds no index, public API, persistent format, or retained
+file handle. It keeps at most one candidate descriptor alongside the current
+probe, bounded by the existing key limits.
+
+The new regression compares results with a linear bound scan for empty, one-page,
+and multiple-page roots, including gaps and outside keys. It fails on the old
+implementation's redundant descriptor read. Selected-entry corruption is also
+checked through the search path. Tree-height admission and page/row/hydration
+budgets remain unchanged; observed `descriptor_reads` now counts fewer reads.
+
+### Typed snapshot I/O diagnostic
+
+The same embedded-library probe runs three rounds per fresh persistent fixture,
+with 512 point requests and 128 ordered 32-row page requests per round. It checks
+all five columns of every returned row and uses the existing typed SQL profiler.
+Both variants report identical logical pages, physical pages, and cache hits in
+each round. Point round one loads 64 physical pages; later point rounds and all
+page rounds use warm data pages. Reopen checks the total row count; the separate
+matrix below checks the complete recovered contents.
+
+| Case | Descriptor reads per round, before -> after | Reads per request, before -> after | Median round average us, before -> after |
+| --- | --- | --- | --- |
+| point, 512 requests | 3,600 -> 2,624 | 7.03125 -> 5.125 | 41.48 -> 37.96 |
+| page, 128 requests | 28,800 -> 20,992 | 225 -> 164 | 1,082.95 -> 965.59 |
+
+Descriptor reads fall 27.1% in both cases in every round. Median per-round average
+elapsed times fall 8.5% and 10.8%, respectively. These timings include profiling
+and result assertions; they are diagnostic averages, not request percentiles.
+
+### Complete durable matrix
+
+The unchanged harness SHA-256 remains
+`bae86e60026d86161062eff23d560b1559eae4ab4aa342d633fd8c6714958490`. Verified distinct release binaries execute the
+fixed baseline/candidate, candidate/baseline, baseline/candidate sequence. Each
+process retains all 13 cases: 141,312 timed requests and 1,299,456 recovered rows
+validate across the six runs. Independent reconstruction checks quantiles,
+worker/request intervals, overlap, throughput, counts, and recovered epochs.
+The same macOS/APFS host, pinned Rust 1.97.1, default features, opt-level 3,
+thin LTO, one codegen unit, `Auto` residency, default `SyncOnEveryWrite`, and
+disabled group commit apply. All task-started builds and tests finish before
+measurement, and the workspace Bazel server is stopped. Background host load,
+CPU placement, and cache state remain uncontrolled.
+
+Each cell gives p95 changes in pairs one, two, and three; positive values are
+regressions. Every raw run is retained with hashes in
+`/private/tmp/hawdb-pr826-descriptor-reuse`, alongside probe/runner/validator
+sources and build receipts.
+
+| Case | Read p95 change | Write p95 change |
+| --- | --- | --- |
+| writer-only | - | +57.1%, +0.8%, +25.6% |
+| point-1-readers-writer-false | +5.2%, +0.5%, +1.9% | - |
+| point-1-readers-writer-true | +5.8%, -3.0%, -14.0% | +16.8%, +0.9%, +11.7% |
+| point-4-readers-writer-false | -45.2%, -9.3%, -4.5% | - |
+| point-4-readers-writer-true | -51.3%, -11.5%, -14.1% | +47.8%, +0.3%, +12.5% |
+| point-8-readers-writer-false | -23.4%, -15.1%, -20.4% | - |
+| point-8-readers-writer-true | -25.4%, -20.9%, -18.9% | +47.3%, +0.7%, -0.0% |
+| page-1-readers-writer-false | -12.0%, -1.3%, -3.5% | - |
+| page-1-readers-writer-true | -14.0%, +1.9%, -1.5% | +0.7%, -0.7%, -0.4% |
+| page-4-readers-writer-false | -7.9%, -9.5%, -11.1% | - |
+| page-4-readers-writer-true | -6.2%, -67.8%, -16.7% | -7.0%, -0.4%, +0.8% |
+| page-8-readers-writer-false | -35.5%, -34.7%, -15.9% | - |
+| page-8-readers-writer-true | -19.4%, -29.5%, -18.0% | +46.5%, +25.5%, +9.4% |
+
+This establishes a bounded descriptor-I/O reduction against the preceding PR.
+Four- and eight-reader read-only point p95 improve in every pair, as do read-only
+pages at every measured reader count. Writer-only p95 rises in all three pairs
+(+57.1%, +0.8%, +25.6%), and one-reader read-only point p95 also rises
+(+5.2%, +0.5%, +1.9%). Several mixed-write tails regress. These measurements
+do not attribute the writer regression to a component or establish a portable
+no-regression result. The change does not complete #226's representative workload or single-stream latency
+acceptance, or qualify Linux/Windows latency, production Mem, capacity, or
+simulated power loss. All preceding failed cohorts remain scoped to their own
+revisions. The PR remains Ready for review.
+
+### Runtime validation
+
+Pinned-toolchain storage tests pass: 983 passed/29 ignored; the focused
+descriptor filter passes 56 tests. The Bazel facade suite discovers 1,664
+passed/4 ignored/1 filtered. Native formatting and strict workspace Clippy for
+all targets/features pass explicitly and in commit hooks. Minimal browser WASM
+strict Clippy also passes (compile/lint evidence only).
+
+The full Bazel API/storage/ConcurrentSnapshots/local-fuzz selection finishes
+98/98 passed on the identical retry: eight executed and 90 cached. The first
+invocation had 90 passing targets and eight timeouts, with 80 executed and 18
+cached. All eight timeout logs and retry outcomes are retained, including the
+60-second and 300-second limits. No timeout, seed, corpus, or configuration was
+changed. The cached abstract ConcurrentSnapshots TLC result is not a Rust
+refinement proof. The row-demand model abstracts descriptor admission and does
+not model these binary-search probes; its admission/publication/pinning/budget
+protocol is unchanged. No formal binary-search proof is claimed.
