@@ -172,15 +172,18 @@ from the current acquisition/publication implementation.
 ## Linux read-acquisition comparison: October 3, 2026
 
 The [publication recording](CONCURRENT_READ_PUBLICATION_LINUX_RECORDING.json)
-preserves three complete campaigns, each containing three alternating fresh-process
+preserves four complete campaigns, each containing three alternating fresh-process
 pairs and all 78 case summaries. Each campaign validates 141,312 timed requests
 and 1,299,456 rows in full recovery scans. Raw samples and preserved binaries are
 in `target/benchmarks/226-read-publication` and
 `target/benchmarks/226-read-publication-atomic`, and
-`target/benchmarks/226-read-publication-shared-log` respectively.
+`target/benchmarks/226-read-publication-shared-log` for the first three campaigns.
+The fourth, described in the current-main follow-up below, remains in
+`target/benchmarks/226-read-publication-main804-linux`.
 
-All campaigns compare main `606e308bdf888fa94b50e9e0e501b2d1934b4886` against the
-independent read-publication implementation, using identical harness bytes
+The first three campaigns compare main
+`606e308bdf888fa94b50e9e0e501b2d1934b4886` against the independent read-publication
+implementation, using identical harness bytes
 (SHA-256 `bae86e60026d86161062eff23d560b1559eae4ab4aa342d633fd8c6714958490`).
 The recording includes candidate source hashes, binary hashes, process resource
 usage, raw-output checksums, and every case summary. Rust 1.97.1, default Cargo
@@ -487,3 +490,73 @@ The median of three per-round average point times is 27.20 -> 25.23 microseconds
 page times are 71.57 -> 69.24, and concurrent-write times are 138.37 -> 141.41.
 These timings include result assertions and allocator instrumentation, use
 in-memory databases, and are not durable request percentiles.
+
+## Linux current-main follow-up: October 3, 2026 (UTC)
+
+The fourth cohort in the [Linux recording](CONCURRENT_READ_PUBLICATION_LINUX_RECORDING.json)
+compares main `804f1a6139f73470c58167411f6cad871efffdbf` with documentation head
+`88a98036b7dcda8aa09d195a8729b2ced2c80d45`, whose runtime code is `9bdfeaf0`.
+This includes the main branch/descriptor changes on both sides and the SQL
+publication borrowing and primary-key capacity hint on the candidate. It is a
+separate cohort from the earlier Linux and macOS comparisons.
+
+Both complete benchmark binaries were built from verified sources in separate
+Cargo target directories. Features and compiler profiles match: Rust 1.97.1,
+default features, opt-level 3, thin LTO, one codegen unit, and the unchanged
+harness. The baseline binary SHA-256 is
+`49326d64bed800e3d3ba3675c5828c49952dabfa75590ff60d5bfc0cfb396aee`;
+the candidate is
+`dbab3a0247642db1aa52222ea662045566571c5b2a591fd3845774f19e0667bc`.
+The build receipts include source locations, features, profiles, library hashes,
+and compiler output hashes.
+
+The host remains the AMD Ryzen 7 7735HS Linux workstation with NVMe/Btrfs fixture
+placement. The workspace Bazel server was stopped and no task-started build or
+test overlapped timing. Background host load, CPU placement, and cache state
+were not controlled. Default `SyncOnEveryWrite`, disabled group commit, and the
+fixed baseline/candidate, candidate/baseline, baseline/candidate order remain
+unchanged. Every process executes all 13 cases. An independent reconstruction
+validates all 141,312 request intervals, worker and case quantiles, overlap,
+throughput, counts, and recovered epochs; the harness checks all 1,299,456
+recovered rows. All six runs are retained.
+
+Each cell gives the request p95 change for pairs one, two, and three. Positive
+values are regressions; samples are not pooled across pairs or hosts.
+
+| Case | Read p95 change | Write p95 change |
+| --- | --- | --- |
+| writer-only | - | -54.7%, +100.5%, -6.6% |
+| point-1-readers-writer-false | +15.2%, -5.6%, +0.3% | - |
+| point-1-readers-writer-true | -46.2%, -60.7%, -21.2% | +152.5%, +112.4%, +128.2% |
+| point-4-readers-writer-false | +86.6%, +22.2%, -12.8% | - |
+| point-4-readers-writer-true | +28.4%, -9.8%, -21.7% | +125.4%, -78.5%, -52.5% |
+| point-8-readers-writer-false | -3.5%, -8.9%, -9.5% | - |
+| point-8-readers-writer-true | -43.1%, -28.5%, -26.9% | -56.4%, -50.7%, +21.1% |
+| page-1-readers-writer-false | +26.1%, +26.4%, +14.2% | - |
+| page-1-readers-writer-true | -30.2%, -96.4%, -95.7% | -47.4%, +0.2%, +21.3% |
+| page-4-readers-writer-false | +12.8%, +11.8%, +22.7% | - |
+| page-4-readers-writer-true | -97.5%, -11.0%, -97.9% | -79.1%, -76.8%, -21.4% |
+| page-8-readers-writer-false | -1.3%, +9.4%, -1.9% | - |
+| page-8-readers-writer-true | -98.2%, -45.0%, -98.7% | +987.7%, +64.2%, -12.3% |
+
+**Performance acceptance remains unmet.** Writer-only p95 improves in two pairs
+but doubles in pair two. One-reader and four-reader read-only page p95 regress
+in all three pairs, with throughput also falling in every pair. One-reader mixed
+point read p95 improves in all pairs while write p95 rises by 112.4%-152.5%.
+Four-reader mixed pages improve both read and write p95 in every pair. These
+tradeoffs do not establish the required no-regression result.
+
+Process-wide evidence also varies: pair-one candidate input blocks are 194,592
+versus 74,864 for main, and user CPU is 54.97 versus 49.08 seconds. Those counters
+are neither per-query profiles nor causal explanations for the tail differences.
+The source-level allocation reductions and green functional checks do not
+resolve this latency gate. The PR remains a draft; no tolerance, durability
+policy, workload length, or run selection was changed to obtain acceptance.
+
+Before this cohort, a comparison of `b8dee40a` against `606e308b` started while
+the remote PR advanced to the new runtime. One complete baseline and a partial
+candidate were retained, and only the verified owned benchmark child was
+terminated. That interrupted campaign is separately marked incomplete in the
+recording and cannot qualify any candidate. Its independent baseline rebuild
+reproduced the earlier preserved baseline binary byte-for-byte. The complete
+current-main cohort above uses newly isolated builds and its own six runs.
