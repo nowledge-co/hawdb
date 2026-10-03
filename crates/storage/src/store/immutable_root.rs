@@ -2949,8 +2949,19 @@ mod tests {
                 BTreeMap::from([("value".into(), Value::Int(3))]),
             )
             .expect("write unrelated branch state");
+        let active_wal_path = store.durable.as_ref().unwrap().wal_path.clone();
+        let active_wal_bytes = fs::read(&active_wal_path).unwrap();
+        let checkpoint = store
+            .prepare_checkpoint(&catalog)
+            .expect("prepare source checkpoint after root sealing")
+            .expect("persistent source has a checkpoint candidate");
+        assert_eq!(
+            fs::read(&active_wal_path).unwrap(),
+            active_wal_bytes,
+            "checkpoint preparation must preserve the active successor WAL"
+        );
         store
-            .checkpoint(&catalog)
+            .publish_prepared_checkpoint(checkpoint, None)
             .expect("advance source checkpoint after root sealing");
         drop(store);
         assert_ne!(
@@ -2960,6 +2971,7 @@ mod tests {
         let mut reopened_catalog = Catalog::default();
         let mut reopened_source =
             GraphStore::open(&database, &mut reopened_catalog).expect("reopen source database");
+        assert_eq!(reopened_source.node_count_for_label(None), 3);
         let replay_after_write_database = temp_dir("immutable-root-replay-after-write");
         let mut replay_after_write_catalog = Catalog::default();
         let (replay_after_write, reopened_head) = GraphStore::open_from_branch_head(
