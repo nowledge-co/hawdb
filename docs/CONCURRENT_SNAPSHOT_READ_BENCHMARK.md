@@ -394,3 +394,96 @@ measure requested allocation traffic, not peak memory or durable latency. Raw
 artifacts remain in `target/benchmarks/226-changefeed-paged-diagnostic`.
 The earlier failed durable comparisons remain recorded; this diagnostic does
 not meet the performance gate, and the PR remains a draft.
+
+## macOS follow-up: October 3, 2026 (UTC)
+
+The [complete recording](CONCURRENT_READ_PUBLICATION_MACOS_RECORDING.json) retains
+both fixed three-pair campaigns: shared SQL publication borrowing first, then
+borrowing plus the primary-key capacity hint. Every campaign contains all 13
+cases in each of six fresh processes, with 141,312 timed requests and 1,299,456
+rows verified after normal WAL reopen. No run or case was discarded. An independent
+parser recomputes counts, quantiles, worker/request intervals, lifetime overlap,
+and throughput from every raw request.
+
+- Baseline: current main `804f1a6139f73470c58167411f6cad871efffdbf`.
+- Final runtime code: `9bdfeaf06a079365a98550cc1141ff4f90352350`.
+- Apple M3 Max, 16 logical CPUs, 128 GiB RAM; macOS 27.0.1, local APFS SSD.
+- Rust 1.97.1, default features, opt-level 3, thin LTO, one codegen unit.
+- Identical unchanged harness SHA-256: `bae86e60026d86161062eff23d560b1559eae4ab4aa342d633fd8c6714958490`.
+- Default `SyncOnEveryWrite`, disabled group commit, `Auto` residency configuration.
+- Order: main/candidate, candidate/main, main/candidate. All agent builds and tests
+  ended before timing. Host background load, CPU placement, and cache state were
+  not controlled. No Linux, capacity, production Mem, or power-loss qualification
+  is inferred from this host.
+
+An initial candidate build in a shared target directory reused the main binary.
+Hash equality detected that before measurement. The candidate was rebuilt in an
+isolated target, and only distinct verified candidate binaries were measured.
+Source digests, binary/library hashes, commands, runners, allocation probe source,
+allocation rounds, case summaries, and raw artifact hashes are in the recording.
+Raw outputs and binaries remain in `/private/tmp/hawdb-pr826-performance`.
+
+### Final durable latency comparison
+
+Each cell contains the p95 change in pairs one, two, and three, respectively.
+Positive values are regressions. Request cohorts are neither pooled nor reduced
+to one favorable median. These are synthetic fixed-work phases, not steady-state
+latency bounds.
+
+| Case | Read p95 change | Write p95 change |
+| --- | --- | --- |
+| writer-only | - | -34.8%, -43.6%, +7.7% |
+| point-1-readers-writer-false | -6.1%, +0.3%, +0.7% | - |
+| point-1-readers-writer-true | +5.5%, -92.8%, -93.0% | -33.8%, -37.3%, -0.0% |
+| point-4-readers-writer-false | +52.7%, +85.0%, +29.9% | - |
+| point-4-readers-writer-true | -5.5%, -99.1%, -99.5% | -0.8%, -32.0%, +0.8% |
+| point-8-readers-writer-false | -0.8%, +3.4%, +3.4% | - |
+| point-8-readers-writer-true | -2.6%, -99.2%, -98.3% | +51.1%, -28.3%, -14.5% |
+| page-1-readers-writer-false | -9.7%, +66.3%, -0.3% | - |
+| page-1-readers-writer-true | -90.6%, -88.7%, -84.1% | -2.2%, +5.0%, +6.0% |
+| page-4-readers-writer-false | +5.5%, -12.0%, -0.1% | - |
+| page-4-readers-writer-true | -94.8%, -91.2%, -91.6% | -16.7%, +40.5%, -14.3% |
+| page-8-readers-writer-false | +6.8%, -10.2%, -0.9% | - |
+| page-8-readers-writer-true | +2.3%, -88.6%, -88.9% | +0.5%, -16.7%, -18.8% |
+
+**Performance acceptance remains unmet.** Writer-only p95 improves in the first
+two pairs but rises by 7.7% in the third. Four-reader read-only point p95 rises
+in all pairs (+52.7%, +85.0%, +29.9%). Mixed one-reader page reads improve in
+all pairs, but their write p95 rises in pairs two and three. The preceding
+shared-view-only campaign and all earlier Linux failures remain recorded.
+These measurements do not explain a causal bottleneck or establish a portable
+latency improvement. #226 remains open and PR #826 remains a draft.
+
+### Requested allocation traffic
+
+The same counting-allocator probe runs three rotated rounds per engine, each with
+nine in-memory fixtures. Point reads validate all five columns on 4,096 requests;
+pages validate 1,024 results of 32 rows. Totals below are identical in all three
+rounds. The recording includes main, the original PR head, shared-view borrowing,
+and the final capacity change. Requested bytes include reallocations and are
+neither retained memory nor peak RSS.
+
+| Case and operation count | Main requested bytes -> final | Main calls -> final |
+| --- | --- | --- |
+| direct_snapshot, 4096 | 9,756,736 -> 9,756,736 | 73,729 -> 73,729 |
+| direct_write, 512 | 119,241,826 -> 119,165,666 | 976,418 -> 976,947 |
+| standing_snapshot_write, 512 | 1,002,559,362 -> 120,988,034 | 18,617,632 -> 991,264 |
+| published_snapshot, 4096 | 9,756,800 -> 9,625,728 | 73,730 -> 69,634 |
+| published_point, 4096 | 10,231,386,112 -> 388,890,624 | 2,920,448 -> 2,805,760 |
+| published_page, 1024 | 273,704,960 -> 270,656,512 | 1,928,192 -> 1,899,520 |
+| concurrent_write, 512 | 119,303,890 -> 125,712,946 | 976,933 -> 984,100 |
+
+One point request drops from 2,497,897 to 94,944 requested bytes (96.2%) and
+from 713 to 685 allocation calls. Borrowing alone removes 28 calls and 2,977 bytes;
+the physical primary-key capacity hint removes another 2,399,976 bytes without
+changing the call count or query limits. Page queries save the same 28 calls
+and 2,977 bytes per request. The standing-snapshot benefit comes from the
+previously implemented paged changefeed; it is not caused by the capacity hint.
+
+Costs remain visible: concurrent writes request 5.4% more bytes than main. The
+median per-round average for explicit published snapshot acquisition is
+1.26 -> 1.59 microseconds.
+The median of three per-round average point times is 27.20 -> 25.23 microseconds;
+page times are 71.57 -> 69.24, and concurrent-write times are 138.37 -> 141.41.
+These timings include result assertions and allocator instrumentation, use
+in-memory databases, and are not durable request percentiles.
