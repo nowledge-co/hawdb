@@ -172,15 +172,18 @@ from the current acquisition/publication implementation.
 ## Linux read-acquisition comparison: October 3, 2026
 
 The [publication recording](CONCURRENT_READ_PUBLICATION_LINUX_RECORDING.json)
-preserves three complete campaigns, each containing three alternating fresh-process
+preserves four complete campaigns, each containing three alternating fresh-process
 pairs and all 78 case summaries. Each campaign validates 141,312 timed requests
 and 1,299,456 rows in full recovery scans. Raw samples and preserved binaries are
 in `target/benchmarks/226-read-publication` and
 `target/benchmarks/226-read-publication-atomic`, and
-`target/benchmarks/226-read-publication-shared-log` respectively.
+`target/benchmarks/226-read-publication-shared-log` for the first three campaigns.
+The fourth, described in the current-main follow-up below, remains in
+`target/benchmarks/226-read-publication-main804-linux`.
 
-All campaigns compare main `606e308bdf888fa94b50e9e0e501b2d1934b4886` against the
-independent read-publication implementation, using identical harness bytes
+The first three campaigns compare main
+`606e308bdf888fa94b50e9e0e501b2d1934b4886` against the independent read-publication
+implementation, using identical harness bytes
 (SHA-256 `bae86e60026d86161062eff23d560b1559eae4ab4aa342d633fd8c6714958490`).
 The recording includes candidate source hashes, binary hashes, process resource
 usage, raw-output checksums, and every case summary. Rust 1.97.1, default Cargo
@@ -487,3 +490,180 @@ The median of three per-round average point times is 27.20 -> 25.23 microseconds
 page times are 71.57 -> 69.24, and concurrent-write times are 138.37 -> 141.41.
 These timings include result assertions and allocator instrumentation, use
 in-memory databases, and are not durable request percentiles.
+
+## Linux current-main follow-up: October 3, 2026 (UTC)
+
+The fourth cohort in the [Linux recording](CONCURRENT_READ_PUBLICATION_LINUX_RECORDING.json)
+compares main `804f1a6139f73470c58167411f6cad871efffdbf` with documentation head
+`88a98036b7dcda8aa09d195a8729b2ced2c80d45`, whose runtime code is `9bdfeaf0`.
+This includes the main branch/descriptor changes on both sides and the SQL
+publication borrowing and primary-key capacity hint on the candidate. It is a
+separate cohort from the earlier Linux and macOS comparisons.
+
+Both complete benchmark binaries were built from verified sources in separate
+Cargo target directories. Features and compiler profiles match: Rust 1.97.1,
+default features, opt-level 3, thin LTO, one codegen unit, and the unchanged
+harness. The baseline binary SHA-256 is
+`49326d64bed800e3d3ba3675c5828c49952dabfa75590ff60d5bfc0cfb396aee`;
+the candidate is
+`dbab3a0247642db1aa52222ea662045566571c5b2a591fd3845774f19e0667bc`.
+The build receipts include source locations, features, profiles, library hashes,
+and compiler output hashes.
+
+The host remains the AMD Ryzen 7 7735HS Linux workstation with NVMe/Btrfs fixture
+placement. The workspace Bazel server was stopped and no task-started build or
+test overlapped timing. Background host load, CPU placement, and cache state
+were not controlled. Default `SyncOnEveryWrite`, disabled group commit, and the
+fixed baseline/candidate, candidate/baseline, baseline/candidate order remain
+unchanged. Every process executes all 13 cases. An independent reconstruction
+validates all 141,312 request intervals, worker and case quantiles, overlap,
+throughput, counts, and recovered epochs; the harness checks all 1,299,456
+recovered rows. All six runs are retained.
+
+Each cell gives the request p95 change for pairs one, two, and three. Positive
+values are regressions; samples are not pooled across pairs or hosts.
+
+| Case | Read p95 change | Write p95 change |
+| --- | --- | --- |
+| writer-only | - | -54.7%, +100.5%, -6.6% |
+| point-1-readers-writer-false | +15.2%, -5.6%, +0.3% | - |
+| point-1-readers-writer-true | -46.2%, -60.7%, -21.2% | +152.5%, +112.4%, +128.2% |
+| point-4-readers-writer-false | +86.6%, +22.2%, -12.8% | - |
+| point-4-readers-writer-true | +28.4%, -9.8%, -21.7% | +125.4%, -78.5%, -52.5% |
+| point-8-readers-writer-false | -3.5%, -8.9%, -9.5% | - |
+| point-8-readers-writer-true | -43.1%, -28.5%, -26.9% | -56.4%, -50.7%, +21.1% |
+| page-1-readers-writer-false | +26.1%, +26.4%, +14.2% | - |
+| page-1-readers-writer-true | -30.2%, -96.4%, -95.7% | -47.4%, +0.2%, +21.3% |
+| page-4-readers-writer-false | +12.8%, +11.8%, +22.7% | - |
+| page-4-readers-writer-true | -97.5%, -11.0%, -97.9% | -79.1%, -76.8%, -21.4% |
+| page-8-readers-writer-false | -1.3%, +9.4%, -1.9% | - |
+| page-8-readers-writer-true | -98.2%, -45.0%, -98.7% | +987.7%, +64.2%, -12.3% |
+
+**Performance acceptance remains unmet.** Writer-only p95 improves in two pairs
+but doubles in pair two. One-reader and four-reader read-only page p95 regress
+in all three pairs, with throughput also falling in every pair. One-reader mixed
+point read p95 improves in all pairs while write p95 rises by 112.4%-152.5%.
+Four-reader mixed pages improve both read and write p95 in every pair. These
+tradeoffs do not establish the required no-regression result.
+
+Process-wide evidence also varies: pair-one candidate input blocks are 194,592
+versus 74,864 for main, and user CPU is 54.97 versus 49.08 seconds. Those counters
+are neither per-query profiles nor causal explanations for the tail differences.
+The source-level allocation reductions and green functional checks do not
+resolve this latency gate. The PR remains a draft; no tolerance, durability
+policy, workload length, or run selection was changed to obtain acceptance.
+
+Before this cohort, a comparison of `b8dee40a` against `606e308b` started while
+the remote PR advanced to the new runtime. One complete baseline and a partial
+candidate were retained, and only the verified owned benchmark child was
+terminated. That interrupted campaign is separately marked incomplete in the
+recording and cannot qualify any candidate. Its independent baseline rebuild
+reproduced the earlier preserved baseline binary byte-for-byte. The complete
+current-main cohort above uses newly isolated builds and its own six runs.
+
+## Prepared SQL dispatch follow-up: October 3, 2026 (UTC)
+
+The [complete recording](CONCURRENT_SQL_TEMPLATE_REUSE_DIAGNOSTIC.json) covers
+runtime commit `e23089a32226c9fbb5b2cbf149f6ac6b23e9d784`. Append-table SELECT and
+EXPLAIN routing previously parsed SQL text twice even when the facade already
+held a cached, neutral `PreparedRelationalSql` template. Both routes now borrow
+that parsed statement in mutable, explicit-transaction, and snapshot execution.
+Parameters, the current append schema, and query limits are rebound each time;
+no bound plan is cached. String-based internal compiler entry points retain
+their previous parsing and error behavior. This adds no branch capability and
+does not change synchronization or persistent formats.
+
+The targeted regression reuses SELECT and EXPLAIN templates with different
+parameters, schema availability, and row limits. It also checks parameter-count
+errors before non-append fallback. Final source SHA-256 is
+`630076b5db1c42895aa5acfb74675c14cbbc44e914e8a903e690275271a31321`.
+
+### Allocation and sampled stacks
+
+The unchanged allocator probe compares the preceding PR head `88a98036` with
+`e23089a3` in three rotated rounds. All allocation totals match across rounds.
+Both binaries use Rust 1.97.1, default features, opt-level 3, thin LTO, and one
+codegen unit. Requested traffic includes reallocations; it is not peak RSS.
+Timings include instrumentation and result assertions in in-memory fixtures.
+
+| Case and operation count | Requested bytes before -> after | Calls before -> after | Median round average us, before -> after |
+| --- | --- | --- | --- |
+| direct_snapshot, 4096 | 9,756,736 -> 9,756,736 | 73,729 -> 73,729 | 1.12 -> 1.11 |
+| direct_write, 512 | 119,165,666 -> 93,603,554 | 976,947 -> 846,899 | 138.85 -> 129.64 |
+| standing_snapshot_write, 512 | 120,988,034 -> 95,425,922 | 991,264 -> 861,216 | 142.30 -> 130.53 |
+| published_snapshot, 4096 | 9,625,728 -> 9,625,728 | 69,634 -> 69,634 | 1.76 -> 1.65 |
+| published_point, 4096 | 388,890,624 -> 123,404,288 | 2,805,760 -> 1,495,040 | 25.20 -> 11.39 |
+| published_page, 1024 | 270,656,512 -> 180,902,912 | 1,899,520 -> 1,446,912 | 69.20 -> 48.55 |
+| concurrent_write, 512 | 125,712,946 -> 100,150,834 | 984,100 -> 854,052 | 141.31 -> 130.86 |
+
+One point request drops from 685 to 365 allocation calls and from 94,944 to
+30,128 requested bytes. One page request drops from 1,855 to 1,413 calls and
+from 264,313 to 176,663 bytes. Mutations also skip the two nonmatching read
+dispatch parses, while their mutation-specific compiler retains its own parse.
+
+A separate four-reader diagnostic warms a durable 128-by-128 fixture, then
+validates all five columns of 262,144 point requests per process. OS stack
+sampling finds 2,016 of 9,766 read-worker stacks under the two string-based
+append read dispatch functions before the change, and none afterward. The
+instrumented execution phase changes from 7.639 to 5.186 seconds and request
+p95 from 139.125 to 90.625 microseconds. These are one before/after sampled run,
+not a general latency bound; sampled stacks include waits and I/O. Its reopen
+check verifies row count only. Complete recovered contents are checked by the
+separate matrix below.
+
+### Complete durable comparison against main
+
+The unchanged full harness compares main `804f1a61` with runtime `e23089a3` in
+the fixed main/candidate, candidate/main, main/candidate order. Each fresh
+process executes all 13 cases. All 141,312 timed requests and 1,299,456 recovered
+rows validate, and an independent parser reconstructs every worker/request
+interval, quantile, lifetime overlap, throughput, row count, and commit epoch.
+The same macOS/APFS host, release configuration, default `SyncOnEveryWrite`,
+disabled group commit, and `Auto` residency configuration apply. No agent build
+or test ran during timing; background load, placement, and cache state remain
+uncontrolled. Every raw run is retained in
+`/private/tmp/hawdb-pr826-reparse-diagnostic` with recorded hashes, probe sources,
+runner sources, and verified distinct binary hashes.
+
+Each cell lists p95 changes in pairs one, two, and three. Positive values are
+regressions; cohorts are not pooled.
+
+| Case | Read p95 change | Write p95 change |
+| --- | --- | --- |
+| writer-only | - | -1.4%, -1.6%, +9.0% |
+| point-1-readers-writer-false | -0.2%, -3.1%, +4.3% | - |
+| point-1-readers-writer-true | -93.4%, -95.3%, -93.8% | -0.3%, -9.6%, +28.7% |
+| point-4-readers-writer-false | -11.3%, -15.1%, +36.5% | - |
+| point-4-readers-writer-true | -99.5%, -99.6%, -99.5% | -15.1%, -12.1%, +0.2% |
+| point-8-readers-writer-false | -2.9%, +1.7%, +8.6% | - |
+| point-8-readers-writer-true | -98.5%, -98.4%, -98.1% | -21.1%, -18.4%, -31.8% |
+| page-1-readers-writer-false | +3.1%, -0.8%, +7.2% | - |
+| page-1-readers-writer-true | -82.9%, -89.3%, -84.4% | -9.1%, +2.0%, +9.1% |
+| page-4-readers-writer-false | +2.0%, -0.4%, +20.2% | - |
+| page-4-readers-writer-true | -94.0%, -91.4%, -91.5% | -8.6%, -9.1%, -12.4% |
+| page-8-readers-writer-false | +0.7%, +2.6%, -43.0% | - |
+| page-8-readers-writer-true | -88.5%, -88.0%, -91.2% | -19.7%, -22.0%, -7.9% |
+
+**The bounded parsing optimization is ready for review; #226 performance
+acceptance remains unmet.** Writer-only p95 rises 9.0% in pair three, and
+four-reader read-only point p95 still rises 36.5% in that pair. Single-reader
+page and mixed-write regressions also remain. The previous macOS and Linux
+cohorts remain historical evidence for their own revisions. This current runtime
+has not been qualified on Linux, Windows, production Mem, large capacity, or
+simulated power loss. No tolerance, workload, durability policy, seed, or corpus
+was changed to obtain acceptance. PR #826 leaves Draft at the maintainer's
+request after this optimization; that does not close #226 or approve the PR.
+
+### Final runtime validation
+
+Pinned-toolchain library tests pass: facade 1,665 passed/4 ignored; relational
+154 passed/9 ignored. Native formatting and strict workspace Clippy for all
+targets/features pass, as does minimal browser WASM strict Clippy with the
+documented clang/llvm-ar setup (compile/lint evidence only). The existing Bazel
+unit, storage, ConcurrentSnapshots TLC, and three local fuzz selections finish
+98/98 passed on the identical retry: one executed and 97 cached. The initial
+invocation passed 97 targets and timed out graph-projection residency fuzz at
+300.1 seconds; the retry passed that target in 141.8 seconds. Both results are
+retained. The new prepared-dispatch regression also passes directly in its
+Bazel-built relational test binary (one passed, 162 filtered). The abstract
+TLC result is not a Rust refinement proof; the publication protocol is unchanged.
