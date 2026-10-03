@@ -239,5 +239,120 @@
   },
   "compile_command": "rustc --edition=2021 -C opt-level=3 -C lto=thin -C codegen-units=1 -L dependency=target/release/deps --extern hawdb=target/release/deps/libhawdb-cba20be3d22fe378.rlib /tmp/hawdb-goal/read-publication-cost-probe.rs -o /tmp/hawdb-goal/read-publication-cost-probe-shared",
   "sampling_compile_options": "Same release options plus -C relocation-model=static; glibc backtrace, addr2line -C -f; one warm backtrace before the fixture",
-  "run_command": "/tmp/hawdb-goal/read-publication-cost-probe-shared > /tmp/hawdb-goal/read-publication-cost-probe-shared.csv"
+  "run_command": "/tmp/hawdb-goal/read-publication-cost-probe-shared > /tmp/hawdb-goal/read-publication-cost-probe-shared.csv",
+  "paged_queue_followup": {
+    "scope": "Private 64-entry COW record pages; in-memory allocation diagnostic only. No latency acceptance or resident-memory claim.",
+    "base_revision": "74208f5ea0319479d15b5141df51831828183371",
+    "baseline": "Original candidate_csv and candidate_probe_sha256 above; exact preserved source and executable verified.",
+    "source": {
+      "base": "74208f5ea0319479d15b5141df51831828183371",
+      "source_files": 1242,
+      "digest_method": "For sorted tracked Rust/Cargo/toolchain paths plus new queue: path UTF-8, NUL, raw SHA256(file bytes).",
+      "changed_source_sha256": {
+        "crates/storage/src/store.rs": "4d7c31f4e68305a7ec6a6e4022a6d4f5f892690a146840dfda69b787274aa320",
+        "crates/storage/src/store/graph_mutation.rs": "216349fd621757502309916e410434f6ce8ba470f89006d891f457ffc2ef2fc3",
+        "crates/storage/src/store/graph_recovery.rs": "d4a36118d59992566f154007196ff37285e116a09e58d5f812e8a31e6811fe15",
+        "crates/storage/src/store/search_projection_change_log.rs": "08f4b81a490146578aea5ef4911025551a6bfb3adc0350b5a0cf1c74d3d6b3aa"
+      },
+      "source_digest_sha256": "354bca2d74f92f094c8764e420fb84296a2c12bef9b2cfd8645fb18c411ab62b",
+      "library_sha256": "9b7836e13f28c60fee21d60ab0cb0338f25ec9016b95433198f19e6ae032b41d",
+      "final_rebuilt_crates": [
+        "hawdb_runtime_tokio",
+        "hawdb_resource_profile",
+        "hawdb_artifact",
+        "hawdb_explain",
+        "hawdb_system_sql",
+        "hawdb_nowledge_contracts",
+        "hawdb_bootstrap",
+        "hawdb_relational",
+        "hawdb_readiness",
+        "hawdb_executor",
+        "hawdb_search",
+        "hawdb",
+        "hawdb_compat",
+        "hawdb_storage"
+      ]
+    },
+    "probe_source_sha256": "06513431e461bf26fb6980a9373de0e7f45b8f7cca668f06697984fbec09aa7d",
+    "probe_sha256": "6cb5878e422f61a4328bfa58c90b66c249e170528c7d1c5a90bbabb3eb6db8e8",
+    "build": "cargo build --locked --release -p hawdb --lib --target-dir /tmp/hawdb-goal/read-paged-log-target --message-format=json",
+    "compile": "rustc --edition=2021 -C opt-level=3 -C lto=thin -C codegen-units=1 -L dependency=/tmp/hawdb-goal/read-paged-log-target/release/deps --extern hawdb=/tmp/hawdb-goal/read-paged-log-target/release/libhawdb.rlib /tmp/hawdb-goal/read-publication-cost-probe.rs -o /tmp/hawdb-goal/read-publication-cost-probe-paged",
+    "run": "/tmp/hawdb-goal/read-publication-cost-probe-paged",
+    "validation": "All nine fixtures validate a final row count of 16896 each. Three rotated rounds retained, with identical per-case allocation counts across rounds. No agent build/test overlapped this run.",
+    "tradeoff": "Directory detach scales with number of pages; append/partial trim detach only boundary pages. Two additional allocation calls per write with a standing snapshot; fewer copied handle bytes. Capture-limit edits may touch all pages.",
+    "csv": "round,case,count,elapsed_ns,allocation_calls,allocated_bytes\n0,direct_snapshot,4096,4834606,73728,9576448\n0,direct_write,512,457680314,976947,119165666\n0,standing_snapshot_write,512,461955113,991264,120965506\n0,published_snapshot,4096,7618778,69632,9445376\n0,concurrent_write,512,417613875,984097,125460866\n1,standing_snapshot_write,512,390249087,991264,120965506\n1,published_snapshot,4096,6129379,69632,9445376\n1,concurrent_write,512,276335130,984097,125460866\n1,direct_snapshot,4096,4961503,73728,9576448\n1,direct_write,512,402857950,976947,119165666\n2,published_snapshot,4096,6362896,69632,9445376\n2,concurrent_write,512,415584131,984097,125460866\n2,direct_snapshot,4096,4881282,73728,9576448\n2,direct_write,512,454021201,976947,119165666\n2,standing_snapshot_write,512,462001455,991264,120965506\n",
+    "allocation_summary": [
+      {
+        "case": "direct_snapshot",
+        "count": 4096,
+        "allocation_calls": {
+          "before": 73728,
+          "after": 73728,
+          "change_percent": 0.0
+        },
+        "allocated_bytes": {
+          "before": 9576448,
+          "after": 9576448,
+          "change_percent": 0.0
+        }
+      },
+      {
+        "case": "direct_write",
+        "count": 512,
+        "allocation_calls": {
+          "before": 976930,
+          "after": 976947,
+          "change_percent": 0.0017
+        },
+        "allocated_bytes": {
+          "before": 119173154,
+          "after": 119165666,
+          "change_percent": -0.0063
+        }
+      },
+      {
+        "case": "standing_snapshot_write",
+        "count": 512,
+        "allocation_calls": {
+          "before": 990240,
+          "after": 991264,
+          "change_percent": 0.1034
+        },
+        "allocated_bytes": {
+          "before": 125230722,
+          "after": 120965506,
+          "change_percent": -3.4059
+        }
+      },
+      {
+        "case": "published_snapshot",
+        "count": 4096,
+        "allocation_calls": {
+          "before": 69632,
+          "after": 69632,
+          "change_percent": 0.0
+        },
+        "allocated_bytes": {
+          "before": 9445376,
+          "after": 9445376,
+          "change_percent": 0.0
+        }
+      },
+      {
+        "case": "concurrent_write",
+        "count": 512,
+        "allocation_calls": {
+          "before": 983073,
+          "after": 984097,
+          "change_percent": 0.1042
+        },
+        "allocated_bytes": {
+          "before": 129726082,
+          "after": 125460866,
+          "change_percent": -3.2879
+        }
+      }
+    ],
+    "artifacts": "target/benchmarks/226-changefeed-paged-diagnostic"
+  }
 }

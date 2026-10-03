@@ -120,6 +120,8 @@ mod relational_index_shadow;
 #[path = "store/relational_row_pages.rs"]
 #[doc(hidden)]
 pub mod relational_row_pages;
+#[path = "store/search_projection_change_log.rs"]
+mod search_projection_change_log;
 #[path = "store/statistics_refresh.rs"]
 mod statistics_refresh;
 #[path = "store/wal_codec.rs"]
@@ -347,6 +349,7 @@ pub use relational_row_pages::RelationalRowPageRecoveryStatus;
 use relational_row_pages::RelationalRowPageState;
 #[doc(hidden)]
 pub use relational_row_pages::RelationalTransactionRowView;
+use search_projection_change_log::SearchProjectionChangeLog;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::num::{NonZeroU64, NonZeroUsize};
@@ -797,7 +800,7 @@ pub struct GraphStore {
     initial_import_source_fingerprint: Option<String>,
     search_projection_database_identity: Option<hawdb_core::Uuid>,
     search_projection_change_log_start_epoch: u64,
-    search_projection_graph_changes: CowSegment<Vec<Arc<SearchProjectionGraphChange>>>,
+    search_projection_graph_changes: SearchProjectionChangeLog,
     search_projection_change_log_retained_bytes: usize,
     max_search_projection_change_log_entries: Option<usize>,
     max_search_projection_change_log_bytes: Option<usize>,
@@ -1683,7 +1686,7 @@ impl GraphStore {
             initial_import_source_fingerprint: None,
             search_projection_database_identity: None,
             search_projection_change_log_start_epoch: 0,
-            search_projection_graph_changes: CowSegment::default(),
+            search_projection_graph_changes: SearchProjectionChangeLog::default(),
             search_projection_change_log_retained_bytes: 0,
             max_search_projection_change_log_entries: None,
             max_search_projection_change_log_bytes: None,
@@ -7924,6 +7927,11 @@ mod tests {
                 },
             )
             .unwrap();
+        for id in 10..140 {
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                .unwrap();
+        }
         for batch in 0..2 {
             store
                 .commit_relational_transaction(
@@ -7944,6 +7952,11 @@ mod tests {
                 )
                 .unwrap();
         }
+        let before_checkpoint = store.search_projection_changes_after(0);
+        store.checkpoint(&catalog).unwrap();
+        drop(store);
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(store.search_projection_changes_after(0), before_checkpoint);
         let snapshot = store.snapshot_for_read();
         let before = snapshot.search_projection_changes_after(0);
         let before_status = snapshot.search_projection_changefeed_status();

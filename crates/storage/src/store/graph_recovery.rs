@@ -344,8 +344,7 @@ impl GraphStore {
             .search_projection_graph_changes
             .into_iter()
             .map(Arc::new)
-            .collect::<Vec<_>>()
-            .into();
+            .collect();
         self.basic_statistics = decoded.basic_statistics;
         self.checkpoint_statistics = decoded.checkpoint_statistics;
         for (name, definition) in decoded.projected_graphs {

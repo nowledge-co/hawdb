@@ -243,9 +243,10 @@ held across writes. Of 2,273 collected stacks, 2,145 (94.37%) include
 `Vec` clones all historical records, including their relational primary keys.
 These are allocation sample counts, not CPU time or allocation-byte percentages.
 
-The changefeed now shares immutable records individually. Appending copies only
-the handle vector; tightening capture limits detaches the affected record before
-editing it. Checkpoint encoding borrows the shared records and keeps the existing
+The initial COW fix shares immutable records individually. In that revision,
+appending copies the handle vector; tightening capture limits detaches the
+affected record before editing it. Checkpoint encoding borrows the shared
+records and keeps the existing
 public image/encoder contract and byte representation. Regression coverage
 checks encoding equivalence, invalid event ordering, snapshot isolation across
 append/limit changes/trim, and checkpoint plus WAL recovery.
@@ -261,9 +262,10 @@ approximately 119 MB allocated. These totals are allocation traffic, not peak
 resident memory, and the sampling percentages are not CPU profiles. Raw probe
 artifacts remain in `target/benchmarks/226-changefeed-cow-diagnostic`.
 
-This resolves the diagnosed whole-history payload copy, while handle-vector COW
-still scales with retained event count. The following fresh fixed-work durable comparison retains the same performance
-qualification requirements.
+This resolves the diagnosed whole-history payload copy, while that revision's
+handle-vector COW still scales with retained event count. The following fresh
+fixed-work durable comparison retains the same performance qualification
+requirements.
 
 ### Durable comparison after shared changefeed records
 
@@ -346,3 +348,34 @@ outside statement timing is sub-millisecond at p95. This bounds one part of the
 remaining investigation without proving why the cross-version tail differs or
 explaining the read-only page regression. The host/storage variance remains
 uncontrolled, and performance acceptance remains blocked.
+
+### Paged changefeed handle storage
+
+The follow-up replaces the flat handle vector with a private COW queue containing
+64 records per page. Snapshots share the directory and pages; append and partial
+prefix removal copy only the affected boundary pages. Directory copying still
+scales with the number of pages. Tightening capture limits may visit every page.
+The queue preserves record order, resume floors, public owned results, and the
+checkpoint encoding. Tests cover page boundaries, retained snapshots, payload
+edits, and a multi-page checkpoint followed by trimming and WAL recovery.
+
+The `paged_queue_followup` section of the
+[allocation recording](CONCURRENT_CHANGEFEED_COW_DIAGNOSTIC.json) preserves the
+same probe source and all three rotated rounds. Each case has identical
+allocation counts across rounds; all nine fixtures validate their final row
+counts. The release library was rebuilt in an isolated Cargo target directory,
+with source and binary hashes recorded. No agent build or test overlapped timing.
+
+| Case, 512 writes | Requested bytes before -> after | Allocation calls before -> after |
+| --- | --- | --- |
+| Direct writes | 119,173,154 -> 119,165,666 | 976,930 -> 976,947 |
+| Standing snapshot | 125,230,722 -> 120,965,506 | 990,240 -> 991,264 |
+| Concurrent facade | 129,726,082 -> 125,460,866 | 983,073 -> 984,097 |
+
+Standing-snapshot and concurrent allocation traffic falls by 3.41% and 3.29%,
+respectively, at the cost of two additional small allocations per write. Pure
+snapshot acquisition retains the same allocation counts and bytes. These totals
+measure requested allocation traffic, not peak memory or durable latency. Raw
+artifacts remain in `target/benchmarks/226-changefeed-paged-diagnostic`.
+The earlier failed durable comparisons remain recorded; this diagnostic does
+not meet the performance gate, and the PR remains a draft.
