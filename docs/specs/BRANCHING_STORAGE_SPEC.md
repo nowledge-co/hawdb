@@ -1085,7 +1085,10 @@ Create then follows these durable transitions:
 
 1. Validate request syntax/limits and consult its idempotency receipt first.
    For a new request, resolve and lock the source; revalidate its expected
-   revision and state; seal if needed.
+   revision and state; seal if needed. Acquire the child's UUID lease before
+   making its pending receipt visible, and retain it through completion or
+   abort. Its directory and stable lock inode may precede reservation; its
+   head and WAL must not.
 2. While the sealed source is pinned, atomically publish a `Creating` catalog
    record with UUID, reserved name, immutable base digest, full request
    fingerprint, and pending outcome. It becomes a global GC root immediately.
@@ -1096,16 +1099,18 @@ Create then follows these durable transitions:
    replay. Failure before step 2 leaves no branch; unreferenced objects are
    later collectible. Failure after step 2 requires recovery, not a new ID.
 
-The current storage implementation makes steps 2--4 explicit in
-`branch_catalog::create_branch_from_parent`. Its private reservation helper
+The current storage implementation makes child ownership and steps 2--4
+explicit in `branch_catalog::create_branch_from_parent`. Directory creation or
+lease acquisition failure leaves the catalog unchanged. Its private reservation helper
 validates the live source head under the metadata lease, durably records
 `Creating`, and returns the exact metadata revision used by completion. The
 unvalidated file-reservation helper is available only to isolated unit fixtures.
 `create_child_branch_head_from_parent` reads the parent selector and rejects a
 generation, commit epoch, project identity, or sealed-root mismatch before it
 creates either child file. `create_child_branch_head` creates the child WAL and
-head with exclusive creation, syncs both files and their parent directory, and
-holds the child directory lease through catalog completion. Therefore, by
+head with exclusive creation and syncs both files and their parent directory.
+The enclosing creator holds the child lease through catalog completion and
+reports an abort-publication failure instead of discarding it. Therefore, by
 induction over these durable boundaries, a successful `Ready` record implies a
 complete private child WAL/head pair whose root is the validated parent root;
 the parent selector and mutable WAL are never modified.
@@ -1132,6 +1137,10 @@ parent again. Parent advancement, deletion, directory loss, or human-name reuse
 cannot change the original reserved child's identity or captured revision.
 Fingerprint conflicts reject before recovery, and SQL result admission uses the
 prospective completion revision before changing the catalog.
+An active creator already holds this lease before publishing `Creating`, so a
+retry cannot abort the creator between reservation and file publication.
+The ordinary opener does not yet scan pending receipts automatically; explicit
+recovery and matching request retries remain the implemented recovery entries.
 
 An unchanged checkpoint is identified by its exact durable-manifest reference
 and recovery boundary. Seal reuses the validated root's checkpoint references

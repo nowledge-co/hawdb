@@ -142,6 +142,11 @@ fn unregister_process_lease(path: &Path) {
     active_database_directories().remove(path);
 }
 
+#[cfg(test)]
+pub(crate) fn has_process_lease(path: &Path) -> bool {
+    active_database_directories().contains(path)
+}
+
 fn active_database_directories() -> MutexGuard<'static, HashSet<PathBuf>> {
     ACTIVE_DATABASE_DIRECTORIES
         .lock()
