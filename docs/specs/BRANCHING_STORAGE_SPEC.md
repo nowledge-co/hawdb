@@ -536,11 +536,40 @@ revision before invoking the child-publication kernel.
 Catalog-backed GC holds metadata serialization through its sweep and reports
 `deferred_for_active_leases` whenever a runtime or snapshot owner may have
 unpublished candidates or older reader generations. This conservative policy
-retains every candidate while such an owner exists. Fine-grained concurrent
-reclamation, project FD accounting (#819), session integration (#775/#780),
-and deterministic power-loss qualification (#820) remain open. Reopen and
-publication-failure tests are source-level recovery evidence, not a complete
-power-loss qualification or a Rust-to-TLA refinement proof.
+retains the entire supplied object inventory and skips deleted-directory cleanup
+while any branch lease is active, including an otherwise idle open branch.
+A long-lived host can therefore defer reclamation indefinitely; this is an
+unresolved storage-growth limitation, not a bounded publication pause. The typed
+report exposes each deferred attempt, but there is no built-in duration counter,
+maintenance scheduler, or alert threshold. Repeatedly retrying GC does not resolve
+the limitation while the lease remains held.
+
+Concurrent reclamation is explicitly deferred to [#778](https://github.com/nowledge-co/hawdb/issues/778).
+The current snapshot clones the branch-level ownership lease; it does not register
+an independently enumerable historical sealed root with the project collector.
+The collector probes OS-visible ownership from catalog paths, so a process-local
+`has_uncommitted_candidate` flag cannot describe foreign publishers or readers.
+An inventory flag alone also cannot exclude a publisher starting between mark
+and sweep. Before narrowing this conservative guard, #778 must establish:
+
+- Candidate protection acquired before the first immutable-object publication
+  and held until durable head publication or conservative failed-attempt recovery,
+  synchronized with the collector across processes.
+- Exact historical-root retention for readers and jobs, including snapshots that
+  outlive their source runtime, with root discovery synchronized with sweep.
+- Revalidation at destructive boundaries and fail-closed handling of incomplete
+  ownership or root evidence; elapsed deferral time never authorizes deletion.
+- Regression evidence that an idle open branch permits unrelated orphan cleanup
+  while unpublished candidates, old snapshots, durable unleased branches, and
+  parent/sibling closures survive concurrent and interrupted maintenance.
+
+The existing `catalog_sweep_defers_for_publication_candidates_and_reader_leases`
+regression proves conservative candidate and old-snapshot retention, followed by
+reclamation after every lease is released. It does not prove progress while an
+unrelated branch remains open. Project FD accounting (#819), session integration
+(#775/#780), and deterministic power-loss qualification (#820) also remain open.
+Reopen and publication-failure tests are source-level recovery evidence, not a
+complete power-loss qualification or a Rust-to-TLA refinement proof.
 
 ## On-disk compatibility and immutable objects
 
