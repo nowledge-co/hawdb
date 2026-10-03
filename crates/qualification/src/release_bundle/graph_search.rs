@@ -64,6 +64,17 @@ pub(super) fn validate_graph(
         "storage_profile_protocol_mismatch",
         &mut blockers,
     );
+    validate_exact_binding(profile, "/evidence_binding", expected, &mut blockers);
+    if profile.get("expected_identity") != Some(&expected.json()) {
+        blockers.push("storage_profile_expected_identity_mismatch".to_string());
+    }
+    if profile
+        .get("canonical_graph_commit_epoch")
+        .and_then(Value::as_u64)
+        != Some(expected.canonical_graph_commit_epoch)
+    {
+        blockers.push("storage_profile_graph_epoch_mismatch".to_string());
+    }
     for (pointer, code) in [
         ("/resource_ready", "storage_resource_not_ready"),
         ("/ready", "storage_production_not_ready"),
@@ -254,6 +265,18 @@ pub(super) fn validate_search(
 }
 
 fn validate_profile_limits(profile: &Value, blockers: &mut Vec<String>) {
+    let canonical_bytes = profile
+        .pointer("/storage/canonical_artifact_bytes")
+        .and_then(Value::as_u64);
+    let cache_capacity = profile
+        .pointer("/storage/segment_cache_capacity_bytes")
+        .and_then(Value::as_u64);
+    if !canonical_bytes
+        .zip(cache_capacity)
+        .is_some_and(|(canonical, capacity)| canonical > capacity)
+    {
+        blockers.push("canonical_does_not_exceed_cache".to_string());
+    }
     let pairs = [
         (
             "/storage/canonical_artifact_bytes",
