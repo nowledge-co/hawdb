@@ -800,6 +800,13 @@ impl DatabaseReadSnapshot {
         &self,
         task_context: &hawdb_core::RuntimeTaskContext,
     ) -> Result<DatabaseReadTransaction> {
+        self.fork(Some(task_context.clone()))
+    }
+
+    fn fork(
+        &self,
+        task_context: Option<hawdb_core::RuntimeTaskContext>,
+    ) -> Result<DatabaseReadTransaction> {
         self.ensure_usable()?;
         let source = &self.0;
         Ok(DatabaseReadTransaction {
@@ -815,7 +822,7 @@ impl DatabaseReadSnapshot {
             config: source.config.clone(),
             branch_catalog_path: source.branch_catalog_path.clone(),
             projection_relational: None,
-            task_context: Some(task_context.clone()),
+            task_context,
             _pin: Arc::clone(&source._pin),
         })
     }
@@ -1305,6 +1312,10 @@ impl Database {
         DatabaseReadSnapshot(self.begin_read_transaction())
     }
 
+    fn read_snapshot_without_observations(&self) -> DatabaseReadSnapshot {
+        DatabaseReadSnapshot(self.read_transaction_state(None, None))
+    }
+
     pub fn begin_read_transaction(&self) -> DatabaseReadTransaction {
         self.begin_read_transaction_inner(None, None)
     }
@@ -1360,6 +1371,17 @@ impl Database {
         projection_relational: Option<ProjectionRelationalReadSnapshot>,
         task_context: Option<hawdb_core::RuntimeTaskContext>,
     ) -> DatabaseReadTransaction {
+        let mut snapshot = self.read_transaction_state(projection_relational, task_context);
+        snapshot.slow_query_snapshot = self.slow_query_log.borrow().snapshot();
+        snapshot.statement_summary_snapshot = self.statement_summary.borrow().snapshot();
+        snapshot
+    }
+
+    fn read_transaction_state(
+        &self,
+        projection_relational: Option<ProjectionRelationalReadSnapshot>,
+        task_context: Option<hawdb_core::RuntimeTaskContext>,
+    ) -> DatabaseReadTransaction {
         let (published_read_view, pin) = self.pin_read_view();
         DatabaseReadTransaction {
             catalog: self.catalog.clone(),
@@ -1369,8 +1391,8 @@ impl Database {
             plan_cache: SharedState::new(PlanCache::new(self.config.max_plan_cache_entries)),
             relational_plan_template_cache: Arc::clone(&self.relational_plan_template_cache),
             optimizer_planning_cache: Arc::clone(&self.optimizer_planning_cache),
-            slow_query_snapshot: self.slow_query_log.borrow().snapshot(),
-            statement_summary_snapshot: self.statement_summary.borrow().snapshot(),
+            slow_query_snapshot: Vec::new(),
+            statement_summary_snapshot: Vec::new(),
             config: self.config.clone(),
             branch_catalog_path: self.branch_catalog_path().ok(),
             projection_relational,

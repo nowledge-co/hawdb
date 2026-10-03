@@ -217,11 +217,34 @@ Both facades share these publication rules:
 - Foreground work MUST remain admissible while internal background work is
   saturated.
 
+`ConcurrentDatabase` publishes one immutable graph/SQL read view independently
+of its writer mutex. Explicit read transactions, supported read-only autocommit
+queries, `commit_epoch`, and `published_read_view` capture the last completed
+publication without acquiring that mutex. During a mutation or shared WAL sync,
+they may return the previous committed state. A write returns success only after
+the completed publication is available. Failed or uncertain query preparation,
+mutations, and control statements retain their exclusive execution paths.
+
+The commit guard spans the whole group durability barrier and publishes before
+releasing the writer mutex. A pending sync group, poisoned storage, or unwind
+invalidates read publication. Autocommit reads check publication health before
+returning a successful result without reacquiring the publication mutex.
+Invalidation is sticky until reopen; a later healthy commit guard cannot restore
+the serving boundary. Checkpoints refresh the physical generation even
+when the logical epoch is unchanged; descendants retain the old generation until
+their final pin drops. The standing publication itself contributes a current
+reader pin to storage-pressure and reclamation reports. Observation tables are
+captured at read acquisition and include completed reads since the last write.
+This synchronous facade does not add runtime-governor admission; hosts retain
+their existing admission responsibilities.
+
 An optimistic concurrent transaction begins from a private copy-on-write
-snapshot. At commit it acquires the database-wide exclusive publication span
-and applies first-committer-wins validation against its base commit epoch. The
-validation is intentionally coarse: any intervening write makes a non-empty
-optimistic transaction stale, even when the two write sets are disjoint.
+snapshot. Commit enters the serialized publication span and applies
+first-committer-wins validation against its base commit epoch. Graph writes and
+qualified explicit-key SQL use per-key stamps; unsupported access shapes retain
+conservative database or schema barriers. The exact graph, relational, and
+append coverage is defined by the
+[MVCC commit validation protocol](../MVCC_COMMIT_VALIDATION_PROTOCOL.md).
 
 A pessimistic concurrent transaction obtains locks before statement execution.
 Supported relational primary-key lookups and inserts may use shared or

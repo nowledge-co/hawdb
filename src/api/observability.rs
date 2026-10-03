@@ -57,6 +57,13 @@ pub(super) struct StatementRecorder {
     telemetry: Option<Arc<dyn TelemetrySink>>,
 }
 
+impl StatementRecorder {
+    pub(super) fn refresh_read_snapshot(&self, snapshot: &mut super::DatabaseReadTransaction) {
+        snapshot.slow_query_snapshot = self.slow_query_log.borrow().snapshot();
+        snapshot.statement_summary_snapshot = self.statement_summary.borrow().snapshot();
+    }
+}
+
 // Ordinary Database calls borrow their recording target without cloning handles.
 struct StatementRecordingTarget<'a> {
     slow_query_log: &'a SharedState<system_sql::SlowQueryLog>,

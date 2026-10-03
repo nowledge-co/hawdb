@@ -43,7 +43,11 @@ inside the writer's lifetime. Request lifetime overlap can include waiting and
 **does not establish simultaneous engine execution**. The regression tests in
 [PR #483](https://github.com/nowledge-co/hawdb/pull/483) separately prove that
 completion recording can finish while a real writer holds the commit sequencer.
-Initial snapshot acquisition still uses that sequencer.
+The current `ConcurrentDatabase` implementation also captures new read snapshots
+from an independent committed publication. Channel-controlled regressions start
+readers while a writer holds the sequencer and while a group awaits its durability
+barrier. These tests prove progress and visibility, not latency acceptance. The
+September 14 measurements below predate this acquisition change.
 
 Every returned ID, order, payload and token count is checked. After each case,
 all database handles close and the database reopens through normal WAL recovery.
@@ -145,7 +149,78 @@ ratios are not a strict strong-scaling experiment.
 Compare the same case across revisions; do not interpret apparent superlinear
 ratios as a general engine scaling result.
 
-#226 remains open for the initial snapshot-acquisition lock, governed read
-concurrency, broader representative latency evidence and the #231/#232 write
-protocols. PR #483's deterministic completion-progress proof and this SQL
-measurement have separate scopes.
+#226 remains open for governed read concurrency, broader representative latency
+evidence and the remaining #231/#232 acceptance criteria. PR #483's deterministic
+completion-progress proof and its historical SQL measurement have separate scopes
+from the current acquisition/publication implementation.
+
+## Linux read-acquisition comparison: October 3, 2026
+
+The [publication recording](CONCURRENT_READ_PUBLICATION_LINUX_RECORDING.json)
+preserves two complete campaigns, each containing three alternating fresh-process
+pairs and all 78 case summaries. Each campaign validates 141,312 timed requests
+and 1,299,456 rows in full recovery scans. Raw samples and preserved binaries are
+in `target/benchmarks/226-read-publication` and
+`target/benchmarks/226-read-publication-atomic` respectively.
+
+Both campaigns compare main `606e308bdf888fa94b50e9e0e501b2d1934b4886` against the
+independent read-publication implementation, using identical harness bytes
+(SHA-256 `bae86e60026d86161062eff23d560b1559eae4ab4aa342d633fd8c6714958490`).
+The recording includes candidate source hashes, binary hashes, process resource
+usage, raw-output checksums, and every case summary. Rust 1.97.1, default Cargo
+features, opt-level 3, thin LTO, and one codegen unit are fixed. The persistent
+fixture uses `SyncOnEveryWrite` with group commit disabled, on NVMe/Btrfs under
+`target`, on an AMD Ryzen 7 7735HS with 16 logical CPUs and Linux 7.1.10-zen1-1-zen.
+This is a shared workstation, not an isolated performance host.
+
+The first implementation acquired the publication mutex again for completion
+health checks. Its eight-reader read-only page p95 regressed in all three pairs
+(+11.1%, +7.2%, +4.7%). The final implementation replaces those repeated
+acquisitions with a sticky atomic failure flag and existing store health checks.
+The first campaign retained an idle Bazel server; that workspace server was
+stopped before the second campaign. No agent-started build or test overlapped
+either campaign. These are separate cohorts, not a controlled estimate of the
+atomic flag's contribution; do not pool them or attribute the between-cohort
+variation to that change alone. No run was discarded or replaced.
+
+An initial build attempt reused a stale artifact across source directories. The
+identical binary hash exposed the mistake before timing; that artifact was not
+measured as a candidate. Rebuilding the package and verifying distinct hashes
+and the new implementation marker established the candidate binaries used here.
+
+The following final-implementation results are medians of three process-level
+metrics, not pooled request percentiles. Latencies are microseconds; throughput
+includes all timed requests in each fixed-work phase.
+
+| Case | Requests/s, baseline -> candidate | Read p95 us, baseline -> candidate | Write p95 us, baseline -> candidate |
+| --- | --- | --- | --- |
+| writer-only | 86.1 -> 75.4 | - | 13,137.8 -> 22,596.3 |
+| point-1-readers-writer-false | 2,592.5 -> 2,819.0 | 2,417.0 -> 2,193.6 | - |
+| point-1-readers-writer-true | 208.6 -> 154.2 | 9,865.1 -> 2,407.8 | 12,776.7 -> 16,190.8 |
+| point-4-readers-writer-false | 19,870.3 -> 23,278.1 | 182.0 -> 136.3 | - |
+| point-4-readers-writer-true | 343.7 -> 400.3 | 210.7 -> 189.3 | 28,941.7 -> 14,318.3 |
+| point-8-readers-writer-false | 40,074.7 -> 43,635.0 | 156.3 -> 148.5 | - |
+| point-8-readers-writer-true | 893.2 -> 696.0 | 251.9 -> 162.5 | 13,331.1 -> 16,021.5 |
+| page-1-readers-writer-false | 628.2 -> 611.0 | 3,478.2 -> 3,596.7 | - |
+| page-1-readers-writer-true | 137.0 -> 109.2 | 148,612.2 -> 4,238.5 | 13,573.3 -> 15,764.8 |
+| page-4-readers-writer-false | 3,118.3 -> 2,902.9 | 2,879.7 -> 3,291.2 | - |
+| page-4-readers-writer-true | 225.3 -> 222.8 | 66,742.7 -> 3,068.8 | 32,380.0 -> 25,286.7 |
+| page-8-readers-writer-false | 5,042.3 -> 5,007.6 | 1,775.4 -> 1,712.7 | - |
+| page-8-readers-writer-true | 479.1 -> 405.4 | 89,339.3 -> 2,009.1 | 11,829.8 -> 17,102.5 |
+
+Mixed page-query read p95 falls in every pair (approximately 89.9%-98.6% across
+one, four and eight readers). This supports the bounded acquisition-progress
+improvement; it does not establish general latency or throughput acceptance.
+Writer-only p95 changes by +105.1%, +24.1%, and -5.5%; four-reader read-only page
+p95 changes by +27.4%, +3.5%, and +14.3%. Eight-reader mixed point-query write p95
+also rises in every pair (+39.8%, +19.3%, +8.6%). The candidate uses more process
+CPU time in each final pair. The source of these costs needs further profiling;
+snapshot publication and COW retention are candidate explanations, not proven
+attributions.
+
+**Performance qualification remains blocked.** In particular, these data do not
+satisfy the single-stream no-regression criterion. The change remains a draft
+while the regressions are investigated. The short read-only phases, workstation
+interference, three-pair sample, and fixed work per reader limit scaling claims.
+This synthetic SQL fixture does not qualify representative Mem data, governed
+admission, Cypher performance, or production readiness. #226 remains open.

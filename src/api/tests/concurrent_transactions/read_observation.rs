@@ -82,6 +82,83 @@ impl ReadLanguage {
     }
 }
 
+fn assert_new_read_does_not_wait_for_writer(language: ReadLanguage) {
+    let mut database = Database::new();
+    database.query("CREATE (:Memory {id: 1})").unwrap();
+    database
+        .query_sql("CREATE TABLE messages (id BIGINT PRIMARY KEY)")
+        .unwrap();
+    database
+        .query_sql("INSERT INTO messages (id) VALUES (1)")
+        .unwrap();
+    let (writer_kind, write_query) = match language {
+        ReadLanguage::Cypher => ("create_node", "CREATE (:Memory {id: 2})"),
+        ReadLanguage::Sql => ("insert", "INSERT INTO messages (id) VALUES (2)"),
+    };
+    let (writer_started, writer_events) = mpsc::channel();
+    let writer_release = Arc::new((Mutex::new(false), Condvar::new()));
+    let sink = Arc::new(PausedWriterTelemetry {
+        writer_kind,
+        writer_started,
+        writer_release: Arc::clone(&writer_release),
+        writer_timed_out: AtomicBool::new(false),
+        read_digest: String::new(),
+        reads: Mutex::new(Vec::new()),
+    });
+    database.set_telemetry_sink(Some(sink.clone()));
+    let db = database.into_concurrent();
+    let before = db.published_read_view().unwrap();
+    let writer_db = db.clone();
+    let writer = std::thread::spawn(move || language.execute(&writer_db, write_query));
+    let writer_ready = writer_events.recv_timeout(Duration::from_secs(5));
+
+    let (read_completed, read_results) = mpsc::channel();
+    let reader_db = db.clone();
+    let reader = std::thread::spawn(move || {
+        let result = (|| {
+            let snapshot = reader_db.begin_read_transaction()?;
+            let view = reader_db.published_read_view()?;
+            let epoch = reader_db.commit_epoch()?;
+            let output = language.execute(&reader_db, language.count_query())?;
+            Ok::<_, crate::HawDBError>((snapshot, view, epoch, output))
+        })();
+        let _ = read_completed.send(result);
+    });
+    let completed_while_writer_paused = read_results.recv_timeout(Duration::from_secs(5));
+    release_autocommit_reads(&writer_release);
+    reader.join().unwrap();
+    let writer_result = writer.join();
+
+    writer_ready.expect("writer must hold the sequencer before starting the reader");
+    writer_result.unwrap().unwrap();
+    assert!(!sink.writer_timed_out.load(Ordering::SeqCst));
+    let (mut snapshot, view, epoch, output) = completed_while_writer_paused
+        .expect("a new reader waited for the active writer's commit mutex")
+        .unwrap();
+    assert_eq!(view, before);
+    assert_eq!(epoch, before.visible_commit_epoch());
+    assert_eq!(snapshot.published_read_view(), before);
+    assert_eq!(output.rows[0].get("total"), Some(&Value::Int(1)));
+    let pinned = match language {
+        ReadLanguage::Cypher => snapshot.query(language.count_query()),
+        ReadLanguage::Sql => snapshot.query_sql(language.count_query()),
+    }
+    .unwrap();
+    assert_eq!(pinned.rows[0].get("total"), Some(&Value::Int(1)));
+    let latest = language.execute(&db, language.count_query()).unwrap();
+    assert_eq!(latest.rows[0].get("total"), Some(&Value::Int(2)));
+}
+
+#[test]
+fn new_cypher_read_does_not_wait_for_writer() {
+    assert_new_read_does_not_wait_for_writer(ReadLanguage::Cypher);
+}
+
+#[test]
+fn new_sql_read_does_not_wait_for_writer() {
+    assert_new_read_does_not_wait_for_writer(ReadLanguage::Sql);
+}
+
 fn assert_read_completion_does_not_wait_for_writer(language: ReadLanguage, fails: bool) {
     let mut database = Database::new_with_config(DatabaseConfig {
         max_read_result_rows: fails.then_some(1),
