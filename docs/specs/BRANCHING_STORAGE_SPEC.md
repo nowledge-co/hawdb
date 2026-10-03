@@ -192,13 +192,16 @@ SHOW BRANCH ID $1;
 parameter, and accepts an optional unsigned `OFFSET` in either clause order; the
 configured query row budget rejects an oversized emitted result rather than
 truncating it. Results are accounted against the configured payload budget. Each catalog row contains
-`branch_id`, `name`, `parent_id`, `source_commit_epoch`, `state`, and `owner`.
+`branch_id`, `name`, `parent_id`, `source_commit_epoch`, `metadata_revision`,
+`state`, and `owner`. The source epoch records immutable creation lineage;
+metadata revision is the token used by an exact-identity delete.
 `SHOW BRANCH NAME` and `SHOW BRANCH ID` accept only a string literal or a bound
-string parameter. The `ID` form validates UUID syntax after binding, while the
+string parameter. `ID` also accepts a typed UUID parameter. The `ID` form
+validates UUID syntax after binding, while the
 `NAME` form never applies a UUID-looking-name heuristic. Catalog inspection is
 metadata-only and does not admit or retain a data-branch runtime.
 
-Selection will use:
+Selection uses:
 
 ```sql
 USE BRANCH dev;
@@ -212,16 +215,17 @@ needed); the `NAME` and `ID` forms accept a string literal or bound parameter.
 Names remain case-sensitive under the branch-name contract, with no UUID-looking
 name heuristic. UUID values are parsed and validated as UUIDs. Parameters are
 bound as values by the parser/runtime, never interpolated into SQL text.
-`SHOW CURRENT BRANCH` is reserved for the same future selection surface. It is
-not parsed or executed until `USE BRANCH` has durable session state to report.
+`SHOW CURRENT BRANCH` returns the catalog row plus the selected runtime's
+`commit_epoch` and effective `durability` (`sync_on_every_write` or
+`sync_on_checkpoint`). A read transaction reports its captured selection and
+commit epoch. `USE BRANCH` returns an empty result after successful admission.
 
-The same Rust query entrypoints execute inspection SQL. `USE BRANCH` is not yet
-implemented; the following remains the target use after its admission protocol
-lands:
+The same Rust query entrypoints execute lifecycle and selection SQL. The
+following is the target ordinary project-opening path:
 
 ```rust
 let mut db = Database::open(project_path)?; // default: SyncOnEveryWrite
-// Proposed SQL, resolved inside this project:
+// SQL resolves the name inside this project:
 db.query_sql("USE BRANCH dev")?;
 db.query_sql("ALTER TABLE documents ADD COLUMN kind TEXT")?;
 db.query_sql("SHOW CURRENT BRANCH")?;
@@ -282,6 +286,64 @@ from enabling SQL selection on the mutable embedded context.
 
 ### SQL lifecycle surface and implementation boundary
 
+The parser contract is:
+
+```sql
+CREATE BRANCH NAME $1 FROM ID $2 AT REVISION $3 REQUEST KEY $4;
+CREATE BRANCH dev FROM main AT REVISION 7 REQUEST KEY 'request-1';
+CREATE BRANCH FROM NAME $1 AT REVISION $2 REQUEST KEY $3 OWNER $4;
+DROP BRANCH ID $1 AT REVISION $2;
+```
+
+Creation accepts an optional name: `NAME` takes a string value, a bare or quoted
+identifier is a literal name, and omission generates `agent/<uuid>`. Source
+selectors use the same identifier/`NAME`/`ID` rules as selection. Expected source
+revision and metadata revision are nonnegative integer literals or positional
+parameters; request key and optional owner are string literals or parameters.
+The source token identifies committed state, not the catalog's birth epoch.
+`DROP` requires a UUID and metadata revision; no name-only delete is accepted.
+`AT REVISION` fences the first `Ready -> Deleting` transition. Once that exact
+UUID is `Deleting` or `Deleted`, deletion is a monotonic, idempotent request to
+finish or observe its existing outcome, including requests from another caller.
+It does not identify an individual caller's operation. A stale request against
+a still-`Ready` UUID fails, and a reused name never retargets an old request.
+Creating and dropping return the resulting catalog row, with one-row and
+payload admission checked before starting the mutation. A lost response may
+still leave a committed operation; create-key and exact-UUID retries recover
+its durable outcome. `SHOW BRANCHES` remains explicitly paginated.
+
+Current qualification covers explicitly initialized projects: `USE` recovers
+the target head/immutable closure/private WAL into a candidate `Database` before
+replacing the source store, schema, plan caches, reader-pin domain, and projection
+registry. Prepared Cypher execution is bound to its original branch UUID.
+Readonly selection reconstructs derived recovery files but cannot append the
+private WAL, publish a head, or change the catalog. Ordinary writes remain on
+the selected private WAL, and a selected source is sealed at the requested
+current revision before a nested fork. An unselected source is sealed from its
+head, immutable manifest, and complete private WAL under its UUID lease without
+materializing its dataset. A busy source fails without retargeting the caller.
+
+The ordinary opener still uses the legacy single-root path, and bootstrap,
+metadata-only project open, deferred default `main` admission, and automatic
+default-main selection on reopen remain #780 work. Background jobs currently
+prevent switching while Pending/Running/Failed so retryable work cannot be
+discarded. Completed outcomes and the job ID allocator stay with the host handle,
+so switching does not reuse old IDs. Independent job-owned branch pins are still
+required. Finite FD admission and complete
+power-loss qualification remain #819/#820 work. These implementation limits do
+not weaken the required project-opening, resource, or job-ownership contracts
+above and below.
+The storage-owned project selector codec and metadata admission seam now validate
+project/main identity without retaining branch descriptors or taking a writer
+lease. Main initialization reserves those UUIDs durably before catalog/head
+publication, reuses an existing development catalog's identity, and rejects
+conflicting or damaged bootstrap evidence. The facade's default opener has not
+yet switched to this seam; identity reservation does not publish the selector
+or prove that the complete default project-opening workflow is implemented.
+The SQL fixtures use default residency/index settings; existing authoritative
+index restrictions on live schema-changing transactions and DDL WAL admission
+remain fail-closed. Enabling branch selection does not bypass those restrictions.
+
 Use `CREATE BRANCH`, `SHOW BRANCHES`, `SHOW BRANCH`, and `DROP BRANCH` for lifecycle
 operations. Creation does not implicitly select its result; `USE BRANCH` never
 creates a missing branch. Creation must expose expected source revision and an
@@ -324,13 +386,15 @@ production branch-opening implementation.
 boundary. It resolves the expected UUID/revision under the metadata lease,
 releases that lease before acquiring the target branch lease, then reads only
 the target head, immutable root, and private active WAL. It materializes the
-root manifest/closure into the target's disposable runtime directory, replays
-the sealed WAL through the normal durable opener, then replays the verified
-private WAL from the exact sealed-root LSN boundary. It rechecks the catalog
+root manifest into the target's disposable runtime directory and checkpoint
+bindings into its persistent data directory. It replays the ordered sealed WAL
+generations and verified private suffix in one recovery pass, starting from
+the exact checkpoint LSN boundary. It rechecks the catalog
 after recovery before exposing the runtime. The legacy
 `open_from_branch_head` helper still copies a source directory and remains
-recovery-qualification-only. SQL session selection and branch-local head
-publication remain separate work; an automatic repair request for a private
+recovery-qualification-only. SQL session selection remains separate work;
+branch-local checkpoint/seal publication is described below. An automatic
+repair request for a private
 WAL currently fails closed until it has branch-aware repair publication.
 
 Any ready branch can be a source, including one with committed DDL and DML.
@@ -403,29 +467,109 @@ must distinguish maintenance failure from a definitely aborted transaction.
 
 ### Current implementation gaps
 
-The lifecycle facade currently creates nested branch metadata from sealed heads;
-this is not yet the complete writable workflow above. The storage admission
-kernel now directly recovers a ready target from its immutable root and
-append-only private WAL without copying its parent directory. Required work
-includes:
+The SQL lifecycle facade now selects explicitly initialized branches, executes
+branch-local DDL/DML, and forks an advanced child at its exact committed epoch.
+This is not yet the complete project-opening workflow above. The storage admission
+kernel directly recovers a ready target from its immutable root and
+append-only private WAL without copying its parent directory. Its admitted
+`GraphStore` now routes ordinary commits to the private WAL, publishes a new
+head at checkpoint/seal boundaries, and can fork an advanced child from its
+exact sealed revision. Required work includes:
 
-- SQL branch selection/lifecycle AST and dispatch, deferred admission through
-  the storage kernel, and context-local writable opening;
-- sealing current committed state when a modified child becomes a fork source;
-- branch-local DDL/checkpoint publication, snapshot and plan invalidation;
-- updating the historical expiry-bearing model; runtime catalog/facade expiry
-  fields and transitions have been removed in catalog v2;
-- exposing the effective durability mode and auditing platform persistence
+- connecting metadata-only project admission to the ordinary opener, deferred
+  default-main admission, and authoritative bootstrap/reopen;
+- independent ownership for background jobs across session switches;
+- qualification of supported residency/index configurations, including existing
+  authoritative-index restrictions on live DDL and schema-WAL replay;
+- complete implementation-to-model refinement for branch publication and
+  resource admission; the lifecycle model and catalog v2 contain no expiry;
+- auditing platform persistence
   barriers in both modes, including metadata publication and uncertain completion;
 - shared project FD accounting, lazy file residency, and bounded descriptor
   admission across branch switching and maintenance;
-- branch-aware locking, global GC, and the acceptance scenarios above.
+- bounded concurrent global GC and the complete power-loss acceptance scenarios
+  above; active leases currently defer physical sweep without bypassing metadata
+  completeness validation.
 
 There is no production compatibility obligation for earlier development-only
 branch formats. Update the greenfield format deliberately and reject unsupported
 old versions; do not add expiry compatibility migrations solely for old dev data.
 These are implementation gaps, not claims that this documentation fixes runtime
 behavior.
+
+### Storage runtime implementation boundary
+
+Direct admission leases the target UUID and materializes only its immutable
+closure. The branch's `runtime/` directory holds the disposable manifest and
+WAL replay files. Its persistent `data/` directory retains branch-local mutable
+recovery dependencies; its authoritative private WAL stays beside `branch.head`.
+Failed admission may clean `runtime/` but must retain `data/`, the private WAL,
+the head, and immutable evidence. A transferred store and its read snapshots
+retain the branch lease until their last owner releases it.
+Admission synchronizes the persistent data directory's parent entry before
+exposing a writable runtime. Synchronizing a later dependency file alone must
+not leave its containing directory creation outside the durability barrier.
+
+The sealed root's `checkpoint_epoch` is the **logical commit epoch** covered by
+the checkpoint. The manifest separately binds the physical checkpoint generation.
+A branch may seal repeatedly without a new commit, so physical generation must
+not be compared to commit epoch. An entirely checkpoint-covered root has no
+sealed-WAL intervals. Otherwise recovery replays the ordered intervals using
+each generation's own header, then the private suffix. Recovery builds one
+relational row/index overlay for the whole suffix and charges all intervals
+against the configured replay entry and byte limits.
+
+Checkpoint publication rotates branch-local artifacts, publishes the complete
+immutable closure, and then switches that UUID's head to a private successor WAL.
+An uncertain head publication or a failed checkpoint after local WAL rotation
+requires closing and reopening the handle. Recovery uses the authoritative old
+or new head and its WAL; it never adopts the disposable manifest as authority.
+Unselected successor WALs left by a failed publication are retained, and retry
+uses a fresh identity.
+
+Catalog reservation records immutable creation lineage. The requested current
+source revision is checked against the selected parent head during reservation
+and rechecked before child file publication; it is not compared for equality to
+the parent's creation epoch. Admitted callers must seal their exact current
+revision before invoking the child-publication kernel.
+
+Catalog-backed GC holds metadata serialization through its sweep and reports
+`deferred_for_active_leases` whenever a runtime or snapshot owner may have
+unpublished candidates or older reader generations. This conservative policy
+retains the entire supplied object inventory and skips deleted-directory cleanup
+while any branch lease is active, including an otherwise idle open branch.
+A long-lived host can therefore defer reclamation indefinitely; this is an
+unresolved storage-growth limitation, not a bounded publication pause. The typed
+report exposes each deferred attempt, but there is no built-in duration counter,
+maintenance scheduler, or alert threshold. Repeatedly retrying GC does not resolve
+the limitation while the lease remains held.
+
+Concurrent reclamation is explicitly deferred to [#778](https://github.com/nowledge-co/hawdb/issues/778).
+The current snapshot clones the branch-level ownership lease; it does not register
+an independently enumerable historical sealed root with the project collector.
+The collector probes OS-visible ownership from catalog paths, so a process-local
+`has_uncommitted_candidate` flag cannot describe foreign publishers or readers.
+An inventory flag alone also cannot exclude a publisher starting between mark
+and sweep. Before narrowing this conservative guard, #778 must establish:
+
+- Candidate protection acquired before the first immutable-object publication
+  and held until durable head publication or conservative failed-attempt recovery,
+  synchronized with the collector across processes.
+- Exact historical-root retention for readers and jobs, including snapshots that
+  outlive their source runtime, with root discovery synchronized with sweep.
+- Revalidation at destructive boundaries and fail-closed handling of incomplete
+  ownership or root evidence; elapsed deferral time never authorizes deletion.
+- Regression evidence that an idle open branch permits unrelated orphan cleanup
+  while unpublished candidates, old snapshots, durable unleased branches, and
+  parent/sibling closures survive concurrent and interrupted maintenance.
+
+The existing `catalog_sweep_defers_for_publication_candidates_and_reader_leases`
+regression proves conservative candidate and old-snapshot retention, followed by
+reclamation after every lease is released. It does not prove progress while an
+unrelated branch remains open. Project FD accounting (#819), session integration
+(#775/#780), and deterministic power-loss qualification (#820) also remain open.
+Reopen and publication-failure tests are source-level recovery evidence, not a
+complete power-loss qualification or a Rust-to-TLA refinement proof.
 
 ## On-disk compatibility and immutable objects
 
@@ -437,6 +581,17 @@ MUST reject the project header before opening a WAL or running generation
 reclamation. Readers MUST
 reject unknown versions, duplicate fields, invalid identities, and incomplete
 references; absence/corruption of the catalog MUST NOT trigger legacy fallback.
+
+The storage seam's exact v1 selector encoding is five newline-terminated ASCII
+lines in this order: the header, `project_id`, `main_branch_id`, `catalog_format`,
+and `checksum`. Fields use one tab separator. UUIDs use canonical lowercase
+hyphenated encoding; project and main UUIDs are non-nil and distinct. Catalog
+format is `2`. The checksum is decimal CRC32C over the first four lines, including
+their newlines. The decoder enforces a 512-byte limit, exact canonical bytes,
+field order, and no trailing fields. A bootstrap intent uses the same fields with
+the distinct `HAWDB_BRANCH_BOOTSTRAP_V1` header; it is identity reservation, never
+a substitute for a published project selector. A recognized legacy header only
+selects the legacy decoder; it does not bypass its complete manifest validation.
 
 New empty projects bootstrap `main` directly. When adopting an existing
 development-only database, hold its directory lease, durably create a catalog
@@ -453,6 +608,7 @@ Logical layout (paths are internal, not part of the facade API):
 ```text
 project/
   manifest.hawdb                 # branch-project selector, published last
+  branch-bootstrap.hawdb         # durable bootstrap UUID reservation, not readiness
   metadata.hawdb.lock            # stable project metadata lock inode
   catalog.hawdb                  # checksummed catalog, atomically replaced
   objects/<kind>/<sha256>        # immutable payloads and sealed roots
@@ -869,6 +1025,69 @@ These are implementation and resource-verification requirements; existing open
 helpers and caches are not claimed to satisfy them merely because branches share
 immutable storage.
 
+### Current descriptor integration boundary
+
+`DatabaseConfig::max_open_files` supplies a finite default of 256. Storage file,
+directory-iterator, clone, ownership-lock, and WAL operations use the admitted
+file wrapper. Independently acquired canonical project contexts share the
+budget and reject conflicting configuration. Immutable checkpoint bindings
+retain logical file references; their cache uses the complete object identity,
+validates content on cold open, retains active reads, and evicts idle handles.
+Clones share a logical sequential cursor, while separately opened references
+and positioned reads preserve their own offsets. Mutable path opens invalidate
+future immutable bindings without changing references captured by snapshots.
+
+The accounting argument is local to these routed operations. A native open or
+clone obtains capacity before acquiring its handle; failure drops the permit.
+Native handles close before their permits return capacity. Directory entries
+share the iterator permit until their final owner closes. An operation quota
+converts reserved capacity to open capacity and returns it on temporary closure;
+dropping the quota releases its unused capacity. Each transition is serialized
+by the budget mutex, preserving `open + reserved <= limit`. Opaque filesystem
+operations conservatively account for temporary handle capacity, so these
+metrics are admission counts, not an exact process-wide native-handle census.
+This is a source-level conservation argument, not a machine-checked proof of
+the complete runtime.
+
+`USE BRANCH` retains a target reservation through recovery and facade validation.
+The current reservation covers three lock/WAL handles, the bounded shared read
+worker limit, and four catalog/publication temporaries. Nested admission borrows
+the reservation; independent work can use the remaining project capacity.
+Snapshots share the admitted-runtime counter and retain the UUID lease after
+the source execution context closes its runtime-directory lock and mutable WAL.
+Resource rejection preserves the source selection and releases candidate quota.
+
+Descriptor rejections also retain their typed cause through append and relational
+checkpoint, row-page, overflow, delta, index, and query-runtime error conversion.
+An exhausted read budget does not poison a generation-pinned reader or become a
+corruption error. The focused exhaustion regressions verify the reached limit,
+unchanged recovery artifacts and quota, and successful reads after capacity is
+released. Catalog `SHOW` commands propagate the same resource error; selected
+branch identity remains available without reading the catalog.
+
+Graph query execution binds its memory ledger to the selected store's descriptor
+context. Spill pools retain that context per query/run, including external
+temporary directories and worker-thread reads; sharing a spill directory does
+not merge distinct projects' descriptor domains. Pool admission is lazy and
+only successful admission is cached. Failed file creation returns both operator
+and pool run quota, and readers retain the run until their file handles close.
+Search file opens, clones, publication locks, and directory operations use the
+same storage wrapper. Persistent search indexes and out-of-core readers retain
+their containing project domain; independent search roots retain their own
+finite default domain rather than sharing the low-level standalone fallback.
+Descriptor errors bypass corruption/rebuild fallback in
+the snapshot/segment admission paths. Ordinary unbound files do not allocate an
+immutable cache, and absolute-path domain lookup borrows the existing path.
+
+#819 remains open. Complete qualification must still audit filesystem operations
+outside the storage wrapper (including native generated-stage deletion and
+projection dependencies), relative-path lookup scratch, cold existing-root alias resolution on Windows,
+data-dependent retained recovery/checkpoint handles, validation-read IO budgets,
+and resource failures at every acquisition/publication boundary. The legacy
+single-root opener, independent job pins, and the complete power-loss matrix
+also remain separate implementation obligations; the current accounting tests
+do not prove those requirements.
+
 ## Sealing and create protocol
 
 Sealing holds the source branch's commit/publication barrier, checks the
@@ -895,7 +1114,10 @@ Create then follows these durable transitions:
 
 1. Validate request syntax/limits and consult its idempotency receipt first.
    For a new request, resolve and lock the source; revalidate its expected
-   revision and state; seal if needed.
+   revision and state; seal if needed. Acquire the child's UUID lease before
+   making its pending receipt visible, and retain it through completion or
+   abort. Its directory and stable lock inode may precede reservation; its
+   head and WAL must not.
 2. While the sealed source is pinned, atomically publish a `Creating` catalog
    record with UUID, reserved name, immutable base digest, full request
    fingerprint, and pending outcome. It becomes a global GC root immediately.
@@ -906,14 +1128,18 @@ Create then follows these durable transitions:
    replay. Failure before step 2 leaves no branch; unreferenced objects are
    later collectible. Failure after step 2 requires recovery, not a new ID.
 
-The current storage implementation makes steps 2--4 explicit in
-`branch_catalog::create_branch_from_parent`. `reserve_create_file` durably
-records `Creating` and returns the exact metadata revision used by completion.
+The current storage implementation makes child ownership and steps 2--4
+explicit in `branch_catalog::create_branch_from_parent`. Directory creation or
+lease acquisition failure leaves the catalog unchanged. Its private reservation helper
+validates the live source head under the metadata lease, durably records
+`Creating`, and returns the exact metadata revision used by completion. The
+unvalidated file-reservation helper is available only to isolated unit fixtures.
 `create_child_branch_head_from_parent` reads the parent selector and rejects a
 generation, commit epoch, project identity, or sealed-root mismatch before it
 creates either child file. `create_child_branch_head` creates the child WAL and
-head with exclusive creation, syncs both files and their parent directory, and
-holds the child directory lease through catalog completion. Therefore, by
+head with exclusive creation and syncs both files and their parent directory.
+The enclosing creator holds the child lease through catalog completion and
+reports an abort-publication failure instead of discarding it. Therefore, by
 induction over these durable boundaries, a successful `Ready` record implies a
 complete private child WAL/head pair whose root is the validated parent root;
 the parent selector and mutable WAL are never modified.
@@ -926,8 +1152,46 @@ can become `Ready`. Any mismatch or uncertain I/O leaves `Creating` unchanged
 and retains the candidate for a later retry. `admit_branch_from_head` then
 uses a ready record only after validating its root/identity twice around direct
 recovery; its sealed and private WAL replay does not consult the parent
-directory. Branch-local DDL/DML and checkpoint head publication remain database
-integration obligations.
+directory. On an admitted runtime, ordinary DDL/DML appends only private WAL;
+checkpoint/seal publishes the immutable root before selecting its successor WAL
+in the branch head. Uncertain publication poisons the handle, including failures
+after local manifest publication but before head handoff. Recovery retains the
+selected head/WAL and candidate evidence. Generation reclamation follows a
+successful head handoff.
+
+Facade retries dispatch a matching pending receipt directly to
+`recover_create_from_head_file`. This recovery owns the child's UUID lease and
+derives its WAL path from the child's head; it never resolves or seals the
+parent again. Parent advancement, deletion, directory loss, or human-name reuse
+cannot change the original reserved child's identity or captured revision.
+Fingerprint conflicts reject before recovery, and SQL result admission uses the
+prospective completion revision before changing the catalog.
+An active creator already holds this lease before publishing `Creating`, so a
+retry cannot abort the creator between reservation and file publication.
+The ordinary opener does not yet scan pending receipts automatically; explicit
+recovery and matching request retries remain the implemented recovery entries.
+
+An unchanged checkpoint is identified by its exact durable-manifest reference
+and recovery boundary. Seal reuses the validated root's checkpoint references
+and bindings, held under the runtime lease, and publishes only the new WAL
+suffix/root metadata. A changed checkpoint publishes a newly verified closure.
+For an unselected source, `seal_branch_from_head` holds the source UUID lease
+and validates head/root/manifest recovery boundaries plus complete private WAL
+frames, contiguous LSNs, and embedded transaction epochs. One WAL record advances
+one commit epoch, including a batch containing both schema and data changes.
+It reuses the previously published immutable checkpoint references without
+materializing a graph/schema runtime or reading checkpoint payloads. Cumulative
+sealed/private WAL entry and byte limits apply before publication. The source
+lease remains held through child creation, and the caller's selected runtime is
+unchanged. A torn suffix or stale revision fails without rotating the head or
+discarding WAL evidence; an uncertain head publication retains candidates for
+reopen. This path does not validate logical mutations against a recovered
+dataset or replace the immutable closure's original publication validation.
+`DatabaseConfig::max_branch_sealed_wal_intervals` defaults to 256, independently
+of WAL byte/entry replay limits. Admission checks this cap before materializing
+or replaying data, and sealing cannot grow a selected runtime beyond its cap;
+checkpoint compaction resets the interval chain. This bounds sealed-generation
+work, but does not replace the project-wide FD budget required by #819.
 
 `begin_delete_file` and `finish_delete_file` make the catalog half of deletion
 equally explicit. Each takes the metadata lease before reading the current
@@ -950,7 +1214,7 @@ current pending state without changing the catalog. `Deleted` confirms
 finalization; a retry after lease release can finish the same UUID's deletion.
 Direct head admission revalidates the catalog after acquiring the target lease
 and recovering the branch, so a `Deleting` record cannot expose a runtime.
-Database session integration remains tracked by #780, and #778 remains
+Default project admission remains tracked by #780, and #778 remains
 responsible for physical cleanup and reachability checks.
 
 If the parent advances or is subsequently deleted, the child's base digest and

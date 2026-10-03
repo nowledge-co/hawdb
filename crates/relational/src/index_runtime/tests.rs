@@ -26,6 +26,58 @@ type Mode<'a> = RelationalIndexReadMode<'a, Reader>;
 type Runtime<'a> = RelationalIndexRuntime<'a, Reader>;
 type Entry = (RelationalKey, RelationalKey);
 
+#[test]
+fn descriptor_exhaustion_preserves_index_runtime_for_retry() {
+    use hawdb_core::error::FileDescriptorError;
+
+    let (fixture, project) = Fixture::with_descriptor_budget(16);
+    let path = fixture.directory.join("held-descriptor");
+    std::fs::write(&path, b"held").unwrap();
+    let mut held = Vec::new();
+    while project.metrics().open < 16 || project.metrics().cached_handles > 0 {
+        held.push(hawdb_storage::file_io::File::open(&path).unwrap());
+    }
+    let transaction = fixture.transaction();
+    let runtime = Runtime::new(fixture.mode(3, &transaction), Default::default());
+    for kind in 0..3 {
+        let mut rows = Vec::new();
+        assert_eq!(
+            visit(&runtime, &fixture.state, kind, |index, primary| {
+                rows.push((index.clone(), primary.clone()));
+                Ok(true)
+            })
+            .unwrap_err(),
+            HawDBError::FileDescriptors(FileDescriptorError::BudgetExceeded {
+                requested: 1,
+                available: 0,
+                limit: 16,
+            })
+        );
+        assert!(rows.is_empty());
+        assert_eq!(project.metrics().open, 16);
+        assert_eq!(project.metrics().reserved, 0);
+    }
+    assert!(runtime.evidence().is_empty());
+    drop(held);
+    for kind in 0..3 {
+        let mut rows = Vec::new();
+        visit(&runtime, &fixture.state, kind, |index, primary| {
+            rows.push((index.clone(), primary.clone()));
+            Ok(true)
+        })
+        .unwrap();
+        assert_eq!(rows, expected(&fixture.oracle, &scan(&[1], false, None)));
+    }
+    let evidence = runtime.evidence();
+    assert_eq!(evidence.len(), 1);
+    assert_eq!(evidence[0].lookups, 3);
+    assert_eq!(evidence[0].canonical_fallback_lookups, 0);
+    drop(runtime);
+    drop(transaction);
+    fixture.remove();
+    assert_eq!(project.metrics().open, 0);
+}
+
 fn scan(prefix: &[i64], backward: bool, bound: Option<&[i64]>) -> RelationalIndexRangeScan {
     RelationalIndexRangeScan {
         prefix: key(prefix),

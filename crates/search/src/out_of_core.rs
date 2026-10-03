@@ -42,10 +42,10 @@ use crate::{
     RuntimeCapabilities, RuntimeCapability, SearchLexicalSourcePolicy, SearchLexicalTermPolicy,
 };
 use hawdb_storage::durability::durable_replace_file;
+use hawdb_storage::file_io::{self as fs, File, OpenOptions};
 use serde::{Deserialize, Serialize};
 use std::cmp::{Ordering as CmpOrdering, Reverse};
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
-use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
@@ -188,6 +188,7 @@ pub(crate) struct SearchOutOfCoreMutationTargetOutput {
 #[derive(Debug)]
 pub struct SearchOutOfCoreReader {
     root: PathBuf,
+    _project_files: hawdb_storage::file_descriptors::ProjectFileDescriptors,
     config: SearchOutOfCoreConfig,
     analyzer_lexicon: SearchAnalyzerLexicon,
     manifest: SearchOutOfCoreManifestBody,
@@ -891,6 +892,10 @@ impl SearchOutOfCoreReader {
         lexical_source_policy: SearchLexicalSourcePolicy,
     ) -> Result<Self> {
         let root = path.as_ref().to_path_buf();
+        let project_files =
+            hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_component(
+                &root, false,
+            )?;
         let (manifest, segments, visibility) = load_artifact_closure(
             &root,
             &config,
@@ -900,6 +905,7 @@ impl SearchOutOfCoreReader {
         )?;
         Ok(Self {
             root,
+            _project_files: project_files,
             config,
             analyzer_lexicon,
             manifest,
@@ -2555,7 +2561,7 @@ pub(super) fn published_artifact_generations(
     analyzer_lexicon: &SearchAnalyzerLexicon,
 ) -> Result<Option<PublishedArtifactGenerations>> {
     let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
-    if !manifest_path.exists() {
+    if !fs::try_exists(&manifest_path)? {
         return Ok(None);
     }
     let (manifest, _segments, _visibility) = load_artifact_closure(
@@ -3582,7 +3588,7 @@ fn unique_candidate_path(directory: &Path) -> PathBuf {
 
 pub(super) fn next_generation(root: &Path, max_lexical_manifest_bytes: u64) -> Result<u64> {
     let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
-    if !manifest_path.exists() {
+    if !fs::try_exists(&manifest_path)? {
         return Ok(1);
     }
     let active_generation = match read_bounded_file(&manifest_path, MAX_OUT_OF_CORE_MANIFEST_BYTES)
@@ -3590,6 +3596,7 @@ pub(super) fn next_generation(root: &Path, max_lexical_manifest_bytes: u64) -> R
         .map(|manifest| manifest.generation)
     {
         Ok(generation) => generation,
+        Err(error @ HawDBError::FileDescriptors(_)) => return Err(error),
         Err(_) => latest_recoverable_lexical_generation(root, max_lexical_manifest_bytes)?,
     };
     active_generation
@@ -4561,29 +4568,7 @@ mod tests {
     // mutation writer and compaction lifecycle remain covered separately.
     #[cfg(feature = "full-text-search")]
     fn mutation_reader_for_test(path: &Path) -> SearchOutOfCoreReader {
-        let config = SearchOutOfCoreConfig::default();
-        let analyzer_lexicon = SearchAnalyzerLexicon::default();
-        let lexical_term_policy = SearchLexicalTermPolicy::default();
-        let lexical_source_policy = SearchLexicalSourcePolicy::default();
-        let (manifest, segments, visibility) = load_artifact_closure(
-            path,
-            &config,
-            &analyzer_lexicon,
-            lexical_term_policy,
-            lexical_source_policy,
-        )
-        .unwrap();
-        SearchOutOfCoreReader {
-            root: path.to_path_buf(),
-            config,
-            analyzer_lexicon,
-            manifest,
-            segments,
-            visibility,
-            lexical_source_policy,
-            lexical_term_policy,
-            runtime_capabilities: crate::compiled_runtime_capabilities(),
-        }
+        SearchOutOfCoreReader::open(path).unwrap()
     }
 
     #[test]

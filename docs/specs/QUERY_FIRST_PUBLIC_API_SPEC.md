@@ -107,6 +107,18 @@ their statements nor route-specific response shapes are public database APIs.
 
 ## Stable typed boundaries
 
+Branch lifecycle and selection use PostgreSQL query entry points:
+`CREATE BRANCH`, `DROP BRANCH`, `USE BRANCH`, `SHOW BRANCHES`, `SHOW BRANCH`, and
+`SHOW CURRENT BRANCH`. `DatabaseSession` borrows the mutable database's selection;
+selection survives the end of that borrow. Catalog mutations and selection are
+rejected inside explicit user transactions. Shared `ConcurrentDatabase` clones
+cannot use `USE BRANCH` to retarget their shared runtime. See
+[the branching contract](BRANCHING_STORAGE_SPEC.md) for value binding, exact
+revision/identity requests, and the remaining project-admission boundaries.
+
+Storage-owned typed helpers implement the same lease/publication/recovery kernel;
+they do not introduce a public `open_branch()` alternative control plane.
+
 A typed API remains appropriate only when a stable kernel contract coordinates
 behavior that cannot be represented safely by one query language statement.
 The retained categories are:

@@ -23,7 +23,7 @@ use crate::{
 use hawdb_core::{HawDBError, Result};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub struct OperatorMemoryTracker {
     pub budget_bytes: usize,
@@ -130,12 +130,35 @@ impl OperatorMemoryTracker {
 
 pub struct SpillBudgetTracker {
     operator: &'static str,
-    pool: std::result::Result<SpillPool, String>,
+    pool: Arc<SpillPoolAdmission>,
     pub max_bytes: u64,
     pub max_runs: usize,
     used_bytes: Arc<AtomicU64>,
     run_count: Arc<AtomicUsize>,
     staging_account: Option<QueryMemoryAccount>,
+}
+
+struct SpillPoolAdmission {
+    memory: ExecutionMemoryConfig,
+    file_descriptors: Option<hawdb_storage::file_descriptors::FileOpenContext>,
+    admitted: Mutex<Option<SpillPool>>,
+}
+
+impl SpillPoolAdmission {
+    fn get(&self) -> Result<SpillPool> {
+        let mut admitted = self
+            .admitted
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(pool) = admitted.as_ref() {
+            return Ok(pool.clone());
+        }
+        // Cache only successful admission. A query can retry after another
+        // reader releases capacity without retaining a failed resource result.
+        let pool = SpillPool::open_with_context(&self.memory, self.file_descriptors.as_ref())?;
+        *admitted = Some(pool.clone());
+        Ok(pool)
+    }
 }
 
 impl SpillBudgetTracker {
@@ -160,9 +183,21 @@ impl SpillBudgetTracker {
     }
 
     pub fn new(operator: &'static str, memory: &ExecutionMemoryConfig) -> Self {
+        Self::with_file_descriptors(operator, memory, None)
+    }
+
+    fn with_file_descriptors(
+        operator: &'static str,
+        memory: &ExecutionMemoryConfig,
+        file_descriptors: Option<hawdb_storage::file_descriptors::FileOpenContext>,
+    ) -> Self {
         Self {
             operator,
-            pool: SpillPool::open(memory).map_err(|error| error.to_string()),
+            pool: Arc::new(SpillPoolAdmission {
+                memory: memory.clone(),
+                file_descriptors,
+                admitted: Mutex::new(None),
+            }),
             max_bytes: memory.max_spill_bytes.get(),
             max_runs: memory.max_spill_runs.get(),
             used_bytes: Arc::new(AtomicU64::new(0)),
@@ -196,7 +231,11 @@ impl SpillBudgetTracker {
                 format!("{operator} spill staging"),
                 staging_budget,
             )),
-            ..Self::new(operator, memory)
+            ..Self::with_file_descriptors(
+                operator,
+                memory,
+                memory_ledger.file_descriptor_context().cloned(),
+            )
         }
     }
 
@@ -242,9 +281,7 @@ impl SpillBudgetTracker {
         file_operator: &str,
         buffer_bytes: NonZeroUsize,
     ) -> Result<(SpillRun, SpillWriter)> {
-        let pool = self.pool.as_ref().map_err(|error| {
-            HawDBError::Execution(format!("{} spill pool unavailable: {error}", self.operator))
-        })?;
+        let pool = self.pool.get().map_err(|error| self.pool_error(error))?;
         let mut current = self.run_count.load(Ordering::Acquire);
         loop {
             if current >= self.max_runs {
@@ -263,7 +300,7 @@ impl SpillBudgetTracker {
                 Err(observed) => current = observed,
             }
         }
-        match SpillRun::create_with_buffer_bytes(pool.clone(), file_operator, buffer_bytes) {
+        match SpillRun::create_with_buffer_bytes(pool, file_operator, buffer_bytes) {
             Ok(run) => Ok(run),
             Err(error) => {
                 // A run that never opened must not consume its slot.
@@ -305,14 +342,11 @@ impl SpillBudgetTracker {
                 Err(observed) => current = observed,
             }
         }
-        let pool = match self.pool.as_ref() {
+        let pool = match self.pool.get() {
             Ok(pool) => pool,
             Err(error) => {
                 self.used_bytes.fetch_sub(bytes, Ordering::AcqRel);
-                return Err(HawDBError::Execution(format!(
-                    "{} spill pool unavailable: {error}",
-                    self.operator
-                )));
+                return Err(self.pool_error(error));
             }
         };
         match pool.reserve_bytes(self.operator, bytes) {
@@ -327,6 +361,15 @@ impl SpillBudgetTracker {
             Err(error) => {
                 self.used_bytes.fetch_sub(bytes, Ordering::AcqRel);
                 Err(error)
+            }
+        }
+    }
+
+    fn pool_error(&self, error: HawDBError) -> HawDBError {
+        match error {
+            HawDBError::FileDescriptors(_) => error,
+            _ => {
+                HawDBError::Execution(format!("{} spill pool unavailable: {error}", self.operator))
             }
         }
     }

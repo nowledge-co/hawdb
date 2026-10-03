@@ -16,6 +16,7 @@
 
 use super::{DurableStore, WalFreeSpaceProbeState, WAL_FREE_SPACE_PROBE_INTERVAL_BYTES};
 use crate::error::{HawDBError, Result};
+use crate::file_io::{self as fs, File, OpenOptions};
 use crate::store::{
     elapsed_micros, encode_binary_wal_header, encode_binary_wal_record, frame_binary_wal_record,
     process_crash_failpoint, sync_parent_dir, wal_generation_file, wal_group_sync_failpoint,
@@ -30,7 +31,6 @@ use hawdb_storage::{
     pressure::{available_storage_space, StorageDebtController, StoragePressureSignals},
     telemetry::WalAppendTelemetry,
 };
-use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::sync::Arc;
 
@@ -381,9 +381,15 @@ impl DurableStore {
         if let Some(file) = self.wal_append_file.take() {
             return Ok((file, false));
         }
-        let open_existing = || OpenOptions::new().append(true).open(&self.wal_path);
+        let open_existing = || {
+            OpenOptions::new()
+                .descriptor_kind(crate::file_descriptors::DescriptorKind::MutableWal)
+                .append(true)
+                .open(&self.wal_path)
+        };
         let (file, created) = if self.wal_bytes == 0 {
             match OpenOptions::new()
+                .descriptor_kind(crate::file_descriptors::DescriptorKind::MutableWal)
                 .append(true)
                 .create_new(true)
                 .open(&self.wal_path)

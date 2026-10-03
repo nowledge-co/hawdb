@@ -78,7 +78,7 @@ impl GraphStore {
         let mut output = match self.append_generation_reader.as_ref() {
             Some(reader) => reader
                 .read_partition_bounded(table, partition, after, max_rows, max_payload_bytes)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?,
+                .map_err(HawDBError::from_storage_error)?,
             None => AppendSegmentReadOutput {
                 rows: Vec::new(),
                 report: Default::default(),
@@ -109,7 +109,7 @@ impl GraphStore {
                 output.report.output_payload_bytes = next_payload_bytes;
                 Ok(())
             })
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
         merge_live_read_report(
             &mut output.report,
             live.rows_returned,

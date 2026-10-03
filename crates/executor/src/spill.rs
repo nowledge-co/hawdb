@@ -16,10 +16,10 @@ use crate::binding::Binding;
 use crate::kernel::{ensure_operator_item_fits, OperatorMemoryTracker, SpillBudgetTracker};
 use crate::QueryMemoryLease;
 use hawdb_core::{HawDBError, LabelId, RelTypeId, Result, Value};
+use hawdb_storage::file_io::{File, OpenOptions};
 use hawdb_storage::{NodeId, NodeRecord, RelId, RelRecord};
 use pool::{process_marker, RunLease, SPILL_FILE_PREFIX, SPILL_FILE_SUFFIX};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Cursor, ErrorKind, Read, Write};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -38,6 +38,13 @@ const MAX_SPILL_RECORD_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_VALUE_DEPTH: usize = 64;
 pub(crate) const SPILL_IO_BUFFER_BYTES: usize = 8 * 1024;
 static NEXT_SPILL_ID: AtomicU64 = AtomicU64::new(0);
+
+fn spill_io_error(action: &str, path: &std::path::Path, error: std::io::Error) -> HawDBError {
+    match hawdb_core::error::file_descriptor_error(&error) {
+        Some(error) => HawDBError::FileDescriptors(error),
+        None => HawDBError::Execution(format!("failed to {action} '{}': {error}", path.display())),
+    }
+}
 
 pub struct SpillRun {
     lease: Arc<RunLease>,
@@ -83,7 +90,10 @@ impl SpillRun {
                 "{SPILL_FILE_PREFIX}{}-{safe_operator}-{id}{SPILL_FILE_SUFFIX}",
                 process_marker()
             ));
-            match OpenOptions::new().create_new(true).write(true).open(&path) {
+            match pool
+                .file_descriptors()
+                .open(OpenOptions::new().create_new(true).write(true), &path)
+            {
                 Ok(file) => {
                     let lease = Arc::new(RunLease::new(path, pool));
                     let memory = Arc::new(RunMemory::default());
@@ -102,10 +112,7 @@ impl SpillRun {
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
                 Err(error) => {
                     pool.cancel_run();
-                    return Err(HawDBError::Execution(format!(
-                        "failed to create spill run '{}': {error}",
-                        path.display()
-                    )));
+                    return Err(spill_io_error("create spill run", &path, error));
                 }
             }
         }
@@ -125,14 +132,14 @@ impl SpillRun {
         &self,
         buffer_bytes: NonZeroUsize,
     ) -> Result<SpillReader> {
-        let file = File::open(self.lease.path()).map_err(|error| {
-            HawDBError::Execution(format!(
-                "failed to open spill run '{}': {error}",
-                self.lease.path().display()
-            ))
-        })?;
+        let file = self
+            .lease
+            .file_descriptors()
+            .open(OpenOptions::new().read(true), self.lease.path())
+            .map_err(|error| spill_io_error("open spill run", self.lease.path(), error))?;
         Ok(SpillReader {
             reader: BufReader::with_capacity(buffer_bytes.get(), file),
+            _lease: Arc::clone(&self.lease),
         })
     }
 }
@@ -220,6 +227,8 @@ impl SpillWriter {
 
 pub struct SpillReader {
     reader: BufReader<File>,
+    // Close the read handle before removing the run, including on Windows.
+    _lease: Arc<RunLease>,
 }
 
 pub(crate) struct SpillRecordPayload {
@@ -997,6 +1006,120 @@ mod tests {
             nodes: BTreeMap::new(),
             relationships: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn external_spill_descriptor_exhaustion_preserves_runs_and_retries_on_workers() {
+        use hawdb_core::error::FileDescriptorError;
+        use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+
+        let memory = test_memory("project-descriptors");
+        let project_path = memory.spill_directory.with_extension("project");
+        let project = ProjectFileDescriptors::acquire(&project_path, 4).unwrap();
+        assert!(!memory.spill_directory.starts_with(project.root()));
+        let ledger = QueryMemoryLedger::new(memory.query_memory_bytes)
+            .with_file_descriptors(Some(project.io_context()));
+        let full = project.reserve(4).unwrap();
+        let tracker = SpillBudgetTracker::with_ledger("Test", &memory, &ledger);
+        assert!(
+            !memory.spill_directory.exists(),
+            "queries that do not spill perform no spill IO"
+        );
+        assert!(matches!(
+            tracker.create_run("initial"),
+            Err(HawDBError::FileDescriptors(
+                FileDescriptorError::BudgetExceeded {
+                    requested: 1,
+                    available: 0,
+                    limit: 4,
+                }
+            ))
+        ));
+        assert_eq!(tracker.run_count(), 0);
+        assert_eq!(tracker.used_bytes(), 0);
+        assert_eq!(project.metrics().open, 0);
+        drop(full);
+
+        let (run, mut writer) = tracker.create_run("retry").unwrap();
+        let run = Arc::new(run);
+        let path = run.lease.path().to_path_buf();
+        let full = project.reserve(3).unwrap();
+        assert!(matches!(
+            tracker.create_run("exhausted"),
+            Err(HawDBError::FileDescriptors(_))
+        ));
+        assert_eq!(tracker.run_count(), 1);
+        assert_eq!(project.metrics().open, 1);
+        drop(full);
+        writer.write(42, &empty_binding(), &tracker).unwrap();
+        writer.finish().unwrap();
+        assert_eq!(project.metrics().open, 0);
+
+        // The worker does not inherit thread-local reservations or path-based
+        // project lookup: the external run retains its originating IO context.
+        let worker_run = Arc::clone(&run);
+        let mut reader = std::thread::spawn(move || worker_run.reader().unwrap())
+            .join()
+            .unwrap();
+        assert_eq!(project.metrics().open, 1);
+        let full = project.reserve(3).unwrap();
+        assert!(matches!(run.reader(), Err(HawDBError::FileDescriptors(_))));
+        assert_eq!(reader.read(1024).unwrap().unwrap().0, 42);
+        drop(full);
+        let another_reader = run.reader().unwrap();
+        assert_eq!(project.metrics().open, 2);
+        drop(run);
+        assert!(
+            path.exists(),
+            "readers pin the run until their handles close"
+        );
+        drop(reader);
+        drop(another_reader);
+        assert!(!path.exists());
+        assert_eq!(memory.spill_pool_snapshot().unwrap().active_runs, 0);
+        assert_eq!(project.metrics().open, 0);
+        assert_eq!(project.metrics().reserved, 0);
+        assert!(project.metrics().high_water <= 4);
+        std::fs::remove_dir_all(&memory.spill_directory).unwrap();
+        std::fs::remove_dir(&project_path).unwrap();
+    }
+
+    #[test]
+    fn shared_spill_directory_charges_each_queries_project() {
+        use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+
+        let memory = test_memory("shared-project-descriptors");
+        let first_path = memory.spill_directory.with_extension("first-project");
+        let second_path = memory.spill_directory.with_extension("second-project");
+        let first = ProjectFileDescriptors::acquire(&first_path, 4).unwrap();
+        let second = ProjectFileDescriptors::acquire(&second_path, 4).unwrap();
+        let first_ledger = QueryMemoryLedger::new(memory.query_memory_bytes)
+            .with_file_descriptors(Some(first.io_context()));
+        let second_ledger = QueryMemoryLedger::new(memory.query_memory_bytes)
+            .with_file_descriptors(Some(second.io_context()));
+        let first_tracker = SpillBudgetTracker::with_ledger("First", &memory, &first_ledger);
+        let second_tracker = SpillBudgetTracker::with_ledger("Second", &memory, &second_ledger);
+        let (first_run, writer) = first_tracker.create_run("first").unwrap();
+        writer.finish().unwrap();
+        let full_first = first.reserve(4).unwrap();
+        let (second_run, writer) = second_tracker.create_run("second").unwrap();
+        assert_eq!(first.metrics().open, 0);
+        assert_eq!(first.metrics().reserved, 4);
+        assert_eq!(second.metrics().open, 1);
+        assert!(matches!(
+            first_run.reader(),
+            Err(HawDBError::FileDescriptors(_))
+        ));
+        writer.finish().unwrap();
+        drop(second_run);
+        drop(full_first);
+        drop(first_run);
+        assert_eq!(first.metrics().open, 0);
+        assert_eq!(second.metrics().open, 0);
+        assert_eq!(memory.spill_pool_snapshot().unwrap().active_runs, 0);
+        std::fs::remove_dir_all(&memory.spill_directory).unwrap();
+        std::fs::remove_dir(&first_path).unwrap();
+        std::fs::remove_dir(&second_path).unwrap();
     }
 
     #[test]

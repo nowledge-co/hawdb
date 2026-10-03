@@ -15,6 +15,7 @@
 use crate::canonical::{
     decode_standalone_value, encode_standalone_value, CanonicalScanControl, CanonicalSegmentError,
 };
+use crate::file_io::{self as fs, File};
 use crate::graph_descriptor_tree::demand::{
     GraphDescriptorTreeDemandReader, GraphDescriptorTreeReadLimits, GraphDescriptorTreeReadReport,
     GraphDescriptorTreeScanControl,
@@ -39,7 +40,6 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, VecDeque};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
-use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};

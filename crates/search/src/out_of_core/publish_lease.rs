@@ -16,7 +16,9 @@ use crate::build_control::checkpoint;
 use crate::build_memory::{path::OwnedPath, reserved::native_path, BuildMemory};
 use crate::error::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
-use std::fs::{File, OpenOptions, TryLockError};
+use hawdb_storage::file_descriptors::DescriptorKind;
+use hawdb_storage::file_io::{File, OpenOptions};
+use std::fs::TryLockError;
 use std::path::Path;
 
 const SEARCH_PROJECTION_PUBLISH_LOCK_FILE: &str = ".search_projection.publish.lock";
@@ -70,6 +72,7 @@ impl SearchProjectionPublishLease {
         let _native = memory.spool.reserve(native_path::bytes(&lock_path)?)?;
         checkpoint(task)?;
         let lock_file = OpenOptions::new()
+            .descriptor_kind(DescriptorKind::OwnershipLock)
             .read(true)
             .write(true)
             .create(true)
@@ -132,7 +135,7 @@ mod registration {
         ) -> Result<Self> {
             checkpoint(task)?;
             let native = memory.spool.reserve(native_path::bytes(root)?)?;
-            let metadata = std::fs::metadata(root)?;
+            let metadata = hawdb_storage::file_io::metadata(root)?;
             drop(native);
             let identity = (metadata.dev(), metadata.ino());
             // Every list node owns its charge. Removing a publisher frees its
@@ -202,7 +205,7 @@ mod registration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use hawdb_storage::file_io as fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 

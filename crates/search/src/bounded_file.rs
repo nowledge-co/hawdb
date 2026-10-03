@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::error::{HawDBError, Result};
-use std::fs::File;
+use hawdb_storage::file_io::File;
 use std::io::{self, Read};
 use std::path::Path;
 

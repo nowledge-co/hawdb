@@ -24,13 +24,13 @@ use super::{
     RELATIONAL_ROW_PAGE_MANIFEST_FILE, RELATIONAL_ROW_PAGE_PUBLICATION_LOCK_FILE,
 };
 use crate::durability::{durable_replace_file, sync_directory};
+use crate::file_io::{self as fs, File, OpenOptions};
 use crate::relational::{
     RelationalOverflowPublicationError, RelationalOverflowRef, RelationalOverflowRootReader,
     RelationalValue,
 };
 use hawdb_integrity::{integrity_digest, Sha256Digest};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -684,6 +684,9 @@ fn overflow_dependency_error(
     error: RelationalOverflowPublicationError,
 ) -> RelationalRowPagePublicationError {
     match error {
+        RelationalOverflowPublicationError::FileDescriptors(error) => {
+            RelationalRowPagePublicationError::FileDescriptors(error)
+        }
         RelationalOverflowPublicationError::Admission(message) => {
             RelationalRowPagePublicationError::Admission(message)
         }

@@ -16,11 +16,11 @@
 
 use super::publication::RelationalOverflowPublicationError;
 use super::RelationalOverflowRef;
+use crate::file_io::{self as fs, File};
 use crate::relational::RelationalScalarType;
 use hawdb_integrity::{Crc32cHasher, Sha256Digest};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
-use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::mem::size_of;
 use std::num::{NonZeroU64, NonZeroUsize};
@@ -598,13 +598,19 @@ fn cleanup_stale_runs(
 fn durability(
     operation: &'static str,
 ) -> impl FnOnce(std::io::Error) -> RelationalOverflowPublicationError {
-    move |error| RelationalOverflowPublicationError::Durability(format!("{operation}: {error}"))
+    move |error| match hawdb_core::error::file_descriptor_error(&error) {
+        Some(error) => RelationalOverflowPublicationError::FileDescriptors(error),
+        None => RelationalOverflowPublicationError::Durability(format!("{operation}: {error}")),
+    }
 }
 
 fn corrupt_read(
     operation: &'static str,
 ) -> impl FnOnce(std::io::Error) -> RelationalOverflowPublicationError {
-    move |error| RelationalOverflowPublicationError::Corrupt(format!("{operation}: {error}"))
+    move |error| match hawdb_core::error::file_descriptor_error(&error) {
+        Some(error) => RelationalOverflowPublicationError::FileDescriptors(error),
+        None => RelationalOverflowPublicationError::Corrupt(format!("{operation}: {error}")),
+    }
 }
 
 #[cfg(test)]

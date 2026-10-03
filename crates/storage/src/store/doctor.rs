@@ -17,6 +17,7 @@ use super::{
     WalRecordCursor, MANIFEST_FILE,
 };
 use crate::error::{HawDBError, Result};
+use crate::file_io::{self as fs, File, OpenOptions};
 use hawdb_integrity::IntegrityHasher;
 pub use hawdb_storage::{
     doctor::{
@@ -26,7 +27,6 @@ pub use hawdb_storage::{
     ownership::DatabaseDirectoryLease,
 };
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -59,8 +59,8 @@ impl DatabaseDoctor {
     ) -> Result<WalTailRepairPlan> {
         let path = path.as_ref();
         validate_existing_database_directory(path)?;
-        let _lease = DatabaseDirectoryLease::acquire(path)
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let _lease =
+            DatabaseDirectoryLease::acquire(path).map_err(HawDBError::from_storage_error)?;
         inspect_wal_tail_locked(path, options)
     }
 
@@ -73,8 +73,8 @@ impl DatabaseDoctor {
         validate_acknowledgement(plan, &acknowledgement)?;
         let path = path.as_ref();
         validate_existing_database_directory(path)?;
-        let _lease = DatabaseDirectoryLease::acquire(path)
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+        let _lease =
+            DatabaseDirectoryLease::acquire(path).map_err(HawDBError::from_storage_error)?;
         apply_wal_tail_repair_locked(path, plan, options)
     }
 }
@@ -676,7 +676,7 @@ fn write_audit_record(path: &Path, record: &WalRepairAuditRecord) -> Result<()> 
         file.sync_all()?;
     }
     hawdb_storage::durability::durable_replace_file(&temp_path, path)
-        .map_err(|error| HawDBError::Storage(error.to_string()))
+        .map_err(HawDBError::from_storage_error)
 }
 
 #[doc(hidden)]

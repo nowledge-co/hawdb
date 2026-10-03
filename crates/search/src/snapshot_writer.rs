@@ -19,8 +19,8 @@ use super::{
 use crate::error::{HawDBError, Result};
 use hawdb_integrity::{Crc32cHasher, IntegrityHasher, Sha256Digest};
 use hawdb_storage::durability::durable_replace_file;
+use hawdb_storage::file_io::{self as fs, File};
 use serde::Serialize;
-use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 

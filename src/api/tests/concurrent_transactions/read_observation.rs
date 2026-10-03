@@ -159,6 +159,63 @@ fn new_sql_read_does_not_wait_for_writer() {
     assert_new_read_does_not_wait_for_writer(ReadLanguage::Sql);
 }
 
+#[test]
+fn autocommit_sql_keeps_its_schema_and_generation_after_publication_replacement() {
+    for mode in [
+        crate::StorageResidencyMode::Materialized,
+        crate::StorageResidencyMode::OutOfCore,
+    ] {
+        let path = super::super::unique_test_dir("published_sql_generation");
+        let mut database = Database::open_with_config(
+            &path,
+            DatabaseConfig {
+                storage_residency_mode: mode,
+                ..DatabaseConfig::default()
+            },
+        )
+        .unwrap();
+        database
+            .query_sql("CREATE TABLE records (id BIGINT PRIMARY KEY, body TEXT)")
+            .unwrap();
+        database
+            .query_sql("INSERT INTO records (id, body) VALUES (1, 'old')")
+            .unwrap();
+        database.checkpoint().unwrap();
+        let db = database.into_concurrent();
+        let (captured, captures) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        db.set_autocommit_read_gate(captured, Arc::clone(&release))
+            .unwrap();
+        let reader_db = db.clone();
+        let reader = std::thread::spawn(move || reader_db.query_sql("SELECT * FROM records"));
+        let captured = captures.recv_timeout(Duration::from_secs(5));
+        // Replace both schema and data, then reclaim checkpoint generations
+        // while the public SQL reader still retains the preceding publication.
+        let changed = (|| {
+            db.query_sql("ALTER TABLE records ADD COLUMN tag TEXT")?;
+            db.query_sql("UPDATE records SET body = 'new' WHERE id = 1")?;
+            db.checkpoint()
+        })();
+        let cleared = db.clear_autocommit_read_gate();
+        release_autocommit_reads(&release);
+        let old = reader.join().unwrap();
+        captured.unwrap();
+        changed.unwrap();
+        cleared.unwrap();
+        let old = old.unwrap();
+        assert_eq!(old.rows.len(), 1);
+        assert_eq!(old.rows[0].len(), 2);
+        assert_eq!(old.rows[0]["body"], Value::String("old".into()));
+        let current = db.query_sql("SELECT * FROM records").unwrap();
+        assert_eq!(current.rows.len(), 1);
+        assert_eq!(current.rows[0].len(), 3);
+        assert_eq!(current.rows[0]["body"], Value::String("new".into()));
+        assert_eq!(current.rows[0]["tag"], Value::Null);
+        drop(db);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
 fn assert_read_completion_does_not_wait_for_writer(language: ReadLanguage, fails: bool) {
     let mut database = Database::new_with_config(DatabaseConfig {
         max_read_result_rows: fails.then_some(1),

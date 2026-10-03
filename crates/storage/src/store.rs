@@ -113,7 +113,8 @@ mod graph_recovery;
 mod immutable_root;
 #[doc(hidden)]
 pub use immutable_root::{
-    AdmittedBranchStore, BranchAdmissionError, BranchAdmissionRequest, PreparedImmutableRootHandoff,
+    AdmittedBranchStore, BranchAdmissionError, BranchAdmissionRequest,
+    PreparedImmutableRootHandoff, SealedBranchSource,
 };
 #[path = "store/relational_index_shadow.rs"]
 mod relational_index_shadow;
@@ -126,6 +127,7 @@ mod search_projection_change_log;
 mod statistics_refresh;
 #[path = "store/wal_codec.rs"]
 mod wal_codec;
+use crate::file_io as fs;
 pub use backup::restore_storage_backup;
 use backup::{remove_source_scan_artifacts, validate_backup_files};
 pub use derived_repair::{
@@ -351,7 +353,6 @@ use relational_row_pages::RelationalRowPageState;
 pub use relational_row_pages::RelationalTransactionRowView;
 use search_projection_change_log::SearchProjectionChangeLog;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -566,7 +567,7 @@ pub fn append_stale_generation_wal_fragment(path: &Path) -> Result<()> {
         b"recycled-region-record-from-a-previous-generation",
         position,
     );
-    let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
+    let mut file = crate::file_io::OpenOptions::new().append(true).open(path)?;
     file.write_all(&framed)?;
     file.sync_all()?;
     Ok(())
@@ -835,6 +836,9 @@ pub struct GraphStore {
     /// layer (`HawDBEmbedded` / `NowledgeMemGraph`) so background shadow
     /// work can request admission. The store never constructs its own.
     runtime_governor: Option<Arc<dyn hawdb_storage::background::BackgroundWorkAdmission>>,
+    branch_lease: Option<Arc<hawdb_storage::ownership::DatabaseDirectoryLease>>,
+    branch_runtime_owner: Option<Arc<crate::file_descriptors::AdmittedRuntimeOwner>>,
+    snapshot_file_context: Option<crate::file_descriptors::FileOpenContext>,
     durable: Option<DurableStore>,
 }
 
@@ -1599,6 +1603,28 @@ impl GraphStore {
             ));
         }
         let total_open_started = std::time::Instant::now();
+        if replay_config.max_graph_manifest_open_bytes == 0 {
+            return Err(HawDBError::Storage(
+                "max_graph_manifest_open_bytes must be non-zero".into(),
+            ));
+        }
+        let _project_files = match mode {
+            DurableOpenMode::CreateIfMissing => {
+                crate::file_descriptors::ProjectFileDescriptors::acquire(
+                    path.as_ref(),
+                    replay_config.max_open_files,
+                )?
+            }
+            DurableOpenMode::ExistingOnly => {
+                // Preserve the read-only path contract before descriptor-domain
+                // canonicalization can replace it with an unclassified IO error.
+                DurableStore::validate_read_only_path(path.as_ref())?;
+                crate::file_descriptors::ProjectFileDescriptors::acquire_existing(
+                    path.as_ref(),
+                    replay_config.max_open_files,
+                )?
+            }
+        };
         let durable_manifest_open_started = std::time::Instant::now();
         let durable = match mode {
             DurableOpenMode::CreateIfMissing => {
@@ -1642,6 +1668,22 @@ impl GraphStore {
         replay_config: WalReplayConfig,
         durable_manifest_open_micros: u64,
     ) -> Result<(Self, Catalog)> {
+        Self::finish_open_with_replay(
+            durable,
+            catalog,
+            replay_config,
+            durable_manifest_open_micros,
+            |store, catalog, replay_config| store.replay_wal(catalog, replay_config),
+        )
+    }
+
+    fn finish_open_with_replay(
+        durable: DurableStore,
+        catalog: &mut Catalog,
+        replay_config: WalReplayConfig,
+        durable_manifest_open_micros: u64,
+        replay: impl FnOnce(&mut Self, &mut Catalog, WalReplayConfig) -> Result<StorageRecoveryReport>,
+    ) -> Result<(Self, Catalog)> {
         let projection_generation_root = durable.root_path.join("projection-generations");
         let projection_generations = if durable.read_only {
             if projection_generation_root.exists() {
@@ -1649,7 +1691,7 @@ impl GraphStore {
                     hawdb_storage::projection_generation::ProjectionGenerationStore::open_existing(
                         &projection_generation_root,
                     )
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?,
+                    .map_err(HawDBError::from_storage_error)?,
                 )
             } else {
                 None
@@ -1659,7 +1701,7 @@ impl GraphStore {
                 hawdb_storage::projection_generation::ProjectionGenerationStore::open(
                     &projection_generation_root,
                 )
-                .map_err(|error| HawDBError::Storage(error.to_string()))?,
+                .map_err(HawDBError::from_storage_error)?,
             )
         };
         let mut store = Self {
@@ -1719,6 +1761,9 @@ impl GraphStore {
             relational_row_pages: RelationalRowPageState::default(),
             projection_generations,
             runtime_governor: None,
+            branch_lease: None,
+            branch_runtime_owner: None,
+            snapshot_file_context: None,
             durable: Some(durable),
         };
         if replay_config
@@ -1740,7 +1785,7 @@ impl GraphStore {
         let checkpoint_root_open_micros = elapsed_micros(checkpoint_root_open_started);
         let checkpoint_catalog = catalog.clone();
         let wal_replay_started = std::time::Instant::now();
-        let mut storage_recovery_report = store.replay_wal(catalog, replay_config)?;
+        let mut storage_recovery_report = replay(&mut store, catalog, replay_config)?;
         let wal_replay_micros = elapsed_micros(wal_replay_started);
         let post_replay_open_started = std::time::Instant::now();
         store.validate_authoritative_relational_index_open()?;
@@ -1769,6 +1814,8 @@ impl GraphStore {
                 "derived repair requires strict WAL replay".to_string(),
             ));
         }
+        let _project_files =
+            crate::file_descriptors::ProjectFileDescriptors::acquire_component(path, false)?;
         let total_open_started = std::time::Instant::now();
         let durable_manifest_open_started = std::time::Instant::now();
         let durable = DurableStore::open_for_derived_repair(
@@ -2143,6 +2190,9 @@ impl GraphStore {
                 .snapshot_at_epoch(self.commit_epoch),
             projection_generations: None,
             runtime_governor: self.runtime_governor.clone(),
+            branch_lease: self.branch_lease.clone(),
+            branch_runtime_owner: self.branch_runtime_owner.clone(),
+            snapshot_file_context: self.file_descriptor_context(),
             durable: None,
         }
     }
@@ -3217,6 +3267,42 @@ impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn derived_repair_borrows_existing_custom_descriptor_budget() {
+        let path = unique_test_dir("derived_repair_custom_descriptors");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            WalReplayConfig {
+                max_open_files: 64,
+                ..WalReplayConfig::default()
+            },
+        )
+        .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        let domain =
+            crate::file_descriptors::ProjectFileDescriptors::acquire_existing(&path, 64).unwrap();
+        drop(store);
+        let (repaired, _, _) =
+            GraphStore::open_for_derived_repair(&path, WalReplayConfig::default()).unwrap();
+        assert_eq!(repaired.file_descriptor_metrics().unwrap().limit, 64);
+        assert!(matches!(
+            crate::file_descriptors::ProjectFileDescriptors::acquire_existing(&path, 256),
+            Err(HawDBError::FileDescriptors(
+                hawdb_core::error::FileDescriptorError::ConfigurationConflict {
+                    configured: 64,
+                    requested: 256
+                }
+            ))
+        ));
+        drop(repaired);
+        assert_eq!(domain.metrics().open, 0);
+        drop(domain);
+        fs::remove_dir_all(path).unwrap();
+    }
 
     use super::{
         canonical_adjacency_artifact_generation_file, canonical_manifest_generation_file,

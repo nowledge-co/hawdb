@@ -85,6 +85,7 @@ pub enum RelationalRowPageCheckpointError {
     Admission(String),
     Corrupt(String),
     Durability(String),
+    FileDescriptors(hawdb_core::error::FileDescriptorError),
 }
 
 impl fmt::Display for RelationalRowPageCheckpointError {
@@ -100,6 +101,7 @@ impl fmt::Display for RelationalRowPageCheckpointError {
                     "corrupt relational row checkpoint view: {message}"
                 )
             }
+            Self::FileDescriptors(error) => fmt::Display::fmt(error, formatter),
             Self::Durability(message) => write!(
                 formatter,
                 "relational row checkpoint durability failed: {message}"
@@ -108,7 +110,14 @@ impl fmt::Display for RelationalRowPageCheckpointError {
     }
 }
 
-impl std::error::Error for RelationalRowPageCheckpointError {}
+impl std::error::Error for RelationalRowPageCheckpointError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::FileDescriptors(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 struct RelationalRowPageLiveBatch {
     commit_epoch: u64,
@@ -1085,13 +1094,19 @@ fn estimated_change_resident_bytes(change: &RelationalRowChange) -> Option<usize
 
 fn map_delta_checkpoint_error(error: RelationalRowDeltaError) -> RelationalRowPageCheckpointError {
     match error {
+        RelationalRowDeltaError::FileDescriptors(error) => {
+            RelationalRowPageCheckpointError::FileDescriptors(error)
+        }
         RelationalRowDeltaError::Admission(message) => {
             RelationalRowPageCheckpointError::Admission(message)
         }
         RelationalRowDeltaError::Durability(message) => {
             RelationalRowPageCheckpointError::Durability(message)
         }
-        error => RelationalRowPageCheckpointError::Corrupt(error.to_string()),
+        error => match hawdb_core::error::file_descriptor_error(&error) {
+            Some(error) => RelationalRowPageCheckpointError::FileDescriptors(error),
+            None => RelationalRowPageCheckpointError::Corrupt(error.to_string()),
+        },
     }
 }
 

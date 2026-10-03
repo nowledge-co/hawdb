@@ -17,6 +17,7 @@ use super::binary::{
     read_u64_at as read_u64, to_usize, Decoder, Encoder,
 };
 use super::{AppendTableError, AppendTableRow};
+use crate::file_io::File;
 use crate::relational::overflow::{decode_overflow_envelope, encode_overflow_envelope};
 use crate::relational::{
     decode_relational_primary_key, encode_relational_primary_key, RelationalHydrationBudget,
@@ -25,7 +26,6 @@ use crate::relational::{
 use crate::relational::{decode_relational_row_payload, encode_relational_row_payload};
 use hawdb_integrity::{integrity_digest, IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::collections::{BTreeMap, VecDeque};
-use std::fs::File;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -486,11 +486,11 @@ impl AppendSegmentSource {
                     )
                 })?;
                 file.seek(SeekFrom::Start(start as u64)).map_err(|error| {
-                    AppendTableError::Durability(format!("seek append segment block: {error}"))
+                    AppendTableError::from_io("seek append segment block", error)
                 })?;
                 let mut encoded = vec![0; len];
                 file.read_exact(&mut encoded).map_err(|error| {
-                    AppendTableError::Durability(format!("read append segment block: {error}"))
+                    AppendTableError::from_io("read append segment block", error)
                 })?;
                 Ok(encoded)
             }
@@ -555,14 +555,11 @@ impl AppendSegmentReader {
         config: AppendSegmentConfig,
     ) -> Result<Self, AppendTableError> {
         validate_config(config)?;
-        let mut file = File::open(path).map_err(|error| {
-            AppendTableError::Durability(format!("open append segment: {error}"))
-        })?;
+        let mut file = File::open(path)
+            .map_err(|error| AppendTableError::from_io("open append segment", error))?;
         let encoded_len = usize::try_from(
             file.metadata()
-                .map_err(|error| {
-                    AppendTableError::Durability(format!("read append segment metadata: {error}"))
-                })?
+                .map_err(|error| AppendTableError::from_io("read append segment metadata", error))?
                 .len(),
         )
         .map_err(|_| {
@@ -574,9 +571,8 @@ impl AppendSegmentReader {
             ));
         }
         let mut header_bytes = [0; SEGMENT_HEADER_BYTES];
-        file.read_exact(&mut header_bytes).map_err(|error| {
-            AppendTableError::Durability(format!("read append segment header: {error}"))
-        })?;
+        file.read_exact(&mut header_bytes)
+            .map_err(|error| AppendTableError::from_io("read append segment header", error))?;
         let header = decode_segment_header(&header_bytes, encoded_len, config)?;
 
         let mut artifact_hasher = IntegrityHasher::new();
@@ -586,9 +582,8 @@ impl AppendSegmentReader {
         let mut buffer = vec![0; remaining.min(64 * 1024)];
         while remaining > 0 {
             let chunk_len = remaining.min(buffer.len());
-            file.read_exact(&mut buffer[..chunk_len]).map_err(|error| {
-                AppendTableError::Durability(format!("stream append segment: {error}"))
-            })?;
+            file.read_exact(&mut buffer[..chunk_len])
+                .map_err(|error| AppendTableError::from_io("stream append segment", error))?;
             artifact_hasher.update(&buffer[..chunk_len]);
             body_hasher.update(&buffer[..chunk_len]);
             remaining -= chunk_len;
@@ -612,13 +607,10 @@ impl AppendSegmentReader {
         }
 
         file.seek(SeekFrom::Start(SEGMENT_HEADER_BYTES as u64))
-            .map_err(|error| {
-                AppendTableError::Durability(format!("seek append segment directory: {error}"))
-            })?;
+            .map_err(|error| AppendTableError::from_io("seek append segment directory", error))?;
         let mut directory = vec![0; header.directory_len];
-        file.read_exact(&mut directory).map_err(|error| {
-            AppendTableError::Durability(format!("read append segment directory: {error}"))
-        })?;
+        file.read_exact(&mut directory)
+            .map_err(|error| AppendTableError::from_io("read append segment directory", error))?;
         let descriptors = decode_directory(
             &directory,
             header.descriptor_count,

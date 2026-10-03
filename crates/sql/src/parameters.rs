@@ -96,13 +96,37 @@ fn collect_branch_parameters(branch: &BranchSqlStatement, positions: &mut BTreeS
             collect_bound_parameter(Some(statement.limit), positions);
             collect_bound_parameter(statement.offset, positions);
         }
-        BranchSqlStatement::ShowBranch(statement) => match &statement.selector {
-            BranchSqlSelector::Name(value) | BranchSqlSelector::Id(value) => {
-                if let BranchSqlValue::Parameter(position) = value {
-                    positions.insert(*position);
-                }
+        BranchSqlStatement::ShowBranch(statement) => {
+            collect_branch_selector(&statement.selector, positions)
+        }
+        BranchSqlStatement::UseBranch(selector) => collect_branch_selector(selector, positions),
+        BranchSqlStatement::ShowCurrentBranch => {}
+        BranchSqlStatement::CreateBranch(statement) => {
+            if let Some(name) = &statement.name {
+                collect_branch_value(name, positions);
             }
-        },
+            collect_branch_selector(&statement.source, positions);
+            collect_bound_parameter(Some(statement.expected_source_revision), positions);
+            collect_branch_value(&statement.request_key, positions);
+            if let Some(owner) = &statement.owner {
+                collect_branch_value(owner, positions);
+            }
+        }
+        BranchSqlStatement::DropBranch(statement) => {
+            collect_branch_value(&statement.id, positions);
+            collect_bound_parameter(Some(statement.expected_metadata_revision), positions);
+        }
+    }
+}
+
+fn collect_branch_selector(selector: &BranchSqlSelector, positions: &mut BTreeSet<usize>) {
+    let (BranchSqlSelector::Name(value) | BranchSqlSelector::Id(value)) = selector;
+    collect_branch_value(value, positions);
+}
+
+fn collect_branch_value(value: &BranchSqlValue, positions: &mut BTreeSet<usize>) {
+    if let BranchSqlValue::Parameter(position) = value {
+        positions.insert(*position);
     }
 }
 

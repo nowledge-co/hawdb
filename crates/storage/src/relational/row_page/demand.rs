@@ -227,6 +227,7 @@ pub enum RelationalRowPageDemandReadError {
     Admission(String),
     Corrupt(String),
     Durability(String),
+    FileDescriptors(hawdb_core::error::FileDescriptorError),
     MissingTable(String),
     Stopped(RuntimeCancellationReason),
 }
@@ -243,6 +244,7 @@ impl fmt::Display for RelationalRowPageDemandReadError {
             Self::Corrupt(message) => {
                 write!(formatter, "corrupt relational row demand reader: {message}")
             }
+            Self::FileDescriptors(error) => fmt::Display::fmt(error, formatter),
             Self::Durability(message) => {
                 write!(
                     formatter,
@@ -265,6 +267,7 @@ impl fmt::Display for RelationalRowPageDemandReadError {
 impl std::error::Error for RelationalRowPageDemandReadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::FileDescriptors(error) => Some(error),
             Self::Stopped(reason) => Some(reason),
             _ => None,
         }
@@ -1197,6 +1200,9 @@ impl<'a> DemandReadContext<'a> {
         error: RelationalOverflowPublicationError,
     ) -> RelationalRowPageDemandReadError {
         let mapped = match error {
+            RelationalOverflowPublicationError::FileDescriptors(error) => {
+                RelationalRowPageDemandReadError::FileDescriptors(error)
+            }
             RelationalOverflowPublicationError::Admission(message) => {
                 RelationalRowPageDemandReadError::Admission(message)
             }
@@ -1468,6 +1474,9 @@ fn map_row_publication_error(
     error: RelationalRowPagePublicationError,
 ) -> RelationalRowPageDemandReadError {
     match error {
+        RelationalRowPagePublicationError::FileDescriptors(error) => {
+            RelationalRowPageDemandReadError::FileDescriptors(error)
+        }
         RelationalRowPagePublicationError::Admission(message) => {
             RelationalRowPageDemandReadError::Admission(message)
         }

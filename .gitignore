@@ -7,3 +7,4 @@
 bazel-*
 MODULE.bazel.lock
 .scratch/
+/examples/wasm-playground/pkg/

@@ -1244,6 +1244,9 @@ fn map_projection_read_error(error: ProjectionGenerationError) -> HawDBError {
 
 fn map_state_to_demand_error(error: RelationalError) -> RelationalRowPageDemandReadError {
     match error {
+        RelationalError::FileDescriptors(error) => {
+            RelationalRowPageDemandReadError::FileDescriptors(error)
+        }
         RelationalError::Admission(message) => RelationalRowPageDemandReadError::Admission(message),
         RelationalError::Durability(message) => {
             RelationalRowPageDemandReadError::Durability(message)
@@ -1258,6 +1261,7 @@ fn map_state_to_demand_error(error: RelationalError) -> RelationalRowPageDemandR
 
 fn map_state_error(error: RelationalError) -> HawDBError {
     match error {
+        RelationalError::FileDescriptors(error) => HawDBError::FileDescriptors(error),
         RelationalError::Admission(message) => HawDBError::Execution(message),
         RelationalError::Durability(message)
         | RelationalError::Schema(message)
@@ -1268,6 +1272,9 @@ fn map_state_error(error: RelationalError) -> HawDBError {
 
 fn map_snapshot_error(error: RelationalRowPageSnapshotReadError) -> HawDBError {
     match error {
+        RelationalRowPageSnapshotReadError::FileDescriptors(error) => {
+            HawDBError::FileDescriptors(error)
+        }
         RelationalRowPageSnapshotReadError::Admission(message) => HawDBError::Execution(message),
         RelationalRowPageSnapshotReadError::Stopped(reason) => {
             HawDBError::Execution(format!("runtime task stopped: {reason}"))

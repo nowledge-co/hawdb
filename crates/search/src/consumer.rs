@@ -18,7 +18,7 @@ use crate::error::{HawDBError, Result};
 use crate::out_of_core::SearchProjectionPublishLease;
 use hawdb_core::Uuid;
 use hawdb_integrity::IntegrityHasher;
-use std::fs::{self, File};
+use hawdb_storage::file_io::{self as fs, File};
 use std::io::Read;
 use std::path::Path;
 
@@ -95,9 +95,14 @@ impl ConsumerProjection {
     where
         F: FnOnce(&mut SearchIndex) -> Result<()>,
     {
+        let project_files =
+            hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_component(
+                root, false,
+            )?;
         let lease = SearchProjectionPublishLease::acquire_for_consumer(root)?;
         let mut index = SearchIndex {
             path: Some(root.to_path_buf()),
+            _project_files: Some(project_files),
             ..SearchIndex::default()
         };
         initialize(&mut index)?;
@@ -125,6 +130,10 @@ impl ConsumerProjection {
     }
 
     pub fn open(root: &Path) -> Result<Self> {
+        let _project_files =
+            hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_component(
+                root, false,
+            )?;
         let lease = SearchProjectionPublishLease::acquire_for_consumer(root)?;
         let index = SearchIndex::open_under_lease(root, true)?;
         let owner = Self {
@@ -305,7 +314,7 @@ impl SearchIndex {
         let descriptor = super::read_search_segment_descriptor(root)?
             .ok_or_else(|| invalid("missing registered descriptor"))?;
         if !descriptor.matches_documents(&self.documents)
-            || !descriptor.payload_artifact_is_available(root)
+            || !descriptor.payload_artifact_is_available(root)?
         {
             return Err(invalid(
                 "registered descriptor does not match its snapshot or payload",

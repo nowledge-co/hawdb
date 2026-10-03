@@ -67,7 +67,6 @@ fn branch_catalog_inspection_requires_bounded_and_typed_syntax() {
         "SHOW BRANCHES LIMIT -1",
         "SHOW BRANCH child",
         "SHOW BRANCH NAME child",
-        "SHOW CURRENT BRANCH",
         "SHOW BRANCHES OFFSET 1",
         "SHOW BRANCHES LIMIT 1 OFFSET 2 LIMIT 3",
     ] {

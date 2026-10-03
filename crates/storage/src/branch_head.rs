@@ -15,6 +15,7 @@
 //! Versioned branch-head selector and generation-checked publication.
 
 use crate::durability::durable_replace_file;
+use crate::file_io::{self as fs, File, OpenOptions};
 use crate::immutable_object::{
     ImmutableObjectError, ImmutableObjectStore, ObjectKind, ObjectReference,
 };
@@ -22,7 +23,6 @@ use crate::sealed_root::{SealedRoot, SealedRootError};
 use crate::sealed_wal::PreparedWalRotation;
 use hawdb_integrity::{crc32c, IntegrityHasher, Sha256Digest};
 use std::fmt::{self, Display, Formatter};
-use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -93,7 +93,16 @@ impl Display for WalRotationPublicationError {
     }
 }
 
-impl std::error::Error for WalRotationPublicationError {}
+impl std::error::Error for WalRotationPublicationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Root(error) => Some(error),
+            Self::Immutable(error) => Some(error),
+            Self::Head(error) => Some(error),
+            Self::SealedWalMissing => None,
+        }
+    }
+}
 
 /// Publishes a sealed root and adopts the prepared successor WAL atomically
 /// from the selector's point of view.
@@ -101,9 +110,9 @@ impl std::error::Error for WalRotationPublicationError {}
 /// The caller must hold the branch publication barrier.  The root object is
 /// published first, then the head selector is switched last.  If head
 /// publication fails, the old head remains authoritative and the new root is
-/// harmlessly unreachable for later reclamation.  The root must reference the
-/// exact sealed WAL produced by `prepared`; accepting a root that omits it
-/// would make the head's replay boundary unverifiable.
+/// retained for later reclamation. A nonempty prepared WAL must be the root's
+/// last interval. An empty WAL contributes no interval; its boundary must equal
+/// the root's replay end, including roots covered entirely by a checkpoint.
 pub fn publish_prepared_wal_rotation_with_root(
     path: &Path,
     request: PreparedWalRootPublicationRequest<'_>,
@@ -111,11 +120,21 @@ pub fn publish_prepared_wal_rotation_with_root(
     objects: &mut ImmutableObjectStore,
 ) -> Result<BranchHead, WalRotationPublicationError> {
     root.validate().map_err(WalRotationPublicationError::Root)?;
-    if !root.sealed_wals.iter().any(|wal| {
-        wal.start_lsn == request.prepared.sealed.start_lsn
-            && wal.end_lsn == request.prepared.sealed.end_lsn
-            && wal.object == request.prepared.sealed.object
-    }) {
+    let sealed = &request.prepared.sealed;
+    let replay_end = root.replay_end_lsn();
+    let sealed_is_bound = if sealed.start_lsn == sealed.end_lsn {
+        replay_end == sealed.end_lsn
+    } else {
+        root.sealed_wals.last().is_some_and(|wal| {
+            wal.start_lsn == sealed.start_lsn
+                && wal.end_lsn == sealed.end_lsn
+                && wal.object == sealed.object
+        })
+    };
+    if !sealed_is_bound
+        || root.commit_epoch != request.logical_commit_epoch
+        || request.prepared.next_start_lsn != replay_end
+    {
         return Err(WalRotationPublicationError::SealedWalMissing);
     }
     let encoded_root = root.encode().map_err(WalRotationPublicationError::Root)?;

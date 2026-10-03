@@ -20,6 +20,7 @@ use super::{
     DurableArtifactMetadata, DurableManifest, DurableStore, GraphManifestOpenBudget,
 };
 use crate::error::{HawDBError, Result};
+use crate::file_io::{self as fs, File};
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checkpoint_generation_file, checkpoint_publish_failpoint,
@@ -38,7 +39,6 @@ use hawdb_storage::{
     relational::{encode_relational_checkpoint_to_writer, RelationalDecodeLimits, RelationalState},
     scan::FileSegmentRangeReader,
 };
-use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -107,7 +107,7 @@ impl DurableStore {
         {
             let mut file = File::create(&tmp_path)?;
             encode_relational_checkpoint_to_writer(&mut file, commit_epoch, state, max_bytes)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
             file.sync_all()?;
         }
         let (encoded_len, encoded_checksum, encoded_sha256) = file_checksum(&tmp_path)?;
@@ -305,8 +305,21 @@ impl DurableStore {
             source_scan_descriptor_checksum,
         };
         manifest.validate()?;
-        manifest.write(&self.manifest_path)?;
-        checkpoint_publish_failpoint(CheckpointPublishStage::ManifestPublished)?;
+        let publication = manifest
+            .write(&self.manifest_path)
+            .and_then(|()| checkpoint_publish_failpoint(CheckpointPublishStage::ManifestPublished));
+        if let Err(error) = publication {
+            // The disposable manifest may already select the candidate while
+            // the authoritative branch head still selects the old closure.
+            // Retain both and require head-based recovery before more writes.
+            return Err(if self.branch_runtime.is_some() {
+                HawDBError::StorageIntegrity(format!(
+                    "branch checkpoint publication failed; close and reopen the branch: {error}"
+                ))
+            } else {
+                error
+            });
+        }
 
         self.wal_append_file = None;
         self.checkpoint_path = manifest.checkpoint_path(&self.root_path);

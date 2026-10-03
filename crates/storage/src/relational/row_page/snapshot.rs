@@ -131,6 +131,7 @@ pub enum RelationalRowPageSnapshotReadError {
     Admission(String),
     Corrupt(String),
     Durability(String),
+    FileDescriptors(hawdb_core::error::FileDescriptorError),
     MissingTable(String),
     Stopped(RuntimeCancellationReason),
 }
@@ -145,6 +146,7 @@ impl fmt::Display for RelationalRowPageSnapshotReadError {
                 )
             }
             Self::Corrupt(message) => write!(formatter, "corrupt relational snapshot: {message}"),
+            Self::FileDescriptors(error) => fmt::Display::fmt(error, formatter),
             Self::Durability(message) => {
                 write!(
                     formatter,
@@ -164,6 +166,7 @@ impl fmt::Display for RelationalRowPageSnapshotReadError {
 impl std::error::Error for RelationalRowPageSnapshotReadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::FileDescriptors(error) => Some(error),
             Self::Stopped(reason) => Some(reason),
             _ => None,
         }
@@ -1346,6 +1349,9 @@ impl<'a> StreamingOverlayCursor<'a> {
     ) -> RelationalRowPageDemandReadError {
         self.owner.poison_if_needed(&error);
         match error {
+            RelationalRowPageSnapshotReadError::FileDescriptors(error) => {
+                RelationalRowPageDemandReadError::FileDescriptors(error)
+            }
             RelationalRowPageSnapshotReadError::Admission(message) => {
                 RelationalRowPageDemandReadError::Admission(message)
             }
@@ -1541,6 +1547,9 @@ fn overlay_key_resident_bytes(
 
 fn map_delta_error(error: RelationalRowDeltaError) -> RelationalRowPageSnapshotReadError {
     match error {
+        RelationalRowDeltaError::FileDescriptors(error) => {
+            RelationalRowPageSnapshotReadError::FileDescriptors(error)
+        }
         RelationalRowDeltaError::Admission(message) => {
             RelationalRowPageSnapshotReadError::Admission(message)
         }
@@ -1561,6 +1570,9 @@ fn map_delta_error(error: RelationalRowDeltaError) -> RelationalRowPageSnapshotR
 
 fn map_demand_error(error: RelationalRowPageDemandReadError) -> RelationalRowPageSnapshotReadError {
     match error {
+        RelationalRowPageDemandReadError::FileDescriptors(error) => {
+            RelationalRowPageSnapshotReadError::FileDescriptors(error)
+        }
         RelationalRowPageDemandReadError::Admission(message) => {
             RelationalRowPageSnapshotReadError::Admission(message)
         }
@@ -1594,6 +1606,9 @@ fn map_row_publication_error(
     error: RelationalRowPagePublicationError,
 ) -> RelationalRowPageSnapshotReadError {
     match error {
+        RelationalRowPagePublicationError::FileDescriptors(error) => {
+            RelationalRowPageSnapshotReadError::FileDescriptors(error)
+        }
         RelationalRowPagePublicationError::Admission(message) => {
             RelationalRowPageSnapshotReadError::Admission(message)
         }

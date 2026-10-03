@@ -19,10 +19,10 @@
 //! objects are accepted only when their complete bytes match the requested
 //! reference; an immutable path is never replaced.
 
+use crate::file_io::{self as fs, File, OpenOptions};
 use hawdb_integrity::{IntegrityHasher, Sha256Digest};
 use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
-use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -174,6 +174,8 @@ pub struct ReclamationReport {
     pub retained_objects: u64,
     pub reclaimed_objects: u64,
     pub reclaimed_bytes: u64,
+    /// Active owners may hold unpublished roots or reader generations.
+    pub deferred_for_active_leases: bool,
 }
 
 /// Durable branch metadata supplied by the catalog/lease owner to a global
@@ -320,6 +322,7 @@ impl ImmutableObjectStore {
             retained_objects: inventory.intersection(&reachable).count() as u64,
             reclaimed_objects: 0,
             reclaimed_bytes: 0,
+            deferred_for_active_leases: false,
         };
         for reference in inventory.difference(&reachable) {
             let path = self.object_path(*reference);
@@ -364,6 +367,20 @@ impl ImmutableObjectStore {
                     ),
                 )?);
             }
+        }
+        if inventory.branches.iter().any(|branch| branch.active_lease) {
+            // A lease prevents removal, never metadata validation. A head
+            // cannot describe unpublished candidates or old reader pins, so
+            // retain them while any owner is active.
+            // Tracking precise publication and historical-reader roots across
+            // owners is follow-up #778. A publication-only flag cannot protect
+            // snapshots of an older head after publication has completed.
+            return Ok(ReclamationReport {
+                retained_objects: inventory.objects.len() as u64,
+                reclaimed_objects: 0,
+                reclaimed_bytes: 0,
+                deferred_for_active_leases: true,
+            });
         }
         let report = self.reclaim_unreachable(&inventory.objects, &roots)?;
         for branch in &inventory.branches {
@@ -542,13 +559,22 @@ fn validate_file(
 }
 
 fn identity_digest(kind: ObjectKind, format_version: u16, bytes: &[u8]) -> Sha256Digest {
+    let mut hasher = identity_hasher(kind, format_version, bytes.len() as u64);
+    hasher.update(bytes);
+    hasher.finish().sha256
+}
+
+pub(crate) fn identity_hasher(
+    kind: ObjectKind,
+    format_version: u16,
+    byte_length: u64,
+) -> IntegrityHasher {
     let mut hasher = IntegrityHasher::new();
     hasher.update(IDENTITY_DOMAIN);
     hasher.update(&[kind as u8]);
     hasher.update(&format_version.to_le_bytes());
-    hasher.update(&(bytes.len() as u64).to_le_bytes());
-    hasher.update(bytes);
-    hasher.finish().sha256
+    hasher.update(&byte_length.to_le_bytes());
+    hasher
 }
 
 fn map_io<T>(operation: &'static str, result: io::Result<T>) -> Result<T, ImmutableObjectError> {
@@ -905,6 +931,32 @@ mod tests {
         fs::create_dir_all(&deleted_directory).unwrap();
         fs::write(deleted_directory.join("head"), b"old").unwrap();
 
+        let error = store
+            .reclaim_branches(&BranchReclamationInventory {
+                objects: vec![live_root_reference, orphan_reference],
+                branches: vec![
+                    BranchReclamationEntry {
+                        state: crate::branch_catalog::BranchState::Ready,
+                        sealed_root: Some(live_root_reference),
+                        directory: root.join("branches").join("live"),
+                        active_lease: true,
+                    },
+                    BranchReclamationEntry {
+                        state: crate::branch_catalog::BranchState::Ready,
+                        sealed_root: None,
+                        directory: root.join("branches").join("corrupt-child"),
+                        active_lease: false,
+                    },
+                ],
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            ImmutableObjectError::BranchMetadataIncomplete(_)
+        ));
+        assert!(store.object_path(orphan_reference).exists());
+        assert!(deleted_directory.exists());
+
         let report = store
             .reclaim_branches(&BranchReclamationInventory {
                 objects: vec![
@@ -919,7 +971,7 @@ mod tests {
                         state: crate::branch_catalog::BranchState::Ready,
                         sealed_root: Some(live_root_reference),
                         directory: root.join("branches").join("live"),
-                        active_lease: true,
+                        active_lease: false,
                     },
                     BranchReclamationEntry {
                         state: crate::branch_catalog::BranchState::Deleted,

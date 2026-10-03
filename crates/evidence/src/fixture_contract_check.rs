@@ -1082,9 +1082,11 @@ fn json_debug(value: Option<&serde_json::Value>) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::FixtureCommandMode;
     use super::{
         check_contract_command, read_contract, run_nowledge_fixture_contract_command_check,
-        FixtureCommandMode, FixtureContractCommandCheckOptions,
+        FixtureContractCommandCheckOptions,
     };
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};

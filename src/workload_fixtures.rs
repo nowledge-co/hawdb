@@ -678,12 +678,14 @@ fn error_class(error: &crate::HawDBError) -> String {
     match error {
         crate::HawDBError::Parse(_) => "parse",
         crate::HawDBError::Semantic(_) => "semantic",
-        crate::HawDBError::Execution(_) | crate::HawDBError::TransactionConflict { .. } => {
-            "execution"
-        }
+        crate::HawDBError::Execution(_)
+        | crate::HawDBError::TransactionConflict { .. }
+        | crate::HawDBError::BranchCommandUnsupported { .. } => "execution",
         crate::HawDBError::Storage(_)
+        | crate::HawDBError::FileDescriptors(_)
         | crate::HawDBError::StorageIntegrity(_)
-        | crate::HawDBError::AppendSequenceExhausted { .. } => "storage",
+        | crate::HawDBError::AppendSequenceExhausted { .. }
+        | crate::HawDBError::BranchBusy { .. } => "storage",
         crate::HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
     .to_string()

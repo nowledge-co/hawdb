@@ -20,6 +20,7 @@ use crate::checkpoint_closure::{
 };
 use crate::durable_manifest::DurableManifest;
 use crate::error::{HawDBError, Result};
+use crate::file_io as fs;
 use crate::immutable_object::{ObjectKind, ObjectReference};
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
@@ -38,7 +39,6 @@ use hawdb_storage::{
     backup::StorageBackupReport,
 };
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self};
 use std::path::{Path, PathBuf};
 
 impl DurableStore {
@@ -114,7 +114,7 @@ impl DurableStore {
         let add =
             |plan: &mut CheckpointClosurePlan, family, inputs: Vec<CheckpointArtifactInput>| {
                 plan.add_family_artifacts(family, inputs)
-                    .map_err(|error| HawDBError::Storage(error.to_string()))
+                    .map_err(HawDBError::from_storage_error)
             };
         if manifest.canonical_manifest_encoded_len.is_some() {
             add(
@@ -128,7 +128,7 @@ impl DurableStore {
             )?;
         } else {
             plan.mark_family_empty(CheckpointArtifactFamily::Canonical)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
         }
         if manifest.canonical_adjacency_generation_artifacts.is_some() {
             add(
@@ -142,7 +142,7 @@ impl DurableStore {
             )?;
         } else {
             plan.mark_family_empty(CheckpointArtifactFamily::Adjacency)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
         }
         if manifest.property_spill_manifest_encoded_len.is_some() {
             add(
@@ -156,7 +156,7 @@ impl DurableStore {
             )?;
         } else {
             plan.mark_family_empty(CheckpointArtifactFamily::PropertySpill)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
         }
         if manifest.property_projection_manifest_encoded_len.is_some() {
             add(
@@ -174,7 +174,7 @@ impl DurableStore {
             )?;
         } else {
             plan.mark_family_empty(CheckpointArtifactFamily::PropertyProjection)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
         }
         if let Some(binding) = manifest.relational_overflow_generation_artifacts {
             let overflow = self.open_bound_relational_overflow()?;
@@ -184,7 +184,7 @@ impl DurableStore {
                     generations.insert(descriptor.physical_generation);
                     Ok(())
                 })
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
             let mut inputs = vec![input(self.root_path.join(
                 hawdb_storage::relational::relational_overflow_descriptor_file(binding.generation),
             ))?];
@@ -205,7 +205,7 @@ impl DurableStore {
             )?;
         } else {
             plan.mark_family_empty(CheckpointArtifactFamily::RelationalOverflow)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
         }
         if let Some(binding) = manifest.relational_row_generation_artifacts {
             let overflow = self.open_bound_relational_overflow()?;
@@ -221,7 +221,7 @@ impl DurableStore {
                     generations.insert(descriptor.physical_generation);
                     Ok(())
                 })
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
             }
             let mut inputs = vec![
                 input(self.root_path.join(
@@ -250,7 +250,7 @@ impl DurableStore {
             add(&mut plan, CheckpointArtifactFamily::RelationalRow, inputs)?;
         } else {
             plan.mark_family_empty(CheckpointArtifactFamily::RelationalRow)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
         }
         if let Some(binding) = manifest.relational_index_generation_artifacts {
             add(
@@ -264,7 +264,7 @@ impl DurableStore {
             )?;
         } else {
             plan.mark_family_empty(CheckpointArtifactFamily::RelationalIndex)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
         }
         if let Some(binding) = manifest.append_generation_artifacts {
             let reader = AppendGenerationReader::open_bound(
@@ -272,7 +272,7 @@ impl DurableStore {
                 binding,
                 AppendPublicationConfig::default(),
             )
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
             let inputs = reader
                 .segment_bindings()
                 .iter()
@@ -281,7 +281,7 @@ impl DurableStore {
             add(&mut plan, CheckpointArtifactFamily::Append, inputs)?;
         } else {
             plan.mark_family_empty(CheckpointArtifactFamily::Append)
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
         }
         Ok(plan)
     }
@@ -354,7 +354,7 @@ impl DurableStore {
                     binding,
                     AppendPublicationConfig::default(),
                 )
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
                 let manifest_name = append_generation_manifest_file(binding.generation);
                 sources.insert(manifest_name.clone(), self.root_path.join(manifest_name));
                 for segment in reader.segment_bindings() {
@@ -370,7 +370,7 @@ impl DurableStore {
                     overflow_extent_generations.insert(descriptor.physical_generation);
                     Ok(())
                 })
-                .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                .map_err(HawDBError::from_storage_error)?;
             for physical_generation in overflow_extent_generations {
                 let name =
                     hawdb_storage::relational::relational_overflow_extent_file(physical_generation);
@@ -390,7 +390,7 @@ impl DurableStore {
                         row_page_generations.insert(descriptor.physical_generation);
                         Ok(())
                     })
-                    .map_err(|error| HawDBError::Storage(error.to_string()))?;
+                    .map_err(HawDBError::from_storage_error)?;
             }
             for physical_generation in row_page_generations {
                 let name = hawdb_storage::relational::relational_row_page_artifact_file(

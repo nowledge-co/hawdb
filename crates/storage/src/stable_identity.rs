@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::cache::SegmentCacheIdentity;
+use crate::file_io::{self as fs, File, OpenOptions};
 use crate::io::read_exact_at;
 use crate::{
     cache::{
@@ -28,7 +29,6 @@ use hawdb_integrity::{IntegrityHasher, SHA256_BYTES};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};

@@ -24,10 +24,10 @@ use crate::artifact_files::{
     parse_relational_row_generation_file,
 };
 use crate::durability::durable_replace_file;
+use crate::file_io::{self as fs, File, OpenOptions};
 use hawdb_core::{HawDBError, Result};
 use hawdb_integrity::{checksum_u64, IntegrityHasher, Sha256Digest};
 use std::collections::BTreeSet;
-use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
 
@@ -356,7 +356,7 @@ fn decode_string(input: &str) -> Result<String> {
             })?;
         bytes.push(byte);
     }
-    String::from_utf8(bytes).map_err(|error| HawDBError::Storage(error.to_string()))
+    String::from_utf8(bytes).map_err(HawDBError::from_storage_error)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,0 +1,556 @@
+// Copyright 2026 Nowledge
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use super::{context_for_path, ProjectFileDescriptors};
+use crate::file_io::{self, File};
+use crate::immutable_files::ImmutableFileBinding;
+use crate::immutable_object::{ObjectKind, ObjectReference};
+use hawdb_core::error::{file_descriptor_error, FileDescriptorError, HawDBError};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+struct Fixture {
+    root: PathBuf,
+    project: ProjectFileDescriptors,
+}
+
+impl Fixture {
+    fn new(limit: usize) -> Self {
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "hawdb-fd-budget-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let project = ProjectFileDescriptors::acquire(&root, limit).unwrap();
+        Self { root, project }
+    }
+
+    fn binding(&self, name: &str, bytes: &[u8]) -> ImmutableFileBinding {
+        let object_path = self.root.join(name);
+        std::fs::write(&object_path, bytes).unwrap();
+        ImmutableFileBinding {
+            reference: ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, bytes),
+            object_path,
+        }
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.root).unwrap();
+    }
+}
+
+#[test]
+fn descriptor_cap_covers_clones_failures_and_reservation_reuse() {
+    let fixture = Fixture::new(4);
+    let path = fixture.root.join("data");
+    std::fs::write(&path, b"value").unwrap();
+    let owner = File::open(&path).unwrap();
+    let copy = owner.try_clone().unwrap();
+    let reservation = fixture.project.reserve(2).unwrap();
+    let temporary = File::open(&path).unwrap();
+    assert_eq!(
+        (
+            fixture.project.metrics().open,
+            fixture.project.metrics().reserved
+        ),
+        (3, 1)
+    );
+    let final_slot = File::open(&path).unwrap();
+    let error = File::open(&path).unwrap_err();
+    assert_eq!(
+        file_descriptor_error(&error),
+        Some(FileDescriptorError::BudgetExceeded {
+            requested: 1,
+            available: 0,
+            limit: 4
+        })
+    );
+    drop(temporary);
+    assert_eq!(
+        (
+            fixture.project.metrics().open,
+            fixture.project.metrics().reserved
+        ),
+        (3, 1)
+    );
+    let error = File::open(fixture.root.join("missing")).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(
+        (
+            fixture.project.metrics().open,
+            fixture.project.metrics().reserved
+        ),
+        (3, 1)
+    );
+    drop(reservation);
+    assert_eq!(fixture.project.metrics().reserved, 0);
+    drop((owner, copy, final_slot));
+    assert_eq!(fixture.project.metrics().open, 0);
+    assert_eq!(fixture.project.metrics().high_water, 4);
+}
+
+#[test]
+fn descriptor_exhaustion_preserves_relational_checkpoint_for_retry() {
+    use crate::relational::{
+        decode_relational_checkpoint_file, encode_relational_checkpoint, RelationalDecodeLimits,
+        RelationalState,
+    };
+
+    let fixture = Fixture::new(4);
+    let checkpoint = fixture.root.join("checkpoint");
+    let encoded = encode_relational_checkpoint(7, &RelationalState::default()).unwrap();
+    std::fs::write(&checkpoint, &encoded).unwrap();
+    let held = (0..4)
+        .map(|_| File::open(&checkpoint).unwrap())
+        .collect::<Vec<_>>();
+    let error =
+        decode_relational_checkpoint_file(&checkpoint, RelationalDecodeLimits::checkpoint())
+            .unwrap_err();
+    let expected = FileDescriptorError::BudgetExceeded {
+        requested: 1,
+        available: 0,
+        limit: 4,
+    };
+    assert_eq!(file_descriptor_error(&error), Some(expected.clone()));
+    assert_eq!(
+        HawDBError::from_storage_error(error),
+        HawDBError::FileDescriptors(expected)
+    );
+    assert_eq!(fixture.project.metrics().open, 4);
+    assert_eq!(fixture.project.metrics().reserved, 0);
+    assert_eq!(std::fs::read(&checkpoint).unwrap(), encoded);
+    drop(held);
+    let recovered =
+        decode_relational_checkpoint_file(&checkpoint, RelationalDecodeLimits::checkpoint())
+            .unwrap();
+    assert_eq!(recovered.epoch, 7);
+    assert_eq!(fixture.project.metrics().open, 0);
+}
+
+#[test]
+fn independent_contexts_share_the_limit_and_reject_conflicting_configuration() {
+    let fixture = Fixture::new(3);
+    let second = ProjectFileDescriptors::acquire(&fixture.root, 3).unwrap();
+    assert!(Arc::ptr_eq(&fixture.project.state, &second.state));
+    let file = File::create(fixture.root.join("data")).unwrap();
+    assert_eq!(second.metrics().open, 1);
+    assert!(matches!(
+        ProjectFileDescriptors::acquire(&fixture.root, 4),
+        Err(HawDBError::FileDescriptors(
+            FileDescriptorError::ConfigurationConflict {
+                configured: 3,
+                requested: 4
+            }
+        ))
+    ));
+    assert!(matches!(
+        ProjectFileDescriptors::acquire(&fixture.root, 0),
+        Err(HawDBError::FileDescriptors(
+            FileDescriptorError::InvalidBudget { limit: 0 }
+        ))
+    ));
+    drop(file);
+    assert_eq!(second.metrics().open, 0);
+}
+
+#[test]
+fn directory_entries_retain_one_permit_and_nested_removal_is_bounded() {
+    let fixture = Fixture::new(2);
+    for index in 0..80 {
+        std::fs::write(fixture.root.join(format!("value-{index}")), b"x").unwrap();
+    }
+    let mut directory = file_io::read_dir(&fixture.root).unwrap();
+    let entry = directory.next().unwrap().unwrap();
+    drop(directory);
+    assert_eq!(fixture.project.metrics().open, 1);
+    let file = File::open(entry.path()).unwrap();
+    assert!(File::open(entry.path()).is_err());
+    drop((file, entry));
+    assert_eq!(fixture.project.metrics().open, 0);
+    let subtree = fixture.root.join("nested");
+    std::fs::create_dir_all(subtree.join("a/b/c")).unwrap();
+    std::fs::write(subtree.join("a/b/c/payload"), b"data").unwrap();
+    file_io::remove_dir_all(&subtree).unwrap();
+    assert!(!subtree.exists());
+    assert_eq!(fixture.project.metrics().open, 0);
+    assert!(fixture.project.metrics().high_water <= 2);
+}
+
+#[test]
+fn shared_immutable_handles_evict_only_idle_files_and_revalidate_on_reopen() {
+    let fixture = Fixture::new(2);
+    let context = context_for_path(&fixture.root).unwrap();
+    let binding = fixture.binding("immutable", b"payload");
+    let first = fixture
+        .project
+        .immutable_handles
+        .get(&binding, &context)
+        .unwrap();
+    let sibling = fixture
+        .project
+        .immutable_handles
+        .get(&binding, &context)
+        .unwrap();
+    assert!(Arc::ptr_eq(&first, &sibling));
+    assert_eq!(fixture.project.metrics().cached_handles, 1);
+    let owner = File::create(fixture.root.join("owner")).unwrap();
+    assert!(File::create(fixture.root.join("rejected")).is_err());
+    assert_eq!(fixture.project.metrics().cached_handles, 1);
+    drop((first, sibling));
+    let replacement = File::create(fixture.root.join("replacement")).unwrap();
+    assert_eq!(fixture.project.metrics().cached_handles, 0);
+    assert_eq!(fixture.project.metrics().cache_evictions, 1);
+    drop((owner, replacement));
+    std::fs::write(&binding.object_path, b"changed").unwrap();
+    assert_eq!(
+        fixture
+            .project
+            .immutable_handles
+            .get(&binding, &context)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+    assert_eq!(fixture.project.metrics().open, 0);
+    std::fs::write(&binding.object_path, b"payload").unwrap();
+    let reopened = fixture
+        .project
+        .immutable_handles
+        .get(&binding, &context)
+        .unwrap();
+    let mut value = [0; 7];
+    crate::io::read_exact_at(&reopened, &mut value, 0).unwrap();
+    assert_eq!(&value, b"payload");
+    assert_eq!(fixture.project.metrics().cached_handles, 1);
+    assert!(fixture.project.metrics().cache_hits >= 1);
+    assert!(fixture.project.metrics().cache_misses >= 3);
+}
+
+#[test]
+fn immutable_identity_includes_kind_version_and_project() {
+    let fixture = Fixture::new(3);
+    let context = context_for_path(&fixture.root).unwrap();
+    let binding = fixture.binding("first", b"payload");
+    let mut wrong = binding.clone();
+    wrong.reference.kind = ObjectKind::Checkpoint;
+    assert!(fixture
+        .project
+        .immutable_handles
+        .get(&wrong, &context)
+        .is_err());
+    wrong = binding.clone();
+    wrong.reference.format_version += 1;
+    assert!(fixture
+        .project
+        .immutable_handles
+        .get(&wrong, &context)
+        .is_err());
+    let opened = fixture
+        .project
+        .immutable_handles
+        .get(&binding, &context)
+        .unwrap();
+    let other = Fixture::new(3);
+    let other_binding = other.binding("same", b"payload");
+    let other_context = context_for_path(&other.root).unwrap();
+    let other_opened = other
+        .project
+        .immutable_handles
+        .get(&other_binding, &other_context)
+        .unwrap();
+    assert!(!Arc::ptr_eq(&opened, &other_opened));
+    assert_eq!(fixture.project.metrics().cached_handles, 1);
+    assert_eq!(other.project.metrics().cached_handles, 1);
+}
+
+#[test]
+fn shared_positioned_reads_do_not_share_a_logical_cursor() {
+    let fixture = Fixture::new(2);
+    let binding = fixture.binding("parallel", b"abcdefgh");
+    let context = context_for_path(&fixture.root).unwrap();
+    let file = fixture
+        .project
+        .immutable_handles
+        .get(&binding, &context)
+        .unwrap();
+    std::thread::scope(|scope| {
+        for offset in 0..8 {
+            let file = file.clone();
+            scope.spawn(move || {
+                for _ in 0..128 {
+                    let mut byte = [0];
+                    crate::io::read_exact_at(&file, &mut byte, offset).unwrap();
+                    assert_eq!(byte[0], b'a' + offset as u8);
+                }
+            });
+        }
+    });
+    assert_eq!(fixture.project.metrics().cached_handles, 1);
+    let mutable = fixture.root.join("mutable");
+    File::create(&mutable).unwrap().write_all(b"plain").unwrap();
+    let mut value = String::new();
+    File::open(mutable)
+        .unwrap()
+        .read_to_string(&mut value)
+        .unwrap();
+    assert_eq!(value, "plain");
+}
+
+#[test]
+fn immutable_logical_cursors_survive_eviction_and_share_only_between_clones() {
+    let fixture = Fixture::new(1);
+    let binding = fixture.binding("object", b"abcdef");
+    let alias = fixture.root.join("logical");
+    fixture
+        .project
+        .immutable_handles
+        .bind(&alias, binding.clone())
+        .unwrap();
+    let mut first = File::open(&alias).unwrap();
+    let mut clone = first.try_clone().unwrap();
+    let mut independent = File::open(&alias).unwrap();
+    assert_eq!(fixture.project.metrics().open, 0);
+    let mut bytes = [0; 2];
+    first.read_exact(&mut bytes).unwrap();
+    assert_eq!(&bytes, b"ab");
+    clone.read_exact(&mut bytes).unwrap();
+    assert_eq!(&bytes, b"cd");
+    independent.read_exact(&mut bytes).unwrap();
+    assert_eq!(&bytes, b"ab");
+    crate::io::read_exact_at(&first, &mut bytes, 0).unwrap();
+    assert_eq!(&bytes, b"ab");
+    assert_eq!(first.stream_position().unwrap(), 4);
+    assert!(first.seek(SeekFrom::Current(-5)).is_err());
+    assert_eq!(clone.stream_position().unwrap(), 4);
+    assert_eq!(clone.seek(SeekFrom::End(-2)).unwrap(), 4);
+    assert_eq!(fixture.project.metrics().cached_handles, 1);
+    let mutable = File::create(fixture.root.join("pressure")).unwrap();
+    assert_eq!(fixture.project.metrics().cached_handles, 0);
+    assert!(matches!(
+        first.read_exact(&mut bytes),
+        Err(error) if matches!(file_descriptor_error(&error), Some(FileDescriptorError::BudgetExceeded { .. }))
+    ));
+    assert_eq!(first.stream_position().unwrap(), 4);
+    drop(mutable);
+    first.read_exact(&mut bytes).unwrap();
+    assert_eq!(&bytes, b"ef");
+    assert_eq!(clone.stream_position().unwrap(), 6);
+    assert_eq!(first.read(&mut bytes).unwrap(), 0);
+    assert_eq!(independent.stream_position().unwrap(), 2);
+    assert_eq!(fixture.project.metrics().high_water, 1);
+}
+
+#[test]
+fn mutable_reopen_invalidates_only_future_readers_of_a_logical_path() {
+    let fixture = Fixture::new(2);
+    let binding = fixture.binding("object", b"original");
+    let alias = fixture.root.join("logical");
+    std::fs::write(&alias, b"original").unwrap();
+    fixture
+        .project
+        .immutable_handles
+        .bind(&alias, binding)
+        .unwrap();
+    let mut snapshot = File::open(&alias).unwrap();
+    File::create(&alias).unwrap().write_all(b"updated").unwrap();
+    assert!(fixture
+        .project
+        .immutable_handles
+        .binding(&alias)
+        .unwrap()
+        .is_none());
+    let mut current = File::open(&alias).unwrap();
+    let mut text = String::new();
+    current.read_to_string(&mut text).unwrap();
+    assert_eq!(text, "updated");
+    text.clear();
+    snapshot.read_to_string(&mut text).unwrap();
+    assert_eq!(text, "original");
+    assert_eq!(
+        snapshot.write(b"change").unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    assert_eq!(fixture.project.metrics().high_water, 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn immutable_logical_files_do_not_retain_a_native_descriptor_per_alias() {
+    const CHILD_MARKER: &str = "HAWDB_FD_ALIAS_QUALIFICATION_CHILD";
+    if std::env::var_os(CHILD_MARKER).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "file_descriptors::tests::immutable_logical_files_do_not_retain_a_native_descriptor_per_alias", "--nocapture", "--test-threads=1"])
+            .env(CHILD_MARKER, "1")
+            .output().unwrap();
+        assert!(
+            output.status.success(),
+            "isolated descriptor qualification failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
+        return;
+    }
+    fn native_descriptor_count() -> usize {
+        let directory = if cfg!(target_os = "linux") {
+            "/proc/self/fd"
+        } else {
+            "/dev/fd"
+        };
+        std::fs::read_dir(directory)
+            .unwrap()
+            .try_fold(0, |count, entry| entry.map(|_| count + 1))
+            .unwrap()
+    }
+    let fixture = Fixture::new(1);
+    let binding = fixture.binding("object", b"abcdef");
+    let before = native_descriptor_count();
+    let files = (0..128)
+        .map(|index| {
+            let alias = fixture.root.join(format!("alias-{index}"));
+            fixture
+                .project
+                .immutable_handles
+                .bind(&alias, binding.clone())
+                .unwrap();
+            File::open(alias).unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(native_descriptor_count(), before);
+    for file in &files {
+        let mut bytes = [0; 3];
+        crate::io::read_exact_at(file, &mut bytes, 2).unwrap();
+        assert_eq!(&bytes, b"cde");
+    }
+    assert_eq!(native_descriptor_count(), before + 1);
+    assert_eq!(fixture.project.metrics().cached_handles, 1);
+    let pressure = File::create(fixture.root.join("pressure")).unwrap();
+    drop(pressure);
+    assert_eq!(native_descriptor_count(), before);
+    assert_eq!(fixture.project.metrics().cached_handles, 0);
+    let mut bytes = [0; 3];
+    crate::io::read_exact_at(&files[127], &mut bytes, 0).unwrap();
+    assert_eq!(&bytes, b"abc");
+    assert_eq!(native_descriptor_count(), before + 1);
+    assert_eq!(fixture.project.metrics().high_water, 1);
+}
+
+#[test]
+fn admission_quota_is_shared_by_nested_calls_and_leaves_unreserved_capacity_available() {
+    let fixture = Fixture::new(6);
+    let owner = File::create(fixture.root.join("owner")).unwrap();
+    let reservation = fixture.project.reserve_admission(2).unwrap();
+    assert_eq!(fixture.project.metrics().reserved, 2);
+    let borrowed = fixture.project.reserve_admission(2).unwrap();
+    assert_eq!(fixture.project.metrics().reserved, 2);
+    drop(borrowed);
+    assert_eq!(fixture.project.metrics().reserved, 2);
+    let root = fixture.root.clone();
+    let held = std::thread::spawn(move || {
+        let held = (0..3)
+            .map(|index| File::create(root.join(format!("competing-{index}"))).unwrap())
+            .collect::<Vec<_>>();
+        let error = File::create(root.join("excess")).unwrap_err();
+        assert!(matches!(
+            file_descriptor_error(&error),
+            Some(FileDescriptorError::BudgetExceeded { available: 0, .. })
+        ));
+        held
+    })
+    .join()
+    .unwrap();
+    let temporary = File::create(fixture.root.join("candidate")).unwrap();
+    assert_eq!(fixture.project.metrics().reserved, 1);
+    assert_eq!(fixture.project.metrics().open, 5);
+    drop(temporary);
+    assert_eq!(fixture.project.metrics().reserved, 2);
+    drop(held);
+    drop(reservation);
+    assert_eq!(fixture.project.metrics().reserved, 0);
+    drop(owner);
+    assert_eq!(fixture.project.metrics().open, 0);
+}
+
+#[test]
+fn a_new_project_can_start_while_an_independent_project_is_full() {
+    let first = Fixture::new(1);
+    let first_owner = File::create(first.root.join("owner")).unwrap();
+    assert_eq!(first.project.metrics().open, 1);
+    let second = Fixture::new(1);
+    let second_owner = File::create(second.root.join("owner")).unwrap();
+    assert_eq!(second.project.metrics().open, 1);
+    assert_eq!(first.project.metrics().open, 1);
+    assert_eq!(first.project.metrics().high_water, 1);
+    assert_eq!(second.project.metrics().high_water, 1);
+    drop((first_owner, second_owner));
+}
+
+#[test]
+fn nested_admission_rejects_insufficient_remaining_quota_before_opening() {
+    let fixture = Fixture::new(3);
+    let outer = fixture.project.reserve_admission(2).unwrap();
+    let held = File::create(fixture.root.join("held")).unwrap();
+    let error = fixture.project.reserve_admission(2).unwrap_err();
+    assert_eq!(
+        file_descriptor_error(&error),
+        Some(FileDescriptorError::BudgetExceeded {
+            requested: 2,
+            available: 1,
+            limit: 3,
+        })
+    );
+    assert_eq!(fixture.project.metrics().open, 1);
+    assert_eq!(fixture.project.metrics().reserved, 1);
+    drop(held);
+    let nested = fixture.project.reserve_admission(2).unwrap();
+    assert_eq!(fixture.project.metrics().reserved, 2);
+    drop(nested);
+    drop(outer);
+    assert_eq!(fixture.project.metrics().reserved, 0);
+}
+
+#[test]
+fn failed_mutable_open_invalidates_binding_before_native_io() {
+    let fixture = Fixture::new(2);
+    let binding = fixture.binding("object", b"snapshot");
+    let alias = fixture.root.join("missing-directory/logical");
+    fixture
+        .project
+        .immutable_handles
+        .bind(&alias, binding)
+        .unwrap();
+    let mut snapshot = File::open(&alias).unwrap();
+    assert_eq!(
+        File::create(&alias).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert!(fixture
+        .project
+        .immutable_handles
+        .binding(&alias)
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        File::open(&alias).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    let mut text = String::new();
+    snapshot.read_to_string(&mut text).unwrap();
+    assert_eq!(text, "snapshot");
+}

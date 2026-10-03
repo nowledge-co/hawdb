@@ -351,6 +351,9 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
             return Err(error);
         }
         match attempt {
+            Some(Err(RelationalIndexShadowError::FileDescriptors(error))) => {
+                Err(HawDBError::FileDescriptors(error))
+            }
             Some(Ok(report)) => {
                 self.record_success(
                     table,
@@ -528,6 +531,9 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
             return Err(error);
         }
         match attempt {
+            Some(Err(RelationalIndexShadowError::FileDescriptors(error))) => {
+                Err(HawDBError::FileDescriptors(error))
+            }
             Some(Ok(report)) => {
                 self.record_success(table, index, &report, selector)?;
                 Ok(keep_going)

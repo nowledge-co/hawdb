@@ -59,6 +59,12 @@ format templates are expanded at their existing test arguments. In particular:
 - The four local counterparts are `ALTER TABLE messages ADD COLUMN size BIGINT`,
   `ALTER TABLE`, `CREATE INDEX broken ON`, and `DELETE FROM`.
 
+Project branch commands are a separate HawDB dialect extension, qualified in
+`crates/sql/src/parser/branch.rs`; they are outside this ordinary PostgreSQL/PGQ
+frontend comparison. The source pin for `tests.rs` was reviewed after removing
+its obsolete rejection of `SHOW CURRENT BRANCH`. Existing corpus SQL, case IDs,
+parameter inventories, outcomes, and waivers are unchanged.
+
 The frozen inputs remain owned by
 `crates/qualification/fixtures/nowledge_content_store/`. Every named workload
 statement must appear exactly once with byte-identical SQL and dense production

@@ -61,6 +61,7 @@ pub struct QueryMemoryLedgerSnapshot {
 #[derive(Debug, Clone)]
 pub struct QueryMemoryLedger {
     inner: Arc<QueryMemoryLedgerInner>,
+    file_descriptors: Option<hawdb_storage::file_descriptors::FileOpenContext>,
 }
 
 #[derive(Debug)]
@@ -100,7 +101,24 @@ impl QueryMemoryLedger {
                 budget_bytes: budget_bytes.get(),
                 state: Mutex::new(QueryMemoryLedgerState::default()),
             }),
+            file_descriptors: None,
         }
+    }
+
+    /// Bind query IO to its store while retaining the existing memory ledger.
+    #[doc(hidden)]
+    pub fn with_file_descriptors(
+        mut self,
+        context: Option<hawdb_storage::file_descriptors::FileOpenContext>,
+    ) -> Self {
+        self.file_descriptors = context.or(self.file_descriptors);
+        self
+    }
+
+    pub(crate) fn file_descriptor_context(
+        &self,
+    ) -> Option<&hawdb_storage::file_descriptors::FileOpenContext> {
+        self.file_descriptors.as_ref()
     }
 
     pub fn account(

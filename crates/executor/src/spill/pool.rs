@@ -14,6 +14,7 @@
 
 use crate::ExecutionMemoryConfig;
 use hawdb_core::{HawDBError, Result};
+use hawdb_storage::file_descriptors::FileOpenContext;
 use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -133,46 +134,67 @@ impl SpillSpaceProbe for FileSystemSpillSpaceProbe {
 #[derive(Debug, Clone)]
 pub(crate) struct SpillPool {
     shared: Arc<SharedSpillPool>,
+    file_descriptors: FileOpenContext,
 }
 
 impl SpillPool {
     pub(crate) fn open(memory: &ExecutionMemoryConfig) -> Result<Self> {
+        Self::open_with_context(memory, None)
+    }
+
+    pub(crate) fn open_with_context(
+        memory: &ExecutionMemoryConfig,
+        context: Option<&FileOpenContext>,
+    ) -> Result<Self> {
         if cfg!(all(target_arch = "wasm32", target_os = "unknown")) {
             return Err(HawDBError::Execution(
                 "disk spill is unavailable in browser WASM".into(),
             ));
         }
-        Self::open_with_probe(memory, Arc::new(FileSystemSpillSpaceProbe))
+        Self::open_admitted(memory, Arc::new(FileSystemSpillSpaceProbe), context)
     }
 
+    #[cfg(test)]
     fn open_with_probe(
         memory: &ExecutionMemoryConfig,
         free_space_probe: Arc<dyn SpillSpaceProbe>,
     ) -> Result<Self> {
-        std::fs::create_dir_all(&memory.spill_directory).map_err(|error| {
-            HawDBError::Execution(format!(
-                "failed to create spill directory '{}': {error}",
-                memory.spill_directory.display()
-            ))
-        })?;
-        let directory = std::fs::canonicalize(&memory.spill_directory).map_err(|error| {
-            HawDBError::Execution(format!(
-                "failed to resolve spill directory '{}': {error}",
-                memory.spill_directory.display()
-            ))
-        })?;
+        Self::open_admitted(memory, free_space_probe, None)
+    }
+
+    fn open_admitted(
+        memory: &ExecutionMemoryConfig,
+        free_space_probe: Arc<dyn SpillSpaceProbe>,
+        context: Option<&FileOpenContext>,
+    ) -> Result<Self> {
+        let file_descriptors = match context {
+            Some(context) => context.clone(),
+            None => FileOpenContext::for_path(&memory.spill_directory)?,
+        };
+        file_descriptors
+            .create_dir_all(&memory.spill_directory)
+            .map_err(|error| {
+                super::spill_io_error("create spill directory", &memory.spill_directory, error)
+            })?;
+        let directory = file_descriptors
+            .canonicalize(&memory.spill_directory)
+            .map_err(|error| {
+                super::spill_io_error("resolve spill directory", &memory.spill_directory, error)
+            })?;
         let limits = SpillPoolLimits::from_config(memory);
         let mut pools = lock_unpoisoned(SPILL_POOLS.get_or_init(Default::default));
         if let Some(shared) = pools.get(&directory) {
             lock_unpoisoned(&shared.state).limits.tighten(limits);
             return Ok(Self {
                 shared: Arc::clone(shared),
+                file_descriptors,
             });
         }
         let orphan_cleanup = cleanup_orphan_files(
             &directory,
             memory.spill_orphan_grace_period,
             process_marker(),
+            &file_descriptors,
         )?;
         let shared = Arc::new(SharedSpillPool {
             directory: directory.clone(),
@@ -196,11 +218,18 @@ impl SpillPool {
             free_space_probe,
         });
         pools.insert(directory, Arc::clone(&shared));
-        Ok(Self { shared })
+        Ok(Self {
+            shared,
+            file_descriptors,
+        })
     }
 
     pub(super) fn directory(&self) -> &Path {
         &self.shared.directory
+    }
+
+    pub(super) fn file_descriptors(&self) -> &FileOpenContext {
+        &self.file_descriptors
     }
 
     pub(super) fn begin_run(&self, operator: &str) -> Result<()> {
@@ -396,6 +425,10 @@ impl RunLease {
         &self.path
     }
 
+    pub(super) fn file_descriptors(&self) -> &FileOpenContext {
+        self.pool.file_descriptors()
+    }
+
     pub(super) fn mark_flushed(&self) {
         let pending_bytes = self.pending_write_bytes.swap(0, Ordering::Relaxed);
         self.pool.commit_write(pending_bytes);
@@ -404,7 +437,7 @@ impl RunLease {
 
 impl Drop for RunLease {
     fn drop(&mut self) {
-        let deleted = match std::fs::remove_file(&self.path) {
+        let deleted = match self.file_descriptors().remove_file(&self.path) {
             Ok(()) => true,
             Err(error) if error.kind() == ErrorKind::NotFound => true,
             Err(_) => false,
@@ -447,15 +480,13 @@ fn cleanup_orphan_files(
     directory: &Path,
     grace_period: Duration,
     current_process_marker: &str,
+    file_descriptors: &FileOpenContext,
 ) -> Result<OrphanCleanupStats> {
     let mut stats = OrphanCleanupStats::default();
     let current_prefix = format!("{SPILL_FILE_PREFIX}{current_process_marker}-");
-    let entries = std::fs::read_dir(directory).map_err(|error| {
-        HawDBError::Execution(format!(
-            "failed to inspect spill directory '{}': {error}",
-            directory.display()
-        ))
-    })?;
+    let entries = file_descriptors
+        .read_dir(directory)
+        .map_err(|error| super::spill_io_error("inspect spill directory", directory, error))?;
     for entry in entries {
         let entry = match entry {
             Ok(entry) => entry,
@@ -490,7 +521,7 @@ fn cleanup_orphan_files(
         if !old_enough {
             continue;
         }
-        match std::fs::remove_file(entry.path()) {
+        match file_descriptors.remove_file(&entry.path()) {
             Ok(()) => {
                 stats.files_removed = stats.files_removed.saturating_add(1);
                 stats.bytes_removed = stats.bytes_removed.saturating_add(metadata.len());

@@ -38,6 +38,7 @@ pub enum DurableCompression {
 
 pub const DEFAULT_MAX_WAL_REPLAY_ENTRIES: usize = 1_000_000;
 pub const DEFAULT_MAX_WAL_REPLAY_BYTES: u64 = 1024 * 1024 * 1024;
+pub const DEFAULT_MAX_BRANCH_SEALED_WAL_INTERVALS: usize = 256;
 pub const DEFAULT_MAX_WAL_QUARANTINE_BYTES: u64 = DEFAULT_MAX_WAL_REPLAY_BYTES;
 pub const DEFAULT_MAX_WAL_RECORD_BYTES: usize = 16 * 1024 * 1024;
 pub const DEFAULT_MAX_WAL_BATCH_OPERATIONS: usize = 100_000;
@@ -99,9 +100,15 @@ impl RelationalIndexMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WalReplayConfig {
+    /// Shared finite descriptor ceiling for the canonical project.
+    pub max_open_files: usize,
     pub recovery_mode: RecoveryMode,
     pub max_entries: Option<usize>,
     pub max_bytes: Option<u64>,
+    /// Sealed generations admitted before checkpoint compaction is required.
+    /// This bounds metadata/file-open work independently of replay byte/entry
+    /// limits and applies before branch materialization or WAL replay.
+    pub max_branch_sealed_wal_intervals: usize,
     /// Maximum aggregate bytes retained under the automatic corrupt-WAL
     /// quarantine directory. A corrupt WAL larger than this bound remains in
     /// place and is not copied.
@@ -126,9 +133,11 @@ pub struct WalReplayConfig {
 impl Default for WalReplayConfig {
     fn default() -> Self {
         Self {
+            max_open_files: crate::file_descriptors::DEFAULT_MAX_OPEN_FILES,
             recovery_mode: RecoveryMode::default(),
             max_entries: Some(DEFAULT_MAX_WAL_REPLAY_ENTRIES),
             max_bytes: Some(DEFAULT_MAX_WAL_REPLAY_BYTES),
+            max_branch_sealed_wal_intervals: DEFAULT_MAX_BRANCH_SEALED_WAL_INTERVALS,
             max_quarantine_bytes: DEFAULT_MAX_WAL_QUARANTINE_BYTES,
             max_record_bytes: Some(DEFAULT_MAX_WAL_RECORD_BYTES),
             max_batch_operations: Some(DEFAULT_MAX_WAL_BATCH_OPERATIONS),

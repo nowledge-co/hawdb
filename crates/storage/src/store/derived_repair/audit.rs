@@ -17,13 +17,13 @@ use super::{
     DERIVED_ARTIFACT_REPAIR_PROTOCOL,
 };
 use crate::error::{HawDBError, Result};
+use crate::file_io::{self as fs, OpenOptions};
 use crate::store::{
     canonical_adjacency_artifact_generation_file, file_checksum,
     property_projection_artifact_generation_file, property_projection_manifest_generation_file,
     sync_parent_dir, DurableManifest, MANIFEST_FILE,
 };
 use serde::{Deserialize, Serialize};
-use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -309,7 +309,7 @@ fn write_audit_record(path: &Path, record: &DerivedRepairAuditRecord) -> Result<
         file.sync_all()?;
     }
     hawdb_storage::durability::durable_replace_file(&temporary, path)
-        .map_err(|error| HawDBError::Storage(error.to_string()))
+        .map_err(HawDBError::from_storage_error)
 }
 
 fn load_audit_record(path: &Path) -> Result<DerivedRepairAuditRecord> {

@@ -17,6 +17,7 @@ use hawdb_executor::runtime_admission::{RuntimeAdmissionPlan, CONTROL_STATEMENT_
 
 #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
 pub(crate) struct PreparedRuntimeQuery {
+    branch_id: Option<hawdb_core::Uuid>,
     cypher_text: String,
     statement: cypher::Statement,
     optimized: Option<OptimizedQueryPlan>,
@@ -27,6 +28,7 @@ pub(crate) struct PreparedRuntimeQuery {
 
 #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
 pub(crate) struct RuntimePlanningSnapshot {
+    branch_id: Option<hawdb_core::Uuid>,
     catalog: Catalog,
     store: GraphStore,
     published_read_view: PublishedReadView,
@@ -39,6 +41,7 @@ pub(crate) struct RuntimePlanningSnapshot {
 }
 
 struct RuntimePlanningContext<'a> {
+    branch_id: Option<hawdb_core::Uuid>,
     catalog: &'a Catalog,
     store: &'a GraphStore,
     optimizer: &'a CascadesOptimizer,
@@ -53,7 +56,8 @@ impl RuntimePlanningSnapshot {
         database: &Database,
         prepared: &PreparedRuntimeQuery,
     ) -> bool {
-        self.published_read_view == database.store.published_read_view()
+        self.branch_id == database.current_branch().map(|current| current.info.id)
+            && self.published_read_view == database.store.published_read_view()
             && self.config == database.config
             && self.system_variables == database.system_variables
             && prepared
@@ -70,6 +74,7 @@ impl RuntimePlanningSnapshot {
         parameters: &BTreeMap<String, Value>,
     ) -> Result<PreparedRuntimeQuery> {
         RuntimePlanningContext {
+            branch_id: self.branch_id,
             catalog: &self.catalog,
             store: &self.store,
             optimizer: &self.optimizer,
@@ -158,10 +163,20 @@ impl PreparedRuntimeQuery {
 }
 
 impl Database {
+    fn validate_prepared_branch(&self, prepared: &PreparedRuntimeQuery) -> Result<()> {
+        if prepared.branch_id != self.current_branch().map(|current| current.info.id) {
+            return Err(HawDBError::Semantic(
+                "prepared statement belongs to a different branch".into(),
+            ));
+        }
+        Ok(())
+    }
+
     #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
     pub(crate) fn runtime_planning_snapshot(&self) -> RuntimePlanningSnapshot {
         let (published_read_view, pin) = self.pin_read_view();
         RuntimePlanningSnapshot {
+            branch_id: self.current_branch().map(|current| current.info.id),
             catalog: self.catalog.clone(),
             store: self.store.snapshot_for_read(),
             // Store snapshots omit the writable durable handle and its checkpoint
@@ -179,6 +194,7 @@ impl Database {
 
     fn runtime_planning_context(&self) -> RuntimePlanningContext<'_> {
         RuntimePlanningContext {
+            branch_id: self.current_branch().map(|current| current.info.id),
             catalog: &self.catalog,
             store: &self.store,
             optimizer: &self.optimizer,
@@ -239,6 +255,10 @@ impl DatabaseReadSnapshot {
     ) -> Result<PreparedRuntimeQuery> {
         let source = &self.0;
         RuntimePlanningContext {
+            branch_id: source
+                .current_branch
+                .as_ref()
+                .map(|current| current.info.id),
             catalog: &source.catalog,
             store: &source.store,
             optimizer: &source.optimizer,
@@ -353,6 +373,7 @@ impl RuntimePlanningContext<'_> {
             }
         };
         Ok(PreparedRuntimeQuery {
+            branch_id: self.branch_id,
             cypher_text,
             statement,
             optimized: prepared_optimized,
@@ -427,6 +448,7 @@ impl Database {
         prepared: PreparedRuntimeQuery,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<QueryOutput> {
+        self.validate_prepared_branch(&prepared)?;
         let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
         let mut external = executor::NoExternalReadOperator;
         self.query_with_params_trace_and_external_prepared(
@@ -474,6 +496,7 @@ impl Database {
         parameters: &BTreeMap<String, Value>,
         task_context: &hawdb_core::RuntimeTaskContext,
     ) -> Result<QueryOutput> {
+        self.validate_prepared_branch(&prepared)?;
         let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
         let mut external = executor::NoExternalReadOperator;
         self.query_with_params_trace_and_external_prepared(

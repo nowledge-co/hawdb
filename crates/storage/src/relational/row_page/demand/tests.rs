@@ -35,6 +35,67 @@ static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const PAGE_BYTES: usize = 4096;
 
 #[test]
+fn descriptor_exhaustion_preserves_demand_reader_for_retry() {
+    use crate::file_descriptors::ProjectFileDescriptors;
+    use hawdb_core::error::{file_descriptor_error, FileDescriptorError, HawDBError};
+
+    let fixture = DemandFixture::new("descriptor-retry");
+    let project = ProjectFileDescriptors::acquire(&fixture.directory, 16).unwrap();
+    let path = fixture.directory.join("held-descriptor");
+    fs::write(&path, b"held").unwrap();
+    let held = (0..16)
+        .map(|_| crate::file_io::File::open(&path).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(project.metrics().open, 16);
+    let initial = RelationalHydrationBudget::default();
+    let mut hydration = initial;
+    let error = fixture
+        .reader
+        .point_projected(
+            "documents",
+            &key(1),
+            &[1],
+            RelationalRowPageDemandReadLimits::default(),
+            &mut hydration,
+            &RuntimeTaskContext::default(),
+        )
+        .unwrap_err();
+    let expected = FileDescriptorError::BudgetExceeded {
+        requested: 1,
+        available: 0,
+        limit: 16,
+    };
+    assert_eq!(file_descriptor_error(&error), Some(expected.clone()));
+    assert_eq!(
+        HawDBError::from_storage_error(error),
+        HawDBError::FileDescriptors(expected)
+    );
+    assert!(!fixture.reader.is_poisoned());
+    assert_eq!(hydration, initial);
+    assert_eq!(project.metrics().open, 16);
+    assert_eq!(project.metrics().reserved, 0);
+    drop(held);
+    let (row, _) = fixture
+        .reader
+        .point_projected(
+            "documents",
+            &key(1),
+            &[1],
+            RelationalRowPageDemandReadLimits::default(),
+            &mut hydration,
+            &RuntimeTaskContext::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        row.unwrap().fields[0].value,
+        RelationalValue::Text("alpha overflow payload".into())
+    );
+    assert!(!fixture.reader.is_poisoned());
+    assert_eq!(project.metrics().open, 0);
+    fixture.remove();
+}
+
+#[test]
 fn point_projection_hydrates_only_selected_overflow_and_reuses_cache() {
     let fixture = DemandFixture::new("point-projection");
     let primary_key = key(1);

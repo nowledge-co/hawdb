@@ -25,6 +25,7 @@ use super::{
     RelationalUpdateValue, RelationalUpsertAssignment, RelationalUpsertValue, RelationalValue,
     RelationalWrite, Uuid,
 };
+use crate::file_io::File;
 use crate::{
     cache::ContentDigest,
     config::{DEFAULT_MAX_CHECKPOINT_ENCODED_BYTES, DEFAULT_MAX_WAL_RECORD_BYTES},
@@ -32,7 +33,6 @@ use crate::{
 };
 use hawdb_integrity::{integrity_digest, IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::File;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::num::NonZeroU64;
 use std::path::Path;
@@ -535,9 +535,7 @@ pub fn encode_relational_checkpoint_to_writer<W: Write + Seek>(
     writer
         .seek(SeekFrom::Start(HEADER_BYTES as u64))
         .map_err(|error| {
-            RelationalError::Durability(format!(
-                "failed to reserve relational checkpoint header: {error}"
-            ))
+            RelationalError::from_io("failed to reserve relational checkpoint header", error)
         })?;
     let mut payload = CheckpointPayloadWriter::new(writer, max_record_bytes - HEADER_BYTES);
 
@@ -593,19 +591,15 @@ pub fn encode_relational_checkpoint_to_writer<W: Write + Seek>(
         digest,
     );
     writer.seek(SeekFrom::Start(0)).map_err(|error| {
-        RelationalError::Durability(format!(
-            "failed to seek relational checkpoint header: {error}"
-        ))
+        RelationalError::from_io("failed to seek relational checkpoint header", error)
     })?;
     writer.write_all(&header).map_err(|error| {
-        RelationalError::Durability(format!(
-            "failed to write relational checkpoint header: {error}"
-        ))
+        RelationalError::from_io("failed to write relational checkpoint header", error)
     })?;
     writer
         .seek(SeekFrom::Start(total_len as u64))
         .map_err(|error| {
-            RelationalError::Durability(format!("failed to finish relational checkpoint: {error}"))
+            RelationalError::from_io("failed to finish relational checkpoint", error)
         })?;
     Ok(total_len as u64)
 }
@@ -650,12 +644,12 @@ pub fn decode_relational_checkpoint_file_with_index_load(
     limits: RelationalDecodeLimits,
     index_load: RelationalCheckpointIndexLoad,
 ) -> Result<RelationalCheckpoint, RelationalError> {
-    let encoded_len = std::fs::metadata(path)
+    let encoded_len = crate::file_io::metadata(path)
         .map_err(|error| {
-            RelationalError::Durability(format!(
-                "failed to inspect relational checkpoint {}: {error}",
-                path.display()
-            ))
+            RelationalError::from_io(
+                &format!("failed to inspect relational checkpoint {}", path.display()),
+                error,
+            )
         })?
         .len();
     if encoded_len > limits.max_record_bytes as u64 {
@@ -863,9 +857,7 @@ impl<'a, W: Write> CheckpointPayloadWriter<'a, W> {
             )));
         }
         self.writer.write_all(bytes).map_err(|error| {
-            RelationalError::Durability(format!(
-                "failed to stream relational checkpoint payload: {error}"
-            ))
+            RelationalError::from_io("failed to stream relational checkpoint payload", error)
         })?;
         self.hasher.update(bytes);
         self.payload_bytes = next;
@@ -1427,17 +1419,20 @@ impl FileDecodeInput {
         limits: RelationalDecodeLimits,
     ) -> Result<(u64, Self), RelationalError> {
         let mut file = File::open(path).map_err(|error| {
-            RelationalError::Durability(format!(
-                "failed to open relational checkpoint {}: {error}",
-                path.display()
-            ))
+            RelationalError::from_io(
+                &format!("failed to open relational checkpoint {}", path.display()),
+                error,
+            )
         })?;
         let mut header = [0_u8; HEADER_BYTES];
         file.read_exact(&mut header).map_err(|error| {
-            RelationalError::Corruption(format!(
-                "failed to read relational checkpoint header {}: {error}",
-                path.display()
-            ))
+            RelationalError::corrupt_io(
+                &format!(
+                    "failed to read relational checkpoint header {}",
+                    path.display()
+                ),
+                error,
+            )
         })?;
         if &header[..8] != CHECKPOINT_MAGIC {
             return Err(RelationalError::Corruption(
@@ -1503,9 +1498,7 @@ impl DecodeInput for FileDecodeInput {
             ));
         }
         self.file.read_exact(output).map_err(|error| {
-            RelationalError::Corruption(format!(
-                "failed to read relational durable payload: {error}"
-            ))
+            RelationalError::corrupt_io("failed to read relational durable payload", error)
         })?;
         self.hasher.update(output);
         self.offset = end;

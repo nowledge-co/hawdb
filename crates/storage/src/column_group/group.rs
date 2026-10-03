@@ -40,11 +40,11 @@ use super::DeletionVectorBinding;
 use super::{corrupt, unsupported, ColumnGroupError, COLUMN_GROUP_MAGIC};
 use crate::cache::ManifestGeneration;
 use crate::durability::durable_replace_file;
+use crate::file_io::{self as fs, File};
 use crate::io::read_exact_at;
 use crate::scan::RangeBound;
 use hawdb_core::{PropertyId, Value};
 use hawdb_integrity::crc32c;
-use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
 

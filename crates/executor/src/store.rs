@@ -86,6 +86,12 @@ pub struct AdjacencyReadMemory<'a> {
 /// records keep executor state independent from storage guard lifetimes and
 /// make memory accounting deterministic at the operator boundary.
 pub trait GraphExecutionRead {
+    /// Query-owned files outside the store directory use the same project cap.
+    #[doc(hidden)]
+    fn file_descriptor_context(&self) -> Option<hawdb_storage::file_descriptors::FileOpenContext> {
+        None
+    }
+
     fn is_out_of_core(&self) -> bool;
 
     fn node_owned(&self, id: NodeId) -> Result<Option<NodeRecord>>;

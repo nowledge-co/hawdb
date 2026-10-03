@@ -26,9 +26,9 @@ use super::{
     RELATIONAL_OVERFLOW_MANIFEST_FILE, RELATIONAL_OVERFLOW_PUBLICATION_LOCK_FILE,
 };
 use crate::durability::{durable_replace_file, sync_directory};
+use crate::file_io::{self as fs, File, OpenOptions};
 use crate::relational::RelationalError;
 use hawdb_integrity::{integrity_digest, IntegrityHasher};
-use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 

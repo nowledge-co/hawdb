@@ -4399,6 +4399,7 @@ pub enum RelationalError {
     Schema(String),
     Constraint(String),
     Durability(String),
+    FileDescriptors(hawdb_core::error::FileDescriptorError),
     Corruption(String),
 }
 
@@ -4410,6 +4411,7 @@ impl fmt::Display for RelationalError {
             Self::Constraint(message) => {
                 write!(formatter, "relational constraint violation: {message}")
             }
+            Self::FileDescriptors(error) => fmt::Display::fmt(error, formatter),
             Self::Durability(message) => {
                 write!(formatter, "relational durability error: {message}")
             }
@@ -4420,7 +4422,30 @@ impl fmt::Display for RelationalError {
     }
 }
 
-impl std::error::Error for RelationalError {}
+impl std::error::Error for RelationalError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::FileDescriptors(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl RelationalError {
+    pub(crate) fn from_io(context: &str, error: std::io::Error) -> Self {
+        match hawdb_core::error::file_descriptor_error(&error) {
+            Some(error) => Self::FileDescriptors(error),
+            None => Self::Durability(format!("{context}: {error}")),
+        }
+    }
+
+    pub(crate) fn corrupt_io(context: &str, error: std::io::Error) -> Self {
+        match hawdb_core::error::file_descriptor_error(&error) {
+            Some(error) => Self::FileDescriptors(error),
+            None => Self::Corruption(format!("{context}: {error}")),
+        }
+    }
+}
 
 pub(crate) fn admit_transaction(
     transaction: &RelationalTransaction,

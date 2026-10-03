@@ -65,6 +65,10 @@ fn adapt_node_consumer(
 }
 
 impl GraphExecutionRead for GraphStore {
+    fn file_descriptor_context(&self) -> Option<hawdb_storage::file_descriptors::FileOpenContext> {
+        GraphStore::file_descriptor_context(self)
+    }
+
     fn is_out_of_core(&self) -> bool {
         GraphStore::is_out_of_core(self)
     }

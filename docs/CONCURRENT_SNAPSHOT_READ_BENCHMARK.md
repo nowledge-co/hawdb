@@ -49,6 +49,21 @@ readers while a writer holds the sequencer and while a group awaits its durabili
 barrier. These tests prove progress and visibility, not latency acceptance. The
 September 14 measurements below predate this acquisition change.
 
+Ordinary read-only SQL autocommit statements borrow the captured publication's
+immutable store instead of cloning a second read transaction. The publication
+`Arc` retains its schema/data view and generation pin through execution and
+completion. Virtual catalog queries still capture fresh observation tables in
+a private query context. Explicit read transactions and Cypher retain their
+independent contexts. A controlled SQL regression replaces schema/data and
+checkpoints after capture, then checks the old and new results separately in
+both materialized and out-of-core modes.
+
+Unjoined primary-key streaming projections reserve at most one output row rather
+than the configured maximum result budget. The physical primary-key access
+proves this cardinality; joined plans retain their prior reservation. This is
+an initial-capacity change only: row and payload limits, cancellation, projection,
+and error handling keep their existing enforcement.
+
 Every returned ID, order, payload and token count is checked. After each case,
 all database handles close and the database reopens through normal WAL recovery.
 The harness checks every original and inserted row, total cardinality and exact

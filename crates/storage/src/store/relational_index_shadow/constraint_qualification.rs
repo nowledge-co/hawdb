@@ -39,7 +39,7 @@ impl GraphStore {
     ) -> crate::Result<RelationalConstraintQualificationReport> {
         self.relational_state
             .require_materialized_rows("relational constraint differential qualification")
-            .map_err(|error| HawDBError::Storage(error.to_string()))?;
+            .map_err(HawDBError::from_storage_error)?;
         let view = self
             .relational_index_shadow
             .current_read_view(self.commit_epoch)

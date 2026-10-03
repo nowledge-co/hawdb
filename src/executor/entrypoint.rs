@@ -103,7 +103,8 @@ pub(super) fn execute_profiled_consumer<S: ExecutionStore>(
     let memory = request.memory();
     let task_context = request.task_context();
 
-    let memory_ledger = QueryMemoryLedger::new(enforced_query_memory_budget(memory, task_context)?);
+    let memory_ledger = QueryMemoryLedger::new(enforced_query_memory_budget(memory, task_context)?)
+        .with_file_descriptors(store.file_descriptor_context());
     let result_memory_budget = enforced_result_memory_budget(memory, task_context)?;
     let mut output = QueryOutputAccumulator::new(
         output_limits,

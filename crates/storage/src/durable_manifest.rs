@@ -20,6 +20,7 @@ use crate::artifact_files::{
     property_spill_manifest_generation_file, wal_generation_file,
 };
 use crate::checkpoint_closure::CheckpointArtifactInput;
+use crate::file_io::{self as fs, File};
 use crate::text::parse_u64;
 use crate::{
     append_table::{AppendGenerationArtifacts, AppendSegmentArtifactMetadata},
@@ -37,7 +38,6 @@ use crate::{
 use hawdb_core::{HawDBError, Result};
 use hawdb_integrity::{checksum_u64 as checksum_bytes, Sha256Digest};
 use std::collections::BTreeSet;
-use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 

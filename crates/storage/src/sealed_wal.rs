@@ -18,12 +18,12 @@
 //! [`seal_wal_file`].  This module validates a stable prefix and publishes its
 //! bytes, but deliberately does not rotate the active writer or switch a head.
 
+use crate::file_io::{self as fs, File, OpenOptions};
 use crate::immutable_object::{
     ImmutableObjectError, ImmutableObjectStore, ObjectKind, ObjectReference, PublishOutcome,
 };
 use crate::wal::{WalCursorEvent, WalOpenOutcome, WalRecordCursor};
 use std::fmt::{self, Display, Formatter};
-use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -46,6 +46,9 @@ pub struct PreparedWalRotation {
 
 #[derive(Debug)]
 pub enum SealedWalError {
+    SuccessorAlreadyExists {
+        path: PathBuf,
+    },
     Io {
         operation: &'static str,
         source: std::io::Error,
@@ -89,6 +92,13 @@ pub enum SealedWalError {
 impl Display for SealedWalError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::SuccessorAlreadyExists { path } => {
+                write!(
+                    formatter,
+                    "successor WAL already exists: {}",
+                    path.display()
+                )
+            }
             Self::Io { operation, source } => write!(formatter, "{operation}: {source}"),
             Self::TooLarge { length, limit } => {
                 write!(
@@ -276,6 +286,11 @@ pub fn prepare_wal_rotation(
         .open(next_path)
     {
         Ok(file) => file,
+        Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(SealedWalError::SuccessorAlreadyExists {
+                path: next_path.to_path_buf(),
+            });
+        }
         Err(source) => {
             return Err(SealedWalError::Io {
                 operation: "create successor WAL",

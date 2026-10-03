@@ -1200,9 +1200,13 @@ fn error_class(error: &HawDBError) -> &'static str {
         HawDBError::Parse(_) => "parse",
         HawDBError::Semantic(_) => "semantic",
         HawDBError::Storage(_)
+        | HawDBError::FileDescriptors(_)
         | HawDBError::StorageIntegrity(_)
-        | HawDBError::AppendSequenceExhausted { .. } => "storage",
-        HawDBError::Execution(_) | HawDBError::TransactionConflict { .. } => "execution",
+        | HawDBError::AppendSequenceExhausted { .. }
+        | HawDBError::BranchBusy { .. } => "storage",
+        HawDBError::Execution(_)
+        | HawDBError::TransactionConflict { .. }
+        | HawDBError::BranchCommandUnsupported { .. } => "execution",
         HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",
     }
 }

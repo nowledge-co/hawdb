@@ -766,6 +766,9 @@ fn admission(message: impl Into<String>) -> RelationalIndexShadowError {
 
 fn relational_read_error(error: RelationalError) -> RelationalIndexShadowError {
     match error {
+        RelationalError::FileDescriptors(error) => {
+            RelationalIndexShadowError::FileDescriptors(error)
+        }
         RelationalError::Admission(message) => RelationalIndexShadowError::Admission(message),
         RelationalError::Durability(message) => RelationalIndexShadowError::Durability(message),
         RelationalError::Corruption(message)

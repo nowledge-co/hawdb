@@ -22,7 +22,7 @@ use crate::lexical_projection::DocumentsDigest;
 use crate::SearchDocument;
 use hawdb_core::RuntimeTaskContext;
 use hawdb_integrity::Crc32cHasher;
-use std::fs::{self, File};
+use hawdb_storage::file_io::{self as fs, File};
 use std::io::{self, BufReader, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -283,7 +283,7 @@ impl StageDirectory {
 
 impl Drop for StageDirectory {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        let _ = std::fs::remove_dir_all(&self.path);
     }
 }
 

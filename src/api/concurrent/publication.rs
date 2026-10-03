@@ -16,7 +16,7 @@ use super::super::{
     observability::StatementRecorder, Database, DatabaseReadSnapshot, DatabaseReadTransaction,
     PlanCache, PreparedRuntimeQuery, QuerySystemVariables, SharedState,
 };
-use crate::{Result, Value};
+use crate::{QueryOutput, Result, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -42,6 +42,31 @@ impl PublishedConcurrentRead {
         // Observation tables include reads completed since the last write.
         self.recorder.refresh_read_snapshot(&mut snapshot);
         Ok(snapshot)
+    }
+
+    pub(super) fn query_sql(
+        &self,
+        sql_text: &str,
+        parameters: &[Value],
+        prepared: crate::relational_sql::PreparedRelationalSql,
+    ) -> Result<QueryOutput> {
+        if matches!(
+            prepared.statement(),
+            crate::sql::SqlStatement::Select(select)
+                if hawdb_system_sql::is_virtual_catalog_select(select)
+        ) {
+            // Observation tables include reads completed after publication.
+            // Capture them privately rather than mutating the shared view.
+            return self
+                .begin_read_transaction()?
+                .query_sql_with_prepared_params(sql_text, parameters, prepared);
+        }
+        // SQL execution borrows its store. The caller's publication Arc keeps
+        // the complete schema/data view and generation pin alive, so ordinary
+        // reads need neither a second store snapshot nor observation copies.
+        self.snapshot
+            .0
+            .query_sql_with_prepared_params(sql_text, parameters, prepared)
     }
 
     pub(super) fn prepare(

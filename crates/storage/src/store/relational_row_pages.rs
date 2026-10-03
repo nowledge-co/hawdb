@@ -171,7 +171,7 @@ impl GraphStore {
                     ..self.relational_row_pages.live_limits
                 },
             )
-            .map_err(|error| crate::error::HawDBError::Storage(error.to_string()))?;
+            .map_err(crate::error::HawDBError::from_storage_error)?;
         let RelationalRowChangeCapture::Captured { changes, .. } = capture else {
             return Err(crate::error::HawDBError::Storage(
                 "relational row checkpoint capture was unexpectedly invalidated".to_string(),
@@ -228,7 +228,7 @@ impl GraphStore {
                     ..config
                 },
             )
-            .map_err(|error| crate::error::HawDBError::Storage(error.to_string()))?;
+            .map_err(crate::error::HawDBError::from_storage_error)?;
             let schema = self.relational_state.table_schema(&table).ok_or_else(|| {
                 crate::error::HawDBError::Storage(format!(
                     "relational row checkpoint change references missing table {table}"
@@ -237,7 +237,7 @@ impl GraphStore {
             let schema_digest = self
                 .relational_state
                 .table_schema_digest(&table)
-                .map_err(|error| crate::error::HawDBError::Storage(error.to_string()))?
+                .map_err(crate::error::HawDBError::from_storage_error)?
                 .ok_or_else(|| {
                     crate::error::HawDBError::Storage(format!(
                         "relational row checkpoint cannot derive schema digest for {table}"
@@ -245,7 +245,7 @@ impl GraphStore {
                 })?;
             let plan = planner
                 .plan_table(&table, schema_digest, schema.columns.len(), changes)
-                .map_err(|error| crate::error::HawDBError::Storage(error.to_string()))?;
+                .map_err(crate::error::HawDBError::from_storage_error)?;
             planned_dirty_pages = planned_dirty_pages
                 .checked_add(plan.dirty_pages)
                 .ok_or_else(|| {
@@ -285,7 +285,7 @@ impl GraphStore {
         let deltas = self
             .relational_state
             .row_page_snapshot_deltas(generation, source_commit_epoch, config)
-            .map_err(|error| crate::error::HawDBError::Storage(error.to_string()))?;
+            .map_err(crate::error::HawDBError::from_storage_error)?;
         Ok(RelationalRowPageCheckpointPlan { base: None, deltas })
     }
 
@@ -1181,7 +1181,7 @@ impl GraphStore {
             generation,
             config.reference_sort,
         )
-        .map_err(|error| crate::error::HawDBError::Storage(error.to_string()))?;
+        .map_err(crate::error::HawDBError::from_storage_error)?;
         let mut report = RelationalOverflowClosureScanReport::default();
         let mut remaining_overlay_entries = config.max_overlay_entries.get();
         let mut remaining_overlay_bytes = config.max_overlay_bytes.get();
@@ -1245,6 +1245,7 @@ impl GraphStore {
                     schema.name
                 );
                 match error {
+                    hawdb_storage::relational::RelationalRowPageSnapshotReadError::FileDescriptors(error) => crate::error::HawDBError::FileDescriptors(error),
                     hawdb_storage::relational::RelationalRowPageSnapshotReadError::Corrupt(_)
                     | hawdb_storage::relational::RelationalRowPageSnapshotReadError::MissingTable(
                         _,
@@ -1259,7 +1260,7 @@ impl GraphStore {
                 }
             })?;
             if let Some(error) = callback_error {
-                return Err(crate::error::HawDBError::Storage(error.to_string()));
+                return Err(crate::error::HawDBError::from_storage_error(error));
             }
             if table_report.demand.stopped_early {
                 return Err(crate::error::HawDBError::StorageIntegrity(format!(
@@ -1327,7 +1328,7 @@ impl GraphStore {
         }
         let references = references
             .finish()
-            .map_err(|error| crate::error::HawDBError::Storage(error.to_string()))?;
+            .map_err(crate::error::HawDBError::from_storage_error)?;
         report.sort = references.report();
         Ok((references, report))
     }
@@ -1389,6 +1390,7 @@ impl GraphStore {
 
 fn map_sparse_row_delta_error(error: RelationalRowDeltaError) -> RelationalError {
     match error {
+        RelationalRowDeltaError::FileDescriptors(error) => RelationalError::FileDescriptors(error),
         RelationalRowDeltaError::Admission(message)
         | RelationalRowDeltaError::Invalidated(message) => RelationalError::Admission(message),
         RelationalRowDeltaError::RequiresCheckpoint { tables } => {
@@ -1403,7 +1405,10 @@ fn map_sparse_row_delta_error(error: RelationalRowDeltaError) -> RelationalError
         | RelationalRowDeltaError::Row(_)
         | RelationalRowDeltaError::StaleGeneration { .. }
         | RelationalRowDeltaError::StaleBase { .. }) => {
-            RelationalError::Corruption(error.to_string())
+            match hawdb_core::error::file_descriptor_error(&error) {
+                Some(error) => RelationalError::FileDescriptors(error),
+                None => RelationalError::Corruption(error.to_string()),
+            }
         }
     }
 }
@@ -1432,6 +1437,9 @@ fn charge_sparse_recovery_read_bytes(
 
 fn map_sparse_snapshot_read_error(error: RelationalRowPageSnapshotReadError) -> RelationalError {
     match error {
+        RelationalRowPageSnapshotReadError::FileDescriptors(error) => {
+            RelationalError::FileDescriptors(error)
+        }
         RelationalRowPageSnapshotReadError::Admission(message) => {
             RelationalError::Admission(message)
         }

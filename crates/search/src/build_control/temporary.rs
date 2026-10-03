@@ -36,7 +36,7 @@ impl<'a> RemoveOnDrop<'a> {
 impl Drop for RemoveOnDrop<'_> {
     fn drop(&mut self) {
         if self.armed {
-            let _ = std::fs::remove_file(self.path);
+            let _ = hawdb_storage::file_io::remove_file(self.path);
         }
     }
 }

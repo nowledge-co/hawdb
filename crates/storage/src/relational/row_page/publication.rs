@@ -243,6 +243,7 @@ pub enum RelationalRowPagePublicationError {
     Admission(String),
     Corrupt(String),
     Durability(String),
+    FileDescriptors(hawdb_core::error::FileDescriptorError),
     MissingTable(String),
     StaleGeneration {
         expected_previous: Option<u64>,
@@ -259,6 +260,7 @@ impl fmt::Display for RelationalRowPagePublicationError {
             Self::Corrupt(message) => {
                 write!(formatter, "corrupt relational row-page publication: {message}")
             }
+            Self::FileDescriptors(error) => fmt::Display::fmt(error, formatter),
             Self::Durability(message) => {
                 write!(formatter, "relational row-page publication durability failed: {message}")
             }
@@ -276,7 +278,14 @@ impl fmt::Display for RelationalRowPagePublicationError {
     }
 }
 
-impl std::error::Error for RelationalRowPagePublicationError {}
+impl std::error::Error for RelationalRowPagePublicationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::FileDescriptors(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 impl From<RelationalRowPageError> for RelationalRowPagePublicationError {
     fn from(error: RelationalRowPageError) -> Self {
@@ -290,7 +299,10 @@ impl From<RelationalRowPageError> for RelationalRowPagePublicationError {
 fn durability(
     context: &'static str,
 ) -> impl FnOnce(std::io::Error) -> RelationalRowPagePublicationError {
-    move |error| RelationalRowPagePublicationError::Durability(format!("{context}: {error}"))
+    move |error| match hawdb_core::error::file_descriptor_error(&error) {
+        Some(error) => RelationalRowPagePublicationError::FileDescriptors(error),
+        None => RelationalRowPagePublicationError::Durability(format!("{context}: {error}")),
+    }
 }
 
 #[cfg(test)]

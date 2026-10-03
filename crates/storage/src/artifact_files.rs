@@ -14,10 +14,10 @@
 
 //! Naming and parsing helpers for generation-suffixed storage artifact files.
 
+use crate::file_io as fs;
 use crate::{cache::StoreId, durability::sync_parent_directory};
 use hawdb_core::Result;
 use hawdb_integrity::checksum_u64;
-use std::fs;
 use std::path::Path;
 
 const MANIFEST_FILE: &str = "manifest.hawdb";

@@ -232,6 +232,9 @@ fn hawdb_lightning_initial_import_source_fingerprint_key(
 pub struct Database {
     catalog: Catalog,
     store: GraphStore,
+    project_root_path: Option<PathBuf>,
+    branch_selection: Option<branch_lifecycle::BranchSelection>,
+    durability: DurabilityPolicy,
     optimizer: CascadesOptimizer,
     plan_cache: Arc<SharedState<PlanCache>>,
     relational_plan_template_cache: Arc<crate::relational_sql::RelationalPlanTemplateCache>,
@@ -292,6 +295,12 @@ pub struct DatabaseConfig {
     pub recovery_mode: RecoveryMode,
     pub max_wal_replay_entries: Option<usize>,
     pub max_wal_replay_bytes: Option<u64>,
+    /// Maximum sealed WAL generations recovered for one branch admission.
+    /// Checkpoint compaction resets the chain; default is 256.
+    pub max_branch_sealed_wal_intervals: usize,
+    /// Finite shared ceiling for all engine-owned project file descriptors.
+    /// Independent contexts for one canonical project must request the same value.
+    pub max_open_files: usize,
     pub max_wal_quarantine_bytes: u64,
     pub max_wal_record_bytes: Option<usize>,
     pub max_wal_batch_operations: Option<usize>,
@@ -483,6 +492,30 @@ fn relational_index_read_mode<
     }
 }
 
+impl DatabaseConfig {
+    fn wal_replay_config(&self) -> WalReplayConfig {
+        WalReplayConfig {
+            max_open_files: self.max_open_files,
+            recovery_mode: self.recovery_mode,
+            max_entries: self.max_wal_replay_entries,
+            max_bytes: self.max_wal_replay_bytes,
+            max_branch_sealed_wal_intervals: self.max_branch_sealed_wal_intervals,
+            max_quarantine_bytes: self.max_wal_quarantine_bytes,
+            max_record_bytes: self.max_wal_record_bytes,
+            max_batch_operations: self.max_wal_batch_operations,
+            max_checkpoint_encoded_bytes: self.max_checkpoint_encoded_bytes,
+            max_checkpoint_decoded_bytes: self.max_checkpoint_decoded_bytes,
+            segment_cache_capacity_bytes: self.segment_cache_capacity_bytes,
+            max_graph_manifest_open_bytes: self.max_graph_manifest_open_bytes,
+            residency_mode: self.storage_residency_mode,
+            auto_materialize_checkpoint_bytes: self.auto_materialize_checkpoint_bytes,
+            max_out_of_core_delta_bytes: self.max_out_of_core_delta_bytes,
+            graph_columnar_shadow_checkpoint: self.graph_columnar_shadow_checkpoint,
+            relational_index_mode: self.relational_index_mode,
+        }
+    }
+}
+
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
@@ -496,6 +529,9 @@ impl Default for DatabaseConfig {
             recovery_mode: RecoveryMode::default(),
             max_wal_replay_entries: Some(hawdb_storage::config::DEFAULT_MAX_WAL_REPLAY_ENTRIES),
             max_wal_replay_bytes: Some(hawdb_storage::config::DEFAULT_MAX_WAL_REPLAY_BYTES),
+            max_branch_sealed_wal_intervals:
+                hawdb_storage::config::DEFAULT_MAX_BRANCH_SEALED_WAL_INTERVALS,
+            max_open_files: hawdb_storage::file_descriptors::DEFAULT_MAX_OPEN_FILES,
             max_wal_quarantine_bytes: hawdb_storage::config::DEFAULT_MAX_WAL_QUARANTINE_BYTES,
             max_wal_record_bytes: Some(hawdb_storage::config::DEFAULT_MAX_WAL_RECORD_BYTES),
             max_wal_batch_operations: Some(hawdb_storage::config::DEFAULT_MAX_WAL_BATCH_OPERATIONS),
@@ -723,6 +759,7 @@ pub(super) struct DatabaseTransactionRuntime {
     config: DatabaseConfig,
     system_variables: QuerySystemVariables,
     branch_catalog_path: Option<PathBuf>,
+    current_branch: Option<branch_lifecycle::CurrentBranch>,
 }
 
 #[derive(Debug)]
@@ -777,6 +814,7 @@ pub struct DatabaseReadTransaction<S: crate::executor::ExecutionStore = GraphSto
     statement_summary_snapshot: Vec<system_sql::StatementSummaryRecord>,
     config: DatabaseConfig,
     branch_catalog_path: Option<PathBuf>,
+    current_branch: Option<branch_lifecycle::CurrentBranch>,
     projection_relational: Option<ProjectionRelationalReadSnapshot>,
     task_context: Option<hawdb_core::RuntimeTaskContext>,
     _pin: Arc<ReaderPin>,
@@ -821,6 +859,7 @@ impl DatabaseReadSnapshot {
             statement_summary_snapshot: source.statement_summary_snapshot.clone(),
             config: source.config.clone(),
             branch_catalog_path: source.branch_catalog_path.clone(),
+            current_branch: source.current_branch.clone(),
             projection_relational: None,
             task_context,
             _pin: Arc::clone(&source._pin),
@@ -882,6 +921,9 @@ impl Default for Database {
         configure_relational_fast_paths(&mut store, &config);
         Self {
             catalog: Catalog::default(),
+            project_root_path: None,
+            branch_selection: None,
+            durability: DurabilityPolicy::default(),
             projection_consumers: search_projection_consumer::ConsumerRegistry::load(
                 store.search_projection_registry_root(),
                 store.search_projection_database_identity(),
@@ -965,6 +1007,9 @@ impl Database {
         let optimizer = optimizer_from_database_config(&config);
         Self {
             catalog: Catalog::default(),
+            project_root_path: None,
+            branch_selection: None,
+            durability: DurabilityPolicy::default(),
             projection_consumers: search_projection_consumer::ConsumerRegistry::load(
                 store.search_projection_registry_root(),
                 store.search_projection_database_identity(),
@@ -1065,23 +1110,8 @@ impl Database {
         let config = effective_database_config(config);
         let local_qos_scheduler = LocalQosScheduler::new(config.local_qos_policy);
         let mut catalog = Catalog::default();
-        let replay_config = WalReplayConfig {
-            recovery_mode: config.recovery_mode,
-            max_entries: config.max_wal_replay_entries,
-            max_bytes: config.max_wal_replay_bytes,
-            max_quarantine_bytes: config.max_wal_quarantine_bytes,
-            max_record_bytes: config.max_wal_record_bytes,
-            max_batch_operations: config.max_wal_batch_operations,
-            max_checkpoint_encoded_bytes: config.max_checkpoint_encoded_bytes,
-            max_checkpoint_decoded_bytes: config.max_checkpoint_decoded_bytes,
-            segment_cache_capacity_bytes: config.segment_cache_capacity_bytes,
-            max_graph_manifest_open_bytes: config.max_graph_manifest_open_bytes,
-            residency_mode: config.storage_residency_mode,
-            auto_materialize_checkpoint_bytes: config.auto_materialize_checkpoint_bytes,
-            max_out_of_core_delta_bytes: config.max_out_of_core_delta_bytes,
-            graph_columnar_shadow_checkpoint: config.graph_columnar_shadow_checkpoint,
-            relational_index_mode: config.relational_index_mode,
-        };
+        let project_root_path = path.as_ref().to_path_buf();
+        let replay_config = config.wal_replay_config();
         let mut store = if config.read_only {
             GraphStore::open_read_only_with_durability_and_replay_config(
                 path,
@@ -1097,10 +1127,14 @@ impl Database {
                 replay_config,
             )?
         };
+        let project_root_path = hawdb_storage::file_io::canonicalize(&project_root_path)?;
         configure_search_projection_changefeed(&mut store, &config);
         configure_relational_fast_paths(&mut store, &config);
         let mut database = Self {
             catalog,
+            project_root_path: Some(project_root_path),
+            branch_selection: None,
+            durability,
             projection_consumers: search_projection_consumer::ConsumerRegistry::load(
                 store.search_projection_registry_root(),
                 store.search_projection_database_identity(),
@@ -1137,6 +1171,13 @@ impl Database {
 
     pub fn config(&self) -> &DatabaseConfig {
         &self.config
+    }
+
+    /// Engine-owned descriptors and reservations shared by this canonical project.
+    pub fn file_descriptor_metrics(
+        &self,
+    ) -> Option<hawdb_storage::file_descriptors::FileDescriptorMetrics> {
+        self.store.file_descriptor_metrics()
     }
 
     /// Returns a handle to the database-owned runtime QoS scheduler.
@@ -1395,6 +1436,7 @@ impl Database {
             statement_summary_snapshot: Vec::new(),
             config: self.config.clone(),
             branch_catalog_path: self.branch_catalog_path().ok(),
+            current_branch: self.current_branch(),
             projection_relational,
             task_context,
             _pin: Arc::new(pin),
@@ -19491,6 +19533,7 @@ impl DatabaseTransactionRuntime {
             config: db.config.clone(),
             system_variables,
             branch_catalog_path: db.branch_catalog_path().ok(),
+            current_branch: db.current_branch(),
         }
     }
 
@@ -19885,6 +19928,8 @@ pub(super) fn execute_database_transaction_prepared_sql(
     if let crate::sql::SqlStatement::Branch(statement) = prepared.statement() {
         return observability::execute_branch_sql_at_path(
             runtime.branch_catalog_path.as_deref(),
+            runtime.current_branch.as_ref(),
+            "explicit transaction",
             statement,
             parameters,
             runtime.config.max_read_result_rows,
@@ -20348,6 +20393,9 @@ fn map_transaction_append_error(
     error: hawdb_storage::append_table::AppendTableError,
 ) -> HawDBError {
     match error {
+        hawdb_storage::append_table::AppendTableError::FileDescriptors(error) => {
+            HawDBError::FileDescriptors(error)
+        }
         hawdb_storage::append_table::AppendTableError::SequenceExhausted {
             table,
             watermark,
@@ -20373,6 +20421,9 @@ fn map_transaction_relational_error(
     error: hawdb_storage::relational::RelationalError,
 ) -> HawDBError {
     match error {
+        hawdb_storage::relational::RelationalError::FileDescriptors(error) => {
+            HawDBError::FileDescriptors(error)
+        }
         hawdb_storage::relational::RelationalError::Corruption(message)
         | hawdb_storage::relational::RelationalError::Durability(message) => {
             HawDBError::StorageIntegrity(message)
@@ -20568,6 +20619,39 @@ impl DatabaseTransaction<'_> {
 }
 
 impl DatabaseSession<'_> {
+    pub fn query_sql(&mut self, sql_text: &str) -> Result<QueryOutput> {
+        self.query_sql_with_params(sql_text, &[])
+    }
+
+    pub fn query_sql_with_params(
+        &mut self,
+        sql_text: &str,
+        parameters: &[Value],
+    ) -> Result<QueryOutput> {
+        if self.graph_transaction.is_none() {
+            return self.db.query_sql_with_params(sql_text, parameters);
+        }
+        let prepared = self.db.relational_plan_template_cache.prepare(sql_text)?;
+        if let crate::sql::SqlStatement::Branch(statement) = prepared.statement() {
+            let runtime = self
+                .transaction_runtime
+                .as_ref()
+                .expect("active session transaction runtime");
+            return observability::execute_branch_sql_at_path(
+                runtime.branch_catalog_path.as_deref(),
+                runtime.current_branch.as_ref(),
+                "explicit transaction",
+                statement,
+                parameters,
+                runtime.config.max_read_result_rows,
+                runtime.config.max_read_result_payload_bytes,
+            );
+        }
+        Err(HawDBError::Execution(
+            "SQL data statements are unavailable in an explicit Cypher session transaction".into(),
+        ))
+    }
+
     pub fn system_variables(&self) -> &QuerySystemVariables {
         &self.system_variables
     }
@@ -21650,6 +21734,8 @@ where
         if let crate::sql::SqlStatement::Branch(statement) = prepared.statement() {
             return observability::execute_branch_sql_at_path(
                 self.branch_catalog_path.as_deref(),
+                self.current_branch.as_ref(),
+                "read transaction",
                 statement,
                 parameters,
                 max_rows,

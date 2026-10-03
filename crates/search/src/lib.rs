@@ -35,6 +35,7 @@ use hawdb_qos::{
     BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy, LocalQosScheduler, LocalQosState,
     QosAdmission, WorkClass, WorkRequest,
 };
+use hawdb_storage::file_io::{self as fs, File};
 use hawdb_storage::{
     durability::durable_replace_file,
     scan::{
@@ -47,7 +48,6 @@ use hawdb_telemetry::{KernelTelemetry, KernelTelemetryOperation, TelemetrySink};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fs::{self, File};
 use std::io::{Cursor, Read, Write};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -1405,6 +1405,7 @@ pub struct SearchIndex {
     consumer_owned_mutation: bool,
     consumer_receipt: Mutex<Option<consumer::CheckpointReceipt>>,
     path: Option<PathBuf>,
+    _project_files: Option<hawdb_storage::file_descriptors::ProjectFileDescriptors>,
     embedding_dimension: Option<usize>,
     embedding_manifest: Option<SearchEmbeddingManifest>,
     import_source_graph_commit_epoch: Option<u64>,
@@ -1436,18 +1437,30 @@ impl SearchIndex {
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let project_files =
+            hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_component(
+                path.as_ref(),
+                true,
+            )?;
         fs::create_dir_all(path.as_ref())?;
         let _lease = out_of_core::SearchProjectionPublishLease::acquire(path.as_ref())?;
-        Self::open_under_lease(path.as_ref(), false)
+        let mut index = Self::open_under_lease(path.as_ref(), false)?;
+        index._project_files = Some(project_files);
+        Ok(index)
     }
 
     fn open_under_lease(path: &Path, registered: bool) -> Result<Self> {
         let mut index = Self {
             path: Some(path.to_path_buf()),
+            _project_files: Some(
+                hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_component(
+                    path, false,
+                )?,
+            ),
             ..Self::default()
         };
         index.load_snapshot().map_err(|error| {
-            if registered {
+            if registered && !matches!(error, HawDBError::FileDescriptors(_)) {
                 HawDBError::StorageIntegrity(error.to_string())
             } else {
                 error
@@ -1461,7 +1474,10 @@ impl SearchIndex {
         if registered {
             index
                 .validate_registered_artifacts()
-                .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
+                .map_err(|error| match error {
+                    HawDBError::FileDescriptors(_) => error,
+                    _ => HawDBError::StorageIntegrity(error.to_string()),
+                })?;
         } else {
             index.load_or_rebuild_segment_descriptor()?;
             index.load_lexical_projection()?;
@@ -3869,7 +3885,7 @@ impl SearchIndex {
             return Ok(());
         };
         let snapshot_path = path.join(SEARCH_SNAPSHOT_FILE);
-        if !snapshot_path.exists() {
+        if !fs::try_exists(&snapshot_path)? {
             return Ok(());
         }
         let text = read_search_snapshot_text(&snapshot_path)?;
@@ -3992,11 +4008,12 @@ impl SearchIndex {
         self.segment_descriptor = match read_search_segment_descriptor(path) {
             Ok(Some(descriptor))
                 if descriptor.matches_documents(&self.documents)
-                    && descriptor.payload_artifact_is_available(path) =>
+                    && descriptor.payload_artifact_is_available(path)? =>
             {
                 Some(descriptor)
             }
             Ok(None) => Some(SearchSegmentDescriptor::build(&self.documents)),
+            Err(error @ HawDBError::FileDescriptors(_)) => return Err(error),
             Ok(Some(_)) | Err(_) => {
                 quarantine_rebuildable_artifact(path, SEARCH_SEGMENT_DESCRIPTOR_FILE);
                 let descriptor = SearchSegmentDescriptor::build(&self.documents);
@@ -4106,6 +4123,7 @@ impl Default for SearchIndex {
             consumer_owned_mutation: false,
             consumer_receipt: Mutex::new(None),
             path: None,
+            _project_files: None,
             embedding_dimension: None,
             embedding_manifest: None,
             import_source_graph_commit_epoch: None,
@@ -4281,10 +4299,11 @@ fn search_projection_probe_predicate_pushdown_report(index: &SearchIndex) -> ser
         .unwrap_or_default();
     let physical_segment_ranges_ready = descriptor.is_some_and(|descriptor| {
         physical_segment_range_count == descriptor.segments.len()
-            && index
-                .path
-                .as_ref()
-                .is_some_and(|path| descriptor.payload_artifact_is_available(path))
+            && index.path.as_ref().is_some_and(|path| {
+                descriptor
+                    .payload_artifact_is_available(path)
+                    .unwrap_or(false)
+            })
     });
     serde_json::json!({
         "ready": true,
@@ -5921,20 +5940,22 @@ impl SearchSegmentDescriptor {
                 == documents.keys().next_back().map(String::as_str)
     }
 
-    fn payload_artifact_is_available(&self, path: &Path) -> bool {
+    fn payload_artifact_is_available(&self, path: &Path) -> Result<bool> {
         let Some(last_range) = self
             .segments
             .iter()
             .filter_map(|segment| segment.payload_range)
             .next_back()
         else {
-            return true;
+            return Ok(true);
         };
-        fs::metadata(path.join(SEARCH_SEGMENT_PAYLOAD_FILE))
-            .ok()
-            .is_some_and(|metadata| {
-                metadata.len() >= last_range.offset.saturating_add(last_range.length)
-            })
+        match fs::metadata(path.join(SEARCH_SEGMENT_PAYLOAD_FILE)) {
+            Ok(metadata) => {
+                Ok(metadata.len() >= last_range.offset.saturating_add(last_range.length))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
     }
 
     fn physical_read_ranges(&self) -> Vec<SegmentReadRange> {
@@ -7102,7 +7123,7 @@ fn write_search_segment_descriptor_bounded(
 
 fn read_search_segment_descriptor(path: &Path) -> Result<Option<SearchSegmentDescriptor>> {
     let descriptor_path = path.join(SEARCH_SEGMENT_DESCRIPTOR_FILE);
-    if !descriptor_path.exists() {
+    if !fs::try_exists(&descriptor_path)? {
         return Ok(None);
     }
     let text = fs::read_to_string(&descriptor_path)?;
@@ -7773,6 +7794,45 @@ fn parse_usize(input: &str, name: &str) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_roots_borrow_project_limits_and_keep_independent_domains() {
+        use hawdb_storage::file_descriptors::{ProjectFileDescriptors, DEFAULT_MAX_OPEN_FILES};
+
+        let sequence = QUARANTINE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "hawdb-search-fd-projects-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let project = ProjectFileDescriptors::acquire(&root.join("first"), 4).unwrap();
+        let search_root = project.root().join("search");
+        let first = SearchIndex::open(&search_root).unwrap();
+        assert_eq!(first._project_files.as_ref().unwrap().metrics().limit, 4);
+        let held = (0..4)
+            .map(|number| File::create(project.root().join(format!("held-{number}"))).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(project.metrics().open, 4);
+        assert!(matches!(
+            SearchIndex::open(&search_root),
+            Err(HawDBError::FileDescriptors(_))
+        ));
+
+        let second = SearchIndex::open(root.join("second")).unwrap();
+        let second_files = second._project_files.as_ref().unwrap();
+        assert_eq!(second_files.metrics().limit, DEFAULT_MAX_OPEN_FILES);
+        assert_eq!(second_files.metrics().open, 0);
+        assert_eq!(project.metrics().open, 4);
+        drop(held);
+        let retried = SearchIndex::open(&search_root).unwrap();
+        assert_eq!(project.metrics().open, 0);
+        drop(retried);
+        drop(first);
+        drop(second);
+        drop(project);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     mod feature_contract;
     #[cfg(feature = "full-text-search")]
     use hawdb_storage::scan::{FileSegmentRangeReader, SegmentReadExecutor, SegmentReadScheduler};
@@ -11430,7 +11490,7 @@ mod tests {
             .unwrap()
             .expect("expected persisted segment descriptor");
         assert_eq!(descriptor.segments.len(), 2);
-        assert!(descriptor.payload_artifact_is_available(&path));
+        assert!(descriptor.payload_artifact_is_available(&path).unwrap());
         let ranges = descriptor.physical_read_ranges();
         assert_eq!(ranges.len(), descriptor.segments.len());
         let scheduled_bytes = ranges.iter().map(|range| range.length.get()).sum::<u64>();

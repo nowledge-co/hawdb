@@ -12,6 +12,7 @@ use crate::branch_head::{
     ChildBranchHeadRequest, ChildBranchSourceExpectation,
 };
 use crate::durability;
+use crate::file_io::{self as fs, File, OpenOptions, TryLockError};
 use crate::immutable_object::{
     BranchReclamationEntry, BranchReclamationInventory, ImmutableObjectError, ImmutableObjectStore,
     ObjectReference, ReclamationReport,
@@ -21,7 +22,6 @@ use hawdb_core::Uuid;
 use hawdb_integrity::crc32c;
 use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
-use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -297,6 +297,9 @@ impl Catalog {
     /// Reserve a branch identity and name before any child files are created.
     /// Replaying the same request key and fingerprint returns the original ID;
     /// a reused key with different input is always a conflict.
+    /// The parent's source epoch records creation lineage, not its current
+    /// revision. Callers must bind the requested revision to the live head;
+    /// this metadata-only transition can reject only revisions before birth.
     pub fn reserve_create(
         &mut self,
         request: CreateRequest,
@@ -323,7 +326,7 @@ impl Catalog {
                 "create parent is not ready",
             ));
         }
-        if parent.source_commit_epoch != request.source_commit_epoch {
+        if request.source_commit_epoch < parent.source_commit_epoch {
             return Err(CatalogTransitionError::Conflict(
                 "create source revision is stale",
             ));
@@ -611,9 +614,10 @@ pub fn read_catalog(path: &Path) -> io::Result<Catalog> {
     if length > MAX_CATALOG_BYTES as u64 {
         return Err(invalid_data("branch catalog exceeds its byte limit"));
     }
-    let mut file = fs::File::open(path)?;
+    let file = fs::File::open(path)?;
     let mut encoded = Vec::with_capacity(length as usize);
-    file.read_to_end(&mut encoded)?;
+    file.take((MAX_CATALOG_BYTES + 1) as u64)
+        .read_to_end(&mut encoded)?;
     Catalog::decode(&encoded).map_err(|error| invalid_data(error.to_string()))
 }
 
@@ -733,13 +737,14 @@ fn write_catalog_locked(path: &Path, catalog: &Catalog) -> io::Result<()> {
         sequence
     ));
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&candidate)?;
-        file.write_all(&encoded)?;
-        file.sync_all()?;
-        drop(file);
+        {
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&candidate)?;
+            file.write_all(&encoded)?;
+            file.sync_all()?;
+        }
         durability::durable_replace_file(&candidate, path)
     })();
     if result.is_err() {
@@ -797,7 +802,14 @@ impl Display for CatalogFileTransitionError {
     }
 }
 
-impl std::error::Error for CatalogFileTransitionError {}
+impl std::error::Error for CatalogFileTransitionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::Transition(error) => Some(error),
+        }
+    }
+}
 
 struct CatalogMutation<T> {
     value: T,
@@ -812,6 +824,15 @@ fn mutate_catalog_file<T>(
     path: &Path,
     transition: impl FnOnce(&mut Catalog) -> Result<CatalogMutation<T>, CatalogTransitionError>,
 ) -> Result<T, CatalogFileTransitionError> {
+    mutate_catalog_file_with_io(path, |catalog| {
+        transition(catalog).map_err(CatalogFileTransitionError::Transition)
+    })
+}
+
+fn mutate_catalog_file_with_io<T>(
+    path: &Path,
+    transition: impl FnOnce(&mut Catalog) -> Result<CatalogMutation<T>, CatalogFileTransitionError>,
+) -> Result<T, CatalogFileTransitionError> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -821,7 +842,7 @@ fn mutate_catalog_file<T>(
     let _metadata_lock =
         CatalogMetadataLease::acquire_blocking(parent).map_err(CatalogFileTransitionError::Io)?;
     let mut catalog = read_catalog(path).map_err(CatalogFileTransitionError::Io)?;
-    let mutation = transition(&mut catalog).map_err(CatalogFileTransitionError::Transition)?;
+    let mutation = transition(&mut catalog)?;
     if mutation.changed {
         write_catalog_locked(path, &catalog).map_err(CatalogFileTransitionError::Io)?;
     }
@@ -861,25 +882,44 @@ fn main_record_index(
     Ok(index)
 }
 
-/// Reserves a child branch in the durable catalog before child files are made.
-/// The returned metadata revision binds the later completion transition.
-pub fn reserve_create_file(
+// Isolated catalog-transition fixture helper. Production callers must use
+// create_branch_from_parent, which validates the live source under this same
+// metadata lease before reserving the child.
+#[cfg(test)]
+fn reserve_create_file(
     path: &Path,
     request: CreateRequest,
 ) -> Result<CreateReservation, CatalogFileTransitionError> {
-    mutate_catalog_file(path, move |catalog| {
+    reserve_create_file_with_source(path, request, |_| Ok(()))
+}
+
+fn reserve_create_file_with_source(
+    path: &Path,
+    request: CreateRequest,
+    validate_source: impl FnOnce(&Catalog) -> Result<(), CatalogFileTransitionError>,
+) -> Result<CreateReservation, CatalogFileTransitionError> {
+    mutate_catalog_file_with_io(path, move |catalog| {
         let replayed = catalog
             .branches
             .iter()
             .any(|branch| branch.create_request_key == request.request_key);
+        // An idempotent retry resolves the original outcome even if its
+        // source has advanced since publication of the child.
+        if !replayed {
+            validate_source(catalog)?;
+        }
         let revision = catalog.revision;
-        let id = catalog.reserve_create(request)?;
+        let id = catalog
+            .reserve_create(request)
+            .map_err(CatalogFileTransitionError::Transition)?;
         let metadata_revision = catalog
             .branches
             .iter()
             .find(|branch| branch.id == id)
             .map(|branch| branch.metadata_revision)
-            .ok_or(CatalogTransitionError::MissingBranch)?;
+            .ok_or(CatalogFileTransitionError::Transition(
+                CatalogTransitionError::MissingBranch,
+            ))?;
         Ok(CatalogMutation {
             value: CreateReservation {
                 id,
@@ -1035,12 +1075,21 @@ impl Display for BranchCreateError {
     }
 }
 
-impl std::error::Error for BranchCreateError {}
+impl std::error::Error for BranchCreateError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Catalog(error) => Some(error),
+            Self::Head(error) => Some(error),
+            Self::Lease(error) => Some(error),
+            Self::InconsistentRequest(_) => None,
+        }
+    }
+}
 
-/// Reserves the catalog record, creates the isolated child head/WAL, and
-/// completes the record only after both files are durable. Known child-file
-/// failures abort the reservation; an uncertain catalog completion leaves the
-/// `Creating` record for deterministic recovery on the next open.
+/// Acquires the child lease, reserves its catalog record, creates the isolated
+/// head/WAL, and completes the record only after both files are durable.
+/// Known child-file failures abort the reservation. Failed abort/completion
+/// publication preserves the receipt for explicit recovery or request retry.
 pub fn create_branch_from_parent(
     catalog_path: &Path,
     parent_head_path: &Path,
@@ -1064,21 +1113,52 @@ pub fn create_branch_from_parent(
             "catalog parent and selected parent head differ",
         ));
     }
-    let reservation =
-        reserve_create_file(catalog_path, request).map_err(BranchCreateError::Catalog)?;
+    if request.source_commit_epoch != expected_parent.logical_commit_epoch
+        || request.source_commit_epoch != child_head_request.logical_commit_epoch
+        || child_head_request.sealed_root != expected_parent.sealed_root
+    {
+        return Err(BranchCreateError::InconsistentRequest(
+            "catalog source revision and selected parent head differ",
+        ));
+    }
     let child_head_path = child_head_request.head_path.clone();
     let child_directory = child_head_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    // Own the child before its pending receipt is visible. Otherwise a retry
+    // can acquire the lease and abort the still-active creator's reservation.
+    // The directory/lock are coordination state; no head/WAL exists yet.
+    fs::create_dir_all(child_directory).map_err(|source| {
+        BranchCreateError::Head(BranchHeadError::Io {
+            operation: "create child branch directory",
+            source,
+        })
+    })?;
+    let lease =
+        DatabaseDirectoryLease::acquire(child_directory).map_err(BranchCreateError::Lease)?;
+    let reservation = reserve_create_file_with_source(catalog_path, request, |catalog| {
+        let parent = crate::branch_head::read_branch_head(parent_head_path)
+            .map_err(|error| CatalogFileTransitionError::Io(invalid_data(error.to_string())))?;
+        if parent.project_id != *catalog.project_id.as_uuid().as_bytes()
+            || parent.branch_id != expected_parent.branch_id
+            || parent.physical_generation != expected_parent.physical_generation
+            || parent.logical_commit_epoch != expected_parent.logical_commit_epoch
+            || parent.sealed_root != expected_parent.sealed_root
+        {
+            return Err(CatalogFileTransitionError::Transition(
+                CatalogTransitionError::Conflict("create source revision is stale"),
+            ));
+        }
+        Ok(())
+    })
+    .map_err(BranchCreateError::Catalog)?;
     if reservation.replayed {
         if reservation.id.as_uuid().as_bytes() != &child_head_request.branch_id {
             return Err(BranchCreateError::InconsistentRequest(
                 "replayed branch identity does not match the requested child paths",
             ));
         }
-        let lease =
-            DatabaseDirectoryLease::acquire(child_directory).map_err(BranchCreateError::Lease)?;
         let catalog = read_catalog(catalog_path)
             .map_err(|error| BranchCreateError::Catalog(CatalogFileTransitionError::Io(error)))?;
         let branch = catalog
@@ -1131,20 +1211,6 @@ pub fn create_branch_from_parent(
         }
         return Ok(BranchCreateResult { head, lease });
     }
-    if let Err(error) = fs::create_dir_all(child_directory) {
-        let _ = abort_create_file(catalog_path, reservation);
-        return Err(BranchCreateError::Head(BranchHeadError::Io {
-            operation: "create child branch directory",
-            source: error,
-        }));
-    }
-    let lease = match DatabaseDirectoryLease::acquire(child_directory) {
-        Ok(lease) => lease,
-        Err(error) => {
-            let _ = abort_create_file(catalog_path, reservation);
-            return Err(BranchCreateError::Lease(error));
-        }
-    };
     match create_child_branch_head_from_parent(
         parent_head_path,
         &child_head_path,
@@ -1157,7 +1223,7 @@ pub fn create_branch_from_parent(
             Ok(BranchCreateResult { head, lease })
         }
         Err(error) => {
-            let _ = abort_create_file(catalog_path, reservation);
+            abort_create_file(catalog_path, reservation).map_err(BranchCreateError::Catalog)?;
             Err(BranchCreateError::Head(error))
         }
     }
@@ -1227,6 +1293,15 @@ pub fn reclaim_catalog_branches(
     objects: &[ObjectReference],
     paths: &[BranchReclamationPath],
 ) -> Result<ReclamationReport, BranchReclamationError> {
+    let project_directory = catalog_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| BranchReclamationError::Catalog(invalid_data("catalog has no parent")))?;
+    // Admission validates metadata before exposing a runtime. Holding this
+    // lease through sweep prevents a new owner from publishing candidates
+    // after the lease inventory was inspected.
+    let _metadata_lease = CatalogMetadataLease::acquire_blocking(project_directory)
+        .map_err(BranchReclamationError::Catalog)?;
     let catalog = read_catalog(catalog_path).map_err(BranchReclamationError::Catalog)?;
     let mut branches = Vec::with_capacity(catalog.branches.len());
     for record in &catalog.branches {
@@ -1292,6 +1367,52 @@ pub fn recover_create_file(
     child_wal_path: &Path,
     max_active_wal_bytes: u64,
 ) -> Result<CreateRecoveryOutcome, BranchCreateError> {
+    recover_create_file_inner(
+        catalog_path,
+        branch_id,
+        child_head_path,
+        Some(child_wal_path),
+        max_active_wal_bytes,
+    )
+}
+
+/// Resumes a reserved child without consulting its parent's current state.
+/// The child's UUID lease protects validation and catalog completion; the WAL
+/// identity comes from its durable head, never a later parent generation.
+pub fn recover_create_from_head_file(
+    catalog_path: &Path,
+    branch_id: BranchId,
+    child_head_path: &Path,
+    max_active_wal_bytes: u64,
+) -> Result<CreateRecoveryOutcome, BranchCreateError> {
+    let directory = child_head_path
+        .parent()
+        .ok_or(BranchCreateError::InconsistentRequest(
+            "child head has no branch directory",
+        ))?;
+    fs::create_dir_all(directory).map_err(|source| {
+        BranchCreateError::Head(BranchHeadError::Io {
+            operation: "create pending child lease directory",
+            source,
+        })
+    })?;
+    let _lease = DatabaseDirectoryLease::acquire(directory).map_err(BranchCreateError::Lease)?;
+    recover_create_file_inner(
+        catalog_path,
+        branch_id,
+        child_head_path,
+        None,
+        max_active_wal_bytes,
+    )
+}
+
+fn recover_create_file_inner(
+    catalog_path: &Path,
+    branch_id: BranchId,
+    child_head_path: &Path,
+    child_wal_path: Option<&Path>,
+    max_active_wal_bytes: u64,
+) -> Result<CreateRecoveryOutcome, BranchCreateError> {
     let catalog = read_catalog(catalog_path)
         .map_err(|error| BranchCreateError::Catalog(CatalogFileTransitionError::Io(error)))?;
     let branch = catalog
@@ -1330,6 +1451,10 @@ pub fn recover_create_file(
             "pending child metadata does not match its head",
         ));
     }
+    let derived_wal_path = child_head_path.with_file_name(
+        crate::artifact_files::wal_generation_file(head.active_wal.generation),
+    );
+    let child_wal_path = child_wal_path.unwrap_or(&derived_wal_path);
     match fs::metadata(child_wal_path) {
         Ok(_) => {}
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
@@ -2244,63 +2369,92 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    #[derive(Clone)]
+    struct CreateFixture {
+        directory: PathBuf,
+        catalog_path: PathBuf,
+        parent_head_path: PathBuf,
+        child_request: ChildBranchHeadRequest,
+        expected_parent: ChildBranchSourceExpectation,
+        request: CreateRequest,
+    }
+
+    impl CreateFixture {
+        fn new() -> Self {
+            let (directory, catalog_path) = temporary_catalog_path();
+            write_catalog(&catalog_path, &catalog()).unwrap();
+            let parent_head_path = directory.join("parent.head");
+            let child_directory = directory.join("child");
+            let child_head_path = child_directory.join("child.head");
+            let child_wal_path = child_directory.join("child.wal");
+            let root = crate::immutable_object::ObjectReference::for_bytes(
+                crate::immutable_object::ObjectKind::SealedRoot,
+                1,
+                b"parent-root",
+            );
+            let parent = BranchHead {
+                project_id: *catalog().project_id.as_uuid().as_bytes(),
+                branch_id: *id(1).as_uuid().as_bytes(),
+                physical_generation: 4,
+                sealed_root: root,
+                logical_commit_epoch: 7,
+                active_wal: crate::branch_head::ActiveWalIdentity {
+                    generation: 5,
+                    replay_start_lsn: 20,
+                    byte_length: 1,
+                    sha256: hawdb_integrity::sha256(b"x"),
+                },
+            };
+            fs::write(&parent_head_path, parent.encode().unwrap()).unwrap();
+            let mut request = create_request();
+            request.base_root_digest = *root.sha256.as_bytes();
+            Self {
+                directory,
+                catalog_path,
+                parent_head_path,
+                child_request: ChildBranchHeadRequest {
+                    project_id: parent.project_id,
+                    branch_id: *request.id.as_uuid().as_bytes(),
+                    sealed_root: root,
+                    logical_commit_epoch: 7,
+                    active_wal_generation: 1,
+                    replay_start_lsn: 42,
+                    head_path: child_head_path.clone(),
+                    wal_path: child_wal_path.clone(),
+                },
+                expected_parent: ChildBranchSourceExpectation {
+                    branch_id: parent.branch_id,
+                    physical_generation: 4,
+                    logical_commit_epoch: 7,
+                    sealed_root: root,
+                },
+                request,
+            }
+        }
+
+        fn child_directory(&self) -> &Path {
+            self.child_request.head_path.parent().unwrap()
+        }
+
+        fn create(&self) -> Result<BranchCreateResult, BranchCreateError> {
+            create_branch_from_parent(
+                &self.catalog_path,
+                &self.parent_head_path,
+                self.child_request.clone(),
+                self.expected_parent,
+                1024,
+                self.request.clone(),
+            )
+        }
+    }
+
     #[test]
     fn create_branch_from_parent_completes_catalog_after_child_files() {
-        let (directory, catalog_path) = temporary_catalog_path();
-        write_catalog(&catalog_path, &catalog()).unwrap();
-        let parent_head_path = directory.join("parent.head");
-        let child_directory = directory.join("child");
-        let child_head_path = child_directory.join("child.head");
-        let child_wal_path = child_directory.join("child.wal");
-        let root = crate::immutable_object::ObjectReference::for_bytes(
-            crate::immutable_object::ObjectKind::SealedRoot,
-            1,
-            b"parent-root",
-        );
-        let parent = BranchHead {
-            project_id: *catalog().project_id.as_uuid().as_bytes(),
-            branch_id: *id(1).as_uuid().as_bytes(),
-            physical_generation: 4,
-            sealed_root: root,
-            logical_commit_epoch: 7,
-            active_wal: crate::branch_head::ActiveWalIdentity {
-                generation: 5,
-                replay_start_lsn: 20,
-                byte_length: 1,
-                sha256: hawdb_integrity::sha256(b"x"),
-            },
-        };
-        fs::write(&parent_head_path, parent.encode().unwrap()).unwrap();
-        let mut request = create_request();
-        request.base_root_digest = *root.sha256.as_bytes();
-        let child_id = request.id;
-        let retry_request = request.clone();
-        let child = create_branch_from_parent(
-            &catalog_path,
-            &parent_head_path,
-            ChildBranchHeadRequest {
-                project_id: parent.project_id,
-                branch_id: *request.id.as_uuid().as_bytes(),
-                sealed_root: root,
-                logical_commit_epoch: 7,
-                active_wal_generation: 1,
-                replay_start_lsn: 42,
-                head_path: child_head_path.clone(),
-                wal_path: child_wal_path.clone(),
-            },
-            ChildBranchSourceExpectation {
-                branch_id: parent.branch_id,
-                physical_generation: 4,
-                logical_commit_epoch: 7,
-                sealed_root: root,
-            },
-            1024,
-            request,
-        )
-        .unwrap();
-        assert_eq!(child.head.sealed_root, root);
+        let fixture = CreateFixture::new();
+        let child = fixture.create().unwrap();
+        assert_eq!(child.head.sealed_root, fixture.child_request.sealed_root);
         assert_eq!(
-            read_catalog(&catalog_path)
+            read_catalog(&fixture.catalog_path)
                 .unwrap()
                 .branches
                 .last()
@@ -2308,54 +2462,92 @@ mod tests {
                 .state,
             BranchState::Ready
         );
-        assert!(child_head_path.is_file());
-        assert!(child_wal_path.is_file());
+        assert!(fixture.child_request.head_path.is_file());
+        assert!(fixture.child_request.wal_path.is_file());
         assert!(matches!(
-            DatabaseDirectoryLease::acquire(&child_directory),
+            DatabaseDirectoryLease::acquire(fixture.child_directory()),
             Err(DatabaseDirectoryLeaseError::AlreadyOpen)
         ));
         let first_head = child.head;
         drop(child);
-        let retried = create_branch_from_parent(
-            &catalog_path,
-            &parent_head_path,
-            ChildBranchHeadRequest {
-                project_id: parent.project_id,
-                branch_id: *retry_request.id.as_uuid().as_bytes(),
-                sealed_root: root,
-                logical_commit_epoch: 7,
-                active_wal_generation: 1,
-                replay_start_lsn: 42,
-                head_path: child_head_path.clone(),
-                wal_path: child_wal_path.clone(),
-            },
-            ChildBranchSourceExpectation {
-                branch_id: parent.branch_id,
-                physical_generation: 4,
-                logical_commit_epoch: 7,
-                sealed_root: root,
-            },
-            1024,
-            retry_request,
-        )
-        .unwrap();
+        let retried = fixture.create().unwrap();
         assert_eq!(retried.head, first_head);
         drop(retried);
-        let reopened = crate::branch_head::read_branch_head(&child_head_path).unwrap();
-        assert_eq!(reopened.sealed_root, root);
+        let reopened =
+            crate::branch_head::read_branch_head(&fixture.child_request.head_path).unwrap();
+        assert_eq!(reopened.sealed_root, fixture.child_request.sealed_root);
         assert_eq!(
-            read_catalog(&catalog_path)
+            read_catalog(&fixture.catalog_path)
                 .unwrap()
                 .branches
                 .iter()
-                .find(|branch| branch.id == child_id)
+                .find(|branch| branch.id == fixture.request.id)
                 .unwrap()
                 .state,
             BranchState::Ready
         );
-        let reopened_lease = DatabaseDirectoryLease::acquire(&child_directory).unwrap();
+        let reopened_lease = DatabaseDirectoryLease::acquire(fixture.child_directory()).unwrap();
         drop(reopened_lease);
-        fs::remove_dir_all(directory).unwrap();
+        fs::remove_dir_all(fixture.directory).unwrap();
+    }
+
+    #[test]
+    fn create_branch_directory_and_lease_failures_leave_no_pending_receipt() {
+        let fixture = CreateFixture::new();
+        let before = fs::read(&fixture.catalog_path).unwrap();
+        fs::write(fixture.child_directory(), b"not a directory").unwrap();
+        assert!(matches!(fixture.create(), Err(BranchCreateError::Head(_))));
+        assert_eq!(fs::read(&fixture.catalog_path).unwrap(), before);
+        fs::remove_file(fixture.child_directory()).unwrap();
+
+        fs::create_dir(fixture.child_directory()).unwrap();
+        let lease = DatabaseDirectoryLease::acquire(fixture.child_directory()).unwrap();
+        assert!(matches!(
+            fixture.create(),
+            Err(BranchCreateError::Lease(
+                DatabaseDirectoryLeaseError::AlreadyOpen
+            ))
+        ));
+        assert_eq!(fs::read(&fixture.catalog_path).unwrap(), before);
+        drop(lease);
+        let child = fixture.create().unwrap();
+        assert_eq!(
+            child.head.branch_id,
+            *fixture.request.id.as_uuid().as_bytes()
+        );
+        drop(child);
+        fs::remove_dir_all(fixture.directory).unwrap();
+    }
+
+    #[test]
+    fn create_branch_owns_child_before_waiting_for_catalog_reservation() {
+        let fixture = CreateFixture::new();
+        let before = fs::read(&fixture.catalog_path).unwrap();
+        let metadata = CatalogMetadataLease::acquire(&fixture.directory).unwrap();
+        let creator_fixture = fixture.clone();
+        let creator = std::thread::spawn(move || creator_fixture.create());
+        let child_directory = fs::canonicalize(&fixture.directory).unwrap().join("child");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let owns_child = loop {
+            if crate::ownership::has_process_lease(&child_directory) {
+                break true;
+            }
+            if creator.is_finished() || std::time::Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        let waiting_catalog = fs::read(&fixture.catalog_path).unwrap();
+        // Release the blocked worker even if the ordering assertion will fail.
+        drop(metadata);
+        let child = creator.join().unwrap().unwrap();
+        assert!(
+            owns_child,
+            "creation must own the child before publishing a pending receipt"
+        );
+        assert_eq!(waiting_catalog, before);
+        drop(child);
+        fs::remove_dir_all(fixture.directory).unwrap();
     }
 
     #[test]
@@ -2646,7 +2838,7 @@ mod tests {
     fn failed_reservation_and_cas_leave_catalog_bytes_unchanged() {
         let mut catalog = catalog();
         let mut request = create_request();
-        request.source_commit_epoch = 8;
+        request.source_commit_epoch = 6;
         let before = catalog.encode().unwrap();
         assert_eq!(
             catalog.reserve_create(request),

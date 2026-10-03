@@ -22,6 +22,7 @@ use super::{
     RELATIONAL_ROW_DELTA_PUBLICATION_LOCK_FILE,
 };
 use crate::durability::{durable_replace_file, sync_directory};
+use crate::file_io::{self as fs, File, OpenOptions};
 use crate::relational::row_page::{RelationalRowPageRecoveredValue, RelationalRowPageRootReader};
 use crate::relational::{
     ordered_key::encode_ordered_relational_key, RelationalKey, RelationalOverflowRootReader,
@@ -29,7 +30,6 @@ use crate::relational::{
     RelationalRowChangeCaptureLimits, RelationalRowPagePublicationConfig, RelationalState,
 };
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
