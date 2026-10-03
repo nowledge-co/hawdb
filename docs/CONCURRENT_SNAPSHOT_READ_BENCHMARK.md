@@ -313,3 +313,36 @@ increase. The next diagnostic must distinguish publication/commit work from
 durability-barrier and storage latency while retaining `SyncOnEveryWrite`.
 No wider latency tolerance, shortened run, or relaxed durability mode is selected
 from these results. #226 remains open and the PR remains a draft.
+
+### Follow-up durability breakdown
+
+A [same-engine telemetry diagnostic](CONCURRENT_DURABILITY_BREAKDOWN_DIAGNOSTIC.json)
+compares direct `Database` calls and `ConcurrentDatabase` on `dbb2ab20`, using three
+fixed alternating pairs of 512 inserts into fresh copies of the same checkpoint.
+It retains `SyncOnEveryWrite`, validates 3,072 timed writes and all 101,376 rows
+in the six recovery scans, and records every request in the local raw artifact.
+This experiment isolates current facade overhead; it does not replace the
+cross-version comparisons above.
+
+| Pair | Facade | Request p95 us | WAL sync p95 us | Outside-statement p95 us | WAL sync share of the slowest 26 requests |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Direct | 15,133 | 11,461 | 36 | 90.94% |
+| 1 | Concurrent | 50,123 | 45,844 | 277 | 95.86% |
+| 2 | Concurrent | 19,520 | 15,518 | 267 | 93.53% |
+| 2 | Direct | 18,377 | 14,280 | 36 | 94.04% |
+| 3 | Direct | 32,784 | 27,688 | 46 | 94.56% |
+| 3 | Concurrent | 14,876 | 9,211 | 357 | 93.26% |
+
+Every case appends exactly 707,387 reported WAL bytes. WAL sync timing covers
+`sync_data` and the parent-directory sync when creating the WAL file; it does
+not cover all other recovery dependencies. Outside-statement time includes
+wrapper preparation, telemetry and publication, not publication alone. Each
+p95 column is computed separately and must not be subtracted to estimate a
+request's component p95. The final column uses the same slowest requests for
+both numerator and denominator.
+
+WAL sync dominates the slowest requests in this diagnostic, while facade work
+outside statement timing is sub-millisecond at p95. This bounds one part of the
+remaining investigation without proving why the cross-version tail differs or
+explaining the read-only page regression. The host/storage variance remains
+uncontrolled, and performance acceptance remains blocked.
