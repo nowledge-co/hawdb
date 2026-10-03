@@ -1349,7 +1349,8 @@ impl GraphStore {
         self.search_projection_change_log_retained_bytes = self
             .search_projection_change_log_retained_bytes
             .saturating_add(change.estimated_retained_bytes());
-        self.search_projection_graph_changes.push(change);
+        // Snapshots share payloads; append detaches the directory and only its tail page.
+        self.search_projection_graph_changes.push(Arc::new(change));
         self.trim_search_projection_graph_change_log();
     }
 
@@ -1372,34 +1373,31 @@ impl GraphStore {
     pub(super) fn trim_search_projection_graph_change_log(&mut self) {
         let mut retained_bytes = self.search_projection_change_log_retained_bytes;
         let mut remove_count = 0usize;
-        while remove_count < self.search_projection_graph_changes.len()
-            && (self
-                .max_search_projection_change_log_entries
-                .is_some_and(|limit| {
-                    self.search_projection_graph_changes
-                        .len()
-                        .saturating_sub(remove_count)
-                        > limit
-                })
-                || self
-                    .max_search_projection_change_log_bytes
-                    .is_some_and(|limit| retained_bytes > limit))
-        {
-            retained_bytes = retained_bytes.saturating_sub(
-                self.search_projection_graph_changes[remove_count].estimated_retained_bytes(),
-            );
-            remove_count = remove_count.saturating_add(1);
-        }
-        if remove_count > 0 {
-            if let Some(last_removed) = self
-                .search_projection_graph_changes
-                .get(remove_count.saturating_sub(1))
-            {
-                self.search_projection_change_log_start_epoch = self
-                    .search_projection_change_log_start_epoch
-                    .max(last_removed.commit_epoch);
+        let mut last_removed_epoch = None;
+        for change in self.search_projection_graph_changes.iter() {
+            let exceeds_limit =
+                self.max_search_projection_change_log_entries
+                    .is_some_and(|limit| {
+                        self.search_projection_graph_changes
+                            .len()
+                            .saturating_sub(remove_count)
+                            > limit
+                    })
+                    || self
+                        .max_search_projection_change_log_bytes
+                        .is_some_and(|limit| retained_bytes > limit);
+            if !exceeds_limit {
+                break;
             }
-            self.search_projection_graph_changes.drain(0..remove_count);
+            retained_bytes = retained_bytes.saturating_sub(change.estimated_retained_bytes());
+            remove_count = remove_count.saturating_add(1);
+            last_removed_epoch = Some(change.commit_epoch);
+        }
+        if let Some(epoch) = last_removed_epoch {
+            self.search_projection_change_log_start_epoch =
+                self.search_projection_change_log_start_epoch.max(epoch);
+            self.search_projection_graph_changes
+                .discard_prefix(remove_count);
         }
         self.search_projection_change_log_retained_bytes = retained_bytes;
     }

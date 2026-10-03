@@ -47,7 +47,8 @@ pub mod locator;
 
 pub use append::{
     compile_append_explain_sql, compile_append_select_sql, compile_append_statement_sql,
-    format_append_explain, project_append_rows, AppendExplainPlan, AppendSelectPlan,
+    compile_prepared_append_explain_sql, compile_prepared_append_select_sql, format_append_explain,
+    project_append_rows, AppendExplainPlan, AppendSelectPlan,
 };
 pub use system_schema::{SystemSchemaMigration, SystemSchemaRegistry, SystemSchemaUpgradeReport};
 
@@ -295,8 +296,7 @@ mod tests {
     use super::*;
     use hawdb_storage::append_table::{AppendOrderMode, AppendState, AppendTableSchema};
 
-    #[test]
-    fn append_select_compiles_from_storage_neutral_sql_ir() {
+    fn append_state() -> AppendState {
         let schema = AppendTableSchema {
             name: "events".to_string(),
             columns: vec![
@@ -317,11 +317,16 @@ mod tests {
             order_key: vec!["sequence".to_string()],
             order_mode: AppendOrderMode::CallerProvided,
         };
-        let state = AppendState::from_checkpoint(
+        AppendState::from_checkpoint(
             std::collections::BTreeMap::from([("events".to_string(), schema)]),
             std::collections::BTreeMap::new(),
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    #[test]
+    fn append_select_compiles_from_storage_neutral_sql_ir() {
+        let state = append_state();
 
         let plan = compile_append_select_sql(
             "SELECT tenant, sequence FROM events WHERE tenant = 'a' ORDER BY sequence LIMIT 10",
@@ -338,6 +343,75 @@ mod tests {
             "SELECT tenant, sequence FROM events WHERE tenant = 'a' HAVING FALSE ORDER BY sequence LIMIT 10",
             &[], &state, 100,
         ).is_err());
+    }
+
+    #[test]
+    fn prepared_append_reads_rebind_parameters_schema_and_limits() {
+        let state = append_state();
+        let sql = "SELECT tenant, sequence FROM events WHERE tenant = $1 AND sequence > $2 ORDER BY sequence LIMIT $3";
+        let prepared = hawdb_sql::prepare_postgres_sql(sql).unwrap();
+        let explain_sql = format!("EXPLAIN ANALYZE {sql}");
+        let explain = hawdb_sql::prepare_postgres_sql(&explain_sql).unwrap();
+        for (tenant, after, limit) in [("a", 1, 10), ("b", 42, 3)] {
+            let parameters = [
+                Value::String(tenant.into()),
+                Value::Int(after),
+                Value::Int(limit),
+            ];
+            let plan = compile_prepared_append_select_sql(&prepared, &parameters, &state, 10)
+                .unwrap()
+                .unwrap();
+            assert_eq!(plan.partition.0, vec![RelationalValue::Text(tenant.into())]);
+            assert_eq!(plan.after.unwrap().0, vec![RelationalValue::BigInt(after)]);
+            assert_eq!(plan.max_rows, limit as usize);
+            assert_eq!(
+                compile_prepared_append_select_sql(&prepared, &parameters, &state, 10).unwrap(),
+                compile_append_select_sql(sql, &parameters, &state, 10).unwrap(),
+            );
+            assert_eq!(
+                compile_prepared_append_explain_sql(&explain, &parameters, &state, 10).unwrap(),
+                compile_append_explain_sql(&explain_sql, &parameters, &state, 10).unwrap(),
+            );
+            // A cached template never caches append-table routing or bound keys.
+            assert!(compile_prepared_append_select_sql(
+                &prepared,
+                &parameters,
+                &AppendState::default(),
+                10
+            )
+            .unwrap()
+            .is_none());
+        }
+        for limit in [0, 11] {
+            let parameters = [Value::String("a".into()), Value::Int(1), Value::Int(limit)];
+            assert!(
+                compile_prepared_append_select_sql(&prepared, &parameters, &state, 10).is_err()
+            );
+            assert!(
+                compile_prepared_append_explain_sql(&explain, &parameters, &state, 10).is_err()
+            );
+        }
+        // Parameter-count errors precede non-append fallthrough, as before.
+        for state in [&state, &AppendState::default()] {
+            assert!(
+                compile_prepared_append_select_sql(&prepared, &[], state, 10)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("requires 3 parameters")
+            );
+            assert!(
+                compile_prepared_append_explain_sql(&explain, &[], state, 10)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("requires 3 parameters")
+            );
+        }
+        let constant = hawdb_sql::prepare_postgres_sql("SELECT 1").unwrap();
+        assert!(
+            compile_prepared_append_select_sql(&constant, &[], &state, 10)
+                .unwrap()
+                .is_none()
+        );
     }
 }
 

@@ -197,7 +197,19 @@ pub(super) fn execute_streaming_projection<'a>(
         })
         .transpose()?
         .unwrap_or(usize::MAX);
-    let mut output = Vec::with_capacity(requested.min(limits.max_output_rows));
+    let capacity = requested.min(limits.max_output_rows);
+    // An unjoined primary-key lookup can return at most one row. Keep the
+    // configured output limits below, but avoid reserving their full budget
+    // for every point read. Joined plans retain their existing capacity.
+    let capacity = if joins.is_empty()
+        && tree_execution.is_none_or(|execution| execution.tree.root.relation_count() == 1)
+        && matches!(base_access, RelationalBaseAccess::PrimaryKey(_))
+    {
+        capacity.min(1)
+    } else {
+        capacity
+    };
+    let mut output = Vec::with_capacity(capacity);
     let mut payload_bytes = 0usize;
     if requested != 0 {
         visit_relational_rows(

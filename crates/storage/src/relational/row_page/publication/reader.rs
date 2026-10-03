@@ -263,6 +263,7 @@ impl RelationalRowPageRootReader {
         let mut lower = 0u64;
         let mut upper = table_root.page_count;
         let mut descriptor_reads = 0usize;
+        let mut candidate = None;
         while lower < upper {
             let middle = lower + (upper - lower) / 2;
             let descriptor = self.read_table_page_descriptor_from(
@@ -283,24 +284,26 @@ impl RelationalRowPageRootReader {
                         "row-page descriptor search overflow".to_string(),
                     )
                 })?;
+                if lower == table_root.page_count {
+                    // Preserve the last-page result for keys above the table.
+                    candidate = Some((middle, descriptor));
+                }
+            } else if descriptor.lower_bound.as_slice() <= encoded_key {
+                // Published page bounds do not overlap. The descriptor and
+                // both keys have already passed their binding checks, so an
+                // in-range key needs neither more probes nor a second read.
+                return Ok((Some((middle, descriptor)), descriptor_reads));
             } else {
                 upper = middle;
+                candidate = Some((middle, descriptor));
             }
         }
-        let ordinal = lower.min(table_root.page_count - 1);
-        let descriptor = self.read_table_page_descriptor_from(
-            &mut descriptors,
-            &mut keys,
-            table,
-            table_root,
-            ordinal,
-        )?;
-        descriptor_reads = descriptor_reads.checked_add(1).ok_or_else(|| {
-            RelationalRowPagePublicationError::Admission(
-                "row-page descriptor read counter overflow".to_string(),
+        let candidate = candidate.ok_or_else(|| {
+            RelationalRowPagePublicationError::Corrupt(
+                "row-page descriptor search did not select a page".to_string(),
             )
         })?;
-        Ok((Some((ordinal, descriptor)), descriptor_reads))
+        Ok((Some(candidate), descriptor_reads))
     }
 
     pub fn read_page(

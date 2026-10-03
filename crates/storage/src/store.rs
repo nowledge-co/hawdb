@@ -121,6 +121,8 @@ mod relational_index_shadow;
 #[path = "store/relational_row_pages.rs"]
 #[doc(hidden)]
 pub mod relational_row_pages;
+#[path = "store/search_projection_change_log.rs"]
+mod search_projection_change_log;
 #[path = "store/statistics_refresh.rs"]
 mod statistics_refresh;
 #[path = "store/wal_codec.rs"]
@@ -349,6 +351,7 @@ pub use relational_row_pages::RelationalRowPageRecoveryStatus;
 use relational_row_pages::RelationalRowPageState;
 #[doc(hidden)]
 pub use relational_row_pages::RelationalTransactionRowView;
+use search_projection_change_log::SearchProjectionChangeLog;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
@@ -798,7 +801,7 @@ pub struct GraphStore {
     initial_import_source_fingerprint: Option<String>,
     search_projection_database_identity: Option<hawdb_core::Uuid>,
     search_projection_change_log_start_epoch: u64,
-    search_projection_graph_changes: CowSegment<Vec<SearchProjectionGraphChange>>,
+    search_projection_graph_changes: SearchProjectionChangeLog,
     search_projection_change_log_retained_bytes: usize,
     max_search_projection_change_log_entries: Option<usize>,
     max_search_projection_change_log_bytes: Option<usize>,
@@ -1725,7 +1728,7 @@ impl GraphStore {
             initial_import_source_fingerprint: None,
             search_projection_database_identity: None,
             search_projection_change_log_start_epoch: 0,
-            search_projection_graph_changes: CowSegment::default(),
+            search_projection_graph_changes: SearchProjectionChangeLog::default(),
             search_projection_change_log_retained_bytes: 0,
             max_search_projection_change_log_entries: None,
             max_search_projection_change_log_bytes: None,
@@ -1924,7 +1927,7 @@ impl GraphStore {
         self.search_projection_graph_changes
             .iter()
             .filter(|change| change.commit_epoch > commit_epoch)
-            .cloned()
+            .map(|change| change.as_ref().clone())
             .collect()
     }
 
@@ -1942,16 +1945,16 @@ impl GraphStore {
             oldest_retained_mutation_id: self
                 .search_projection_graph_changes
                 .first()
-                .map(SearchProjectionGraphChange::mutation_id),
+                .map(|change| change.mutation_id()),
             newest_retained_mutation_id: self
                 .search_projection_graph_changes
                 .last()
-                .map(SearchProjectionGraphChange::mutation_id),
+                .map(|change| change.mutation_id()),
             first_rebuild_required_mutation_id: self
                 .search_projection_graph_changes
                 .iter()
                 .find(|change| change.relational_primary_key_changes.requires_rebuild())
-                .map(SearchProjectionGraphChange::mutation_id),
+                .map(|change| change.mutation_id()),
             retained_mutation_count: self.search_projection_graph_changes.len(),
             retained_bytes: self.search_projection_change_log_retained_bytes,
             max_retained_bytes: self.max_search_projection_change_log_bytes,
@@ -1976,7 +1979,7 @@ impl GraphStore {
         self.search_projection_primary_key_capture_limits = limits;
         for change in self.search_projection_graph_changes.iter_mut() {
             if change.relational_primary_key_changes.exceeds_limits(limits) {
-                change.relational_primary_key_changes =
+                Arc::make_mut(change).relational_primary_key_changes =
                     hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
                         reason: hawdb_storage::relational::RelationalPrimaryKeyChangeRebuildReason::CaptureLimitExceeded,
                     };
@@ -1985,7 +1988,7 @@ impl GraphStore {
         self.search_projection_change_log_retained_bytes = self
             .search_projection_graph_changes
             .iter()
-            .map(SearchProjectionGraphChange::estimated_retained_bytes)
+            .map(|change| change.estimated_retained_bytes())
             .fold(0usize, usize::saturating_add);
         self.trim_search_projection_graph_change_log();
     }
@@ -2971,10 +2974,10 @@ pub fn read_durable_text(path: &Path, name: &str) -> Result<String> {
     read_durable_text_bytes(&bytes, name)
 }
 
-fn validate_search_projection_checkpoint_changes(
+fn validate_search_projection_checkpoint_changes<'a>(
     start_epoch: u64,
     checkpoint_commit_epoch: u64,
-    changes: &[SearchProjectionGraphChange],
+    changes: impl IntoIterator<Item = &'a SearchProjectionGraphChange>,
 ) -> Result<()> {
     if start_epoch > checkpoint_commit_epoch {
         return Err(HawDBError::Storage(format!(
@@ -7980,6 +7983,125 @@ mod tests {
             assert_eq!(rels[0].source, NodeId(0));
             assert_eq!(rels[0].target, NodeId(1));
         }
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn search_projection_snapshots_preserve_payloads_across_append_trim_and_reopen() {
+        use crate::relational::RelationalPrimaryKeyChangeCaptureLimits;
+
+        let path = unique_test_dir("shared_search_projection_changes");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![RelationalWrite::CreateTable(RelationalTableSchema {
+                        name: "messages".to_string(),
+                        columns: vec![RelationalColumnSchema {
+                            name: "id".to_string(),
+                            scalar_type: RelationalScalarType::Text,
+                            nullable: false,
+                            default: None,
+                        }],
+                        primary_key: vec!["id".to_string()],
+                        unique_constraints: Vec::new(),
+                        foreign_keys: Vec::new(),
+                        indexes: Vec::new(),
+                    })],
+                },
+            )
+            .unwrap();
+        for id in 10..140 {
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                .unwrap();
+        }
+        for batch in 0..2 {
+            store
+                .commit_relational_transaction(
+                    &mut catalog,
+                    RelationalTransaction {
+                        writes: vec![RelationalWrite::Insert {
+                            table: "messages".to_string(),
+                            mode: RelationalInsertMode::Error,
+                            rows: (0..128)
+                                .map(|key| {
+                                    RelationalRow::new(vec![RelationalValue::Text(format!(
+                                        "message-{batch}-{key:04}"
+                                    ))])
+                                })
+                                .collect(),
+                        }],
+                    },
+                )
+                .unwrap();
+        }
+        let before_checkpoint = store.search_projection_changes_after(0);
+        store.checkpoint(&catalog).unwrap();
+        drop(store);
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(store.search_projection_changes_after(0), before_checkpoint);
+        let snapshot = store.snapshot_for_read();
+        let before = snapshot.search_projection_changes_after(0);
+        let before_status = snapshot.search_projection_changefeed_status();
+        assert_eq!(
+            before
+                .last()
+                .unwrap()
+                .relational_primary_key_changes
+                .operation_count(),
+            128
+        );
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+            .unwrap();
+        assert_eq!(
+            &store.search_projection_changes_after(0)[..before.len()],
+            before
+        );
+
+        store.set_search_projection_primary_key_capture_limits(
+            RelationalPrimaryKeyChangeCaptureLimits {
+                max_entries: NonZeroUsize::new(1).unwrap(),
+                ..RelationalPrimaryKeyChangeCaptureLimits::default()
+            },
+        );
+        assert!(store
+            .search_projection_changes_after(0)
+            .iter()
+            .find(|change| change.commit_epoch == snapshot.commit_epoch())
+            .unwrap()
+            .relational_primary_key_changes
+            .requires_rebuild());
+        assert_eq!(snapshot.search_projection_changes_after(0), before);
+        assert_eq!(
+            snapshot.search_projection_changefeed_status(),
+            before_status
+        );
+        store.set_max_search_projection_change_log_entries(Some(1));
+        let retained = store.search_projection_changes_after(0);
+        let floor = store.search_projection_change_log_start_epoch();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(floor, snapshot.commit_epoch());
+        assert_eq!(snapshot.search_projection_changes_after(0), before);
+        store.checkpoint(&catalog).unwrap();
+        drop(store);
+
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(store.search_projection_changes_after(0), retained);
+        assert_eq!(store.search_projection_change_log_start_epoch(), floor);
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(2))]))
+            .unwrap();
+        let with_wal = store.search_projection_changes_after(0);
+        drop(store);
+        let store = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(store.search_projection_changes_after(0), with_wal);
+        assert_eq!(snapshot.search_projection_changes_after(0), before);
+        drop(store);
+        drop(snapshot);
         std::fs::remove_dir_all(path).unwrap();
     }
 

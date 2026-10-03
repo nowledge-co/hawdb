@@ -598,12 +598,10 @@ impl DurableStore {
     }
 
     pub(super) fn next_checkpoint_generation(&self) -> Result<u64> {
-        let current = if self.branch_runtime.is_some() {
-            self.checkpoint_epoch.max(self.wal_generation)
-        } else {
-            self.checkpoint_epoch
-        };
-        current
+        // Sealing can advance the active WAL before branch admission. A
+        // checkpoint candidate must never replace that acknowledged prefix.
+        self.checkpoint_epoch
+            .max(self.wal_generation)
             .checked_add(1)
             .ok_or_else(|| HawDBError::Storage("checkpoint generation overflow".to_string()))
     }
