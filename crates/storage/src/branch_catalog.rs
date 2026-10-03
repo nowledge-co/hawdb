@@ -222,10 +222,14 @@ impl Catalog {
         if self.branches.len() > MAX_BRANCHES as usize {
             return Err(CatalogError::Limit("branch count"));
         }
-        let mut ordered = self.branches.clone();
-        ordered.sort_by_key(|branch| branch.id);
-        for pair in ordered.windows(2) {
-            if pair[0].id == pair[1].id {
+        let mut branch_ids = self
+            .branches
+            .iter()
+            .map(|branch| branch.id)
+            .collect::<Vec<_>>();
+        branch_ids.sort_unstable();
+        for pair in branch_ids.windows(2) {
+            if pair[0] == pair[1] {
                 return Err(CatalogError::Duplicate("branch UUID"));
             }
         }
@@ -258,10 +262,7 @@ impl Catalog {
                 ));
             }
             if let Some(parent_id) = branch.parent_id
-                && !self
-                    .branches
-                    .iter()
-                    .any(|candidate| candidate.id == parent_id)
+                && branch_ids.binary_search(&parent_id).is_err()
             {
                 return Err(CatalogError::InvalidIdentity(
                     "branch parent UUID is not present in the catalog",
@@ -1968,6 +1969,65 @@ mod tests {
         assert_eq!(read_catalog(&path).unwrap().revision, catalog.revision);
         assert!(path.is_file());
         assert!(directory.join(METADATA_LOCK_FILE).is_file());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn parent_validation_accepts_unsorted_lineage_and_rejects_missing_or_duplicate_ids() {
+        let mut parent = record(2, "parent");
+        parent.parent_id = Some(id(1));
+        let mut child = record(3, "child");
+        child.parent_id = Some(id(2));
+        let mut catalog = Catalog {
+            project_id: id(99),
+            revision: 1,
+            branches: vec![child, record(1, "root"), parent],
+        };
+        let encoded = catalog.encode().unwrap();
+        for _ in 0..catalog.branches.len() {
+            catalog.branches.rotate_left(1);
+            assert_eq!(catalog.encode().unwrap(), encoded);
+        }
+        let mut dangling = catalog.clone();
+        dangling
+            .branches
+            .iter_mut()
+            .find(|branch| branch.id == id(3))
+            .unwrap()
+            .parent_id = Some(id(4));
+        assert!(matches!(
+            dangling.validate(),
+            Err(CatalogError::InvalidIdentity(
+                "branch parent UUID is not present in the catalog"
+            ))
+        ));
+        catalog.branches.push(catalog.branches[0].clone());
+        assert_eq!(
+            catalog.validate(),
+            Err(CatalogError::Duplicate("branch UUID"))
+        );
+    }
+
+    #[test]
+    fn opened_catalog_read_retains_one_complete_publication() {
+        let (directory, path) = temporary_catalog_path();
+        let mut catalog = catalog();
+        write_catalog(&path, &catalog).unwrap();
+        let old_encoded = catalog.encode().unwrap();
+        let mut opened = File::open(&path).unwrap();
+        let mut observed = vec![0; MAGIC.len()];
+        opened.read_exact(&mut observed).unwrap();
+        catalog
+            .rename(id(2), 3, BranchName::new("renamed").unwrap())
+            .unwrap();
+        write_catalog(&path, &catalog).unwrap();
+        opened.read_to_end(&mut observed).unwrap();
+        assert_eq!(observed, old_encoded);
+        assert_eq!(Catalog::decode(&observed).unwrap().revision, 11);
+        let next = read_catalog(&path).unwrap();
+        assert_eq!(next.revision, 12);
+        assert_eq!(next.encode().unwrap(), catalog.encode().unwrap());
+        drop(opened);
         fs::remove_dir_all(directory).unwrap();
     }
 

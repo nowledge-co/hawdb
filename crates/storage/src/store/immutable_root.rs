@@ -452,6 +452,14 @@ impl GraphStore {
         request: BranchAdmissionRequest<'_>,
         cleanup: impl FnOnce(&Path),
     ) -> std::result::Result<AdmittedBranchStore, BranchAdmissionError> {
+        Self::admit_branch_from_head_with_revalidation(request, || {}, cleanup)
+    }
+
+    fn admit_branch_from_head_with_revalidation(
+        request: BranchAdmissionRequest<'_>,
+        before_revalidation: impl FnOnce(),
+        cleanup: impl FnOnce(&Path),
+    ) -> std::result::Result<AdmittedBranchStore, BranchAdmissionError> {
         let project_path =
             request
                 .catalog_path
@@ -596,6 +604,7 @@ impl GraphStore {
                 .post_replay_open_micros
                 .saturating_add(super::elapsed_micros(activation_started));
 
+            before_revalidation();
             let after = ready_branch_record(
                 request.catalog_path,
                 request.branch_id,
@@ -1984,6 +1993,78 @@ mod tests {
 
     fn branch_id(value: u128) -> branch_catalog::BranchId {
         branch_catalog::BranchId::new(hawdb_core::Uuid::from_u128(value)).unwrap()
+    }
+
+    #[test]
+    fn admission_rejects_a_catalog_publication_after_target_recovery() {
+        let fixture = BranchFixture::new();
+        let mut source = fixture.admit(fixture.main, DurabilityPolicy::default());
+        let source_head = *source.head();
+        let child = branch_id(2);
+        fixture.fork(&source, child, "child");
+        let catalog = branch_catalog::read_catalog(&fixture.catalog_path).unwrap();
+        let revision = catalog
+            .branches
+            .iter()
+            .find(|record| record.id == child)
+            .unwrap()
+            .metadata_revision;
+        let head_path = fixture.head_path(child);
+        let publish_path = fixture.catalog_path.clone();
+        let target_directory = head_path.parent().unwrap().to_path_buf();
+        let mut recovered = false;
+        let result = GraphStore::admit_branch_from_head_with_revalidation(
+            BranchAdmissionRequest {
+                catalog_path: &fixture.catalog_path,
+                branch_id: child,
+                expected_metadata_revision: revision,
+                head_path: &head_path,
+                immutable_store_root: &fixture.objects,
+                durability: DurabilityPolicy::default(),
+                replay_config: WalReplayConfig::default(),
+            },
+            || {
+                recovered = true;
+                std::thread::spawn(move || {
+                    assert!(matches!(
+                        DatabaseDirectoryLease::acquire(&target_directory),
+                        Err(DatabaseDirectoryLeaseError::AlreadyOpen)
+                    ));
+                    let metadata = branch_catalog::CatalogMetadataLease::acquire(
+                        publish_path.parent().unwrap(),
+                    )
+                    .unwrap();
+                    drop(metadata);
+                    let mut catalog = branch_catalog::read_catalog(&publish_path).unwrap();
+                    catalog
+                        .rename(
+                            child,
+                            revision,
+                            branch_catalog::BranchName::new("renamed").unwrap(),
+                        )
+                        .unwrap();
+                    branch_catalog::write_catalog(&publish_path, &catalog).unwrap();
+                })
+                .join()
+                .unwrap();
+            },
+            |runtime| fs::remove_dir_all(runtime).unwrap(),
+        );
+        assert!(
+            recovered,
+            "publication must occur after the target has recovered"
+        );
+        assert!(
+            matches!(result, Err(BranchAdmissionError::StaleMetadataRevision { expected, actual }) if expected == revision && actual == revision + 1)
+        );
+        assert_eq!(*source.head(), source_head);
+        let (store, schema) = source.store_and_catalog_mut();
+        store
+            .create_node(schema, "SourceAfterReject", BTreeMap::new())
+            .unwrap();
+        assert_eq!(store.node_count_for_label(None), 3);
+        let retried = fixture.admit(child, DurabilityPolicy::default());
+        assert_eq!(retried.store().node_count_for_label(None), 2);
     }
 
     fn write_schema_and_graph(branch: &mut AdmittedBranchStore) {

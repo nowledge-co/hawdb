@@ -300,6 +300,10 @@ name = "relational_monotonic_append"
 harness = false
 
 [[bench]]
+name = "branch_catalog_inspection"
+harness = false
+
+[[bench]]
 name = "relational_row_page_lending"
 harness = false
 
