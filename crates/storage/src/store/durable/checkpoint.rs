@@ -34,6 +34,7 @@ use hawdb_storage::{
     cache::ManifestGeneration,
     config::{DurableCompression, WalReplayConfig},
     durability::durable_replace_file,
+    projection::SearchProjectionGraphChange,
     relational::{encode_relational_checkpoint_to_writer, RelationalDecodeLimits, RelationalState},
     scan::FileSegmentRangeReader,
 };
@@ -119,12 +120,15 @@ impl DurableStore {
         Ok(Some(metadata))
     }
 
-    pub(in crate::store) fn write_checkpoint(
+    pub(in crate::store) fn write_checkpoint<'a>(
         &self,
         image: CheckpointImage<'_>,
         generation: u64,
+        changes: impl Iterator<Item = &'a SearchProjectionGraphChange> + Clone,
     ) -> Result<DurableArtifactMetadata> {
-        let data = hawdb_storage::checkpoint::encode_checkpoint_body(&image, generation)?;
+        let data = hawdb_storage::checkpoint::encode_checkpoint_body_with_changes(
+            &image, generation, changes,
+        )?;
         let checksum = checksum_bytes(data.as_bytes());
         let data = format!("{data}checksum\t{checksum}\n");
         let checkpoint_path = self.root_path.join(checkpoint_generation_file(generation));

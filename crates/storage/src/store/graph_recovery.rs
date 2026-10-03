@@ -340,7 +340,12 @@ impl GraphStore {
             decoded.search_projection_change_log_retained_bytes;
         self.search_projection_database_identity = decoded.search_projection_database_identity;
         self.initial_import_source_fingerprint = decoded.initial_import_source_fingerprint;
-        self.search_projection_graph_changes = decoded.search_projection_graph_changes.into();
+        self.search_projection_graph_changes = decoded
+            .search_projection_graph_changes
+            .into_iter()
+            .map(Arc::new)
+            .collect::<Vec<_>>()
+            .into();
         self.basic_statistics = decoded.basic_statistics;
         self.checkpoint_statistics = decoded.checkpoint_statistics;
         for (name, definition) in decoded.projected_graphs {
@@ -444,7 +449,7 @@ impl GraphStore {
                 validate_search_projection_checkpoint_changes(
                     start_epoch,
                     self.commit_epoch,
-                    &self.search_projection_graph_changes,
+                    self.search_projection_graph_changes.iter().map(Arc::as_ref),
                 )?;
             }
             None => {

@@ -157,13 +157,14 @@ from the current acquisition/publication implementation.
 ## Linux read-acquisition comparison: October 3, 2026
 
 The [publication recording](CONCURRENT_READ_PUBLICATION_LINUX_RECORDING.json)
-preserves two complete campaigns, each containing three alternating fresh-process
+preserves three complete campaigns, each containing three alternating fresh-process
 pairs and all 78 case summaries. Each campaign validates 141,312 timed requests
 and 1,299,456 rows in full recovery scans. Raw samples and preserved binaries are
 in `target/benchmarks/226-read-publication` and
-`target/benchmarks/226-read-publication-atomic` respectively.
+`target/benchmarks/226-read-publication-atomic`, and
+`target/benchmarks/226-read-publication-shared-log` respectively.
 
-Both campaigns compare main `606e308bdf888fa94b50e9e0e501b2d1934b4886` against the
+All campaigns compare main `606e308bdf888fa94b50e9e0e501b2d1934b4886` against the
 independent read-publication implementation, using identical harness bytes
 (SHA-256 `bae86e60026d86161062eff23d560b1559eae4ab4aa342d633fd8c6714958490`).
 The recording includes candidate source hashes, binary hashes, process resource
@@ -175,7 +176,7 @@ This is a shared workstation, not an isolated performance host.
 
 The first implementation acquired the publication mutex again for completion
 health checks. Its eight-reader read-only page p95 regressed in all three pairs
-(+11.1%, +7.2%, +4.7%). The final implementation replaces those repeated
+(+11.1%, +7.2%, +4.7%). The second implementation replaces those repeated
 acquisitions with a sticky atomic failure flag and existing store health checks.
 The first campaign retained an idle Bazel server; that workspace server was
 stopped before the second campaign. No agent-started build or test overlapped
@@ -188,8 +189,8 @@ identical binary hash exposed the mistake before timing; that artifact was not
 measured as a candidate. Rebuilding the package and verifying distinct hashes
 and the new implementation marker established the candidate binaries used here.
 
-The following final-implementation results are medians of three process-level
-metrics, not pooled request percentiles. Latencies are microseconds; throughput
+The following second-campaign results, before the changefeed COW fix below,
+are medians of three process-level metrics, not pooled request percentiles. Latencies are microseconds; throughput
 includes all timed requests in each fixed-work phase.
 
 | Case | Requests/s, baseline -> candidate | Read p95 us, baseline -> candidate | Write p95 us, baseline -> candidate |
@@ -213,8 +214,8 @@ one, four and eight readers). This supports the bounded acquisition-progress
 improvement; it does not establish general latency or throughput acceptance.
 Writer-only p95 changes by +105.1%, +24.1%, and -5.5%; four-reader read-only page
 p95 changes by +27.4%, +3.5%, and +14.3%. Eight-reader mixed point-query write p95
-also rises in every pair (+39.8%, +19.3%, +8.6%). The candidate uses more process
-CPU time in each final pair. The source of these costs needs further profiling;
+also rises in every pair (+39.8%, +19.3%, +8.6%). The atomic-flag candidate uses more process
+CPU time in each pair of this second campaign. The source of these costs needs further profiling;
 snapshot publication and COW retention are candidate explanations, not proven
 attributions.
 
@@ -224,3 +225,91 @@ while the regressions are investigated. The short read-only phases, workstation
 interference, three-pair sample, and fixed work per reader limit scaling claims.
 This synthetic SQL fixture does not qualify representative Mem data, governed
 admission, Cypher performance, or production readiness. #226 remains open.
+
+### Changefeed COW diagnosis
+
+A separate release-mode, in-memory diagnostic isolates publication costs; it is
+not a durability or production qualification run. It uses the same 16,384-row
+and 1,024-byte payload shape, rotates three fixed case orders, and counts global
+allocator calls and requested bytes. Across 512 inserts, ordinary `Database`
+writes allocate 119,241,826 bytes in 976,418 calls. Holding and refreshing a read
+snapshot raises that to 1,002,536,834 bytes in 18,617,632 calls; synchronous
+`ConcurrentDatabase` writes show almost the same allocation amplification.
+Snapshot acquisition itself takes approximately 1-2 microseconds in this probe.
+
+A second diagnostic samples every 8,192nd allocation while a read snapshot is
+held across writes. Of 2,273 collected stacks, 2,145 (94.37%) include
+`record_search_projection_changes_for_ops`: appending to the shared changefeed
+`Vec` clones all historical records, including their relational primary keys.
+These are allocation sample counts, not CPU time or allocation-byte percentages.
+
+The changefeed now shares immutable records individually. Appending copies only
+the handle vector; tightening capture limits detaches the affected record before
+editing it. Checkpoint encoding borrows the shared records and keeps the existing
+public image/encoder contract and byte representation. Regression coverage
+checks encoding equivalence, invalid event ordering, snapshot isolation across
+append/limit changes/trim, and checkpoint plus WAL recovery.
+
+The [complete diagnostic recording](CONCURRENT_CHANGEFEED_COW_DIAGNOSTIC.json)
+contains both probe sources, all three rounds before/after, sampled stacks,
+source/binary hashes and exact allocation counts. The same probe after the change
+allocates 125,230,722 bytes in 990,240 calls for the standing-snapshot case, down
+87.5% and 94.7% respectively. The concurrent facade allocates 129,726,082 bytes
+in 983,073 calls, versus 1,007,032,194 bytes in 18,610,465 calls before. All nine
+fixtures per version validate their final row counts. Ordinary writes remain
+approximately 119 MB allocated. These totals are allocation traffic, not peak
+resident memory, and the sampling percentages are not CPU profiles. Raw probe
+artifacts remain in `target/benchmarks/226-changefeed-cow-diagnostic`.
+
+This resolves the diagnosed whole-history payload copy, while handle-vector COW
+still scales with retained event count. The following fresh fixed-work durable comparison retains the same performance
+qualification requirements.
+
+### Durable comparison after shared changefeed records
+
+The third complete campaign uses the same main baseline, unchanged 13-case
+harness, three-pair order, release settings, durability policy and fixture shape.
+The candidate binary SHA-256 is
+`02bb739d72b5afa43fcfc3ddde20e575352a16906802553de97ae163caeabc26`.
+The recording now includes both facade and storage source hashes. All 141,312
+timed requests and 1,299,456 recovered rows validate; all six runs are retained.
+The workspace Bazel server was stopped after verification and before timing,
+with no overlapping agent builds or tests. This shared workstation still does
+not provide an isolated storage-latency environment.
+
+These are medians of three process-level metrics, with p95 latencies in
+microseconds. Compare this candidate with its own baseline runs, not with pooled
+samples or a previous campaign's baseline.
+
+| Case | Requests/s, baseline -> candidate | Read p95 us, baseline -> candidate | Write p95 us, baseline -> candidate |
+| --- | --- | --- | --- |
+| writer-only | 91.3 -> 68.6 | - | 17,809.9 -> 50,095.8 |
+| point-1-readers-writer-false | 2,631.3 -> 2,729.7 | 2,273.4 -> 2,094.8 | - |
+| point-1-readers-writer-true | 199.4 -> 194.5 | 25,507.7 -> 2,240.3 | 12,723.7 -> 12,912.2 |
+| point-4-readers-writer-false | 22,461.1 -> 20,753.8 | 142.9 -> 143.4 | - |
+| point-4-readers-writer-true | 356.9 -> 481.5 | 185.2 -> 205.4 | 44,585.6 -> 12,846.8 |
+| point-8-readers-writer-false | 41,954.0 -> 42,274.0 | 149.3 -> 142.6 | - |
+| point-8-readers-writer-true | 835.1 -> 632.4 | 189.6 -> 138.8 | 16,458.7 -> 24,539.9 |
+| page-1-readers-writer-false | 622.8 -> 602.7 | 3,774.5 -> 3,897.0 | - |
+| page-1-readers-writer-true | 131.2 -> 83.8 | 42,136.7 -> 4,922.7 | 12,676.4 -> 66,131.1 |
+| page-4-readers-writer-false | 3,160.7 -> 3,069.8 | 2,924.5 -> 2,990.2 | - |
+| page-4-readers-writer-true | 258.8 -> 179.8 | 4,365.9 -> 3,165.8 | 14,598.8 -> 41,260.0 |
+| page-8-readers-writer-false | 5,443.5 -> 5,142.6 | 1,790.5 -> 1,719.4 | - |
+| page-8-readers-writer-true | 462.9 -> 414.6 | 3,703.0 -> 1,851.5 | 12,774.5 -> 19,703.7 |
+
+**Performance qualification remains blocked after the COW fix.** Writer-only p95
+rises in all three pairs (+181.3%, +13.0%, +47.2%). Four-reader read-only page
+p95 also rises (+0.7%, +19.3%, +2.2%), with throughput falling in all three pairs.
+One-reader mixed page read p95 improves in all pairs (-81.8%, -88.3%, -95.7%),
+but its write p95 rises (+232.4%, +14.8%, +476.6%). These tradeoffs do not satisfy
+the single-stream no-regression gate.
+
+The allocation diagnostic proves that whole-history payload copying was removed;
+it does not explain the remaining durable latency results. Process CPU and I/O
+counters vary: candidate user CPU falls in pairs one and two but rises in pair
+three, and pair-three input blocks are 235,288 versus 76,248 for the baseline.
+These are process-wide counters, not a causal attribution of the writer p95
+increase. The next diagnostic must distinguish publication/commit work from
+durability-barrier and storage latency while retaining `SyncOnEveryWrite`.
+No wider latency tolerance, shortened run, or relaxed durability mode is selected
+from these results. #226 remains open and the PR remains a draft.

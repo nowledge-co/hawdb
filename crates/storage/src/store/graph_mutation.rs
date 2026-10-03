@@ -1349,7 +1349,8 @@ impl GraphStore {
         self.search_projection_change_log_retained_bytes = self
             .search_projection_change_log_retained_bytes
             .saturating_add(change.estimated_retained_bytes());
-        self.search_projection_graph_changes.push(change);
+        // Snapshots share immutable payloads; appending detaches only the handle list.
+        self.search_projection_graph_changes.push(Arc::new(change));
         self.trim_search_projection_graph_change_log();
     }
 
