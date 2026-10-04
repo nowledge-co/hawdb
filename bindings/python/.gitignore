@@ -1,0 +1,20 @@
+/target
+Cargo.lock
+
+# Byte-compiled / test caches
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# Built extension modules land in python/hawdb/ during maturin develop
+*.so
+*.pyd
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.venv/
+venv/
+
+.DS_Store

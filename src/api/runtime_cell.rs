@@ -28,7 +28,9 @@ use super::{
 };
 use crate::error::{HawDBError, Result};
 use hawdb_storage::branch_project::{ProjectMetadata, ProjectSelector};
-use hawdb_storage::file_descriptors::{FileDescriptorMetrics, ProjectFileDescriptors};
+use hawdb_storage::file_descriptors::{
+    FileDescriptorMetrics, FileOpenContext, ProjectFileDescriptors,
+};
 use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Debug)]
@@ -143,6 +145,16 @@ impl BranchRuntimeCell {
         self.peek()
             .and_then(|runtime| runtime.store.file_descriptor_metrics())
             .or_else(|| self.pending.as_ref().map(|pending| pending.files.metrics()))
+    }
+
+    pub(super) fn file_descriptor_context(&self) -> Option<FileOpenContext> {
+        self.peek()
+            .and_then(|runtime| runtime.store.file_descriptor_context())
+            .or_else(|| {
+                self.pending
+                    .as_ref()
+                    .map(|pending| pending.files.io_context())
+            })
     }
 
     pub(super) fn reserve_target_admission_resources(

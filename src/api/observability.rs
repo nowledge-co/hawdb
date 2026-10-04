@@ -592,7 +592,15 @@ impl Database {
         options: &SlowQueryLogExportOptions,
     ) -> Result<()> {
         let jsonl = self.slow_query_log_jsonl_with_options(options)?;
-        let mut file = std::fs::File::create(path)?;
+        let mut options = hawdb_storage::file_io::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        // Export is engine IO even outside the project directory. Use the
+        // source domain without admitting a deferred data runtime, and reserve
+        // capacity before opening or truncating the destination.
+        let mut file = match self.runtime.file_descriptor_context() {
+            Some(context) => context.open(&options, path.as_ref())?,
+            None => options.open(path)?,
+        };
         file.write_all(jsonl.as_bytes())?;
         Ok(())
     }

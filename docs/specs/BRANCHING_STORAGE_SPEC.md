@@ -1170,6 +1170,12 @@ Descriptor errors bypass corruption/rebuild fallback in
 the snapshot/segment admission paths. Ordinary unbound files do not allocate an
 immutable cache, and absolute-path domain lookup borrows the existing path.
 
+Slow-query JSONL export also uses its source project's descriptor domain,
+including when the destination is outside that project. A deferred project
+handle can export its in-memory log without admitting the selected data runtime.
+Descriptor admission precedes destination creation or truncation, so exhaustion
+preserves an existing export without leaking descriptors or reservations.
+
 #819 remains open. Complete qualification must still audit filesystem operations
 outside the storage wrapper (including native generated-stage deletion and
 projection dependencies), relative-path lookup scratch, cold existing-root alias resolution on Windows,

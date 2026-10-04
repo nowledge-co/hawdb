@@ -62,6 +62,67 @@ fn values(database: &mut Database) -> Vec<BTreeMap<String, Value>> {
         .into_rows()
 }
 
+#[test]
+fn slow_query_export_uses_source_budget_without_admitting_deferred_runtime() {
+    use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+    use hawdb_storage::file_io::OpenOptions;
+
+    let project = Project::new();
+    let database = Database::open_with_config(
+        &project.0,
+        DatabaseConfig {
+            max_open_files: 32,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let files = ProjectFileDescriptors::acquire_existing(&project.0, 32).unwrap();
+    let external = Project::new();
+    // A distinct destination domain must not allow export to bypass the source
+    // domain, even when it has spare capacity and the source runtime is cold.
+    let _destination_files = ProjectFileDescriptors::acquire(&external.0, 64).unwrap();
+    let destination = external.0.join("slow-query.jsonl");
+    std::fs::write(&destination, b"retain on admission failure").unwrap();
+    let mut options = OpenOptions::new();
+    options.read(true);
+    let held = (0..32)
+        .map(|_| {
+            files
+                .io_context()
+                .open(&options, &project.0.join("manifest.hawdb"))
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let before = files.metrics();
+    assert_eq!(before.open, 32);
+    assert!(matches!(
+        database.write_slow_query_log_jsonl(&destination),
+        Err(HawDBError::FileDescriptors(
+            hawdb_core::error::FileDescriptorError::BudgetExceeded {
+                requested: 1,
+                available: 0,
+                limit: 32,
+            }
+        ))
+    ));
+    let mut rejected = before;
+    rejected.budget_rejections += 1;
+    assert_eq!(files.metrics(), rejected);
+    assert_no_runtime(&database);
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"retain on admission failure"
+    );
+    drop(held);
+    database.write_slow_query_log_jsonl(&destination).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&destination).unwrap(),
+        database.slow_query_log_jsonl().unwrap()
+    );
+    assert_eq!(files.metrics().open, 0);
+    assert_no_runtime(&database);
+}
+
 #[derive(Debug, Default)]
 struct ReentrantRecoverySink {
     database: Mutex<Weak<Database>>,
