@@ -28,6 +28,7 @@ use crate::{
 use hawdb_core::uuidv7::generate_uuidv7;
 use hawdb_search::consumer::{CheckpointReceipt, ConsumerBinding, ConsumerProjection};
 use hawdb_search::projection_consumer::{Record, MAX_CONSUMERS};
+use hawdb_storage::file_io as fs;
 use std::path::{Path, PathBuf};
 use SearchProjectionConsumerError as Error;
 use SearchProjectionConsumerRebuildReason as Reason;
@@ -133,7 +134,7 @@ impl Database {
             checkpoint_uuid: generate_uuidv7()?,
         };
         let stage = parent.join(format!(".hawdb-consumer-{registration_uuid}.stage"));
-        std::fs::create_dir(&stage).map_err(HawDBError::from)?;
+        fs::create_dir(&stage).map_err(HawDBError::from)?;
         let stage_guard = StageDirectory(stage.clone());
         let mut snapshot = self.begin_read_transaction()?;
         let epoch = snapshot.commit_epoch();
@@ -153,6 +154,13 @@ impl Database {
             }
             Err(error) => {
                 if let Err(cleanup) = stage_guard.cleanup() {
+                    // An exhausted cleanup must retain the stage and remain
+                    // retryable even if initialization failed for another reason.
+                    if let Some(resource) = hawdb_core::error::file_descriptor_error(&error)
+                        .or_else(|| hawdb_core::error::file_descriptor_error(&cleanup))
+                    {
+                        return Err(HawDBError::FileDescriptors(resource).into());
+                    }
                     return Err(HawDBError::Storage(format!("consumer initialization failed: {error}; staging cleanup failed: {cleanup}")).into());
                 }
                 return Err(error.into());
@@ -582,7 +590,7 @@ impl Database {
 struct StageDirectory(PathBuf);
 impl StageDirectory {
     fn cleanup(self) -> Result<()> {
-        match std::fs::remove_dir_all(&self.0) {
+        match fs::remove_dir_all(&self.0) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.into()),
@@ -591,7 +599,7 @@ impl StageDirectory {
 }
 impl Drop for StageDirectory {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = fs::remove_dir_all(&self.0);
     }
 }
 

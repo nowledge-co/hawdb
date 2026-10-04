@@ -980,3 +980,139 @@ fn foreign_registry_reinitializes_only_after_the_new_projection_is_complete() {
         .open_search_projection_consumer(&id("main"), fixture.0.join("rebuilt"))
         .unwrap();
 }
+
+#[test]
+fn stage_cleanup_preserves_unpublished_files_until_descriptor_capacity_returns() {
+    use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+    use hawdb_storage::file_io as counted;
+    let fixture = Fixture::new();
+    let project = ProjectFileDescriptors::acquire(&fixture.0, 4).unwrap();
+    for explicit in [true, false] {
+        let stage = fixture.0.join(format!("stage-{explicit}"));
+        counted::create_dir(&stage).unwrap();
+        let evidence = stage.join("unpublished");
+        counted::write(&evidence, b"retain unpublished bytes").unwrap();
+        let mut held = (0..4)
+            .map(|_| counted::File::open(&evidence).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(project.metrics().open, 4);
+        let rejections = project.metrics().budget_rejections;
+        let guard = StageDirectory(stage.clone());
+        if explicit {
+            assert!(matches!(
+                guard.cleanup(),
+                Err(HawDBError::FileDescriptors(_))
+            ));
+        } else {
+            drop(guard);
+        }
+        assert_eq!(
+            std::fs::read(&evidence).unwrap(),
+            b"retain unpublished bytes"
+        );
+        assert!(project.metrics().budget_rejections > rejections);
+        assert_eq!(project.metrics().open, 4);
+        assert_eq!(project.metrics().reserved, 0);
+        drop(held.pop());
+        StageDirectory(stage.clone()).cleanup().unwrap();
+        assert!(!stage.exists());
+        assert_eq!(project.metrics().open, 3);
+        drop(held);
+    }
+    assert_eq!(project.metrics().open, 0);
+    assert!(project.metrics().high_water <= 4);
+}
+
+#[test]
+fn initializer_descriptor_rejection_preserves_typed_cause_and_source() {
+    use hawdb_storage::file_io as counted;
+    let fixture = Fixture::new();
+    let root = fixture.0.join("database");
+    let mut db = Database::open_with_config(
+        &root,
+        crate::DatabaseConfig {
+            max_open_files: 32,
+            ..crate::DatabaseConfig::default()
+        },
+    )
+    .unwrap();
+    append(&mut db, 1);
+    let epoch = db.commit_epoch().unwrap();
+    let branch = db.current_branch().unwrap().unwrap().info.id;
+    let destination = root.join("projection");
+    let project =
+        hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_existing(&root, 32)
+            .unwrap();
+    let mut held = Vec::new();
+    let mut evidence = None;
+    let error = db
+        .create_search_projection_consumer(id("fd-retry"), &destination, options(100), |_, _| {
+            let stage = std::fs::read_dir(&root)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .ends_with(".stage")
+                })
+                .unwrap();
+            let file = stage.join("unpublished");
+            counted::write(&file, b"retain initializer evidence").unwrap();
+            let error = loop {
+                match counted::File::open(&file) {
+                    Ok(file) => held.push(file),
+                    Err(error) => break HawDBError::from(error),
+                }
+            };
+            assert!(matches!(error, HawDBError::FileDescriptors(_)));
+            assert_eq!(project.metrics().open, 32);
+            evidence = Some(file);
+            Err(error)
+        })
+        .unwrap_err();
+    assert!(
+        matches!(error, Error::Database(HawDBError::FileDescriptors(_))),
+        "expected a typed FD failure, got {error:?}"
+    );
+    let evidence = evidence.unwrap();
+    // Failed initialization releases its publication lock before cleanup;
+    // that one returned descriptor lets the bounded walker remove the stage.
+    assert!(!evidence.exists());
+    assert!(!destination.exists());
+    assert!(db.file_descriptor_metrics().unwrap().open < 32);
+    assert_eq!(db.file_descriptor_metrics().unwrap().reserved, 0);
+    drop(held);
+    assert_eq!(db.commit_epoch().unwrap(), epoch);
+    assert_eq!(db.current_branch().unwrap().unwrap().info.id, branch);
+    assert!(db
+        .query("MATCH (m:Memory) RETURN m.id AS id")
+        .unwrap()
+        .rows
+        .iter()
+        .any(|row| row["id"] == crate::Value::String("m1".into())));
+    let consumer = db
+        .create_search_projection_consumer(id("fd-retry"), &destination, options(100), initialize)
+        .unwrap();
+    assert!(consumer.search_index().document("memory:m1").is_some());
+    assert!(db
+        .search_projection_consumer_readiness(&consumer, None)
+        .unwrap()
+        .is_ready());
+    assert!(db.file_descriptor_metrics().unwrap().high_water <= 32);
+    drop(consumer);
+    drop(db);
+    let mut reopened = Database::open_with_config(
+        &root,
+        crate::DatabaseConfig {
+            max_open_files: 32,
+            ..crate::DatabaseConfig::default()
+        },
+    )
+    .unwrap();
+    let consumer = reopened
+        .open_search_projection_consumer(&id("fd-retry"), &destination)
+        .unwrap();
+    assert!(consumer.search_index().document("memory:m1").is_some());
+}

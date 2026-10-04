@@ -1176,14 +1176,21 @@ handle can export its in-memory log without admitting the selected data runtime.
 Descriptor admission precedes destination creation or truncation, so exhaustion
 preserves an existing export without leaking descriptors or reservations.
 
-#819 remains open. Complete qualification must still audit filesystem operations
-outside the storage wrapper (including native generated-stage deletion and
-projection dependencies), relative-path lookup scratch, cold existing-root alias resolution on Windows,
-data-dependent retained recovery/checkpoint handles, validation-read IO budgets,
-and resource failures at every acquisition/publication boundary. Interrupted
-legacy adoption/default admission, independent job pins, and the complete
-power-loss matrix remain separate qualification obligations; the accounting tests
-do not prove those requirements.
+The combined P0 delivery includes the facade staging paths here, derived-artifact
+and search-cleanup admission in #839, and derived-recovery/pruned-range resource
+error preservation in #841. Its finite source audit reviews native ingress and
+handle/permit lifetimes alongside small-budget recovery, checkpoint, GC and
+selection regressions. The runtime power-loss matrix covers interrupted legacy
+adoption and default admission, lost/torn/reordered WAL, catalog/head/checkpoint
+publication and GC. See [the qualification record](../BRANCH_POWER_LOSS_QUALIFICATION.md)
+for executed cases, platform assumptions and limits; each companion PR targets
+`main` directly, and this paragraph does not imply those changes have merged.
+
+#819/#820 remain open for broader qualification, including native-library/host
+resources outside the engine domain, additional Windows alias and namespace
+fault schedules, physical-device evidence, independent job pins and finer
+concurrent GC. The source audit and current small-budget tests do not prove all
+possible native allocations or qualify every filesystem/platform.
 
 ## Sealing and create protocol
 

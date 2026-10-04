@@ -70,6 +70,13 @@ and are materialized in isolated directories. Recovery uses ordinary
 | Admission | Before/after actual checkpoint hard-link alias installation; exact committed schema/data survive replay without copying a parent dataset. |
 | Configurations | `Auto`, `Materialized`, and `OutOfCore` crossed with all four existing relational index modes; indexed queries, child DDL/DML/checkpoint, nested fork, parent deletion and reopen under a 32-FD domain. |
 
+Checkpoint/head, create/delete catalog and GC cuts additionally replay
+uncovered operations in reverse order and each operation in isolation. The
+oracle still retains every completed file/directory barrier; these schedules
+never weaken an acknowledged prefix. The executed log records actual pending
+operation and generated plan counts so a single-operation cut is not mislabeled
+as a nontrivial reordering case.
+
 `Authoritative` currently requires a canonical binding and rejects schema-changing
 transactions. The configuration matrix checks that rejection leaves the epoch
 unchanged, publishes DDL through the existing `Shadow` configuration/checkpoint
@@ -92,6 +99,31 @@ process descriptor count in an isolated child. A 12-FD fixture proves typed
 rejection before a create can change the catalog. Existing tests cover shared
 immutable-cache identities, idle eviction, native-open failures, reader snapshots,
 source-preserving failed selection, and repeated switching.
+
+Consumer staging creation and explicit/destructor cleanup use the counted
+storage traversal. A four-descriptor regression retains the entire stage when
+its domain is full, then removes it with one slot available without leaking
+permits. A source-backed initialization regression actually fills its 32-FD
+domain, propagates the typed rejection, retries successfully, and reopens the
+published consumer. Initialization releases its publication lease before
+cleanup, allowing that returned slot to clean the stage. Search's optional
+post-publication cleanup separately defers both a full-budget scan and an
+unlink blocked by a still-open iterator, then retries without changing the
+published generation.
+
+The combined production-path descriptor audit resolves Rust import aliases and
+reviews native ingress and handle/permit lifetimes in the facade, storage,
+search, and embedded vector-projection sources. Low-level opens and clones
+acquire permits before native handles; handles close before permits return.
+Iterator entries retain their shared permit, and immutable logical references
+retain identity without requiring resident descriptors. External query spill
+and export operations carry their source project context. Developer input,
+test-support image materialization, host telemetry, and standalone projection
+without `storage-io` are outside this branch-engine domain. This finite source
+audit supplements small-budget regressions; it is not a compiler completeness
+proof or an exact process-wide descriptor census. Derived projection completion
+and error classification are delivered in #839; derived-recovery and pruned
+range error preservation are delivered in #841. Each PR targets `main` directly.
 
 Pending/running/failed host jobs block `USE BRANCH` and retain the current runtime;
 completed jobs keep their outcome and monotonically increasing IDs across

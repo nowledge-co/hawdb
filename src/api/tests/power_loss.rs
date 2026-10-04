@@ -367,11 +367,12 @@ fn checkpoint_head_replacement_cuts_recover_complete_schema_and_data() {
                 .unwrap()
                 .expect("actual checkpoint head replacement must be observed");
             drop(database);
-            for plan in [CrashPlan::default(), snapshot.persist_all_plan()] {
+            for plan in publication_fault_plans(&snapshot) {
                 let root = fixture.image(&snapshot, &plan);
                 let mut recovered = open(&root, durability);
                 let recovered_epoch = recovered.commit_epoch().unwrap();
-                if durability == DurabilityPolicy::SyncOnEveryWrite || !plan.persistence.is_empty()
+                if durability == DurabilityPolicy::SyncOnEveryWrite
+                    || plan == snapshot.persist_all_plan()
                 {
                     assert_eq!(
                         recovered_epoch, epoch,
@@ -395,6 +396,35 @@ fn checkpoint_head_replacement_cuts_recover_complete_schema_and_data() {
             }
         }
     }
+}
+
+// Namespace publications can survive independently of other uncovered names.
+// Retain file/directory barriers while reversing or isolating the actual pending
+// operations, rather than assuming that every in-flight publication survives.
+fn publication_fault_plans(snapshot: &PowerLossSnapshot) -> Vec<CrashPlan> {
+    let complete = snapshot.persist_all_plan();
+    let mut plans = vec![CrashPlan::default(), complete.clone()];
+    let reversed = CrashPlan {
+        persistence: complete.persistence.iter().rev().cloned().collect(),
+    };
+    if !plans.contains(&reversed) {
+        plans.push(reversed);
+    }
+    for operation in &complete.persistence {
+        let isolated = CrashPlan {
+            persistence: vec![operation.clone()],
+        };
+        if !plans.contains(&isolated) {
+            plans.push(isolated);
+        }
+    }
+    eprintln!(
+        "branch-power-publication-v1 path={:?} uncovered={} plans={}",
+        snapshot.observed_path(),
+        complete.persistence.len(),
+        plans.len()
+    );
+    plans
 }
 
 const CREATE_BRANCH: &str = "CREATE BRANCH NAME $1 FROM ID $2 AT REVISION $3 REQUEST KEY $4";
@@ -460,11 +490,15 @@ fn catalog_publication_cuts_preserve_creation_identity_after_a_lost_response() {
                     .unwrap()
                     .expect("actual catalog completion must be observed");
                 drop(database);
-                for (snapshot, plan, allow_aborted_reservation) in [
-                    (&snapshot, CrashPlan::default(), true),
-                    (&snapshot, snapshot.persist_all_plan(), true),
-                    (&acknowledged, CrashPlan::default(), false),
-                ] {
+                let plans = publication_fault_plans(&snapshot)
+                    .into_iter()
+                    .map(|plan| (&snapshot, plan, true))
+                    .chain(std::iter::once((
+                        &acknowledged,
+                        CrashPlan::default(),
+                        false,
+                    )));
+                for (snapshot, plan, allow_aborted_reservation) in plans {
                     let root = fixture.image(snapshot, &plan);
                     let catalog = hawdb_storage::branch_catalog::read_catalog(
                         &root.join("branches/catalog.hawdb"),
@@ -661,12 +695,14 @@ fn deletion_and_gc_cuts_keep_an_unleased_nested_branch_recoverable() {
             .expect("actual GC unlink must be observed");
         assert!(fixture.model.project().metrics().high_water <= 32);
 
-        for (snapshot, plan) in [
-            (&deletion, CrashPlan::default()),
-            (&cut, CrashPlan::default()),
-            (&cut, cut.persist_all_plan()),
-            (&swept, CrashPlan::default()),
-        ] {
+        let plans = publication_fault_plans(&cut)
+            .into_iter()
+            .map(|plan| (&cut, plan))
+            .chain([
+                (&deletion, CrashPlan::default()),
+                (&swept, CrashPlan::default()),
+            ]);
+        for (snapshot, plan) in plans {
             let root = fixture.image(snapshot, &plan);
             let mut recovered = open(&root, durability);
             assert!(recovered
@@ -1117,11 +1153,11 @@ fn logical_deletion_publication_cuts_are_atomic_and_retry_the_same_uuid() {
                     .unwrap()
                     .expect("actual delete catalog publication");
                 drop(database);
-                for (snapshot, plan) in [
-                    (&cut, CrashPlan::default()),
-                    (&cut, cut.persist_all_plan()),
-                    (&acknowledged, CrashPlan::default()),
-                ] {
+                let plans = publication_fault_plans(&cut)
+                    .into_iter()
+                    .map(|plan| (&cut, plan))
+                    .chain(std::iter::once((&acknowledged, CrashPlan::default())));
+                for (snapshot, plan) in plans {
                     let root = fixture.image(snapshot, &plan);
                     let mut recovered = open(&root, durability);
                     recovered
