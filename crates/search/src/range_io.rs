@@ -174,7 +174,14 @@ impl SearchIndex {
                 Ok::<(), HawDBError>(())
             })
             .map_err(|error| {
-                HawDBError::Storage(format!("search segment range execution failed: {error}"))
+                // The reader's IO error is nested under execution/read wrappers.
+                // Keep capacity rejection typed so callers can retry without
+                // treating a valid projection as corrupt or falling back.
+                if let Some(resource) = hawdb_core::error::file_descriptor_error(&error) {
+                    HawDBError::FileDescriptors(resource)
+                } else {
+                    HawDBError::Storage(format!("search segment range execution failed: {error}"))
+                }
             })?;
         let expected_document_count = matching_segments
             .iter()

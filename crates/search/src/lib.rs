@@ -11461,6 +11461,125 @@ mod tests {
 
     #[test]
     #[cfg(feature = "full-text-search")]
+    fn pruned_range_read_budget_rejection_is_typed_and_retryable() {
+        use hawdb_core::error::FileDescriptorError;
+        use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+
+        let path = unique_test_dir("search_range_fd_retry");
+        let project = ProjectFileDescriptors::acquire(&path, 32).unwrap();
+        let mut index = SearchIndex::open(&path).unwrap();
+        for (id, space) in [
+            ("memory:0", "space-a"),
+            ("memory:1", "space-a"),
+            ("memory:2", "space-b"),
+        ] {
+            index
+                .upsert(SearchDocument {
+                    id: id.to_string(),
+                    title: id.to_string(),
+                    content: "bounded physical range".to_string(),
+                    embedding: None,
+                    metadata: BTreeMap::from([("space_id".to_string(), space.to_string())]),
+                })
+                .unwrap();
+        }
+        index.checkpoint().unwrap();
+        drop(index);
+        let index = SearchIndex::open(&path).unwrap();
+        let payload = path.join(SEARCH_SEGMENT_PAYLOAD_FILE);
+        let original_payload = std::fs::read(&payload).unwrap();
+        let options = SearchQueryOptions {
+            limit: 10,
+            offset: 0,
+            rank_window: None,
+            fusion_weights: SearchFusionWeights::default(),
+            metadata_filters: BTreeMap::from([("space_id".to_string(), "space-b".to_string())]),
+            policy_epoch: None,
+        };
+        let before = index
+            .try_search_with_options(
+                "bounded physical range",
+                None,
+                SearchMode::Text,
+                options.clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            before
+                .candidate_set
+                .metadata_predicate_pushdown
+                .physical_range_read_count,
+            1
+        );
+        let baseline_open = project.metrics().open;
+        let mut held = Vec::new();
+        loop {
+            match File::create(path.join(format!("held-{}", held.len()))) {
+                Ok(file) => held.push(file),
+                Err(error) => {
+                    assert!(matches!(
+                        HawDBError::from(error),
+                        HawDBError::FileDescriptors(FileDescriptorError::BudgetExceeded { .. })
+                    ));
+                    break;
+                }
+            }
+        }
+        assert_eq!(project.metrics().open, 32);
+        let error = index
+            .try_search_with_options(
+                "bounded physical range",
+                None,
+                SearchMode::Text,
+                options.clone(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                HawDBError::FileDescriptors(FileDescriptorError::BudgetExceeded { .. })
+            ),
+            "range-read rejection lost its resource cause: {error:?}"
+        );
+        assert_eq!(project.metrics().open, 32);
+        assert_eq!(project.metrics().reserved, 0);
+        drop(held);
+        assert_eq!(std::fs::read(&payload).unwrap(), original_payload);
+        let result = index
+            .try_search_with_options("bounded physical range", None, SearchMode::Text, options)
+            .unwrap();
+        assert_eq!(
+            result
+                .hits
+                .iter()
+                .map(|hit| hit.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["memory:2"]
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .physical_range_read_count,
+            1
+        );
+        assert!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .physical_bytes_read
+                > 0
+        );
+        assert!(project.metrics().open <= baseline_open);
+        assert_eq!(project.metrics().reserved, 0);
+        drop(index);
+        assert_eq!(project.metrics().open, 0);
+        drop(project);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
     fn persisted_segment_ranges_execute_bounded_physical_reads() {
         let path = unique_test_dir("search_segment_physical_ranges");
         {
