@@ -4,12 +4,10 @@ on:
   pull_request:
     paths:
       - "bindings/python/**"
-      - ".github/workflows/python-bindings.yml"
   push:
     branches: [main]
     paths:
       - "bindings/python/**"
-      - ".github/workflows/python-bindings.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -28,6 +26,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: clippy, rustfmt
 
       - name: Install Python
         uses: actions/setup-python@v5
