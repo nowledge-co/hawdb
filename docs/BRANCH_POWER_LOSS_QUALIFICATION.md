@@ -114,9 +114,11 @@ abstract atomic closure publication alone cannot prove that distinction.
 The model assumes reliable completed POSIX synchronization and atomic
 same-directory rename. Native execution validates the implementation against
 those assumptions; it does not certify a filesystem, controller or drive and
-does not power-cycle the host. Windows directory synchronization remains a
-no-op, and recorder attachment rejects Windows. Cross-target Clippy or ordinary
-Windows recovery cannot qualify the missing ancestor-name barrier. Symlinks and
+does not power-cycle the host. Windows now requests counted write-capable
+directory-handle flushes and propagates failures; recorder attachment still
+rejects Windows. API success, cross-target Clippy or ordinary Windows recovery
+cannot establish the Windows ancestor-name barrier's semantics. See the
+[namespace assumptions](BRANCH_NAMESPACE_DURABILITY.md). Symlinks and
 custom native open flags are rejected by capture. IO outside the recorder must
 be added before claiming coverage of a new path. The finite named matrix is not
 exhaustive IO-interleaving exploration; physical devices, Windows namespace

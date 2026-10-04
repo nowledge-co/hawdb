@@ -70,8 +70,18 @@ also observes descendant project installation and its newly created parents
 inside that anchor. Cross-target compilation is not execution evidence.
 
 Windows uses atomic file replacement followed by a write-capable publication
-handle flush, while directory synchronization is a no-op. Neither this no-op nor passing Windows reopen tests
-qualifies newly created ancestor names. The recorder rejects Windows attachment.
+handle flush and a counted parent-directory flush request. Directory handles are
+opened with `FILE_FLAG_BACKUP_SEMANTICS` and write access; missing paths, resource
+exhaustion, permissions and unsupported filesystem operations propagate rather
+than becoming successful no-ops. Writable project admission requests the ancestor
+barriers one handle at a time and caches only a completed ancestry walk.
+
+[FlushFileBuffers](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)
+requires `GENERIC_WRITE`. Its file/volume documentation does not establish a
+portable POSIX directory-fsync contract. A successful directory flush request or
+passing reopen test therefore does not qualify newly created ancestor names.
+The host may need write access to ancestor directories; failure must not silently
+relax the durable default. The recorder rejects Windows attachment.
 Windows namespace power-loss qualification remains open; do not infer it from
 the Unix model. The [facade matrix](BRANCH_POWER_LOSS_QUALIFICATION.md) adds ordinary runtime
 bootstrap, seal/rotation, create/delete, admission and residency/index evidence.

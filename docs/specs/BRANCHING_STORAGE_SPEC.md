@@ -83,7 +83,8 @@ implementation seams at this specification's introduction are:
 - `crates/storage/src/durability.rs`: synced file replacement uses rename plus
   parent-directory sync on Unix. Windows uses the pinned Rust atomic
   replacement path followed by flush of a counted write-capable publication
-  handle; ancestor-directory persistence remains unqualified.
+  handle and a counted directory-handle flush request. Directory and ancestor
+  flush failures propagate; Windows namespace persistence remains unqualified.
 
 Single-directory generation arithmetic MUST NOT authorize deletion of shared
 branch objects. Branch-aware storage stays unavailable until all paths that can
@@ -763,7 +764,7 @@ The publication argument is an induction over the operation's checked stages:
    own ancestry. Existence after an interrupted attempt is not a completed
    barrier. Object reuse repeats its final name barrier before acknowledgment.
    See [namespace qualification](../BRANCH_NAMESPACE_DURABILITY.md) for evidence
-   and the unqualified Windows directory-sync boundary.
+   and the unqualified semantics of Windows directory-handle flushes.
    The object and staging directory entries are synchronized before success is
    reported. An error after exclusive installation is publication-uncertain and
    poisons that in-memory publisher; reopening creates a fresh publisher which

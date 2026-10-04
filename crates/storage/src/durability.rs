@@ -87,18 +87,19 @@ impl WalSyncGroupState {
 /// Unix persists the directory entry after rename. Windows retains a counted,
 /// write-capable candidate handle across the standard library's atomic rename
 /// and synchronizes that handle afterward. An open destination reader keeps its
-/// old publication. This does not qualify ancestor-directory persistence on
-/// Windows; that remains a separate platform qualification requirement.
+/// old publication. The parent-directory barrier is also requested on Windows;
+/// its namespace durability remains a separate platform qualification requirement.
 pub fn durable_replace_file(source: &Path, destination: &Path) -> io::Result<()> {
     #[cfg(test)]
     inject_durable_replace_failure(destination)?;
     #[cfg(windows)]
     {
         durable_replace_file_windows(source, destination)?;
-        // MoveFileExW bypasses file_io::rename. New readers must see the
-        // replacement, while captured immutable readers retain their identity.
+        // New readers must see the replacement, while captured immutable
+        // readers retain their original publication identity.
         fs::unbind_immutable_path(source)?;
-        fs::unbind_immutable_path(destination)
+        fs::unbind_immutable_path(destination)?;
+        sync_parent_directory(destination)
     }
     #[cfg(not(windows))]
     {
@@ -223,14 +224,39 @@ pub(crate) fn sync_directory_with_context(
     }
     #[cfg(windows)]
     {
-        let _ = (directory, context);
-        Ok(())
+        use std::os::windows::fs::OpenOptionsExt;
+
+        // Opening a directory requires BACKUP_SEMANTICS; FlushFileBuffers also
+        // requires GENERIC_WRITE. A read-only handle or a silent no-op cannot
+        // establish a namespace barrier. Unsupported filesystems and denied
+        // permissions must propagate instead of acknowledging a publication.
+        // API success alone does not qualify Windows namespace persistence.
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        let mut options = fs::OpenOptions::new();
+        options
+            .read(true)
+            .write(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+        let directory = context.open(&options, directory)?;
+        require_directory(&directory)?;
+        directory.sync_all()
     }
     #[cfg(not(windows))]
     {
-        context
-            .open(fs::OpenOptions::new().read(true), directory)?
-            .sync_all()
+        let directory = context.open(fs::OpenOptions::new().read(true), directory)?;
+        require_directory(&directory)?;
+        directory.sync_all()
+    }
+}
+
+fn require_directory(file: &fs::File) -> io::Result<()> {
+    if file.metadata()?.is_dir() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            "namespace synchronization requires a directory",
+        ))
     }
 }
 
@@ -248,40 +274,32 @@ pub(crate) fn sync_directory_ancestors(directory: &Path) -> io::Result<()> {
 /// Explicit context avoids reentering the project registry during bootstrap.
 /// Open one directory at a time, charging even ancestor IO to this project.
 /// With no project boundary, stop at the existing filesystem mount: persistence
-/// of the mount itself is an external platform assumption. Windows directory
-/// synchronization remains unqualified; its no-op is not a durability barrier.
+/// of the mount itself is an external platform assumption. Windows requests
+/// actual directory-handle flushes; their namespace semantics remain unqualified.
 pub(crate) fn sync_directory_tree_with_context(
     directory: &Path,
     context: &crate::file_descriptors::FileOpenContext,
     stop: Option<&Path>,
 ) -> io::Result<()> {
-    #[cfg(windows)]
-    {
-        let _ = (directory, context, stop);
-        Ok(())
-    }
-    #[cfg(not(windows))]
-    {
-        let mut current = context.canonicalize(directory)?;
-        loop {
-            sync_directory_with_context(&current, context)?;
-            if stop.is_some_and(|root| current == root) {
-                break;
-            }
-            let Some(parent) = current.parent() else {
-                break;
-            };
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                if context.metadata(&current)?.dev() != context.metadata(parent)?.dev() {
-                    break;
-                }
-            }
-            current = parent.to_path_buf();
+    let mut current = context.canonicalize(directory)?;
+    loop {
+        sync_directory_with_context(&current, context)?;
+        if stop.is_some_and(|root| current == root) {
+            break;
         }
-        Ok(())
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if context.metadata(&current)?.dev() != context.metadata(parent)?.dev() {
+                break;
+            }
+        }
+        current = parent.to_path_buf();
     }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -307,6 +325,53 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn directory_sync_rejects_missing_paths_and_regular_files() {
+        let root = unique_test_dir();
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("not-a-directory");
+        write_synced(&file, b"preserved");
+        assert!(sync_directory(&file).is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"preserved");
+        assert_eq!(
+            sync_directory(&root.join("missing")).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        sync_directory(&root).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn directory_sync_charges_and_releases_its_project_handle() {
+        let root = unique_test_dir();
+        let project = crate::file_descriptors::ProjectFileDescriptors::acquire(&root, 1).unwrap();
+        let held = crate::file_io::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(root.join("held"))
+            .unwrap();
+        assert_eq!(project.metrics().open, 1);
+        let before = project.metrics();
+        let error = sync_directory(&root).unwrap_err();
+        assert!(
+            error.get_ref().is_some_and(|error| {
+                error
+                    .downcast_ref::<hawdb_core::error::FileDescriptorError>()
+                    .is_some()
+            }),
+            "unexpected directory sync error: {error:?}"
+        );
+        assert_eq!(project.metrics().open, before.open);
+        assert_eq!(project.metrics().reserved, before.reserved);
+        assert_eq!(project.metrics().high_water, 1);
+        drop(held);
+        sync_directory(&root).unwrap();
+        assert_eq!(project.metrics().open, 0);
+        assert_eq!(project.metrics().reserved, 0);
+        assert_eq!(project.metrics().high_water, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn wal_sync_group_state_owns_bounded_flush_accounting() {
@@ -354,6 +419,28 @@ mod tests {
         assert_eq!(fs::read(&published).unwrap(), b"second");
         assert!(!candidate.exists());
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn directory_flush_failure_preserves_the_installed_publication() {
+        let root = unique_test_dir();
+        fs::create_dir_all(&root).unwrap();
+        let candidate = root.join("candidate.hawdb");
+        let published = root.join("published.hawdb");
+        write_synced(&published, b"old");
+        write_synced(&candidate, b"new");
+
+        let failure = fail_sync_directory_for(&root);
+        let error = durable_replace_file(&candidate, &published).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        // The rename may have committed before a failed namespace barrier.
+        // Retain the exact installed bytes; a missing response is not rollback.
+        assert_eq!(fs::read(&published).unwrap(), b"new");
+        assert!(!candidate.exists());
+        drop(failure);
+        sync_directory(&root).unwrap();
+        assert_eq!(fs::read(&published).unwrap(), b"new");
         fs::remove_dir_all(root).unwrap();
     }
 
