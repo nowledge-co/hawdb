@@ -110,6 +110,20 @@ sweep time. `Protected` includes ready/deleting heads, recovery heads, creating
 bases, leases, and publication candidates. Parent deletion may proceed while a
 descendant survives because the descendant has its own immutable root.
 
+## Implementation fault evidence
+
+The [branch power-loss matrix](../BRANCH_POWER_LOSS_QUALIFICATION.md) captures
+actual production IO and recovers isolated crash images through ordinary
+project opening. It distinguishes inode bytes from parent-directory names,
+including namespace retry and uncertain pending-create recovery. Its named
+bootstrap, WAL/seal, head/checkpoint, catalog, admission and GC cuts support the
+abstract complete-closure obligations below; they do not establish a refinement
+proof or exhaustive physical interleaving coverage. The model and its finite
+configuration are unchanged by those implementation corrections, so previous
+positive/mutant/witness results remain results for that exact abstraction.
+Windows ancestor-directory persistence and physical-device behavior remain
+explicit qualification gaps.
+
 ## Safety argument
 
 TLC exhaustively checks the configured finite instance. The invariants encode

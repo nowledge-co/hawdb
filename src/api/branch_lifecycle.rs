@@ -144,10 +144,20 @@ mod tests {
             "parse",
             BTreeMap::new(),
         );
+        assert!(matches!(
+            database.query_sql("USE BRANCH child"),
+            Err(HawDBError::BranchBusy { .. })
+        ));
+        assert_eq!(database.current_branch().unwrap().unwrap().info.id, main.id);
         let claim = database
             .derived_artifact_jobs
             .claim_external_by_id(job.id)
             .unwrap();
+        assert!(matches!(
+            database.query_sql("USE BRANCH child"),
+            Err(HawDBError::BranchBusy { .. })
+        ));
+        assert_eq!(database.current_branch().unwrap().unwrap().info.id, main.id);
         database
             .derived_artifact_jobs
             .complete(claim, Err(HawDBError::Execution("fixture failure".into())));

@@ -1,17 +1,21 @@
 # Durable copy-on-write branching
 
 Status: active P0 implementation contract for [#774](https://github.com/nowledge-co/hawdb/issues/774).
-This specification defines planned behavior; it does not claim that branching is
-available. Earlier lifecycle-model results do not qualify the revised contract.
-Implementation and release qualification remain separate gates.
+This specification states the required behavior. Implemented lifecycle and
+project-opening paths have the bounded evidence recorded in
+[branch power-loss qualification](../BRANCH_POWER_LOSS_QUALIFICATION.md) and the
+[current lifecycle model](../tla/BRANCH_LIFECYCLE_PROOF.md). Those checks do not
+establish physical-device or Windows namespace persistence. Implementation and
+release qualification remain separate gates.
 
 ## Configurable durability decision (2026-09-29)
 
 Power-loss-safe transaction commits are the default (`SyncOnEveryWrite`). Hosts
 may explicitly select `SyncOnCheckpoint` for branch-local DDL/DML through typed
 Rust configuration. Branch metadata publication remains synchronously durable
-in both modes. Existing implementation and historical model evidence still
-require qualification; this document does not claim they pass.
+in both modes. The implementation evidence records successful POSIX fault-image
+recovery under stated synchronization assumptions. Platform and physical-device
+qualification gaps remain explicit.
 
 - After `create_branch()` returns success, the same branch UUID and name MUST
   survive power loss and restart. Branches persist until explicitly deleted;
@@ -77,7 +81,9 @@ implementation seams at this specification's introduction are:
 - `crates/storage/src/store/durable/reclamation.rs`: physical generations are
   retained for the current root, previous root, and pinned local readers.
 - `crates/storage/src/durability.rs`: synced file replacement uses rename plus
-  parent-directory sync on Unix and write-through replacement on Windows.
+  parent-directory sync on Unix. Windows uses the pinned Rust atomic
+  replacement path followed by flush of a counted write-capable publication
+  handle; ancestor-directory persistence remains unqualified.
 
 Single-directory generation arithmetic MUST NOT authorize deletion of shared
 branch objects. Branch-aware storage stays unavailable until all paths that can
@@ -752,7 +758,13 @@ The publication argument is an induction over the operation's checked stages:
    bytes and reference; it never replaces that path. Consequently, every
    successful destination names exactly one validated immutable payload, even
    when two publishers race.
-4. The object and staging directory entries are synchronized before success is
+4. Required ancestor names through the project root are synchronized before the
+   first dependent publication; writable project admission establishes the root's
+   own ancestry. Existence after an interrupted attempt is not a completed
+   barrier. Object reuse repeats its final name barrier before acknowledgment.
+   See [namespace qualification](../BRANCH_NAMESPACE_DURABILITY.md) for evidence
+   and the unqualified Windows directory-sync boundary.
+   The object and staging directory entries are synchronized before success is
    reported. An error after exclusive installation is publication-uncertain and
    poisons that in-memory publisher; reopening creates a fresh publisher which
    revalidates the existing object. Thus an uncertain result cannot be retried
@@ -1421,15 +1433,16 @@ in the inventory/root snapshot before invoking this primitive.
 
 ## Model and implementation qualification
 
-The [previous model report](../tla/BRANCH_LIFECYCLE_PROOF.md) is superseded as
-qualification evidence for this contract. A revised model must cover persistent
-branches without expiry, multi-level forks, atomic schema/data publication,
-open-lock loss without branch loss, explicit deletion, and GC reachability.
-Model changes require rerunning positive invariants, negative controls, and
-reachability witnesses. Abstract atomic publication does not establish torn-write,
-write-reordering, OS-locking, or filesystem durability behavior; those require
-implementation-level power-loss fault injection. No revised-model result is
-claimed here.
+The [lifecycle model report](../tla/BRANCH_LIFECYCLE_PROOF.md) now describes
+persistent branches without expiry, multi-level forks, atomic schema/data
+publication, open-lock loss without branch loss, explicit deletion, and GC
+reachability. Model changes require positive invariants, negative controls and
+reachability witnesses. The current runtime corrections do not change that
+abstract protocol. Their [implementation qualification](../BRANCH_POWER_LOSS_QUALIFICATION.md)
+uses actual IO-driven lost/torn/reordered images and ordinary project recovery;
+it is neither a Rust-to-TLA refinement proof nor physical-device certification.
+Namespace and synchronization assumptions, executed coverage and remaining
+Windows/job/concurrent-GC gaps are recorded separately.
 
 Implementation delivery is specification -> catalog (#777) and immutable
 objects (#779) -> isolated branch opening (#780) -> lifecycle facade (#775)

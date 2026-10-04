@@ -9659,3 +9659,6 @@ fn read_test_durable_text(path: &std::path::Path) -> std::io::Result<String> {
     String::from_utf8(decoded)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
+
+#[cfg(all(unix, feature = "test-support"))]
+mod power_loss;

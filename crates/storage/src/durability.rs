@@ -84,9 +84,11 @@ impl WalSyncGroupState {
 
 /// Atomically publishes a file whose contents have already been synchronized.
 ///
-/// Unix persists the directory entry after rename. Windows uses a write-through
-/// move because flushing a directory handle is not a supported durability
-/// primitive there.
+/// Unix persists the directory entry after rename. Windows retains a counted,
+/// write-capable candidate handle across the standard library's atomic rename
+/// and synchronizes that handle afterward. An open destination reader keeps its
+/// old publication. This does not qualify ancestor-directory persistence on
+/// Windows; that remains a separate platform qualification requirement.
 pub fn durable_replace_file(source: &Path, destination: &Path) -> io::Result<()> {
     #[cfg(test)]
     inject_durable_replace_failure(destination)?;
@@ -193,6 +195,14 @@ pub fn sync_parent_directory(path: &Path) -> io::Result<()> {
 
 /// Persists pending directory entry changes when supported by the platform.
 pub fn sync_directory(directory: &Path) -> io::Result<()> {
+    let context = crate::file_descriptors::context_for_path(directory)?;
+    sync_directory_with_context(directory, &context)
+}
+
+pub(crate) fn sync_directory_with_context(
+    directory: &Path,
+    context: &crate::file_descriptors::FileOpenContext,
+) -> io::Result<()> {
     #[cfg(test)]
     {
         let should_fail = SYNC_DIRECTORY_FAILURE.with(|expected| {
@@ -213,56 +223,78 @@ pub fn sync_directory(directory: &Path) -> io::Result<()> {
     }
     #[cfg(windows)]
     {
-        let _ = directory;
+        let _ = (directory, context);
         Ok(())
     }
     #[cfg(not(windows))]
     {
-        use crate::file_io::File;
+        context
+            .open(fs::OpenOptions::new().read(true), directory)?
+            .sync_all()
+    }
+}
 
-        File::open(directory)?.sync_all()
+/// Persists names from a publication directory through its project root.
+/// Existing directories can be leftovers of an interrupted attempt: existence
+/// alone never replaces these barriers. The project root's own ancestry is
+/// synchronized during writable project admission.
+pub(crate) fn sync_directory_ancestors(directory: &Path) -> io::Result<()> {
+    let context = crate::file_descriptors::context_for_path(directory)?;
+    let root = context.project_root();
+    let stop = (!root.as_os_str().is_empty()).then_some(root);
+    sync_directory_tree_with_context(directory, &context, stop)
+}
+
+/// Explicit context avoids reentering the project registry during bootstrap.
+/// Open one directory at a time, charging even ancestor IO to this project.
+/// With no project boundary, stop at the existing filesystem mount: persistence
+/// of the mount itself is an external platform assumption. Windows directory
+/// synchronization remains unqualified; its no-op is not a durability barrier.
+pub(crate) fn sync_directory_tree_with_context(
+    directory: &Path,
+    context: &crate::file_descriptors::FileOpenContext,
+    stop: Option<&Path>,
+) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        let _ = (directory, context, stop);
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let mut current = context.canonicalize(directory)?;
+        loop {
+            sync_directory_with_context(&current, context)?;
+            if stop.is_some_and(|root| current == root) {
+                break;
+            }
+            let Some(parent) = current.parent() else {
+                break;
+            };
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if context.metadata(&current)?.dev() != context.metadata(parent)?.dev() {
+                    break;
+                }
+            }
+            current = parent.to_path_buf();
+        }
+        Ok(())
     }
 }
 
 #[cfg(windows)]
 fn durable_replace_file_windows(source: &Path, destination: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-
-    const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
-    const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
-
-    #[link(name = "Kernel32")]
-    unsafe extern "system" {
-        fn MoveFileExW(
-            existing_file_name: *const u16,
-            new_file_name: *const u16,
-            flags: u32,
-        ) -> i32;
-    }
-
-    let source = source
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let destination = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    // SAFETY: both paths are live, NUL-terminated UTF-16 buffers for the call.
-    let moved = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if moved == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    // Rust 1.97.1's Windows rename uses FileRenameInfoEx POSIX replacement when
+    // the ordinary move cannot replace an open destination. Calling our old
+    // MoveFileExW helper directly omitted that behavior. Keep the candidate
+    // handle through rename so the subsequent FlushFileBuffers targets the
+    // exact publication even if another reader opens the destination.
+    // FlushFileBuffers requires write access; no create/truncate is permitted.
+    let candidate = fs::OpenOptions::new().read(true).write(true).open(source)?;
+    fs::rename(source, destination)?;
+    candidate.sync_all()
 }
 
 #[cfg(test)]
