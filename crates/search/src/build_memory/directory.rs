@@ -57,15 +57,31 @@ pub(crate) fn scan_bytes(root: &Path) -> Result<usize> {
     )
 }
 
+// Owned stages are flat and usually small. Four paths keep the cleanup charge
+// near its existing scan envelope without changing general GC traversal batches.
+pub(crate) const STAGE_REMOVAL_BATCH_ENTRIES: usize = 4;
+
 pub(crate) fn stage_removal_bytes(root: &Path) -> Result<usize> {
-    // Every producer writes regular files directly into the owned stage. Keep
-    // std's handle-relative, symlink-safe removal instead of a path walker.
-    // Unix retains one DIR and entry. Windows retains a 1-KiB DirBuff and its
-    // one-directory handle vector. No generated child directory can add a level.
-    let traversal = if cfg!(windows) {
-        1024 + 4 * size_of::<fs::File>()
+    // The admitted walker closes its iterator before deleting each batch. Stage
+    // producers create files directly under the owned root, so only one level
+    // of pending directory paths can exist. Retain all child paths in the batch,
+    // plus the iterator/entry/native-path scratch and overlapping Vec growth.
+    let root_bytes = root.as_os_str().as_encoded_bytes().len();
+    let verbatim = matches!(root.components().next(), Some(Component::Prefix(prefix)) if prefix.kind().is_verbatim());
+    let joined = add(root_bytes, add(ENTRY_NAME_BYTES, 1)?)?;
+    // Retained capacity is smaller than join's transient normalization/growth
+    // envelope (covered separately by scan_bytes). Unix appends the separator
+    // and then the full name: at most two growth steps from the root capacity.
+    let child_capacity = if verbatim {
+        mul(joined.max(8), 4)?
     } else {
-        1024 * 1024 + ENTRY_NAME_BYTES + 256
+        joined.max(mul(root_bytes, 4)?).max(16)
     };
-    add(native_path::bytes(root)?, traversal)
+    let paths = mul(STAGE_REMOVAL_BATCH_ENTRIES, child_capacity)?;
+    let tuples = mul(
+        2 * STAGE_REMOVAL_BATCH_ENTRIES,
+        size_of::<(std::path::PathBuf, fs::FileType)>(),
+    )?;
+    let pending = add(root_bytes, 4 * size_of::<std::path::PathBuf>())?;
+    add(scan_bytes(root)?, add(paths, add(tuples, pending)?)?)
 }

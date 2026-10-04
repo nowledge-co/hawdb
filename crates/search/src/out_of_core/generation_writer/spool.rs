@@ -285,7 +285,10 @@ impl Drop for StageDirectory {
     fn drop(&mut self) {
         // Cleanup shares the project budget too. If capacity is exhausted,
         // retain this unpublished stage for a later cleanup attempt.
-        let _ = fs::remove_dir_all(&self.path);
+        let _ = fs::remove_dir_all_with_batch_size(
+            &self.path,
+            crate::build_memory::directory::STAGE_REMOVAL_BATCH_ENTRIES,
+        );
     }
 }
 

@@ -117,6 +117,12 @@ These cover sibling writers sharing one project cap, independent registered
 projects, rejection before create/map, immutable bytes still readable through
 an existing mapping at a full FD cap, handle release and successful retry,
 typed search load errors without quarantine or silent fallback, and bounded
-stage cleanup retaining unpublished bytes at exhaustion. The tests do not
+stage cleanup retaining unpublished bytes at exhaustion. Owned stages remove
+four paths per batch; ordinary storage/GC traversal keeps its existing 64-path
+batch. Cleanup reserves the actual iterator scratch, retained paths, tuple
+capacity/growth and pending-root workspace before creating the stage and retains
+that charge through cancellation and unwind. The existing allocation test must
+fit that charge on Windows too; switching from native std deletion to admitted
+traversal cannot reuse std's smaller workspace estimate. The tests do not
 promise automatic cleanup of retained stages or a process-wide descriptor cap
 for unrelated host IO.
