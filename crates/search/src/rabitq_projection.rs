@@ -104,6 +104,7 @@ enum RaBitQCandidateProjectionStorage {
 pub(crate) enum RaBitQCandidateProjectionLoadError {
     Corrupt(HawDBError),
     NotApplicable(HawDBError),
+    Resource(HawDBError),
 }
 
 impl RaBitQCandidateProjectionLoadError {
@@ -111,9 +112,9 @@ impl RaBitQCandidateProjectionLoadError {
         matches!(self, Self::Corrupt(_))
     }
 
-    fn into_hawdb_error(self) -> HawDBError {
+    pub(crate) fn into_hawdb_error(self) -> HawDBError {
         match self {
-            Self::Corrupt(error) | Self::NotApplicable(error) => error,
+            Self::Corrupt(error) | Self::NotApplicable(error) | Self::Resource(error) => error,
         }
     }
 }
@@ -488,7 +489,9 @@ fn classify_load_error(error: ProjectionError) -> RaBitQCandidateProjectionLoadE
             if matches!(error.kind(), std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof)
     );
     let error = projection_error(error);
-    if corrupt {
+    if matches!(error, HawDBError::FileDescriptors(_)) {
+        RaBitQCandidateProjectionLoadError::Resource(error)
+    } else if corrupt {
         RaBitQCandidateProjectionLoadError::Corrupt(error)
     } else {
         RaBitQCandidateProjectionLoadError::NotApplicable(error)
@@ -496,7 +499,10 @@ fn classify_load_error(error: ProjectionError) -> RaBitQCandidateProjectionLoadE
 }
 
 fn projection_error(error: hawdb_vector_projection::ProjectionError) -> HawDBError {
-    HawDBError::Storage(format!("HawDB RaBitQ projection: {error}"))
+    match error {
+        ProjectionError::Io(error) => HawDBError::from_storage_error(error),
+        error => HawDBError::Storage(format!("HawDB RaBitQ projection: {error}")),
+    }
 }
 
 #[cfg(test)]
@@ -612,7 +618,7 @@ mod tests {
             .contains("resource budget exceeded"));
     }
 
-    fn sample_documents() -> BTreeMap<String, SearchDocument> {
+    pub(super) fn sample_documents() -> BTreeMap<String, SearchDocument> {
         [
             ("memory:a", vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
             ("memory:b", vec![0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),

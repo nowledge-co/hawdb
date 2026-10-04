@@ -111,6 +111,19 @@ impl File {
         }
     }
 
+    /// Map an immutable artifact through its admitted native handle.
+    /// The mapping retains the OS mapping, not the file descriptor permit.
+    ///
+    /// # Safety
+    /// The underlying file must not be mutated or truncated while the mapping
+    /// exists, including by another process.
+    #[cfg(feature = "artifact-mmap")]
+    pub unsafe fn map_read_only(&self) -> io::Result<memmap2::Mmap> {
+        // SAFETY: the caller guarantees the immutable artifact lifetime. The
+        // native handle and its permit stay together throughout map creation.
+        self.with_native(|file| unsafe { memmap2::Mmap::map(file) })
+    }
+
     pub fn metadata(&self) -> io::Result<Metadata> {
         self.with_native(std::fs::File::metadata)
     }

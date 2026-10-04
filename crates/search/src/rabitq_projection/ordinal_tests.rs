@@ -578,3 +578,71 @@ fn seeded_documents(seed: u64, count: usize) -> BTreeMap<String, SearchDocument>
         .map(|document| (document.id.clone(), document))
         .collect()
 }
+
+#[test]
+fn descriptor_exhaustion_is_a_retryable_resource_error_and_never_quarantines_projection() {
+    use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+    use hawdb_storage::file_io::OpenOptions;
+    let root = super::tests::unique_test_dir("rabitq-fd-resource");
+    let project = ProjectFileDescriptors::acquire(&root, 4).unwrap();
+    let mut index = SearchIndex::in_memory();
+    index.path = Some(root.clone());
+    index.documents = super::tests::sample_documents();
+    let identity = index.rabitq_projection_identity(1);
+    let path = root.join(crate::rabitq_artifact_file(1));
+    drop(
+        RaBitQCandidateProjection::write_from_documents(
+            &path,
+            &index.documents,
+            identity.clone(),
+            Default::default(),
+        )
+        .unwrap(),
+    );
+    let before = fs::read(&path).unwrap();
+    let held = (0..4)
+        .map(|_| {
+            project
+                .io_context()
+                .open(OpenOptions::new().read(true), &path)
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let error =
+        RaBitQCandidateProjection::load_from_path_classified(&path, &index.documents, &identity)
+            .unwrap_err();
+    assert!(!error.should_quarantine());
+    assert!(matches!(
+        error,
+        RaBitQCandidateProjectionLoadError::Resource(HawDBError::FileDescriptors(_))
+    ));
+    assert!(matches!(
+        index.load_rabitq_projection(),
+        Err(HawDBError::FileDescriptors(_))
+    ));
+    assert!(index.rabitq_projection().is_none());
+    assert!(matches!(
+        index.load_registered_rabitq_projection(),
+        Err(HawDBError::FileDescriptors(_))
+    ));
+    let rejected = root.join(crate::rabitq_artifact_file(2));
+    assert!(matches!(
+        RaBitQCandidateProjection::write_from_documents(
+            &rejected,
+            &index.documents,
+            identity,
+            Default::default()
+        ),
+        Err(HawDBError::FileDescriptors(_))
+    ));
+    assert!(!rejected.exists());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    drop(held);
+    index.load_rabitq_projection().unwrap();
+    assert!(index.rabitq_projection().is_some());
+    assert_eq!(project.metrics().open, 0);
+    assert!(project.metrics().high_water <= 4);
+    drop(index);
+    fs::remove_dir_all(root).unwrap();
+}

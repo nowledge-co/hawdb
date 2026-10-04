@@ -523,3 +523,37 @@ fn cancellation_after_commit_returns_the_published_generation_and_cleanup_retry(
     drop(reader);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn stage_cleanup_retains_unpublished_files_when_the_project_descriptor_budget_is_exhausted() {
+    use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+    let root = test_dir("stage-fd-cleanup");
+    let project = ProjectFileDescriptors::acquire(&root, 4).unwrap();
+    let task = RuntimeTaskContext::default();
+    let memory = BuildMemory::new(&task).unwrap();
+    let stage = StageDirectory::create(&root, &memory, &task).unwrap();
+    let stage_path = stage.path.as_ref().to_path_buf();
+    let evidence = stage_path.join("unpublished");
+    std::fs::write(&evidence, b"retain for retry").unwrap();
+    let filler = root.join("held");
+    std::fs::write(&filler, b"held").unwrap();
+    let mut held = (0..4)
+        .map(|_| {
+            project
+                .io_context()
+                .open(fs::OpenOptions::new().read(true), &filler)
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let rejections = project.metrics().budget_rejections;
+    drop(stage);
+    assert_eq!(std::fs::read(&evidence).unwrap(), b"retain for retry");
+    assert_eq!(project.metrics().open, 4);
+    assert!(project.metrics().budget_rejections > rejections);
+    drop(held.pop());
+    fs::remove_dir_all(&stage_path).unwrap();
+    assert!(!stage_path.exists());
+    assert!(project.metrics().high_water <= 4);
+    drop(held);
+    fs::remove_dir_all(root).unwrap();
+}

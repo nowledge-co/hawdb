@@ -11,10 +11,11 @@ rust_library(
     name = "hawdb_vector_projection",
     crate_name = "hawdb_vector_projection",
     crate_root = "src/lib.rs",
+    crate_features = ["storage-io"],
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
-    deps = all_crate_deps(normal = True) + ["//crates/core:hawdb_core"],
+    deps = all_crate_deps(normal = True) + ["//crates/core:hawdb_core", "//crates/storage:hawdb_storage"],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 

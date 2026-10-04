@@ -19,7 +19,10 @@ use crate::model::{
     ProjectionManifest, QuantizedSegment, RaBitQBitWidth, SegmentDescriptor,
 };
 use crc32fast::Hasher;
+#[cfg(feature = "storage-io")]
+use hawdb_storage::file_io::{self as fs, File, OpenOptions};
 use memmap2::Mmap;
+#[cfg(not(feature = "storage-io"))]
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -56,7 +59,7 @@ impl ProjectionWriter {
             )
         })?;
         fs::create_dir_all(parent)?;
-        if target.exists() {
+        if target_exists(&target)? {
             return Err(ProjectionError::InvalidConfiguration(format!(
                 "projection generation already exists at {}",
                 target.display()
@@ -235,6 +238,9 @@ impl FileProjection {
         // SAFETY: the artifact is published via atomic rename and never mutated in
         // place after that point, so external truncation/mutation racing this map is
         // not part of HawDB's supported artifact lifecycle.
+        #[cfg(feature = "storage-io")]
+        let mmap = Arc::new(unsafe { file.map_read_only()? });
+        #[cfg(not(feature = "storage-io"))]
         let mmap = Arc::new(unsafe { Mmap::map(&file)? });
 
         verify_projection_payload(&mmap, &manifest)?;
@@ -503,6 +509,17 @@ fn temporary_path(target: &Path) -> PathBuf {
     target.with_extension(format!("tmp.{}.{}", std::process::id(), sequence))
 }
 
+fn target_exists(path: &Path) -> std::io::Result<bool> {
+    #[cfg(feature = "storage-io")]
+    {
+        fs::try_exists(path)
+    }
+    #[cfg(not(feature = "storage-io"))]
+    {
+        fs::exists(path)
+    }
+}
+
 #[cfg(unix)]
 fn sync_parent(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
@@ -640,7 +657,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    fn unique_test_dir(name: &str) -> PathBuf {
+    pub(super) fn unique_test_dir(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -651,3 +668,6 @@ mod tests {
         ))
     }
 }
+
+#[cfg(all(test, feature = "storage-io"))]
+mod descriptor_tests;

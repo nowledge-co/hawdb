@@ -205,7 +205,12 @@ impl RaBitQArtifactBuilder {
 
 #[cfg(feature = "vector-search")]
 fn rabitq_error(error: hawdb_vector_projection::ProjectionError) -> HawDBError {
-    HawDBError::Storage(format!("search RaBitQ projection: {error}"))
+    match error {
+        hawdb_vector_projection::ProjectionError::Io(error) => {
+            HawDBError::from_storage_error(error)
+        }
+        error => HawDBError::Storage(format!("search RaBitQ projection: {error}")),
+    }
 }
 
 #[cfg(all(test, feature = "vector-search"))]

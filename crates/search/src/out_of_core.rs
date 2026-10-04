@@ -4305,6 +4305,7 @@ mod tests {
         install_edited_mutation_run(path, document, target_segment_id, run_generation, |_| {});
     }
 
+    #[cfg(feature = "full-text-search")]
     fn install_delete_mutation_runs(
         path: &Path,
         targets: &[(&SearchDocument, u64)],

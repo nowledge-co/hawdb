@@ -287,18 +287,24 @@ impl SearchIndex {
             .path
             .as_deref()
             .expect("persistent registered projection");
-        for (generation, path) in super::rabitq_artifacts_descending(root) {
-            if let Ok(projection) = super::RaBitQCandidateProjection::load_from_path_classified(
+        for (generation, path) in super::rabitq_artifacts_descending(root)? {
+            match super::RaBitQCandidateProjection::load_from_path_classified(
                 &path,
                 &self.documents,
                 &self.rabitq_projection_identity(generation),
             ) {
-                *self
-                    .rabitq_projection
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner()) =
-                    Some(std::sync::Arc::new(projection));
-                return Ok(());
+                Ok(projection) => {
+                    *self
+                        .rabitq_projection
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner()) =
+                        Some(std::sync::Arc::new(projection));
+                    return Ok(());
+                }
+                Err(super::rabitq_projection::RaBitQCandidateProjectionLoadError::Resource(
+                    error,
+                )) => return Err(error),
+                Err(_) => {}
             }
         }
         Err(HawDBError::StorageIntegrity(
@@ -527,7 +533,7 @@ mod tests {
         .unwrap();
         drop(owner);
         ConsumerProjection::open(&root).unwrap();
-        let artifacts = super::super::rabitq_artifacts_descending(&root);
+        let artifacts = super::super::rabitq_artifacts_descending(&root).unwrap();
         assert!(!artifacts.is_empty());
         for (_, artifact) in artifacts {
             fs::remove_file(artifact).unwrap();

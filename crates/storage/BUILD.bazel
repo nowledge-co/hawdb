@@ -11,6 +11,7 @@ rust_library(
     name = "hawdb_storage",
     crate_name = "hawdb_storage",
     crate_root = "src/lib.rs",
+    crate_features = ["artifact-mmap"],
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),

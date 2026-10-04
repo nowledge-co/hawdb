@@ -1100,13 +1100,24 @@ Search file opens, clones, publication locks, and directory operations use the
 same storage wrapper. Persistent search indexes and out-of-core readers retain
 their containing project domain; independent search roots retain their own
 finite default domain rather than sharing the low-level standalone fallback.
+Embedded RaBitQ artifact writers and readers enable vector-projection's
+`storage-io` feature and borrow the same admitted file operations. Creation,
+publication, directory synchronization, abandonment and mapping preparation
+therefore consume the containing project budget. Read-only mappings are created
+through the private counted native handle; closing that handle releases its
+permit while the immutable mapping remains usable. Generated-stage removal also
+uses bounded admitted traversal. Budget exhaustion during destructor cleanup
+retains the unpublished stage for a later explicit cleanup attempt. It must not
+open an uncounted descriptor to force cleanup. Artifact discovery and loading
+preserve typed resource errors rather than hiding them as missing/corrupt data.
+
 Descriptor errors bypass corruption/rebuild fallback in
 the snapshot/segment admission paths. Ordinary unbound files do not allocate an
 immutable cache, and absolute-path domain lookup borrows the existing path.
 
 #819 remains open. Complete qualification must still audit filesystem operations
-outside the storage wrapper (including native generated-stage deletion and
-projection dependencies), relative-path lookup scratch, cold existing-root alias resolution on Windows,
+outside the routed storage/projection operations, relative-path lookup scratch,
+cold existing-root alias resolution on Windows,
 data-dependent retained recovery/checkpoint handles, validation-read IO budgets,
 and resource failures at every acquisition/publication boundary. The legacy
 single-root opener, independent job pins, and the complete power-loss matrix

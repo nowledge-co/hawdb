@@ -283,7 +283,9 @@ impl StageDirectory {
 
 impl Drop for StageDirectory {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
+        // Cleanup shares the project budget too. If capacity is exhausted,
+        // retain this unpublished stage for a later cleanup attempt.
+        let _ = fs::remove_dir_all(&self.path);
     }
 }
 
