@@ -50,7 +50,7 @@ pub(super) fn bootstrap_checkpoint(
         DurabilityPolicy::SyncOnEveryWrite,
         database_config(config, RelationalIndexMode::Shadow),
     )?;
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
     for statement in nowledge_content_store_schema_statements()? {
         transaction.query_sql(statement)?;
     }
@@ -62,7 +62,7 @@ pub(super) fn bootstrap_checkpoint(
     let anchor = corpus_statement(corpus, "upsert_memory_message_anchor")?;
     let source_summary = corpus_statement(corpus, "source_document_payload_summary")?;
     let update_summary = corpus_statement(corpus, "update_content_document_summary")?;
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
     transaction.query_with_params(
         "CREATE (:Thread {id: $thread_id, space_id: $space_id})",
         &graph_identity_parameters("thread_id", THREAD_OWNER_ID),
@@ -118,7 +118,7 @@ pub(super) fn bootstrap_checkpoint(
     transaction.commit()?;
     database.checkpoint()?;
     let report = database
-        .relational_index_shadow_checkpoint_report()
+        .relational_index_shadow_checkpoint_report()?
         .ok_or_else(|| {
             HawDBError::Execution(
                 "content-store row-page qualification checkpoint did not publish relational indexes"

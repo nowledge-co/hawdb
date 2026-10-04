@@ -19,10 +19,10 @@ fn knowledge_retrieval_expands_graph_context_by_ordered_adjacency() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root', title: 'Ordered retrieval context'})")
         .unwrap();
-    let lower_neighbor_id = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    let lower_neighbor_id = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Entity",
             BTreeMap::from([
                 (
@@ -35,11 +35,12 @@ fn knowledge_retrieval_expands_graph_context_by_ordered_adjacency() {
                 ),
             ]),
         )
-        .unwrap();
-    let higher_neighbor_id = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    }
+    .unwrap();
+    let higher_neighbor_id = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Entity",
             BTreeMap::from([
                 (
@@ -52,25 +53,30 @@ fn knowledge_retrieval_expands_graph_context_by_ordered_adjacency() {
                 ),
             ]),
         )
-        .unwrap();
-    db.store
-        .create_relationship(
-            &mut db.catalog,
+    }
+    .unwrap();
+    {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_relationship(
+            &mut branch_runtime.catalog,
             NodeId(0),
             higher_neighbor_id,
             "MENTIONS",
             BTreeMap::new(),
         )
-        .unwrap();
-    db.store
-        .create_relationship(
-            &mut db.catalog,
+    }
+    .unwrap();
+    {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_relationship(
+            &mut branch_runtime.catalog,
             NodeId(0),
             lower_neighbor_id,
             "RELATES_TO",
             BTreeMap::new(),
         )
-        .unwrap();
+    }
+    .unwrap();
 
     let mut search_index = SearchIndex::in_memory();
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
@@ -133,26 +139,29 @@ fn knowledge_retrieval_reports_dense_graph_context_without_truncation() {
     db.query("CREATE (:Memory {id: 'root', title: 'Dense retrieval root'})")
         .unwrap();
     for index in 0..DENSE_ADJACENCY_DEGREE_THRESHOLD {
-        let target = db
-            .store
-            .create_node(
-                &mut db.catalog,
+        let target = {
+            let branch_runtime = db.runtime.get_mut().unwrap();
+            branch_runtime.store.create_node(
+                &mut branch_runtime.catalog,
                 "Entity",
                 BTreeMap::from([
                     ("id".to_string(), Value::String(format!("entity-{index}"))),
                     ("name".to_string(), Value::String(format!("Entity {index}"))),
                 ]),
             )
-            .unwrap();
-        db.store
-            .create_relationship(
-                &mut db.catalog,
+        }
+        .unwrap();
+        {
+            let branch_runtime = db.runtime.get_mut().unwrap();
+            branch_runtime.store.create_relationship(
+                &mut branch_runtime.catalog,
                 NodeId(0),
                 target,
                 "MENTIONS",
                 BTreeMap::new(),
             )
-            .unwrap();
+        }
+        .unwrap();
     }
 
     let mut search_index = SearchIndex::in_memory();

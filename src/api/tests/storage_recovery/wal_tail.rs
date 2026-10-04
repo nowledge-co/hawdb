@@ -15,7 +15,6 @@
 use super::*;
 #[cfg(feature = "test-support")]
 use crate::store::{set_wal_append_failpoint, WalAppendFailure};
-#[cfg(feature = "test-support")]
 use crate::HawDBError;
 use std::fs;
 use std::path::Path;
@@ -25,6 +24,23 @@ fn automatic_config() -> DatabaseConfig {
         recovery_mode: RecoveryMode::AutoRepairTornTail,
         ..storage_crash_test_config()
     }
+}
+
+fn doctor_directory(path: &Path) -> std::path::PathBuf {
+    active_storage_root(path).parent().unwrap().join("doctor")
+}
+
+fn admission_error(path: &Path, config: DatabaseConfig) -> HawDBError {
+    let database = Database::open_with_config(path, config).unwrap();
+    let error = database.commit_epoch().unwrap_err();
+    assert_eq!(
+        database
+            .file_descriptor_metrics()
+            .unwrap()
+            .admitted_runtimes,
+        0
+    );
+    error
 }
 
 fn seed_database(path: &Path) {
@@ -45,7 +61,7 @@ fn append_torn_tail(path: &Path) -> Vec<u8> {
 }
 
 fn assert_repair_evidence(path: &Path, original: &[u8]) {
-    let doctor = path.join("doctor");
+    let doctor = doctor_directory(path);
     let records = fs::read_dir(&doctor)
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -80,12 +96,12 @@ fn partial_write_rolls_back_and_next_commit_succeeds() {
             let mut db = Database::open(&path).unwrap();
             let wal = active_wal_path(&path);
             let before = fs::read(&wal).unwrap_or_default();
-            let epoch = db.commit_epoch();
+            let epoch = db.commit_epoch().unwrap();
             set_wal_append_failpoint(WalAppendFailure::PartialWrite);
             let query =
                 "CREATE (:Memory {id: 'failed-a'})-[:RELATED_TO]->(:Memory {id: 'failed-b'})";
             let error = if transaction {
-                let mut tx = db.begin_transaction();
+                let mut tx = db.begin_transaction().unwrap();
                 tx.query(query).unwrap();
                 tx.commit().unwrap_err()
             } else {
@@ -93,8 +109,8 @@ fn partial_write_rolls_back_and_next_commit_succeeds() {
             };
             assert!(error.to_string().contains("rolled back"), "{error}");
             assert_eq!(fs::read(&wal).unwrap_or_default(), before);
-            assert!(!db.storage_handle_poisoned());
-            assert_eq!(db.commit_epoch(), epoch);
+            assert!(!db.storage_handle_poisoned().unwrap());
+            assert_eq!(db.commit_epoch().unwrap(), epoch);
             db.query("CREATE (:Memory {id: 'retry'})").unwrap();
             drop(db);
             let mut db = Database::open(&path).unwrap();
@@ -143,12 +159,15 @@ fn partial_write_keeps_earlier_group_entries_flushable() {
     let mut db = Database::open(&path).unwrap();
     assert!(db.begin_wal_sync_group().unwrap());
     db.query("CREATE (:Memory {id: 'group-prefix'})").unwrap();
-    let progress = db.wal_sync_group_progress();
+    let progress = db.runtime.get().unwrap().store.wal_sync_group_progress();
     let prefix = fs::read(active_wal_path(&path)).unwrap();
     set_wal_append_failpoint(WalAppendFailure::PartialWrite);
     assert!(db.query("CREATE (:Memory {id: 'failed'})").is_err());
-    assert!(!db.storage_handle_poisoned());
-    assert_eq!(db.wal_sync_group_progress(), progress);
+    assert!(!db.storage_handle_poisoned().unwrap());
+    assert_eq!(
+        db.runtime.get().unwrap().store.wal_sync_group_progress(),
+        progress
+    );
     assert_eq!(fs::read(active_wal_path(&path)).unwrap(), prefix);
     let flush = db.finish_wal_sync_group().unwrap();
     assert_eq!(flush.entry_count, progress.entry_count);
@@ -176,7 +195,7 @@ fn rollback_and_sync_failures_poison_the_handle() {
         set_wal_append_failpoint(failure);
         let error = db.query("CREATE (:Memory {id: 'uncertain'})").unwrap_err();
         assert!(matches!(error, HawDBError::StorageIntegrity(_)), "{error}");
-        assert!(db.storage_handle_poisoned());
+        assert!(db.storage_handle_poisoned().unwrap());
         let damaged = fs::read(&wal).unwrap();
         assert!(damaged.len() as u64 > before);
         assert!(db.query("CREATE (:Memory {id: 'blocked'})").is_err());
@@ -184,7 +203,7 @@ fn rollback_and_sync_failures_poison_the_handle() {
         drop(db);
         let mut db = Database::open_with_config(&path, automatic_config()).unwrap();
         assert_eq!(
-            db.storage_recovery_report().torn_tail_repaired,
+            db.storage_recovery_report().unwrap().torn_tail_repaired,
             failure == WalAppendFailure::Rollback
         );
         assert_eq!(
@@ -211,9 +230,11 @@ fn automatic_repair_preserves_quarantine_and_acknowledged_commits() {
     let path = unique_test_dir("automatic_wal_tail");
     seed_database(&path);
     let original = append_torn_tail(&path);
-    assert!(Database::open(&path).is_err());
+    assert!(admission_error(&path, storage_crash_test_config())
+        .to_string()
+        .contains("torn tail"));
     let mut db = Database::open_with_config(&path, automatic_config()).unwrap();
-    let report = db.storage_recovery_report();
+    let report = db.storage_recovery_report().unwrap();
     assert_eq!(report.recovery_mode, RecoveryMode::AutoRepairTornTail);
     assert!(report.torn_tail_repaired);
     assert!(!report.torn_tail_ignored);
@@ -227,7 +248,7 @@ fn automatic_repair_preserves_quarantine_and_acknowledged_commits() {
     db.query("CREATE (:Memory {id: 'after-repair'})").unwrap();
     drop(db);
     let mut db = Database::open(&path).unwrap();
-    assert!(!db.storage_recovery_report().torn_tail_repaired);
+    assert!(!db.storage_recovery_report().unwrap().torn_tail_repaired);
     assert_eq!(
         count_query(&mut db, "MATCH (m:Memory) RETURN count(m) AS count"),
         3
@@ -255,11 +276,18 @@ fn automatic_repair_rejects_read_only_and_insufficient_evidence_budget() {
             ..automatic_config()
         },
     ] {
-        assert!(Database::open_with_config(&path, config).is_err());
+        admission_error(&path, config);
         assert_eq!(fs::read(active_wal_path(&path)).unwrap(), original);
-        assert!(!path.join("doctor").exists());
+        assert!(!doctor_directory(&path).exists());
     }
-    drop(Database::open_with_config(&path, automatic_config()).unwrap());
+    let repaired = Database::open_with_config(&path, automatic_config()).unwrap();
+    assert!(
+        repaired
+            .storage_recovery_report()
+            .unwrap()
+            .torn_tail_repaired
+    );
+    drop(repaired);
     assert_repair_evidence(&path, &original);
     fs::remove_dir_all(path).unwrap();
 }
@@ -288,10 +316,10 @@ fn automatic_repair_rejects_complete_corruption() {
             *bytes.last_mut().unwrap() ^= 0xff;
         }
         fs::write(&wal, &bytes).unwrap();
-        let error = Database::open_with_config(&path, automatic_config()).unwrap_err();
+        let error = admission_error(&path, automatic_config());
         assert!(error.to_string().contains("corrupt"), "{error}");
         assert_eq!(fs::read(&wal).unwrap(), bytes);
-        assert!(!path.join("doctor").exists());
+        assert!(!doctor_directory(&path).exists());
         fs::remove_dir_all(path).unwrap();
     }
 }
@@ -305,21 +333,27 @@ fn automatic_repair_budget_preserves_prior_audit_evidence() {
     db.query("CREATE (:Memory {id: 'later'})").unwrap();
     drop(db);
     let second = append_torn_tail(&path);
-    let error = Database::open_with_config(
+    let error = admission_error(
         &path,
         DatabaseConfig {
             max_wal_quarantine_bytes: (first.len() + second.len() - 1) as u64,
             ..automatic_config()
         },
-    )
-    .unwrap_err();
+    );
     assert!(
         error.to_string().contains("quarantine byte limit"),
         "{error}"
     );
     assert_eq!(fs::read(active_wal_path(&path)).unwrap(), second);
     assert_repair_evidence(&path, &first);
-    drop(Database::open_with_config(&path, automatic_config()).unwrap());
+    let repaired = Database::open_with_config(&path, automatic_config()).unwrap();
+    assert!(
+        repaired
+            .storage_recovery_report()
+            .unwrap()
+            .torn_tail_repaired
+    );
+    drop(repaired);
     fs::remove_dir_all(path).unwrap();
 }
 
@@ -362,10 +396,10 @@ fn automatic_repair_rejects_nonzero_block_trailers() {
     corrupt.extend(frame_binary_wal_record(generation, &payload, 0));
     corrupt.extend([0, 0, 0xff, 0, 0, 0, 0]);
     fs::write(&wal, &corrupt).unwrap();
-    let error = Database::open_with_config(&path, automatic_config()).unwrap_err();
+    let error = admission_error(&path, automatic_config());
     assert!(error.to_string().contains("trailer"), "{error}");
     assert_eq!(fs::read(&wal).unwrap(), corrupt);
-    assert!(!path.join("doctor").exists());
+    assert!(!doctor_directory(&path).exists());
     fs::remove_dir_all(path).unwrap();
 }
 
@@ -402,13 +436,12 @@ fn subprocess_partial_append_and_interrupted_automatic_repair_recover() {
         let original = fs::read(active_wal_path(&path)).unwrap();
         if let Some(stage) = repair_stage {
             assert_eq!(child(stage).code(), Some(86));
-            assert!(Database::open(&path)
-                .unwrap_err()
+            assert!(admission_error(&path, storage_crash_test_config())
                 .to_string()
                 .contains("interrupted WAL doctor"));
         }
         let mut db = Database::open_with_config(&path, automatic_config()).unwrap();
-        assert!(db.storage_recovery_report().torn_tail_repaired);
+        assert!(db.storage_recovery_report().unwrap().torn_tail_repaired);
         assert_eq!(
             count_query(&mut db, "MATCH (m:Memory) RETURN count(m) AS count"),
             2

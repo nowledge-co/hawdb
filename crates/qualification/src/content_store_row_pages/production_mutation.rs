@@ -666,9 +666,9 @@ fn validate_source_database(
         DurabilityPolicy::SyncOnEveryWrite,
         source_config,
     )?;
-    let commit_epoch = source.commit_epoch();
-    let pressure = source.storage_pressure_snapshot();
-    let residency = source.storage_residency_report();
+    let commit_epoch = source.commit_epoch()?;
+    let pressure = source.storage_pressure_snapshot()?;
+    let residency = source.storage_residency_report()?;
     let evidence = storage_evidence(&pressure, &residency);
     if commit_epoch != config.expected_identity.canonical_graph_commit_epoch
         || !storage_view_current(&evidence)
@@ -1364,7 +1364,10 @@ mod tests {
         let mut source_config = database_config(&seed, RelationalIndexMode::Authoritative);
         source_config.read_only = true;
         let source = Database::open_with_config(&source_path, source_config).unwrap();
-        assert_eq!(source.commit_epoch(), source_checkpoint.commit_epoch);
+        assert_eq!(
+            source.commit_epoch().unwrap(),
+            source_checkpoint.commit_epoch
+        );
         drop(source);
         std::fs::remove_dir_all(root).unwrap();
     }

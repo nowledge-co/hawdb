@@ -59,7 +59,7 @@ fn thread_compacted_memories_use_fixed_snapshot_pinned_queries() {
         "thread_id".to_string(),
         Value::String("logical-a".to_string()),
     )]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     let identity = read
         .query_with_params_bounded(THREAD_BY_LOGICAL_ID_QUERY, &identity_parameters, Some(1))
         .unwrap();
@@ -116,7 +116,7 @@ fn memory_compacting_threads_use_per_memory_bounded_queries() {
         "memory_id".to_string(),
         Value::String("memory-a".to_string()),
     )]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     let identity = read
         .query_with_params_bounded(MEMORY_BY_ID_QUERY, &identity_parameters, Some(1))
         .unwrap();

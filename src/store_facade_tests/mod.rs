@@ -41,6 +41,59 @@ pub fn unique_test_dir(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("hawdb_store_{name}_{nanos}"))
 }
 
+/// Standalone backups let decoder tests change valid outer checksums without
+/// invalidating a project's immutable-object identity first. Seed through the
+/// public branch runtime, then exercise legacy recovery and writable adoption.
+pub struct CheckpointCodecFixture(pub std::path::PathBuf, std::path::PathBuf);
+
+impl CheckpointCodecFixture {
+    pub fn new(name: &str, seed: impl FnOnce(&mut crate::Database)) -> Self {
+        let root = unique_test_dir(name);
+        let fixture = Self(root.clone(), root.with_extension("source"));
+        let mut database = crate::Database::open(&fixture.1).unwrap();
+        seed(&mut database);
+        database.checkpoint().unwrap();
+        database.backup_to(&fixture.0).unwrap();
+        // Validate the unmodified backup and establish its persistent owner
+        // lock before corruption tests take their no-write baseline.
+        drop(
+            crate::Database::open_with_config(
+                &fixture.0,
+                crate::DatabaseConfig {
+                    read_only: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        );
+        fixture
+    }
+}
+
+impl Drop for CheckpointCodecFixture {
+    fn drop(&mut self) {
+        for path in [&self.0, &self.1] {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
+pub fn assert_storage_files_unchanged(
+    before: &std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+    after: std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+) {
+    let changed = before
+        .keys()
+        .chain(after.keys())
+        .filter(|path| before.get(*path) != after.get(*path))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        after == *before,
+        "storage files changed: {:?}",
+        changed.into_iter().take(16).collect::<Vec<_>>()
+    );
+}
+
 pub fn active_checkpoint_path(path: impl AsRef<std::path::Path>) -> std::path::PathBuf {
     active_generation_path(path.as_ref(), "checkpoint_generation", "checkpoint")
 }

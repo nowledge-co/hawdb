@@ -655,7 +655,7 @@ fn seed_database(directory: &Path) {
         .expect("create lending benchmark table");
     for transaction_start in (0..ROWS).step_by(INSERT_TRANSACTION_ROWS) {
         let transaction_end = (transaction_start + INSERT_TRANSACTION_ROWS).min(ROWS);
-        let mut transaction = database.begin_transaction();
+        let mut transaction = database.begin_transaction().unwrap();
         for start in (transaction_start..transaction_end).step_by(INSERT_BATCH_ROWS) {
             let end = (start + INSERT_BATCH_ROWS).min(transaction_end);
             let mut statement =

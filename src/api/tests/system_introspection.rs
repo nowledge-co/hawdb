@@ -78,7 +78,7 @@ fn system_graph_statistics_are_parameterized_and_snapshot_pinned() {
         "CREATE (:Memory {id: 1, kind: 'note'})-[:MENTIONS]->(:Entity {id: 10, name: 'Rust'})",
     )
     .unwrap();
-    let read_tx = db.begin_read_transaction();
+    let read_tx = db.begin_read_transaction().unwrap();
 
     db.query("CREATE (:Memory {id: 2, kind: 'decision'})")
         .unwrap();
@@ -167,6 +167,7 @@ fn system_graph_statistics_exposes_index_samples() {
 #[test]
 fn system_sql_exposes_projected_graph_and_changefeed_state() {
     let path = unique_test_dir("system_projection_introspection");
+    let projection_epoch;
     {
         let mut db = Database::open(&path).unwrap();
         db.query(
@@ -176,10 +177,13 @@ fn system_sql_exposes_projected_graph_and_changefeed_state() {
         db.query("CALL project_graph('EntityGraph', ['Memory', 'Entity'], ['LINKS'])")
             .unwrap();
         db.checkpoint().unwrap();
+        projection_epoch = db.projected_graph_statuses().unwrap()[0]
+            .projection_epoch
+            .unwrap();
     }
     {
         let mut db = Database::open(&path).unwrap();
-        let graph_commit_epoch = db.commit_epoch();
+        let graph_commit_epoch = db.commit_epoch().unwrap();
         let projection = db
             .query_sql_with_params(
                 "SELECT name, projection_epoch, node_count, edge_count, reusable \
@@ -191,7 +195,10 @@ fn system_sql_exposes_projected_graph_and_changefeed_state() {
             projection.rows,
             vec![BTreeMap::from([
                 ("name".to_string(), Value::String("EntityGraph".to_string()),),
-                ("projection_epoch".to_string(), Value::Int(1)),
+                (
+                    "projection_epoch".to_string(),
+                    Value::Int(i64::try_from(projection_epoch).unwrap())
+                ),
                 ("node_count".to_string(), Value::Int(2)),
                 ("edge_count".to_string(), Value::Int(1)),
                 ("reusable".to_string(), Value::Bool(true)),

@@ -27,7 +27,7 @@ fn exposes_property_index_descriptors_and_statistics() {
     )
     .unwrap();
 
-    let indexes = db.property_indexes();
+    let indexes = db.property_indexes().unwrap();
     assert!(indexes
         .iter()
         .any(|index| index.property == "id" && index.label_id.0 == 0));
@@ -35,8 +35,8 @@ fn exposes_property_index_descriptors_and_statistics() {
         .iter()
         .any(|index| index.property == "kind" && index.label_id.0 == 0));
 
-    let statistics = db.statistics();
-    let basic_statistics = db.basic_statistics();
+    let statistics = db.statistics().unwrap();
+    let basic_statistics = db.basic_statistics().unwrap();
     assert_eq!(statistics.node_count, 4);
     assert_eq!(statistics.relationship_count, 1);
     assert_eq!(statistics.label_counts.values().sum::<u64>(), 4);
@@ -61,13 +61,13 @@ fn exposes_property_index_descriptors_and_statistics() {
         .property_histograms
         .values()
         .any(|values| { values == &vec![Value::Int(1), Value::Int(2), Value::Int(3)] }));
-    let distinct_report = db.distinct_value_statistics_consistency_report();
+    let distinct_report = db.distinct_value_statistics_consistency_report().unwrap();
     assert!(distinct_report.ready);
     assert_eq!(
         distinct_report.maintained_property_distinct_counts,
         distinct_report.recomputed_property_distinct_counts
     );
-    let property_index_report = db.property_index_consistency_report();
+    let property_index_report = db.property_index_consistency_report().unwrap();
     assert!(property_index_report.ready);
     assert_eq!(
         property_index_report.node_index_entry_count,
@@ -78,13 +78,13 @@ fn exposes_property_index_descriptors_and_statistics() {
         property_index_report.recomputed_relationship_index_reference_count
     );
 
-    let read_tx = db.begin_read_transaction();
+    let read_tx = db.begin_read_transaction().unwrap();
     db.query("CREATE (:Memory {id: 4, kind: 'note'})").unwrap();
     assert_eq!(read_tx.statistics().node_count, 4);
     assert_eq!(read_tx.basic_statistics().node_count, 4);
-    assert_eq!(db.statistics().node_count, 5);
-    assert_eq!(db.basic_statistics().node_count, 5);
-    assert_eq!(db.basic_statistics().computed_at_commit_epoch, 7);
+    assert_eq!(db.statistics().unwrap().node_count, 5);
+    assert_eq!(db.basic_statistics().unwrap().node_count, 5);
+    assert_eq!(db.basic_statistics().unwrap().computed_at_commit_epoch, 7);
 }
 
 #[test]
@@ -100,13 +100,14 @@ fn explicit_text_index_publishes_payload_free_selectivity() {
     }
     db.query("CREATE INDEX ON :Memory(body)").unwrap();
 
-    let statistics = db.statistics();
+    let statistics = db.statistics().unwrap();
     assert!(statistics
         .property_distinct_counts
         .keys()
         .all(|(_, property)| property != "body"));
     let index = db
         .property_indexes()
+        .unwrap()
         .into_iter()
         .find(|index| index.property == "body" && index.kind == IndexKind::Equality)
         .unwrap();
@@ -133,7 +134,17 @@ fn out_of_core_index_sample_tracks_wal_churn_and_becomes_stale() {
         ..DatabaseConfig::default()
     };
     let (index_id, composite_index_id) = {
-        let mut db = Database::open_with_config(&path, config.clone()).unwrap();
+        // Keep bootstrap empty, then build exact samples at the first
+        // transition to an out-of-core graph checkpoint.
+        let mut db = Database::open_with_config(
+            &path,
+            DatabaseConfig {
+                // Materialize the empty canonical header, then externalize user records.
+                auto_materialize_checkpoint_bytes: 64,
+                ..DatabaseConfig::default()
+            },
+        )
+        .unwrap();
         db.query("CREATE INDEX ON :Memory(kind)").unwrap();
         db.query("CREATE INDEX ON :Memory(kind, id)").unwrap();
         for id in 0..100 {
@@ -143,12 +154,14 @@ fn out_of_core_index_sample_tracks_wal_churn_and_becomes_stale() {
         }
         let index_id = db
             .property_indexes()
+            .unwrap()
             .into_iter()
             .find(|index| index.property == "kind")
             .unwrap()
             .id;
         let composite_index_id = db
             .composite_property_indexes()
+            .unwrap()
             .into_iter()
             .find(|index| index.properties == ["kind", "id"])
             .unwrap()
@@ -159,7 +172,7 @@ fn out_of_core_index_sample_tracks_wal_churn_and_becomes_stale() {
 
     {
         let mut db = Database::open_with_config(&path, config).unwrap();
-        let statistics = db.statistics();
+        let statistics = db.statistics().unwrap();
         assert_eq!(
             statistics.index_samples.get(&index_id),
             Some(&crate::schema::IndexStatisticsSample::exact(100, 2))
@@ -175,6 +188,7 @@ fn out_of_core_index_sample_tracks_wal_churn_and_becomes_stale() {
             .unwrap();
         assert_eq!(
             db.statistics()
+                .unwrap()
                 .index_samples
                 .get(&index_id)
                 .unwrap()
@@ -190,7 +204,7 @@ fn out_of_core_index_sample_tracks_wal_churn_and_becomes_stale() {
             db.query(&format!("CREATE (:Memory {{id: {id}, kind: 'new-{id}'}})"))
                 .unwrap();
         }
-        let statistics = db.statistics();
+        let statistics = db.statistics().unwrap();
         let sample = *statistics.index_samples.get(&index_id).unwrap();
         assert_eq!(sample.updates_since_sample, 6);
         assert!(sample.is_stale());
@@ -221,8 +235,8 @@ fn range_and_composite_samples_use_complete_index_keys() {
     db.query("CREATE INDEX ON :Memory(kind, source_id)")
         .unwrap();
 
-    let statistics = db.statistics();
-    let indexes = db.property_indexes();
+    let statistics = db.statistics().unwrap();
+    let indexes = db.property_indexes().unwrap();
     let range = indexes
         .iter()
         .find(|index| index.property == "rank" && index.kind == IndexKind::Range)
@@ -233,6 +247,7 @@ fn range_and_composite_samples_use_complete_index_keys() {
     );
     let composite = db
         .composite_property_indexes()
+        .unwrap()
         .into_iter()
         .find(|index| index.properties == ["kind", "source_id"])
         .unwrap();
@@ -250,14 +265,14 @@ fn basic_statistics_are_incremental_across_deletes_and_replay() {
         db.query("CREATE (:Memory {id: 1})-[:MENTIONS]->(:Entity {id: 10})")
             .unwrap();
         db.query("CREATE (:Memory {id: 2})").unwrap();
-        let read_tx = db.begin_read_transaction();
+        let read_tx = db.begin_read_transaction().unwrap();
 
         db.query("MATCH (m:Memory)-[r:MENTIONS]->(e:Entity) WHERE m.id = 1 DELETE r")
             .unwrap();
         db.query("MATCH (m:Memory) WHERE m.id = 2 DETACH DELETE m")
             .unwrap();
 
-        let basic_statistics = db.basic_statistics();
+        let basic_statistics = db.basic_statistics().unwrap();
         assert_eq!(basic_statistics.computed_at_commit_epoch, 5);
         assert_eq!(basic_statistics.node_count, 2);
         assert_eq!(basic_statistics.relationship_count, 0);
@@ -271,13 +286,16 @@ fn basic_statistics_are_incremental_across_deletes_and_replay() {
 
     {
         let db = Database::open(&path).unwrap();
-        let basic_statistics = db.basic_statistics();
+        let basic_statistics = db.basic_statistics().unwrap();
         assert_eq!(basic_statistics.computed_at_commit_epoch, 5);
         assert_eq!(basic_statistics.node_count, 2);
         assert_eq!(basic_statistics.relationship_count, 0);
-        assert_eq!(db.statistics().node_count, basic_statistics.node_count);
         assert_eq!(
-            db.statistics().relationship_count,
+            db.statistics().unwrap().node_count,
+            basic_statistics.node_count
+        );
+        assert_eq!(
+            db.statistics().unwrap().relationship_count,
             basic_statistics.relationship_count
         );
     }
@@ -296,7 +314,7 @@ fn bounded_multi_hop_statistics_drive_expand_estimates() {
             .unwrap();
     }
 
-    let statistics = db.statistics();
+    let statistics = db.statistics().unwrap();
     let exact_two_hop_count = statistics
         .bounded_path_counts
         .iter()
@@ -488,13 +506,14 @@ fn checkpoint_persists_index_descriptors_and_statistics() {
         let db = Database::open(&path).unwrap();
         assert!(db
             .property_indexes()
+            .unwrap()
             .iter()
             .any(|index| index.property == "kind"));
-        assert_eq!(db.statistics().computed_at_commit_epoch, 5);
-        assert!(db.statistics().advanced_statistics_complete);
-        assert_eq!(db.statistics().histogram_sample_limit, 512);
-        assert_eq!(db.statistics().node_count, 3);
-        assert_eq!(db.statistics().relationship_count, 1);
+        assert_eq!(db.statistics().unwrap().computed_at_commit_epoch, 5);
+        assert!(db.statistics().unwrap().advanced_statistics_complete);
+        assert_eq!(db.statistics().unwrap().histogram_sample_limit, 512);
+        assert_eq!(db.statistics().unwrap().node_count, 3);
+        assert_eq!(db.statistics().unwrap().relationship_count, 1);
     }
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -540,7 +559,7 @@ fn external_optimizer_statistics_refresh_truncates_bounded_paths_instead_of_fail
         .unwrap();
     assert!(!report.bounded_path_truncated);
     assert!(report.bounded_path_group_count > 0);
-    assert!(!db.statistics().bounded_path_counts.is_empty());
+    assert!(!db.statistics().unwrap().bounded_path_counts.is_empty());
 
     let report = db
         .refresh_optimizer_statistics_external(&options(500))
@@ -548,7 +567,7 @@ fn external_optimizer_statistics_refresh_truncates_bounded_paths_instead_of_fail
     assert!(report.bounded_path_truncated);
     assert_eq!(report.bounded_path_group_count, 0);
     assert!(report.path_group_count > 0);
-    let statistics = db.statistics();
+    let statistics = db.statistics().unwrap();
     assert!(statistics.bounded_path_counts.is_empty());
     assert!(statistics.bounded_path_source_distinct_counts.is_empty());
     assert!(statistics.bounded_path_target_distinct_counts.is_empty());

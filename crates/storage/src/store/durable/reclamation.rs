@@ -54,15 +54,20 @@ impl DurableStore {
     pub(in crate::store) fn reclaim_old_generations(
         &mut self,
         current_generation: u64,
+        previous_checkpoint_generation: u64,
         pinned_reader_generations: Option<&BTreeSet<u64>>,
     ) {
-        self.generation_reclamation_debt =
-            self.try_reclaim_old_generations(current_generation, pinned_reader_generations);
+        self.generation_reclamation_debt = self.try_reclaim_old_generations(
+            current_generation,
+            previous_checkpoint_generation,
+            pinned_reader_generations,
+        );
     }
 
     fn try_reclaim_old_generations(
         &self,
         current_generation: u64,
+        previous_checkpoint_generation: u64,
         pinned_reader_generations: Option<&BTreeSet<u64>>,
     ) -> GenerationReclamationDebt {
         let mut debt = GenerationReclamationDebt::default();
@@ -72,8 +77,10 @@ impl DurableStore {
 
         let mut retained_generations = pinned_reader_generations.cloned().unwrap_or_default();
         retained_generations.insert(current_generation);
-        if current_generation > 1 {
-            retained_generations.insert(current_generation - 1);
+        // Branch WAL seals consume generation numbers too. Preserve the
+        // actual preceding checkpoint, rather than a nonexistent adjacent ID.
+        if previous_checkpoint_generation > 0 {
+            retained_generations.insert(previous_checkpoint_generation);
         }
         let (retained_row_page_generations, retained_overflow_extent_generations) =
             match self.retained_relational_physical_generations(&retained_generations) {

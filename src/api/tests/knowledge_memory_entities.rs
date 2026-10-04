@@ -50,7 +50,7 @@ fn memory_entities_use_one_fixed_bounded_query_per_memory() {
         ("memory_id".to_string(), Value::String("memory".to_string())),
         ("limit".to_string(), Value::Int(2)),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     db.query("CREATE (:Entity {id: 'entity-c', name: 'Gamma'})")
         .unwrap();
@@ -104,7 +104,7 @@ fn memory_entities_missing_memory_returns_no_rows() {
         ),
         ("limit".to_string(), Value::Int(1)),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     let output = snapshot
         .query_with_params_bounded(MEMORY_ENTITIES_QUERY, &parameters, Some(1))

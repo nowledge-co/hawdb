@@ -147,7 +147,7 @@ fn create_fixture(path: &Path) {
     )
     .unwrap();
     for thread in 0..THREADS {
-        let mut transaction = db.begin_transaction();
+        let mut transaction = db.begin_transaction().unwrap();
         for message in 0..MESSAGES {
             transaction
                 .query_sql_with_params(INSERT, &message_parameters(thread, message))
@@ -316,7 +316,7 @@ fn measure_case(
 
 fn verify_recovery(path: &Path, writes: usize, epoch: u64) {
     let mut db = Database::open(path).expect("complete WAL recovery succeeds");
-    assert_eq!(db.commit_epoch(), epoch);
+    assert_eq!(db.commit_epoch().unwrap(), epoch);
     for thread in 0..=THREADS {
         let count = if thread == THREADS { writes } else { MESSAGES };
         let output = db

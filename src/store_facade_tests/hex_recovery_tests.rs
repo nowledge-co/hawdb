@@ -14,7 +14,8 @@
 
 use crate::error::HawDBError;
 use crate::store_facade_tests::{
-    active_checkpoint_path, read_durable_text, rewrite_checksummed_file, unique_test_dir,
+    active_checkpoint_path, assert_storage_files_unchanged, read_durable_text,
+    rewrite_checksummed_file, CheckpointCodecFixture as Fixture,
 };
 use crate::value::Value;
 use crate::{Database, DatabaseConfig};
@@ -22,24 +23,6 @@ use hawdb_storage::text::encode_string;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-
-struct Fixture(PathBuf);
-
-impl Fixture {
-    fn new() -> Self {
-        let fixture = Self(unique_test_dir("hex_recovery"));
-        let mut database = Database::open(&fixture.0).unwrap();
-        database.query("CREATE (:HexRecovery {id: 1})").unwrap();
-        database.checkpoint().unwrap();
-        fixture
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
 
 fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     fn visit(root: &Path, directory: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
@@ -93,11 +76,24 @@ fn assert_corrupt_checkpoint_rejected(fixture: &Fixture, from: &str, to: &str, e
         assert!(matches!(error, HawDBError::Storage(_)));
         assert!(error.to_string().contains(expected), "{error}");
         assert!(error.to_string().len() < 256);
-        assert_eq!(snapshot(&fixture.0), before);
+        assert_storage_files_unchanged(&before, snapshot(&fixture.0));
     }
     fs::write(checkpoint, valid_checkpoint).unwrap();
     fs::write(manifest, valid_manifest).unwrap();
-    let mut database = Database::open(&fixture.0).unwrap();
+    // Keep the standalone decoder fixture until every corruption case has
+    // run. A successful writable open adopts it into the branch project.
+    assert_valid_checkpoint(fixture, true);
+}
+
+fn assert_valid_checkpoint(fixture: &Fixture, read_only: bool) {
+    let mut database = Database::open_with_config(
+        &fixture.0,
+        DatabaseConfig {
+            read_only,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert_eq!(
         database
             .query("MATCH (n:HexRecovery) RETURN n.id AS id")
@@ -109,7 +105,9 @@ fn assert_corrupt_checkpoint_rejected(fixture: &Fixture, from: &str, to: &str, e
 
 #[test]
 fn public_checkpoint_reopen_rejects_bad_hex_without_writes() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new("hex_recovery", |database| {
+        database.query("CREATE (:HexRecovery {id: 1})").unwrap();
+    });
     let label = encode_string("HexRecovery");
     for input in ["a\u{e9}a", "\u{1f980}", "gg", "f", "ff"] {
         let expected = if input == "ff" {
@@ -124,11 +122,14 @@ fn public_checkpoint_reopen_rejects_bad_hex_without_writes() {
             expected,
         );
     }
+    assert_valid_checkpoint(&fixture, false);
 }
 
 #[test]
 fn public_checkpoint_histogram_rejects_bad_value_tags_without_writes() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new("hex_recovery", |database| {
+        database.query("CREATE (:HexRecovery {id: 1})").unwrap();
+    });
     let checkpoint = active_checkpoint_path(&fixture.0);
     let label = format!("label\t0\t{}\n", encode_string("HexRecovery"));
     let valid_histogram = "stat_property_histogram\t0\t6964\t6931\n";
@@ -138,7 +139,7 @@ fn public_checkpoint_histogram_rejects_bad_value_tags_without_writes() {
         &format!("{label}{valid_histogram}"),
         "checkpoint",
     );
-    drop(Database::open(&fixture.0).unwrap());
+    assert_valid_checkpoint(&fixture, true);
     for input in ["\u{e9}", "\u{4e2d}", "\u{1f980}"] {
         assert_corrupt_checkpoint_rejected(
             &fixture,
@@ -150,4 +151,5 @@ fn public_checkpoint_histogram_rejects_bad_value_tags_without_writes() {
             "invalid encoded value",
         );
     }
+    assert_valid_checkpoint(&fixture, false);
 }

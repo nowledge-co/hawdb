@@ -475,7 +475,7 @@ impl GraphStore {
     pub(super) fn uses_sparse_read_only_relational_recovery(&self) -> bool {
         self.durable
             .as_ref()
-            .is_some_and(|durable| durable.read_only)
+            .is_some_and(|durable| !durable.recovery_artifact_writes_allowed)
             && self.residency_mode == StorageResidencyMode::OutOfCore
             && self
                 .relational_index_shadow
@@ -515,7 +515,7 @@ impl GraphStore {
         let root = durable.root_path().to_path_buf();
         let checkpoint_generation = durable.checkpoint_epoch;
         let checkpoint_commit_epoch = durable.checkpoint_commit_epoch;
-        let read_only = durable.read_only;
+        let read_only = !durable.recovery_artifact_writes_allowed;
         let Some(binding) = durable.relational_index_generation_artifacts else {
             self.relational_index_shadow.generation_artifacts = None;
             self.relational_index_shadow.recovery_status =
@@ -1076,7 +1076,9 @@ impl GraphStore {
         recovered_commit_epoch: u64,
         reason: impl Into<String>,
     ) {
-        if self.relational_index_shadow.recovery_builder.is_some() {
+        if self.relational_index_shadow.recovery_builder.is_some()
+            || self.relational_index_shadow.read_view.is_some()
+        {
             self.mark_relational_index_recovery_unavailable(recovered_commit_epoch, reason.into());
         }
     }

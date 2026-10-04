@@ -213,7 +213,7 @@ fn knowledge_relationship_batch_create_rejects_invalid_identifiers() {
         .unwrap_err();
 
     assert!(error.to_string().contains("relationship type identifier"));
-    assert_eq!(db.store.commit_epoch(), 2);
+    assert_eq!(db.runtime.get().unwrap().store.commit_epoch(), 2);
 }
 
 #[test]
@@ -327,7 +327,8 @@ fn typed_knowledge_relationship_batch_create_persists_as_one_wal_batch_and_repla
     }
     let wal = read_test_wal(&path).unwrap();
     assert!(wal.contains("create_rel"));
-    assert_eq!(wal.matches("\tbatch\t").count(), 2);
+    // Engine bootstrap is already checkpointed; count the private user WAL.
+    assert_eq!(wal.matches("\tbatch\t").count(), 1);
     {
         let db = Database::open(&path).unwrap();
         let output = db

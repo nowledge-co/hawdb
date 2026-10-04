@@ -329,8 +329,8 @@ pub fn run_production_content_store_overflow_compaction_qualification(
     database.set_runtime_governor(governor.clone());
 
     let initial_residency = residency_evidence(
-        database.commit_epoch(),
-        &database.storage_residency_report(),
+        database.commit_epoch()?,
+        &database.storage_residency_report()?,
     );
     let mut blocker_codes = Vec::new();
     collect_initial_blockers(&config, &initial_residency, &mut blocker_codes);
@@ -356,8 +356,8 @@ pub fn run_production_content_store_overflow_compaction_qualification(
     let compaction = ProductionRelationalOverflowCompactionEvidence::from(compaction);
     let files_after_compaction = regular_file_bytes_by_name(&config.replica_path)?;
     let compacted_residency = residency_evidence(
-        database.commit_epoch(),
-        &database.storage_residency_report(),
+        database.commit_epoch()?,
+        &database.storage_residency_report()?,
     );
     let compacted_reads = verify_cases(
         &mut database,
@@ -374,10 +374,10 @@ pub fn run_production_content_store_overflow_compaction_qualification(
     database.checkpoint()?;
     let cleanup_elapsed_micros = elapsed_micros(cleanup_started);
     let final_residency = residency_evidence(
-        database.commit_epoch(),
-        &database.storage_residency_report(),
+        database.commit_epoch()?,
+        &database.storage_residency_report()?,
     );
-    let reclamation = database.storage_reclamation_watermark().into();
+    let reclamation = database.storage_reclamation_watermark()?.into();
     let scrub = database.scrub_storage()?.into();
     let files_after_cleanup = regular_file_bytes_by_name(&config.replica_path)?;
     drop(database);
@@ -389,8 +389,8 @@ pub fn run_production_content_store_overflow_compaction_qualification(
     )?;
     reopened.set_runtime_governor(governor.clone());
     let reopened_residency = residency_evidence(
-        reopened.commit_epoch(),
-        &reopened.storage_residency_report(),
+        reopened.commit_epoch()?,
+        &reopened.storage_residency_report()?,
     );
     let reopened_reads = verify_cases(
         &mut reopened,
@@ -690,10 +690,10 @@ fn publish_cleanup_marker(
         "purpose".to_string(),
         Value::String("physical-reclamation-evidence".to_string()),
     );
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
     transaction.query_with_params(CLEANUP_MARKER_QUERY, &parameters)?;
     transaction.commit()?;
-    Ok(database.commit_epoch())
+    database.commit_epoch()
 }
 
 struct ResultBlockerInputs<'a> {

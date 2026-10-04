@@ -93,7 +93,7 @@ impl CompatibilityPrimaryEngine for Database {
         )
     }
 
-    fn project_graph(&self, rel_type: Option<&str>) -> ProjectedGraph {
+    fn project_graph(&self, rel_type: Option<&str>) -> Result<ProjectedGraph> {
         Database::project_graph(self, rel_type)
     }
 

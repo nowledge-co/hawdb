@@ -130,7 +130,7 @@ fn insert_background_maintenance_summary_json(
         &LocalQosPolicy::default(),
         &LocalQosState::default(),
         Default::default(),
-    );
+    )?;
     hawdb_compat::nowledge_inventory::migration_gate_json_object(bundle)?.insert(
         "background_maintenance".to_string(),
         background_maintenance_summary_to_json(&summary),
@@ -516,12 +516,14 @@ mod summary_json_facade_tests {
     fn facade_matches_the_pre_migration_sampled_summary_json_oracle() {
         let database = crate::Database::new();
         let search_index = crate::SearchIndex::in_memory();
-        let summary = database.background_maintenance_summary(
-            Some(&search_index),
-            &crate::LocalQosPolicy::default(),
-            &crate::LocalQosState::default(),
-            Default::default(),
-        );
+        let summary = database
+            .background_maintenance_summary(
+                Some(&search_index),
+                &crate::LocalQosPolicy::default(),
+                &crate::LocalQosState::default(),
+                Default::default(),
+            )
+            .unwrap();
 
         assert!(summary.qos_snapshot.is_some());
         assert_eq!(
@@ -1397,7 +1399,7 @@ mod tests {
             &mut self,
             check: &ProjectedGraphFixtureCheck,
         ) -> Result<Option<ProjectedGraphShadowOutput>> {
-            let graph = self.db.project_graph(check.rel_type.as_deref());
+            let graph = self.db.project_graph(check.rel_type.as_deref()).unwrap();
             let page_rank_scores = graph
                 .page_rank(Default::default())
                 .into_iter()

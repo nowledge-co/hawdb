@@ -28,6 +28,19 @@ impl Fixture {
     fn database(&self) -> Database {
         Database::open(self.0.join("database")).unwrap()
     }
+
+    fn registry_path(&self, project: &str) -> PathBuf {
+        let root = self.0.join(project);
+        let runtime_root =
+            match hawdb_storage::branch_project::inspect_project_manifest(&root).unwrap() {
+                hawdb_storage::branch_project::ProjectManifest::Branch(selector) => root
+                    .join("branches")
+                    .join(selector.main_branch_id().as_uuid().to_string())
+                    .join("data"),
+                _ => root,
+            };
+        runtime_root.join("projection_consumers.meta")
+    }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -105,7 +118,7 @@ fn creation_checkpoint_catch_up_and_reopen_use_real_receipts() {
     let fixture = Fixture::new();
     let mut db = fixture.database();
     append(&mut db, 1);
-    let epoch = db.store.commit_epoch();
+    let epoch = db.runtime.get().unwrap().store.commit_epoch();
     let mut consumer = db
         .create_search_projection_consumer(
             id("main"),
@@ -114,7 +127,7 @@ fn creation_checkpoint_catch_up_and_reopen_use_real_receipts() {
             initialize,
         )
         .unwrap();
-    assert_eq!(db.store.commit_epoch(), epoch);
+    assert_eq!(db.runtime.get().unwrap().store.commit_epoch(), epoch);
     assert_eq!(consumer.search_index().document_count(), 1);
     assert!(db
         .search_projection_consumer_readiness(&consumer, None)
@@ -127,14 +140,26 @@ fn creation_checkpoint_catch_up_and_reopen_use_real_receipts() {
     assert_eq!(consumer.search_index().document_count(), 2);
     assert_eq!(
         report.consumer.minimum_valid_consumer_commit_epoch,
-        Some(db.store.commit_epoch())
+        Some(db.runtime.get().unwrap().store.commit_epoch())
     );
     drop(consumer);
     db.checkpoint().unwrap();
-    let identity = db.store.search_projection_database_identity();
+    let identity = db
+        .runtime
+        .get()
+        .unwrap()
+        .store
+        .search_projection_database_identity();
     drop(db);
     let mut db = fixture.database();
-    assert_eq!(db.store.search_projection_database_identity(), identity);
+    assert_eq!(
+        db.runtime
+            .get()
+            .unwrap()
+            .store
+            .search_projection_database_identity(),
+        identity
+    );
     let status = db.search_projection_consumer_status(&id("main")).unwrap();
     assert_eq!(status.state, State::Unverified);
     assert_eq!(status.minimum_valid_consumer_commit_epoch, None);
@@ -154,7 +179,11 @@ fn creation_checkpoint_catch_up_and_reopen_use_real_receipts() {
 fn empty_source_epoch_zero_and_repeated_catch_up_are_valid() {
     let fixture = Fixture::new();
     let mut db = Database::default();
-    db.store = crate::store::GraphStore::open(fixture.0.join("database"), &mut db.catalog).unwrap();
+    db.runtime.get_mut().unwrap().store = crate::store::GraphStore::open(
+        fixture.0.join("database"),
+        &mut db.runtime.get_mut().unwrap().catalog,
+    )
+    .unwrap();
     let mut consumer = db
         .create_search_projection_consumer(
             id("empty"),
@@ -164,13 +193,13 @@ fn empty_source_epoch_zero_and_repeated_catch_up_are_valid() {
         )
         .unwrap();
     assert_eq!(consumer.projection().receipt().source_epoch, 0);
-    let before = std::fs::read(fixture.0.join("database/projection_consumers.meta")).unwrap();
+    let before = std::fs::read(fixture.registry_path("database")).unwrap();
     let report = catch_up(&mut db, &mut consumer).unwrap();
     assert!(report.catch_up.complete);
     assert_eq!(report.catch_up.applied_batch_count, 0);
     assert_eq!(
         before,
-        std::fs::read(fixture.0.join("database/projection_consumers.meta")).unwrap()
+        std::fs::read(fixture.registry_path("database")).unwrap()
     );
 }
 
@@ -240,7 +269,10 @@ fn owned_projection_excludes_other_publishers_and_releases_lease_on_drop() {
 fn hard_retention_floor_invalidates_only_the_lagging_consumer() {
     let fixture = Fixture::new();
     let mut db = fixture.database();
-    db.store
+    db.runtime
+        .get_mut()
+        .unwrap()
+        .store
         .set_max_search_projection_change_log_entries(Some(1));
     let mut lagging = db
         .create_search_projection_consumer(
@@ -259,7 +291,7 @@ fn hard_retention_floor_invalidates_only_the_lagging_consumer() {
         )
         .unwrap();
     append(&mut db, 1);
-    let first_epoch = db.store.commit_epoch();
+    let first_epoch = db.runtime.get().unwrap().store.commit_epoch();
     catch_up(&mut db, &mut current).unwrap();
     append(&mut db, 2);
     let status = db
@@ -287,7 +319,10 @@ fn hard_retention_floor_invalidates_only_the_lagging_consumer() {
     ));
     catch_up(&mut db, &mut current).unwrap();
     assert_eq!(
-        db.store
+        db.runtime
+            .get()
+            .unwrap()
+            .store
             .search_projection_changefeed_status()
             .retained_mutation_count,
         1
@@ -307,7 +342,7 @@ fn expiry_is_inclusive_renewal_is_explicit_and_stale_handles_stay_revoked() {
         )
         .unwrap();
     append(&mut db, 1);
-    let deadline = db.store.commit_epoch() + 2;
+    let deadline = db.runtime.get().unwrap().store.commit_epoch() + 2;
     assert_eq!(
         db.renew_search_projection_consumer(&old)
             .unwrap()
@@ -401,11 +436,9 @@ fn identity_survives_database_rename_and_rejects_copied_registry() {
     drop(db);
     let replacement = fixture.database();
     drop(replacement);
-    std::fs::copy(
-        fixture.0.join("moved/projection_consumers.meta"),
-        fixture.0.join("database/projection_consumers.meta"),
-    )
-    .unwrap();
+    let registry = fixture.registry_path("database");
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::copy(fixture.registry_path("moved"), registry).unwrap();
     let mut replacement = fixture.database();
     assert!(matches!(
         replacement.open_search_projection_consumer(&id("main"), fixture.0.join("projection")),
@@ -425,24 +458,24 @@ fn registry_publication_error_never_adopts_the_unacknowledged_checkpoint() {
             initialize,
         )
         .unwrap();
-    let old = std::fs::read(fixture.0.join("database/projection_consumers.meta")).unwrap();
+    let old = std::fs::read(fixture.registry_path("database")).unwrap();
     append(&mut db, 1);
     PUBLICATION_FAILURE.set(Some((PublicationStage::BeforeRegistry, false)));
     assert!(catch_up(&mut db, &mut consumer).is_err());
     assert_eq!(
-        std::fs::read(fixture.0.join("database/projection_consumers.meta")).unwrap(),
+        std::fs::read(fixture.registry_path("database")).unwrap(),
         old
     );
     assert!(!fixture
-        .0
-        .join("database/projection_consumers.meta.tmp")
+        .registry_path("database")
+        .with_file_name("projection_consumers.meta.tmp")
         .exists());
     assert_eq!(
         consumer
             .search_index()
             .projection_freshness()
             .durable_source_graph_commit_epoch,
-        Some(db.store.commit_epoch())
+        Some(db.runtime.get().unwrap().store.commit_epoch())
     );
     drop(consumer);
     drop(db);
@@ -468,7 +501,7 @@ fn missing_and_corrupt_registry_leave_ordinary_database_writes_available() {
             .unwrap();
         drop(consumer);
         drop(db);
-        let registry = fixture.0.join("database/projection_consumers.meta");
+        let registry = fixture.registry_path("database");
         if corrupt {
             std::fs::write(&registry, b"corrupt").unwrap();
         } else {
@@ -514,14 +547,14 @@ fn overflow_and_hydration_errors_do_not_publish_progress() {
         .unwrap();
     append(&mut db, 1);
     let receipt = consumer.projection().receipt();
-    let before = std::fs::read(fixture.0.join("database/projection_consumers.meta")).unwrap();
+    let before = std::fs::read(fixture.registry_path("database")).unwrap();
     let result = db.catch_up_search_projection_consumer(&mut consumer, 1, 1, 1, |_, _| {
         Err(HawDBError::Execution("incomplete hydration".into()))
     });
     assert!(result.is_err());
     assert_eq!(consumer.projection().receipt(), receipt);
     assert_eq!(
-        std::fs::read(fixture.0.join("database/projection_consumers.meta")).unwrap(),
+        std::fs::read(fixture.registry_path("database")).unwrap(),
         before
     );
     assert_eq!(
@@ -571,7 +604,7 @@ fn process_crashes_observe_checkpoint_before_registry_ordering() {
             .unwrap();
         let old_epoch = consumer.projection().receipt().source_epoch;
         append(&mut db, 1);
-        let source_epoch = db.store.commit_epoch();
+        let source_epoch = db.runtime.get().unwrap().store.commit_epoch();
         drop(consumer);
         drop(db);
         let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -664,8 +697,17 @@ fn failed_registration_retry_preserves_other_durable_consumers() {
             initialize,
         )
         .unwrap();
-    assert_eq!(db.projection_consumers.records.len(), 2);
-    assert!(db.projection_consumers.records.contains_key("first"));
+    assert_eq!(
+        db.runtime.get().unwrap().projection_consumers.records.len(),
+        2
+    );
+    assert!(db
+        .runtime
+        .get()
+        .unwrap()
+        .projection_consumers
+        .records
+        .contains_key("first"));
     db.renew_search_projection_consumer(&first).unwrap();
     assert_eq!(
         db.search_projection_consumer_status(&id("first"))
@@ -713,9 +755,12 @@ fn consumer_registry_capacity_is_reclaimed_only_by_unregister() {
         initialize,
     )
     .unwrap();
-    assert_eq!(db.projection_consumers.records.len(), MAX_CONSUMERS);
+    assert_eq!(
+        db.runtime.get().unwrap().projection_consumers.records.len(),
+        MAX_CONSUMERS
+    );
     assert!(
-        std::fs::metadata(fixture.0.join("database/projection_consumers.meta"))
+        std::fs::metadata(fixture.registry_path("database"))
             .unwrap()
             .len()
             <= 64 * 1024
@@ -740,7 +785,7 @@ fn acknowledgement_is_idempotent_monotonic_and_bound_to_the_complete_receipt() {
     for variation in 0..5 {
         let mut invalid = receipt.clone();
         match variation {
-            0 => invalid.source_epoch = db.store.commit_epoch() + 1,
+            0 => invalid.source_epoch = db.runtime.get().unwrap().store.commit_epoch() + 1,
             1 => invalid.source_epoch -= 1,
             2 => invalid.sha256 = "0".repeat(64),
             3 => invalid.binding.checkpoint_uuid = generate_uuidv7().unwrap(),
@@ -771,9 +816,17 @@ fn byte_retention_limit_does_not_wait_for_registry_io() {
             initialize,
         )
         .unwrap();
-    db.store.set_max_search_projection_change_log_entries(None);
-    db.store.set_max_search_projection_change_log_bytes(Some(1));
-    let registry = fixture.0.join("database/projection_consumers.meta");
+    db.runtime
+        .get_mut()
+        .unwrap()
+        .store
+        .set_max_search_projection_change_log_entries(None);
+    db.runtime
+        .get_mut()
+        .unwrap()
+        .store
+        .set_max_search_projection_change_log_bytes(Some(1));
+    let registry = fixture.registry_path("database");
     let old = std::fs::read(&registry).unwrap();
     append(&mut db, 1);
     let status = db.search_projection_consumer_status(consumer.id()).unwrap();
@@ -808,7 +861,12 @@ fn backup_restores_identity_and_rejects_a_cursor_ahead_of_the_restored_source() 
             initialize,
         )
         .unwrap();
-    let identity = db.store.search_projection_database_identity();
+    let identity = db
+        .runtime
+        .get()
+        .unwrap()
+        .store
+        .search_projection_database_identity();
     db.backup_to(fixture.0.join("backup")).unwrap();
     append(&mut db, 1);
     catch_up(&mut db, &mut consumer).unwrap();
@@ -816,7 +874,12 @@ fn backup_restores_identity_and_rejects_a_cursor_ahead_of_the_restored_source() 
     Database::restore_backup(fixture.0.join("backup"), fixture.0.join("restored")).unwrap();
     let mut restored = Database::open(fixture.0.join("restored")).unwrap();
     assert_eq!(
-        restored.store.search_projection_database_identity(),
+        restored
+            .runtime
+            .get()
+            .unwrap()
+            .store
+            .search_projection_database_identity(),
         identity
     );
     assert!(matches!(
@@ -825,8 +888,8 @@ fn backup_restores_identity_and_rejects_a_cursor_ahead_of_the_restored_source() 
     ));
     drop(restored);
     std::fs::copy(
-        fixture.0.join("database/projection_consumers.meta"),
-        fixture.0.join("restored/projection_consumers.meta"),
+        fixture.registry_path("database"),
+        fixture.registry_path("restored"),
     )
     .unwrap();
     let mut restored = Database::open(fixture.0.join("restored")).unwrap();
@@ -849,15 +912,17 @@ fn foreign_registry_reinitializes_only_after_the_new_projection_is_complete() {
             initialize,
         )
         .unwrap();
-    let source_identity = source.store.search_projection_database_identity();
+    let source_identity = source
+        .runtime
+        .get()
+        .unwrap()
+        .store
+        .search_projection_database_identity();
     let mut replacement = Database::open(fixture.0.join("replacement-database")).unwrap();
     append(&mut replacement, 2);
     drop(replacement);
-    let foreign_bytes =
-        std::fs::read(fixture.0.join("database/projection_consumers.meta")).unwrap();
-    let registry = fixture
-        .0
-        .join("replacement-database/projection_consumers.meta");
+    let foreign_bytes = std::fs::read(fixture.registry_path("database")).unwrap();
+    let registry = fixture.registry_path("replacement-database");
     std::fs::write(&registry, &foreign_bytes).unwrap();
     let mut replacement = Database::open(fixture.0.join("replacement-database")).unwrap();
     let epoch = replacement.commit_epoch();
@@ -894,7 +959,12 @@ fn foreign_registry_reinitializes_only_after_the_new_projection_is_complete() {
         .unwrap();
     assert_eq!(replacement.commit_epoch(), epoch);
     assert_ne!(
-        replacement.store.search_projection_database_identity(),
+        replacement
+            .runtime
+            .get()
+            .unwrap()
+            .store
+            .search_projection_database_identity(),
         source_identity
     );
     assert!(rebuilt.search_index().document("memory:m2").is_some());

@@ -57,13 +57,13 @@ pub(super) fn qualify_space_merge_ownership(
     }
     require_source_state(&mut database, corpus, SOURCE_SPACE_ID)?;
     let payload_sha256_before = ownership_payload_sha256(&mut database, &threads)?;
-    let base_epoch = database.commit_epoch();
+    let base_epoch = database.commit_epoch()?;
 
     let update_document = corpus_statement(corpus, "update_owned_document_space_guarded")?;
     let update_messages = corpus_statement(corpus, "update_thread_messages_space_guarded")?;
     let page = corpus_statement(corpus, "thread_messages_page")?;
     let source_page = corpus_statement(corpus, "source_chunks_by_source")?;
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
     for thread in threads {
         transaction.query_with_params(
             "MATCH (t:Thread {id: $thread_id}) WHERE t.space_id = $source_space_id SET t.space_id = $target_space_id, t.updated_at = $updated_at",
@@ -153,7 +153,7 @@ pub(super) fn qualify_space_merge_ownership(
     require_source_chunk_state(&chunks, TARGET_SPACE_ID, "workspace")?;
     transaction.commit()?;
 
-    let committed_epoch = database.commit_epoch();
+    let committed_epoch = database.commit_epoch()?;
     if committed_epoch <= base_epoch {
         return Err(HawDBError::Execution(format!(
             "content-store space merge epoch {committed_epoch} did not advance beyond base epoch {base_epoch}"
@@ -177,7 +177,7 @@ pub(super) fn qualify_space_merge_ownership(
 
     database.checkpoint()?;
     let checkpoint_generation = database
-        .relational_index_shadow_checkpoint_report()
+        .relational_index_shadow_checkpoint_report()?
         .ok_or_else(|| {
             HawDBError::Execution(
                 "content-store space merge checkpoint did not publish relational indexes"

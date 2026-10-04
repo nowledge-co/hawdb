@@ -271,11 +271,17 @@ impl CommitSequencer {
             if completed.len() == 1 {
                 group_commit_process_crash("after_first_group_task");
             }
-            if database.relational_row_schema_checkpoint_required() {
+            // The group was admitted before any task ran. Inspect that bundle
+            // without a new fallible admission after acknowledging mutations.
+            // If a task unexpectedly removes it, stop collecting and let the
+            // shared finish barrier report the failure to all completed callers.
+            let Some(runtime) = database.runtime.peek() else {
                 break;
-            }
-            let progress = database.wal_sync_group_progress();
-            if progress.byte_count >= self.group_commit.config.max_bytes().get() {
+            };
+            if runtime.store.relational_row_schema_checkpoint_required()
+                || runtime.store.wal_sync_group_progress().byte_count
+                    >= self.group_commit.config.max_bytes().get()
+            {
                 break;
             }
         }

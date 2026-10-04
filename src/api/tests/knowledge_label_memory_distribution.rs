@@ -58,7 +58,7 @@ fn label_memory_distribution_uses_one_fixed_bounded_query() {
         ("offset".to_string(), Value::Int(0)),
         ("limit".to_string(), Value::Int(2)),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     db.query("CREATE (:Memory {id: 'late-memory'})").unwrap();
     db.query(
@@ -111,7 +111,7 @@ fn label_memory_distribution_respects_query_offset() {
         ("offset".to_string(), Value::Int(1)),
         ("limit".to_string(), Value::Int(1)),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     let output = snapshot
         .query_with_params_bounded(LABEL_MEMORY_DISTRIBUTION_QUERY, &parameters, Some(1))

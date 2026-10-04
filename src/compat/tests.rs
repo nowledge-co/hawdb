@@ -1058,7 +1058,7 @@ impl CompatibilityShadowEngine for DatabaseShadowEngine {
         &mut self,
         check: &ProjectedGraphFixtureCheck,
     ) -> Result<Option<ProjectedGraphShadowOutput>> {
-        let graph = self.db.project_graph(check.rel_type.as_deref());
+        let graph = self.db.project_graph(check.rel_type.as_deref())?;
         Ok(Some(super::projected_graph_shadow_output(&graph, check)))
     }
 }

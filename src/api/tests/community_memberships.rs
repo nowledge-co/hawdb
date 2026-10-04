@@ -97,7 +97,7 @@ fn community_membership_create_rejects_invalid_input_before_wal() {
     let wal_before = read_test_wal(&path).unwrap();
     {
         let mut db = Database::open(&path).unwrap();
-        let graph_commit_epoch_before = db.store.commit_epoch();
+        let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
         let error = db
             .create_knowledge_community_memberships_batch(
                 &KnowledgeCommunityMembershipCreateBatchRequest {
@@ -112,7 +112,10 @@ fn community_membership_create_rejects_invalid_input_before_wal() {
             )
             .unwrap_err();
         assert!(error.to_string().contains("strength must be finite"));
-        assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+        assert_eq!(
+            db.runtime.get().unwrap().store.commit_epoch(),
+            graph_commit_epoch_before
+        );
     }
     let wal_after = read_test_wal(&path).unwrap();
     assert_eq!(wal_after, wal_before);

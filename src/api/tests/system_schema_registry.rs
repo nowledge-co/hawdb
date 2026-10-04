@@ -108,7 +108,12 @@ fn application_system_schema_upgrade_crash_recovers_a_consistent_registry_and_sc
             )
             .unwrap();
             assert!(matches!(
-                read_only.store.relational_row_page_recovery_status(),
+                read_only
+                    .runtime
+                    .get()
+                    .unwrap()
+                    .store
+                    .relational_row_page_recovery_status(),
                 crate::RelationalRowPageRecoveryStatus::Unavailable {
                     recovered_commit_epoch: 4,
                     checkpoint_required: true,
@@ -155,7 +160,12 @@ fn application_system_schema_upgrade_crash_recovers_a_consistent_registry_and_sc
                 assert_eq!(versions, vec![1, 2]);
                 assert_eq!(kind.unwrap(), Value::String("text".to_string()));
                 assert!(matches!(
-                    reopened.store.relational_row_page_recovery_status(),
+                    reopened
+                        .runtime
+                        .get()
+                        .unwrap()
+                        .store
+                        .relational_row_page_recovery_status(),
                     crate::RelationalRowPageRecoveryStatus::CheckpointReady {
                         source_commit_epoch: 4,
                         ..
@@ -165,10 +175,10 @@ fn application_system_schema_upgrade_crash_recovers_a_consistent_registry_and_sc
             }
             version => panic!("unexpected recovered schema version {version} after {stage}"),
         };
-        let epoch_before_validation = reopened.commit_epoch();
+        let epoch_before_validation = reopened.commit_epoch().unwrap();
         let validation = reopened.apply_system_schema_registry(&registry).unwrap();
         assert!(validation.applied_versions.is_empty());
-        assert_eq!(reopened.commit_epoch(), epoch_before_validation);
+        assert_eq!(reopened.commit_epoch().unwrap(), epoch_before_validation);
 
         drop(reopened);
         std::fs::remove_dir_all(path).unwrap();
@@ -187,7 +197,7 @@ fn engine_system_schema_bootstraps_during_persistent_open() {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["owner"], Value::String("hawdb.engine".to_string()));
         assert_eq!(rows[0]["version"], Value::Int(1));
-        let changefeed = db.search_projection_changefeed_status();
+        let changefeed = db.search_projection_changefeed_status().unwrap();
         assert_eq!(changefeed.retained_mutation_count, 0);
         assert_eq!(changefeed.required_projection_commit_epoch(), 0);
         assert_eq!(changefeed.projection_commit_lag_after(0), 0);
@@ -242,11 +252,32 @@ fn read_only_out_of_core_open_validates_system_schema_through_canonical_rows() {
     )
     .unwrap();
 
-    assert!(!db.store.relational_state().materialized_rows_resident());
-    assert!(db.store.relational_state().canonical_row_metadata_only());
-    assert_eq!(db.store.relational_state().overflow_segment_count(), 0);
+    assert!(!db
+        .runtime
+        .get()
+        .unwrap()
+        .store
+        .relational_state()
+        .materialized_rows_resident());
+    assert!(db
+        .runtime
+        .get()
+        .unwrap()
+        .store
+        .relational_state()
+        .canonical_row_metadata_only());
+    assert_eq!(
+        db.runtime
+            .get()
+            .unwrap()
+            .store
+            .relational_state()
+            .overflow_segment_count(),
+        0
+    );
     assert!(
         db.storage_residency_report()
+            .unwrap()
             .relational_rows
             .overflow_extent_count
             > 0
@@ -289,8 +320,14 @@ fn writable_metadata_only_transaction_checkpoints_rows_and_indexes() {
 
     let committed_epoch = {
         let mut db = Database::open_with_config(&path, config.clone()).unwrap();
-        assert!(db.store.relational_state().canonical_row_metadata_only());
-        let mut transaction = db.begin_transaction();
+        assert!(db
+            .runtime
+            .get()
+            .unwrap()
+            .store
+            .relational_state()
+            .canonical_row_metadata_only());
+        let mut transaction = db.begin_transaction().unwrap();
         transaction
             .query_sql("INSERT INTO content_documents (id, body) VALUES ('doc-2', 'private')")
             .unwrap();
@@ -313,22 +350,22 @@ fn writable_metadata_only_transaction_checkpoints_rows_and_indexes() {
             .unwrap();
         assert_eq!(after_rejection.rows, private.rows);
         transaction.commit().unwrap();
-        let committed_epoch = db.commit_epoch();
+        let committed_epoch = db.commit_epoch().unwrap();
         db.checkpoint().unwrap();
         committed_epoch
     };
 
-    let incompatible = match Database::open(&path) {
-        Ok(_) => panic!("metadata-only checkpoint unexpectedly reopened in materialized mode"),
-        Err(error) => error,
-    };
+    let incompatible = Database::open(&path).unwrap().commit_epoch().unwrap_err();
     assert!(incompatible
         .to_string()
         .contains("reopen requires OutOfCore residency with Authoritative relational indexes"));
 
     let mut reopened = Database::open_with_config(&path, config).unwrap();
-    assert_eq!(reopened.commit_epoch(), committed_epoch);
+    assert_eq!(reopened.commit_epoch().unwrap(), committed_epoch);
     assert!(reopened
+        .runtime
+        .get()
+        .unwrap()
         .store
         .relational_state()
         .canonical_row_metadata_only());
@@ -406,22 +443,26 @@ fn schema_upgrade_publishes_a_canonical_row_checkpoint_before_returning() {
     db.checkpoint().unwrap();
     let generation_before = db
         .storage_reclamation_watermark()
+        .unwrap()
         .checkpoint_epoch
         .expect("checkpoint generation");
 
     let report = db.apply_system_schema_registry(&registry_v2()).unwrap();
 
     assert_eq!(report.applied_versions, vec![2]);
-    assert_eq!(
-        db.storage_reclamation_watermark().checkpoint_epoch,
-        Some(generation_before + 1)
+    assert!(
+        db.storage_reclamation_watermark()
+            .unwrap()
+            .checkpoint_epoch
+            .unwrap()
+            > generation_before
     );
     assert!(matches!(
-        db.store.relational_row_page_recovery_status(),
+        db.runtime.get().unwrap().store.relational_row_page_recovery_status(),
         crate::RelationalRowPageRecoveryStatus::CheckpointReady {
             source_commit_epoch,
             ..
-        } if *source_commit_epoch == db.commit_epoch()
+        } if *source_commit_epoch == db.commit_epoch().unwrap()
     ));
     assert_eq!(
         db.query_sql("SELECT kind FROM content_documents WHERE id = 'doc-1'")
@@ -541,7 +582,7 @@ fn application_system_schema_requires_contiguous_versions() {
     );
     let error = db.apply_system_schema_registry(&registry).unwrap_err();
     assert!(error.to_string().contains("contiguous from version 1"));
-    assert_eq!(db.commit_epoch(), 0);
+    assert_eq!(db.commit_epoch().unwrap(), 0);
 }
 
 #[test]
@@ -556,7 +597,7 @@ fn application_sql_cannot_modify_system_schema_registry() {
         .to_string()
         .contains("read-only outside system schema upgrade"));
 
-    let mut transaction = db.begin_transaction();
+    let mut transaction = db.begin_transaction().unwrap();
     let transaction_error = transaction
         .query_sql(
             "UPDATE hawdb_schema_migrations SET version = 9 WHERE owner = 'nowledge.content_store'",
@@ -616,7 +657,7 @@ fn application_cannot_claim_the_engine_system_schema_owner() {
 
     let error = db.apply_system_schema_registry(&registry).unwrap_err();
     assert!(error.to_string().contains("reserved by the engine"));
-    assert_eq!(db.commit_epoch(), 0);
+    assert_eq!(db.commit_epoch().unwrap(), 0);
 }
 
 #[test]

@@ -21,6 +21,7 @@ use serde_json::{json, Value as JsonValue};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const APPEND_STATE_MACHINE_PROTOCOL: &str = "hawdb-append-state-machine-fuzz-v1";
@@ -76,14 +77,22 @@ pub fn run_append_state_machine_case(seed: u64, steps: usize) -> Result<JsonValu
     if steps == 0 {
         return Err("append state-machine case requires at least one step".to_string());
     }
-    let path = unique_path(seed);
+    let path = unique_path(seed)?;
     let result = run_case_at_path(&path, seed, steps);
-    let _ = fs::remove_dir_all(&path);
-    result
+    match result {
+        Ok(report) => {
+            let _ = fs::remove_dir_all(&path);
+            Ok(report)
+        }
+        Err(error) => Err(format!(
+            "append fixture retained at {}: {error}",
+            path.display()
+        )),
+    }
 }
 
 fn run_case_at_path(path: &Path, seed: u64, steps: usize) -> Result<JsonValue, String> {
-    let mut database = Database::open(path).map_err(|error| error.to_string())?;
+    let mut database = Database::open(path).map_err(|error| format!("initial open: {error}"))?;
     database
         .append_transaction(AppendTransaction {
             writes: vec![
@@ -95,7 +104,7 @@ fn run_case_at_path(path: &Path, seed: u64, steps: usize) -> Result<JsonValue, S
                 },
             ],
         })
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("create append schemas: {error}"))?;
     let mut model = AppendModel::default();
     let mut generated_model = AppendModel::default();
     let mut rng = DeterministicRng::new(seed);
@@ -222,9 +231,11 @@ fn run_case_at_path(path: &Path, seed: u64, steps: usize) -> Result<JsonValue, S
             .map_err(|error| format!("step {step} generated state mismatch: {error}"))?;
     }
 
-    database.checkpoint().map_err(|error| error.to_string())?;
+    database
+        .checkpoint()
+        .map_err(|error| format!("final checkpoint: {error}"))?;
     drop(database);
-    let database = Database::open(path).map_err(|error| error.to_string())?;
+    let database = Database::open(path).map_err(|error| format!("final reopen: {error}"))?;
     verify_all_partitions(&database, &model)
         .map_err(|error| format!("final checkpoint/reopen mismatch: {error}"))?;
     verify_generated_partitions(&database, &generated_model)
@@ -377,11 +388,11 @@ fn reject_invalid(
     transaction: AppendTransaction,
     label: &str,
 ) -> Result<(), String> {
-    let before = database.commit_epoch();
+    let before = database.commit_epoch().map_err(|error| error.to_string())?;
     if database.append_transaction(transaction).is_ok() {
         return Err(format!("{label} was accepted"));
     }
-    if database.commit_epoch() != before {
+    if database.commit_epoch().map_err(|error| error.to_string())? != before {
         return Err(format!("{label} changed the commit epoch"));
     }
     Ok(())
@@ -547,15 +558,26 @@ fn count_action(counts: &mut BTreeMap<&'static str, usize>, action: &'static str
     *counts.entry(action).or_default() += 1;
 }
 
-fn unique_path(seed: u64) -> PathBuf {
+fn unique_path(seed: u64) -> Result<PathBuf, String> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    std::env::temp_dir().join(format!(
-        "hawdb-append-state-machine-{}-{seed}-{timestamp}",
-        std::process::id()
-    ))
+    // CLI tests execute the same seed concurrently. Clock resolution alone
+    // cannot give each campaign exclusive ownership of a fixture directory.
+    loop {
+        let path = std::env::temp_dir().join(format!(
+            "hawdb-append-state-machine-{}-{seed}-{timestamp}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("create append fixture directory: {error}")),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

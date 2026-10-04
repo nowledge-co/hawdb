@@ -54,7 +54,7 @@ fn skill_list_and_detail_use_fixed_parameterized_queries() {
         .unwrap();
     db.query("CREATE (:Skill {id: 'skill-c', stage: 'retired', updated_at: 30})")
         .unwrap();
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     let page_parameters = BTreeMap::from([
         (
             "stages".to_string(),
@@ -105,7 +105,7 @@ fn skill_memory_read_is_bounded_by_skill_and_limit() {
         ("skill_id".to_string(), Value::String("skill-a".to_string())),
         ("limit".to_string(), Value::Int(1)),
     ]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
 
     let output = read
         .query_with_params_bounded(SKILL_MEMORY_QUERY, &parameters, Some(1))
@@ -134,7 +134,7 @@ fn skill_thread_source_read_uses_one_bounded_path_query() {
         ("skill_id".to_string(), Value::String("skill-a".to_string())),
         ("limit".to_string(), Value::Int(1)),
     ]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
 
     let output = read
         .query_with_params_bounded(SKILL_THREAD_SOURCE_QUERY, &parameters, Some(1))

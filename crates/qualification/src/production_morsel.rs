@@ -937,7 +937,7 @@ mod tests {
         let graph_commit_epoch = {
             let mut database = Database::open_with_config(&graph_path, database_config.clone())
                 .expect("fixture database should open");
-            let mut transaction = database.begin_transaction();
+            let mut transaction = database.begin_transaction().unwrap();
             for row in 0..1024 {
                 transaction
                     .query_with_params(
@@ -951,7 +951,8 @@ mod tests {
                 .checkpoint()
                 .expect("fixture checkpoint should succeed");
             database.commit_epoch()
-        };
+        }
+        .unwrap();
         let mut qualification_identity = identity();
         qualification_identity.canonical_graph_commit_epoch = graph_commit_epoch;
         let report = run_production_morsel_profile(ProductionMorselProfileConfig {

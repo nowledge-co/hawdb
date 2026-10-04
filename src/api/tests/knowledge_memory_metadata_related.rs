@@ -60,7 +60,7 @@ fn metadata_related_memories_use_one_fixed_bounded_query() {
         ),
         ("limit".to_string(), Value::Int(2)),
     ]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     db.query("CREATE (:Memory {id: 'after-snapshot', metadata: '{\"source_id\":\"thread-a\"}', space_id: 'default', created_at: 50})")
         .unwrap();
 

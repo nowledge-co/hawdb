@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::*;
-use crate::store::{ManifestGeneration, StorageResidencyMode};
+use crate::store::StorageResidencyMode;
 use crate::DatabaseReadTransaction;
 use std::sync::{Arc, Barrier};
 
@@ -23,7 +23,7 @@ fn read_transaction_keeps_snapshot_before_later_commit() {
     db.query("CREATE (:Memory {id: 1, title: 'Before snapshot'})")
         .unwrap();
 
-    let mut read_tx = db.begin_read_transaction();
+    let mut read_tx = db.begin_read_transaction().unwrap();
     db.query("CREATE (:Memory {id: 2, title: 'After snapshot'})")
         .unwrap();
 
@@ -53,39 +53,40 @@ fn published_read_view_separates_logical_visibility_from_physical_generation() {
     let path = unique_test_dir("published_read_view_identity");
     let mut db = Database::open(&path).unwrap();
 
-    let empty = db.published_read_view();
+    let empty = db.published_read_view().unwrap();
     assert_eq!(empty.visible_commit_epoch(), 1);
-    assert_eq!(empty.checkpoint_commit_epoch(), None);
-    assert_eq!(empty.physical_generation(), None);
+    assert_eq!(
+        empty.checkpoint_commit_epoch(),
+        Some(empty.visible_commit_epoch())
+    );
+    assert!(empty.physical_generation().is_some());
 
     db.query("CREATE (:Memory {id: 1, title: 'Checkpoint base'})")
         .unwrap();
     db.checkpoint().unwrap();
-    let checkpointed = db.published_read_view();
+    let checkpointed = db.published_read_view().unwrap();
     assert_eq!(checkpointed.visible_commit_epoch(), 2);
     assert_eq!(checkpointed.checkpoint_commit_epoch(), Some(2));
-    assert_eq!(
-        checkpointed.physical_generation(),
-        Some(ManifestGeneration(1))
-    );
+    let first_generation = checkpointed.physical_generation().unwrap();
+    assert!(first_generation > empty.physical_generation().unwrap());
     assert!(checkpointed.physical_base_is_current());
     assert!(!checkpointed.has_delta_after_physical_generation());
 
     db.query("CREATE (:Memory {id: 2, title: 'Logical delta'})")
         .unwrap();
-    let reader = db.begin_read_transaction();
+    let reader = db.begin_read_transaction().unwrap();
     let pinned = reader.published_read_view();
     assert_eq!(pinned.visible_commit_epoch(), 3);
     assert_eq!(pinned.checkpoint_commit_epoch(), Some(2));
-    assert_eq!(pinned.physical_generation(), Some(ManifestGeneration(1)));
+    assert_eq!(pinned.physical_generation(), Some(first_generation));
     assert!(!pinned.physical_base_is_current());
     assert!(pinned.has_delta_after_physical_generation());
 
     db.checkpoint().unwrap();
-    let current = db.published_read_view();
+    let current = db.published_read_view().unwrap();
     assert_eq!(current.visible_commit_epoch(), 3);
     assert_eq!(current.checkpoint_commit_epoch(), Some(3));
-    assert_eq!(current.physical_generation(), Some(ManifestGeneration(2)));
+    assert!(current.physical_generation().unwrap() > first_generation);
     assert!(current.physical_base_is_current());
     assert_eq!(reader.published_read_view(), pinned);
 
@@ -100,21 +101,30 @@ fn read_transaction_keeps_parameterized_query_snapshot() {
     db.query("CREATE (:Memory {id: 'root', title: 'Before snapshot'})-[:LINKS]->(:Entity {id: 'mid', name: 'Mid'})")
             .unwrap();
 
-    let mut read_tx = db.begin_read_transaction();
-    let leaf = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    let mut read_tx = db.begin_read_transaction().unwrap();
+    let leaf = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Entity",
             BTreeMap::from([
                 ("id".to_string(), Value::String("leaf".to_string())),
                 ("name".to_string(), Value::String("Leaf".to_string())),
             ]),
         )
-        .unwrap();
-    db.store
-        .create_relationship(&mut db.catalog, NodeId(0), leaf, "LINKS", BTreeMap::new())
-        .unwrap();
+    }
+    .unwrap();
+    {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_relationship(
+            &mut branch_runtime.catalog,
+            NodeId(0),
+            leaf,
+            "LINKS",
+            BTreeMap::new(),
+        )
+    }
+    .unwrap();
 
     let parameters = BTreeMap::from([("id".to_string(), Value::String("root".to_string()))]);
     let entity = read_tx
@@ -236,27 +246,30 @@ fn read_transaction_retrieves_knowledge_from_pinned_snapshot() {
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
 
-    let read_tx = db.begin_read_transaction();
-    let after = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    let read_tx = db.begin_read_transaction().unwrap();
+    let after = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Entity",
             BTreeMap::from([
                 ("id".to_string(), Value::String("after".to_string())),
                 ("name".to_string(), Value::String("After".to_string())),
             ]),
         )
-        .unwrap();
-    db.store
-        .create_relationship(
-            &mut db.catalog,
+    }
+    .unwrap();
+    {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_relationship(
+            &mut branch_runtime.catalog,
             NodeId(0),
             after,
             "MENTIONS",
             BTreeMap::new(),
         )
-        .unwrap();
+    }
+    .unwrap();
     db.query("CREATE (:Memory {id: 'later', title: 'Snapshot retrieval', content: 'snapshot retrieval later'})")
         .unwrap();
 
@@ -333,7 +346,7 @@ fn read_transaction_rebuilds_search_projection_from_pinned_snapshot() {
         "CREATE (:Memory {id: 'snapshot', title: 'Pinned projection', content: 'snapshot only'})",
     )
     .unwrap();
-    let read_tx = db.begin_read_transaction();
+    let read_tx = db.begin_read_transaction().unwrap();
     db.query("CREATE (:Memory {id: 'live', title: 'Pinned projection', content: 'live only'})")
         .unwrap();
 
@@ -371,7 +384,7 @@ fn read_transaction_repairs_search_projection_metadata_from_pinned_snapshot() {
         "CREATE (:Memory {id: 'snapshot', title: 'Pinned projection', content: 'snapshot only', source_id: 'before', space_id: 'snapshot-space'})",
     )
     .unwrap();
-    let read_tx = db.begin_read_transaction();
+    let read_tx = db.begin_read_transaction().unwrap();
     db.query(
         "MATCH (m:Memory {id: 'snapshot'}) SET m.source_id = 'after', m.space_id = 'live-space'",
     )
@@ -428,7 +441,7 @@ fn read_transaction_survives_later_checkpoint() {
         db.query("CREATE (:Memory {id: 1, title: 'Pinned snapshot'})")
             .unwrap();
 
-        let mut read_tx = db.begin_read_transaction();
+        let mut read_tx = db.begin_read_transaction().unwrap();
         db.query("CREATE (:Memory {id: 2, title: 'Checkpoint commit'})")
             .unwrap();
         db.checkpoint().unwrap();
@@ -453,21 +466,28 @@ fn read_transaction_pins_checkpoint_manifest_until_drop() {
     let path = unique_test_dir("read_tx_manifest_pin");
     {
         let mut db = Database::open(&path).unwrap();
+        let bootstrap_generation = db
+            .storage_reclamation_watermark()
+            .unwrap()
+            .checkpoint_epoch
+            .unwrap();
+        let first_generation;
         db.query("CREATE (:Memory {id: 1, title: 'Pinned snapshot'})")
             .unwrap();
 
         {
-            let _read_tx = db.begin_read_transaction();
+            let _read_tx = db.begin_read_transaction().unwrap();
             db.query("CREATE (:Memory {id: 2, title: 'Newer commit'})")
                 .unwrap();
             db.checkpoint().unwrap();
-            let manifest = std::fs::read_to_string(path.join("manifest.hawdb")).unwrap();
+            let manifest = std::fs::read_to_string(active_runtime_manifest_path(&path)).unwrap();
             assert!(manifest.contains("checkpoint_commit_epoch\t3\n"));
             assert!(manifest.contains("oldest_reader_commit_epoch\t2\n"));
             assert!(manifest.contains("safe_reclaim_commit_epoch\t1\n"));
-            let watermark = db.storage_reclamation_watermark();
+            let watermark = db.storage_reclamation_watermark().unwrap();
             assert_eq!(watermark.current_commit_epoch, 3);
-            assert_eq!(watermark.checkpoint_epoch, Some(1));
+            first_generation = watermark.checkpoint_epoch.unwrap();
+            assert!(first_generation > bootstrap_generation);
             assert_eq!(watermark.checkpoint_commit_epoch, Some(3));
             assert_eq!(watermark.oldest_reader_commit_epoch, Some(2));
             assert_eq!(watermark.safe_reclaim_commit_epoch, 1);
@@ -475,13 +495,13 @@ fn read_transaction_pins_checkpoint_manifest_until_drop() {
         }
 
         db.checkpoint().unwrap();
-        let manifest = std::fs::read_to_string(path.join("manifest.hawdb")).unwrap();
+        let manifest = std::fs::read_to_string(active_runtime_manifest_path(&path)).unwrap();
         assert!(manifest.contains("checkpoint_commit_epoch\t3\n"));
         assert!(manifest.contains("oldest_reader_commit_epoch\tnone\n"));
         assert!(manifest.contains("safe_reclaim_commit_epoch\t3\n"));
-        let watermark = db.storage_reclamation_watermark();
+        let watermark = db.storage_reclamation_watermark().unwrap();
         assert_eq!(watermark.current_commit_epoch, 3);
-        assert_eq!(watermark.checkpoint_epoch, Some(2));
+        assert!(watermark.checkpoint_epoch.unwrap() > first_generation);
         assert_eq!(watermark.checkpoint_commit_epoch, Some(3));
         assert_eq!(watermark.oldest_reader_commit_epoch, None);
         assert_eq!(watermark.safe_reclaim_commit_epoch, 3);
@@ -502,14 +522,13 @@ fn out_of_core_reader_pin_retains_its_canonical_generation_until_drop() {
         .unwrap();
     db.checkpoint().unwrap();
 
-    let mut reader = db.begin_read_transaction();
+    let mut reader = db.begin_read_transaction().unwrap();
     let pinned_view = reader.published_read_view();
     assert_eq!(pinned_view.visible_commit_epoch(), 2);
     assert_eq!(pinned_view.checkpoint_commit_epoch(), Some(2));
-    assert_eq!(
-        pinned_view.physical_generation(),
-        Some(ManifestGeneration(1))
-    );
+    let pinned_generation = pinned_view.physical_generation().unwrap().0;
+    let data = active_storage_root(&path);
+    let mut generations = vec![pinned_generation];
     for id in 2..=5 {
         db.query_with_params(
             "CREATE (:Memory {id: $id, title: 'Newer'})",
@@ -517,18 +536,24 @@ fn out_of_core_reader_pin_retains_its_canonical_generation_until_drop() {
         )
         .unwrap();
         db.checkpoint().unwrap();
+        generations.push(
+            db.published_read_view()
+                .unwrap()
+                .physical_generation()
+                .unwrap()
+                .0,
+        );
     }
 
-    assert!(path.join("canonical.1.hawdb").exists());
-    assert!(!path.join("canonical.2.hawdb").exists());
-    assert!(!path.join("canonical.3.hawdb").exists());
-    assert!(path.join("canonical.4.hawdb").exists());
-    assert!(path.join("canonical.5.hawdb").exists());
-    assert!(path.join("checkpoint.1.hawdb").exists());
-    assert!(!path.join("checkpoint.2.hawdb").exists());
-    assert!(!path.join("checkpoint.3.hawdb").exists());
-    assert!(path.join("checkpoint.4.hawdb").exists());
-    assert!(path.join("checkpoint.5.hawdb").exists());
+    for prefix in ["canonical", "checkpoint"] {
+        for (index, generation) in generations.iter().enumerate() {
+            let expected = index == 0 || index >= generations.len() - 2;
+            assert_eq!(
+                data.join(format!("{prefix}.{generation}.hawdb")).exists(),
+                expected
+            );
+        }
+    }
     let pinned = reader
         .query("MATCH (m:Memory) RETURN m.id AS id ORDER BY id")
         .unwrap();
@@ -538,10 +563,18 @@ fn out_of_core_reader_pin_retains_its_canonical_generation_until_drop() {
 
     drop(reader);
     db.checkpoint().unwrap();
-    assert!(!path.join("canonical.1.hawdb").exists());
-    assert!(!path.join("canonical.4.hawdb").exists());
-    assert!(path.join("canonical.5.hawdb").exists());
-    assert!(path.join("canonical.6.hawdb").exists());
+    let current_generation = db
+        .published_read_view()
+        .unwrap()
+        .physical_generation()
+        .unwrap()
+        .0;
+    for generation in &generations[..generations.len() - 1] {
+        assert!(!data.join(format!("canonical.{generation}.hawdb")).exists());
+    }
+    for generation in [*generations.last().unwrap(), current_generation] {
+        assert!(data.join(format!("canonical.{generation}.hawdb")).exists());
+    }
     drop(db);
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -553,8 +586,8 @@ fn overlapping_pinned_reads_survive_serialized_durable_commit() {
     db.query("CREATE (:Memory {id: 1, title: 'Pinned snapshot'})")
         .unwrap();
 
-    let first_reader = db.begin_read_transaction();
-    let second_reader = db.begin_read_transaction();
+    let first_reader = db.begin_read_transaction().unwrap();
+    let second_reader = db.begin_read_transaction().unwrap();
     let readers_started = Arc::new(Barrier::new(3));
     let readers_release = Arc::new(Barrier::new(3));
     let spawn_reader = |mut reader: DatabaseReadTransaction| {
@@ -579,7 +612,7 @@ fn overlapping_pinned_reads_survive_serialized_durable_commit() {
     db.query("CREATE (:Memory {id: 2, title: 'Durable commit'})")
         .unwrap();
     db.checkpoint().unwrap();
-    let watermark = db.storage_reclamation_watermark();
+    let watermark = db.storage_reclamation_watermark().unwrap();
     assert_eq!(watermark.current_commit_epoch, 3);
     assert_eq!(watermark.oldest_reader_commit_epoch, Some(2));
     assert_eq!(watermark.safe_reclaim_commit_epoch, 1);
@@ -596,6 +629,7 @@ fn overlapping_pinned_reads_survive_serialized_durable_commit() {
     }
     assert_eq!(
         db.storage_reclamation_watermark()
+            .unwrap()
             .oldest_reader_commit_epoch,
         None
     );
@@ -619,10 +653,10 @@ fn in_memory_reclamation_watermark_tracks_reader_pins() {
         .unwrap();
 
     {
-        let _read_tx = db.begin_read_transaction();
+        let _read_tx = db.begin_read_transaction().unwrap();
         db.query("CREATE (:Memory {id: 2, title: 'Newer commit'})")
             .unwrap();
-        let watermark = db.storage_reclamation_watermark();
+        let watermark = db.storage_reclamation_watermark().unwrap();
         assert_eq!(watermark.current_commit_epoch, 2);
         assert_eq!(watermark.checkpoint_epoch, None);
         assert_eq!(watermark.checkpoint_commit_epoch, None);
@@ -631,7 +665,7 @@ fn in_memory_reclamation_watermark_tracks_reader_pins() {
         assert!(!watermark.durable);
     }
 
-    let watermark = db.storage_reclamation_watermark();
+    let watermark = db.storage_reclamation_watermark().unwrap();
     assert_eq!(watermark.current_commit_epoch, 2);
     assert_eq!(watermark.oldest_reader_commit_epoch, None);
     assert_eq!(watermark.safe_reclaim_commit_epoch, 2);
@@ -641,7 +675,7 @@ fn in_memory_reclamation_watermark_tracks_reader_pins() {
 #[test]
 fn read_transaction_rejects_mutations() {
     let db = Database::new();
-    let mut read_tx = db.begin_read_transaction();
+    let mut read_tx = db.begin_read_transaction().unwrap();
     let error = read_tx
         .query("CREATE (:Memory {id: 1, title: 'No writes'})")
         .unwrap_err();
@@ -651,7 +685,7 @@ fn read_transaction_rejects_mutations() {
 #[test]
 fn read_transaction_rejects_checkpoint_control() {
     let db = Database::new();
-    let mut read_tx = db.begin_read_transaction();
+    let mut read_tx = db.begin_read_transaction().unwrap();
     let error = read_tx.query("CHECKPOINT").unwrap_err();
 
     assert!(error

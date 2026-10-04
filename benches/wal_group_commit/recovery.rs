@@ -45,7 +45,7 @@ pub(super) fn verify_recovery(
     // Strict recovery checks contiguous LSNs for both supported WAL encodings.
     // Inspect its original report before any read query, and keep this handle
     // for the row proof so recovery and derived-artifact work happen only once.
-    let report = reopened.storage_recovery_report();
+    let report = reopened.storage_recovery_report().unwrap();
     let wal_order_verified = report.wal_replay_start_lsn == Some(1)
         && expected
             .final_epoch
@@ -65,7 +65,7 @@ pub(super) fn verify_recovery(
                         (id, format!("warmup-{id}"))
                     }));
                 rows.rows.len() == expected.commit_count + expected.warmup_commit_count
-                    && reopened.commit_epoch() == expected.final_epoch
+                    && reopened.commit_epoch().unwrap() == expected.final_epoch
                     && rows
                         .rows
                         .iter()

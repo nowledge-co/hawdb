@@ -55,7 +55,7 @@ fn source_reference_entities_use_parameterized_pinned_reads() {
         "source_reference".to_string(),
         Value::String("source_1".to_string()),
     )]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     let first = snapshot
         .query_with_params_bounded(SOURCE_REFERENCE_ENTITIES_QUERY, &parameters, Some(2))
@@ -77,7 +77,7 @@ fn source_reference_entities_use_parameterized_pinned_reads() {
         .unwrap();
     assert_eq!(pinned.rows.len(), 2);
 
-    let mut live = db.begin_read_transaction();
+    let mut live = db.begin_read_transaction().unwrap();
     let current = live
         .query_with_params_bounded(SOURCE_REFERENCE_ENTITIES_QUERY, &parameters, Some(3))
         .unwrap();
@@ -101,7 +101,7 @@ fn source_reference_delete_guard_uses_named_count_queries() {
             Value::String("excluded-source".to_string()),
         ),
     ]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
 
     let entity = read
         .query_with_params_bounded(SOURCE_REFERENCE_ENTITY_QUERY, &parameters, Some(1))
@@ -217,7 +217,7 @@ fn source_reference_relationship_cleanup_rejects_empty_reference_before_wal() {
     let wal_before = read_test_wal(&path).unwrap();
     {
         let mut db = Database::open(&path).unwrap();
-        let epoch_before = db.store.commit_epoch();
+        let epoch_before = db.runtime.get().unwrap().store.commit_epoch();
         let error = db
             .delete_knowledge_source_reference_relationships(
                 &KnowledgeSourceReferenceRelationshipCleanupRequest {
@@ -226,7 +226,7 @@ fn source_reference_relationship_cleanup_rejects_empty_reference_before_wal() {
             )
             .unwrap_err();
         assert!(error.to_string().contains("non-empty source_reference"));
-        assert_eq!(db.store.commit_epoch(), epoch_before);
+        assert_eq!(db.runtime.get().unwrap().store.commit_epoch(), epoch_before);
     }
     let wal_after = read_test_wal(&path).unwrap();
     assert_eq!(wal_after, wal_before);

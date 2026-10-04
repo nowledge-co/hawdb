@@ -106,10 +106,10 @@ fn database_facade_reexports_search_owned_catch_up_contracts() {
 #[test]
 fn database_facade_builds_search_projection_delta_from_graph_nodes() {
     let mut db = Database::new();
-    let node_id = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    let node_id = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Memory",
             BTreeMap::from([
                 ("id".to_string(), Value::String("new".to_string())),
@@ -123,7 +123,8 @@ fn database_facade_builds_search_projection_delta_from_graph_nodes() {
                 ),
             ]),
         )
-        .unwrap();
+    }
+    .unwrap();
     let mut search_index = SearchIndex::in_memory();
     search_index
         .upsert_projection_row(search_projection_row("old", "Old projection", "Remove me"))
@@ -132,7 +133,7 @@ fn database_facade_builds_search_projection_delta_from_graph_nodes() {
         upsert_node_ids: vec![node_id.0],
         delete_document_ids: vec!["memory:old".to_string()],
         max_operations: Some(2),
-        complete_through_graph_commit_epoch: Some(db.store.commit_epoch()),
+        complete_through_graph_commit_epoch: Some(db.runtime.get().unwrap().store.commit_epoch()),
     };
 
     let plan = db
@@ -156,13 +157,14 @@ fn database_facade_builds_search_projection_delta_from_graph_nodes() {
                 ..BackgroundWorkHint::default()
             },
         )
+        .unwrap()
         .unwrap();
     assert_eq!(freshness_plan.request.class, WorkClass::Projection);
     assert_eq!(freshness_plan.request.estimated_operations, 2);
     assert_eq!(freshness_plan.hint.recent_delta_operations, 2);
     assert_eq!(
         freshness_plan.hint.source_graph_commit_lag,
-        db.store.commit_epoch()
+        db.runtime.get().unwrap().store.commit_epoch()
     );
     let ranked = LocalQosPolicy::default()
         .rank_background_work(&LocalQosState::default(), &[freshness_plan]);
@@ -182,14 +184,14 @@ fn database_facade_builds_search_projection_delta_from_graph_nodes() {
     assert_eq!(report.source_graph_commit_epoch_before, None);
     assert_eq!(
         report.source_graph_commit_epoch_after,
-        Some(db.store.commit_epoch())
+        Some(db.runtime.get().unwrap().store.commit_epoch())
     );
     assert!(report.source_graph_commit_epoch_updated);
     assert_eq!(
         search_index
             .projection_freshness()
             .source_graph_commit_epoch,
-        Some(db.store.commit_epoch())
+        Some(db.runtime.get().unwrap().store.commit_epoch())
     );
     assert!(search_index.document("memory:old").is_none());
     assert!(search_index.document("memory:new").is_some());
@@ -214,7 +216,7 @@ fn database_facade_builds_search_projection_delta_request_from_changefeed() {
     assert_eq!(request.max_operations, Some(4));
     assert_eq!(
         request.complete_through_graph_commit_epoch,
-        Some(db.store.commit_epoch())
+        Some(db.runtime.get().unwrap().store.commit_epoch())
     );
 
     let mut search_index = SearchIndex::in_memory();
@@ -247,7 +249,7 @@ fn unified_search_projection_changefeed_captures_relational_primary_keys() {
     let mut db = Database::new();
     db.query_sql("CREATE TABLE public.thread_messages (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
         .unwrap();
-    let source_epoch = db.store.commit_epoch();
+    let source_epoch = db.runtime.get().unwrap().store.commit_epoch();
     db.query_sql("INSERT INTO public.thread_messages (id, body) VALUES (1, 'first')")
         .unwrap();
     db.query_sql("UPDATE public.thread_messages SET body = 'second' WHERE id = 1")
@@ -273,7 +275,7 @@ fn unified_search_projection_changefeed_captures_relational_primary_keys() {
     assert_eq!(batch.operation_count(), 1);
     assert_eq!(
         batch.complete_through_commit_epoch(),
-        Some(db.store.commit_epoch())
+        Some(db.runtime.get().unwrap().store.commit_epoch())
     );
 
     let graph_only_error = db
@@ -318,7 +320,7 @@ fn unified_search_projection_changefeed_captures_relational_primary_keys() {
         .unwrap();
     assert_eq!(
         report.source_graph_commit_epoch_after,
-        Some(db.store.commit_epoch())
+        Some(db.runtime.get().unwrap().store.commit_epoch())
     );
     assert!(search_index.document("memory:thread-message-1").is_some());
 }
@@ -338,7 +340,7 @@ fn conflict_noop_returning_does_not_emit_a_relational_changefeed_mutation() {
          VALUES ('turn-1', 'request-1')",
     )
     .unwrap();
-    let source_epoch = db.store.commit_epoch();
+    let source_epoch = db.runtime.get().unwrap().store.commit_epoch();
 
     let duplicate = db
         .query_sql(
@@ -368,7 +370,7 @@ fn relational_changefeed_overflow_requires_rebuild_without_rejecting_commit() {
     });
     db.query_sql("CREATE TABLE public.source_chunks (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
         .unwrap();
-    let source_epoch = db.store.commit_epoch();
+    let source_epoch = db.runtime.get().unwrap().store.commit_epoch();
     db.query_sql("INSERT INTO public.source_chunks (id, body) VALUES (1, 'a'), (2, 'b')")
         .unwrap();
 
@@ -376,8 +378,9 @@ fn relational_changefeed_overflow_requires_rebuild_without_rejecting_commit() {
         .build_search_projection_change_batch_after(source_epoch, Some(8))
         .unwrap_err();
     assert!(error.to_string().contains("CaptureLimitExceeded"));
-    let readiness =
-        db.search_projection_changefeed_readiness(&SearchIndex::in_memory(), false, Some(8));
+    let readiness = db
+        .search_projection_changefeed_readiness(&SearchIndex::in_memory(), false, Some(8))
+        .unwrap();
     assert!(!readiness.ready);
     assert!(readiness
         .blocker_codes
@@ -395,10 +398,10 @@ fn relational_changefeed_resumes_from_wal_after_restart() {
     db.query_sql("CREATE TABLE public.thread_messages (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
         .unwrap();
     db.checkpoint().unwrap();
-    let source_epoch = db.store.commit_epoch();
+    let source_epoch = db.runtime.get().unwrap().store.commit_epoch();
     db.query_sql("INSERT INTO public.thread_messages (id, body) VALUES (7, 'durable')")
         .unwrap();
-    let committed_epoch = db.store.commit_epoch();
+    let committed_epoch = db.runtime.get().unwrap().store.commit_epoch();
     drop(db);
 
     let db = Database::open(&path).unwrap();
@@ -414,7 +417,11 @@ fn relational_changefeed_resumes_from_wal_after_restart() {
             hawdb_storage::relational::RelationalValue::BigInt(7)
         ])]
     );
-    assert!(db.search_projection_changefeed_status().restart_recoverable);
+    assert!(
+        db.search_projection_changefeed_status()
+            .unwrap()
+            .restart_recoverable
+    );
 
     drop(db);
     std::fs::remove_dir_all(path).unwrap();
@@ -426,10 +433,10 @@ fn relational_changefeed_resumes_from_checkpoint_after_restart() {
     let mut db = Database::open(&path).unwrap();
     db.query_sql("CREATE TABLE public.source_chunks (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
         .unwrap();
-    let source_epoch = db.store.commit_epoch();
+    let source_epoch = db.runtime.get().unwrap().store.commit_epoch();
     db.query_sql("INSERT INTO public.source_chunks (id, body) VALUES (11, 'checkpointed')")
         .unwrap();
-    let committed_epoch = db.store.commit_epoch();
+    let committed_epoch = db.runtime.get().unwrap().store.commit_epoch();
     db.checkpoint().unwrap();
     drop(db);
 
@@ -460,7 +467,7 @@ fn search_projection_changefeed_byte_budget_advances_resume_floor() {
     db.query("CREATE (:Memory {id: 'm1', title: 'First'})")
         .unwrap();
 
-    let status = db.search_projection_changefeed_status();
+    let status = db.search_projection_changefeed_status().unwrap();
     assert_eq!(status.resume_floor_commit_epoch, 1);
     assert_eq!(status.retained_mutation_count, 0);
     assert_eq!(status.retained_bytes, 0);
@@ -558,7 +565,7 @@ fn durable_search_projection_catch_up_resumes_in_bounded_batches() {
         .unwrap();
     assert!(second.applied_batch_count >= 1);
     assert!(second.complete);
-    assert_eq!(second.end_durable_epoch, Some(db.commit_epoch()));
+    assert_eq!(second.end_durable_epoch, Some(db.commit_epoch().unwrap()));
     assert!(search_index.document("memory:m1").is_some());
     assert!(search_index.document("memory:m2").is_some());
 
@@ -568,7 +575,7 @@ fn durable_search_projection_catch_up_resumes_in_bounded_batches() {
         reopened
             .projection_freshness()
             .durable_source_graph_commit_epoch,
-        Some(db.commit_epoch())
+        Some(db.commit_epoch().unwrap())
     );
     assert!(reopened.document("memory:m1").is_some());
     assert!(reopened.document("memory:m2").is_some());
@@ -604,7 +611,7 @@ fn unified_projection_catch_up_checkpoints_one_mixed_commit() {
     let mut db = Database::new();
     db.query_sql("CREATE TABLE thread_messages (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
         .unwrap();
-    let mut transaction = db.begin_transaction();
+    let mut transaction = db.begin_transaction().unwrap();
     transaction
         .query("CREATE (:Memory {id: 'm1', title: 'Graph document'})")
         .unwrap();
@@ -627,8 +634,8 @@ fn unified_projection_catch_up_checkpoints_one_mixed_commit() {
     assert!(report.complete);
     assert_eq!(report.applied_batch_count, 1);
     assert_eq!(report.applied_operation_count, 2);
-    assert_eq!(report.end_applied_epoch, Some(db.commit_epoch()));
-    assert_eq!(report.end_durable_epoch, Some(db.commit_epoch()));
+    assert_eq!(report.end_applied_epoch, Some(db.commit_epoch().unwrap()));
+    assert_eq!(report.end_durable_epoch, Some(db.commit_epoch().unwrap()));
     assert!(search_index.document("memory:m1").is_some());
     assert_eq!(
         search_index
@@ -645,7 +652,7 @@ fn unified_projection_catch_up_checkpoints_one_mixed_commit() {
         reopened
             .projection_freshness()
             .durable_source_graph_commit_epoch,
-        Some(db.commit_epoch())
+        Some(db.commit_epoch().unwrap())
     );
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -692,7 +699,7 @@ fn unified_projection_batch_hydrator_observes_graph_only_commit() {
     assert!(report.complete);
     assert!(search_index.document("memory:m1").is_some());
     assert!(search_index.document("message:derived").is_some());
-    assert_eq!(report.end_durable_epoch, Some(db.commit_epoch()));
+    assert_eq!(report.end_durable_epoch, Some(db.commit_epoch().unwrap()));
     std::fs::remove_dir_all(path).unwrap();
 }
 
@@ -949,7 +956,7 @@ fn unified_projection_catch_up_resumes_from_durable_batch_after_reopen() {
         reopened
             .projection_freshness()
             .durable_source_graph_commit_epoch,
-        Some(db.commit_epoch())
+        Some(db.commit_epoch().unwrap())
     );
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -969,7 +976,7 @@ fn durable_search_projection_catch_up_skips_nodes_deleted_before_projection() {
 
     assert!(report.complete);
     assert_eq!(report.applied_operation_count, 1);
-    assert_eq!(report.end_durable_epoch, Some(db.commit_epoch()));
+    assert_eq!(report.end_durable_epoch, Some(db.commit_epoch().unwrap()));
     assert!(search_index.document("memory:m1").is_none());
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -1002,7 +1009,7 @@ fn durable_search_projection_catch_up_converges_stale_update_delete_sequence() {
 
     assert!(report.complete);
     assert_eq!(report.start_durable_epoch, Some(1));
-    assert_eq!(report.end_durable_epoch, Some(db.commit_epoch()));
+    assert_eq!(report.end_durable_epoch, Some(db.commit_epoch().unwrap()));
     assert_eq!(report.applied_batch_count, 1);
     assert_eq!(report.applied_operation_count, 2);
     assert!(search_index.document("memory:m1").is_none());
@@ -1015,7 +1022,7 @@ fn durable_search_projection_catch_up_converges_stale_update_delete_sequence() {
         search_index
             .projection_freshness()
             .durable_source_graph_commit_epoch,
-        Some(db.commit_epoch())
+        Some(db.commit_epoch().unwrap())
     );
 
     drop(search_index);
@@ -1026,7 +1033,7 @@ fn durable_search_projection_catch_up_converges_stale_update_delete_sequence() {
         reopened
             .projection_freshness()
             .durable_source_graph_commit_epoch,
-        Some(db.commit_epoch())
+        Some(db.commit_epoch().unwrap())
     );
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -1034,7 +1041,7 @@ fn durable_search_projection_catch_up_converges_stale_update_delete_sequence() {
 #[test]
 fn search_projection_changefeed_does_not_split_one_commit_across_batches() {
     let mut db = Database::new();
-    let mut transaction = db.begin_transaction();
+    let mut transaction = db.begin_transaction().unwrap();
     transaction
         .query("CREATE (:Memory {id: 'm1', title: 'First'})")
         .unwrap();
@@ -1043,7 +1050,7 @@ fn search_projection_changefeed_does_not_split_one_commit_across_batches() {
         .unwrap();
     transaction.commit().unwrap();
 
-    assert_eq!(db.commit_epoch(), 1);
+    assert_eq!(db.commit_epoch().unwrap(), 1);
     let error = db
         .build_search_projection_graph_delta_request_after(0, Some(1))
         .unwrap_err();
@@ -1057,7 +1064,7 @@ fn search_projection_changefeed_does_not_split_one_commit_across_batches() {
 #[test]
 fn search_projection_changefeed_keeps_source_ingest_composite_commit_atomic() {
     let mut db = Database::new();
-    let mut transaction = db.begin_transaction();
+    let mut transaction = db.begin_transaction().unwrap();
     transaction
         .query(
             "CREATE (:Source {id: 'source-v1', original_name: 'source.md', lifecycle_state: 'parsed', space_id: 'default', version: 1})",
@@ -1076,7 +1083,7 @@ fn search_projection_changefeed_keeps_source_ingest_composite_commit_atomic() {
         .unwrap();
     transaction.commit().unwrap();
 
-    assert_eq!(db.commit_epoch(), 1);
+    assert_eq!(db.commit_epoch().unwrap(), 1);
     let too_small = db
         .build_search_projection_graph_delta_request_after(0, Some(1))
         .unwrap_err();
@@ -1142,7 +1149,7 @@ fn search_projection_changefeed_does_not_schedule_irrelevant_watermark_only_work
     assert!(request.delete_document_ids.is_empty());
     assert_eq!(
         request.complete_through_graph_commit_epoch,
-        Some(db.store.commit_epoch())
+        Some(db.runtime.get().unwrap().store.commit_epoch())
     );
 
     assert!(db
@@ -1151,6 +1158,7 @@ fn search_projection_changefeed_does_not_schedule_irrelevant_watermark_only_work
             &request,
             BackgroundWorkHint::default(),
         )
+        .unwrap()
         .is_none());
 }
 
@@ -1217,7 +1225,7 @@ fn search_projection_changefeed_status_reports_resume_window_and_mutation_identi
         .unwrap();
     }
 
-    let status = db.search_projection_changefeed_status();
+    let status = db.search_projection_changefeed_status().unwrap();
 
     assert_eq!(status.graph_commit_epoch, 3);
     assert_eq!(status.resume_floor_commit_epoch, 1);
@@ -1264,7 +1272,9 @@ fn search_projection_changefeed_readiness_reports_incremental_window() {
         .unwrap();
     }
 
-    let readiness = db.search_projection_changefeed_readiness(&search_index, false, Some(2));
+    let readiness = db
+        .search_projection_changefeed_readiness(&search_index, false, Some(2))
+        .unwrap();
 
     assert!(readiness.ready);
     assert!(readiness.incremental_ready);
@@ -1290,7 +1300,9 @@ fn search_projection_changefeed_readiness_fails_closed_for_expired_floor() {
     }
     let search_index = SearchIndex::in_memory();
 
-    let readiness = db.search_projection_changefeed_readiness(&search_index, false, Some(2));
+    let readiness = db
+        .search_projection_changefeed_readiness(&search_index, false, Some(2))
+        .unwrap();
 
     assert!(!readiness.ready);
     assert!(!readiness.incremental_ready);
@@ -1307,7 +1319,9 @@ fn search_projection_changefeed_readiness_can_require_restart_recovery() {
         .unwrap();
     let search_index = SearchIndex::in_memory();
 
-    let readiness = db.search_projection_changefeed_readiness(&search_index, true, Some(1));
+    let readiness = db
+        .search_projection_changefeed_readiness(&search_index, true, Some(1))
+        .unwrap();
 
     assert!(!readiness.ready);
     assert!(!readiness.restart_recoverable);
@@ -1341,7 +1355,7 @@ fn search_projection_changefeed_replays_wal_only_mutations_after_restart() {
     }
 
     let db = Database::open(&graph_path).unwrap();
-    let status = db.search_projection_changefeed_status();
+    let status = db.search_projection_changefeed_status().unwrap();
     assert_eq!(status.graph_commit_epoch, 3);
     assert!(status.restart_recoverable);
     assert_eq!(
@@ -1396,10 +1410,10 @@ fn search_projection_delta_request_requires_rebuild_when_changefeed_start_is_too
 #[test]
 fn graph_search_projection_delta_budget_failure_keeps_projection_unchanged() {
     let mut db = Database::new();
-    let node_id = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    let node_id = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Memory",
             BTreeMap::from([
                 ("id".to_string(), Value::String("new".to_string())),
@@ -1409,7 +1423,8 @@ fn graph_search_projection_delta_budget_failure_keeps_projection_unchanged() {
                 ),
             ]),
         )
-        .unwrap();
+    }
+    .unwrap();
     let mut search_index = SearchIndex::in_memory();
     search_index
         .upsert_projection_row(search_projection_row("old", "Old projection", "Keep me"))
@@ -1422,7 +1437,9 @@ fn graph_search_projection_delta_budget_failure_keeps_projection_unchanged() {
                 upsert_node_ids: vec![node_id.0],
                 delete_document_ids: vec!["memory:old".to_string()],
                 max_operations: Some(1),
-                complete_through_graph_commit_epoch: Some(db.store.commit_epoch()),
+                complete_through_graph_commit_epoch: Some(
+                    db.runtime.get().unwrap().store.commit_epoch(),
+                ),
             },
         )
         .unwrap_err();
@@ -1450,10 +1467,10 @@ fn graph_search_projection_delta_plan_is_absent_when_request_exceeds_limit() {
 #[test]
 fn graph_search_projection_delta_without_watermark_keeps_freshness_epoch() {
     let mut db = Database::new();
-    let node_id = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    let node_id = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Memory",
             BTreeMap::from([
                 ("id".to_string(), Value::String("new".to_string())),
@@ -1463,7 +1480,8 @@ fn graph_search_projection_delta_without_watermark_keeps_freshness_epoch() {
                 ),
             ]),
         )
-        .unwrap();
+    }
+    .unwrap();
     let mut search_index = SearchIndex::in_memory();
 
     db.apply_search_projection_graph_delta(
@@ -1489,10 +1507,10 @@ fn graph_search_projection_delta_without_watermark_keeps_freshness_epoch() {
 #[test]
 fn graph_search_projection_delta_rejects_future_freshness_watermark() {
     let mut db = Database::new();
-    let node_id = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    let node_id = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Memory",
             BTreeMap::from([
                 ("id".to_string(), Value::String("new".to_string())),
@@ -1502,7 +1520,8 @@ fn graph_search_projection_delta_rejects_future_freshness_watermark() {
                 ),
             ]),
         )
-        .unwrap();
+    }
+    .unwrap();
     let mut search_index = SearchIndex::in_memory();
 
     let error = db
@@ -1512,7 +1531,9 @@ fn graph_search_projection_delta_rejects_future_freshness_watermark() {
                 upsert_node_ids: vec![node_id.0],
                 delete_document_ids: Vec::new(),
                 max_operations: Some(1),
-                complete_through_graph_commit_epoch: Some(db.store.commit_epoch() + 1),
+                complete_through_graph_commit_epoch: Some(
+                    db.runtime.get().unwrap().store.commit_epoch() + 1,
+                ),
             },
         )
         .unwrap_err();
@@ -1524,10 +1545,10 @@ fn graph_search_projection_delta_rejects_future_freshness_watermark() {
 #[test]
 fn background_graph_search_projection_delta_uses_qos_admission() {
     let mut db = Database::new();
-    let node_id = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    let node_id = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Memory",
             BTreeMap::from([
                 ("id".to_string(), Value::String("new".to_string())),
@@ -1537,7 +1558,8 @@ fn background_graph_search_projection_delta_uses_qos_admission() {
                 ),
             ]),
         )
-        .unwrap();
+    }
+    .unwrap();
     let mut search_index = SearchIndex::in_memory();
     search_index
         .upsert_projection_row(search_projection_row("old", "Old projection", "Keep me"))
@@ -1556,7 +1578,9 @@ fn background_graph_search_projection_delta_uses_qos_admission() {
                 upsert_node_ids: vec![node_id.0],
                 delete_document_ids: vec!["memory:old".to_string()],
                 max_operations: Some(2),
-                complete_through_graph_commit_epoch: Some(db.store.commit_epoch()),
+                complete_through_graph_commit_epoch: Some(
+                    db.runtime.get().unwrap().store.commit_epoch(),
+                ),
             },
         )
         .unwrap_err();
@@ -1581,7 +1605,9 @@ fn scheduled_graph_search_projection_delta_releases_budget_on_build_error() {
                 upsert_node_ids: vec![99],
                 delete_document_ids: vec!["memory:old".to_string()],
                 max_operations: Some(2),
-                complete_through_graph_commit_epoch: Some(db.store.commit_epoch() + 1),
+                complete_through_graph_commit_epoch: Some(
+                    db.runtime.get().unwrap().store.commit_epoch() + 1,
+                ),
             },
         )
         .unwrap_err();

@@ -323,23 +323,37 @@ current revision before a nested fork. An unselected source is sealed from its
 head, immutable manifest, and complete private WAL under its UUID lease without
 materializing its dataset. A busy source fails without retargeting the caller.
 
-The ordinary opener still uses the legacy single-root path, and bootstrap,
-metadata-only project open, deferred default `main` admission, and automatic
-default-main selection on reopen remain #780 work. Background jobs currently
-prevent switching while Pending/Running/Failed so retryable work cannot be
-discarded. Completed outcomes and the job ID allocator stay with the host handle,
-so switching does not reuse old IDs. Independent job-owned branch pins are still
-required. Finite FD admission and complete
-power-loss qualification remain #819/#820 work. These implementation limits do
-not weaken the required project-opening, resource, or job-ownership contracts
-above and below.
-The storage-owned project selector codec and metadata admission seam now validate
-project/main identity without retaining branch descriptors or taking a writer
-lease. Main initialization reserves those UUIDs durably before catalog/head
-publication, reuses an existing development catalog's identity, and rejects
-conflicting or damaged bootstrap evidence. The facade's default opener has not
-yet switched to this seam; identity reservation does not publish the selector
-or prove that the complete default project-opening workflow is implemented.
+The ordinary opener recognizes published projects before opening a data store.
+It validates selector/catalog/main identity and retains only the finite project
+FD domain and deferred admission configuration. The first data query, snapshot,
+transaction, or data-state accessor recovers and validates main as one runtime
+bundle. Admission failures are returned as typed errors and remain retryable;
+there is no empty-store placeholder or cached failed admission. Catalog-only SQL
+and explicit selection of another branch do not implicitly admit main. A shared
+concurrent runtime rejects USE before data admission.
+
+Writable first open reserves project/main UUIDs, checkpoints the authoritative
+legacy state, publishes its immutable closure/private WAL/head/catalog, then
+publishes the project selector last under the legacy directory, main UUID, and
+catalog ownership boundaries. The old writer is invalidated before uncertain
+selector publication and released before returning the deferred project handle.
+An existing initial main must cover the exact legacy checkpoint and have an
+empty private WAL; stale or divergent development histories fail closed and are
+retained. Read-only legacy opens do not perform adoption. A published project's
+read-only open follows metadata admission and defers main recovery.
+
+Background jobs currently prevent switching while Pending/Running/Failed so
+retryable work cannot be discarded. Completed outcomes and the job ID allocator
+stay with the host handle; independent job-owned branch pins remain required.
+Complete engine FD qualification and deterministic power-loss qualification
+remain #819/#820 work. The default-open integration does not itself prove those
+contracts or all bootstrap publication-failure boundaries.
+
+Data-dependent Rust accessors, transaction creation, and snapshot creation now
+return Result because deferred admission can fail with busy, resource, recovery,
+or corruption errors. They never report a fabricated epoch/schema/empty view.
+Project metrics and runtime control setters do not trigger data admission.
+
 The SQL fixtures use default residency/index settings; existing authoritative
 index restrictions on live schema-changing transactions and DDL WAL admission
 remain fail-closed. Enabling branch selection does not bypass those restrictions.
@@ -392,10 +406,48 @@ generations and verified private suffix in one recovery pass, starting from
 the exact checkpoint LSN boundary. It rechecks the catalog
 after recovery before exposing the runtime. The legacy
 `open_from_branch_head` helper still copies a source directory and remains
-recovery-qualification-only. SQL session selection remains separate work;
-branch-local checkpoint/seal publication is described below. An automatic
-repair request for a private
-WAL currently fails closed until it has branch-aware repair publication.
+recovery-qualification-only. SQL session selection and branch-local
+checkpoint/seal publication use the admitted runtime described above.
+
+Strict recovery rejects incomplete private transactions. Explicitly configured
+`AutoRepairTornTail` can repair only an incomplete final private WAL record after
+recovery validates the immutable root and its sealed intervals. Immutable WAL
+intervals always use strict replay. Repair plans bind the exact branch head,
+UUID, active WAL generation/start, original file, and retained prefix. The plan's
+existing `manifest_*` identity fields bind the authoritative branch head rather
+than its disposable runtime manifest. The owning UUID lease remains held while
+the full damaged WAL is quarantined, a pending audit is synchronized, the tail
+is truncated and synchronized, and the applied audit is published. An interrupted
+repair resumes from matching evidence; strict recovery rejects pending audits.
+The published WAL prefix and immutable history cannot be truncated. Read-only
+admission never repairs, cleans abandoned checkpoint preparations, or creates a
+writable projection catalog. Project-level doctor operations target main;
+an exact UUID directory targets that branch. This tail-repair coverage does not
+replace the required lost-write/reordering power-loss qualification.
+
+Derived-artifact doctor plans use the same project descriptor domain and UUID
+lease as branch admission. They bind the catalog revision, exact published
+head, immutable manifest and complete private WAL. Canonical/schema/data
+dependencies and sealed WAL remain strictly validated; only the explicitly
+declared adjacency and property-projection artifact families may be unavailable
+during repair inspection. Planning cannot acknowledge a partial transaction.
+Before rebuilding, synchronize the original head/root/manifest/private WAL and
+the damaged derived-object bytes into the UUID's persistent doctor quarantine,
+then publish a pending audit. Rebuild through an ordinary branch checkpoint
+using a new physical generation. Synchronize the exact target-head identity
+into that audit before switching the head. Retain the owning lease through
+publication validation and applied-audit completion.
+
+A local runtime manifest does not prove branch publication. If the source head
+remains selected, an interrupted repair archives its unpublished target files
+and rebuilds from the validated source; if the exact recorded target head is
+already selected and healthy, it finalizes the audit without advancing the head
+again. Pending or mismatched evidence blocks normal admission. Repair never
+overwrites a shared immutable object, including an existing corrupt hash path;
+such a collision still fails closed. Unopened sibling branches require no
+additional repair leases or data descriptors. A damaged sibling's older root
+remains unchanged and can be repaired explicitly through its UUID directory.
+These interruption checks do not qualify physical lost writes or reordering.
 
 Any ready branch can be a source, including one with committed DDL and DML.
 Capture schema and data at one committed source revision. A source revision
@@ -467,17 +519,18 @@ must distinguish maintenance failure from a definitely aborted transaction.
 
 ### Current implementation gaps
 
-The SQL lifecycle facade now selects explicitly initialized branches, executes
-branch-local DDL/DML, and forks an advanced child at its exact committed epoch.
-This is not yet the complete project-opening workflow above. The storage admission
-kernel directly recovers a ready target from its immutable root and
+The SQL lifecycle facade selects durable branches, executes branch-local DDL/DML,
+and forks an advanced child at its exact committed epoch. The ordinary opener now
+admits project metadata and defers main recovery as described above; interruption
+and power-loss qualification of that workflow remains incomplete. The storage
+admission kernel directly recovers a ready target from its immutable root and
 append-only private WAL without copying its parent directory. Its admitted
 `GraphStore` now routes ordinary commits to the private WAL, publishes a new
 head at checkpoint/seal boundaries, and can fork an advanced child from its
 exact sealed revision. Required work includes:
 
-- connecting metadata-only project admission to the ordinary opener, deferred
-  default-main admission, and authoritative bootstrap/reopen;
+- qualification of default metadata admission, deferred main recovery, and all
+  bootstrap interruption/publication-failure boundaries;
 - independent ownership for background jobs across session switches;
 - qualification of supported residency/index configurations, including existing
   authoritative-index restrictions on live DDL and schema-WAL replay;
@@ -1083,9 +1136,9 @@ immutable cache, and absolute-path domain lookup borrows the existing path.
 outside the storage wrapper (including native generated-stage deletion and
 projection dependencies), relative-path lookup scratch, cold existing-root alias resolution on Windows,
 data-dependent retained recovery/checkpoint handles, validation-read IO budgets,
-and resource failures at every acquisition/publication boundary. The legacy
-single-root opener, independent job pins, and the complete power-loss matrix
-also remain separate implementation obligations; the current accounting tests
+and resource failures at every acquisition/publication boundary. Interrupted
+legacy adoption/default admission, independent job pins, and the complete
+power-loss matrix remain separate qualification obligations; the accounting tests
 do not prove those requirements.
 
 ## Sealing and create protocol

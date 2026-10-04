@@ -119,7 +119,7 @@ fn public_consumer_initializes_mixed_content_catches_up_and_reopens() {
         .unwrap();
     db.query_sql("INSERT INTO consumer_messages (id, body) VALUES (1, 'first')")
         .unwrap();
-    let epoch = db.commit_epoch();
+    let epoch = db.commit_epoch().unwrap();
     let id = SearchProjectionConsumerId::new("mixed").unwrap();
     let mut consumer = db
         .create_search_projection_consumer(
@@ -130,7 +130,7 @@ fn public_consumer_initializes_mixed_content_catches_up_and_reopens() {
         )
         .unwrap();
     assert_eq!(consumer.id(), &id);
-    assert_eq!(db.commit_epoch(), epoch);
+    assert_eq!(db.commit_epoch().unwrap(), epoch);
     assert_eq!(consumer.search_index().document_count(), 2);
     assert_eq!(
         consumer
@@ -158,7 +158,10 @@ fn public_consumer_initializes_mixed_content_catches_up_and_reopens() {
         "second"
     );
     let renewal = db.renew_search_projection_consumer(&consumer).unwrap();
-    assert_eq!(renewal.expires_at_commit_epoch, db.commit_epoch() + 100);
+    assert_eq!(
+        renewal.expires_at_commit_epoch,
+        db.commit_epoch().unwrap() + 100
+    );
     drop(consumer);
     drop(db);
     let mut db = Database::open(fixture.0.join("database")).unwrap();

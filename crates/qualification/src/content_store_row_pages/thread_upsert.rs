@@ -61,9 +61,9 @@ pub(super) fn qualify_thread_message_upsert(
     let update_summary = corpus_statement(corpus, "update_content_document_summary")?;
     let page = corpus_statement(corpus, "thread_messages_page")?;
     let page_parameters = thread_page_parameters(THREAD_STORAGE_ID, MESSAGE_COUNT);
-    let base_epoch = database.commit_epoch();
+    let base_epoch = database.commit_epoch()?;
 
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
     transaction.query_with_params(
         "CREATE (:Thread {id: $thread_id, space_id: $space_id, updated_at: $updated_at})",
         &graph_parameters(),
@@ -174,7 +174,7 @@ pub(super) fn qualify_thread_message_upsert(
     require_graph_state(&workspace_graph)?;
     transaction.commit()?;
 
-    let committed_epoch = database.commit_epoch();
+    let committed_epoch = database.commit_epoch()?;
     if committed_epoch != base_epoch.saturating_add(1) {
         return Err(HawDBError::Execution(format!(
             "content-store thread upsert published epoch {committed_epoch}, expected {}",
@@ -200,7 +200,7 @@ pub(super) fn qualify_thread_message_upsert(
 
     database.checkpoint()?;
     let checkpoint_generation = database
-        .relational_index_shadow_checkpoint_report()
+        .relational_index_shadow_checkpoint_report()?
         .ok_or_else(|| {
             HawDBError::Execution(
                 "content-store thread upsert checkpoint published no relational generation"

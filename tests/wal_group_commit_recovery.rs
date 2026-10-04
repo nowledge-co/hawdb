@@ -50,7 +50,7 @@ mod tests {
                     ))
                     .unwrap();
             }
-            let epoch = database.commit_epoch();
+            let epoch = database.commit_epoch().unwrap();
             drop(database);
             Self { path, epoch }
         }
@@ -105,7 +105,7 @@ mod tests {
     fn clean_recovery_keeps_the_original_separate_proofs() {
         let fixture = Fixture::create(&[(0, "payload-0"), (1, "payload-1")]);
         let original_order = Database::open(&fixture.path).is_ok_and(|db| {
-            let report = db.storage_recovery_report();
+            let report = db.storage_recovery_report().unwrap();
             report.wal_replay_start_lsn == Some(1)
                 && report.next_lsn_after_replay == Some(fixture.epoch + 1)
                 && report.replayed_wal_entries as u64 == fixture.epoch
@@ -114,7 +114,7 @@ mod tests {
         let original_rows = Database::open(&fixture.path)
             .and_then(|mut db| {
                 db.query_sql("SELECT id FROM public.messages ORDER BY id")
-                    .map(|rows| rows.rows.len() == 2 && db.commit_epoch() == fixture.epoch)
+                    .map(|rows| rows.rows.len() == 2 && db.commit_epoch().unwrap() == fixture.epoch)
             })
             .unwrap_or(false);
         let verified = verify_recovery(&fixture.path, fixture.expected(), |_| {});

@@ -17,7 +17,7 @@ use crate::{
     sealed_root::{CheckpointArtifactBinding, SealedRoot},
 };
 use std::collections::{btree_map::Entry, BTreeMap};
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -73,6 +73,25 @@ pub(super) struct BranchRuntimeBinding {
     root: Arc<SealedRoot>,
     checkpoint_generation: u64,
     max_sealed_wal_intervals: usize,
+    repair_publication: Option<Arc<super::derived_repair::publication::DerivedRepairPublication>>,
+}
+
+impl BranchRuntimeBinding {
+    pub(super) fn root(&self) -> &SealedRoot {
+        &self.root
+    }
+
+    pub(super) fn immutable_store_root(&self) -> &Path {
+        &self.immutable_store_root
+    }
+
+    pub(super) fn head_path(&self) -> &Path {
+        &self.head_path
+    }
+
+    pub(super) fn metadata_revision(&self) -> u64 {
+        self.metadata_revision
+    }
 }
 
 /// A prepared immutable-root handoff. The successor WAL exists and is durable,
@@ -103,8 +122,9 @@ pub struct BranchAdmissionRequest<'a> {
 
 /// A recovered branch runtime that retains the target branch writer lease.
 ///
-/// Immutable bindings are materialized below the target branch; WAL recovery
-/// dependencies remain in its persistent data directory. The runtime selector
+/// Checkpoint aliases share immutable content below the target branch; writes
+/// detach before modifying it. WAL recovery dependencies remain in its
+/// persistent data directory. The runtime selector
 /// is disposable, but the branch head, private WAL, immutable objects, and
 /// mutable recovery dependencies survive closure of the handle.
 #[derive(Debug)]
@@ -197,6 +217,15 @@ impl std::error::Error for BranchAdmissionError {
 
 impl GraphStore {
     #[doc(hidden)]
+    pub fn reserve_project_branch_admission_resources(
+        files: &crate::file_descriptors::ProjectFileDescriptors,
+    ) -> Result<crate::file_descriptors::DescriptorReservation> {
+        files
+            .reserve_admission(MIN_BRANCH_ADMISSION_DESCRIPTORS)
+            .map_err(HawDBError::from_storage_error)
+    }
+
+    #[doc(hidden)]
     pub fn reserve_branch_project_identity(
         &self,
         proposed: crate::branch_project::ProjectSelector,
@@ -208,6 +237,128 @@ impl GraphStore {
                 HawDBError::Storage("project bootstrap requires durable storage".into())
             })?
             .reserve_project_bootstrap_identity(proposed)
+    }
+
+    /// Publishes the project selector last, while the legacy directory lease
+    /// still protects the authoritative source. A stale development main is
+    /// rejected rather than replacing acknowledged legacy writes with it.
+    #[doc(hidden)]
+    pub fn publish_branch_project_selector(
+        &self,
+        selector: crate::branch_project::ProjectSelector,
+    ) -> Result<()> {
+        self.ensure_usable()?;
+        let durable = self.durable.as_ref().ok_or_else(|| {
+            HawDBError::Storage("project publication requires durable storage".into())
+        })?;
+        if durable.read_only || durable.branch_runtime.is_some() {
+            return Err(HawDBError::Storage(
+                "project publication requires the writable legacy directory lease".into(),
+            ));
+        }
+        let catalog_path = crate::branch_project::catalog_path(&durable.root_path);
+        let branch_directory = durable
+            .root_path
+            .join("branches")
+            .join(selector.main_branch_id().as_uuid().to_string());
+        let _main_lease = DatabaseDirectoryLease::acquire(&branch_directory)
+            .map_err(HawDBError::from_storage_error)?;
+        let _metadata_lease =
+            branch_catalog::CatalogMetadataLease::acquire(catalog_path.parent().ok_or_else(
+                || HawDBError::StorageIntegrity("project catalog has no directory".into()),
+            )?)?;
+        let catalog = branch_catalog::read_catalog(&catalog_path)?;
+        if catalog.project_id != selector.project_id() {
+            return Err(HawDBError::StorageIntegrity(
+                "bootstrap project UUID changed".into(),
+            ));
+        }
+        let main = catalog
+            .branches
+            .iter()
+            .find(|record| record.id == selector.main_branch_id())
+            .ok_or_else(|| HawDBError::StorageIntegrity("bootstrap main is absent".into()))?;
+        if main.name.as_str() != "main"
+            || main.parent_id.is_some()
+            || main.state != branch_catalog::BranchState::Ready
+        {
+            return Err(HawDBError::StorageIntegrity(
+                "bootstrap main is incomplete".into(),
+            ));
+        }
+        let head = branch_head::read_branch_head(&branch_directory.join("branch.head"))
+            .map_err(HawDBError::from_storage_error)?;
+        let objects = ImmutableObjectStore::open(durable.root_path.join("branches/objects"))
+            .map_err(HawDBError::from_storage_error)?;
+        let root = SealedRoot::decode(
+            &objects
+                .read(head.sealed_root)
+                .map_err(HawDBError::from_storage_error)?,
+        )
+        .map_err(HawDBError::from_storage_error)?;
+        validate_admission_binding(
+            &ReadyBranchRecord {
+                project_id: catalog.project_id,
+                branch: main.clone(),
+            },
+            &head,
+            &root,
+            root.object_reference()
+                .map_err(HawDBError::from_storage_error)?,
+        )
+        .map_err(HawDBError::from_storage_error)?;
+        let manifest_bytes = fs::read(durable.manifest_path())?;
+        if head.physical_generation != 1
+            || root.commit_epoch != self.commit_epoch
+            || root.checkpoint_epoch != self.commit_epoch
+            || durable.checkpoint_commit_epoch != self.commit_epoch
+            || root.durable_manifest
+                != ObjectReference::for_bytes(ObjectKind::DurableManifest, 1, &manifest_bytes)
+            || !root.sealed_wals.is_empty()
+        {
+            return Err(HawDBError::StorageIntegrity(
+                "bootstrap main does not cover the current legacy checkpoint; retain both histories".into(),
+            ));
+        }
+        // Verify all dependencies before publication. They are immutable and
+        // pinned by the main UUID lease throughout this operation.
+        for reference in &root.checkpoint_references {
+            objects
+                .read(*reference)
+                .map_err(HawDBError::from_storage_error)?;
+        }
+        objects
+            .read(root.durable_manifest)
+            .map_err(HawDBError::from_storage_error)?;
+        let wal_path = branch_directory.join(crate::artifact_files::wal_generation_file(
+            head.active_wal.generation,
+        ));
+        let empty_wal = crate::wal::frame::encode_binary_wal_header(
+            head.active_wal.generation,
+            head.active_wal.replay_start_lsn,
+        );
+        let mut wal_bytes = Vec::with_capacity(empty_wal.len());
+        fs::File::open(&wal_path)?
+            .take(empty_wal.len() as u64 + 1)
+            .read_to_end(&mut wal_bytes)?;
+        let mut wal_hasher = hawdb_integrity::IntegrityHasher::new();
+        wal_hasher.update(&wal_bytes);
+        if wal_bytes != empty_wal
+            || head.active_wal.byte_length != empty_wal.len() as u64
+            || head.active_wal.sha256 != wal_hasher.finish().sha256
+        {
+            return Err(HawDBError::StorageIntegrity(
+                "bootstrap main has a separate private WAL history; retain both histories".into(),
+            ));
+        }
+        // Once selector publication starts, this legacy writer must never
+        // acknowledge another write, including after an uncertain rename/sync.
+        self.integrity_poisoned
+            .store(true, super::AtomicOrdering::Release);
+        crate::branch_project::publish_validated_selector(
+            durable.project_file_descriptors(),
+            selector,
+        )
     }
 
     #[doc(hidden)]
@@ -443,13 +594,46 @@ impl GraphStore {
     pub fn admit_branch_from_head(
         request: BranchAdmissionRequest<'_>,
     ) -> std::result::Result<AdmittedBranchStore, BranchAdmissionError> {
-        Self::admit_branch_from_head_with_cleanup(request, |runtime_directory| {
+        Self::admit_branch_from_head_with_cleanup(request, false, |runtime_directory| {
+            let _ = fs::remove_dir_all(runtime_directory);
+        })
+    }
+
+    /// Uses read-only storage capabilities throughout recovery. Disposable
+    /// runtime materialization is allowed; WAL repair, checkpoint cleanup, and
+    /// creation of a writable projection catalog are not.
+    #[doc(hidden)]
+    pub fn admit_read_only_branch_from_head(
+        request: BranchAdmissionRequest<'_>,
+    ) -> std::result::Result<AdmittedBranchStore, BranchAdmissionError> {
+        Self::admit_branch_from_head_with_cleanup(request, true, |runtime_directory| {
             let _ = fs::remove_dir_all(runtime_directory);
         })
     }
 
     fn admit_branch_from_head_with_cleanup(
         request: BranchAdmissionRequest<'_>,
+        read_only: bool,
+        cleanup: impl FnOnce(&Path),
+    ) -> std::result::Result<AdmittedBranchStore, BranchAdmissionError> {
+        Self::admit_branch_with_purpose(request, read_only, false, cleanup)
+    }
+
+    /// Canonical repair sources retain the same UUID lease, closure/WAL
+    /// checks, and resource domain as ordinary admission. Only the two
+    /// explicitly rebuildable graph-artifact families may be unavailable.
+    pub(super) fn admit_branch_for_derived_repair(
+        request: BranchAdmissionRequest<'_>,
+    ) -> std::result::Result<AdmittedBranchStore, BranchAdmissionError> {
+        Self::admit_branch_with_purpose(request, true, true, |runtime_directory| {
+            let _ = fs::remove_dir_all(runtime_directory);
+        })
+    }
+
+    fn admit_branch_with_purpose(
+        request: BranchAdmissionRequest<'_>,
+        read_only: bool,
+        derived_repair: bool,
         cleanup: impl FnOnce(&Path),
     ) -> std::result::Result<AdmittedBranchStore, BranchAdmissionError> {
         let project_path =
@@ -470,13 +654,14 @@ impl GraphStore {
                 BranchAdmissionError::Recovery(HawDBError::from_storage_error(error))
             })?;
         let total_open_started = std::time::Instant::now();
-        if matches!(
-            request.replay_config.recovery_mode,
-            RecoveryMode::AutoRepairTornTail | RecoveryMode::DoctorRepairTornTail
-        ) {
+        if request.replay_config.recovery_mode == RecoveryMode::DoctorRepairTornTail {
             return Err(BranchAdmissionError::Recovery(HawDBError::Storage(
-                "automatic repair of a branch private WAL requires branch-aware repair publication"
-                    .to_string(),
+                "WAL repair is not available through database open; use DatabaseDoctor to plan and explicitly apply repair before opening in strict mode".into(),
+            )));
+        }
+        if read_only && request.replay_config.recovery_mode == RecoveryMode::AutoRepairTornTail {
+            return Err(BranchAdmissionError::Recovery(HawDBError::Storage(
+                "automatic WAL tail repair requires a writable database open".into(),
             )));
         }
         let before = ready_branch_record(
@@ -493,6 +678,10 @@ impl GraphStore {
                 ))?;
         let branch_lease = DatabaseDirectoryLease::acquire(branch_directory)
             .map_err(BranchAdmissionError::Lease)?;
+        if !derived_repair {
+            super::derived_repair::reject_pending_derived_artifact_repair(branch_directory)
+                .map_err(BranchAdmissionError::Recovery)?;
+        }
         let head = branch_head::read_branch_head(request.head_path).map_err(|error| {
             BranchAdmissionError::Recovery(HawDBError::from_storage_error(error))
         })?;
@@ -533,8 +722,14 @@ impl GraphStore {
         // belong to this UUID, never to its parent or to the materialization.
         let artifact_directory = branch_directory.join("data");
         let result = (|| {
-            materialize_branch_runtime(&objects, &root, &runtime_directory, &artifact_directory)
-                .map_err(BranchAdmissionError::Recovery)?;
+            mount_branch_runtime(
+                &objects,
+                &root,
+                &runtime_directory,
+                &artifact_directory,
+                derived_repair,
+            )
+            .map_err(BranchAdmissionError::Recovery)?;
             let mut catalog = crate::schema::Catalog::default();
             let manifest_open_started = std::time::Instant::now();
             let durable = super::durable::DurableStore::open_branch_runtime(
@@ -542,6 +737,8 @@ impl GraphStore {
                 &artifact_directory,
                 request.durability,
                 request.replay_config,
+                read_only,
+                !derived_repair,
             )
             .map_err(BranchAdmissionError::Recovery)?;
             let (mut store, _) = GraphStore::finish_open_with_replay(
@@ -625,6 +822,7 @@ impl GraphStore {
                     root: Arc::new(root),
                     checkpoint_generation: durable.checkpoint_epoch,
                     max_sealed_wal_intervals: request.replay_config.max_branch_sealed_wal_intervals,
+                    repair_publication: None,
                 });
                 store.branch_runtime_owner = Some(runtime_owner);
                 Ok(AdmittedBranchStore { store, catalog })
@@ -832,6 +1030,32 @@ impl GraphStore {
             .root
             .object_reference()
             .map_err(HawDBError::from_storage_error)?;
+        if let Some(publication) = durable
+            .branch_runtime
+            .as_ref()
+            .and_then(|branch| branch.repair_publication.as_ref())
+        {
+            let header = crate::wal::frame::encode_binary_wal_header(
+                prepared.rotation.next_generation,
+                prepared.rotation.next_start_lsn,
+            );
+            let target = branch_head::BranchHead {
+                project_id,
+                branch_id,
+                physical_generation: expected_head_generation
+                    .checked_add(1)
+                    .ok_or_else(|| HawDBError::Storage("repair head generation overflow".into()))?,
+                sealed_root: root_reference,
+                logical_commit_epoch: self.commit_epoch,
+                active_wal: branch_head::ActiveWalIdentity {
+                    generation: prepared.rotation.next_generation,
+                    replay_start_lsn: prepared.rotation.next_start_lsn,
+                    byte_length: header.len() as u64,
+                    sha256: hawdb_integrity::integrity_digest(&header).sha256,
+                },
+            };
+            publication.record_target_head(&target)?;
+        }
         let mut objects = ImmutableObjectStore::open(&prepared.immutable_store_root)
             .map_err(HawDBError::from_storage_error)?;
         let head = branch_head::publish_prepared_wal_rotation_with_root(
@@ -890,6 +1114,18 @@ impl GraphStore {
         if durable.branch_runtime.is_none() {
             return Err(HawDBError::Storage("store has no admitted branch".into()));
         }
+        let projection_generation_root = durable.root_path.join("projection-generations");
+        let projection_generations = if fs::try_exists(&projection_generation_root)? {
+            Some(
+                crate::projection_generation::ProjectionGenerationStore::open_existing(
+                    &projection_generation_root,
+                )
+                .map_err(HawDBError::from_storage_error)?,
+            )
+        } else {
+            None
+        };
+        self.projection_generations = projection_generations;
         durable.read_only = true;
         Ok(())
     }
@@ -965,6 +1201,21 @@ impl GraphStore {
         )
     }
 
+    pub(super) fn authorize_derived_repair_publication(
+        &mut self,
+        publication: Arc<super::derived_repair::publication::DerivedRepairPublication>,
+    ) -> Result<()> {
+        let branch = self
+            .durable
+            .as_mut()
+            .and_then(|durable| durable.branch_runtime.as_mut())
+            .ok_or_else(|| {
+                HawDBError::Storage("repair publication requires an admitted branch".into())
+            })?;
+        branch.repair_publication = Some(publication);
+        Ok(())
+    }
+
     /// Replays the target branch's active WAL after opening the sealed root
     /// materialization. The root's sealed WAL has already been replayed by the
     /// ordinary durable opener; the private WAL must start at exactly that
@@ -1000,9 +1251,11 @@ impl GraphStore {
         root: &SealedRoot,
         objects: &ImmutableObjectStore,
         runtime_directory: &Path,
-        replay_config: WalReplayConfig,
+        mut replay_config: WalReplayConfig,
         source: &mut RelationalRecoverySourceBuilder,
     ) -> Result<()> {
+        // Immutable intervals are published commits, never repairable tails.
+        replay_config.recovery_mode = RecoveryMode::Strict;
         for interval in &root.sealed_wals {
             let bytes = objects
                 .read(interval.object)
@@ -1078,8 +1331,18 @@ impl GraphStore {
         durable.wal_append_file = None;
         durable.wal_generation = generation;
         durable.wal_replay_start_lsn = start_lsn;
+        let repair_directory = path.parent().ok_or_else(|| {
+            HawDBError::StorageIntegrity("branch WAL has no parent directory".into())
+        })?;
+        durable.wal_tail_repair = if !durable.read_only
+            && replay_config.recovery_mode == RecoveryMode::AutoRepairTornTail
+        {
+            super::doctor::resume_automatic_wal_tail_repair_locked(repair_directory, replay_config)?
+        } else {
+            super::doctor::reject_pending_wal_doctor_repair(repair_directory)?;
+            None
+        };
         durable.wal_bytes = fs::metadata(path)?.len();
-        durable.wal_tail_repair = None;
         self.storage_recovery_report = combine_recovery_reports(
             before,
             self.replay_wal_interval(catalog, replay_config, source)?,
@@ -1546,12 +1809,12 @@ fn checkpoint_artifact_bindings(
 }
 
 #[derive(Clone)]
-struct ReadyBranchRecord {
+pub(super) struct ReadyBranchRecord {
     project_id: branch_catalog::BranchId,
     branch: branch_catalog::BranchRecord,
 }
 
-fn ready_branch_record(
+pub(super) fn ready_branch_record(
     catalog_path: &Path,
     branch_id: branch_catalog::BranchId,
     expected_metadata_revision: u64,
@@ -1591,7 +1854,7 @@ fn ready_branch_record(
     })
 }
 
-fn validate_admission_binding(
+pub(super) fn validate_admission_binding(
     record: &ReadyBranchRecord,
     head: &branch_head::BranchHead,
     root: &SealedRoot,
@@ -1642,11 +1905,12 @@ fn validate_admission_binding(
     Ok(())
 }
 
-fn materialize_branch_runtime(
+fn mount_branch_runtime(
     objects: &ImmutableObjectStore,
     root: &SealedRoot,
     runtime_directory: &Path,
     artifact_directory: &Path,
+    derived_repair: bool,
 ) -> Result<()> {
     root.validate().map_err(HawDBError::from_storage_error)?;
     if runtime_directory.exists() {
@@ -1670,7 +1934,12 @@ fn materialize_branch_runtime(
             "sealed root differs from its checkpoint manifest recovery boundary".to_string(),
         ));
     }
-    materialize_checkpoint_bindings(objects, artifact_directory, &root.checkpoint_bindings)?;
+    mount_checkpoint_bindings(
+        objects,
+        artifact_directory,
+        &root.checkpoint_bindings,
+        derived_repair.then_some(manifest.checkpoint_epoch),
+    )?;
     // The manifest names the checkpoint's original WAL generation. A seal
     // can omit that empty generation and begin at a newer private generation.
     // Mount an empty anchor, then replay each root interval with its own header.
@@ -1686,6 +1955,52 @@ fn materialize_branch_runtime(
     Ok(())
 }
 
+fn mount_checkpoint_bindings(
+    objects: &ImmutableObjectStore,
+    destination: &Path,
+    bindings: &[CheckpointArtifactBinding],
+    derived_repair_generation: Option<u64>,
+) -> Result<()> {
+    let project = crate::file_descriptors::ProjectFileDescriptors::registered(destination)?;
+    let context = crate::file_descriptors::context_for_path(destination)?;
+    for binding in bindings {
+        let path = destination.join(&binding.relative_path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mounted = project.immutable_handles.mount(
+            &path,
+            crate::immutable_files::ImmutableFileBinding {
+                reference: binding.reference,
+                object_path: objects.object_path(binding.reference),
+            },
+            &context,
+        );
+        if let Err(error) = mounted {
+            let rebuildable = derived_repair_generation.is_some_and(|generation| {
+                super::derived_repair::rebuildable_artifact_kind(&binding.relative_path, generation)
+                    .is_some()
+            });
+            // Never reinterpret descriptor exhaustion or another I/O failure
+            // as corrupt data. Ordinary admission bypasses no closure member.
+            if !rebuildable
+                || !matches!(
+                    error.kind(),
+                    io::ErrorKind::InvalidData | io::ErrorKind::NotFound
+                )
+            {
+                if error.kind() == io::ErrorKind::InvalidData {
+                    return Err(HawDBError::StorageIntegrity(error.to_string()));
+                }
+                return Err(error.into());
+            }
+        }
+    }
+    Ok(())
+}
+
+// Independent dataset copying belongs only to the legacy qualification helper;
+// production branch admission above mounts immutable aliases without copying.
 fn materialize_checkpoint_bindings(
     objects: &ImmutableObjectStore,
     destination: &Path,
@@ -3297,6 +3612,23 @@ mod tests {
             GraphStore::admit_branch_from_head(request).expect("admit child directly");
         assert_eq!(admitted.store().node_count_for_label(None), 2);
         assert_eq!(admitted.head().sealed_root, root_reference);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let object_store = ImmutableObjectStore::open(&objects).unwrap();
+            let data = admitted.store().durable.as_ref().unwrap().root_path();
+            for binding in &prepared.root.checkpoint_bindings {
+                let alias = std::fs::metadata(data.join(&binding.relative_path)).unwrap();
+                let object =
+                    std::fs::metadata(object_store.object_path(binding.reference)).unwrap();
+                assert_eq!(
+                    (alias.dev(), alias.ino()),
+                    (object.dev(), object.ino()),
+                    "direct admission copied {} instead of mounting its immutable object",
+                    binding.relative_path,
+                );
+            }
+        }
         let sibling = GraphStore::admit_branch_from_head(BranchAdmissionRequest {
             catalog_path: &catalog_path,
             branch_id: sibling_id,
@@ -3448,7 +3780,7 @@ mod tests {
         };
         let mut cleaned = false;
         assert!(matches!(
-            GraphStore::admit_branch_from_head_with_cleanup(torn_request(), |runtime| {
+            GraphStore::admit_branch_from_head_with_cleanup(torn_request(), false, |runtime| {
                 assert!(runtime.exists(), "recovery materialized the failed runtime");
                 // Pause at the cleanup boundary and run a contending opener on
                 // another thread. It must fail before touching runtime files.

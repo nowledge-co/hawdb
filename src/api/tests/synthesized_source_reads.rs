@@ -73,7 +73,7 @@ fn synthesized_coverage_uses_fixed_bounded_aggregate_queries() {
         ),
         ("required_covered_count".to_string(), Value::Int(1)),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     let all = snapshot
         .query_with_params_bounded(SYNTHESIZED_COVERAGE_QUERY, &parameters, Some(2))
@@ -115,7 +115,7 @@ fn synthesized_source_ids_use_two_named_queries_on_one_snapshot() {
             Value::String("missing".to_string()),
         ]),
     )]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     let crystals = snapshot
         .query_with_params_bounded(SYNTHESIZED_CRYSTALS_QUERY, &parameters, Some(3))

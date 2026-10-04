@@ -127,7 +127,7 @@ fn graph_meta_stamp_rejects_meta_id_assignment_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:GraphMeta {meta_id: 'main', pagerank_applied: false})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .stamp_knowledge_graph_meta_batch(&KnowledgeGraphMetaStampBatchRequest {
@@ -142,7 +142,10 @@ fn graph_meta_stamp_rejects_meta_id_assignment_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("cannot update meta_id"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -220,7 +223,7 @@ fn reads_graph_meta_by_meta_id_with_parameterized_cypher() {
         .unwrap();
 
     let parameters = BTreeMap::from([("meta_id".to_string(), Value::String("main".to_string()))]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     let output = read
         .query_with_params_bounded(GRAPH_META_ALGORITHM_STATE_QUERY, &parameters, Some(1))
         .unwrap();
@@ -270,18 +273,21 @@ fn fixed_graph_meta_projections_support_state_growth_and_pinned_reads() {
     });
     db.query("CREATE (:GraphMeta {meta_id: 'main', pagerank_applied: true, community_detection_applied: false, pagerank_computed_at: 100, future_state_field: 'future'})")
         .unwrap();
-    let graph_commit_epoch = db.store.commit_epoch();
-    let mut snapshot = db.begin_read_transaction();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     db.query("MATCH (m:GraphMeta {meta_id: 'main'}) SET m.future_state_field = 'late', m.extra_field = 'extra'")
         .unwrap();
 
     let parameters = BTreeMap::from([("meta_id".to_string(), Value::String("main".to_string()))]);
-    let mut live = db.begin_read_transaction();
+    let mut live = db.begin_read_transaction().unwrap();
     let projected = live
         .query_with_params_bounded(GRAPH_META_FUTURE_STATE_QUERY, &parameters, Some(1))
         .unwrap();
-    assert_eq!(live.commit_epoch(), db.store.commit_epoch());
+    assert_eq!(
+        live.commit_epoch(),
+        db.runtime.get().unwrap().store.commit_epoch()
+    );
     let meta = &projected.rows[0];
     assert_eq!(
         meta.get("meta_id"),
@@ -328,7 +334,7 @@ fn graph_meta_empty_read_returns_no_rows_and_delete_rejects_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:GraphMeta {meta_id: 'main', pagerank_applied: true})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let parameters = BTreeMap::from([("meta_id".to_string(), Value::String(String::new()))]);
     let read = db
@@ -342,7 +348,10 @@ fn graph_meta_empty_read_returns_no_rows_and_delete_rejects_before_wal() {
         })
         .unwrap_err();
     assert!(delete_error.to_string().contains("non-empty meta id"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -356,7 +365,7 @@ fn graph_meta_read_parameters_cannot_change_query_shape_or_wal() {
     let wal_before = read_test_wal(&path).unwrap();
     {
         let db = Database::open(&path).unwrap();
-        let graph_commit_epoch_before = db.store.commit_epoch();
+        let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
         let parameters = BTreeMap::from([(
             "meta_id".to_string(),
             Value::String("main') MATCH (n) RETURN n //".to_string()),
@@ -369,7 +378,10 @@ fn graph_meta_read_parameters_cannot_change_query_shape_or_wal() {
             )
             .unwrap();
         assert!(output.rows.is_empty());
-        assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+        assert_eq!(
+            db.runtime.get().unwrap().store.commit_epoch(),
+            graph_commit_epoch_before
+        );
     }
     let wal_after = read_test_wal(&path).unwrap();
     assert_eq!(wal_after, wal_before);
@@ -387,7 +399,7 @@ fn graph_meta_delete_missing_does_not_write_wal() {
     let wal_before = read_test_wal(&path).unwrap();
     {
         let mut db = Database::open(&path).unwrap();
-        let graph_commit_epoch_before = db.store.commit_epoch();
+        let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
         let output = db
             .delete_knowledge_graph_meta(&KnowledgeGraphMetaRequest {
                 meta_id: "missing".to_string(),

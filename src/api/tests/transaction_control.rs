@@ -18,7 +18,7 @@ use super::*;
 fn transaction_rollback_discards_buffered_mutations() {
     let mut db = Database::new();
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("CREATE (:Memory {id: 1, title: 'Graph foundations'})")
             .unwrap();
         let staged = tx
@@ -41,7 +41,7 @@ fn transaction_rollback_discards_buffered_mutations() {
 fn transaction_commit_applies_buffered_mutations() {
     let mut db = Database::new();
     let output = {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("CREATE (:Memory {id: 1, title: 'Graph foundations'})")
             .unwrap();
         tx.query(
@@ -69,7 +69,7 @@ fn transaction_commit_replays_as_one_wal_batch() {
     let path = unique_test_dir("transaction_batch_wal");
     {
         let mut db = Database::open(&path).unwrap();
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("CREATE (:Memory {id: 1, title: 'Graph foundations'})")
             .unwrap();
         tx.query(
@@ -80,7 +80,8 @@ fn transaction_commit_replays_as_one_wal_batch() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 2);
+    // Engine bootstrap is already checkpointed; count the private user WAL.
+    assert_eq!(wal.lines().count(), 1);
     assert!(wal.contains("\tbatch\t"));
     {
         let mut db = Database::open(&path).unwrap();
@@ -104,7 +105,7 @@ fn transaction_reads_own_writes_and_commits_exact_staged_operations() {
     db.query("CREATE (:Memory {id: 1, state: 'old'})").unwrap();
 
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("CREATE (:Memory {id: 2, state: 'created'})")
             .unwrap();
         let created = tx
@@ -172,7 +173,7 @@ fn transaction_commit_updates_property_index() {
     let mut db = Database::new();
     db.query("CREATE INDEX ON :Memory(id)").unwrap();
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("CREATE (:Memory {id: 42, title: 'Indexed memory'})")
             .unwrap();
         for id in 100..116 {

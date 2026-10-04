@@ -75,7 +75,7 @@ fn measure(declared_indexes: usize) -> serde_json::Value {
         // Grouped into transactions, because one commit per node makes this a
         // WAL benchmark rather than an open benchmark.
         for batch in (0..NODE_COUNT).step_by(BATCH) {
-            let mut transaction = db.begin_transaction();
+            let mut transaction = db.begin_transaction().unwrap();
             for index in batch..(batch + BATCH).min(NODE_COUNT) {
                 transaction
                     .query(&format!(

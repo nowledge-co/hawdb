@@ -737,8 +737,11 @@ fn prepare_sql_case(
             return Err(sql_error_observation("setup", error));
         }
     }
-    let snapshot_epoch = database.commit_epoch();
-    Ok((database.begin_read_transaction(), snapshot_epoch))
+    let snapshot = database
+        .begin_read_transaction()
+        .map_err(|error| sql_error_observation("snapshot", error))?;
+    let snapshot_epoch = snapshot.commit_epoch();
+    Ok((snapshot, snapshot_epoch))
 }
 
 fn execute_sql_tlp_queries(

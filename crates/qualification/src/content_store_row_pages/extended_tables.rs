@@ -43,7 +43,7 @@ pub(super) fn append_runtime_content(
     let next_chunk_count = chunk_position.checked_add(1).ok_or_else(|| {
         HawDBError::Semantic("content-store chunk count overflowed usize".to_string())
     })?;
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
     transaction.query_with_params(
         "MATCH (s:Source {id: $source_id}) SET s.chunk_count = $chunk_count",
         &source_graph_parameters(next_chunk_count),
@@ -85,7 +85,7 @@ pub(super) fn append_runtime_content(
         ],
     )?;
     transaction.commit()?;
-    let committed_epoch = database.commit_epoch();
+    let committed_epoch = database.commit_epoch()?;
     require_source_graph_chunk_count(database, next_chunk_count)?;
     Ok(committed_epoch)
 }

@@ -15,12 +15,36 @@
 //! Shared immutable handles. Logical references survive idle descriptor eviction.
 
 use crate::file_descriptors::{BudgetState, DescriptorCache, DescriptorKind, FileOpenContext};
-use crate::file_io::{File, OpenOptions};
+use crate::file_io::{self as fs, File, OpenOptions};
 use crate::immutable_object::ObjectReference;
 use std::collections::BTreeMap;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+static NEXT_ALIAS_CANDIDATE: AtomicU64 = AtomicU64::new(0);
+
+struct AliasCandidate(PathBuf);
+
+impl Drop for AliasCandidate {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn alias_candidate_path(path: &Path) -> io::Result<PathBuf> {
+    let mut name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "alias has no filename"))?
+        .to_os_string();
+    name.push(format!(
+        ".alias-{}-{}",
+        std::process::id(),
+        NEXT_ALIAS_CANDIDATE.fetch_add(1, Ordering::Relaxed),
+    ));
+    Ok(path.with_file_name(name))
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ImmutableFileBinding {
@@ -73,6 +97,68 @@ impl ImmutableFileHandles {
         Ok(())
     }
 
+    /// Mounts verified checkpoint content without copying the dataset. The
+    /// alias and the immutable object share an inode; mutable opens detach it.
+    pub(crate) fn mount(
+        &self,
+        path: &Path,
+        binding: ImmutableFileBinding,
+        context: &FileOpenContext,
+    ) -> io::Result<()> {
+        // Mount validation uses a transient handle and a fixed-size buffer;
+        // mounting an unopened artifact must not warm the descriptor cache.
+        // Keep the verified handle alive until the alias has been installed.
+        let _verified = Self::open_verified_object(&binding, context, DescriptorKind::Transient)?;
+        let candidate = loop {
+            let candidate = alias_candidate_path(path)?;
+            match fs::hard_link(&binding.object_path, &candidate) {
+                Ok(()) => break AliasCandidate(candidate),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        };
+        // Aliases are recoverable from the durable head. Their installation
+        // does not publish a schema/data commit or require a durability barrier.
+        fs::rename(&candidate.0, path)?;
+        self.bind(path, binding)
+    }
+
+    /// Gives a mutator an independent inode before it can change shared bytes.
+    /// Only an actual write copies content; a truncating write copies no data.
+    pub(crate) fn detach_for_write(
+        &self,
+        path: &Path,
+        context: &FileOpenContext,
+        truncate: bool,
+    ) -> io::Result<()> {
+        let (candidate, mut destination) = loop {
+            let candidate = alias_candidate_path(path)?;
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open_with_context(&candidate, context)
+            {
+                Ok(file) => break (AliasCandidate(candidate), file),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        };
+        if !truncate {
+            // Read through the immutable binding's positioned cursor, never
+            // through the shared cache handle's sequential cursor.
+            let mut source = OpenOptions::new()
+                .read(true)
+                .open_with_context(path, context)?;
+            io::copy(&mut source, &mut destination)?;
+            destination.set_permissions(source.metadata()?.permissions())?;
+        }
+        destination.flush()?;
+        destination.sync_all()?;
+        // Close the candidate before replacement, including on Windows.
+        drop(destination);
+        crate::durability::durable_replace_file(&candidate.0, path)
+    }
+
     /// A live read owns an Arc. Only the cache's final, idle Arc is evictable.
     pub(crate) fn get(
         &self,
@@ -106,9 +192,26 @@ impl ImmutableFileHandles {
             return Ok(file);
         }
         self.state.record_cache_miss();
+        let file = Arc::new(Self::open_verified_object(
+            binding,
+            context,
+            DescriptorKind::ImmutableCache,
+        )?);
+        self.handles
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(binding.reference, file.clone());
+        Ok(file)
+    }
+
+    fn open_verified_object(
+        binding: &ImmutableFileBinding,
+        context: &FileOpenContext,
+        kind: DescriptorKind,
+    ) -> io::Result<File> {
         let mut file = OpenOptions::new()
             .read(true)
-            .descriptor_kind(DescriptorKind::ImmutableCache)
+            .descriptor_kind(kind)
             .open_with_context(&binding.object_path, context)?;
         let metadata = file.metadata()?;
         if !metadata.is_file() || metadata.len() != binding.reference.byte_length {
@@ -148,11 +251,6 @@ impl ImmutableFileHandles {
                 "immutable handle identity digest mismatch",
             ));
         }
-        let file = Arc::new(file);
-        self.handles
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(binding.reference, file.clone());
         Ok(file)
     }
 }
@@ -178,5 +276,166 @@ impl DescriptorCache for ImmutableFileHandles {
         drop(removed);
         self.state.record_cache_evictions(count);
         count
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::file_descriptors::ProjectFileDescriptors;
+    use crate::immutable_object::{ImmutableObjectStore, ObjectKind};
+    use std::io::{Seek, SeekFrom};
+
+    struct Fixture {
+        root: PathBuf,
+        project: ProjectFileDescriptors,
+        objects: ImmutableObjectStore,
+        reference: ObjectReference,
+        bytes: Vec<u8>,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let root = loop {
+                let root = std::env::temp_dir().join(format!(
+                    "hawdb-immutable-alias-{}-{}",
+                    std::process::id(),
+                    NEXT_ALIAS_CANDIDATE.fetch_add(1, Ordering::Relaxed),
+                ));
+                match fs::create_dir(&root) {
+                    Ok(()) => break root,
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("create immutable alias fixture: {error}"),
+                }
+            };
+            let project = ProjectFileDescriptors::acquire_existing(&root, 8).unwrap();
+            let mut objects = ImmutableObjectStore::open(root.join("immutable")).unwrap();
+            let bytes = (0..128 * 1024).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+            let reference = ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, &bytes);
+            objects.publish(reference, &bytes).unwrap();
+            Self {
+                root,
+                project,
+                objects,
+                reference,
+                bytes,
+            }
+        }
+
+        fn mount(&self, name: &str) -> PathBuf {
+            let path = self.root.join(name);
+            self.project
+                .immutable_handles
+                .mount(
+                    &path,
+                    ImmutableFileBinding {
+                        reference: self.reference,
+                        object_path: self.objects.object_path(self.reference),
+                    },
+                    &crate::file_descriptors::context_for_path(&path).unwrap(),
+                )
+                .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                let alias = std::fs::metadata(&path).unwrap();
+                let object = std::fs::metadata(self.objects.object_path(self.reference)).unwrap();
+                assert_eq!((alias.dev(), alias.ino()), (object.dev(), object.ino()));
+            }
+            path
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn shared_alias_detaches_before_append_or_truncate_and_preserves_readers() {
+        for (truncate, native_flags) in [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let fixture = Fixture::new();
+            let path = fixture.mount("selected.hawdb");
+            let sibling = fixture.mount("sibling.hawdb");
+            assert_eq!(fixture.project.metrics().open, 0);
+            assert_eq!(fixture.project.metrics().cached_handles, 0);
+            let mut snapshot = File::open(&path).unwrap();
+            assert_eq!(
+                OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::AlreadyExists,
+            );
+            assert_eq!(fs::read(&path).unwrap(), fixture.bytes);
+            #[cfg(unix)]
+            let _native_read_only = if native_flags {
+                use std::os::unix::fs::OpenOptionsExt;
+                // Opaque native flags detach before removing the binding, so
+                // a later ordinary write cannot mutate the shared object.
+                Some(
+                    OpenOptions::new()
+                        .read(true)
+                        .custom_flags(0)
+                        .open(&path)
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            #[cfg(not(unix))]
+            let _ = native_flags;
+            if truncate {
+                fs::write(&path, b"replacement").unwrap();
+                assert_eq!(fs::read(&path).unwrap(), b"replacement");
+            } else {
+                let mut writer = OpenOptions::new().append(true).open(&path).unwrap();
+                writer.write_all(b"suffix").unwrap();
+                drop(writer);
+                let mut expected = fixture.bytes.clone();
+                expected.extend_from_slice(b"suffix");
+                assert_eq!(fs::read(&path).unwrap(), expected);
+            }
+            assert_eq!(
+                fixture.objects.read(fixture.reference).unwrap(),
+                fixture.bytes
+            );
+            assert_eq!(fs::read(&sibling).unwrap(), fixture.bytes);
+            let mut original = Vec::new();
+            snapshot.read_to_end(&mut original).unwrap();
+            assert_eq!(original, fixture.bytes);
+            assert!(fixture.project.metrics().high_water <= 8);
+        }
+    }
+
+    #[test]
+    fn replacement_and_removal_update_future_opens_without_invalidating_snapshot_identity() {
+        let fixture = Fixture::new();
+        let path = fixture.mount("selected.hawdb");
+        let mut snapshot = File::open(&path).unwrap();
+        let candidate = fixture.root.join("replacement.tmp");
+        let mut replacement = File::create(&candidate).unwrap();
+        replacement.write_all(b"published replacement").unwrap();
+        replacement.sync_all().unwrap();
+        drop(replacement);
+        crate::durability::durable_replace_file(&candidate, &path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"published replacement");
+        fs::remove_file(&path).unwrap();
+        assert_eq!(
+            File::open(&path).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        let mut original = Vec::new();
+        snapshot.read_to_end(&mut original).unwrap();
+        assert_eq!(original, fixture.bytes);
+        snapshot.seek(SeekFrom::Start(0)).unwrap();
+        assert_eq!(
+            fixture.objects.read(fixture.reference).unwrap(),
+            fixture.bytes
+        );
     }
 }

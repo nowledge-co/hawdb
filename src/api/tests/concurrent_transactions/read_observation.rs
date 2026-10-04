@@ -247,8 +247,8 @@ fn read_snapshot_descendants_keep_graph_and_sql_views_across_checkpoint() {
         db.query_sql("INSERT INTO records (id, body) VALUES (1, 'old')")
             .unwrap();
         db.checkpoint().unwrap();
-        let source = db.read_snapshot();
-        let epoch = db.commit_epoch();
+        let source = db.read_snapshot().unwrap();
+        let epoch = db.commit_epoch().unwrap();
         db.query("MATCH (n:Memory) SET n.value = 2").unwrap();
         db.query_sql("UPDATE records SET body = 'new' WHERE id = 1")
             .unwrap();

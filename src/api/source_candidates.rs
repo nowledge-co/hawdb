@@ -40,7 +40,11 @@ impl Database {
         &self,
         request: &KnowledgeSourceCandidateScanRequest,
     ) -> Result<KnowledgeSourceCandidateScanOutput> {
-        knowledge_source_candidates(&self.catalog, &self.store, request)
+        knowledge_source_candidates(
+            &self.runtime.get()?.catalog,
+            &self.runtime.get()?.store,
+            request,
+        )
     }
 }
 

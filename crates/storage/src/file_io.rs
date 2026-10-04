@@ -342,12 +342,25 @@ impl OpenOptions {
                 })),
             });
         }
+        if (mutable || self.native_options)
+            && !self.mutable[4]
+            && let Some(handles) = handles.as_ref()
+            && handles.binding(path)?.is_some()
+        {
+            // Native options can override access mode or request truncation.
+            // Give opaque native opens a private inode too. create_new must
+            // still reject an existing alias without changing its binding.
+            handles.detach_for_write(path, context, self.mutable[2])?;
+        }
+        // COW charges each of its native handles before opening it, then
+        // closes the candidate before acquiring this final handle's capacity.
         let permit = context.acquire(self.kind)?;
         // Later readers must see the mutable path. Existing logical readers
         // retain their captured immutable identity and remain snapshot-safe.
         // Invalidate before the native open can truncate or modify the path.
         if (mutable || self.native_options)
-            && let Some(handles) = handles
+            && !self.mutable[4]
+            && let Some(handles) = handles.as_ref()
         {
             handles.unbind(path)?;
         }
@@ -355,6 +368,13 @@ impl OpenOptions {
             .inner
             .open(path)
             .map_err(|error| context.map_open_error(error))?;
+        if self.mutable[4]
+            && let Some(handles) = handles
+        {
+            // A rejected create_new must preserve the existing alias. Clear
+            // a stale binding only after native creation actually succeeds.
+            handles.unbind(path)?;
+        }
         Ok(File {
             backing: FileBacking::Native(NativeFile { inner, permit }),
         })
@@ -442,6 +462,23 @@ fn temporary<T>(path: &Path, operation: impl FnOnce() -> io::Result<T>) -> io::R
     operation().map_err(|error| context.map_open_error(error))
 }
 
+fn two_paths<T>(
+    source: &Path,
+    destination: &Path,
+    operation: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    let source_context = context_for_path(source)?;
+    let destination_context = context_for_path(destination)?;
+    let _source_permit = source_context.acquire(DescriptorKind::Transient)?;
+    if Arc::ptr_eq(&source_context.state, &destination_context.state) {
+        // One filesystem operation in one project is one temporary admission.
+        operation().map_err(|error| source_context.map_open_error(error))
+    } else {
+        let _destination_permit = destination_context.acquire(DescriptorKind::Transient)?;
+        operation().map_err(|error| destination_context.map_open_error(error))
+    }
+}
+
 pub fn metadata(path: impl AsRef<Path>) -> io::Result<Metadata> {
     temporary(path.as_ref(), || std::fs::metadata(path.as_ref()))
 }
@@ -465,23 +502,34 @@ pub fn create_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
     temporary(path.as_ref(), || std::fs::create_dir_all(path.as_ref()))
 }
 pub fn remove_file(path: impl AsRef<Path>) -> io::Result<()> {
-    temporary(path.as_ref(), || std::fs::remove_file(path.as_ref()))
+    let path = path.as_ref();
+    temporary(path, || std::fs::remove_file(path))?;
+    unbind_immutable_path(path)
+}
+
+pub(crate) fn unbind_immutable_path(path: &Path) -> io::Result<()> {
+    if let Some(handles) = context_for_path(path)?.state.existing_immutable_handles() {
+        handles.unbind(path)?;
+    }
+    Ok(())
 }
 pub fn remove_dir(path: impl AsRef<Path>) -> io::Result<()> {
     temporary(path.as_ref(), || std::fs::remove_dir(path.as_ref()))
 }
 pub fn rename(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Result<()> {
-    temporary(source.as_ref(), || {
-        temporary(destination.as_ref(), || {
-            std::fs::rename(source.as_ref(), destination.as_ref())
-        })
-    })
+    two_paths(source.as_ref(), destination.as_ref(), || {
+        std::fs::rename(source.as_ref(), destination.as_ref())
+    })?;
+    // Captured logical readers retain their immutable identity, while future
+    // opens must observe the replacement or the removed source name.
+    for path in [source.as_ref(), destination.as_ref()] {
+        unbind_immutable_path(path)?;
+    }
+    Ok(())
 }
 pub fn hard_link(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Result<()> {
-    temporary(source.as_ref(), || {
-        temporary(destination.as_ref(), || {
-            std::fs::hard_link(source.as_ref(), destination.as_ref())
-        })
+    two_paths(source.as_ref(), destination.as_ref(), || {
+        std::fs::hard_link(source.as_ref(), destination.as_ref())
     })
 }
 

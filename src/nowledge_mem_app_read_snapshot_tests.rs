@@ -89,6 +89,7 @@ fn app_read_handle() -> NowledgeMemEmbeddedStoreHandle {
     }
     let projection = NowledgeMemSearchProjection::from_index(index);
     NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, Some(projection)))
+        .unwrap()
 }
 
 #[test]
@@ -704,7 +705,7 @@ fn durable_snapshot_handle(root: &SnapshotTestRoot) -> NowledgeMemEmbeddedStoreH
         NowledgeMemGraphMode::WritableCutover,
         snapshot_governor(),
     );
-    NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, None))
+    NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, None)).unwrap()
 }
 
 #[test]
@@ -715,12 +716,24 @@ fn user_keeps_shared_snapshot_pins_across_same_epoch_checkpoints_until_last_fork
     let (permit_a, mut first) = handle.canonical_read_transaction(4096, None).unwrap();
     let (permit_b, mut second) = handle.canonical_read_transaction(4096, None).unwrap();
     let old_view = first.published_read_view();
+    let old_generation = old_view.physical_generation().unwrap().0;
+    let hawdb_storage::branch_project::ProjectManifest::Branch(selector) =
+        hawdb_storage::branch_project::inspect_project_manifest(&root.0).unwrap()
+    else {
+        panic!("expected a branch project")
+    };
+    let data = root
+        .0
+        .join("branches")
+        .join(selector.main_branch_id().as_uuid().to_string())
+        .join("data");
     assert_eq!(second.published_read_view(), old_view);
     // When checkpoint changes only the physical generation, new acquisition refreshes its pin.
     handle.checkpoint().unwrap();
     let new_view = handle
         .with_read_transaction(4096, |tx| Ok(tx.published_read_view()))
         .unwrap();
+    let first_new_generation = new_view.physical_generation().unwrap().0;
     assert_eq!(
         new_view.visible_commit_epoch(),
         old_view.visible_commit_epoch()
@@ -732,8 +745,12 @@ fn user_keeps_shared_snapshot_pins_across_same_epoch_checkpoints_until_last_fork
     for _ in 0..3 {
         handle.checkpoint().unwrap();
     }
-    assert!(root.0.join("canonical.1.hawdb").exists());
-    assert!(!root.0.join("canonical.2.hawdb").exists());
+    assert!(data
+        .join(format!("canonical.{old_generation}.hawdb"))
+        .exists());
+    assert!(!data
+        .join(format!("canonical.{first_new_generation}.hawdb"))
+        .exists());
     assert_eq!(
         first
             .query("MATCH (r:Record) RETURN r.id AS id")
@@ -745,7 +762,9 @@ fn user_keeps_shared_snapshot_pins_across_same_epoch_checkpoints_until_last_fork
     drop(first);
     drop(permit_a);
     handle.checkpoint().unwrap();
-    assert!(root.0.join("canonical.1.hawdb").exists());
+    assert!(data
+        .join(format!("canonical.{old_generation}.hawdb"))
+        .exists());
     assert_eq!(
         second
             .query("MATCH (r:Record) RETURN r.id AS id")
@@ -758,8 +777,12 @@ fn user_keeps_shared_snapshot_pins_across_same_epoch_checkpoints_until_last_fork
     drop(second);
     drop(permit_b);
     handle.checkpoint().unwrap();
-    assert!(!root.0.join("canonical.1.hawdb").exists());
-    assert!(!root.0.join("checkpoint.1.hawdb").exists());
+    assert!(!data
+        .join(format!("canonical.{old_generation}.hawdb"))
+        .exists());
+    assert!(!data
+        .join(format!("checkpoint.{old_generation}.hawdb"))
+        .exists());
 }
 
 #[test]
@@ -794,7 +817,11 @@ fn assert_late_snapshot_rejected(bounded: bool, failure: impl FnOnce() + Send + 
             return;
         }
         let mut store = writer_handle.write_store().unwrap();
-        let mut transaction = store.graph_mut().database_mut().begin_transaction();
+        let mut transaction = store
+            .graph_mut()
+            .database_mut()
+            .begin_transaction()
+            .unwrap();
         transaction.query("CREATE (:Record {id: 'new-a'})").unwrap();
         transaction.query("CREATE (:Record {id: 'new-b'})").unwrap();
         failure();

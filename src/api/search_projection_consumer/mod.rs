@@ -50,10 +50,13 @@ impl Database {
         F: FnOnce(&mut DatabaseReadTransaction, &mut SearchIndex) -> Result<()>,
     {
         let root = self.consumer_writable_root()?;
-        if self.projection_consumers.unavailable {
-            self.projection_consumers = ConsumerRegistry::load(
+        if self.runtime.get_mut()?.projection_consumers.unavailable {
+            self.runtime.get_mut()?.projection_consumers = ConsumerRegistry::load(
                 Some(&root),
-                self.store.search_projection_database_identity(),
+                self.runtime
+                    .get()?
+                    .store
+                    .search_projection_database_identity(),
             );
         }
         let destination = projection_directory.as_ref();
@@ -70,31 +73,52 @@ impl Database {
         if !parent.is_dir() {
             return Err(HawDBError::Storage("consumer projection parent must exist".into()).into());
         }
-        let reinitialize_registry = self.projection_consumers.unavailable
+        let identity = self
+            .runtime
+            .get()?
+            .store
+            .search_projection_database_identity();
+        let reinitialize_registry = self.runtime.get_mut()?.projection_consumers.unavailable
             || self
+                .runtime
+                .get_mut()?
                 .projection_consumers
                 .database_uuid
-                .is_some_and(|identity| {
-                    Some(identity) != self.store.search_projection_database_identity()
-                });
+                .is_some_and(|registered_identity| Some(registered_identity) != identity);
         if !reinitialize_registry {
-            if self.projection_consumers.records.contains_key(id.as_str()) {
+            if self
+                .runtime
+                .get_mut()?
+                .projection_consumers
+                .records
+                .contains_key(id.as_str())
+            {
                 return Err(Error::AlreadyRegistered);
             }
-            if self.projection_consumers.records.len() >= MAX_CONSUMERS {
+            if self.runtime.get_mut()?.projection_consumers.records.len() >= MAX_CONSUMERS {
                 return Err(Error::RegistryFull);
             }
         }
         let expires_at_commit_epoch = self
+            .runtime
+            .get()?
             .store
             .commit_epoch()
             .checked_add(options.max_idle_commits().get())
             .ok_or_else(|| HawDBError::Semantic("consumer expiry epoch overflow".into()))?;
-        let database_uuid = match self.store.search_projection_database_identity() {
+        let database_uuid = match self
+            .runtime
+            .get()?
+            .store
+            .search_projection_database_identity()
+        {
             Some(identity) => identity,
             None => {
                 let identity = generate_uuidv7()?;
-                self.store.set_search_projection_database_identity(identity);
+                self.runtime
+                    .get_mut()?
+                    .store
+                    .set_search_projection_database_identity(identity);
                 identity
             }
         };
@@ -111,7 +135,7 @@ impl Database {
         let stage = parent.join(format!(".hawdb-consumer-{registration_uuid}.stage"));
         std::fs::create_dir(&stage).map_err(HawDBError::from)?;
         let stage_guard = StageDirectory(stage.clone());
-        let mut snapshot = self.begin_read_transaction();
+        let mut snapshot = self.begin_read_transaction()?;
         let epoch = snapshot.commit_epoch();
         let initialized = (|| -> Result<ConsumerProjection> {
             let mut projection = ConsumerProjection::initialize(&stage, binding, epoch, |index| {
@@ -138,11 +162,11 @@ impl Database {
         // Invalid foreign/corrupt records have no authority in this database.
         // Replace them only after explicit initialization actually succeeds.
         if reinitialize_registry {
-            self.projection_consumers = ConsumerRegistry::default();
+            self.runtime.get_mut()?.projection_consumers = ConsumerRegistry::default();
         }
-        self.projection_consumers.database_uuid = Some(database_uuid);
+        self.runtime.get_mut()?.projection_consumers.database_uuid = Some(database_uuid);
 
-        self.projection_consumers.records.insert(
+        self.runtime.get_mut()?.projection_consumers.records.insert(
             id.as_str().into(),
             Record {
                 checkpoint_uuid: receipt.binding.checkpoint_uuid.to_string(),
@@ -157,7 +181,9 @@ impl Database {
             },
         );
         self.publish_consumer_registry(&root)?;
-        self.projection_consumers
+        self.runtime
+            .get_mut()?
+            .projection_consumers
             .verified
             .insert(id.as_str().into(), State::Active);
         Ok(SearchProjectionConsumer::from_projection(id, projection))
@@ -176,10 +202,14 @@ impl Database {
         let projection = match ConsumerProjection::open(projection_directory.as_ref()) {
             Ok(projection) => projection,
             Err(HawDBError::StorageIntegrity(_)) => {
-                self.projection_consumers.verified.insert(
-                    id.as_str().into(),
-                    State::RebuildRequired(Reason::CheckpointMismatch),
-                );
+                self.runtime
+                    .get_mut()?
+                    .projection_consumers
+                    .verified
+                    .insert(
+                        id.as_str().into(),
+                        State::RebuildRequired(Reason::CheckpointMismatch),
+                    );
                 return Err(Error::RebuildRequired(Reason::CheckpointMismatch));
             }
             Err(error) => return Err(error.into()),
@@ -187,13 +217,17 @@ impl Database {
         let consumer = SearchProjectionConsumer::from_projection(id.clone(), projection);
         if let Err(error) = self.validate_consumer_receipt(&consumer) {
             if let Error::RebuildRequired(reason) = &error {
-                self.projection_consumers
+                self.runtime
+                    .get_mut()?
+                    .projection_consumers
                     .verified
                     .insert(id.as_str().into(), State::RebuildRequired(reason.clone()));
             }
             return Err(error);
         }
-        self.projection_consumers
+        self.runtime
+            .get_mut()?
+            .projection_consumers
             .verified
             .insert(id.as_str().into(), State::Active);
         Ok(consumer)
@@ -215,7 +249,9 @@ impl Database {
     {
         let root = self.consumer_writable_root()?;
         self.validate_consumer_receipt(consumer)?;
-        self.projection_consumers
+        self.runtime
+            .get_mut()?
+            .projection_consumers
             .verified
             .insert(consumer.id().as_str().into(), State::Active);
         if max_change_operations_per_batch == 0
@@ -228,7 +264,7 @@ impl Database {
             .into());
         }
         let start = consumer.search_index().projection_freshness();
-        let graph_commit_epoch = self.store.commit_epoch();
+        let graph_commit_epoch = self.runtime.get()?.store.commit_epoch();
         let mut applied_batch_count = 0usize;
         let mut applied_operation_count = 0usize;
         while applied_batch_count < max_batches {
@@ -240,7 +276,7 @@ impl Database {
                 break;
             };
             let operation_count = batch.operation_count();
-            let mut snapshot = self.begin_read_transaction();
+            let mut snapshot = self.begin_read_transaction()?;
             let hydrated = batch_hydrator(&mut snapshot, &batch)?;
             drop(snapshot);
             batch.graph_delta_mut().max_operations = Some(max_projection_operations_per_batch);
@@ -249,16 +285,22 @@ impl Database {
                 .apply(|index| self.apply_search_projection_change_batch(index, batch, hydrated))?;
             // Any error from this point leaves an applied or durable projection
             // that must not be silently paired with the previous cursor receipt.
-            self.projection_consumers.verified.insert(
-                consumer.id().as_str().into(),
-                State::RebuildRequired(Reason::CheckpointMismatch),
-            );
+            self.runtime
+                .get_mut()?
+                .projection_consumers
+                .verified
+                .insert(
+                    consumer.id().as_str().into(),
+                    State::RebuildRequired(Reason::CheckpointMismatch),
+                );
             publication_failpoint(PublicationStage::BeforeCheckpoint)?;
             let receipt = consumer.projection_mut().checkpoint()?;
             publication_failpoint(PublicationStage::AfterCheckpoint)?;
             self.acknowledge_consumer_checkpoint(consumer.id(), &receipt)?;
             self.publish_consumer_registry(&root)?;
-            self.projection_consumers
+            self.runtime
+                .get_mut()?
+                .projection_consumers
                 .verified
                 .insert(consumer.id().as_str().into(), State::Active);
             applied_batch_count = applied_batch_count.saturating_add(1);
@@ -286,17 +328,20 @@ impl Database {
     ) -> SearchProjectionConsumerResult<SearchProjectionConsumerStatus> {
         let root = self.consumer_writable_root()?;
         self.validate_consumer_receipt(consumer)?;
-        self.projection_consumers
+        self.runtime
+            .get_mut()?
+            .projection_consumers
             .verified
             .insert(consumer.id().as_str().into(), State::Active);
+        let epoch = self.runtime.get()?.store.commit_epoch();
         let record = self
+            .runtime
+            .get_mut()?
             .projection_consumers
             .records
             .get_mut(consumer.id().as_str())
             .ok_or(Error::InvalidHandle)?;
-        record.expires_at_commit_epoch = self
-            .store
-            .commit_epoch()
+        record.expires_at_commit_epoch = epoch
             .checked_add(record.max_idle_commits)
             .ok_or_else(|| HawDBError::Semantic("consumer expiry epoch overflow".into()))?;
         self.publish_consumer_registry(&root)?;
@@ -309,14 +354,18 @@ impl Database {
     ) -> SearchProjectionConsumerResult<()> {
         self.ensure_writable()?;
         let root = self
+            .runtime
+            .get()?
             .store
             .search_projection_registry_root()
             .ok_or(Error::SourceNotDurable)?
             .to_path_buf();
-        if self.projection_consumers.unavailable {
+        if self.runtime.get_mut()?.projection_consumers.unavailable {
             return Err(Error::RebuildRequired(Reason::RegistryUnavailable));
         }
         if self
+            .runtime
+            .get_mut()?
             .projection_consumers
             .records
             .remove(id.as_str())
@@ -324,7 +373,11 @@ impl Database {
         {
             return Ok(());
         }
-        self.projection_consumers.verified.remove(id.as_str());
+        self.runtime
+            .get_mut()?
+            .projection_consumers
+            .verified
+            .remove(id.as_str());
         self.publish_consumer_registry(&root)
     }
 
@@ -332,28 +385,41 @@ impl Database {
         &self,
         id: &SearchProjectionConsumerId,
     ) -> SearchProjectionConsumerResult<SearchProjectionConsumerStatus> {
-        if self.projection_consumers.unavailable {
+        if self.runtime.get()?.projection_consumers.unavailable {
             return Err(Error::RebuildRequired(Reason::RegistryUnavailable));
         }
         let record = self
+            .runtime
+            .get()?
             .projection_consumers
             .records
             .get(id.as_str())
             .ok_or(Error::InvalidHandle)?;
-        let changefeed = self.store.search_projection_changefeed_status();
-        let identity = self.store.search_projection_database_identity();
-        let state = self.projection_consumers.state(
+        let changefeed = self
+            .runtime
+            .get()?
+            .store
+            .search_projection_changefeed_status();
+        let identity = self
+            .runtime
+            .get()?
+            .store
+            .search_projection_database_identity();
+        let state = self.runtime.get()?.projection_consumers.state(
             record,
             identity,
             changefeed.graph_commit_epoch,
             changefeed.resume_floor_commit_epoch,
         );
+        let registry = &self.runtime.get()?.projection_consumers;
         let minimum = self
+            .runtime
+            .get()?
             .projection_consumers
             .records
             .values()
             .filter(|record| {
-                self.projection_consumers.state(
+                registry.state(
                     record,
                     identity,
                     changefeed.graph_commit_epoch,
@@ -398,10 +464,12 @@ impl Database {
 
     fn consumer_writable_root(&self) -> SearchProjectionConsumerResult<PathBuf> {
         self.ensure_writable()?;
-        if self.store.wal_sync_group_active() {
+        if self.runtime.get()?.store.wal_sync_group_active() {
             return Err(Error::SourceNotDurable);
         }
-        self.store
+        self.runtime
+            .get()?
+            .store
             .search_projection_registry_root()
             .map(Path::to_path_buf)
             .ok_or(Error::SourceNotDurable)
@@ -413,12 +481,20 @@ impl Database {
     ) -> SearchProjectionConsumerResult<()> {
         let status = self.search_projection_consumer_status(consumer.id())?;
         let record = self
+            .runtime
+            .get()?
             .projection_consumers
             .records
             .get(consumer.id().as_str())
             .ok_or(Error::InvalidHandle)?;
         let binding = consumer.projection().binding();
-        if Some(binding.database_uuid) != self.store.search_projection_database_identity() {
+        if Some(binding.database_uuid)
+            != self
+                .runtime
+                .get()?
+                .store
+                .search_projection_database_identity()
+        {
             return Err(Error::RebuildRequired(Reason::DatabaseIdentityMismatch));
         }
         if binding.consumer_id != consumer.id().as_str()
@@ -457,16 +533,24 @@ impl Database {
         id: &SearchProjectionConsumerId,
         receipt: &CheckpointReceipt,
     ) -> SearchProjectionConsumerResult<()> {
+        let identity = self
+            .runtime
+            .get()?
+            .store
+            .search_projection_database_identity();
+        let epoch = self.runtime.get()?.store.commit_epoch();
         let record = self
+            .runtime
+            .get_mut()?
             .projection_consumers
             .records
             .get_mut(id.as_str())
             .ok_or(Error::InvalidHandle)?;
-        if Some(receipt.binding.database_uuid) != self.store.search_projection_database_identity()
+        if Some(receipt.binding.database_uuid) != identity
             || receipt.binding.consumer_id != id.as_str()
             || receipt.binding.registration_uuid.to_string() != record.registration_uuid
             || receipt.binding.projection_uuid.to_string() != record.projection_uuid
-            || receipt.source_epoch > self.store.commit_epoch()
+            || receipt.source_epoch > epoch
             || receipt.source_epoch < record.durable_complete_through_epoch
             || (receipt.source_epoch == record.durable_complete_through_epoch
                 && (receipt.binding.checkpoint_uuid.to_string() != record.checkpoint_uuid
@@ -483,12 +567,12 @@ impl Database {
     }
 
     fn publish_consumer_registry(&mut self, root: &Path) -> SearchProjectionConsumerResult<()> {
-        if let Err(error) = self.projection_consumers.publish(
+        if let Err(error) = self.runtime.get_mut()?.projection_consumers.publish(
             root,
             || publication_failpoint(PublicationStage::BeforeRegistry),
             || publication_failpoint(PublicationStage::AfterRegistry),
         ) {
-            self.projection_consumers.unavailable = true;
+            self.runtime.get_mut()?.projection_consumers.unavailable = true;
             return Err(error.into());
         }
         Ok(())

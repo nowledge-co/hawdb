@@ -85,7 +85,7 @@ pub(super) fn qualify_content_store_resources(
     }
 
     let files_before = regular_file_bytes_by_name(config.database_path)?;
-    let wal_before = database.storage_pressure_snapshot().wal_bytes;
+    let wal_before = database.storage_pressure_snapshot()?.wal_bytes;
     let message = corpus_statement(corpus, "upsert_thread_message")?;
     let mutation_parameters = thread_message_parameters(
         config.message_position,
@@ -96,7 +96,7 @@ pub(super) fn qualify_content_store_resources(
     let mutation_started = Instant::now();
     database.query_sql_with_params(&message.sql, &mutation_parameters)?;
     let mutation_latency_micros = elapsed_micros(mutation_started);
-    let wal_after = database.storage_pressure_snapshot().wal_bytes;
+    let wal_after = database.storage_pressure_snapshot()?.wal_bytes;
     let wal_append_bytes = wal_after.checked_sub(wal_before).ok_or_else(|| {
         HawDBError::Execution(format!(
             "content-store resource probe observed WAL bytes decrease from {wal_before} to {wal_after} before checkpoint"

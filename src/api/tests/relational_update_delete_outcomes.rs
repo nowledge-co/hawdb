@@ -60,7 +60,7 @@ fn assert_commit_outcome(result: TransactionCommitResult, affected_rows: usize) 
 fn relational_update_delete_report_matching_zero_and_multi_row_outcomes() {
     let mut database = mutation_fixture();
 
-    let mut update = database.begin_transaction();
+    let mut update = database.begin_transaction().unwrap();
     assert_statement_outcome(
         update
             .query_sql_with_result("UPDATE items SET state = 'updated' WHERE id = 1")
@@ -72,7 +72,7 @@ fn relational_update_delete_report_matching_zero_and_multi_row_outcomes() {
         1,
     );
 
-    let mut zero_update = database.begin_transaction();
+    let mut zero_update = database.begin_transaction().unwrap();
     assert_statement_outcome(
         zero_update
             .query_sql_with_result("UPDATE items SET state = 'missing' WHERE id = 99")
@@ -86,7 +86,7 @@ fn relational_update_delete_report_matching_zero_and_multi_row_outcomes() {
         0,
     );
 
-    let mut multi_update = database.begin_transaction();
+    let mut multi_update = database.begin_transaction().unwrap();
     assert_statement_outcome(
         multi_update
             .query_sql_with_result("UPDATE items SET state = 'batch' WHERE state = 'ready'")
@@ -100,7 +100,7 @@ fn relational_update_delete_report_matching_zero_and_multi_row_outcomes() {
         2,
     );
 
-    let mut delete = database.begin_transaction();
+    let mut delete = database.begin_transaction().unwrap();
     assert_statement_outcome(
         delete
             .query_sql_with_result("DELETE FROM items WHERE id = 1")
@@ -112,7 +112,7 @@ fn relational_update_delete_report_matching_zero_and_multi_row_outcomes() {
         1,
     );
 
-    let mut zero_delete = database.begin_transaction();
+    let mut zero_delete = database.begin_transaction().unwrap();
     assert_statement_outcome(
         zero_delete
             .query_sql_with_result("DELETE FROM items WHERE id = 99")
@@ -126,7 +126,7 @@ fn relational_update_delete_report_matching_zero_and_multi_row_outcomes() {
         0,
     );
 
-    let mut multi_delete = database.begin_transaction();
+    let mut multi_delete = database.begin_transaction().unwrap();
     assert_statement_outcome(
         multi_delete
             .query_sql_with_result("DELETE FROM items WHERE state = 'batch'")
@@ -156,7 +156,7 @@ fn relational_update_delete_outcomes_fail_closed_on_affected_row_budget() {
         .query_sql("INSERT INTO items (id, state) VALUES (2, 'ready')")
         .expect("insert second item");
 
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction().unwrap();
     let update_error = transaction
         .query_sql_with_result("UPDATE items SET state = 'changed' WHERE state = 'ready'")
         .expect_err("multi-row update exceeds the affected-row budget");
@@ -287,7 +287,7 @@ fn relational_update_delete_outcomes_survive_wal_checkpoint_and_reopen() {
             .expect("insert items");
         database.checkpoint().expect("checkpoint fixture");
 
-        let mut transaction = database.begin_transaction();
+        let mut transaction = database.begin_transaction().unwrap();
         assert_statement_outcome(
             transaction
                 .query_sql_with_result("UPDATE items SET state = 'updated' WHERE id = 1")
@@ -323,7 +323,7 @@ fn relational_update_delete_outcomes_survive_wal_checkpoint_and_reopen() {
             Some(&Value::String("updated".to_string()))
         );
 
-        let mut zero_update = database.begin_transaction();
+        let mut zero_update = database.begin_transaction().unwrap();
         assert_statement_outcome(
             zero_update
                 .query_sql_with_result("UPDATE items SET state = 'missing' WHERE id = 99")
@@ -337,7 +337,7 @@ fn relational_update_delete_outcomes_survive_wal_checkpoint_and_reopen() {
             0,
         );
 
-        let mut zero_delete = database.begin_transaction();
+        let mut zero_delete = database.begin_transaction().unwrap();
         assert_statement_outcome(
             zero_delete
                 .query_sql_with_result("DELETE FROM items WHERE id = 99")

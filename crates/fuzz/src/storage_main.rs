@@ -260,7 +260,9 @@ fn validate_graph_fixture(path: &Path) -> Result<JsonValue, ValidationError> {
         "graph": {
             "memory_count": 2,
             "append_row_count": append.rows.len(),
-            "commit_epoch": database.commit_epoch(),
+            "commit_epoch": database.commit_epoch().map_err(|error| {
+                ValidationError::Rejected(format!("graph epoch read failed: {error}"))
+            })?,
         },
         "integrity": {
             "checked_file_count": scrub.checked_file_count,

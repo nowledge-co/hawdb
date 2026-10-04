@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(not(windows))]
 use crate::file_io as fs;
 #[cfg(test)]
 use std::ffi::OsString;
@@ -93,7 +92,11 @@ pub fn durable_replace_file(source: &Path, destination: &Path) -> io::Result<()>
     inject_durable_replace_failure(destination)?;
     #[cfg(windows)]
     {
-        durable_replace_file_windows(source, destination)
+        durable_replace_file_windows(source, destination)?;
+        // MoveFileExW bypasses file_io::rename. New readers must see the
+        // replacement, while captured immutable readers retain their identity.
+        fs::unbind_immutable_path(source)?;
+        fs::unbind_immutable_path(destination)
     }
     #[cfg(not(windows))]
     {

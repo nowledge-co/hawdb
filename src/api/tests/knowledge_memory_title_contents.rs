@@ -47,7 +47,7 @@ fn memory_title_contents_use_one_fixed_bounded_query() {
         ),
         ("limit".to_string(), Value::Int(3)),
     ]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     db.query("MATCH (m:Memory {id: 'memory-a'}) SET m.title = 'Changed'")
         .unwrap();
 

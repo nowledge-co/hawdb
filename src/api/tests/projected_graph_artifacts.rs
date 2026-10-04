@@ -27,10 +27,23 @@ fn storage_owned_projected_artifact_preserves_structural_corruption_fallback() {
                 if path.is_dir() {
                     visit(root, &path, output);
                 } else {
-                    output.insert(
-                        path.strip_prefix(root).unwrap().to_path_buf(),
-                        std::fs::read(path).unwrap(),
-                    );
+                    let relative = path.strip_prefix(root).unwrap().to_path_buf();
+                    let components = relative.iter().collect::<Vec<_>>();
+                    // Read-only branch admission may reconstruct disposable runtime
+                    // metadata and bounded recovery deltas. Logical history and
+                    // checkpoint artifacts remain immutable.
+                    let disposable = components.len() >= 3
+                        && components[0] == "branches"
+                        && (components[2] == "runtime"
+                            || (components[2] == "data"
+                                && path.file_name().is_some_and(|name| {
+                                    let name = name.to_string_lossy();
+                                    name.starts_with("relational-row-delta-")
+                                        || name.starts_with("relational-index-recovery-")
+                                })));
+                    if !disposable {
+                        output.insert(relative, std::fs::read(path).unwrap());
+                    }
                 }
             }
         }
@@ -52,9 +65,9 @@ fn storage_owned_projected_artifact_preserves_structural_corruption_fallback() {
             .query("CALL page_rank('G') RETURN node, pagerank_score")
             .unwrap()
             .rows;
-        assert!(db.projected_graph_statuses()[0].reusable);
+        assert!(db.projected_graph_statuses().unwrap()[0].reusable);
     }
-    let artifact_path = path.join("projected_graphs.hawdb");
+    let artifact_path = active_storage_root(&path).join("projected_graphs.hawdb");
     let original = std::fs::read(&artifact_path).unwrap();
     let text = read_test_durable_text(&artifact_path).unwrap();
     let (body, _) =
@@ -104,7 +117,7 @@ fn storage_owned_projected_artifact_preserves_structural_corruption_fallback() {
                 },
             )
             .unwrap();
-            assert!(!db.projected_graph_statuses()[0].reusable);
+            assert!(!db.projected_graph_statuses().unwrap()[0].reusable);
             assert_eq!(
                 db.query("CALL page_rank('G') RETURN node, pagerank_score")
                     .unwrap()
@@ -112,15 +125,20 @@ fn storage_owned_projected_artifact_preserves_structural_corruption_fallback() {
                 baseline_rows
             );
         }
-        assert_eq!(
-            files(&path),
-            before,
-            "read-only open wrote files for {from}"
+        let after = files(&path);
+        let changed = before
+            .keys()
+            .chain(after.keys())
+            .filter(|name| before.get(*name) != after.get(*name))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(
+            changed.is_empty(),
+            "read-only admission changed history for {from}: {changed:?}"
         );
 
         {
             let mut db = Database::open(&path).unwrap();
-            assert!(!db.projected_graph_statuses()[0].reusable);
+            assert!(!db.projected_graph_statuses().unwrap()[0].reusable);
             assert_eq!(
                 db.query("CALL page_rank('G') RETURN node, pagerank_score")
                     .unwrap()
@@ -133,7 +151,7 @@ fn storage_owned_projected_artifact_preserves_structural_corruption_fallback() {
             );
         }
         let mut expected = before;
-        expected.remove(std::path::Path::new("projected_graphs.hawdb"));
+        expected.remove(artifact_path.strip_prefix(&path).unwrap());
         assert_eq!(
             files(&path),
             expected,
@@ -142,16 +160,16 @@ fn storage_owned_projected_artifact_preserves_structural_corruption_fallback() {
         std::fs::write(&artifact_path, &original).unwrap();
         {
             let db = Database::open(&path).unwrap();
-            assert!(db.projected_graph_statuses()[0].reusable);
+            assert!(db.projected_graph_statuses().unwrap()[0].reusable);
         }
     }
 
     std::fs::write(&artifact_path, b"invalid derived artifact").unwrap();
     {
         let mut db = Database::open(&path).unwrap();
-        assert!(!db.projected_graph_statuses()[0].reusable);
+        assert!(!db.projected_graph_statuses().unwrap()[0].reusable);
         db.rebuild_projected_graph_artifacts().unwrap();
-        assert!(db.projected_graph_statuses()[0].reusable);
+        assert!(db.projected_graph_statuses().unwrap()[0].reusable);
         assert_eq!(
             db.query("CALL page_rank('G') RETURN node, pagerank_score")
                 .unwrap()
@@ -161,7 +179,7 @@ fn storage_owned_projected_artifact_preserves_structural_corruption_fallback() {
     }
     {
         let mut db = Database::open(&path).unwrap();
-        assert!(db.projected_graph_statuses()[0].reusable);
+        assert!(db.projected_graph_statuses().unwrap()[0].reusable);
         assert_eq!(
             db.query("CALL page_rank('G') RETURN node, pagerank_score")
                 .unwrap()
@@ -182,7 +200,7 @@ fn projects_graph_for_page_rank() {
     db.query("MERGE (:Entity {id: 3, name: 'Leaf'})-[:MENTIONS]->(:Entity {id: 4, name: 'Other'})")
         .unwrap();
 
-    let links = db.project_graph(Some("LINKS"));
+    let links = db.project_graph(Some("LINKS")).unwrap();
     assert_eq!(links.node_count(), 4);
     assert_eq!(links.edge_count(), 2);
     assert_eq!(
@@ -193,14 +211,14 @@ fn projects_graph_for_page_rank() {
         vec![NodeId(1)]
     );
 
-    let all = db.project_graph(None);
+    let all = db.project_graph(None).unwrap();
     assert_eq!(all.edge_count(), 3);
     assert_eq!(
         all.incoming_sources(NodeId(3)).unwrap().collect::<Vec<_>>(),
         vec![NodeId(2)]
     );
 
-    let missing = db.project_graph(Some("MISSING"));
+    let missing = db.project_graph(Some("MISSING")).unwrap();
     assert_eq!(missing.node_count(), 4);
     assert_eq!(missing.edge_count(), 0);
     assert!(missing
@@ -302,12 +320,12 @@ fn read_transaction_projects_snapshot_graph() {
     db.query("MERGE (:Memory {id: 1, title: 'Root'})-[:LINKS]->(:Entity {id: 2, name: 'Mid'})")
         .unwrap();
 
-    let read_tx = db.begin_read_transaction();
+    let read_tx = db.begin_read_transaction().unwrap();
     db.query("MERGE (:Entity {id: 2, name: 'Mid'})-[:LINKS]->(:Entity {id: 3, name: 'Leaf'})")
         .unwrap();
 
     assert_eq!(read_tx.project_graph(Some("LINKS")).edge_count(), 1);
-    assert_eq!(db.project_graph(Some("LINKS")).edge_count(), 2);
+    assert_eq!(db.project_graph(Some("LINKS")).unwrap().edge_count(), 2);
 }
 
 #[test]
@@ -382,6 +400,7 @@ fn projected_graph_definition_survives_checkpoint() {
 #[test]
 fn checkpoint_writes_projected_graph_artifacts() {
     let path = unique_test_dir("projected_graph_artifacts");
+    let projection_epoch;
     {
         let mut db = Database::open(&path).unwrap();
         db.query("MERGE (:Memory {id: 1, title: 'Root'})-[:LINKS]->(:Entity {id: 2, name: 'Mid'})")
@@ -391,12 +410,16 @@ fn checkpoint_writes_projected_graph_artifacts() {
         db.query("CALL project_graph('EntityOnlyGraph', ['Entity'], ['LINKS'])")
             .unwrap();
         db.checkpoint().unwrap();
+        projection_epoch = db.projected_graph_statuses().unwrap()[0]
+            .projection_epoch
+            .unwrap();
     }
 
-    let artifact = read_test_durable_text(&path.join("projected_graphs.hawdb")).unwrap();
+    let artifact =
+        read_test_durable_text(&active_storage_root(&path).join("projected_graphs.hawdb")).unwrap();
     assert!(artifact.contains("HAWDB_PROJECTED_GRAPHS_V1\n"));
     assert!(artifact.contains("artifact_version\t1\n"));
-    assert!(artifact.contains("projection_epoch\t1\n"));
+    assert!(artifact.contains(&format!("projection_epoch\t{projection_epoch}\n")));
     assert!(artifact.contains("commit_epoch\t4\n"));
     assert!(artifact.contains("graph\t456e746974794f6e6c794772617068"));
     assert!(artifact.contains("nodes\t1,2\n"));
@@ -411,6 +434,8 @@ fn checkpoint_writes_projected_graph_artifacts() {
 #[test]
 fn projected_graph_status_reports_artifact_reuse_state() {
     let path = unique_test_dir("projected_graph_status");
+    let first_projection_epoch;
+    let rebuilt_projection_epoch;
     {
         let mut db = Database::open(&path).unwrap();
         db.query("MERGE (:Memory {id: 1, title: 'Root'})-[:LINKS]->(:Entity {id: 2, name: 'Mid'})")
@@ -418,13 +443,16 @@ fn projected_graph_status_reports_artifact_reuse_state() {
         db.query("CALL project_graph('EntityGraph', ['Memory', 'Entity'], ['LINKS'])")
             .unwrap();
         db.checkpoint().unwrap();
+        first_projection_epoch = db.projected_graph_statuses().unwrap()[0]
+            .projection_epoch
+            .unwrap();
     }
     {
         let db = Database::open(&path).unwrap();
-        let statuses = db.projected_graph_statuses();
+        let statuses = db.projected_graph_statuses().unwrap();
         assert_eq!(statuses.len(), 1);
         assert_eq!(statuses[0].name, "EntityGraph");
-        assert_eq!(statuses[0].projection_epoch, Some(1));
+        assert_eq!(statuses[0].projection_epoch, Some(first_projection_epoch));
         assert!(statuses[0].reusable);
         assert_eq!(statuses[0].node_count, Some(2));
         assert_eq!(statuses[0].edge_count, Some(1));
@@ -436,24 +464,26 @@ fn projected_graph_status_reports_artifact_reuse_state() {
     }
     {
         let mut db = Database::open(&path).unwrap();
-        let statuses = db.projected_graph_statuses();
+        let statuses = db.projected_graph_statuses().unwrap();
         assert_eq!(statuses.len(), 1);
         assert_eq!(statuses[0].projection_epoch, None);
         assert!(!statuses[0].reusable);
         assert_eq!(statuses[0].node_count, None);
         assert_eq!(statuses[0].edge_count, None);
         db.rebuild_projected_graph_artifacts().unwrap();
-        let statuses = db.projected_graph_statuses();
-        assert_eq!(statuses[0].projection_epoch, Some(2));
+        let statuses = db.projected_graph_statuses().unwrap();
+        rebuilt_projection_epoch = statuses[0].projection_epoch.unwrap();
+        assert!(rebuilt_projection_epoch > first_projection_epoch);
+        assert_eq!(statuses[0].projection_epoch, Some(rebuilt_projection_epoch));
         assert!(statuses[0].reusable);
         assert_eq!(statuses[0].node_count, Some(3));
         assert_eq!(statuses[0].edge_count, Some(1));
     }
     {
         let db = Database::open(&path).unwrap();
-        let statuses = db.projected_graph_statuses();
+        let statuses = db.projected_graph_statuses().unwrap();
         assert_eq!(statuses.len(), 1);
-        assert_eq!(statuses[0].projection_epoch, Some(2));
+        assert_eq!(statuses[0].projection_epoch, Some(rebuilt_projection_epoch));
         assert!(statuses[0].reusable);
         assert_eq!(statuses[0].node_count, Some(3));
         assert_eq!(statuses[0].edge_count, Some(1));
@@ -464,6 +494,7 @@ fn projected_graph_status_reports_artifact_reuse_state() {
 #[test]
 fn derived_artifact_rebuild_reports_projected_graph_refresh() {
     let path = unique_test_dir("derived_artifact_rebuild");
+    let rebuilt_projection_epoch;
     {
         let mut db = Database::open(&path).unwrap();
         db.query("MERGE (:Memory {id: 1, title: 'Root'})-[:LINKS]->(:Entity {id: 2, name: 'Mid'})")
@@ -471,10 +502,13 @@ fn derived_artifact_rebuild_reports_projected_graph_refresh() {
         db.query("CALL project_graph('EntityGraph', ['Memory', 'Entity'], ['LINKS'])")
             .unwrap();
         db.checkpoint().unwrap();
+        let previous_projection_epoch = db.projected_graph_statuses().unwrap()[0]
+            .projection_epoch
+            .unwrap();
         db.query("CREATE (:Memory {id: 3, title: 'Later'})")
             .unwrap();
 
-        let before = db.projected_graph_statuses();
+        let before = db.projected_graph_statuses().unwrap();
         assert_eq!(before.len(), 1);
         assert!(!before[0].reusable);
 
@@ -500,16 +534,24 @@ fn derived_artifact_rebuild_reports_projected_graph_refresh() {
             output.rows[0].get("after_reusable"),
             Some(&Value::Bool(true))
         );
-        assert_eq!(output.rows[0].get("projection_epoch"), Some(&Value::Int(2)));
+        let Some(Value::Int(epoch)) = output.rows[0].get("projection_epoch") else {
+            panic!("rebuild must report its published projection epoch");
+        };
+        rebuilt_projection_epoch = u64::try_from(*epoch).unwrap();
+        assert!(rebuilt_projection_epoch > previous_projection_epoch);
+        assert_eq!(
+            db.projected_graph_statuses().unwrap()[0].projection_epoch,
+            Some(rebuilt_projection_epoch)
+        );
         assert_eq!(output.rows[0].get("node_count"), Some(&Value::Int(3)));
         assert_eq!(output.rows[0].get("edge_count"), Some(&Value::Int(1)));
     }
     {
         let db = Database::open(&path).unwrap();
-        let statuses = db.projected_graph_statuses();
+        let statuses = db.projected_graph_statuses().unwrap();
         assert_eq!(statuses.len(), 1);
         assert!(statuses[0].reusable);
-        assert_eq!(statuses[0].projection_epoch, Some(2));
+        assert_eq!(statuses[0].projection_epoch, Some(rebuilt_projection_epoch));
         assert_eq!(statuses[0].node_count, Some(3));
     }
     std::fs::remove_dir_all(path).unwrap();
@@ -756,7 +798,7 @@ fn corrupt_projected_graph_artifacts_do_not_block_recovery() {
         db.checkpoint().unwrap();
     }
 
-    let artifact_path = path.join("projected_graphs.hawdb");
+    let artifact_path = active_storage_root(&path).join("projected_graphs.hawdb");
     let artifact = read_test_durable_text(&artifact_path).unwrap();
     std::fs::write(
         &artifact_path,
@@ -787,7 +829,7 @@ fn read_only_open_ignores_corrupt_projected_graph_artifact_without_cleanup() {
         db.checkpoint().unwrap();
     }
 
-    let artifact_path = path.join("projected_graphs.hawdb");
+    let artifact_path = active_storage_root(&path).join("projected_graphs.hawdb");
     let artifact = read_test_durable_text(&artifact_path).unwrap();
     std::fs::write(
         &artifact_path,

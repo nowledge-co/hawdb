@@ -526,7 +526,7 @@ fn nested_admission_rejects_insufficient_remaining_quota_before_opening() {
 }
 
 #[test]
-fn failed_mutable_open_invalidates_binding_before_native_io() {
+fn failed_copy_on_write_preserves_the_logical_binding_and_snapshot() {
     let fixture = Fixture::new(2);
     let binding = fixture.binding("object", b"snapshot");
     let alias = fixture.root.join("missing-directory/logical");
@@ -545,11 +545,10 @@ fn failed_mutable_open_invalidates_binding_before_native_io() {
         .immutable_handles
         .binding(&alias)
         .unwrap()
-        .is_none());
-    assert_eq!(
-        File::open(&alias).unwrap_err().kind(),
-        std::io::ErrorKind::NotFound
-    );
+        .is_some());
+    // Failure occurred before a private inode could be installed. Keep the
+    // original logical reader rather than losing its immutable identity.
+    assert_eq!(file_io::read(&alias).unwrap(), b"snapshot");
     let mut text = String::new();
     snapshot.read_to_string(&mut text).unwrap();
     assert_eq!(text, "snapshot");

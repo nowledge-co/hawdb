@@ -252,6 +252,9 @@ fn relational_mvcc_constrained_inserts_validate_unique_values_without_serializin
             let database = Database::open_with_config(&path, config.clone()).unwrap();
             assert_eq!(
                 database
+                    .runtime
+                    .get()
+                    .unwrap()
                     .store
                     .relational_state()
                     .canonical_row_metadata_only(),
@@ -350,7 +353,7 @@ fn relational_mvcc_constrained_inserts_validate_unique_values_without_serializin
             drop(old);
             drop(db);
             let mut reopened = Database::open_with_config(&path, config.clone()).unwrap();
-            assert_eq!(reopened.commit_epoch(), epoch + committed);
+            assert_eq!(reopened.commit_epoch().unwrap(), epoch + committed);
             assert_eq!(
                 reopened
                     .query_sql("SELECT id FROM documents ORDER BY id")
@@ -482,6 +485,9 @@ fn relational_mvcc_primary_key_predicates_preserve_replay_and_absent_intents() {
             let database = Database::open_with_config(&path, config.clone()).unwrap();
             assert_eq!(
                 database
+                    .runtime
+                    .get()
+                    .unwrap()
                     .store
                     .relational_state()
                     .canonical_row_metadata_only(),
@@ -553,7 +559,7 @@ fn relational_mvcc_primary_key_predicates_preserve_replay_and_absent_intents() {
             drop(old);
             drop(db);
             let mut reopened = Database::open_with_config(&path, config).unwrap();
-            assert_eq!(reopened.commit_epoch(), expected_epoch);
+            assert_eq!(reopened.commit_epoch().unwrap(), expected_epoch);
             assert_eq!(
                 reopened
                     .query_sql("SELECT * FROM records ORDER BY id")
@@ -615,6 +621,9 @@ fn relational_mvcc_constraint_preserving_updates_keep_disjoint_rows_and_barriers
             let database = Database::open_with_config(&path, config.clone()).unwrap();
             assert_eq!(
                 database
+                    .runtime
+                    .get()
+                    .unwrap()
                     .store
                     .relational_state()
                     .canonical_row_metadata_only(),
@@ -767,7 +776,7 @@ fn relational_mvcc_constraint_preserving_updates_keep_disjoint_rows_and_barriers
             drop(old);
             drop(db);
             let mut reopened = Database::open_with_config(&path, config).unwrap();
-            assert_eq!(reopened.commit_epoch(), expected_epoch);
+            assert_eq!(reopened.commit_epoch().unwrap(), expected_epoch);
             assert_eq!(
                 reopened
                     .query_sql("SELECT * FROM documents ORDER BY id")

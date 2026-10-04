@@ -14,7 +14,7 @@
 
 use super::*;
 use crate::store::set_wal_apply_failpoint;
-use crate::StorageResidencyMode;
+use crate::{HawDBError, StorageResidencyMode};
 
 #[path = "storage_recovery/wal_tail.rs"]
 mod wal_tail;
@@ -50,6 +50,7 @@ fn strict_append_sql_replays_from_wal_after_reopen() {
     let db = Database::open(&path).unwrap();
     let output = db
         .begin_read_transaction()
+        .unwrap()
         .query_sql_with_params(
             "SELECT payload FROM events \
              WHERE stream_id = $1 ORDER BY sequence ASC LIMIT 10",
@@ -150,26 +151,28 @@ fn wal_pressure_schedules_and_completes_a_bounded_background_checkpoint() {
                 ]),
             )
             .unwrap();
-            let pressure = db.storage_pressure_snapshot();
+            let pressure = db.storage_pressure_snapshot().unwrap();
             (pressure.state == crate::StoragePressureState::SpeedUpMaintenance).then_some(pressure)
         })
         .expect("WAL should reach its soft pressure threshold before mutation backpressure");
     assert!(pressure.recommends_checkpoint());
     assert!(pressure.wal_pressure_ratio_per_million.unwrap() >= 700_000);
 
-    let candidates = db.background_maintenance_candidates(
-        None,
-        BackgroundMaintenanceOptions {
-            include_schema_maintenance: false,
-            include_property_index_projection: false,
-            include_search_projection_graph_delta_freshness: false,
-            include_search_projection_rebuild: false,
-            include_search_projection_metadata_repair: false,
-            include_hawdb_lightning_bootstrap_export: false,
-            include_external_content_artifact_jobs: false,
-            ..BackgroundMaintenanceOptions::default()
-        },
-    );
+    let candidates = db
+        .background_maintenance_candidates(
+            None,
+            BackgroundMaintenanceOptions {
+                include_schema_maintenance: false,
+                include_property_index_projection: false,
+                include_search_projection_graph_delta_freshness: false,
+                include_search_projection_rebuild: false,
+                include_search_projection_metadata_repair: false,
+                include_hawdb_lightning_bootstrap_export: false,
+                include_external_content_artifact_jobs: false,
+                ..BackgroundMaintenanceOptions::default()
+            },
+        )
+        .unwrap();
     assert_eq!(candidates.len(), 1);
     assert_eq!(
         candidates[0].kind,
@@ -183,7 +186,7 @@ fn wal_pressure_schedules_and_completes_a_bounded_background_checkpoint() {
         BackgroundWorkHint::default(),
     )
     .unwrap();
-    let after = db.storage_pressure_snapshot();
+    let after = db.storage_pressure_snapshot().unwrap();
     assert!(!after.recommends_checkpoint());
     assert_eq!(after.current_commit_epoch, after.checkpoint_commit_epoch);
     drop(db);
@@ -217,7 +220,7 @@ fn wal_pressure_rejects_before_append_and_leaves_no_partial_mutation() {
     assert!(error
         .to_string()
         .contains("WAL append rejected by storage pressure"));
-    assert_eq!(db.store.commit_epoch(), 1);
+    assert_eq!(db.runtime.get().unwrap().store.commit_epoch(), 1);
     drop(db);
 
     let mut reopened = Database::open(&path).unwrap();
@@ -233,8 +236,8 @@ fn wal_pressure_rejects_before_append_and_leaves_no_partial_mutation() {
 fn user_rejects_existing_snapshots_after_post_wal_failure_until_reopen() {
     let path = unique_test_dir("post_wal_apply_poison");
     let mut db = Database::open(&path).unwrap();
-    let mut stable_read = db.begin_read_transaction();
-    let mut transaction = db.begin_transaction();
+    let mut stable_read = db.begin_read_transaction().unwrap();
+    let mut transaction = db.begin_transaction().unwrap();
     transaction.query("CREATE (:Memory {id: 'first'})").unwrap();
     transaction
         .query("CREATE (:Memory {id: 'second'})")
@@ -247,7 +250,7 @@ fn user_rejects_existing_snapshots_after_post_wal_failure_until_reopen() {
     assert!(commit_error
         .to_string()
         .contains("injected failure while applying a durable WAL batch"));
-    assert!(db.storage_handle_poisoned());
+    assert!(db.storage_handle_poisoned().unwrap());
     // A fatal durable outcome invalidates the entire live handle family,
     // including views captured before the failed apply.
     let stable_error = stable_read
@@ -262,8 +265,16 @@ fn user_rejects_existing_snapshots_after_post_wal_failure_until_reopen() {
     assert!(checkpoint_error.to_string().contains("close and reopen"));
 
     drop(db);
+    let waiting = Database::open(&path).unwrap();
+    assert!(matches!(
+        waiting.commit_epoch().unwrap_err(),
+        HawDBError::BranchBusy { .. }
+    ));
+    drop(waiting);
+    // A snapshot owns the UUID lease until its final reference is closed.
+    drop(stable_read);
     let mut reopened = Database::open(&path).unwrap();
-    assert!(!reopened.storage_handle_poisoned());
+    assert!(!reopened.storage_handle_poisoned().unwrap());
     let output = reopened
         .query("MATCH (m:Memory) RETURN m.id AS id ORDER BY id")
         .unwrap();
@@ -300,7 +311,7 @@ fn forced_out_of_core_checkpoint_reopen_and_mutation_are_equivalent() {
             .unwrap();
         db.checkpoint().unwrap();
 
-        let residency = db.storage_residency_report();
+        let residency = db.storage_residency_report().unwrap();
         assert!(residency.out_of_core);
         assert_eq!(residency.delta_node_count, 0);
         assert_eq!(residency.delta_relationship_count, 0);
@@ -332,7 +343,7 @@ fn forced_out_of_core_checkpoint_reopen_and_mutation_are_equivalent() {
         let snapshot = db.try_export_canonical_graph_snapshot().unwrap();
         assert_eq!(snapshot.nodes.len(), 3);
         assert_eq!(snapshot.relationships.len(), 1);
-        let statistics = db.statistics();
+        let statistics = db.statistics().unwrap();
         assert!(!statistics.advanced_statistics_complete);
         assert_eq!(statistics.node_count, 3);
         assert_eq!(statistics.relationship_count, 1);
@@ -356,7 +367,7 @@ fn forced_out_of_core_checkpoint_reopen_and_mutation_are_equivalent() {
 
     {
         let mut db = Database::open_with_config(&path, config).unwrap();
-        let residency = db.storage_residency_report();
+        let residency = db.storage_residency_report().unwrap();
         assert!(residency.out_of_core);
         assert_eq!(residency.delta_node_count, 0);
         assert_eq!(residency.delta_relationship_count, 0);
@@ -373,7 +384,7 @@ fn forced_out_of_core_checkpoint_reopen_and_mutation_are_equivalent() {
         );
         assert_eq!(rows.rows[1].get("memory_id"), Some(&Value::Int(2)));
 
-        let statistics = db.statistics();
+        let statistics = db.statistics().unwrap();
         assert_eq!(statistics.node_count, 3);
         assert_eq!(statistics.relationship_count, 2);
         assert!(!statistics.advanced_statistics_complete);
@@ -381,15 +392,16 @@ fn forced_out_of_core_checkpoint_reopen_and_mutation_are_equivalent() {
         assert!(statistics.rel_property_distinct_counts.is_empty());
         assert!(statistics.path_counts.is_empty());
         assert!(
-            statistics.computed_at_commit_epoch < db.basic_statistics().computed_at_commit_epoch
+            statistics.computed_at_commit_epoch
+                < db.basic_statistics().unwrap().computed_at_commit_epoch
         );
 
-        let residency = db.storage_residency_report();
+        let residency = db.storage_residency_report().unwrap();
         assert!(!residency.checkpoint_statistics_complete);
         assert!(residency.checkpoint_statistics_stale);
         assert!(residency.segment_cache_miss_count > 0);
         assert_eq!(residency.segment_cache_digest_mismatch_count, 0);
-        let cache = db.segment_cache_snapshot().unwrap();
+        let cache = db.segment_cache_snapshot().unwrap().unwrap();
         assert!(cache.resident_bytes <= cache.capacity_bytes);
     }
     std::fs::remove_dir_all(path).unwrap();
@@ -411,7 +423,7 @@ fn typed_reads_and_mutations_include_checkpointed_canonical_rows() {
         .unwrap();
         db.checkpoint().unwrap();
 
-        let residency = db.storage_residency_report();
+        let residency = db.storage_residency_report().unwrap();
         assert_eq!(residency.delta_node_count, 0);
         assert_eq!(residency.delta_relationship_count, 0);
 
@@ -525,7 +537,7 @@ fn typed_read_fails_closed_when_an_out_of_core_segment_is_corrupted() {
         .unwrap();
     db.checkpoint().unwrap();
 
-    let canonical_path = path.join("canonical.1.hawdb");
+    let canonical_path = active_generation_path(&path, "checkpoint_generation", "canonical");
     let mut bytes = std::fs::read(&canonical_path).unwrap();
     bytes[24] ^= 0xff;
     std::fs::write(&canonical_path, bytes).unwrap();
@@ -544,10 +556,11 @@ fn typed_read_fails_closed_when_an_out_of_core_segment_is_corrupted() {
     );
     assert_eq!(
         db.storage_residency_report()
+            .unwrap()
             .segment_cache_digest_mismatch_count,
         1
     );
-    assert!(db.storage_handle_poisoned());
+    assert!(db.storage_handle_poisoned().unwrap());
     let poisoned = db
         .query("MATCH (m:Memory) RETURN m.id AS memory_id")
         .unwrap_err();
@@ -573,7 +586,7 @@ fn public_query_fails_closed_when_an_out_of_core_segment_is_corrupted() {
         .unwrap();
     db.checkpoint().unwrap();
 
-    let canonical_path = path.join("canonical.1.hawdb");
+    let canonical_path = active_generation_path(&path, "checkpoint_generation", "canonical");
     let mut bytes = std::fs::read(&canonical_path).unwrap();
     bytes[24] ^= 0xff;
     std::fs::write(&canonical_path, bytes).unwrap();
@@ -589,10 +602,11 @@ fn public_query_fails_closed_when_an_out_of_core_segment_is_corrupted() {
     );
     assert_eq!(
         db.storage_residency_report()
+            .unwrap()
             .segment_cache_digest_mismatch_count,
         1
     );
-    assert!(db.storage_handle_poisoned());
+    assert!(db.storage_handle_poisoned().unwrap());
     let poisoned = db
         .query("MATCH (m:Memory) RETURN m.id AS memory_id")
         .unwrap_err();
@@ -620,7 +634,7 @@ fn production_sized_resource_profile_stays_within_admission_budgets() {
         // Seed the complete dataset without exceeding the default WAL record limit.
         let transaction_rows = 128;
         for start in (0..node_count).step_by(transaction_rows) {
-            let mut tx = db.begin_transaction();
+            let mut tx = db.begin_transaction().unwrap();
             for id in start..(start + transaction_rows).min(node_count) {
                 tx.query_with_params(
                     "CREATE (:Memory {id: $id, body: $body})",
@@ -634,7 +648,7 @@ fn production_sized_resource_profile_stays_within_admission_budgets() {
             tx.commit().unwrap();
         }
         db.checkpoint().unwrap();
-        assert!(db.storage_residency_report().out_of_core);
+        assert!(db.storage_residency_report().unwrap().out_of_core);
     }
 
     let db = Database::open_with_config(&path, config).unwrap();
@@ -706,7 +720,7 @@ fn typed_storage_resource_profile_gates_larger_than_cache_reads() {
         ..DatabaseConfig::default()
     };
     let mut db = Database::open_with_config(&path, config).unwrap();
-    let mut transaction = db.begin_transaction();
+    let mut transaction = db.begin_transaction().unwrap();
     for id in 0..32 {
         transaction
             .query_with_params(
@@ -778,7 +792,7 @@ fn platform_storage_resource_profile_emits_bound_evidence() {
         ..DatabaseConfig::default()
     };
     let mut db = Database::open_with_config(&path, config).unwrap();
-    let mut transaction = db.begin_transaction();
+    let mut transaction = db.begin_transaction().unwrap();
     for id in 0..32 {
         transaction
             .query_with_params(
@@ -812,7 +826,7 @@ fn platform_storage_resource_profile_emits_bound_evidence() {
         configuration_digest: "storage-resource-out-of-core-1k-cache-v1".to_string(),
         deployment_profile: "storage-resource-platform-ci".to_string(),
         dataset_fingerprint: "storage-resource-platform-fixture-v1".to_string(),
-        canonical_graph_commit_epoch: db.commit_epoch(),
+        canonical_graph_commit_epoch: db.commit_epoch().unwrap(),
         policy_version: crate::PRODUCTION_QUALIFICATION_POLICY_VERSION,
     };
     let report = db
@@ -912,7 +926,7 @@ fn external_optimizer_statistics_refresh_spills_and_persists_exact_stats() {
             properties: BTreeMap::from([("weight".to_string(), Value::Int(2))]),
         })
         .unwrap();
-        let mut transaction = db.begin_transaction();
+        let mut transaction = db.begin_transaction().unwrap();
         for id in 0..128 {
             let mixed_value = if id == 0 {
                 Value::Int(1)
@@ -933,7 +947,7 @@ fn external_optimizer_statistics_refresh_spills_and_persists_exact_stats() {
         }
         transaction.commit().unwrap();
         db.checkpoint().unwrap();
-        assert!(!db.statistics().advanced_statistics_complete);
+        assert!(!db.statistics().unwrap().advanced_statistics_complete);
 
         db.query("CREATE (:Memory {id: 'memory:two', kind: 'task'})")
             .unwrap();
@@ -950,7 +964,7 @@ fn external_optimizer_statistics_refresh_spills_and_persists_exact_stats() {
             properties: BTreeMap::from([("weight".to_string(), Value::Int(3))]),
         })
         .unwrap();
-        let source_epoch = db.basic_statistics().computed_at_commit_epoch;
+        let source_epoch = db.basic_statistics().unwrap().computed_at_commit_epoch;
         let report = db
             .refresh_optimizer_statistics_external(&crate::OptimizerStatisticsRefreshOptions {
                 memory_budget_bytes: 8 * 1024,
@@ -969,7 +983,7 @@ fn external_optimizer_statistics_refresh_spills_and_persists_exact_stats() {
         assert!(report.spilled_bytes > 0);
         assert!(report.peak_buffer_bytes <= 8 * 1024);
         assert!(report.excluded_property_group_count > 0);
-        let statistics = db.statistics();
+        let statistics = db.statistics().unwrap();
         assert!(statistics.advanced_statistics_complete);
         assert_eq!(statistics.computed_at_commit_epoch, source_epoch);
         assert!(!statistics
@@ -1028,12 +1042,12 @@ fn external_optimizer_statistics_refresh_spills_and_persists_exact_stats() {
             },
         )
         .unwrap();
-        assert_eq!(db.statistics(), refreshed_statistics);
+        assert_eq!(db.statistics().unwrap(), refreshed_statistics);
     }
 
     {
         let db = Database::open_with_config(&path, config).unwrap();
-        let statistics = db.statistics();
+        let statistics = db.statistics().unwrap();
         assert!(statistics.advanced_statistics_complete);
         assert_eq!(
             statistics
@@ -1043,7 +1057,7 @@ fn external_optimizer_statistics_refresh_spills_and_persists_exact_stats() {
                 .max(),
             Some(3)
         );
-        let residency = db.storage_residency_report();
+        let residency = db.storage_residency_report().unwrap();
         assert!(residency.checkpoint_statistics_complete);
         assert!(!residency.checkpoint_statistics_stale);
     }
@@ -1064,7 +1078,7 @@ fn external_optimizer_statistics_refresh_resamples_live_out_of_core_indexes() {
         db.query("CREATE NODE TABLE Memory").unwrap();
         db.query("CREATE PROPERTY ON NODE TABLE Memory(body) TYPE TEXT")
             .unwrap();
-        let mut transaction = db.begin_transaction();
+        let mut transaction = db.begin_transaction().unwrap();
         for id in 0..20 {
             transaction
                 .query_with_params(
@@ -1086,19 +1100,26 @@ fn external_optimizer_statistics_refresh_resamples_live_out_of_core_indexes() {
         db.query("CREATE INDEX ON :Memory(body, id)").unwrap();
         let body_index_id = db
             .property_indexes()
+            .unwrap()
             .into_iter()
             .find(|index| index.property == "body")
             .unwrap()
             .id;
         let composite_index_id = db
             .composite_property_indexes()
+            .unwrap()
             .into_iter()
             .find(|index| index.properties == ["body", "id"])
             .unwrap()
             .id;
-        assert!(!db.statistics().index_samples.contains_key(&body_index_id));
         assert!(!db
             .statistics()
+            .unwrap()
+            .index_samples
+            .contains_key(&body_index_id));
+        assert!(!db
+            .statistics()
+            .unwrap()
             .index_samples
             .contains_key(&composite_index_id));
 
@@ -1116,15 +1137,19 @@ fn external_optimizer_statistics_refresh_resamples_live_out_of_core_indexes() {
         assert_eq!(report.index_sample_count, 2);
         assert!(report.spill_run_count > 1);
         assert_eq!(
-            db.statistics().index_samples.get(&body_index_id),
+            db.statistics().unwrap().index_samples.get(&body_index_id),
             Some(&crate::schema::IndexStatisticsSample::exact(20, 2))
         );
         assert_eq!(
-            db.statistics().index_samples.get(&composite_index_id),
+            db.statistics()
+                .unwrap()
+                .index_samples
+                .get(&composite_index_id),
             Some(&crate::schema::IndexStatisticsSample::exact(20, 20))
         );
         assert!(db
             .statistics()
+            .unwrap()
             .property_distinct_counts
             .keys()
             .all(|(_, property)| property != "body"));
@@ -1139,7 +1164,7 @@ fn external_optimizer_statistics_refresh_resamples_live_out_of_core_indexes() {
             .unwrap();
         db.query("MATCH (m:Memory) WHERE m.id = 1 SET m.body = 'fourth'")
             .unwrap();
-        let stale_statistics = db.statistics();
+        let stale_statistics = db.statistics().unwrap();
         assert!(stale_statistics
             .index_samples
             .get(&body_index_id)
@@ -1154,11 +1179,14 @@ fn external_optimizer_statistics_refresh_resamples_live_out_of_core_indexes() {
         let report = db.refresh_optimizer_statistics_external(&options).unwrap();
         assert_eq!(report.index_sample_count, 2);
         assert_eq!(
-            db.statistics().index_samples.get(&body_index_id),
+            db.statistics().unwrap().index_samples.get(&body_index_id),
             Some(&crate::schema::IndexStatisticsSample::exact(20, 4))
         );
         assert_eq!(
-            db.statistics().index_samples.get(&composite_index_id),
+            db.statistics()
+                .unwrap()
+                .index_samples
+                .get(&composite_index_id),
             Some(&crate::schema::IndexStatisticsSample::exact(20, 20))
         );
         assert_eq!(std::fs::read_dir(&spill_root).unwrap().count(), 0);
@@ -1168,11 +1196,14 @@ fn external_optimizer_statistics_refresh_resamples_live_out_of_core_indexes() {
     let db = Database::open_with_config(&path, config).unwrap();
     assert_eq!(db.statistics(), refreshed_statistics);
     assert_eq!(
-        db.statistics().index_samples.get(&body_index_id),
+        db.statistics().unwrap().index_samples.get(&body_index_id),
         Some(&crate::schema::IndexStatisticsSample::exact(20, 4))
     );
     assert_eq!(
-        db.statistics().index_samples.get(&composite_index_id),
+        db.statistics()
+            .unwrap()
+            .index_samples
+            .get(&composite_index_id),
         Some(&crate::schema::IndexStatisticsSample::exact(20, 20))
     );
     drop(db);
@@ -1201,9 +1232,13 @@ fn external_optimizer_statistics_refresh_rejects_oversized_index_key_before_publ
     .unwrap();
     db.checkpoint().unwrap();
     db.query("CREATE INDEX ON :Memory(body)").unwrap();
-    let index_id = db.property_indexes()[0].id;
-    assert!(!db.statistics().index_samples.contains_key(&index_id));
-    let generation = db.storage_residency_report().canonical_generation;
+    let index_id = db.property_indexes().unwrap()[0].id;
+    assert!(!db
+        .statistics()
+        .unwrap()
+        .index_samples
+        .contains_key(&index_id));
+    let generation = db.storage_residency_report().unwrap().canonical_generation;
 
     let error = db
         .refresh_optimizer_statistics_external(&crate::OptimizerStatisticsRefreshOptions {
@@ -1220,9 +1255,13 @@ fn external_optimizer_statistics_refresh_rejects_oversized_index_key_before_publ
         error.to_string().contains("optimizer statistics fact uses"),
         "unexpected refresh error: {error}"
     );
-    assert!(!db.statistics().index_samples.contains_key(&index_id));
+    assert!(!db
+        .statistics()
+        .unwrap()
+        .index_samples
+        .contains_key(&index_id));
     assert_eq!(
-        db.storage_residency_report().canonical_generation,
+        db.storage_residency_report().unwrap().canonical_generation,
         generation
     );
     assert_eq!(std::fs::read_dir(&spill_root).unwrap().count(), 0);
@@ -1238,7 +1277,8 @@ fn external_optimizer_statistics_refresh_fails_before_publication_on_work_budget
     let mut db = Database::open_with_config(
         &path,
         DatabaseConfig {
-            storage_residency_mode: StorageResidencyMode::OutOfCore,
+            // Materialize the empty canonical header, then externalize user records.
+            auto_materialize_checkpoint_bytes: 64,
             ..DatabaseConfig::default()
         },
     )
@@ -1247,8 +1287,8 @@ fn external_optimizer_statistics_refresh_fails_before_publication_on_work_budget
         .unwrap();
     db.query("CREATE INDEX ON :Memory(kind)").unwrap();
     db.checkpoint().unwrap();
-    let generation = db.storage_residency_report().canonical_generation;
-    let statistics = db.statistics();
+    let generation = db.storage_residency_report().unwrap().canonical_generation;
+    let statistics = db.statistics().unwrap();
     assert_eq!(statistics.index_samples.len(), 1);
 
     let error = db
@@ -1266,10 +1306,10 @@ fn external_optimizer_statistics_refresh_fails_before_publication_on_work_budget
         error.to_string().contains("max_generated_facts 1"),
         "unexpected refresh error: {error}"
     );
-    assert!(!db.statistics().advanced_statistics_complete);
-    assert_eq!(db.statistics(), statistics);
+    assert!(!db.statistics().unwrap().advanced_statistics_complete);
+    assert_eq!(db.statistics().unwrap(), statistics);
     assert_eq!(
-        db.storage_residency_report().canonical_generation,
+        db.storage_residency_report().unwrap().canonical_generation,
         generation
     );
     assert_eq!(std::fs::read_dir(&spill_root).unwrap().count(), 0);
@@ -1297,8 +1337,8 @@ fn external_optimizer_statistics_refresh_preserves_spill_limits_and_snapshot() {
         .unwrap();
     }
     db.checkpoint().unwrap();
-    let before = db.statistics();
-    let generation = db.storage_residency_report().canonical_generation;
+    let before = db.statistics().unwrap();
+    let generation = db.storage_residency_report().unwrap().canonical_generation;
     let manifest = std::fs::read(path.join("manifest.hawdb")).unwrap();
     let wal = read_test_wal(&path).unwrap();
     let spill_root = path.join("statistics-spill");
@@ -1318,9 +1358,9 @@ fn external_optimizer_statistics_refresh_preserves_spill_limits_and_snapshot() {
             })
             .unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");
-        assert_eq!(db.statistics(), before);
+        assert_eq!(db.statistics().unwrap(), before);
         assert_eq!(
-            db.storage_residency_report().canonical_generation,
+            db.storage_residency_report().unwrap().canonical_generation,
             generation
         );
         assert_eq!(
@@ -1332,8 +1372,8 @@ fn external_optimizer_statistics_refresh_preserves_spill_limits_and_snapshot() {
     }
     drop(db);
     let db = Database::open_with_config(&path, config).unwrap();
-    assert_eq!(db.statistics(), before);
-    assert_eq!(db.basic_statistics().node_count, 96);
+    assert_eq!(db.statistics().unwrap(), before);
+    assert_eq!(db.basic_statistics().unwrap().node_count, 96);
     drop(db);
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -1347,10 +1387,14 @@ fn out_of_core_delta_budget_rejects_before_wal_append() {
         ..DatabaseConfig::default()
     };
     {
-        let mut db = Database::open_with_config(&path, config.clone()).unwrap();
-        db.query("CREATE (:Memory {id: 1, title: 'Original'})")
+        // Seed the checkpoint independently of the mutation delta budget.
+        let mut seed = Database::open(&path).unwrap();
+        seed.query("CREATE (:Memory {id: 1, title: 'Original'})")
             .unwrap();
-        db.checkpoint().unwrap();
+        seed.checkpoint().unwrap();
+    }
+    {
+        let mut db = Database::open_with_config(&path, config.clone()).unwrap();
         assert_eq!(read_test_wal(&path).unwrap(), "");
 
         let error = db
@@ -1360,7 +1404,7 @@ fn out_of_core_delta_budget_rejects_before_wal_append() {
             .to_string()
             .contains("out-of-core mutation delta admission rejected"));
         assert_eq!(read_test_wal(&path).unwrap(), "");
-        let residency = db.storage_residency_report();
+        let residency = db.storage_residency_report().unwrap();
         assert_eq!(residency.estimated_delta_resident_bytes, 0);
         assert!(residency.delta_within_budget);
     }
@@ -1392,11 +1436,13 @@ fn out_of_core_deferred_mutation_is_not_queued_and_can_retry_after_checkpoint() 
     db.checkpoint().unwrap();
     db.query("CREATE (:Memory)").unwrap();
     assert_eq!(
-        db.storage_residency_report().estimated_delta_resident_bytes,
+        db.storage_residency_report()
+            .unwrap()
+            .estimated_delta_resident_bytes,
         36
     );
     let before_wal = read_test_wal(&path).unwrap();
-    let before_epoch = db.commit_epoch();
+    let before_epoch = db.commit_epoch().unwrap();
 
     let error = db.query("CREATE (:Memory)").unwrap_err();
     assert!(
@@ -1409,9 +1455,11 @@ fn out_of_core_deferred_mutation_is_not_queued_and_can_retry_after_checkpoint() 
         .to_string()
         .contains("checkpoint the database before retrying"));
     assert_eq!(read_test_wal(&path).unwrap(), before_wal);
-    assert_eq!(db.commit_epoch(), before_epoch);
+    assert_eq!(db.commit_epoch().unwrap(), before_epoch);
     assert_eq!(
-        db.storage_residency_report().estimated_delta_resident_bytes,
+        db.storage_residency_report()
+            .unwrap()
+            .estimated_delta_resident_bytes,
         36
     );
 
@@ -1447,7 +1495,9 @@ fn out_of_core_replay_does_not_defer_already_committed_mutations() {
         db.query("CREATE (:Memory)").unwrap();
     }
     assert_eq!(
-        db.storage_residency_report().estimated_delta_resident_bytes,
+        db.storage_residency_report()
+            .unwrap()
+            .estimated_delta_resident_bytes,
         360
     );
     drop(db);
@@ -1463,7 +1513,7 @@ fn out_of_core_replay_does_not_defer_already_committed_mutations() {
     )
     .unwrap();
     assert_eq!(
-        reopened.storage_pressure_snapshot().state,
+        reopened.storage_pressure_snapshot().unwrap().state,
         crate::StoragePressureState::DeferMutation
     );
     assert_eq!(
@@ -1506,6 +1556,8 @@ fn out_of_core_delta_budget_also_bounds_wal_replay() {
             ..DatabaseConfig::default()
         },
     )
+    .unwrap()
+    .commit_epoch()
     .unwrap_err();
     assert!(error
         .to_string()
@@ -1526,12 +1578,21 @@ fn legacy_text_wal_is_rejected_by_the_single_v1_reader() {
     )
     .unwrap();
 
-    let error = Database::open(&path).unwrap_err();
+    let strict = Database::open(&path).unwrap();
+    let error = strict.commit_epoch().unwrap_err();
     assert!(
         error
             .to_string()
-            .contains("WAL is missing a supported generation header"),
+            .contains("branch head active-WAL identity is invalid"),
         "unexpected legacy WAL error: {error}"
+    );
+    assert_eq!(
+        std::fs::read(active_wal_path(&path)).unwrap(),
+        b"HAWDB_WAL_V1\t1\t1\t00000000000000000000\n"
+    );
+    assert_eq!(
+        strict.file_descriptor_metrics().unwrap().admitted_runtimes,
+        0
     );
 
     std::fs::remove_dir_all(path).unwrap();
@@ -1558,7 +1619,7 @@ fn stale_generation_wal_fragment_reads_as_clean_end_of_log() {
             output.rows[0].get("title"),
             Some(&Value::String("Graph foundations".to_string()))
         );
-        let recovery = db.storage_recovery_report();
+        let recovery = db.storage_recovery_report().unwrap();
         assert!(recovery.replayed_wal_entries >= 1);
         assert!(!recovery.torn_tail_ignored);
         assert!(!recovery.torn_tail_repaired);
@@ -1610,7 +1671,8 @@ fn default_recovery_rejects_torn_wal_tail_until_explicit_doctor_repair() {
         .write_all(b"torn-entry-without-checksum")
         .unwrap();
 
-    let error = Database::open(&path).unwrap_err();
+    let strict = Database::open(&path).unwrap();
+    let error = strict.commit_epoch().unwrap_err();
     assert!(error
         .to_string()
         .contains("strict WAL recovery rejected torn tail"));
@@ -1622,6 +1684,8 @@ fn default_recovery_rejects_torn_wal_tail_until_explicit_doctor_repair() {
             ..DatabaseConfig::default()
         },
     )
+    .unwrap()
+    .commit_epoch()
     .unwrap_err();
     assert!(legacy_open_repair_error
         .to_string()
@@ -1648,11 +1712,12 @@ fn default_recovery_rejects_torn_wal_tail_until_explicit_doctor_repair() {
         plan.discarded_wal_tail_bytes
     );
     assert!(!repair.resumed_interrupted_repair);
-    assert!(path
-        .join("doctor/quarantine")
+    let doctor = active_storage_root(&path).parent().unwrap().join("doctor");
+    assert!(doctor
+        .join("quarantine")
         .join(&repair.quarantine_file)
         .exists());
-    let repair_record = path.join("doctor").join(&repair.repair_record_file);
+    let repair_record = doctor.join(&repair.repair_record_file);
     assert!(repair_record.exists());
     assert!(std::fs::read_to_string(repair_record)
         .unwrap()
@@ -1666,7 +1731,7 @@ fn default_recovery_rejects_torn_wal_tail_until_explicit_doctor_repair() {
         output.rows[0].get("title"),
         Some(&Value::String("Graph foundations".to_string()))
     );
-    let recovery = repaired.storage_recovery_report();
+    let recovery = repaired.storage_recovery_report().unwrap();
     assert!(!recovery.torn_tail_ignored);
     assert!(!recovery.torn_tail_repaired);
     assert_eq!(recovery.discarded_wal_tail_bytes, 0);
@@ -1674,7 +1739,7 @@ fn default_recovery_rejects_torn_wal_tail_until_explicit_doctor_repair() {
         .unwrap()
         .contains("torn-entry-without-checksum"));
     let quarantined =
-        std::fs::read(path.join("doctor/quarantine").join(repair.quarantine_file)).unwrap();
+        std::fs::read(doctor.join("quarantine").join(repair.quarantine_file)).unwrap();
     assert!(quarantined
         .windows(b"torn-entry-without-checksum".len())
         .any(|window| window == b"torn-entry-without-checksum"));
@@ -1698,12 +1763,18 @@ fn storage_scrub_streams_strong_artifact_verification_and_poisons_on_corruption(
     db.checkpoint().unwrap();
 
     let clean = db.scrub_storage().unwrap();
-    assert_eq!(clean.generation, 1);
+    assert_eq!(
+        clean.generation,
+        db.storage_reclamation_watermark()
+            .unwrap()
+            .checkpoint_epoch
+            .unwrap()
+    );
     assert!(clean.checked_file_count >= 4);
     assert!(clean.sha256_verified_file_count >= 2);
     assert!(clean.checked_bytes > 0);
 
-    let canonical_path = path.join("canonical.1.hawdb");
+    let canonical_path = active_generation_path(&path, "checkpoint_generation", "canonical");
     let mut bytes = std::fs::read(&canonical_path).unwrap();
     bytes[24] ^= 0xff;
     std::fs::write(&canonical_path, bytes).unwrap();
@@ -1714,7 +1785,7 @@ fn storage_scrub_streams_strong_artifact_verification_and_poisons_on_corruption(
             || error.to_string().contains("SHA-256 mismatch during scrub"),
         "unexpected scrub error: {error}"
     );
-    assert!(db.storage_handle_poisoned());
+    assert!(db.storage_handle_poisoned().unwrap());
     let poisoned = db
         .query("MATCH (m:Memory) RETURN m.id AS memory_id")
         .unwrap_err();
@@ -1740,6 +1811,8 @@ fn wal_replay_entry_limit_rejects_long_recovery() {
             ..DatabaseConfig::default()
         },
     )
+    .unwrap()
+    .commit_epoch()
     .unwrap_err();
     assert!(error
         .to_string()
@@ -1756,11 +1829,17 @@ fn wal_replay_entry_limit_rejects_long_recovery() {
 #[test]
 fn storage_recovery_report_tracks_wal_replay_boundary() {
     let path = unique_test_dir("storage_recovery_report");
+    let checkpoint_generation;
     {
         let mut db = Database::open(&path).unwrap();
         db.query("CREATE (:Memory {id: 1, title: 'Checkpointed'})")
             .unwrap();
         db.checkpoint().unwrap();
+        checkpoint_generation = db
+            .storage_reclamation_watermark()
+            .unwrap()
+            .checkpoint_epoch
+            .unwrap();
         db.query("CREATE (:Memory {id: 2, title: 'Replayed'})")
             .unwrap();
     }
@@ -1773,11 +1852,11 @@ fn storage_recovery_report_tracks_wal_replay_boundary() {
         },
     )
     .unwrap();
-    let report = db.storage_recovery_report();
+    let report = db.storage_recovery_report().unwrap();
     assert!(report.durable);
     assert_eq!(report.recovery_mode, RecoveryMode::Strict);
     assert_eq!(report.max_wal_replay_entries, Some(8));
-    assert_eq!(report.checkpoint_epoch, Some(1));
+    assert_eq!(report.checkpoint_epoch, Some(checkpoint_generation));
     assert_eq!(report.checkpoint_commit_epoch, Some(2));
     assert!(report.wal_present);
     assert_eq!(report.wal_replay_start_lsn, Some(3));
@@ -1814,22 +1893,23 @@ fn canonical_row_overflow_backup_reopen_and_reclaim_follow_physical_closure() {
 
     let first_generation = db
         .storage_reclamation_watermark()
+        .unwrap()
         .checkpoint_epoch
         .expect("durable checkpoint generation");
-    let first_row_manifest = path.join(
+    let first_row_manifest = active_storage_root(&path).join(
         hawdb_storage::relational::relational_row_page_manifest_generation_file(first_generation),
     );
-    let first_overflow_manifest = path.join(
+    let first_overflow_manifest = active_storage_root(&path).join(
         hawdb_storage::relational::relational_overflow_manifest_generation_file(first_generation),
     );
-    let first_overflow_extent = path.join(
+    let first_overflow_extent = active_storage_root(&path).join(
         hawdb_storage::relational::relational_overflow_extent_file(first_generation),
     );
     assert!(first_row_manifest.exists());
     assert!(first_overflow_manifest.exists());
     assert!(first_overflow_extent.exists());
 
-    let pinned = db.begin_read_transaction();
+    let pinned = db.begin_read_transaction().unwrap();
     assert_eq!(
         pinned
             .query_sql("SELECT body FROM public.documents WHERE id = 1")
@@ -1925,7 +2005,7 @@ fn relational_storage_residency_tracks_checkpoint_live_and_recovery_views() {
     };
     let mut db = Database::open_with_config(&path, config.clone()).unwrap();
 
-    let checkpoint = db.storage_residency_report();
+    let checkpoint = db.storage_residency_report().unwrap();
     assert!(checkpoint.relational_rows.serving);
     assert!(checkpoint.relational_rows.base_generation.is_some());
     assert_eq!(
@@ -1986,14 +2066,14 @@ fn relational_storage_residency_tracks_checkpoint_live_and_recovery_views() {
 
     db.query_sql("INSERT INTO public.documents (id, body) VALUES (2, 'live')")
         .unwrap();
-    let live = db.storage_residency_report();
+    let live = db.storage_residency_report().unwrap();
     assert_eq!(
         live.relational_rows.visible_commit_epoch,
-        Some(db.commit_epoch())
+        Some(db.commit_epoch().unwrap())
     );
     assert_eq!(
         live.relational_indexes.visible_commit_epoch,
-        Some(db.commit_epoch())
+        Some(db.commit_epoch().unwrap())
     );
     assert!(live.relational_rows.live_batches > 0);
     assert!(live.relational_rows.live_entries > 0);
@@ -2005,7 +2085,7 @@ fn relational_storage_residency_tracks_checkpoint_live_and_recovery_views() {
     drop(db);
 
     let reopened = Database::open_with_config(&path, config).unwrap();
-    let recovered = reopened.storage_residency_report();
+    let recovered = reopened.storage_residency_report().unwrap();
     assert!(recovered.relational_rows.serving);
     assert!(recovered
         .relational_rows
@@ -2040,6 +2120,7 @@ fn relational_storage_residency_tracks_checkpoint_live_and_recovery_views() {
 #[test]
 fn mem_shaped_graph_mutations_recover_across_checkpoint_and_wal() {
     let path = unique_test_dir("mem_shaped_recovery");
+    let checkpoint_generation;
     let live_snapshot = {
         let mut db = Database::open(&path).unwrap();
         db.query(
@@ -2055,9 +2136,14 @@ fn mem_shaped_graph_mutations_recover_across_checkpoint_and_wal() {
         )
         .unwrap();
         db.checkpoint().unwrap();
+        checkpoint_generation = db
+            .storage_reclamation_watermark()
+            .unwrap()
+            .checkpoint_epoch
+            .unwrap();
 
         {
-            let mut tx = db.begin_transaction();
+            let mut tx = db.begin_transaction().unwrap();
             tx.query(
                 "CREATE (:Memory {id: 'mem:replayed', title: 'Replayed memory', source_id: 'source:one', thread_id: 'thread:one', space_id: 'default', importance: 0.9, confidence: 0.7, lifecycle_state: 'active', is_latest: true})-[:MENTIONS {thread_id: 'thread:one', message_index: 1, confidence: 0.7}]->(:Entity {id: 'entity:rust', name: 'Rust', space_id: 'default', unit_type: 'entity'})",
             )
@@ -2065,7 +2151,7 @@ fn mem_shaped_graph_mutations_recover_across_checkpoint_and_wal() {
             tx.commit().unwrap();
         }
 
-        let snapshot = db.export_canonical_graph_snapshot();
+        let snapshot = db.export_canonical_graph_snapshot().unwrap();
         assert!(snapshot.validate().is_valid);
         snapshot
     };
@@ -2085,12 +2171,12 @@ fn mem_shaped_graph_mutations_recover_across_checkpoint_and_wal() {
             },
         )
         .unwrap();
-        let recovered = db.export_canonical_graph_snapshot();
+        let recovered = db.export_canonical_graph_snapshot().unwrap();
         assert_eq!(recovered, live_snapshot);
         assert!(recovered.validate().is_valid);
 
-        let recovery = db.storage_recovery_report();
-        assert_eq!(recovery.checkpoint_epoch, Some(1));
+        let recovery = db.storage_recovery_report().unwrap();
+        assert_eq!(recovery.checkpoint_epoch, Some(checkpoint_generation));
         assert_eq!(recovery.checkpoint_commit_epoch, Some(4));
         assert_eq!(recovery.replayed_wal_entries, 1);
         assert_eq!(recovery.max_wal_replay_entries, Some(8));
@@ -2112,7 +2198,7 @@ fn mem_shaped_graph_mutations_recover_across_checkpoint_and_wal() {
 #[test]
 fn mem_shaped_post_checkpoint_batch_replays_before_torn_tail() {
     let path = unique_test_dir("mem_shaped_recovery_torn_tail");
-    let live_snapshot = {
+    let (live_snapshot, checkpoint) = {
         let mut db = Database::open(&path).unwrap();
         db.query(
             "CREATE (:Source {id: 'source:one', space_id: 'default', kind: 'thread', metadata: '{}', memory_count: 1})",
@@ -2127,17 +2213,17 @@ fn mem_shaped_post_checkpoint_batch_replays_before_torn_tail() {
         )
         .unwrap();
         db.checkpoint().unwrap();
-
-        let mut tx = db.begin_transaction();
+        let checkpoint = db.storage_reclamation_watermark().unwrap();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query(
             "CREATE (:Memory {id: 'mem:replayed', title: 'Replayed memory', source_id: 'source:one', thread_id: 'thread:one', space_id: 'default'})-[:MENTIONS {thread_id: 'thread:one', message_index: 1, confidence: 0.7}]->(:Entity {id: 'entity:rust', name: 'Rust', space_id: 'default', unit_type: 'entity'})",
         )
         .unwrap();
         tx.commit().unwrap();
 
-        let snapshot = db.export_canonical_graph_snapshot();
+        let snapshot = db.export_canonical_graph_snapshot().unwrap();
         assert!(snapshot.validate().is_valid);
-        snapshot
+        (snapshot, checkpoint)
     };
 
     std::fs::OpenOptions::new()
@@ -2167,16 +2253,22 @@ fn mem_shaped_post_checkpoint_batch_replays_before_torn_tail() {
             },
         )
         .unwrap();
-        let recovered = db.export_canonical_graph_snapshot();
+        let recovered = db.export_canonical_graph_snapshot().unwrap();
         assert_eq!(recovered, live_snapshot);
         assert!(recovered.validate().is_valid);
 
-        let recovery = db.storage_recovery_report();
-        assert_eq!(recovery.checkpoint_epoch, Some(1));
-        assert_eq!(recovery.checkpoint_commit_epoch, Some(4));
+        let recovery = db.storage_recovery_report().unwrap();
+        assert_eq!(recovery.checkpoint_epoch, checkpoint.checkpoint_epoch);
+        assert_eq!(
+            recovery.checkpoint_commit_epoch,
+            checkpoint.checkpoint_commit_epoch
+        );
         assert_eq!(recovery.replayed_wal_entries, 1);
         assert_eq!(recovery.max_wal_replay_entries, Some(8));
-        assert_eq!(recovery.recovered_commit_epoch, 5);
+        assert_eq!(
+            recovery.recovered_commit_epoch,
+            checkpoint.current_commit_epoch + 1
+        );
         assert!(!recovery.torn_tail_ignored);
         assert!(!recovery.torn_tail_repaired);
         assert_eq!(recovery.discarded_wal_tail_bytes, 0);
@@ -2197,7 +2289,7 @@ fn mem_shaped_post_checkpoint_batch_replays_before_torn_tail() {
 #[test]
 fn in_memory_storage_recovery_report_is_non_durable() {
     let db = Database::new();
-    let report = db.storage_recovery_report();
+    let report = db.storage_recovery_report().unwrap();
     assert!(!report.durable);
     assert_eq!(report.recovered_commit_epoch, 0);
     assert_eq!(report.replayed_wal_entries, 0);
@@ -2224,30 +2316,14 @@ fn read_only_open_does_not_create_missing_database_path() {
 }
 
 #[test]
-fn durable_database_open_is_exclusive_until_owner_drops() {
+fn durable_database_data_admission_is_exclusive_until_owner_drops() {
     let path = unique_test_dir("exclusive_database_owner");
     let owner = Database::open(&path).unwrap();
-
-    let write_error = Database::open(&path).unwrap_err();
-    assert_eq!(
-        write_error.to_string(),
-        "storage error: database directory is already open by this or another application"
-    );
-    let read_error = Database::open_with_config(
-        &path,
-        DatabaseConfig {
-            read_only: true,
-            ..DatabaseConfig::default()
-        },
-    )
-    .unwrap_err();
-    assert_eq!(read_error.to_string(), write_error.to_string());
-    assert!(!write_error
-        .to_string()
-        .contains(&path.display().to_string()));
-
-    drop(owner);
-    let reopened = Database::open_with_config(
+    let epoch = owner.commit_epoch().unwrap();
+    let writer = Database::open(&path).unwrap();
+    let write_error = writer.commit_epoch().unwrap_err();
+    assert!(matches!(write_error, HawDBError::BranchBusy { .. }));
+    let reader = Database::open_with_config(
         &path,
         DatabaseConfig {
             read_only: true,
@@ -2255,25 +2331,37 @@ fn durable_database_open_is_exclusive_until_owner_drops() {
         },
     )
     .unwrap();
-    drop(reopened);
+    let read_error = reader.commit_epoch().unwrap_err();
+    assert!(matches!(read_error, HawDBError::BranchBusy { .. }));
+    assert!(!write_error
+        .to_string()
+        .contains(&path.display().to_string()));
+
+    drop(owner);
+    assert_eq!(writer.commit_epoch().unwrap(), epoch);
+    drop(writer);
+    assert_eq!(reader.commit_epoch().unwrap(), epoch);
+    drop(reader);
     std::fs::remove_dir_all(path).unwrap();
 }
 
 #[test]
-fn durable_database_rejects_path_alias_until_owner_drops() {
+fn durable_database_path_alias_shares_data_admission_until_owner_drops() {
     let path = unique_test_dir("exclusive_database_alias");
     let alias = path.join(".");
     let owner = Database::open(&path).unwrap();
-
-    let error = Database::open(&alias).unwrap_err();
+    let epoch = owner.commit_epoch().unwrap();
+    let aliased = Database::open(&alias).unwrap();
+    let error = aliased.commit_epoch().unwrap_err();
+    assert!(matches!(error, HawDBError::BranchBusy { .. }));
     assert_eq!(
-        error.to_string(),
-        "storage error: database directory is already open by this or another application"
+        aliased.file_descriptor_metrics(),
+        owner.file_descriptor_metrics()
     );
 
     drop(owner);
-    let reopened = Database::open(&alias).unwrap();
-    drop(reopened);
+    assert_eq!(aliased.commit_epoch().unwrap(), epoch);
+    drop(aliased);
     std::fs::remove_dir_all(path).unwrap();
 }
 
@@ -2344,7 +2432,7 @@ fn checkpoint_query_invokes_storage_checkpoint() {
 
     let checkpoint = read_test_durable_text(&active_checkpoint_path(&path)).unwrap();
     assert!(checkpoint.contains("canonical_records\ttrue\n"));
-    assert!(path.join("canonical.1.hawdb").exists());
+    assert!(active_generation_path(&path, "checkpoint_generation", "canonical").exists());
     assert_eq!(read_test_wal(&path).unwrap(), "");
 
     std::fs::remove_dir_all(path).unwrap();
@@ -2364,7 +2452,7 @@ fn storage_crash_recovery_child() {
     );
     let point = std::env::var("HAWDB_TEST_PROCESS_CRASH_POINT").expect("crash point");
     let mut db = Database::open_with_config(&path, storage_crash_test_config()).unwrap();
-    let mut transaction = db.begin_transaction();
+    let mut transaction = db.begin_transaction().unwrap();
     transaction
         .query(
             "CREATE (:Memory {id: 'crash-a'})-[:RELATED_TO {id: 'crash-rel'}]->(:Memory {id: 'crash-b'})",
@@ -2403,7 +2491,7 @@ fn subprocess_crash_matrix_recovers_whole_batches_and_artifact_generations() {
                 .unwrap();
                 db.checkpoint().unwrap();
                 db.commit_epoch()
-            };
+            }.unwrap();
 
             let status = std::process::Command::new(std::env::current_exe().unwrap())
                 .arg("--exact")
@@ -2448,8 +2536,8 @@ fn subprocess_crash_matrix_recovers_whole_batches_and_artifact_generations() {
             }
 
             let expected_epoch = baseline_epoch + node_a;
-            assert_eq!(reopened.commit_epoch(), expected_epoch);
-            let recovery = reopened.storage_recovery_report();
+            assert_eq!(reopened.commit_epoch().unwrap(), expected_epoch);
+            let recovery = reopened.storage_recovery_report().unwrap();
             assert_eq!(recovery.recovered_commit_epoch, expected_epoch);
             assert!(recovery.next_lsn_after_replay.is_some());
             assert!(recovery.wal_replay_start_lsn.is_some());
@@ -2457,12 +2545,12 @@ fn subprocess_crash_matrix_recovers_whole_batches_and_artifact_generations() {
                 .checkpoint_commit_epoch
                 .is_some_and(|epoch| epoch <= expected_epoch));
 
-            let residency = reopened.storage_residency_report();
+            let residency = reopened.storage_residency_report().unwrap();
             let artifact_generation_valid =
                 recovery.checkpoint_epoch == residency.canonical_generation;
             assert!(artifact_generation_valid);
             assert_eq!(residency.segment_cache_digest_mismatch_count, 0);
-            let changefeed = reopened.search_projection_changefeed_status();
+            let changefeed = reopened.search_projection_changefeed_status().unwrap();
             let projection_watermark_valid = changefeed.graph_commit_epoch == expected_epoch;
             assert!(projection_watermark_valid);
             assert!(changefeed.restart_recoverable);
@@ -2480,7 +2568,7 @@ fn subprocess_crash_matrix_recovers_whole_batches_and_artifact_generations() {
                 process_terminated: status.code() == Some(86),
                 recovered_batch_present: node_a == 1,
                 whole_batch_recovered: node_a == node_b && node_a == relationship,
-                commit_epoch: reopened.commit_epoch(),
+                commit_epoch: reopened.commit_epoch().unwrap(),
                 recovered_commit_epoch: recovery.recovered_commit_epoch,
                 replay_lsn_present: recovery.next_lsn_after_replay.is_some()
                     && recovery.wal_replay_start_lsn.is_some(),
@@ -2593,11 +2681,11 @@ fn user_invalidates_old_snapshots_when_checkpoint_or_projection_reads_corrupt_ca
         db.query_sql("CREATE TABLE snapshot_probe (id BIGINT PRIMARY KEY)")
             .unwrap();
         db.checkpoint().unwrap();
-        let snapshot = db.begin_read_transaction();
+        let snapshot = db.begin_read_transaction().unwrap();
         snapshot
             .query_sql("SELECT id FROM snapshot_probe WHERE id = 1")
             .expect("healthy snapshot probe succeeds before canonical corruption");
-        let canonical = path.join("canonical.1.hawdb");
+        let canonical = active_generation_path(&path, "checkpoint_generation", "canonical");
         let mut bytes = std::fs::read(&canonical).unwrap();
         bytes[24] ^= 0xff;
         std::fs::write(canonical, bytes).unwrap();
@@ -2619,7 +2707,7 @@ fn user_invalidates_old_snapshots_when_checkpoint_or_projection_reads_corrupt_ca
                 .contains("failed content digest verification"),
             "{error}"
         );
-        assert!(db.storage_handle_poisoned());
+        assert!(db.storage_handle_poisoned().unwrap());
         // Then a query of the independent empty SQL table fails without reading the damaged graph segment.
         assert!(snapshot
             .query_sql("SELECT id FROM snapshot_probe WHERE id = 1")

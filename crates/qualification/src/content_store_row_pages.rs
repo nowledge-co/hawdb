@@ -736,7 +736,7 @@ pub fn run_content_store_initial_row_page_qualification(
         DurabilityPolicy::SyncOnEveryWrite,
         authoritative_config.clone(),
     )?;
-    let recovery = database.storage_recovery_report();
+    let recovery = database.storage_recovery_report()?;
     if recovery.replayed_wal_entries == 0 {
         return Err(HawDBError::Execution(
             "content-store row-page qualification did not replay the post-checkpoint WAL mutation"

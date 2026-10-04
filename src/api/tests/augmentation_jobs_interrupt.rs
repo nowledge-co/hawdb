@@ -96,7 +96,7 @@ fn augmentation_job_interrupt_without_candidates_does_not_write_wal() {
     let wal_before = read_test_wal(&path).unwrap();
     {
         let mut db = Database::open(&path).unwrap();
-        let graph_commit_epoch_before = db.store.commit_epoch();
+        let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
         let output = db
             .interrupt_knowledge_augmentation_jobs(&KnowledgeAugmentationJobInterruptRequest {
                 error_message: "no candidates".to_string(),
@@ -119,7 +119,7 @@ fn augmentation_job_interrupt_rejects_empty_reason_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:AugmentationJob {job_id: 'pending_job', status: 'pending'})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .interrupt_knowledge_augmentation_jobs(&KnowledgeAugmentationJobInterruptRequest {
@@ -129,7 +129,10 @@ fn augmentation_job_interrupt_rejects_empty_reason_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-empty error message"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]

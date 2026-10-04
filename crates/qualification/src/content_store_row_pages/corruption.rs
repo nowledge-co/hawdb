@@ -79,7 +79,7 @@ pub(super) fn qualify_content_store_corruption(
             "content-store corruption probe returned an unexpected scrub error: {scrub_error}"
         )));
     }
-    if !corrupted.storage_handle_poisoned() {
+    if !corrupted.storage_handle_poisoned()? {
         return Err(HawDBError::Execution(
             "content-store corruption probe did not poison the damaged handle".to_string(),
         ));

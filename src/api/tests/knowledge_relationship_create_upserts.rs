@@ -154,7 +154,7 @@ fn knowledge_relationship_create_rejects_invalid_identifiers() {
         .unwrap_err();
 
     assert!(error.to_string().contains("relationship type identifier"));
-    assert_eq!(db.store.commit_epoch(), 2);
+    assert_eq!(db.runtime.get().unwrap().store.commit_epoch(), 2);
 }
 
 #[test]
@@ -227,7 +227,7 @@ fn upserts_knowledge_relationship_through_typed_api() {
     assert_eq!(created.created_relationship_count, 1);
     assert_eq!(created.relationship_id, Some(0));
 
-    let epoch_before_second = db.store.commit_epoch();
+    let epoch_before_second = db.runtime.get().unwrap().store.commit_epoch();
     let existing = db
         .upsert_knowledge_relationship(&KnowledgeRelationshipUpsertRequest {
             source: KnowledgeEntityRequest {
