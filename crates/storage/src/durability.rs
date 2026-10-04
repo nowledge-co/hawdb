@@ -190,6 +190,14 @@ pub fn sync_parent_directory(path: &Path) -> io::Result<()> {
 
 /// Persists pending directory entry changes when supported by the platform.
 pub fn sync_directory(directory: &Path) -> io::Result<()> {
+    let context = crate::file_descriptors::context_for_path(directory)?;
+    sync_directory_with_context(directory, &context)
+}
+
+pub(crate) fn sync_directory_with_context(
+    directory: &Path,
+    context: &crate::file_descriptors::FileOpenContext,
+) -> io::Result<()> {
     #[cfg(test)]
     {
         let should_fail = SYNC_DIRECTORY_FAILURE.with(|expected| {
@@ -210,14 +218,64 @@ pub fn sync_directory(directory: &Path) -> io::Result<()> {
     }
     #[cfg(windows)]
     {
-        let _ = directory;
+        let _ = (directory, context);
         Ok(())
     }
     #[cfg(not(windows))]
     {
-        use crate::file_io::File;
+        context
+            .open(fs::OpenOptions::new().read(true), directory)?
+            .sync_all()
+    }
+}
 
-        File::open(directory)?.sync_all()
+/// Persists names from a publication directory through its project root.
+/// Existing directories can be leftovers of an interrupted attempt: existence
+/// alone never replaces these barriers. The project root's own ancestry is
+/// synchronized during writable project admission.
+pub(crate) fn sync_directory_ancestors(directory: &Path) -> io::Result<()> {
+    let context = crate::file_descriptors::context_for_path(directory)?;
+    let root = context.project_root();
+    let stop = (!root.as_os_str().is_empty()).then_some(root);
+    sync_directory_tree_with_context(directory, &context, stop)
+}
+
+/// Explicit context avoids reentering the project registry during bootstrap.
+/// Open one directory at a time, charging even ancestor IO to this project.
+/// With no project boundary, stop at the existing filesystem mount: persistence
+/// of the mount itself is an external platform assumption. Windows directory
+/// synchronization remains unqualified; its no-op is not a durability barrier.
+pub(crate) fn sync_directory_tree_with_context(
+    directory: &Path,
+    context: &crate::file_descriptors::FileOpenContext,
+    stop: Option<&Path>,
+) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        let _ = (directory, context, stop);
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let mut current = context.canonicalize(directory)?;
+        loop {
+            sync_directory_with_context(&current, context)?;
+            if stop.is_some_and(|root| current == root) {
+                break;
+            }
+            let Some(parent) = current.parent() else {
+                break;
+            };
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if context.metadata(&current)?.dev() != context.metadata(parent)?.dev() {
+                    break;
+                }
+            }
+            current = parent.to_path_buf();
+        }
+        Ok(())
     }
 }
 

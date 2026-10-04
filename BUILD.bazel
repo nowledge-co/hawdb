@@ -358,10 +358,12 @@ test_suite(
     tests = ["//crates/executor:hawdb_batch_dispatch_fuzz_tests"],
 )
 
+# Each durable campaign runs alone: shared filesystem synchronization made
+# concurrent halves exceed the unchanged medium deadline. Every seed is retained.
 rust_test(
-    name = "hawdb_graph_projection_residency_fuzz_tests",
+    name = "hawdb_graph_projection_residency_fuzz_first_half_tests",
     args = [
-        "api::tests::projected_graph_execution::differential::projected_graph_residency_differential_campaign",
+        "api::tests::projected_graph_execution::differential::projected_graph_residency_differential_campaign_first_half",
         "--exact",
         "--ignored",
         "--nocapture",
@@ -369,10 +371,36 @@ rust_test(
     crate = ":hawdb",
     crate_features = _HAWDB_DEFAULT_FEATURES,
     edition = "2024",
-    tags = ["manual"],
+    tags = ["exclusive", "manual"],
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "hawdb_graph_projection_residency_fuzz_second_half_tests",
+    args = [
+        "api::tests::projected_graph_execution::differential::projected_graph_residency_differential_campaign_second_half",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":hawdb",
+    crate_features = _HAWDB_DEFAULT_FEATURES,
+    edition = "2024",
+    tags = ["exclusive", "manual"],
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+test_suite(
+    name = "hawdb_graph_projection_residency_fuzz_tests",
+    tags = ["manual"],
+    tests = [
+        ":hawdb_graph_projection_residency_fuzz_first_half_tests",
+        ":hawdb_graph_projection_residency_fuzz_second_half_tests",
+    ],
 )
 
 rust_test(

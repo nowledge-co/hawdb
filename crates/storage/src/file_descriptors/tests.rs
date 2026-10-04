@@ -664,3 +664,40 @@ fn failed_mutable_open_invalidates_binding_before_native_io() {
     snapshot.read_to_string(&mut text).unwrap();
     assert_eq!(text, "snapshot");
 }
+
+#[cfg(unix)]
+#[test]
+fn ancestry_barriers_use_one_project_descriptor_at_a_time() {
+    let fixture = Fixture::new(1);
+    let nested = fixture.root.join("new/a/b/c");
+    file_io::create_dir_all(&nested).unwrap();
+    crate::durability::sync_directory_ancestors(&nested).unwrap();
+    assert_eq!(fixture.project.metrics().open, 0);
+    assert_eq!(fixture.project.metrics().high_water, 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn writable_admission_retries_root_ancestry_after_a_read_only_domain() {
+    let fixture = Fixture::new(1);
+    let root = fixture.root.with_extension("read-only");
+    std::fs::create_dir_all(&root).unwrap();
+    let read_only = ProjectFileDescriptors::acquire_existing(&root, 1).unwrap();
+    let failure = crate::durability::fail_sync_directory_for(read_only.root());
+    assert!(ProjectFileDescriptors::acquire(&root, 1).is_err());
+    assert!(!read_only
+        .state
+        .root_namespace_durable
+        .load(Ordering::Acquire));
+    assert_eq!(read_only.metrics().open, 0);
+    drop(failure);
+    let writable = ProjectFileDescriptors::acquire(&root, 1).unwrap();
+    assert!(Arc::ptr_eq(&read_only.state, &writable.state));
+    assert!(writable
+        .state
+        .root_namespace_durable
+        .load(Ordering::Acquire));
+    assert_eq!(writable.metrics().open, 0);
+    assert_eq!(writable.metrics().high_water, 1);
+    std::fs::remove_dir_all(root).unwrap();
+}

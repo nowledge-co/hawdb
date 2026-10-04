@@ -433,9 +433,11 @@ fn next_random(state: &mut u64) -> u64 {
     value ^ (value >> 31)
 }
 
-fn campaign(seeds: u64) {
+fn campaign(seeds: std::ops::Range<u64>) {
+    let first_seed = seeds.start;
+    let seed_count = seeds.end - seeds.start;
     let mut checks = 0;
-    for seed in 0..seeds {
+    for seed in seeds {
         for mode in [
             StorageResidencyMode::Materialized,
             StorageResidencyMode::OutOfCore,
@@ -505,18 +507,33 @@ fn campaign(seeds: u64) {
             }
         }
     }
-    eprintln!("graph-projection-residency-v1 seeds={seeds} state_checks={checks}");
+    eprintln!("graph-projection-residency-v1 first_seed={first_seed} seeds={seed_count} state_checks={checks}");
 }
 
 #[test]
 fn projected_graph_residency_differential_smoke() {
-    campaign(2);
+    campaign(0..2);
 }
 
 #[test]
 #[ignore = "explicit local graph projection residency campaign"]
 fn projected_graph_residency_differential_campaign() {
-    campaign(32);
+    campaign(0..32);
+}
+
+// Keep the complete campaign above available for direct Cargo replay. Bazel
+// executes both halves separately so every seed retains its full state machine
+// without placing all 32 durable fixtures under one test-process timeout.
+#[test]
+#[ignore = "explicit local graph projection residency campaign, seeds 0..16"]
+fn projected_graph_residency_differential_campaign_first_half() {
+    campaign(0..16);
+}
+
+#[test]
+#[ignore = "explicit local graph projection residency campaign, seeds 16..32"]
+fn projected_graph_residency_differential_campaign_second_half() {
+    campaign(16..32);
 }
 
 #[test]

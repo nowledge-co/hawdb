@@ -21,7 +21,7 @@ use std::io;
 use std::marker::PhantomData;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 pub const DEFAULT_MAX_OPEN_FILES: usize = 256;
@@ -98,6 +98,9 @@ pub(crate) struct BudgetState {
     cache: Mutex<Option<Weak<dyn DescriptorCache>>>,
     immutable_handles: Mutex<Weak<crate::immutable_files::ImmutableFileHandles>>,
     active_reservations: AtomicUsize,
+    root_namespace_durable: AtomicBool,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) power_loss: Mutex<Weak<crate::power_loss::ModelCore>>,
 }
 
 impl BudgetState {
@@ -109,6 +112,9 @@ impl BudgetState {
             cache: Mutex::new(None),
             immutable_handles: Mutex::new(Weak::new()),
             active_reservations: AtomicUsize::new(0),
+            root_namespace_durable: AtomicBool::new(false),
+            #[cfg(any(test, feature = "test-support"))]
+            power_loss: Mutex::new(Weak::new()),
         }
     }
 
@@ -256,7 +262,12 @@ impl ProjectFileDescriptors {
     #[doc(hidden)]
     pub fn acquire_component(root: &Path, create: bool) -> Result<Self, HawDBError> {
         match Self::containing(root)? {
-            Some(project) => Ok(project),
+            Some(project) => {
+                if create {
+                    ensure_project_namespace(&project.state, project.root())?;
+                }
+                Ok(project)
+            }
             None => Self::acquire_root(root, DEFAULT_MAX_OPEN_FILES, create),
         }
     }
@@ -299,7 +310,11 @@ impl ProjectFileDescriptors {
         let mut projects = PROJECTS.lock().unwrap_or_else(|error| error.into_inner());
         projects.retain(|_, state| state.strong_count() != 0);
         if let Some(state) = projects.get(&lexical).and_then(Weak::upgrade) {
-            return configured_state(state, limit);
+            let project = configured_state(state, limit)?;
+            if create {
+                ensure_project_namespace(&project.state, project.root())?;
+            }
+            return Ok(project);
         }
         let tentative = Arc::new(BudgetState::new(lexical.clone(), limit));
         let tentative_probe =
@@ -330,8 +345,14 @@ impl ProjectFileDescriptors {
         drop(probe_permits);
         if let Some(state) = projects.get(&canonical).and_then(Weak::upgrade) {
             let project = configured_state(state, limit)?;
+            if create {
+                ensure_project_namespace(&project.state, project.root())?;
+            }
             projects.insert(lexical, Arc::downgrade(&project.state));
             return Ok(project);
+        }
+        if create {
+            ensure_project_namespace(&tentative, &canonical)?;
         }
         let mut state = tentative;
         Arc::get_mut(&mut state)
@@ -426,6 +447,15 @@ impl ProjectFileDescriptors {
             _thread: PhantomData,
         }
     }
+}
+
+fn ensure_project_namespace(state: &Arc<BudgetState>, root: &Path) -> io::Result<()> {
+    if !state.root_namespace_durable.load(Ordering::Acquire) {
+        let context = FileOpenContext::from_state(state.clone());
+        crate::durability::sync_directory_tree_with_context(root, &context, None)?;
+        state.root_namespace_durable.store(true, Ordering::Release);
+    }
+    Ok(())
 }
 
 fn create_project_directory(path: &Path) -> io::Result<bool> {
@@ -605,6 +635,15 @@ pub struct FileOpenContext {
 }
 
 impl FileOpenContext {
+    pub(crate) fn project_root(&self) -> &Path {
+        &self.state.root
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn metadata(&self, path: &Path) -> io::Result<std::fs::Metadata> {
+        self.temporary(|| std::fs::metadata(path))
+    }
+
     pub fn for_path(path: &Path) -> io::Result<Self> {
         context_for_path(path)
     }

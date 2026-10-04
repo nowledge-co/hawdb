@@ -212,12 +212,10 @@ pub fn create_child_branch_head(
             source,
         });
     }
-    if let Err(source) = crate::durability::sync_parent_directory(&request.wal_path) {
-        let _ = fs::remove_file(&request.wal_path);
-        return Err(BranchHeadError::Io {
-            operation: "sync child active WAL directory",
-            source,
-        });
+    if let Err(source) = crate::durability::sync_directory_ancestors(
+        request.wal_path.parent().unwrap_or_else(|| Path::new(".")),
+    ) {
+        return Err(BranchHeadError::CandidatePublicationUncertain { source });
     }
     let active_wal = active_wal_identity_from_file(
         &request.wal_path,
@@ -259,13 +257,12 @@ pub fn create_child_branch_head(
             source,
         });
     }
-    if let Err(source) = crate::durability::sync_parent_directory(head_path) {
-        let _ = fs::remove_file(head_path);
-        let _ = fs::remove_file(&request.wal_path);
-        return Err(BranchHeadError::Io {
-            operation: "sync child branch head directory",
-            source,
-        });
+    if let Err(source) = crate::durability::sync_directory_ancestors(
+        head_path.parent().unwrap_or_else(|| Path::new(".")),
+    ) {
+        // Retain the complete pair and its pending catalog receipt. Recovery
+        // must synchronize them before making the child Ready.
+        return Err(BranchHeadError::CandidatePublicationUncertain { source });
     }
     Ok(head)
 }
@@ -315,7 +312,6 @@ pub fn create_initial_branch_head(
     if let Err(source) = selector
         .write_all(&encoded)
         .and_then(|_| selector.sync_all())
-        .and_then(|_| crate::durability::sync_parent_directory(request.path))
     {
         let _ = fs::remove_file(request.path);
         return Err(BranchHeadError::Io {
@@ -323,6 +319,10 @@ pub fn create_initial_branch_head(
             source,
         });
     }
+    crate::durability::sync_directory_ancestors(
+        request.path.parent().unwrap_or_else(|| Path::new(".")),
+    )
+    .map_err(|source| BranchHeadError::CandidatePublicationUncertain { source })?;
     Ok(head)
 }
 

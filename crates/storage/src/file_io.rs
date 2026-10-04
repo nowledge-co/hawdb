@@ -44,6 +44,18 @@ struct NativeFile {
     // Declaration order closes the native handle before returning its capacity.
     inner: std::fs::File,
     permit: DescriptorPermit,
+    #[cfg(any(test, feature = "test-support"))]
+    trace: Option<crate::power_loss::NativeTrace>,
+}
+
+impl NativeFile {
+    fn io<T>(&self, operation: impl FnOnce(&std::fs::File) -> io::Result<T>) -> io::Result<T> {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(trace) = &self.trace {
+            return trace.io(|| operation(&self.inner));
+        }
+        operation(&self.inner)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -82,7 +94,12 @@ impl File {
                     .inner
                     .try_clone()
                     .map_err(|error| file.permit.context.map_open_error(error))?;
-                FileBacking::Native(NativeFile { inner, permit })
+                FileBacking::Native(NativeFile {
+                    inner,
+                    permit,
+                    #[cfg(any(test, feature = "test-support"))]
+                    trace: file.trace.clone(),
+                })
             }
         };
         Ok(Self { backing })
@@ -93,7 +110,7 @@ impl File {
         operation: impl FnOnce(&std::fs::File) -> io::Result<T>,
     ) -> io::Result<T> {
         match &self.backing {
-            FileBacking::Native(file) => operation(&file.inner),
+            FileBacking::Native(file) => file.io(operation),
             FileBacking::Immutable(file) => {
                 let lease = file.handles.get(&file.binding, &file.context)?;
                 lease.with_native(operation)
@@ -115,12 +132,18 @@ impl File {
         self.with_native(std::fs::File::metadata)
     }
     pub fn sync_all(&self) -> io::Result<()> {
-        self.with_native(std::fs::File::sync_all)
+        self.synchronize(false)
     }
     pub fn sync_data(&self) -> io::Result<()> {
-        self.with_native(std::fs::File::sync_data)
+        self.synchronize(true)
     }
     pub fn set_len(&self, size: u64) -> io::Result<()> {
+        #[cfg(any(test, feature = "test-support"))]
+        if let FileBacking::Native(file) = &self.backing
+            && let Some(trace) = &file.trace
+        {
+            return trace.truncate(size, || file.inner.set_len(size));
+        }
         self.writable_native()?.set_len(size)
     }
     pub fn set_permissions(&self, permissions: Permissions) -> io::Result<()> {
@@ -140,7 +163,7 @@ impl File {
 
     fn read_sequential(&self, buffer: &mut [u8]) -> io::Result<usize> {
         match &self.backing {
-            FileBacking::Native(file) => (&file.inner).read(buffer),
+            FileBacking::Native(file) => file.io(|mut inner| inner.read(buffer)),
             FileBacking::Immutable(file) => {
                 let mut cursor = file
                     .cursor
@@ -162,7 +185,7 @@ impl File {
 
     fn read_sequential_vectored(&self, buffers: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
         match &self.backing {
-            FileBacking::Native(file) => (&file.inner).read_vectored(buffers),
+            FileBacking::Native(file) => file.io(|mut inner| inner.read_vectored(buffers)),
             FileBacking::Immutable(_) => match buffers.iter_mut().find(|buffer| !buffer.is_empty())
             {
                 Some(buffer) => self.read_sequential(buffer),
@@ -173,7 +196,7 @@ impl File {
 
     fn seek_sequential(&self, position: SeekFrom) -> io::Result<u64> {
         match &self.backing {
-            FileBacking::Native(file) => (&file.inner).seek(position),
+            FileBacking::Native(file) => file.io(|mut inner| inner.seek(position)),
             FileBacking::Immutable(file) => {
                 let mut cursor = file
                     .cursor
@@ -196,6 +219,49 @@ impl File {
             }
         }
     }
+
+    fn synchronize(&self, data_only: bool) -> io::Result<()> {
+        match &self.backing {
+            FileBacking::Native(file) => {
+                let sync = || {
+                    if data_only {
+                        file.inner.sync_data()
+                    } else {
+                        file.inner.sync_all()
+                    }
+                };
+                #[cfg(any(test, feature = "test-support"))]
+                if let Some(trace) = &file.trace {
+                    return trace.sync(sync);
+                }
+                sync()
+            }
+            FileBacking::Immutable(file) => file
+                .handles
+                .get(&file.binding, &file.context)?
+                .synchronize(data_only),
+        }
+    }
+
+    fn write_sequential(&self, buffer: &[u8]) -> io::Result<usize> {
+        #[cfg(any(test, feature = "test-support"))]
+        if let FileBacking::Native(file) = &self.backing
+            && let Some(trace) = &file.trace
+        {
+            return trace.write(&file.inner, buffer);
+        }
+        self.writable_native()?.write(buffer)
+    }
+
+    fn write_sequential_vectored(&self, buffers: &[io::IoSlice<'_>]) -> io::Result<usize> {
+        #[cfg(any(test, feature = "test-support"))]
+        if let FileBacking::Native(file) = &self.backing
+            && let Some(trace) = &file.trace
+        {
+            return trace.write_vectored(&file.inner, buffers);
+        }
+        self.writable_native()?.write_vectored(buffers)
+    }
 }
 
 impl Read for File {
@@ -216,10 +282,10 @@ impl Read for &File {
 }
 impl Write for File {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.writable_native()?.write(buffer)
+        self.write_sequential(buffer)
     }
     fn write_vectored(&mut self, buffers: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        self.writable_native()?.write_vectored(buffers)
+        self.write_sequential_vectored(buffers)
     }
     fn flush(&mut self) -> io::Result<()> {
         self.writable_native()?.flush()
@@ -227,10 +293,10 @@ impl Write for File {
 }
 impl Write for &File {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.writable_native()?.write(buffer)
+        self.write_sequential(buffer)
     }
     fn write_vectored(&mut self, buffers: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        self.writable_native()?.write_vectored(buffers)
+        self.write_sequential_vectored(buffers)
     }
     fn flush(&mut self) -> io::Result<()> {
         self.writable_native()?.flush()
@@ -351,12 +417,36 @@ impl OpenOptions {
         {
             handles.unbind(path)?;
         }
+        #[cfg(any(test, feature = "test-support"))]
+        let (inner, trace) = match crate::power_loss::for_path(context, path)? {
+            Some(core) => crate::power_loss::NativeTrace::open(
+                core,
+                path,
+                &self.inner,
+                self.mutable,
+                self.native_options,
+            )
+            .map(|(inner, trace)| (inner, Some(trace)))
+            .map_err(|error| context.map_open_error(error))?,
+            None => (
+                self.inner
+                    .open(path)
+                    .map_err(|error| context.map_open_error(error))?,
+                None,
+            ),
+        };
+        #[cfg(not(any(test, feature = "test-support")))]
         let inner = self
             .inner
             .open(path)
             .map_err(|error| context.map_open_error(error))?;
         Ok(File {
-            backing: FileBacking::Native(NativeFile { inner, permit }),
+            backing: FileBacking::Native(NativeFile {
+                inner,
+                permit,
+                #[cfg(any(test, feature = "test-support"))]
+                trace,
+            }),
         })
     }
 }
@@ -442,6 +532,23 @@ fn temporary<T>(path: &Path, operation: impl FnOnce() -> io::Result<T>) -> io::R
     operation().map_err(|error| context.map_open_error(error))
 }
 
+fn two_paths<T>(
+    source: &Path,
+    destination: &Path,
+    operation: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    let source_context = context_for_path(source)?;
+    let destination_context = context_for_path(destination)?;
+    let _source_permit = source_context.acquire(DescriptorKind::Transient)?;
+    if Arc::ptr_eq(&source_context.state, &destination_context.state) {
+        // One filesystem operation in one project is one temporary admission.
+        operation().map_err(|error| source_context.map_open_error(error))
+    } else {
+        let _destination_permit = destination_context.acquire(DescriptorKind::Transient)?;
+        operation().map_err(|error| destination_context.map_open_error(error))
+    }
+}
+
 pub fn metadata(path: impl AsRef<Path>) -> io::Result<Metadata> {
     temporary(path.as_ref(), || std::fs::metadata(path.as_ref()))
 }
@@ -459,29 +566,139 @@ pub fn canonicalize(path: impl AsRef<Path>) -> io::Result<PathBuf> {
     temporary(path.as_ref(), || std::fs::canonicalize(path.as_ref()))
 }
 pub fn create_dir(path: impl AsRef<Path>) -> io::Result<()> {
-    temporary(path.as_ref(), || std::fs::create_dir(path.as_ref()))
-}
-pub fn create_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
-    temporary(path.as_ref(), || std::fs::create_dir_all(path.as_ref()))
-}
-pub fn remove_file(path: impl AsRef<Path>) -> io::Result<()> {
-    temporary(path.as_ref(), || std::fs::remove_file(path.as_ref()))
-}
-pub fn remove_dir(path: impl AsRef<Path>) -> io::Result<()> {
-    temporary(path.as_ref(), || std::fs::remove_dir(path.as_ref()))
-}
-pub fn rename(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Result<()> {
-    temporary(source.as_ref(), || {
-        temporary(destination.as_ref(), || {
-            std::fs::rename(source.as_ref(), destination.as_ref())
-        })
+    let path = path.as_ref();
+    temporary(path, || {
+        let native = || std::fs::create_dir(path);
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            crate::power_loss::namespace(
+                &context_for_path(path)?,
+                path,
+                None,
+                |engine, path| engine.create_directory(path).map(|_| ()),
+                native,
+            )
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            native()
+        }
     })
 }
+pub fn create_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
+    let path = path.as_ref();
+    temporary(path, || {
+        let native = || std::fs::create_dir_all(path);
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            crate::power_loss::namespace(
+                &context_for_path(path)?,
+                path,
+                None,
+                crate::power_loss::create_directories,
+                native,
+            )
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            native()
+        }
+    })
+}
+pub fn remove_file(path: impl AsRef<Path>) -> io::Result<()> {
+    let path = path.as_ref();
+    temporary(path, || {
+        let native = || std::fs::remove_file(path);
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            crate::power_loss::namespace(
+                &context_for_path(path)?,
+                path,
+                Some(crate::power_loss::NamespaceEvent::Remove),
+                |engine, path| engine.remove(path),
+                native,
+            )
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            native()
+        }
+    })?;
+    unbind_immutable_path(path)
+}
+
+pub(crate) fn unbind_immutable_path(path: &Path) -> io::Result<()> {
+    if let Some(handles) = context_for_path(path)?.state.existing_immutable_handles() {
+        handles.unbind(path)?;
+    }
+    Ok(())
+}
+pub fn remove_dir(path: impl AsRef<Path>) -> io::Result<()> {
+    let path = path.as_ref();
+    temporary(path, || {
+        let native = || std::fs::remove_dir(path);
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            crate::power_loss::namespace(
+                &context_for_path(path)?,
+                path,
+                Some(crate::power_loss::NamespaceEvent::Remove),
+                |engine, path| engine.remove(path),
+                native,
+            )
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            native()
+        }
+    })
+}
+pub fn rename(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Result<()> {
+    two_paths(source.as_ref(), destination.as_ref(), || {
+        let native = || std::fs::rename(source.as_ref(), destination.as_ref());
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            crate::power_loss::two_paths(
+                &context_for_path(source.as_ref())?,
+                &context_for_path(destination.as_ref())?,
+                source.as_ref(),
+                destination.as_ref(),
+                Some(crate::power_loss::NamespaceEvent::Rename),
+                |engine, source, destination| engine.rename(source, destination),
+                native,
+            )
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            native()
+        }
+    })?;
+    // Captured logical readers retain their immutable identity, while future
+    // opens must observe the replacement or the removed source name.
+    for path in [source.as_ref(), destination.as_ref()] {
+        unbind_immutable_path(path)?;
+    }
+    Ok(())
+}
 pub fn hard_link(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Result<()> {
-    temporary(source.as_ref(), || {
-        temporary(destination.as_ref(), || {
-            std::fs::hard_link(source.as_ref(), destination.as_ref())
-        })
+    two_paths(source.as_ref(), destination.as_ref(), || {
+        let native = || std::fs::hard_link(source.as_ref(), destination.as_ref());
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            crate::power_loss::two_paths(
+                &context_for_path(source.as_ref())?,
+                &context_for_path(destination.as_ref())?,
+                source.as_ref(),
+                destination.as_ref(),
+                None,
+                |engine, source, destination| engine.hard_link(source, destination),
+                native,
+            )
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            native()
+        }
     })
 }
 

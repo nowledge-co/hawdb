@@ -78,6 +78,9 @@ pub mod io;
 pub mod mutation;
 #[doc(hidden)]
 pub mod ownership;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod power_loss;
 #[doc(hidden)]
 pub mod predicate;
 pub mod pressure;

@@ -699,7 +699,13 @@ The publication argument is an induction over the operation's checked stages:
    bytes and reference; it never replaces that path. Consequently, every
    successful destination names exactly one validated immutable payload, even
    when two publishers race.
-4. The object and staging directory entries are synchronized before success is
+4. Required ancestor names through the project root are synchronized before the
+   first dependent publication; writable project admission establishes the root's
+   own ancestry. Existence after an interrupted attempt is not a completed
+   barrier. Object reuse repeats its final name barrier before acknowledgment.
+   See [namespace qualification](../BRANCH_NAMESPACE_DURABILITY.md) for evidence
+   and the unqualified Windows directory-sync boundary.
+   The object and staging directory entries are synchronized before success is
    reported. An error after exclusive installation is publication-uncertain and
    poisons that in-memory publisher; reopening creates a fresh publisher which
    revalidates the existing object. Thus an uncertain result cannot be retried
