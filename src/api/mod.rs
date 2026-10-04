@@ -2219,6 +2219,29 @@ impl Database {
         Ok(self.runtime.get()?.store.storage_recovery_report())
     }
 
+    /// Inventories regular files in the selected branch's durable artifact
+    /// directory for storage qualification. The directory handle participates
+    /// in the project's FD budget; immutable closure objects live separately.
+    #[doc(hidden)]
+    pub fn storage_artifact_file_sizes(&self) -> Result<BTreeMap<String, u64>> {
+        let runtime = self.runtime.get()?;
+        let root = runtime.store.durable_root_path().ok_or_else(|| {
+            HawDBError::Execution("storage artifact inventory requires a durable database".into())
+        })?;
+        let mut files = BTreeMap::new();
+        for entry in hawdb_storage::file_io::read_dir(root)? {
+            let entry = entry?;
+            let metadata = entry.metadata()?;
+            if metadata.is_file() {
+                let name = entry.file_name().into_string().map_err(|_| {
+                    HawDBError::Storage("storage artifact inventory found a non-UTF-8 name".into())
+                })?;
+                files.insert(name, metadata.len());
+            }
+        }
+        Ok(files)
+    }
+
     pub(crate) fn poison_on_storage_error<T>(&self, result: &Result<T>) {
         if let Some(runtime) = self.runtime.peek() {
             runtime.store.poison_on_storage_error(result);

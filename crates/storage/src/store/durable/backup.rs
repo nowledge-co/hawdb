@@ -16,7 +16,7 @@
 
 use super::DurableStore;
 use crate::checkpoint_closure::{
-    CheckpointArtifactFamily, CheckpointArtifactInput, CheckpointClosurePlan,
+    read_closure_artifact, CheckpointArtifactFamily, CheckpointArtifactInput, CheckpointClosurePlan,
 };
 use crate::durable_manifest::DurableManifest;
 use crate::error::{HawDBError, Result};
@@ -53,12 +53,7 @@ impl DurableStore {
             HawDBError::Storage("checkpoint closure requires a checkpoint generation".into())
         })?;
         let input = |path: PathBuf| -> Result<CheckpointArtifactInput> {
-            let bytes = fs::read(&path).map_err(|error| {
-                HawDBError::Storage(format!(
-                    "read checkpoint closure artifact {}: {error}",
-                    path.display()
-                ))
-            })?;
+            let bytes = read_closure_artifact(&path, "read checkpoint closure artifact")?;
             Ok(CheckpointArtifactInput {
                 path,
                 reference: ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, &bytes),
@@ -75,12 +70,10 @@ impl DurableStore {
                 let relational_checkpoint = self
                     .root_path
                     .join(relational_checkpoint_generation_file(generation));
-                let bytes = fs::read(&relational_checkpoint).map_err(|error| {
-                    HawDBError::Storage(format!(
-                        "read relational checkpoint closure artifact {}: {error}",
-                        relational_checkpoint.display()
-                    ))
-                })?;
+                let bytes = read_closure_artifact(
+                    &relational_checkpoint,
+                    "read relational checkpoint closure artifact",
+                )?;
                 if bytes.len() as u64 != encoded_len
                     || u64::from(hawdb_integrity::crc32c(&bytes).get()) != encoded_checksum
                     || hawdb_integrity::sha256(&bytes) != encoded_sha256

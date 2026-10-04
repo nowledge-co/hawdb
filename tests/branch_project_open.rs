@@ -63,6 +63,101 @@ fn values(database: &mut Database) -> Vec<BTreeMap<String, Value>> {
 }
 
 #[test]
+fn storage_inventory_tracks_selection_and_retries_budget_exhaustion() {
+    use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+    use hawdb_storage::file_io::OpenOptions;
+
+    let project = Project::new();
+    let mut database = Database::open_with_config(
+        &project.0,
+        DatabaseConfig {
+            max_open_files: 32,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    database.query("CREATE (:Memory {id: 'main'})").unwrap();
+    database.checkpoint().unwrap();
+    let revision = database.commit_epoch().unwrap();
+    database
+        .query_sql(&format!(
+            "CREATE BRANCH inventory_child FROM main AT REVISION {revision} REQUEST KEY 'inventory-child'"
+        ))
+        .unwrap();
+    let main = main_id(&database);
+    let child = database
+        .describe_branch(BranchSelector::Name("inventory_child".into()))
+        .unwrap()
+        .id;
+    let expected_files = |id: hawdb::Uuid| {
+        std::fs::read_dir(project.0.join("branches").join(id.to_string()).join("data"))
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .filter_map(|entry| {
+                let metadata = entry.metadata().unwrap();
+                metadata
+                    .is_file()
+                    .then(|| (entry.file_name().into_string().unwrap(), metadata.len()))
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let main_files = expected_files(main);
+    assert!(!main_files.is_empty());
+    assert_eq!(database.storage_artifact_file_sizes().unwrap(), main_files);
+    database.query_sql("USE BRANCH inventory_child").unwrap();
+    database.query("CREATE (:Memory {id: 'child'})").unwrap();
+    database.checkpoint().unwrap();
+    assert_eq!(
+        database.storage_artifact_file_sizes().unwrap(),
+        expected_files(child)
+    );
+    assert_eq!(expected_files(main), main_files);
+
+    let files = ProjectFileDescriptors::acquire_existing(&project.0, 32).unwrap();
+    let mut options = OpenOptions::new();
+    options.read(true);
+    let mut held = Vec::new();
+    loop {
+        match files
+            .io_context()
+            .open(&options, &project.0.join("manifest.hawdb"))
+        {
+            Ok(file) => held.push(file),
+            Err(error) => {
+                assert!(matches!(
+                    HawDBError::from(error),
+                    HawDBError::FileDescriptors(_)
+                ));
+                break;
+            }
+        }
+    }
+    assert_eq!(files.metrics().open, 32);
+    let before = files.metrics();
+    assert!(matches!(
+        database.storage_artifact_file_sizes(),
+        Err(HawDBError::FileDescriptors(
+            hawdb::FileDescriptorError::BudgetExceeded {
+                requested: 1,
+                available: 0,
+                limit: 32,
+            }
+        ))
+    ));
+    assert_eq!(files.metrics().open, before.open);
+    assert_eq!(files.metrics().reserved, before.reserved);
+    assert!(!database.storage_handle_poisoned().unwrap());
+    drop(held);
+    assert_eq!(
+        database.storage_artifact_file_sizes().unwrap(),
+        expected_files(child)
+    );
+    assert_eq!(values(&mut database).len(), 2);
+    drop(database);
+    assert_eq!(files.metrics().open, 0);
+}
+
+#[test]
 fn slow_query_export_uses_source_budget_without_admitting_deferred_runtime() {
     use hawdb_storage::file_descriptors::ProjectFileDescriptors;
     use hawdb_storage::file_io::OpenOptions;
@@ -98,7 +193,7 @@ fn slow_query_export_uses_source_budget_without_admitting_deferred_runtime() {
     assert!(matches!(
         database.write_slow_query_log_jsonl(&destination),
         Err(HawDBError::FileDescriptors(
-            hawdb_core::error::FileDescriptorError::BudgetExceeded {
+            hawdb::FileDescriptorError::BudgetExceeded {
                 requested: 1,
                 available: 0,
                 limit: 32,

@@ -366,10 +366,8 @@ fn run_case(
         DurabilityPolicy::SyncOnEveryWrite,
         config.database_config.clone(),
     )?;
-    let wal_replay_open = recovery_evidence(
-        elapsed_micros(wal_open_started),
-        recovered.storage_recovery_report()?,
-    );
+    let recovery = recovered.storage_recovery_report()?;
+    let wal_replay_open = recovery_evidence(elapsed_micros(wal_open_started), recovery);
     let replay_verification = verify_cases(&recovered, case, corpus)?;
     let recovered_storage = storage_evidence(
         &recovered.storage_pressure_snapshot()?,
@@ -386,10 +384,8 @@ fn run_case(
         DurabilityPolicy::SyncOnEveryWrite,
         config.database_config.clone(),
     )?;
-    let manifest_only_open = recovery_evidence(
-        elapsed_micros(manifest_open_started),
-        final_database.storage_recovery_report()?,
-    );
+    let recovery = final_database.storage_recovery_report()?;
+    let manifest_only_open = recovery_evidence(elapsed_micros(manifest_open_started), recovery);
     let checkpoint_verification = verify_cases(&final_database, case, corpus)?;
     let final_storage = storage_evidence(
         &final_database.storage_pressure_snapshot()?,

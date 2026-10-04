@@ -478,7 +478,7 @@ rust_test(
     crate_features = _HAWDB_DEFAULT_FEATURES,
     srcs = ["tests/branch_project_open.rs"],
     edition = "2024",
-    deps = [":hawdb"],
+    deps = [":hawdb", "//crates/storage:hawdb_storage"],
 )
 
 rust_test(
@@ -486,7 +486,7 @@ rust_test(
     crate_root = "tests/branch_project_open.rs",
     srcs = ["tests/branch_project_open.rs"],
     edition = "2024",
-    deps = [":hawdb_minimal"],
+    deps = [":hawdb_minimal", "//crates/storage:hawdb_storage"],
 )
 
 # External embedded-library consumer; no internal owner imports.

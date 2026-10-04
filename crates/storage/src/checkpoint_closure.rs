@@ -16,7 +16,19 @@ use crate::sealed_root::{
 };
 use std::collections::BTreeSet;
 use std::fmt::{self, Display, Formatter};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Keep admission failures retryable while retaining artifact context for
+/// missing files and other storage failures in every closure reader.
+pub(crate) fn read_closure_artifact(path: &Path, operation: &str) -> hawdb_core::Result<Vec<u8>> {
+    fs::read(path).map_err(|error| {
+        if let Some(resource) = hawdb_core::error::file_descriptor_error(&error) {
+            hawdb_core::HawDBError::FileDescriptors(resource)
+        } else {
+            hawdb_core::HawDBError::Storage(format!("{operation} {}: {error}", path.display()))
+        }
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct CheckpointArtifactInput {

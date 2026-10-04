@@ -317,9 +317,11 @@ pub fn run_production_content_store_storage_qualification(
             config.database_config.clone(),
         )?;
         database.set_runtime_governor(governor.clone());
+        // Ordinary opening is metadata-only. Include deferred data recovery in
+        // the measured readiness boundary before comparing internal timings.
+        let recovery = database.storage_recovery_report()?;
         let open_latency_micros = elapsed_micros(open_started);
         let process_after_open = ProcessMemorySnapshot::capture()?;
-        let recovery = database.storage_recovery_report()?;
         let open_timings = ContentStoreOpenTimingEvidence::from(recovery.open_timings);
         if !open_timings.consistent || open_timings.total_open_micros > open_latency_micros {
             blocker_codes.push("content_store_open_timing_invalid".to_string());

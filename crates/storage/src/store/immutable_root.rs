@@ -2121,7 +2121,7 @@ fn copy_recovery_container(source: &Path, destination: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::checkpoint_closure::build_sealed_root;
+    use crate::checkpoint_closure::{build_sealed_root, CheckpointClosurePlan};
     use crate::relational::{
         RelationalColumnSchema, RelationalInsertMode, RelationalRow, RelationalScalarType,
         RelationalTableSchema, RelationalTransaction, RelationalValue, RelationalWrite,
@@ -2147,6 +2147,77 @@ mod tests {
         ));
         fs::create_dir_all(&path).expect("create test directory");
         path
+    }
+
+    #[test]
+    fn checkpoint_closure_budget_rejection_is_typed_and_retryable() {
+        use crate::file_descriptors::ProjectFileDescriptors;
+        use crate::file_io::OpenOptions;
+        use hawdb_core::error::FileDescriptorError;
+
+        let path = temp_dir("checkpoint-closure-budget");
+        let mut catalog = Catalog::default();
+        let store_config = WalReplayConfig {
+            max_open_files: 32,
+            ..Default::default()
+        };
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            store_config,
+        )
+        .unwrap();
+        store
+            .create_node(&mut catalog, "Seed", BTreeMap::new())
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        let durable = store.durable.as_ref().unwrap();
+        let manifest_path = path.join(MANIFEST_FILE);
+        let manifest = DurableManifest::load(&manifest_path).unwrap();
+        let original_manifest = std::fs::read(&manifest_path).unwrap();
+        let expected = durable.checkpoint_closure_plan(manifest).unwrap();
+        let domain = ProjectFileDescriptors::acquire_existing(&path, 32).unwrap();
+        let mut options = OpenOptions::new();
+        options.read(true);
+        let mut held = Vec::new();
+        while domain.metrics().open < 32 {
+            held.push(domain.io_context().open(&options, &manifest_path).unwrap());
+        }
+        let before = domain.metrics();
+        let rejection = durable.checkpoint_closure_plan(manifest).unwrap_err();
+        assert!(
+            matches!(
+                &rejection,
+                HawDBError::FileDescriptors(FileDescriptorError::BudgetExceeded {
+                    requested: 1,
+                    available: 0,
+                    limit: 32,
+                })
+            ),
+            "{rejection:?}"
+        );
+        assert_eq!(domain.metrics().open, before.open);
+        assert_eq!(domain.metrics().reserved, before.reserved);
+        assert_eq!(
+            domain.metrics().budget_rejections,
+            before.budget_rejections + 1
+        );
+        assert_eq!(std::fs::read(&manifest_path).unwrap(), original_manifest);
+        assert!(!store.storage_handle_poisoned());
+        drop(held);
+        let retried = durable.checkpoint_closure_plan(manifest).unwrap();
+        let identities = |plan: &CheckpointClosurePlan| {
+            plan.inputs()
+                .iter()
+                .map(|input| (input.path.clone(), input.reference))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(identities(&retried), identities(&expected));
+        drop(store);
+        assert_eq!(domain.metrics().open, 0);
+        drop(domain);
+        fs::remove_dir_all(path).unwrap();
     }
 
     struct BranchFixture {

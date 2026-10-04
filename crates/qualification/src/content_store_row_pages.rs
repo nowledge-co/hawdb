@@ -885,7 +885,6 @@ pub fn run_content_store_initial_row_page_qualification(
             profile_kind: config.resource_profile_kind,
             configured_available_memory_bytes: config.configured_available_memory_bytes,
             read_samples: config.resource_read_samples,
-            database_path: &config.database_path,
             database_config: &authoritative_config,
             message_position: config.base_message_count + 2,
             message_payload_bytes: config.message_payload_bytes,

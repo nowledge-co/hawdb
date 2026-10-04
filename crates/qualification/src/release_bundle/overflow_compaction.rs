@@ -279,13 +279,19 @@ fn validate_residency_transitions(
     reopened: &Value,
     blockers: &mut Vec<String>,
 ) {
+    // Checkpoints and private WAL rotations share a physical generation
+    // namespace. Successful cleanup advances the generation, but a sealed
+    // branch can consume intervening generations without another checkpoint.
+    let cleanup_advances = unsigned(final_residency, "/row_base_generation")
+        .zip(unsigned(compacted, "/row_base_generation"))
+        .is_some_and(|(cleanup, published)| cleanup > published);
     if unsigned(artifact, "/compaction/source_commit_epoch")
         != unsigned(initial, "/database_commit_epoch")
         || unsigned(artifact, "/compaction/published_generation")
             != unsigned(compacted, "/row_base_generation")
-        || unsigned(final_residency, "/row_base_generation")
-            != unsigned(compacted, "/row_base_generation")
-                .map(|generation| generation.saturating_add(1))
+        || !cleanup_advances
+        || unsigned(artifact, "/scrub/generation")
+            != unsigned(final_residency, "/row_base_generation")
         || !same_storage_identity(final_residency, reopened)
     {
         blockers.push("overflow_compaction_published_identity_mismatch".to_string());

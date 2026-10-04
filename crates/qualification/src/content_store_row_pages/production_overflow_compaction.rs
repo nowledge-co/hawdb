@@ -18,7 +18,7 @@ use super::production::{
     residency_evidence, runtime_governor_evidence, statement_digest, validate_read_cases,
     validate_resource_profile,
 };
-use super::resource::{process_evidence, regular_file_bytes_by_name, runtime_memory_evidence};
+use super::resource::{process_evidence, runtime_memory_evidence};
 use super::{
     ContentStoreProcessResourceEvidence, ContentStoreResourceProfileKind,
     ContentStoreRowPageReadPhase, ContentStoreRowPageReadReport, ContentStoreRuntimeMemoryEvidence,
@@ -345,7 +345,7 @@ pub fn run_production_content_store_overflow_compaction_qualification(
         &mut blocker_codes,
     )?;
 
-    let files_before = regular_file_bytes_by_name(&config.replica_path)?;
+    let files_before = database.storage_artifact_file_sizes()?;
     let process_before = ProcessMemorySnapshot::capture()?;
     let compaction_started = Instant::now();
     let compaction = database.compact_relational_overflow(config.compaction)?;
@@ -354,7 +354,7 @@ pub fn run_production_content_store_overflow_compaction_qualification(
     let compaction_process =
         process_evidence(ProcessMemoryProfile::between(process_before, process_after));
     let compaction = ProductionRelationalOverflowCompactionEvidence::from(compaction);
-    let files_after_compaction = regular_file_bytes_by_name(&config.replica_path)?;
+    let files_after_compaction = database.storage_artifact_file_sizes()?;
     let compacted_residency = residency_evidence(
         database.commit_epoch()?,
         &database.storage_residency_report()?,
@@ -379,7 +379,7 @@ pub fn run_production_content_store_overflow_compaction_qualification(
     );
     let reclamation = database.storage_reclamation_watermark()?.into();
     let scrub = database.scrub_storage()?.into();
-    let files_after_cleanup = regular_file_bytes_by_name(&config.replica_path)?;
+    let files_after_cleanup = database.storage_artifact_file_sizes()?;
     drop(database);
 
     let mut reopened = Database::open_with_durability_and_config(
