@@ -77,7 +77,9 @@ implementation seams at this specification's introduction are:
 - `crates/storage/src/store/durable/reclamation.rs`: physical generations are
   retained for the current root, previous root, and pinned local readers.
 - `crates/storage/src/durability.rs`: synced file replacement uses rename plus
-  parent-directory sync on Unix and write-through replacement on Windows.
+  parent-directory sync on Unix. Windows uses the pinned Rust atomic
+  replacement path followed by flush of a counted write-capable publication
+  handle; ancestor-directory persistence remains unqualified.
 
 Single-directory generation arithmetic MUST NOT authorize deletion of shared
 branch objects. Branch-aware storage stays unavailable until all paths that can

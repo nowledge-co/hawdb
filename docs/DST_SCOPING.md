@@ -117,7 +117,8 @@ This deliberately limited coverage must remain visible in every report.
 - Treat process termination and power loss as different fault models. Killing
   today's test subprocess does not flush the host's page cache out of existence;
   simulated power loss does not qualify a real disk's firmware or kernel.
-- Distinguish Unix rename-plus-directory-sync from Windows write-through replace
+- Distinguish Unix rename-plus-directory-sync from Windows atomic replace plus
+  a write-capable publication-handle flush
   in `durable_replace_file`; do not pretend a Windows directory sync is the Unix
   primitive. Keep Linux, macOS, and Windows native recovery/locking tests.
 - Give runnable work stable IDs and choose only enabled transitions. Record
