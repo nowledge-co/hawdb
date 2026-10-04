@@ -746,6 +746,7 @@ dependencies = [
  "hawdb-plan-cypher",
  "hawdb-qos",
  "hawdb-telemetry",
+ "libc",
  "rayon",
  "roaring",
  "serde",

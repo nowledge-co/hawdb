@@ -15,9 +15,9 @@
 use crate::{bind_relational_value, compile_column, reject_non_public_schema};
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_sql::{
-    CreateTableStatement, SelectProjection, SelectStatement, SqlBound, SqlComparisonOp,
-    SqlGeneratedOrder, SqlNullOrder, SqlOrderDirection, SqlPredicate, SqlStatement,
-    SqlTableStorage, SqlValue,
+    CreateTableStatement, PreparedPostgresStatement, SelectProjection, SelectStatement, SqlBound,
+    SqlComparisonOp, SqlGeneratedOrder, SqlNullOrder, SqlOrderDirection, SqlPredicate,
+    SqlStatement, SqlTableStorage, SqlValue,
 };
 use hawdb_sql::{Expr, ExprKind};
 use hawdb_storage::{
@@ -290,6 +290,19 @@ pub fn compile_append_select_sql(
     configured_max_rows: usize,
 ) -> Result<Option<AppendSelectPlan>> {
     let prepared = hawdb_sql::prepare_postgres_sql(sql)?;
+    compile_prepared_append_select_sql(&prepared, parameters, state, configured_max_rows)
+}
+
+/// Binds an append read from a parameter-neutral parsed template.
+///
+/// Schema lookup and parameter validation remain per execution. Non-append
+/// statements need neither another parse nor a cloned statement.
+pub fn compile_prepared_append_select_sql(
+    prepared: &PreparedPostgresStatement,
+    parameters: &[Value],
+    state: &AppendState,
+    configured_max_rows: usize,
+) -> Result<Option<AppendSelectPlan>> {
     if prepared.parameters.len() != parameters.len() {
         return Err(HawDBError::Semantic(format!(
             "PostgreSQL statement requires {} parameters, but {} parameters were supplied",
@@ -297,7 +310,7 @@ pub fn compile_append_select_sql(
             parameters.len()
         )));
     }
-    let SqlStatement::Select(select) = prepared.statement else {
+    let SqlStatement::Select(select) = &prepared.statement else {
         return Ok(None);
     };
     if select.from.is_none() {
@@ -316,6 +329,16 @@ pub fn compile_append_explain_sql(
     configured_max_rows: usize,
 ) -> Result<Option<AppendExplainPlan>> {
     let prepared = hawdb_sql::prepare_postgres_sql(sql)?;
+    compile_prepared_append_explain_sql(&prepared, parameters, state, configured_max_rows)
+}
+
+/// Binds append EXPLAIN against the current schema without reparsing SQL.
+pub fn compile_prepared_append_explain_sql(
+    prepared: &PreparedPostgresStatement,
+    parameters: &[Value],
+    state: &AppendState,
+    configured_max_rows: usize,
+) -> Result<Option<AppendExplainPlan>> {
     if prepared.parameters.len() != parameters.len() {
         return Err(HawDBError::Semantic(format!(
             "PostgreSQL statement requires {} parameters, but {} parameters were supplied",
@@ -323,10 +346,10 @@ pub fn compile_append_explain_sql(
             parameters.len()
         )));
     }
-    let SqlStatement::Explain(explain) = prepared.statement else {
+    let SqlStatement::Explain(explain) = &prepared.statement else {
         return Ok(None);
     };
-    let SqlStatement::Select(select) = *explain.statement else {
+    let SqlStatement::Select(select) = explain.statement.as_ref() else {
         return Ok(None);
     };
     if select.from.is_none() {
@@ -342,7 +365,7 @@ pub fn compile_append_explain_sql(
 }
 
 fn compile_append_select(
-    select: SelectStatement,
+    select: &SelectStatement,
     parameters: &[Value],
     schema: &AppendTableSchema,
     configured_max_rows: usize,

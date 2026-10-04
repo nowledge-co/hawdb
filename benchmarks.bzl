@@ -33,7 +33,11 @@ HAWDB_BENCHMARK_TARGETS = [
 ]
 
 # Local qualification only; these are outside the existing CI smoke dispatch.
-HAWDB_MANUAL_BENCHMARKS = ["concurrent_snapshot_reads", "concurrent_writers"]
+HAWDB_MANUAL_BENCHMARKS = [
+    "branch_catalog_inspection",
+    "concurrent_snapshot_reads",
+    "concurrent_writers",
+]
 
 def hawdb_benchmark_binaries(crate_features):
     benchmark_deps = all_crate_deps(normal = True, normal_dev = True) + [

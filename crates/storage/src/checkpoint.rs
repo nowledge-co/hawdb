@@ -108,10 +108,10 @@ pub fn encode_search_projection_relational_primary_key_changes(
     }
 }
 
-fn validate_search_projection_checkpoint_changes(
+fn validate_search_projection_checkpoint_changes<'a>(
     start_epoch: u64,
     checkpoint_commit_epoch: u64,
-    changes: &[SearchProjectionGraphChange],
+    changes: impl IntoIterator<Item = &'a SearchProjectionGraphChange>,
 ) -> Result<()> {
     if start_epoch > checkpoint_commit_epoch {
         return Err(HawDBError::Storage(format!(
@@ -178,10 +178,23 @@ fn validate_search_projection_checkpoint_changes(
 }
 
 pub fn encode_checkpoint_body(image: &CheckpointImage<'_>, generation: u64) -> Result<String> {
+    encode_checkpoint_body_with_changes(
+        image,
+        generation,
+        image.search_projection_graph_changes.iter(),
+    )
+}
+
+// Accept borrowed records so checkpointing a shared log never clones its payloads.
+pub(crate) fn encode_checkpoint_body_with_changes<'a>(
+    image: &CheckpointImage<'_>,
+    generation: u64,
+    changes: impl Iterator<Item = &'a SearchProjectionGraphChange> + Clone,
+) -> Result<String> {
     validate_search_projection_checkpoint_changes(
         image.search_projection_change_log_start_epoch,
         image.commit_epoch,
-        image.search_projection_graph_changes,
+        changes.clone(),
     )?;
     let mut body = String::new();
     body.push_str(&format!("{CHECKPOINT_HEADER_V1}\n"));
@@ -220,7 +233,7 @@ pub fn encode_checkpoint_body(image: &CheckpointImage<'_>, generation: u64) -> R
             encode_string(source_fingerprint)
         ));
     }
-    for change in image.search_projection_graph_changes {
+    for change in changes {
         let (relational_kind, relational_changes) =
             encode_search_projection_relational_primary_key_changes(
                 &change.relational_primary_key_changes,
@@ -1183,4 +1196,68 @@ pub fn parse_checkpoint(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod shared_change_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn shared_projection_changes_preserve_checkpoint_encoding_and_validation() {
+        let changes = vec![
+            SearchProjectionGraphChange {
+                commit_epoch: 1,
+                upsert_node_ids: vec![1, 2],
+                delete_document_ids: vec!["memory:deleted".to_string()],
+                relational_primary_key_changes: RelationalPrimaryKeyChangeCapture::Captured {
+                    tables: Vec::new(),
+                    encoded_bytes: 0,
+                },
+            },
+            SearchProjectionGraphChange {
+                commit_epoch: 2,
+                upsert_node_ids: Vec::new(),
+                delete_document_ids: Vec::new(),
+                relational_primary_key_changes:
+                    RelationalPrimaryKeyChangeCapture::RequiresRebuild {
+                        reason: RelationalPrimaryKeyChangeRebuildReason::SchemaRewrite,
+                    },
+            },
+        ];
+        let catalog = Catalog::default();
+        let statistics = GraphStatistics::default();
+        let projected_graphs = BTreeMap::new();
+        let image = CheckpointImage {
+            catalog: &catalog,
+            commit_epoch: 2,
+            next_node_id: 3,
+            next_rel_id: 0,
+            search_projection_change_log_start_epoch: 0,
+            search_projection_graph_changes: &changes,
+            statistics: &statistics,
+            projected_graphs: &projected_graphs,
+            initial_import_source_fingerprint: None,
+            search_projection_database_identity: None,
+            relational_checkpoint: None,
+        };
+        let expected = encode_checkpoint_body(&image, 7).unwrap();
+        let mut shared = changes.iter().cloned().map(Arc::new).collect::<Vec<_>>();
+        let metadata = CheckpointImage {
+            search_projection_graph_changes: &[],
+            ..image
+        };
+        let encoded =
+            encode_checkpoint_body_with_changes(&metadata, 7, shared.iter().map(Arc::as_ref))
+                .unwrap();
+        assert_eq!(encoded, expected);
+        let mut decoded = DecodedCheckpoint::default();
+        parse_checkpoint(&encoded, &mut Catalog::default(), &mut decoded).unwrap();
+        assert_eq!(decoded.search_projection_graph_changes, changes);
+        shared.swap(0, 1);
+        assert!(
+            encode_checkpoint_body_with_changes(&metadata, 7, shared.iter().map(Arc::as_ref))
+                .is_err()
+        );
+    }
 }

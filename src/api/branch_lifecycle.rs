@@ -1302,9 +1302,10 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_branch_inspection_uses_a_snapshot_and_executes_in_transactions() {
+    fn concurrent_branch_inspection_observes_publications_after_its_data_snapshot() {
         let (path, mut database, main) = initialized_database();
         let child = database.create_branch(create_request(&main)).unwrap();
+        let catalog_path = database.branch_catalog_path().unwrap();
         let database = database.into_concurrent();
         let (snapshot_acquired, snapshots) = mpsc::channel();
         let release = Arc::new((Mutex::new(false), Condvar::new()));
@@ -1316,22 +1317,49 @@ mod tests {
         snapshots
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("branch inspection must acquire a read snapshot");
+        publish_catalog_rename(&catalog_path, child.id, "after-snapshot");
         database.clear_autocommit_read_gate().unwrap();
         let (released, available) = &*release;
         *released.lock().unwrap() = true;
         available.notify_all();
-        assert_eq!(inspection.join().unwrap().unwrap().rows.len(), 2);
+        let rows = inspection.join().unwrap().unwrap().rows;
+        assert_eq!(rows.len(), 2);
+        let child_row = rows
+            .iter()
+            .find(|row| row.get("branch_id") == Some(&Value::Uuid(child.id)))
+            .unwrap();
+        assert_eq!(
+            child_row.get("name"),
+            Some(&Value::String("after-snapshot".into()))
+        );
 
         let mut transaction = database
             .begin_transaction(ConcurrentTransactionOptions::default())
             .unwrap();
         assert_eq!(
             transaction
-                .query_sql_with_params("SHOW BRANCH NAME $1", &[Value::String(child.name.clone())],)
+                .query_sql_with_params(
+                    "SHOW BRANCH NAME $1",
+                    &[Value::String("after-snapshot".into())],
+                )
                 .unwrap()
                 .rows[0]
                 .get("branch_id"),
             Some(&Value::Uuid(child.id))
+        );
+        let publisher_path = catalog_path.clone();
+        std::thread::spawn(move || {
+            publish_catalog_rename(&publisher_path, child.id, "after-transaction")
+        })
+        .join()
+        .unwrap();
+        assert_eq!(
+            transaction
+                .query_sql_with_params("SHOW BRANCH ID $1", &[Value::Uuid(child.id)])
+                .unwrap()
+                .rows[0]
+                .get("name"),
+            Some(&Value::String("after-transaction".into()))
         );
         transaction
             .query_sql("CREATE TABLE branch_lock_probe (id BIGINT PRIMARY KEY)")
@@ -1342,6 +1370,52 @@ mod tests {
             .unwrap()
             .rows
             .is_empty());
+        drop(database);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    fn publish_catalog_rename(path: &std::path::Path, id: Uuid, name: &str) {
+        let mut catalog = storage::read_catalog(path).unwrap();
+        let id = storage::BranchId::new(id).unwrap();
+        let revision = catalog
+            .branches
+            .iter()
+            .find(|record| record.id == id)
+            .unwrap()
+            .metadata_revision;
+        catalog
+            .rename(id, revision, storage::BranchName::new(name).unwrap())
+            .unwrap();
+        storage::write_catalog(path, &catalog).unwrap();
+    }
+
+    #[test]
+    fn read_transaction_branch_inspection_observes_each_catalog_publication() {
+        let (path, mut database, main) = initialized_database();
+        let child = database.create_branch(create_request(&main)).unwrap();
+        let catalog_path = database.branch_catalog_path().unwrap();
+        let transaction = database.begin_read_transaction();
+        let first = transaction
+            .query_sql_with_params("SHOW BRANCH ID $1", &[Value::Uuid(child.id)])
+            .unwrap();
+        assert_eq!(first.rows[0].get("name"), Some(&Value::String(child.name)));
+        std::thread::spawn(move || {
+            publish_catalog_rename(&catalog_path, child.id, "after-read-transaction")
+        })
+        .join()
+        .unwrap();
+        let next = transaction
+            .query_sql_with_params("SHOW BRANCH ID $1", &[Value::Uuid(child.id)])
+            .unwrap();
+        assert_eq!(
+            next.rows[0].get("name"),
+            Some(&Value::String("after-read-transaction".into()))
+        );
+        assert_ne!(
+            first.rows[0].get("metadata_revision"),
+            next.rows[0].get("metadata_revision")
+        );
+        drop(transaction);
         drop(database);
         std::fs::remove_dir_all(path).unwrap();
     }

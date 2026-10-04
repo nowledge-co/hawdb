@@ -1377,6 +1377,20 @@ They are implementation evidence, not a machine-checked refinement proof.
 Readers pin immutable `Arc` snapshots, one writer stages the next epoch, and the
 published pointer changes only after the durability callback succeeds.
 
+The same logical boundary is refined by `CommitGuard` and
+`PublishedConcurrentRead`: acquiring a read does not depend on writer idleness,
+and the guard retains exclusive commit ownership until the full group durability
+barrier finishes and the new read view is installed. Rust regressions
+`new_cypher_read_does_not_wait_for_writer`, `new_sql_read_does_not_wait_for_writer`,
+and `committed_read_publication_waits_for_group_durability` bind those transitions
+to the synchronous facade. The finite model does not cover physical file pins or
+panic invalidation; `committed_read_publication_refreshes_physical_generations`
+and `committed_read_publication_rejects_new_and_late_reads_after_writer_panic`
+cover those implementation boundaries separately.
+`committed_read_publication_stays_invalid_after_unfinished_group` checks that an
+abandoned group invalidates new and late reads even if its original snapshot is
+healthy, and that subsequent cleanup cannot clear the serving failure.
+
 ## Optimistic and Pessimistic Transaction Publication
 
 `HawDBTransactionConcurrency.tla` models the in-process `ConcurrentDatabase`

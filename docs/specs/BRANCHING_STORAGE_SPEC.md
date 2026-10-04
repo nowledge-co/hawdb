@@ -261,6 +261,23 @@ recovery until `USE BRANCH` or the first data statement against default `main`.
 After default/selected branch admission fails, never silently route to another
 branch. Metadata operations remain possible without an admitted data branch.
 
+`SHOW BRANCHES` and `SHOW BRANCH` are statement-consistent catalog reads, not
+part of the schema/data MVCC snapshot. Each statement inspecting an initialized
+catalog opens and validates one complete durable publication. A publication
+racing that read yields the complete old or new catalog, never a mixture.
+A later inspection statement may observe a newer catalog even inside the same
+explicit read or write transaction,
+or after a data snapshot was acquired. Separate pagination requests do not pin
+a common catalog revision: concurrent create/delete may change their positions.
+Callers must retain UUIDs and metadata revisions for lifecycle requests instead
+of treating a name or page position as a stable identity.
+
+Inspection currently reads and validates the whole catalog for both exact
+lookup and paged listing. `LIMIT` bounds returned rows and payload, not catalog
+I/O or validation work. No process-local catalog cache or persisted lookup index
+is part of this contract. Any later optimization must preserve publication
+validation and statement freshness, including after recovery and name reuse.
+
 `USE BRANCH` performs real open admission: resolve and pin the target identity,
 try its open lock, validate/recover its state, revalidate its catalog identity,
 and only then replace the context's active branch. Do not wait indefinitely for
@@ -269,6 +286,14 @@ failed switch keeps the original context usable; it must not replace the source
 catalog/store before target admission completes. Release the old context's open
 lock only after switching, retaining any independently owned reader/job pins.
 Selecting the already admitted UUID is a no-op after lifecycle revalidation.
+
+Target admission binds the UUID and metadata revision resolved from the catalog,
+then validates that exact record under metadata serialization before recovery
+and again after recovery. An unrelated catalog publication may advance the
+project revision without invalidating that target. A changed target revision,
+state, or head binding rejects the admission; it must not re-resolve the name
+and select a replacement UUID. The final validated publication is the admission
+boundary, not a promise that future catalog publications cannot occur.
 
 Reject selection during an explicit transaction, including read-only transactions;
 never implicitly commit, roll back, or move writes. Existing independent read

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use super::super::transaction_locks::{LockRequest, LockTable, LockWaitQueue};
+use super::publication::PublishedConcurrentRead;
 use super::{
     Database, QueryOutput, WalGroupCommitConfig, WalGroupCommitDelayPolicy, WalGroupCommitSnapshot,
     WalGroupCommitWaitDecision, DEFAULT_WAL_GROUP_COMMIT_MAX_DELAY,
@@ -22,7 +23,7 @@ use hawdb_core::time::{Duration, Instant};
 use std::collections::VecDeque;
 use std::fmt::{self, Debug, Formatter};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(test)]
 use std::sync::Barrier;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -50,21 +51,88 @@ const GROUP_COMMIT_LIVENESS_CHECK_INTERVAL: Duration = Duration::from_millis(250
 
 pub(super) struct CommitSequencer {
     database: Mutex<Database>,
+    published_read: Mutex<Arc<PublishedConcurrentRead>>,
+    read_publication_failed: AtomicBool,
     group_commit: GroupCommitCoordinator,
 }
 
 impl CommitSequencer {
     pub(super) fn new(database: Database, group_commit: WalGroupCommitConfig) -> Self {
+        let published = PublishedConcurrentRead::capture(&database);
         Self {
             database: Mutex::new(database),
+            published_read: Mutex::new(Arc::new(published)),
+            read_publication_failed: AtomicBool::new(false),
             group_commit: GroupCommitCoordinator::new(group_commit),
         }
     }
 
-    pub(super) fn lock(&self) -> Result<MutexGuard<'_, Database>> {
-        self.database.lock().map_err(|_| {
+    pub(super) fn lock(&self) -> Result<CommitGuard<'_>> {
+        let database = self.database.lock().map_err(|_| {
             HawDBError::Execution("concurrent commit sequencer is poisoned".to_string())
+        })?;
+        Ok(CommitGuard {
+            database,
+            published: &self.published_read,
+            read_publication_failed: &self.read_publication_failed,
+            mutated: false,
         })
+    }
+
+    pub(super) fn read_view(&self) -> Result<Arc<PublishedConcurrentRead>> {
+        let view = self
+            .published_read
+            .lock()
+            .map_err(|_| read_publication_poisoned_error())?
+            .clone();
+        self.ensure_read_usable(&view)?;
+        Ok(view)
+    }
+
+    pub(super) fn storage_pressure_snapshot(
+        &self,
+    ) -> Result<hawdb_storage::pressure::StoragePressureSnapshot> {
+        let database = self.lock()?;
+        let excluded = {
+            // Lock order is writer -> publication. A borrowed query retains
+            // the publication Arc; an explicit read retains the pin Arc.
+            let published = self
+                .published_read
+                .lock()
+                .map_err(|_| read_publication_poisoned_error())?;
+            (Arc::strong_count(&published) == 1
+                && Arc::strong_count(&published.snapshot.0._pin) == 1)
+                .then_some(published.snapshot.0._pin.id)
+        };
+        let oldest = database
+            .reader_pins
+            .lock()
+            .expect("database reader pins lock should not be poisoned")
+            .oldest_epoch_excluding(excluded);
+        // Only the host metric excludes an idle internal publication. Actual
+        // checkpoint/WAL reclamation still uses every physical-generation pin.
+        Ok(database.store.storage_pressure_snapshot(oldest))
+    }
+
+    fn ensure_read_usable(&self, view: &PublishedConcurrentRead) -> Result<()> {
+        if self.read_publication_failed.load(Ordering::Acquire)
+            || self.database.is_poisoned()
+            || self.published_read.is_poisoned()
+        {
+            return Err(read_publication_poisoned_error());
+        }
+        view.snapshot.ensure_usable()
+    }
+
+    pub(super) fn finish_read<T>(
+        &self,
+        view: &PublishedConcurrentRead,
+        result: Result<T>,
+    ) -> Result<T> {
+        if result.is_ok() {
+            self.ensure_read_usable(view)?;
+        }
+        result
     }
 
     pub(super) fn execute_grouped(
@@ -374,6 +442,68 @@ impl CommitSequencer {
         self.group_commit.available.notify_all();
         Ok(())
     }
+}
+
+pub(super) struct CommitGuard<'a> {
+    database: MutexGuard<'a, Database>,
+    published: &'a Mutex<Arc<PublishedConcurrentRead>>,
+    read_publication_failed: &'a AtomicBool,
+    mutated: bool,
+}
+
+impl std::ops::Deref for CommitGuard<'_> {
+    type Target = Database;
+
+    fn deref(&self) -> &Self::Target {
+        &self.database
+    }
+}
+
+impl std::ops::DerefMut for CommitGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // Mutable access conservatively republishes even on a rejected
+        // statement: variables/caches and physical generations can change
+        // without advancing the logical commit epoch. Observation recorders
+        // use their shared state and are refreshed independently on reads.
+        self.mutated = true;
+        &mut self.database
+    }
+}
+
+impl Drop for CommitGuard<'_> {
+    fn drop(&mut self) {
+        if !self.mutated && !std::thread::panicking() {
+            return;
+        }
+        // The guard spans the entire group durability barrier. An unfinished
+        // group or unwind must never expose its partially published live state.
+        let usable = !std::thread::panicking()
+            && !self.database.store.wal_sync_group_active()
+            && self.database.store.ensure_usable().is_ok();
+        if !usable {
+            self.read_publication_failed.store(true, Ordering::Release);
+            return;
+        }
+        if self.read_publication_failed.load(Ordering::Acquire) {
+            return;
+        }
+        let next = Arc::new(PublishedConcurrentRead::capture(&self.database));
+        let previous = std::mem::replace(
+            &mut *self
+                .published
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+            next,
+        );
+        // Final pin release can acquire the pin registry; do it outside publication.
+        drop(previous);
+    }
+}
+
+fn read_publication_poisoned_error() -> HawDBError {
+    HawDBError::StorageIntegrity(
+        "concurrent read publication is poisoned; close and reopen the database".to_string(),
+    )
 }
 
 impl Debug for CommitSequencer {
