@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(not(windows))]
 use crate::file_io as fs;
 #[cfg(test)]
 use std::ffi::OsString;
@@ -85,9 +84,11 @@ impl WalSyncGroupState {
 
 /// Atomically publishes a file whose contents have already been synchronized.
 ///
-/// Unix persists the directory entry after rename. Windows uses a write-through
-/// move because flushing a directory handle is not a supported durability
-/// primitive there.
+/// Unix persists the directory entry after rename. Windows retains a counted,
+/// write-capable candidate handle across the standard library's atomic rename
+/// and synchronizes that handle afterward. An open destination reader keeps its
+/// old publication. This does not qualify ancestor-directory persistence on
+/// Windows; that remains a separate platform qualification requirement.
 pub fn durable_replace_file(source: &Path, destination: &Path) -> io::Result<()> {
     #[cfg(test)]
     inject_durable_replace_failure(destination)?;
@@ -223,43 +224,15 @@ pub fn sync_directory(directory: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn durable_replace_file_windows(source: &Path, destination: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-
-    const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
-    const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
-
-    #[link(name = "Kernel32")]
-    unsafe extern "system" {
-        fn MoveFileExW(
-            existing_file_name: *const u16,
-            new_file_name: *const u16,
-            flags: u32,
-        ) -> i32;
-    }
-
-    let source = source
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let destination = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    // SAFETY: both paths are live, NUL-terminated UTF-16 buffers for the call.
-    let moved = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if moved == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    // Rust 1.97.1's Windows rename uses FileRenameInfoEx POSIX replacement when
+    // the ordinary move cannot replace an open destination. Calling our old
+    // MoveFileExW helper directly omitted that behavior. Keep the candidate
+    // handle through rename so the subsequent FlushFileBuffers targets the
+    // exact publication even if another reader opens the destination.
+    // FlushFileBuffers requires write access; no create/truncate is permitted.
+    let candidate = fs::OpenOptions::new().read(true).write(true).open(source)?;
+    fs::rename(source, destination)?;
+    candidate.sync_all()
 }
 
 #[cfg(test)]
