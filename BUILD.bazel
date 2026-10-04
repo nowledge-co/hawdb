@@ -704,7 +704,7 @@ rust_test(
         "tests/wal_group_commit_recovery.rs",
     ],
     edition = "2024",
-    deps = [":hawdb"],
+    deps = [":hawdb", "//crates/storage:hawdb_storage"],
 )
 
 # This exploratory benchmark is intentionally separate from the routine Linux

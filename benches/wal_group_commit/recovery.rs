@@ -17,6 +17,9 @@ use std::path::Path;
 
 pub(super) struct ExpectedRecovery {
     pub final_epoch: u64,
+    /// The explicitly checkpointed schema/setup prefix. All later commits
+    /// must be recovered from WAL, including benchmark warmup writes.
+    pub checkpoint_commit_epoch: u64,
     pub commit_count: usize,
     pub warmup_start_id: usize,
     pub warmup_commit_count: usize,
@@ -41,18 +44,37 @@ pub(super) fn verify_recovery(
             return RecoveryVerification::default();
         }
     };
+    // Opening reads project metadata only. Complete deferred recovery inside
+    // this phase before accepting either WAL or row evidence.
+    let report = match reopened.storage_recovery_report() {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("wal_group_commit recovery admission failed: {error}");
+            return RecoveryVerification::default();
+        }
+    };
     phase("recovery-order");
     // Strict recovery checks contiguous LSNs for both supported WAL encodings.
     // Inspect its original report before any read query, and keep this handle
     // for the row proof so recovery and derived-artifact work happen only once.
-    let report = reopened.storage_recovery_report().unwrap();
-    let wal_order_verified = report.wal_replay_start_lsn == Some(1)
+    let wal_order_verified = report.checkpoint_commit_epoch
+        == Some(expected.checkpoint_commit_epoch)
+        && expected
+            .checkpoint_commit_epoch
+            .checked_add(1)
+            .is_some_and(|start| report.wal_replay_start_lsn == Some(start))
         && expected
             .final_epoch
             .checked_add(1)
             .is_some_and(|next_lsn| report.next_lsn_after_replay == Some(next_lsn))
-        && report.replayed_wal_entries as u64 == expected.final_epoch
+        && expected
+            .final_epoch
+            .checked_sub(expected.checkpoint_commit_epoch)
+            .is_some_and(|entries| report.replayed_wal_entries as u64 == entries)
         && report.torn_tail_reason.is_none();
+    if !wal_order_verified {
+        eprintln!("wal_group_commit recovery order rejected: {report:?}");
+    }
 
     phase("recovery-rows");
     let strict_recovery_verified =

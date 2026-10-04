@@ -26,6 +26,7 @@ mod tests {
     struct Fixture {
         path: PathBuf,
         epoch: u64,
+        checkpoint_commit_epoch: u64,
     }
 
     impl Fixture {
@@ -43,6 +44,8 @@ mod tests {
                     "CREATE TABLE public.messages (id BIGINT PRIMARY KEY, body TEXT NOT NULL)",
                 )
                 .unwrap();
+            database.checkpoint().unwrap();
+            let checkpoint_commit_epoch = database.commit_epoch().unwrap();
             for (id, body) in rows {
                 database
                     .query_sql(&format!(
@@ -52,12 +55,17 @@ mod tests {
             }
             let epoch = database.commit_epoch().unwrap();
             drop(database);
-            Self { path, epoch }
+            Self {
+                path,
+                epoch,
+                checkpoint_commit_epoch,
+            }
         }
 
         fn expected(&self) -> ExpectedRecovery {
             ExpectedRecovery {
                 final_epoch: self.epoch,
+                checkpoint_commit_epoch: self.checkpoint_commit_epoch,
                 commit_count: 2,
                 warmup_start_id: 2,
                 warmup_commit_count: 0,
@@ -106,9 +114,11 @@ mod tests {
         let fixture = Fixture::create(&[(0, "payload-0"), (1, "payload-1")]);
         let original_order = Database::open(&fixture.path).is_ok_and(|db| {
             let report = db.storage_recovery_report().unwrap();
-            report.wal_replay_start_lsn == Some(1)
+            report.checkpoint_commit_epoch == Some(fixture.checkpoint_commit_epoch)
+                && report.wal_replay_start_lsn == Some(fixture.checkpoint_commit_epoch + 1)
                 && report.next_lsn_after_replay == Some(fixture.epoch + 1)
-                && report.replayed_wal_entries as u64 == fixture.epoch
+                && report.replayed_wal_entries as u64
+                    == fixture.epoch - fixture.checkpoint_commit_epoch
                 && report.torn_tail_reason.is_none()
         });
         let original_rows = Database::open(&fixture.path)
@@ -171,20 +181,18 @@ mod tests {
     #[test]
     fn torn_wal_rejects_recovery_before_any_row_proof() {
         let fixture = Fixture::create(&[(0, "payload-0"), (1, "payload-1")]);
-        let wal_path = std::fs::read_dir(&fixture.path)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .find(|path| {
-                path.file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .starts_with("wal.")
-                    && path
-                        .extension()
-                        .is_some_and(|extension| extension == "hawdb")
-            })
-            .expect("fixture must retain its WAL");
+        let hawdb_storage::branch_project::ProjectManifest::Branch(selector) =
+            hawdb_storage::branch_project::inspect_project_manifest(&fixture.path).unwrap()
+        else {
+            panic!("fixture must be a branch project")
+        };
+        let branch = fixture
+            .path
+            .join("branches")
+            .join(selector.main_branch_id().as_uuid().to_string());
+        let head =
+            hawdb_storage::branch_head::read_branch_head(&branch.join("branch.head")).unwrap();
+        let wal_path = branch.join(format!("wal.{}.hawdb", head.active_wal.generation));
         std::fs::OpenOptions::new()
             .append(true)
             .open(wal_path)
