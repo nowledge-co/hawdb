@@ -33,6 +33,12 @@ const FOOTER_MAGIC: &[u8; 8] = b"SKRQBF01";
 const FOOTER_BYTES: u64 = 8 + 4 + FOOTER_MAGIC.len() as u64;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(all(test, feature = "storage-io"))]
+thread_local! {
+    static BEFORE_PROJECTION_OPEN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 #[cfg(test)]
 thread_local! {
     static SEGMENT_CHECKSUM_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -112,10 +118,27 @@ impl ProjectionWriter {
         file.write_all(FOOTER_MAGIC)?;
         file.sync_all()?;
         drop(self.file.take());
+        // Admit and validate the complete mapping before publishing the name.
+        // Keep capacity through rename and the directory barrier so another
+        // project owner cannot exhaust this operation's remaining IO slots.
+        #[cfg(feature = "storage-io")]
+        let _publication_quota = {
+            let project =
+                hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_component(
+                    self.temporary
+                        .parent()
+                        .expect("temporary artifact has a parent"),
+                    false,
+                )
+                .map_err(|error| ProjectionError::Io(std::io::Error::other(error)))?;
+            project.reserve_admission(2)?
+        };
+        let mut projection = FileProjection::open(&self.temporary)?;
+        projection.path.clone_from(&self.target);
         fs::rename(&self.temporary, &self.target)?;
         sync_parent(&self.target)?;
         self.finished = true;
-        FileProjection::open(&self.target)
+        Ok(projection)
     }
 
     fn flush_segment(&mut self, reserve_next_segment: bool) -> Result<()> {
@@ -178,6 +201,9 @@ impl Drop for ProjectionWriter {
     fn drop(&mut self) {
         if !self.finished {
             drop(self.file.take());
+            // Budget/OS exhaustion may defer best-effort removal. Retain the
+            // unpublished temporary name for explicit cleanup; never bypass
+            // descriptor admission or remove the final published generation.
             let _ = fs::remove_file(&self.temporary);
         }
     }
@@ -193,6 +219,10 @@ pub struct FileProjection {
 impl FileProjection {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
+        #[cfg(all(test, feature = "storage-io"))]
+        if let Some(callback) = BEFORE_PROJECTION_OPEN.with(|slot| slot.replace(None)) {
+            callback();
+        }
         let mut file = File::open(&path)?;
         let file_bytes = file.metadata()?.len();
         if file_bytes < FOOTER_BYTES {

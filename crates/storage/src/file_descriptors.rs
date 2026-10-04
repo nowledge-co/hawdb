@@ -382,7 +382,8 @@ impl ProjectFileDescriptors {
     /// Reserve the target's lock/WAL and bounded IO-wave capacity through
     /// candidate validation. Nested storage calls borrow the outer operation's
     /// quota; independent contexts can use the remaining project capacity.
-    pub(crate) fn reserve_admission(&self, minimum: usize) -> io::Result<DescriptorReservation> {
+    #[doc(hidden)]
+    pub fn reserve_admission(&self, minimum: usize) -> io::Result<DescriptorReservation> {
         if let Some(inventory) = FileOpenContext::from_state(self.state.clone()).inventory {
             let inner = inventory
                 .inner

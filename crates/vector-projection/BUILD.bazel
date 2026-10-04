@@ -22,6 +22,7 @@ rust_library(
 rust_test(
     name = "hawdb_vector_projection_tests",
     crate = ":hawdb_vector_projection",
+    crate_features = ["storage-io"],
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
     deps = all_crate_deps(normal_dev = True),

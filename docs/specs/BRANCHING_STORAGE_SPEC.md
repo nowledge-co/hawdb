@@ -1111,6 +1111,18 @@ retains the unpublished stage for a later explicit cleanup attempt. It must not
 open an uncounted descriptor to force cleanup. Artifact discovery and loading
 preserve typed resource errors rather than hiding them as missing/corrupt data.
 
+Artifact completion validates and prepares its immutable mapping from the
+complete temporary file before publishing the generation name. It retains a
+bounded operation quota through rename and the parent barrier, borrowing an
+outer admission quota when present. Descriptor rejection before publication
+leaves the generation name available for retry. This removes post-publication
+reopen/map failure; a filesystem error after rename remains an uncertain
+publication and is not a promise of automatic rollback. Best-effort temporary
+removal may retain unpublished bytes under descriptor pressure, just as stage
+cleanup does. Optional resident discovery retains its historical non-resource
+fallback; resource rejection propagates. Generation allocation fails closed on
+discovery errors rather than choosing generation zero from an unreadable list.
+
 Descriptor errors bypass corruption/rebuild fallback in
 the snapshot/segment admission paths. Ordinary unbound files do not allocate an
 immutable cache, and absolute-path domain lookup borrows the existing path.

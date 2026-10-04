@@ -113,3 +113,164 @@ fn sibling_artifact_writers_share_the_project_limit_and_other_projects_are_indep
     std::fs::remove_dir_all(root).unwrap();
     std::fs::remove_dir_all(other_root).unwrap();
 }
+
+struct ProjectionOpenCallback;
+impl Drop for ProjectionOpenCallback {
+    fn drop(&mut self) {
+        BEFORE_PROJECTION_OPEN.with(|slot| {
+            slot.replace(None);
+        });
+    }
+}
+
+#[test]
+fn finish_reserves_mapping_and_publication_before_a_competing_owner_fills_the_budget() {
+    let root = super::tests::unique_test_dir("artifact-finish-fd");
+    let project = ProjectFileDescriptors::acquire(&root, 4).unwrap();
+    let filler = root.join("held");
+    std::fs::write(&filler, b"competing owner").unwrap();
+    let target = root.join("projection.hawdb");
+    let mut writer = ProjectionWriter::create(&target, config()).unwrap();
+    writer.push(7, &[1.0, 0.0]).unwrap();
+    let held = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let callback_held = Arc::clone(&held);
+    let callback_project = project.clone();
+    BEFORE_PROJECTION_OPEN.with(|slot| {
+        slot.replace(Some(Box::new(move || {
+            // A different owner must not inherit this thread's reserved quota.
+            std::thread::spawn(move || {
+                loop {
+                    match callback_project
+                        .io_context()
+                        .open(CountedOpenOptions::new().read(true), &filler)
+                    {
+                        Ok(file) => callback_held.lock().unwrap().push(file),
+                        Err(error) => {
+                            assert_budget_rejection(&error.into());
+                            break;
+                        }
+                    }
+                }
+                let metrics = callback_project.metrics();
+                assert_eq!(metrics.open + metrics.reserved, 4);
+            })
+            .join()
+            .unwrap();
+        })));
+    });
+    let _callback = ProjectionOpenCallback;
+    let projection = writer.finish().unwrap_or_else(|error| {
+        panic!(
+            "admitted finish failed; published target exists={}: {error:?}",
+            target.exists()
+        )
+    });
+    assert_eq!(projection.path(), target);
+    assert!(target.exists());
+    assert_eq!(project.metrics().reserved, 0);
+    assert_eq!(project.metrics().open, held.lock().unwrap().len());
+    assert_eq!(
+        projection
+            .read_segment(0)
+            .unwrap()
+            .parts(2, RaBitQBitWidth::One, 1)
+            .unwrap()
+            .id(0),
+        7
+    );
+    held.lock().unwrap().clear();
+    assert_eq!(project.metrics().open, 0);
+    let reopened = FileProjection::open(&target).unwrap();
+    assert_eq!(reopened.manifest(), projection.manifest());
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+    assert!(project.metrics().high_water <= 4);
+    drop(reopened);
+    drop(projection);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn abandoned_writer_retains_only_its_temporary_when_cleanup_has_no_capacity() {
+    let root = super::tests::unique_test_dir("artifact-drop-fd");
+    let project = ProjectFileDescriptors::acquire(&root, 4).unwrap();
+    let target = root.join("projection.hawdb");
+    let mut writer = ProjectionWriter::create(&target, config()).unwrap();
+    writer.push(7, &[1.0, 0.0]).unwrap();
+    let temporary = writer.temporary.clone();
+    // Replace the owned writer handle with a competing holder: Drop has no
+    // returned writer slot to borrow for its removal attempt.
+    let file = writer.file.take().unwrap();
+    file.sync_all().unwrap();
+    let mut held = vec![file];
+    for _ in 0..3 {
+        held.push(
+            project
+                .io_context()
+                .open(CountedOpenOptions::new().read(true), &temporary)
+                .unwrap(),
+        );
+    }
+    let bytes = std::fs::read(&temporary).unwrap();
+    let rejections = project.metrics().budget_rejections;
+    drop(writer);
+    assert!(temporary.exists());
+    assert!(!target.exists());
+    assert_eq!(std::fs::read(&temporary).unwrap(), bytes);
+    assert_eq!(project.metrics().open, 4);
+    assert_eq!(project.metrics().reserved, 0);
+    assert!(project.metrics().budget_rejections > rejections);
+    drop(held.pop());
+    fs::remove_file(&temporary).unwrap();
+    assert!(!temporary.exists());
+    drop(held);
+    let mut retried = ProjectionWriter::create(&target, config()).unwrap();
+    retried.push(7, &[1.0, 0.0]).unwrap();
+    let projection = retried.finish().unwrap();
+    assert_eq!(project.metrics().open, 0);
+    assert!(project.metrics().high_water <= 4);
+    drop(projection);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn finish_capacity_rejection_leaves_the_generation_name_available_for_retry() {
+    let root = super::tests::unique_test_dir("artifact-finish-retry");
+    let project = ProjectFileDescriptors::acquire(&root, 4).unwrap();
+    let filler = root.join("held");
+    std::fs::write(&filler, b"held").unwrap();
+    let target = root.join("projection.hawdb");
+    let mut writer = ProjectionWriter::create(&target, config()).unwrap();
+    writer.push(7, &[1.0, 0.0]).unwrap();
+    let held = (0..3)
+        .map(|_| {
+            project
+                .io_context()
+                .open(CountedOpenOptions::new().read(true), &filler)
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(project.metrics().open, 4);
+    assert_budget_rejection(&writer.finish().unwrap_err());
+    assert!(!target.exists());
+    assert_eq!(project.metrics().open, 3);
+    assert_eq!(project.metrics().reserved, 0);
+    drop(held);
+    let mut writer = ProjectionWriter::create(&target, config()).unwrap();
+    writer.push(7, &[1.0, 0.0]).unwrap();
+    let projection = writer.finish().unwrap();
+    assert_eq!(projection.manifest().identity.generation, 1);
+    assert_eq!(
+        projection
+            .read_segment(0)
+            .unwrap()
+            .parts(2, RaBitQBitWidth::One, 1)
+            .unwrap()
+            .id(0),
+        7
+    );
+    assert_eq!(project.metrics().open, 0);
+    assert_eq!(project.metrics().reserved, 0);
+    assert!(project.metrics().high_water <= 4);
+    drop(projection);
+    std::fs::remove_dir_all(root).unwrap();
+}

@@ -1576,7 +1576,14 @@ impl SearchIndex {
         let Some(path) = &self.path else {
             return Ok(());
         };
-        for (generation, artifact_path) in rabitq_artifacts_descending(path)? {
+        let artifacts = match rabitq_artifacts_descending(path) {
+            Ok(artifacts) => artifacts,
+            Err(error @ HawDBError::FileDescriptors(_)) => return Err(error),
+            // An optional resident projection can be rebuilt or served by the
+            // existing exact path. Keep its historical non-resource fallback.
+            Err(_) => return Ok(()),
+        };
+        for (generation, artifact_path) in artifacts {
             let identity = self.rabitq_projection_identity(generation);
             match RaBitQCandidateProjection::load_from_path_classified(
                 &artifact_path,
