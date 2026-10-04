@@ -1,0 +1,242 @@
+{
+  "schema": "hawdb-write-durability-breakdown-v1",
+  "date": "2026-10-03",
+  "engine_revision": "dbb2ab20e9880c11ea87867f36e6e793b1e94ca0",
+  "scope": "Same-engine comparison of direct Database and ConcurrentDatabase; diagnostic only",
+  "durability": "SyncOnEveryWrite; group commit default disabled",
+  "protocol": "Three fixed alternating pairs of 512 single-row inserts per facade, using fresh copies of one 16384-row checkpoint with 1024-byte content; all five result columns and complete recovered row counts checked.",
+  "timed_writes": 3072,
+  "recovered_rows_verified": 101376,
+  "clock_units": "Integer microseconds. Non-WAL-sync duration includes all time outside the reported WAL sync. Outside-statement duration includes wrapper, telemetry and publication work; it is not a direct publication timer.",
+  "tail_definition": "The slowest 26 complete requests of each 512-request case; fraction is sum(WAL sync time)/sum(total request time) over those same requests.",
+  "compile_command": "rustc --edition=2021 -C opt-level=3 -C lto=thin -C codegen-units=1 -L dependency=target/release/deps --extern hawdb=target/release/deps/libhawdb-cba20be3d22fe378.rlib /tmp/hawdb-goal/read-publication-durability-probe.rs -o /tmp/hawdb-goal/read-publication-durability-probe",
+  "toolchain": "Rust 1.97.1; default HawDB features; optimized release with thin LTO and one codegen unit",
+  "host": "AMD Ryzen 7 7735HS, 16 logical CPUs, Linux 7.1.10-zen1-1-zen; shared workstation, NVMe/Btrfs fixtures",
+  "raw_artifact_directory": "target/benchmarks/226-durability-breakdown-diagnostic",
+  "artifacts_sha256": {
+    "probe": "4c8e50dc48579d187b7ec225eee26c626f13420dbed38acd0d52edde91b277d7",
+    "read-publication-durability-probe.csv": "9d41450d2ff367a75ae7a0ef27f8d366eacb4baba1cf788390bf07d4abdb1b09",
+    "read-publication-durability-probe.rs": "abce5f721d85ae9727fbc69b66c9f3ff1c6a9fe293dcf05bb4c5644f2e49c875",
+    "read-publication-durability-probe.stderr": "1cad15868cb16da0281967cf60221cb97710f7b92d778ba4539fdf250cb1a505"
+  },
+  "probe_source": "use hawdb::{ConcurrentDatabase, Database, KernelTelemetry, KernelTelemetryOperation, QueryOutput, QueryTelemetry, TelemetrySink, Value};\nuse std::path::{Path, PathBuf};\nuse std::sync::{Arc, Mutex};\nuse std::time::Instant;\n\n#[derive(Debug, Clone, Copy, Default)]\nstruct Events {\n    wal_us: u64,\n    wal_sync_us: u64,\n    wal_bytes: u64,\n    statement_us: u64,\n    wal_events: usize,\n    query_events: usize,\n}\n#[derive(Debug, Default)]\nstruct RecordingSink(Mutex<Events>);\nimpl RecordingSink {\n    fn take(&self) -> Events { std::mem::take(&mut *self.0.lock().unwrap()) }\n}\nimpl TelemetrySink for RecordingSink {\n    fn record_query(&self, event: QueryTelemetry<'_>) {\n        assert!(event.success);\n        let mut sample = self.0.lock().unwrap();\n        sample.statement_us += event.elapsed_micros;\n        sample.query_events += 1;\n    }\n    fn record_kernel(&self, event: KernelTelemetry) {\n        assert!(event.success);\n        if event.operation == KernelTelemetryOperation::WalAppend {\n            let mut sample = self.0.lock().unwrap();\n            sample.wal_us += event.elapsed_micros;\n            sample.wal_sync_us += event.fsync_micros;\n            sample.wal_bytes += event.byte_count;\n            sample.wal_events += 1;\n        }\n    }\n}\nenum Handle { Direct(Box<Database>), Concurrent(ConcurrentDatabase) }\nimpl Handle {\n    fn write(&mut self, parameters: &[Value]) {\n        match self {\n            Self::Direct(db) => db.query_sql_with_params(INSERT, parameters).unwrap(),\n            Self::Concurrent(db) => db.query_sql_with_params(INSERT, parameters).unwrap(),\n        };\n    }\n    fn epoch(&self) -> u64 {\n        match self { Self::Direct(db) => db.commit_epoch(), Self::Concurrent(db) => db.commit_epoch().unwrap() }\n    }\n}\nfn main() {\n    let root = PathBuf::from(format!(\"target/benchmarks/226-durability-breakdown-fixtures-{}\", std::process::id()));\n    std::fs::create_dir(&root).unwrap();\n    let fixture = root.join(\"fixture\");\n    create_fixture(&fixture);\n    let mut records = Vec::with_capacity(6 * WRITES);\n    for (round, mode) in [(1, \"direct\"), (1, \"concurrent\"), (2, \"concurrent\"), (2, \"direct\"), (3, \"direct\"), (3, \"concurrent\")] {\n        eprintln!(\"starting pair={round} mode={mode}\");\n        let path = root.join(format!(\"{round}-{mode}\"));\n        copy_fixture(&fixture, &path);\n        let mut db = Database::open(&path).unwrap();\n        assert_rows(&db.query_sql_with_params(POINT, &[Value::String(message_id(0, 0))]).unwrap(), 0, 0, 1);\n        assert_rows(&db.query_sql_with_params(PAGE, &[Value::String(thread_id(0)), Value::Int(PAGE_ROWS as i64)]).unwrap(), 0, 0, PAGE_ROWS);\n        let initial_epoch = db.commit_epoch();\n        let sink = Arc::new(RecordingSink::default());\n        db.set_telemetry_sink(Some(sink.clone()));\n        let mut handle = if mode == \"direct\" { Handle::Direct(Box::new(db)) } else { Handle::Concurrent(db.into_concurrent()) };\n        for request in 0..WRITES {\n            let parameters = message_parameters(THREADS, request);\n            let started = Instant::now();\n            handle.write(&parameters);\n            let total_us = started.elapsed().as_micros() as u64;\n            let event = sink.take();\n            assert_eq!(event.wal_events, 1);\n            assert_eq!(event.query_events, 1);\n            assert!(event.wal_sync_us <= event.wal_us);\n            assert!(event.wal_us <= total_us + 1);\n            assert!(event.statement_us <= total_us + 1);\n            records.push((round, mode, request, total_us, event));\n        }\n        let epoch = handle.epoch();\n        assert_eq!(epoch, initial_epoch + WRITES as u64);\n        drop(handle);\n        verify_recovery(&path, WRITES, epoch);\n        eprintln!(\"completed pair={round} mode={mode}\");\n    }\n    println!(\"pair,mode,request,total_us,wal_us,wal_sync_us,statement_us,wal_bytes,non_wal_sync_us,outside_statement_us\");\n    for (round, mode, request, total_us, event) in records {\n        println!(\"{round},{mode},{request},{total_us},{},{},{},{},{},{}\", event.wal_us, event.wal_sync_us, event.statement_us, event.wal_bytes, total_us.saturating_sub(event.wal_sync_us), total_us.saturating_sub(event.statement_us));\n    }\n    std::fs::remove_dir_all(root).unwrap();\n}\n\nconst SMOKE: bool = cfg!(debug_assertions);\nconst THREADS: usize = if SMOKE { 4 } else { 128 };\nconst MESSAGES: usize = if SMOKE { 16 } else { 128 };\nconst CONTENT_BYTES: usize = 1024;\nconst PAGE_ROWS: usize = if SMOKE { 16 } else { 32 };\nconst WRITES: usize = if SMOKE { 8 } else { 512 };\nconst INSERT: &str = \"INSERT INTO thread_messages \\\n    (content_message_id, thread_storage_id, order_index, content, token_count) \\\n    VALUES ($1, $2, $3, $4, $5)\";\nconst POINT: &str =\n    \"SELECT content_message_id, thread_storage_id, order_index, content, token_count \\\n    FROM thread_messages WHERE content_message_id = $1\";\nconst PAGE: &str =\n    \"SELECT content_message_id, thread_storage_id, order_index, content, token_count \\\n    FROM thread_messages WHERE thread_storage_id = $1 \\\n    ORDER BY order_index, content_message_id LIMIT $2\";\nconst COMPLETE_THREAD: &str =\n    \"SELECT content_message_id, thread_storage_id, order_index, content, token_count \\\n    FROM thread_messages WHERE thread_storage_id = $1 \\\n    ORDER BY order_index, content_message_id\";\n\n\nfn create_fixture(path: &Path) {\n    let mut db = Database::open(path).expect(\"fixture opens\");\n    db.query_sql(\n        \"CREATE TABLE thread_messages (content_message_id TEXT PRIMARY KEY, \\\n         thread_storage_id TEXT NOT NULL, order_index BIGINT NOT NULL, \\\n         content TEXT NOT NULL, token_count BIGINT NOT NULL)\",\n    )\n    .unwrap();\n    db.query_sql(\n        \"CREATE INDEX idx_thread_messages_order \\\n         ON thread_messages (thread_storage_id, order_index, content_message_id)\",\n    )\n    .unwrap();\n    for thread in 0..THREADS {\n        let mut transaction = db.begin_transaction();\n        for message in 0..MESSAGES {\n            transaction\n                .query_sql_with_params(INSERT, &message_parameters(thread, message))\n                .unwrap();\n        }\n        transaction.commit().unwrap();\n    }\n    db.checkpoint().expect(\"fixture checkpoint succeeds\");\n}\n\nfn verify_recovery(path: &Path, writes: usize, epoch: u64) {\n    let mut db = Database::open(path).expect(\"complete WAL recovery succeeds\");\n    assert_eq!(db.commit_epoch(), epoch);\n    for thread in 0..=THREADS {\n        let count = if thread == THREADS { writes } else { MESSAGES };\n        let output = db\n            .query_sql_with_params(COMPLETE_THREAD, &[Value::String(thread_id(thread))])\n            .unwrap();\n        assert_rows(&output, thread, 0, count);\n    }\n    let total = db\n        .query_sql(\"SELECT count(*) AS total FROM thread_messages\")\n        .unwrap();\n    assert_eq!(\n        total.rows[0].get(\"total\"),\n        Some(&Value::Int((THREADS * MESSAGES + writes) as i64))\n    );\n}\n\nfn assert_rows(output: &QueryOutput, thread: usize, first: usize, count: usize) {\n    assert_eq!(output.rows.len(), count);\n    let expected_thread = Value::String(thread_id(thread));\n    for (offset, row) in output.rows.iter().enumerate() {\n        assert_eq!(\n            row.get(\"content_message_id\"),\n            Some(&Value::String(message_id(thread, first + offset)))\n        );\n        assert!(matches!(row.get(\"content\"), Some(Value::String(content))\n            if content.len() == CONTENT_BYTES && content.bytes().all(|byte| byte == b'm')));\n        assert_eq!(row.get(\"thread_storage_id\"), Some(&expected_thread));\n        assert_eq!(\n            row.get(\"order_index\"),\n            Some(&Value::Int((first + offset) as i64))\n        );\n        assert_eq!(\n            row.get(\"token_count\"),\n            Some(&Value::Int(CONTENT_BYTES as i64 / 4))\n        );\n    }\n}\n\nfn message_parameters(thread: usize, message: usize) -> Vec<Value> {\n    vec![\n        Value::String(message_id(thread, message)),\n        Value::String(thread_id(thread)),\n        Value::Int(message as i64),\n        Value::String(\"m\".repeat(CONTENT_BYTES)),\n        Value::Int(CONTENT_BYTES as i64 / 4),\n    ]\n}\n\nfn message_id(thread: usize, message: usize) -> String {\n    format!(\"thread-{thread:04}:message-{message:04}\")\n}\n\nfn thread_id(thread: usize) -> String {\n    format!(\"thread-{thread:04}\")\n}\n\nfn copy_fixture(source: &Path, destination: &Path) {\n    std::fs::create_dir(destination).unwrap();\n    for entry in std::fs::read_dir(source).unwrap() {\n        let entry = entry.unwrap();\n        let target: PathBuf = destination.join(entry.file_name());\n        let kind = entry.file_type().unwrap();\n        if kind.is_dir() {\n            copy_fixture(&entry.path(), &target);\n        } else {\n            assert!(kind.is_file(), \"fixture contains an unexpected symlink\");\n            std::fs::copy(entry.path(), target).unwrap();\n        }\n    }\n}\n",
+  "results": [
+    {
+      "pair": 1,
+      "mode": "direct",
+      "total_us": {
+        "p50": 8067,
+        "p95": 15133,
+        "p99": 57258
+      },
+      "wal_us": {
+        "p50": 4097,
+        "p95": 11481,
+        "p99": 53266
+      },
+      "wal_sync_us": {
+        "p50": 4067,
+        "p95": 11461,
+        "p99": 53241
+      },
+      "statement_us": {
+        "p50": 8041,
+        "p95": 15112,
+        "p99": 57229
+      },
+      "non_wal_sync_us": {
+        "p50": 3882,
+        "p95": 4718,
+        "p99": 5524
+      },
+      "outside_statement_us": {
+        "p50": 28,
+        "p95": 36,
+        "p99": 42
+      },
+      "tail_sync_fraction": 0.9093629412302783,
+      "total_wal_bytes": 707387
+    },
+    {
+      "pair": 1,
+      "mode": "concurrent",
+      "total_us": {
+        "p50": 10300,
+        "p95": 50123,
+        "p99": 117803
+      },
+      "wal_us": {
+        "p50": 6412,
+        "p95": 45878,
+        "p99": 112627
+      },
+      "wal_sync_us": {
+        "p50": 6386,
+        "p95": 45844,
+        "p99": 112602
+      },
+      "statement_us": {
+        "p50": 10144,
+        "p95": 49898,
+        "p99": 117502
+      },
+      "non_wal_sync_us": {
+        "p50": 4108,
+        "p95": 4800,
+        "p99": 5142
+      },
+      "outside_statement_us": {
+        "p50": 222,
+        "p95": 277,
+        "p99": 306
+      },
+      "tail_sync_fraction": 0.9586424755840515,
+      "total_wal_bytes": 707387
+    },
+    {
+      "pair": 2,
+      "mode": "concurrent",
+      "total_us": {
+        "p50": 8498,
+        "p95": 19520,
+        "p99": 110339
+      },
+      "wal_us": {
+        "p50": 4322,
+        "p95": 15547,
+        "p99": 105945
+      },
+      "wal_sync_us": {
+        "p50": 4293,
+        "p95": 15518,
+        "p99": 105920
+      },
+      "statement_us": {
+        "p50": 8278,
+        "p95": 19323,
+        "p99": 110110
+      },
+      "non_wal_sync_us": {
+        "p50": 4002,
+        "p95": 4915,
+        "p99": 5999
+      },
+      "outside_statement_us": {
+        "p50": 208,
+        "p95": 267,
+        "p99": 325
+      },
+      "tail_sync_fraction": 0.9353028293874875,
+      "total_wal_bytes": 707387
+    },
+    {
+      "pair": 2,
+      "mode": "direct",
+      "total_us": {
+        "p50": 8188,
+        "p95": 18377,
+        "p99": 109239
+      },
+      "wal_us": {
+        "p50": 4116,
+        "p95": 14317,
+        "p99": 104842
+      },
+      "wal_sync_us": {
+        "p50": 4090,
+        "p95": 14280,
+        "p99": 104809
+      },
+      "statement_us": {
+        "p50": 8157,
+        "p95": 18357,
+        "p99": 109209
+      },
+      "non_wal_sync_us": {
+        "p50": 3953,
+        "p95": 5245,
+        "p99": 6037
+      },
+      "outside_statement_us": {
+        "p50": 28,
+        "p95": 36,
+        "p99": 42
+      },
+      "tail_sync_fraction": 0.9403753160654941,
+      "total_wal_bytes": 707387
+    },
+    {
+      "pair": 3,
+      "mode": "direct",
+      "total_us": {
+        "p50": 11219,
+        "p95": 32784,
+        "p99": 198248
+      },
+      "wal_us": {
+        "p50": 4874,
+        "p95": 27894,
+        "p99": 193765
+      },
+      "wal_sync_us": {
+        "p50": 4845,
+        "p95": 27688,
+        "p99": 193732
+      },
+      "statement_us": {
+        "p50": 11191,
+        "p95": 32763,
+        "p99": 198218
+      },
+      "non_wal_sync_us": {
+        "p50": 5324,
+        "p95": 7805,
+        "p99": 10068
+      },
+      "outside_statement_us": {
+        "p50": 29,
+        "p95": 46,
+        "p99": 58
+      },
+      "tail_sync_fraction": 0.9456395939648549,
+      "total_wal_bytes": 707387
+    },
+    {
+      "pair": 3,
+      "mode": "concurrent",
+      "total_us": {
+        "p50": 8817,
+        "p95": 14876,
+        "p99": 109845
+      },
+      "wal_us": {
+        "p50": 4040,
+        "p95": 9230,
+        "p99": 104673
+      },
+      "wal_sync_us": {
+        "p50": 4010,
+        "p95": 9211,
+        "p99": 104648
+      },
+      "statement_us": {
+        "p50": 8563,
+        "p95": 14573,
+        "p99": 109557
+      },
+      "non_wal_sync_us": {
+        "p50": 4502,
+        "p95": 6743,
+        "p99": 7936
+      },
+      "outside_statement_us": {
+        "p50": 229,
+        "p95": 357,
+        "p99": 405
+      },
+      "tail_sync_fraction": 0.9326092046246728,
+      "total_wal_bytes": 707387
+    }
+  ],
+  "acceptance": "diagnostic_only; cross-version performance gate remains not qualified"
+}

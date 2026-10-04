@@ -1134,6 +1134,19 @@ mod tests {
         assert!(!index_evidence.cancellation.handle_poisoned_after);
         assert!(index_evidence.cancellation.subsequent_read_succeeded);
         assert_eq!(report.runtime.cancellations_delta, 1);
+        let assessment = crate::evaluate_production_release_qualification_bundle(
+            crate::ProductionReleaseQualificationArtifacts {
+                graph_storage: Some(report.json()),
+                ..crate::ProductionReleaseQualificationArtifacts::default()
+            },
+            report.evidence_binding.identity.clone(),
+            crate::ProductionReleaseQualificationPolicy::default(),
+        );
+        assert!(
+            assessment.graph_storage.ready,
+            "unexpected release blockers: {:?}",
+            assessment.graph_storage.blocker_codes
+        );
         let json = report.json().to_string();
         assert!(!json.contains(graph_path.to_string_lossy().as_ref()));
         assert!(!json.contains("MATCH (m:Memory)"));

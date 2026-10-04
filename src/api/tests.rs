@@ -9590,7 +9590,7 @@ fn test_main_branch_directory(root: &std::path::Path) -> Option<std::path::PathB
     }
 }
 
-fn active_storage_root(root: &std::path::Path) -> std::path::PathBuf {
+pub(super) fn active_storage_root(root: &std::path::Path) -> std::path::PathBuf {
     test_main_branch_directory(root)
         .map_or_else(|| root.to_path_buf(), |branch| branch.join("data"))
 }

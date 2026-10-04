@@ -980,7 +980,8 @@ impl GraphStore {
                     next_rel_id: self.next_rel_id,
                     search_projection_change_log_start_epoch: self
                         .search_projection_change_log_start_epoch,
-                    search_projection_graph_changes: &self.search_projection_graph_changes,
+                    // The shared log is borrowed by the encoder below.
+                    search_projection_graph_changes: &[],
                     statistics: &checkpoint_statistics,
                     projected_graphs: &self.projected_graphs,
                     initial_import_source_fingerprint: self
@@ -990,6 +991,7 @@ impl GraphStore {
                     relational_checkpoint: relational_checkpoint_artifact,
                 },
                 generation,
+                self.search_projection_graph_changes.iter().map(Arc::as_ref),
             )?;
             checkpoint_publish_failpoint(CheckpointPublishStage::CheckpointPersisted)?;
             durable.prepare_wal_generation(generation)?;

@@ -77,8 +77,8 @@ impl DurableStore {
 
         let mut retained_generations = pinned_reader_generations.cloned().unwrap_or_default();
         retained_generations.insert(current_generation);
-        // Branch WAL seals consume generation numbers too. Preserve the
-        // actual preceding checkpoint, rather than a nonexistent adjacent ID.
+        // WAL rotations share the namespace and may leave gaps between
+        // checkpoints. Preserve the actual preceding recovery generation.
         if previous_checkpoint_generation > 0 {
             retained_generations.insert(previous_checkpoint_generation);
         }

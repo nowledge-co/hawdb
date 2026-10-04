@@ -258,6 +258,35 @@ impl Database {
     }
 }
 
+impl DatabaseReadSnapshot {
+    pub(super) fn prepare_runtime_query(
+        &self,
+        cypher_text: String,
+        parameters: &BTreeMap<String, Value>,
+        system_variables: &QuerySystemVariables,
+        plan_cache: &SharedState<PlanCache>,
+    ) -> Result<PreparedRuntimeQuery> {
+        let source = &self.0;
+        RuntimePlanningContext {
+            branch_id: source
+                .current_branch
+                .as_ref()
+                .map(|current| current.info.id),
+            catalog: &source.catalog,
+            store: &source.store,
+            optimizer: &source.optimizer,
+            config: &source.config,
+            system_variables,
+        }
+        .prepare(
+            cypher_text,
+            parameters,
+            plan_cache,
+            &source.optimizer_planning_cache,
+        )
+    }
+}
+
 impl RuntimePlanningContext<'_> {
     fn prepare(
         &self,

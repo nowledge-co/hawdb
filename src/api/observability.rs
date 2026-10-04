@@ -19,8 +19,9 @@ use super::{
 use crate::error::{HawDBError, Result};
 use crate::executor;
 use crate::relational_sql::{
-    compile_append_explain_sql, compile_append_select_sql, compile_append_statement_sql,
-    compile_relational_statement_sql_with_result, format_append_explain, project_append_rows,
+    compile_append_statement_sql, compile_prepared_append_explain_sql,
+    compile_prepared_append_select_sql, compile_relational_statement_sql_with_result,
+    format_append_explain, project_append_rows,
 };
 use crate::sql::{
     BranchSqlSelector, BranchSqlStatement, BranchSqlValue, ShowBranchesStatement, SqlBound,
@@ -55,6 +56,13 @@ pub(super) struct StatementRecorder {
     statement_summary: Arc<SharedState<system_sql::StatementSummary>>,
     slow_query_log_threshold_micros: u128,
     telemetry: Option<Arc<dyn TelemetrySink>>,
+}
+
+impl StatementRecorder {
+    pub(super) fn refresh_read_snapshot(&self, snapshot: &mut super::DatabaseReadTransaction) {
+        snapshot.slow_query_snapshot = self.slow_query_log.borrow().snapshot();
+        snapshot.statement_summary_snapshot = self.statement_summary.borrow().snapshot();
+    }
 }
 
 // Ordinary Database calls borrow their recording target without cloning handles.
@@ -372,8 +380,8 @@ impl Database {
                 };
             }
 
-            if let Some(plan) = compile_append_select_sql(
-                sql_text,
+            if let Some(plan) = compile_prepared_append_select_sql(
+                &prepared.template,
                 parameters,
                 self.runtime.get()?.store.append_state(),
                 max_rows.unwrap_or(usize::MAX),
@@ -389,8 +397,8 @@ impl Database {
                     rows: project_append_rows(&plan, &output.rows)?.into(),
                 });
             }
-            if let Some(plan) = compile_append_explain_sql(
-                sql_text,
+            if let Some(plan) = compile_prepared_append_explain_sql(
+                &prepared.template,
                 parameters,
                 self.runtime.get()?.store.append_state(),
                 max_rows.unwrap_or(usize::MAX),

@@ -264,7 +264,11 @@ fn concurrent_writer_pins_canonical_generation_until_rollback() {
         .join(format!("canonical.{pinned_generation}.hawdb"))
         .exists());
     let manifest = std::fs::read_to_string(active_runtime_manifest_path(&path)).unwrap();
-    assert!(manifest.contains("oldest_reader_commit_epoch\tnone\n"));
+    // The current committed publication still pins its physical generation.
+    assert!(manifest.contains(&format!(
+        "oldest_reader_commit_epoch\t{}\n",
+        db.commit_epoch().unwrap()
+    )));
     drop(db);
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -296,6 +300,9 @@ fn concurrent_writer_pin_retires_on_every_transaction_exit() {
                 "drop" => drop(tx),
                 _ => unreachable!(),
             }
+            // Advance past the exited transaction so a leaked pin cannot be
+            // hidden by the publication's pin at the same epoch.
+            db.query("CREATE (:Memory {id: 2, value: 0})").unwrap();
             assert_eq!(
                 db.storage_pressure_snapshot()
                     .unwrap()
@@ -319,6 +326,7 @@ fn concurrent_writer_pin_retires_on_every_transaction_exit() {
         .commit()
         .unwrap_err()
         .is_retryable_transaction_conflict());
+    db.query("CREATE (:Memory {id: 2, value: 0})").unwrap();
     assert_eq!(
         db.storage_pressure_snapshot()
             .unwrap()
@@ -355,6 +363,8 @@ fn concurrent_writer_pin_refreshes_with_first_pessimistic_statement() {
         Some(before + 1)
     );
     tx.rollback();
+    db.query_sql("INSERT INTO messages (id) VALUES (3)")
+        .unwrap();
     assert_eq!(
         db.storage_pressure_snapshot()
             .unwrap()

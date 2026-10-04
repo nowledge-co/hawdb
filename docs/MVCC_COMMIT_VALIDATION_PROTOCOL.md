@@ -103,6 +103,12 @@ at the capture epoch instead of all historical conflict-index pages. Epoch-zero
 captures need no stamp. Writable workspaces/savepoints retain precise indexes
 through the ordinary `snapshot` method.
 
+Ordinary synchronous SQL autocommit reads borrow the already captured immutable
+publication directly; its `Arc` retains the same store and generation pin until
+completion. Virtual catalog reads fork a private context for fresh observation
+tables. This avoids per-query store/metadata copies without adding timestamp
+lookup, persisted row versions, or a different visibility boundary.
+
 A new transaction starts at or after capture, so older stamps cannot affect its
 validation. A pre-capture transaction submitted to the low-level read-optimized
 store is conservatively rejected by the barrier. The facade read API rejects

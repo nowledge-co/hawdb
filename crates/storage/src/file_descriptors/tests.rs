@@ -390,33 +390,44 @@ fn mutable_reopen_invalidates_only_future_readers_of_a_logical_path() {
 }
 
 #[cfg(unix)]
+fn run_descriptor_child(test_name: &str) -> bool {
+    const CHILD_MARKER: &str = "HAWDB_FD_QUALIFICATION_CHILD";
+    if std::env::var(CHILD_MARKER).as_deref() == Ok(test_name) {
+        return false;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test_name, "--nocapture", "--test-threads=1"])
+        .env(CHILD_MARKER, test_name)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "isolated descriptor qualification failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
+    true
+}
+
+#[cfg(unix)]
+fn native_descriptor_count() -> usize {
+    let directory = if cfg!(target_os = "linux") {
+        "/proc/self/fd"
+    } else {
+        "/dev/fd"
+    };
+    std::fs::read_dir(directory)
+        .unwrap()
+        .try_fold(0, |count, entry| entry.map(|_| count + 1))
+        .unwrap()
+}
+
+#[cfg(unix)]
 #[test]
 fn immutable_logical_files_do_not_retain_a_native_descriptor_per_alias() {
-    const CHILD_MARKER: &str = "HAWDB_FD_ALIAS_QUALIFICATION_CHILD";
-    if std::env::var_os(CHILD_MARKER).is_none() {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "file_descriptors::tests::immutable_logical_files_do_not_retain_a_native_descriptor_per_alias", "--nocapture", "--test-threads=1"])
-            .env(CHILD_MARKER, "1")
-            .output().unwrap();
-        assert!(
-            output.status.success(),
-            "isolated descriptor qualification failed:\n{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
+    if run_descriptor_child("file_descriptors::tests::immutable_logical_files_do_not_retain_a_native_descriptor_per_alias") {
         return;
-    }
-    fn native_descriptor_count() -> usize {
-        let directory = if cfg!(target_os = "linux") {
-            "/proc/self/fd"
-        } else {
-            "/dev/fd"
-        };
-        std::fs::read_dir(directory)
-            .unwrap()
-            .try_fold(0, |count, entry| entry.map(|_| count + 1))
-            .unwrap()
     }
     let fixture = Fixture::new(1);
     let binding = fixture.binding("object", b"abcdef");
@@ -449,6 +460,105 @@ fn immutable_logical_files_do_not_retain_a_native_descriptor_per_alias() {
     assert_eq!(&bytes, b"abc");
     assert_eq!(native_descriptor_count(), before + 1);
     assert_eq!(fixture.project.metrics().high_water, 1);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn native_os_limit_releases_descriptor_reservations_for_retry() {
+    if run_descriptor_child(
+        "file_descriptors::tests::native_os_limit_releases_descriptor_reservations_for_retry",
+    ) {
+        return;
+    }
+
+    struct RestoreLimit(libc::rlimit);
+    impl Drop for RestoreLimit {
+        fn drop(&mut self) {
+            // SAFETY: The saved limit is initialized and only this isolated
+            // child changes its soft limit; the hard limit remains unchanged.
+            assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &self.0) }, 0);
+        }
+    }
+
+    let fixture = Fixture::new(16);
+    let native_before = native_descriptor_count();
+    let path = fixture.root.join("data");
+    std::fs::write(&path, b"unchanged").unwrap();
+    let owner = File::open(&path).unwrap();
+    let reservation = fixture.project.reserve(3).unwrap();
+    let mut expected = fixture.project.metrics();
+    assert_eq!((expected.open, expected.reserved), (1, 3));
+
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: The pointer refers to a writable, correctly sized rlimit value.
+    assert_eq!(
+        unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
+        0
+    );
+    let _restore = RestoreLimit(limit);
+    limit.rlim_cur = limit.rlim_cur.min(64);
+    assert!(limit.rlim_cur > native_before as libc::rlim_t + 4);
+    // SAFETY: Only the isolated child lowers its soft limit, preserving the
+    // hard limit so Drop can restore the original configuration.
+    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+
+    // Host-owned handles consume the OS allowance without consuming the
+    // engine's reserved quota. Engine admission must succeed before native IO.
+    let mut pressure = Vec::new();
+    loop {
+        match std::fs::File::open("/dev/null") {
+            Ok(file) => {
+                pressure.push(file);
+                assert!(pressure.len() <= 64);
+            }
+            Err(error) => {
+                assert_eq!(error.raw_os_error(), Some(libc::EMFILE));
+                break;
+            }
+        }
+    }
+    let mut assert_rejection = |error: std::io::Error| {
+        assert_eq!(
+            file_descriptor_error(&error),
+            Some(FileDescriptorError::OsLimit {
+                requested: 1,
+                os_code: Some(libc::EMFILE),
+            })
+        );
+        expected.os_limit_rejections += 1;
+        let observed = fixture.project.metrics();
+        // A clone retains its owner's pre-reservation context and can raise
+        // the historical peak while returning its temporary slot on failure.
+        assert!(observed.high_water >= expected.high_water);
+        assert!(observed.high_water <= expected.limit);
+        expected.high_water = observed.high_water;
+        assert_eq!(observed, expected);
+    };
+    for _ in 0..3 {
+        assert_rejection(File::open(&path).unwrap_err());
+        assert_rejection(owner.try_clone().unwrap_err());
+        assert_rejection(file_io::read_dir(&fixture.root).unwrap_err());
+    }
+
+    // One released native slot must support each retry in turn without a
+    // leaked handle, even while the remaining host pressure is retained.
+    drop(pressure.pop().unwrap());
+    let mut reopened = File::open(&path).unwrap();
+    let mut contents = String::new();
+    reopened.read_to_string(&mut contents).unwrap();
+    assert_eq!(contents, "unchanged");
+    drop(reopened);
+    drop(owner.try_clone().unwrap());
+    assert_eq!(file_io::read_dir(&fixture.root).unwrap().count(), 1);
+    assert_eq!(fixture.project.metrics(), expected);
+    drop(pressure);
+    drop((reservation, owner));
+    assert_eq!(fixture.project.metrics().open, 0);
+    assert_eq!(fixture.project.metrics().reserved, 0);
+    assert_eq!(native_descriptor_count(), native_before);
 }
 
 #[test]

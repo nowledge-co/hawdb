@@ -531,6 +531,138 @@ fn shared_runtime_rejects_use_before_main_admission_and_can_show_catalog() {
         shared.query("MATCH (m:Memory) RETURN m.id"),
         Err(HawDBError::BranchBusy { .. })
     ));
+    drop(writer);
+    let rows = shared.query("MATCH (m:Memory) RETURN m.id AS id").unwrap();
+    assert_eq!(rows.rows.len(), 1);
+    assert_eq!(rows.rows[0]["id"], Value::String("busy-main".into()));
+    assert!(shared.commit_epoch().unwrap() > 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn unopened_catalog_scale_keeps_native_and_project_descriptors_bounded() {
+    const TEST: &str = "unopened_catalog_scale_keeps_native_and_project_descriptors_bounded";
+    const CHILD: &str = "HAWDB_TEST_BRANCH_DESCRIPTOR_CHILD";
+    if std::env::var(CHILD).as_deref() != Ok(TEST) {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+            .env(CHILD, TEST)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated branch FD qualification failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
+        return;
+    }
+    let native_count = || {
+        let directory = if cfg!(target_os = "linux") {
+            "/proc/self/fd"
+        } else {
+            "/dev/fd"
+        };
+        std::fs::read_dir(directory)
+            .unwrap()
+            .try_fold(0, |count, entry| entry.map(|_| count + 1))
+            .unwrap()
+    };
+    let project = Project::new();
+    let limited = DatabaseConfig {
+        max_open_files: 12,
+        ..Default::default()
+    };
+    let before = native_count();
+    let mut rejected = Database::open_with_config(&project.0, limited).unwrap();
+    let main = rejected
+        .describe_branch(BranchSelector::Name("main".into()))
+        .unwrap();
+    let sql = "CREATE BRANCH NAME $1 FROM ID $2 AT REVISION $3 REQUEST KEY $4";
+    let parameters = [
+        Value::String("descriptor-denied".into()),
+        Value::Uuid(main.id),
+        Value::Int(i64::try_from(main.source_commit_epoch).unwrap()),
+        Value::String("descriptor-denied".into()),
+    ];
+    assert!(matches!(
+        rejected.query_sql_with_params(sql, &parameters),
+        Err(HawDBError::FileDescriptors(_))
+    ));
+    assert_no_runtime(&rejected);
+    assert_eq!(
+        rejected
+            .query_sql("SHOW BRANCHES LIMIT 65")
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+    assert_eq!(native_count(), before);
+    drop(rejected);
+    // Cold creation explicitly reserves 23 descriptors for its recovery and
+    // sealing path. A finite limit of 32 admits that path; 12 above proves
+    // exhaustion fails before catalog mutation and releases the reservation.
+    let config = DatabaseConfig {
+        max_open_files: 32,
+        ..Default::default()
+    };
+    let mut database = Database::open_with_config(&project.0, config.clone()).unwrap();
+    assert_no_runtime(&database);
+    let main = database
+        .describe_branch(BranchSelector::Name("main".into()))
+        .unwrap();
+    let sql = "CREATE BRANCH NAME $1 FROM ID $2 AT REVISION $3 REQUEST KEY $4";
+    for id in 0..64 {
+        let parameters = [
+            Value::String(format!("unopened-{id}")),
+            Value::Uuid(main.id),
+            Value::Int(i64::try_from(main.source_commit_epoch).unwrap()),
+            Value::String(format!("descriptor-create-{id}")),
+        ];
+        let first = database.query_sql_with_params(sql, &parameters).unwrap();
+        assert_eq!(
+            database
+                .query_sql_with_params(sql, &parameters)
+                .unwrap()
+                .rows,
+            first.rows
+        );
+        let mut conflicting = parameters;
+        conflicting[0] = Value::String(format!("conflicting-{id}"));
+        assert!(database.query_sql_with_params(sql, &conflicting).is_err());
+        assert_no_runtime(&database);
+        let metrics = database.file_descriptor_metrics().unwrap();
+        assert_eq!(metrics.open, 0);
+        assert_eq!(metrics.reserved, 0);
+        assert!(metrics.high_water <= 32);
+        assert_eq!(native_count(), before, "branch {id} retained a native FD");
+    }
+    for _ in 0..8 {
+        assert_eq!(
+            database
+                .query_sql("SHOW BRANCHES LIMIT 65")
+                .unwrap()
+                .rows
+                .len(),
+            65
+        );
+        assert_eq!(native_count(), before);
+        assert_no_runtime(&database);
+    }
+    drop(database);
+    let mut reopened = Database::open_with_config(&project.0, config).unwrap();
+    assert_eq!(
+        reopened
+            .query_sql("SHOW BRANCHES LIMIT 65")
+            .unwrap()
+            .rows
+            .len(),
+        65
+    );
+    assert_no_runtime(&reopened);
+    assert_eq!(native_count(), before);
 }
 
 #[test]

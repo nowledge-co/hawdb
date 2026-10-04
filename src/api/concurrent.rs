@@ -16,6 +16,7 @@ use crate::sql::{Expr, ExprKind};
 mod coordinator;
 #[cfg(test)]
 mod key_range_tests;
+mod publication;
 
 use self::coordinator::{CommitSequencer, LockManager, TransactionIdAllocator};
 use super::system_sql;
@@ -181,12 +182,20 @@ impl ConcurrentDatabase {
         Database::open_with_durability_and_config(path, durability, config).map(Self::new)
     }
 
+    /// Returns the last completed publication, without waiting for an active writer.
     pub fn commit_epoch(&self) -> Result<u64> {
-        self.inner.commits.lock()?.commit_epoch()
+        Ok(self.published_read_view()?.visible_commit_epoch())
     }
 
+    /// Includes the physical generation refreshed by completed checkpoints.
     pub fn published_read_view(&self) -> Result<crate::store::PublishedReadView> {
-        self.inner.commits.lock()?.published_read_view()
+        Ok(self
+            .inner
+            .commits
+            .read_view()?
+            .snapshot
+            .0
+            .published_read_view())
     }
 
     pub fn wal_group_commit_snapshot(&self) -> Result<WalGroupCommitSnapshot> {
@@ -240,9 +249,10 @@ impl ConcurrentDatabase {
     }
 
     /// Returns storage debt and cache accounting from the same serialized
-    /// commit view used by writers.
+    /// commit view used by writers. The reader epoch excludes the idle internal
+    /// publication, but includes borrowed queries and explicit reader/writer pins.
     pub fn storage_pressure_snapshot(&self) -> Result<StoragePressureSnapshot> {
-        self.inner.commits.lock()?.storage_pressure_snapshot()
+        self.inner.commits.storage_pressure_snapshot()
     }
 
     /// Returns the generation-pinned storage residency view without scanning
@@ -257,8 +267,11 @@ impl ConcurrentDatabase {
         self.inner.commits.lock()?.storage_recovery_report()
     }
 
+    /// Pins the last completed publication while a writer or group sync is active.
     pub fn begin_read_transaction(&self) -> Result<DatabaseReadTransaction> {
-        self.inner.commits.lock()?.begin_read_transaction()
+        let view = self.inner.commits.read_view()?;
+        let snapshot = view.begin_read_transaction();
+        self.inner.commits.finish_read(&view, snapshot)
     }
 
     pub fn checkpoint(&self) -> Result<()> {
@@ -344,37 +357,38 @@ impl ConcurrentDatabase {
         cypher_text: &str,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<QueryOutput> {
-        let database = self.inner.commits.lock()?;
         let started = Instant::now();
-        let prepared = match database.prepare_runtime_query(cypher_text.to_string(), parameters) {
+        let view = self.inner.commits.read_view()?;
+        let prepared = match view.prepare(cypher_text.to_string(), parameters) {
             Ok(prepared) => prepared,
             Err(_) => {
                 // Failed preparation cannot prove that the statement is read-only. Re-run it
                 // through the original exclusive path so planning failures retain their
                 // statement-observability behavior and uncertain statements fail closed.
-                drop(database);
+                drop(view);
                 return self.with_autocommit_exclusive(|database| {
                     database.query_with_params(cypher_text, parameters)
                 });
             }
         };
         if !prepared.uses_read_snapshot() {
-            drop(database);
+            drop(view);
             return self.with_autocommit_exclusive(move |database| {
                 database.query_prepared_with_params(prepared, parameters)
             });
         }
         let statement_kind = prepared.statement_kind();
         let parse_nanos = prepared.parse_nanos();
-        let recorder = database.statement_recorder();
-        let mut snapshot = database.begin_read_transaction()?;
-        drop(database);
+        let mut snapshot = view.begin_read_transaction()?;
 
         #[cfg(test)]
         self.wait_after_autocommit_read_snapshot()?;
-        let result = snapshot.query_prepared_with_params_bounded_profile(prepared, parameters);
+        let result = self.inner.commits.finish_read(
+            &view,
+            snapshot.query_prepared_with_params_bounded_profile(prepared, parameters),
+        );
         drop(snapshot);
-        recorder.record_statement_execution(
+        view.recorder.record_statement_execution(
             "cypher",
             cypher_text,
             statement_kind,
@@ -389,7 +403,9 @@ impl ConcurrentDatabase {
                 parse_nanos,
             },
         );
-        result.map(|profiled| profiled.output)
+        self.inner
+            .commits
+            .finish_read(&view, result.map(|profiled| profiled.output))
     }
 
     pub fn query_sql(&self, sql_text: &str) -> Result<QueryOutput> {
@@ -401,37 +417,26 @@ impl ConcurrentDatabase {
         sql_text: &str,
         parameters: &[Value],
     ) -> Result<QueryOutput> {
-        let database = self.inner.commits.lock()?;
         let started = Instant::now();
-        if let SqlStatement::Branch(statement) = crate::sql::parse_postgres_sql(sql_text)? {
+        let prepared = self.inner.commits.prepare_sql(sql_text)?;
+        if let SqlStatement::Branch(statement) = prepared.statement() {
             if matches!(statement, crate::sql::BranchSqlStatement::UseBranch(_)) {
                 return Err(HawDBError::BranchCommandUnsupported {
                     command: "USE BRANCH",
                     context: "shared concurrent runtime",
                 });
             }
-            if !matches!(statement, crate::sql::BranchSqlStatement::ShowCurrentBranch) {
-                #[cfg(test)]
-                let catalog_read = !statement.changes_context_or_catalog();
-                drop(database);
-                let result = self.with_autocommit_exclusive(|database| {
-                    database.query_sql_with_params(sql_text, parameters)
-                });
-                // SHOW has captured and rendered one catalog snapshot. The
-                // commit sequencer is released before the read-snapshot gate,
-                // without admitting a data runtime for catalog inspection.
-                #[cfg(test)]
-                if catalog_read && result.is_ok() {
-                    self.wait_after_autocommit_read_snapshot()?;
-                }
-                return result;
+            // Catalog statements have no schema/data dependency. Keep them
+            // usable while the default branch is busy or requires repair.
+            #[cfg(test)]
+            if !statement.changes_context_or_catalog() {
+                self.wait_after_autocommit_read_snapshot()?;
             }
+            return self.with_autocommit_exclusive(|database| {
+                database.query_sql_with_prepared_params(sql_text, parameters, prepared)
+            });
         }
-        let prepared = database
-            .runtime
-            .get()?
-            .relational_plan_template_cache
-            .prepare(sql_text)?;
+        let view = self.inner.commits.read_view()?;
         if let SqlStatement::Branch(crate::sql::BranchSqlStatement::UseBranch(_)) =
             prepared.statement()
         {
@@ -441,21 +446,19 @@ impl ConcurrentDatabase {
             });
         }
         if !sql_statement_uses_snapshot(prepared.statement()) {
-            drop(database);
+            drop(view);
             return self.with_autocommit_exclusive(move |database| {
                 database.query_sql_with_prepared_params(sql_text, parameters, prepared)
             });
         }
         let statement_kind = super::observability::sql_statement_kind(prepared.statement());
-        let recorder = database.statement_recorder();
-        let snapshot = database.begin_read_transaction()?;
-        drop(database);
-
         #[cfg(test)]
         self.wait_after_autocommit_read_snapshot()?;
-        let result = snapshot.query_sql_with_prepared_params(sql_text, parameters, prepared);
-        drop(snapshot);
-        recorder.record_statement_execution(
+        let result = self
+            .inner
+            .commits
+            .finish_read(&view, view.query_sql(sql_text, parameters, prepared));
+        view.recorder.record_statement_execution(
             "sql",
             sql_text,
             statement_kind,
@@ -463,7 +466,7 @@ impl ConcurrentDatabase {
             result.as_ref(),
             StatementExecutionContext::default(),
         );
-        result
+        self.inner.commits.finish_read(&view, result)
     }
 
     /// Commits one strict append transaction through the same serialized WAL
@@ -924,9 +927,9 @@ fn sql_statement_uses_snapshot(statement: &SqlStatement) -> bool {
         | SqlStatement::CreateTable(_)
         | SqlStatement::CreateIndex(_)
         | SqlStatement::AlterTableAddColumn(_) => false,
-        // The current branch AST is inspection-only. It executes through a
-        // `DatabaseReadTransaction`, so autocommit catalog reads do not take
-        // the write sequencer's exclusive database lock.
+        // Branch catalog inspection uses the immutable read view. Lifecycle
+        // mutations use the exclusive sequencer; USE BRANCH is rejected before
+        // routing because a shared runtime cannot change its branch context.
         SqlStatement::Branch(statement) => !statement.changes_context_or_catalog(),
     }
 }

@@ -928,6 +928,75 @@ fn every_pre_manifest_crash_keeps_the_previous_root_selected() {
 }
 
 #[test]
+fn descriptor_search_matches_linear_bounds_without_rereading_selected_pages() {
+    for (stride, width, first) in [(10, 2, 0), (10, 0, -20), (3, 1, -12)] {
+        for page_count in [0, 1, 2, 3, 8, 17] {
+            let directory = unique_test_dir("descriptor-search");
+            let config = RelationalRowPagePublicationConfig::default();
+            RelationalRowPagePublisher::new(config)
+                .publish(
+                    &directory,
+                    1,
+                    10,
+                    None,
+                    vec![table_delta(
+                        "documents",
+                        (0..page_count)
+                            .map(|index| {
+                                page(
+                                    index + 1,
+                                    1,
+                                    10,
+                                    first + index as i64 * stride,
+                                    first + index as i64 * stride + width,
+                                )
+                            })
+                            .collect(),
+                    )],
+                )
+                .unwrap();
+            let reader = RelationalRowPageRootReader::open_latest(&directory, config)
+                .unwrap()
+                .unwrap();
+            let descriptors = collect_descriptors(&reader, "documents");
+            for value in first - 1..=first + page_count as i64 * stride + width {
+                let primary_key = RelationalKey(vec![RelationalValue::BigInt(value)]);
+                let encoded =
+                    crate::relational::row_page::encode_ordered_relational_key(&primary_key)
+                        .unwrap();
+                let expected = descriptors
+                    .iter()
+                    .enumerate()
+                    .find(|(_, descriptor)| descriptor.upper_bound.as_slice() >= encoded.as_slice())
+                    .or_else(|| descriptors.iter().enumerate().next_back());
+                let (actual, reads) = reader
+                    .find_table_page_descriptor_accounted("documents", &primary_key)
+                    .unwrap();
+                assert_eq!(
+                    actual
+                        .as_ref()
+                        .map(|(ordinal, descriptor)| (*ordinal as usize, descriptor)),
+                    expected,
+                    "page_count={page_count}, key={value}"
+                );
+                if page_count == 0 {
+                    assert_eq!(reads, 0);
+                } else {
+                    assert!(reads <= page_count.ilog2() as usize + 1);
+                    let middle_lower = first + page_count as i64 / 2 * stride;
+                    if (middle_lower..=middle_lower + width).contains(&value) {
+                        assert_eq!(
+                            reads, 1,
+                            "a key within the first validated page ends the search"
+                        );
+                    }
+                }
+            }
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+}
+#[test]
 fn descriptor_corruption_fails_when_the_selected_entry_is_read() {
     let directory = unique_test_dir("descriptor-corruption");
     let config = RelationalRowPagePublicationConfig::default();
@@ -954,6 +1023,11 @@ fn descriptor_corruption_fails_when_the_selected_entry_is_read() {
     descriptor.sync_all().unwrap();
     assert!(matches!(
         reader.read_table_page_descriptor("documents", 0),
+        Err(RelationalRowPagePublicationError::Corrupt(message))
+            if message.contains("binding checksum")
+    ));
+    assert!(matches!(
+        reader.find_table_page_descriptor("documents", &RelationalKey(vec![RelationalValue::BigInt(1)])),
         Err(RelationalRowPagePublicationError::Corrupt(message))
             if message.contains("binding checksum")
     ));

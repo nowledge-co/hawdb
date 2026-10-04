@@ -1,0 +1,3162 @@
+{
+  "recorded_date_utc": "2026-10-03",
+  "scope": "Prepared AST reuse in append SELECT/EXPLAIN dispatch; no bound-plan cache or durability changes.",
+  "issue": "ref #226",
+  "artifact_root": "/private/tmp/hawdb-pr826-reparse-diagnostic",
+  "build": {
+    "baseline_revision": "88a98036b7dcda8aa09d195a8729b2ced2c80d45",
+    "main_revision": "804f1a6139f73470c58167411f6cad871efffdbf",
+    "candidate_source_sha256": "630076b5db1c42895aa5acfb74675c14cbbc44e914e8a903e690275271a31321",
+    "candidate_library_sha256": "447aec01a949cc2c30aecfd05c50c99882e7a8920669e4547934db3641ae01ae",
+    "harness_sha256": "bae86e60026d86161062eff23d560b1559eae4ab4aa342d633fd8c6714958490",
+    "binary_sha256": {
+      "matrix-after": "9393681662f7da09ba6a17f9ed7d10debe1ef775d7abe249e84232b668451a62",
+      "matrix-before": "c99b73881c188332c2de227aacbc5c7793b4980473f03d6e0c34638ef15753db",
+      "matrix-main": "2e7bbfeda1a09092d4714cad22d00f746121174921dc8b9734aee462b85356d1"
+    },
+    "candidate_code_commit": "e23089a32226c9fbb5b2cbf149f6ac6b23e9d784"
+  },
+  "environment": {
+    "os": "macOS 27.0.1 (26A434)",
+    "arch": "aarch64",
+    "cpu": "Apple M3 Max",
+    "logical_cpus": 16,
+    "memory_bytes": 137438953472,
+    "filesystem": "local APFS SSD",
+    "rust": "1.97.1",
+    "profile": "release, opt-level 3, thin LTO, one codegen unit",
+    "features": "default",
+    "durability": "SyncOnEveryWrite",
+    "group_commit": "default_disabled",
+    "residency_configuration": "Auto",
+    "agent_builds_or_tests_during_timing": false,
+    "background_load_cpu_placement_cache_state": "uncontrolled"
+  },
+  "commands": {
+    "release_build": "RUSTUP_TOOLCHAIN=1.97.1 CARGO_TARGET_DIR=/private/tmp/hawdb-pr826-candidate-target cargo build --locked --release -p hawdb --lib --bench concurrent_snapshot_reads",
+    "matrix": "python3 -u /private/tmp/hawdb-pr826-reparse-diagnostic/run-campaign.py",
+    "raw_report_validation": "python3 /private/tmp/hawdb-pr826-reparse-diagnostic/validate-raw-reports.py",
+    "library_tests": "RUSTUP_TOOLCHAIN=1.97.1 CARGO_TARGET_DIR=/private/tmp/hawdb-power-qualification-target cargo test --locked -p hawdb -p hawdb-relational --lib",
+    "native_lint": "RUSTUP_TOOLCHAIN=1.97.1 CARGO_TARGET_DIR=/private/tmp/hawdb-power-qualification-target prek run --all-files",
+    "wasm_lint": "RUSTUP_TOOLCHAIN=1.97.1 CARGO_TARGET_DIR=/private/tmp/hawdb-power-qualification-target CC_wasm32_unknown_unknown=/usr/bin/clang AR_wasm32_unknown_unknown=/Users/hawkingrei/.rustup/toolchains/1.97.1-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-ar cargo clippy --locked -p hawdb --no-default-features --target wasm32-unknown-unknown --lib --test in_memory_portable -- -D warnings",
+    "bazel": "bazel test //:hawdb_unit_fast_tests //crates/storage:hawdb_storage_tests //docs/tla:HawDBConcurrentSnapshots_check //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test --test_output=errors",
+    "bazel_new_regression": "bazel-bin/crates/relational/test-506949849/hawdb_relational_statement_fuzz_tests --exact tests::prepared_append_reads_rebind_parameters_schema_and_limits"
+  },
+  "validation": {
+    "runtime_code_commit": "e23089a32226c9fbb5b2cbf149f6ac6b23e9d784",
+    "cargo_facade": {
+      "passed": 1665,
+      "ignored": 4
+    },
+    "cargo_relational": {
+      "passed": 154,
+      "ignored": 9
+    },
+    "native_fmt_and_strict_workspace_clippy": "pass, all targets/features; commit hooks also passed",
+    "minimal_wasm_strict_clippy": "pass, compile/lint only",
+    "bazel_first_invocation": {
+      "passed": 97,
+      "timed_out": 1,
+      "graph_projection_residency_fuzz_timeout_seconds": 300.1
+    },
+    "bazel_identical_retry": {
+      "passed": 98,
+      "executed": 1,
+      "cached": 97,
+      "graph_projection_residency_fuzz_seconds": 141.8
+    },
+    "bazel_new_regression": {
+      "passed": 1,
+      "filtered": 162
+    },
+    "timeout_seed_corpus_configuration_changes": false,
+    "tla": "ConcurrentSnapshots target passed from cache; abstract model, not a Rust refinement proof"
+  },
+  "allocation_diagnostic": {
+    "baseline": "88a98036b7dcda8aa09d195a8729b2ced2c80d45",
+    "candidate": "e23089a32226c9fbb5b2cbf149f6ac6b23e9d784",
+    "rounds": {
+      "before": [
+        {
+          "round": 0,
+          "case": "direct_snapshot",
+          "count": 4096,
+          "elapsed_ns": 4606083,
+          "allocation_calls": 73729,
+          "allocated_bytes": 9756736
+        },
+        {
+          "round": 0,
+          "case": "direct_write",
+          "count": 512,
+          "elapsed_ns": 71069500,
+          "allocation_calls": 976947,
+          "allocated_bytes": 119165666
+        },
+        {
+          "round": 0,
+          "case": "standing_snapshot_write",
+          "count": 512,
+          "elapsed_ns": 73412000,
+          "allocation_calls": 991264,
+          "allocated_bytes": 120988034
+        },
+        {
+          "round": 0,
+          "case": "published_snapshot",
+          "count": 4096,
+          "elapsed_ns": 7411083,
+          "allocation_calls": 69634,
+          "allocated_bytes": 9625728
+        },
+        {
+          "round": 0,
+          "case": "published_point",
+          "count": 4096,
+          "elapsed_ns": 103760542,
+          "allocation_calls": 2805760,
+          "allocated_bytes": 388890624
+        },
+        {
+          "round": 0,
+          "case": "published_page",
+          "count": 1024,
+          "elapsed_ns": 71060084,
+          "allocation_calls": 1899520,
+          "allocated_bytes": 270656512
+        },
+        {
+          "round": 0,
+          "case": "concurrent_write",
+          "count": 512,
+          "elapsed_ns": 72799750,
+          "allocation_calls": 984100,
+          "allocated_bytes": 125712946
+        },
+        {
+          "round": 1,
+          "case": "standing_snapshot_write",
+          "count": 512,
+          "elapsed_ns": 72857250,
+          "allocation_calls": 991264,
+          "allocated_bytes": 120988034
+        },
+        {
+          "round": 1,
+          "case": "published_snapshot",
+          "count": 4096,
+          "elapsed_ns": 7193541,
+          "allocation_calls": 69634,
+          "allocated_bytes": 9625728
+        },
+        {
+          "round": 1,
+          "case": "published_point",
+          "count": 4096,
+          "elapsed_ns": 103236666,
+          "allocation_calls": 2805760,
+          "allocated_bytes": 388890624
+        },
+        {
+          "round": 1,
+          "case": "published_page",
+          "count": 1024,
+          "elapsed_ns": 70803458,
+          "allocation_calls": 1899520,
+          "allocated_bytes": 270656512
+        },
+        {
+          "round": 1,
+          "case": "concurrent_write",
+          "count": 512,
+          "elapsed_ns": 72352125,
+          "allocation_calls": 984100,
+          "allocated_bytes": 125712946
+        },
+        {
+          "round": 1,
+          "case": "direct_snapshot",
+          "count": 4096,
+          "elapsed_ns": 4499041,
+          "allocation_calls": 73729,
+          "allocated_bytes": 9756736
+        },
+        {
+          "round": 1,
+          "case": "direct_write",
+          "count": 512,
+          "elapsed_ns": 71090417,
+          "allocation_calls": 976947,
+          "allocated_bytes": 119165666
+        },
+        {
+          "round": 2,
+          "case": "published_snapshot",
+          "count": 4096,
+          "elapsed_ns": 6826667,
+          "allocation_calls": 69634,
+          "allocated_bytes": 9625728
+        },
+        {
+          "round": 2,
+          "case": "published_point",
+          "count": 4096,
+          "elapsed_ns": 103104500,
+          "allocation_calls": 2805760,
+          "allocated_bytes": 388890624
+        },
+        {
+          "round": 2,
+          "case": "published_page",
+          "count": 1024,
+          "elapsed_ns": 70859959,
+          "allocation_calls": 1899520,
+          "allocated_bytes": 270656512
+        },
+        {
+          "round": 2,
+          "case": "concurrent_write",
+          "count": 512,
+          "elapsed_ns": 72129209,
+          "allocation_calls": 984100,
+          "allocated_bytes": 125712946
+        },
+        {
+          "round": 2,
+          "case": "direct_snapshot",
+          "count": 4096,
+          "elapsed_ns": 4744333,
+          "allocation_calls": 73729,
+          "allocated_bytes": 9756736
+        },
+        {
+          "round": 2,
+          "case": "direct_write",
+          "count": 512,
+          "elapsed_ns": 71792458,
+          "allocation_calls": 976947,
+          "allocated_bytes": 119165666
+        },
+        {
+          "round": 2,
+          "case": "standing_snapshot_write",
+          "count": 512,
+          "elapsed_ns": 72666459,
+          "allocation_calls": 991264,
+          "allocated_bytes": 120988034
+        }
+      ],
+      "after": [
+        {
+          "round": 0,
+          "case": "direct_snapshot",
+          "count": 4096,
+          "elapsed_ns": 4527125,
+          "allocation_calls": 73729,
+          "allocated_bytes": 9756736
+        },
+        {
+          "round": 0,
+          "case": "direct_write",
+          "count": 512,
+          "elapsed_ns": 66374542,
+          "allocation_calls": 846899,
+          "allocated_bytes": 93603554
+        },
+        {
+          "round": 0,
+          "case": "standing_snapshot_write",
+          "count": 512,
+          "elapsed_ns": 68012959,
+          "allocation_calls": 861216,
+          "allocated_bytes": 95425922
+        },
+        {
+          "round": 0,
+          "case": "published_snapshot",
+          "count": 4096,
+          "elapsed_ns": 6718667,
+          "allocation_calls": 69634,
+          "allocated_bytes": 9625728
+        },
+        {
+          "round": 0,
+          "case": "published_point",
+          "count": 4096,
+          "elapsed_ns": 47224000,
+          "allocation_calls": 1495040,
+          "allocated_bytes": 123404288
+        },
+        {
+          "round": 0,
+          "case": "published_page",
+          "count": 1024,
+          "elapsed_ns": 49956959,
+          "allocation_calls": 1446912,
+          "allocated_bytes": 180902912
+        },
+        {
+          "round": 0,
+          "case": "concurrent_write",
+          "count": 512,
+          "elapsed_ns": 67345958,
+          "allocation_calls": 854052,
+          "allocated_bytes": 100150834
+        },
+        {
+          "round": 1,
+          "case": "standing_snapshot_write",
+          "count": 512,
+          "elapsed_ns": 66830083,
+          "allocation_calls": 861216,
+          "allocated_bytes": 95425922
+        },
+        {
+          "round": 1,
+          "case": "published_snapshot",
+          "count": 4096,
+          "elapsed_ns": 6745208,
+          "allocation_calls": 69634,
+          "allocated_bytes": 9625728
+        },
+        {
+          "round": 1,
+          "case": "published_point",
+          "count": 4096,
+          "elapsed_ns": 46532334,
+          "allocation_calls": 1495040,
+          "allocated_bytes": 123404288
+        },
+        {
+          "round": 1,
+          "case": "published_page",
+          "count": 1024,
+          "elapsed_ns": 49193042,
+          "allocation_calls": 1446912,
+          "allocated_bytes": 180902912
+        },
+        {
+          "round": 1,
+          "case": "concurrent_write",
+          "count": 512,
+          "elapsed_ns": 66716000,
+          "allocation_calls": 854052,
+          "allocated_bytes": 100150834
+        },
+        {
+          "round": 1,
+          "case": "direct_snapshot",
+          "count": 4096,
+          "elapsed_ns": 4688709,
+          "allocation_calls": 73729,
+          "allocated_bytes": 9756736
+        },
+        {
+          "round": 1,
+          "case": "direct_write",
+          "count": 512,
+          "elapsed_ns": 65700458,
+          "allocation_calls": 846899,
+          "allocated_bytes": 93603554
+        },
+        {
+          "round": 2,
+          "case": "published_snapshot",
+          "count": 4096,
+          "elapsed_ns": 6769834,
+          "allocation_calls": 69634,
+          "allocated_bytes": 9625728
+        },
+        {
+          "round": 2,
+          "case": "published_point",
+          "count": 4096,
+          "elapsed_ns": 46637375,
+          "allocation_calls": 1495040,
+          "allocated_bytes": 123404288
+        },
+        {
+          "round": 2,
+          "case": "published_page",
+          "count": 1024,
+          "elapsed_ns": 49720125,
+          "allocation_calls": 1446912,
+          "allocated_bytes": 180902912
+        },
+        {
+          "round": 2,
+          "case": "concurrent_write",
+          "count": 512,
+          "elapsed_ns": 66999875,
+          "allocation_calls": 854052,
+          "allocated_bytes": 100150834
+        },
+        {
+          "round": 2,
+          "case": "direct_snapshot",
+          "count": 4096,
+          "elapsed_ns": 4437292,
+          "allocation_calls": 73729,
+          "allocated_bytes": 9756736
+        },
+        {
+          "round": 2,
+          "case": "direct_write",
+          "count": 512,
+          "elapsed_ns": 67387292,
+          "allocation_calls": 846899,
+          "allocated_bytes": 93603554
+        },
+        {
+          "round": 2,
+          "case": "standing_snapshot_write",
+          "count": 512,
+          "elapsed_ns": 66444083,
+          "allocation_calls": 861216,
+          "allocated_bytes": 95425922
+        }
+      ]
+    },
+    "comparison": [
+      {
+        "case": "direct_snapshot",
+        "before": {
+          "count": 4096,
+          "allocation_calls": 73729,
+          "allocated_bytes": 9756736,
+          "median_round_average_nanos": 1124.531982421875
+        },
+        "after": {
+          "count": 4096,
+          "allocation_calls": 73729,
+          "allocated_bytes": 9756736,
+          "median_round_average_nanos": 1105.255126953125
+        }
+      },
+      {
+        "case": "direct_write",
+        "before": {
+          "count": 512,
+          "allocation_calls": 976947,
+          "allocated_bytes": 119165666,
+          "median_round_average_nanos": 138848.470703125
+        },
+        "after": {
+          "count": 512,
+          "allocation_calls": 846899,
+          "allocated_bytes": 93603554,
+          "median_round_average_nanos": 129637.77734375
+        }
+      },
+      {
+        "case": "standing_snapshot_write",
+        "before": {
+          "count": 512,
+          "allocation_calls": 991264,
+          "allocated_bytes": 120988034,
+          "median_round_average_nanos": 142299.31640625
+        },
+        "after": {
+          "count": 512,
+          "allocation_calls": 861216,
+          "allocated_bytes": 95425922,
+          "median_round_average_nanos": 130527.505859375
+        }
+      },
+      {
+        "case": "published_snapshot",
+        "before": {
+          "count": 4096,
+          "allocation_calls": 69634,
+          "allocated_bytes": 9625728,
+          "median_round_average_nanos": 1756.235595703125
+        },
+        "after": {
+          "count": 4096,
+          "allocation_calls": 69634,
+          "allocated_bytes": 9625728,
+          "median_round_average_nanos": 1646.779296875
+        }
+      },
+      {
+        "case": "published_point",
+        "before": {
+          "count": 4096,
+          "allocation_calls": 2805760,
+          "allocated_bytes": 388890624,
+          "median_round_average_nanos": 25204.26416015625
+        },
+        "after": {
+          "count": 4096,
+          "allocation_calls": 1495040,
+          "allocated_bytes": 123404288,
+          "median_round_average_nanos": 11386.077880859375
+        }
+      },
+      {
+        "case": "published_page",
+        "before": {
+          "count": 1024,
+          "allocation_calls": 1899520,
+          "allocated_bytes": 270656512,
+          "median_round_average_nanos": 69199.1787109375
+        },
+        "after": {
+          "count": 1024,
+          "allocation_calls": 1446912,
+          "allocated_bytes": 180902912,
+          "median_round_average_nanos": 48554.8095703125
+        }
+      },
+      {
+        "case": "concurrent_write",
+        "before": {
+          "count": 512,
+          "allocation_calls": 984100,
+          "allocated_bytes": 125712946,
+          "median_round_average_nanos": 141312.744140625
+        },
+        "after": {
+          "count": 512,
+          "allocation_calls": 854052,
+          "allocated_bytes": 100150834,
+          "median_round_average_nanos": 130859.130859375
+        }
+      }
+    ],
+    "interpretation": "Requested allocation traffic including reallocations, not retained memory or peak RSS. In-memory timings include allocator instrumentation and result validation; median of three per-round averages is not a durable request percentile."
+  },
+  "sampled_read_diagnostic": {
+    "baseline": "88a98036b7dcda8aa09d195a8729b2ced2c80d45",
+    "candidate": "e23089a32226c9fbb5b2cbf149f6ac6b23e9d784",
+    "runs": {
+      "before": {
+        "timings": {
+          "requests": 262144,
+          "phase_ns": 7639011875,
+          "p50_ns": 84250,
+          "p95_ns": 139125,
+          "p99_ns": 1009250
+        },
+        "sampled_read_worker_stacks": 9766,
+        "sampled_stacks_under_string_append_read_dispatch": 2016,
+        "sample_sha256": "fbc6d0e0e0fef3e842895b95777ed9a83b95932b1fd444f05819b34f8a9100e0"
+      },
+      "after": {
+        "timings": {
+          "requests": 262144,
+          "phase_ns": 5185604875,
+          "p50_ns": 72167,
+          "p95_ns": 90625,
+          "p99_ns": 140166
+        },
+        "sampled_read_worker_stacks": 1954,
+        "sampled_stacks_under_string_append_read_dispatch": 0,
+        "sample_sha256": "cc998053e2e17e8c57fef8c8c7d25001c7d214eee1be0e49ab5e539d9c9250e8"
+      }
+    },
+    "interpretation": "One instrumented before/after run, four warm readers and 262144 validated point requests per process. Reopen checks row count only; full recovery contents are covered by the separate matrix. Stack samples include I/O/waits and are not exact CPU attribution or a general latency bound. Sampled execution phase falls 32.1%, but is not performance qualification."
+  },
+  "durable_matrix": {
+    "order": [
+      [
+        1,
+        "main"
+      ],
+      [
+        1,
+        "candidate"
+      ],
+      [
+        2,
+        "candidate"
+      ],
+      [
+        2,
+        "main"
+      ],
+      [
+        3,
+        "main"
+      ],
+      [
+        3,
+        "candidate"
+      ]
+    ],
+    "runs": [
+      {
+        "pair": 1,
+        "variant": "main",
+        "elapsed_seconds": 59.13700985908508,
+        "stdout_sha256": "ea676f1b8c667801527a61e1df1d91763aee73edbd738ab45036869dfe5bfec0",
+        "stderr_sha256": "d11583d1636cb6a0fdf8f8c3ca0f397a5508c1800ec3efaac435d10f4d0a9430",
+        "timed_requests": 23552,
+        "recovered_rows_verified": 216576,
+        "cases": [
+          {
+            "case": "writer-only",
+            "elapsed_nanos": 4573697042,
+            "read_latency": {
+              "count": 0
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 0,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 111.94445003644384,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 16577417,
+              "min_nanos": 5425250,
+              "p50_nanos": 8769209,
+              "p95_nanos": 10582917,
+              "p99_nanos": 13800917
+            },
+            "writers": 1
+          },
+          {
+            "case": "point-1-readers-writer-false",
+            "elapsed_nanos": 110178625,
+            "read_latency": {
+              "count": 512,
+              "max_nanos": 3692083,
+              "min_nanos": 66875,
+              "p50_nanos": 69458,
+              "p95_nanos": 1209750,
+              "p99_nanos": 1240625
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 1,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 4646.999361264492,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "point-1-readers-writer-true",
+            "elapsed_nanos": 4624160584,
+            "read_latency": {
+              "count": 512,
+              "max_nanos": 143514000,
+              "min_nanos": 134958,
+              "p50_nanos": 9019041,
+              "p95_nanos": 20281041,
+              "p99_nanos": 37968583
+            },
+            "read_requests_within_writer_phase": 372,
+            "read_shape": "point",
+            "readers": 1,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 221.4455967517931,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 18231333,
+              "min_nanos": 4607625,
+              "p50_nanos": 9327125,
+              "p95_nanos": 10590959,
+              "p99_nanos": 12528500
+            },
+            "writers": 1
+          },
+          {
+            "case": "point-4-readers-writer-false",
+            "elapsed_nanos": 73444958,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 2076833,
+              "min_nanos": 66750,
+              "p50_nanos": 91834,
+              "p95_nanos": 120500,
+              "p99_nanos": 1426208
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 4,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 27884.827710024696,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "point-4-readers-writer-true",
+            "elapsed_nanos": 5009638375,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 203848250,
+              "min_nanos": 176084,
+              "p50_nanos": 9538042,
+              "p95_nanos": 21924916,
+              "p99_nanos": 39721583
+            },
+            "read_requests_within_writer_phase": 1982,
+            "read_shape": "point",
+            "readers": 4,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 511.014929296169,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 16856792,
+              "min_nanos": 4677708,
+              "p50_nanos": 9582750,
+              "p95_nanos": 12410250,
+              "p99_nanos": 13665750
+            },
+            "writers": 1
+          },
+          {
+            "case": "point-8-readers-writer-false",
+            "elapsed_nanos": 126992416,
+            "read_latency": {
+              "count": 4096,
+              "max_nanos": 2698333,
+              "min_nanos": 75542,
+              "p50_nanos": 225666,
+              "p95_nanos": 326625,
+              "p99_nanos": 1586000
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 8,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 32253.89459477643,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "point-8-readers-writer-true",
+            "elapsed_nanos": 4854609375,
+            "read_latency": {
+              "count": 4096,
+              "max_nanos": 238206875,
+              "min_nanos": 169500,
+              "p50_nanos": 380167,
+              "p95_nanos": 21837834,
+              "p99_nanos": 43237042
+            },
+            "read_requests_within_writer_phase": 4096,
+            "read_shape": "point",
+            "readers": 8,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 949.2009848887172,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 19590750,
+              "min_nanos": 4661500,
+              "p50_nanos": 9445917,
+              "p95_nanos": 13310333,
+              "p99_nanos": 16523083
+            },
+            "writers": 1
+          },
+          {
+            "case": "page-1-readers-writer-false",
+            "elapsed_nanos": 384721333,
+            "read_latency": {
+              "count": 256,
+              "max_nanos": 2471292,
+              "min_nanos": 1195458,
+              "p50_nanos": 1215750,
+              "p95_nanos": 2357916,
+              "p99_nanos": 2396416
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "page",
+            "readers": 1,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 665.4167004562754,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "page-1-readers-writer-true",
+            "elapsed_nanos": 4428346083,
+            "read_latency": {
+              "count": 256,
+              "max_nanos": 213512417,
+              "min_nanos": 1413917,
+              "p50_nanos": 9680917,
+              "p95_nanos": 24044000,
+              "p99_nanos": 39096209
+            },
+            "read_requests_within_writer_phase": 255,
+            "read_shape": "page",
+            "readers": 1,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 173.42817964211946,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 24533083,
+              "min_nanos": 4572542,
+              "p50_nanos": 8668750,
+              "p95_nanos": 10557458,
+              "p99_nanos": 12059833
+            },
+            "writers": 1
+          },
+          {
+            "case": "page-4-readers-writer-false",
+            "elapsed_nanos": 550668708,
+            "read_latency": {
+              "count": 1024,
+              "max_nanos": 3783167,
+              "min_nanos": 1195792,
+              "p50_nanos": 2050792,
+              "p95_nanos": 2973125,
+              "p99_nanos": 3282208
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "page",
+            "readers": 4,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 1859.557271229583,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "page-4-readers-writer-true",
+            "elapsed_nanos": 4707147292,
+            "read_latency": {
+              "count": 1024,
+              "max_nanos": 1481925041,
+              "min_nanos": 1642500,
+              "p50_nanos": 2335208,
+              "p95_nanos": 53763791,
+              "p99_nanos": 330009250
+            },
+            "read_requests_within_writer_phase": 152,
+            "read_shape": "page",
+            "readers": 4,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 326.3122874039863,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 141897417,
+              "min_nanos": 4531083,
+              "p50_nanos": 6385500,
+              "p95_nanos": 12433125,
+              "p99_nanos": 20980791
+            },
+            "writers": 1
+          },
+          {
+            "case": "page-8-readers-writer-false",
+            "elapsed_nanos": 1733023125,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 9006209,
+              "min_nanos": 1596708,
+              "p50_nanos": 6709167,
+              "p95_nanos": 7350250,
+              "p99_nanos": 8056458
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "page",
+            "readers": 8,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 1181.7499550099772,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "page-8-readers-writer-true",
+            "elapsed_nanos": 5148244500,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 222830167,
+              "min_nanos": 1543916,
+              "p50_nanos": 7668042,
+              "p95_nanos": 65325125,
+              "p99_nanos": 131471792
+            },
+            "read_requests_within_writer_phase": 534,
+            "read_shape": "page",
+            "readers": 8,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 497.256880476442,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 15972167,
+              "min_nanos": 4782334,
+              "p50_nanos": 6574083,
+              "p95_nanos": 12837834,
+              "p99_nanos": 14641209
+            },
+            "writers": 1
+          }
+        ]
+      },
+      {
+        "pair": 1,
+        "variant": "candidate",
+        "elapsed_seconds": 55.00287103652954,
+        "stdout_sha256": "dcba96e0b4ba2f9e5afd72cdafdbb1891978ce8c0cb39486a18c62700cb20a96",
+        "stderr_sha256": "d11583d1636cb6a0fdf8f8c3ca0f397a5508c1800ec3efaac435d10f4d0a9430",
+        "timed_requests": 23552,
+        "recovered_rows_verified": 216576,
+        "cases": [
+          {
+            "case": "writer-only",
+            "elapsed_nanos": 4446017125,
+            "read_latency": {
+              "count": 0
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 0,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 115.159250539324,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 14955750,
+              "min_nanos": 4618833,
+              "p50_nanos": 8638958,
+              "p95_nanos": 10434750,
+              "p99_nanos": 11049208
+            },
+            "writers": 1
+          },
+          {
+            "case": "point-1-readers-writer-false",
+            "elapsed_nanos": 99534583,
+            "read_latency": {
+              "count": 512,
+              "max_nanos": 1326250,
+              "min_nanos": 49000,
+              "p50_nanos": 50875,
+              "p95_nanos": 1207166,
+              "p99_nanos": 1264791
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 1,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 5143.940774836018,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "point-1-readers-writer-true",
+            "elapsed_nanos": 4431592416,
+            "read_latency": {
+              "count": 512,
+              "max_nanos": 4084584,
+              "min_nanos": 47958,
+              "p50_nanos": 51333,
+              "p95_nanos": 1338250,
+              "p99_nanos": 3162625
+            },
+            "read_requests_within_writer_phase": 512,
+            "read_shape": "point",
+            "readers": 1,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 231.06818133881382,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 18449417,
+              "min_nanos": 4592084,
+              "p50_nanos": 9222542,
+              "p95_nanos": 10558375,
+              "p99_nanos": 12541709
+            },
+            "writers": 1
+          },
+          {
+            "case": "point-4-readers-writer-false",
+            "elapsed_nanos": 65503584,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 2024792,
+              "min_nanos": 49125,
+              "p50_nanos": 78500,
+              "p95_nanos": 106875,
+              "p99_nanos": 1431000
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 4,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 31265.46480265874,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "point-4-readers-writer-true",
+            "elapsed_nanos": 4538071917,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 4423500,
+              "min_nanos": 47417,
+              "p50_nanos": 79791,
+              "p95_nanos": 104667,
+              "p99_nanos": 2716083
+            },
+            "read_requests_within_writer_phase": 2048,
+            "read_shape": "point",
+            "readers": 4,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 564.1162253092606,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 16683334,
+              "min_nanos": 4370083,
+              "p50_nanos": 9210083,
+              "p95_nanos": 10530875,
+              "p99_nanos": 11779959
+            },
+            "writers": 1
+          },
+          {
+            "case": "point-8-readers-writer-false",
+            "elapsed_nanos": 129212959,
+            "read_latency": {
+              "count": 4096,
+              "max_nanos": 2669625,
+              "min_nanos": 49625,
+              "p50_nanos": 235625,
+              "p95_nanos": 317000,
+              "p99_nanos": 1629375
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 8,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 31699.60684825738,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "point-8-readers-writer-true",
+            "elapsed_nanos": 4339240625,
+            "read_latency": {
+              "count": 4096,
+              "max_nanos": 4757583,
+              "min_nanos": 52250,
+              "p50_nanos": 243291,
+              "p95_nanos": 327708,
+              "p99_nanos": 2320666
+            },
+            "read_requests_within_writer_phase": 4094,
+            "read_shape": "point",
+            "readers": 8,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 1061.9369604560707,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 15925458,
+              "min_nanos": 4596792,
+              "p50_nanos": 8630917,
+              "p95_nanos": 10505416,
+              "p99_nanos": 11494417
+            },
+            "writers": 1
+          },
+          {
+            "case": "page-1-readers-writer-false",
+            "elapsed_nanos": 387645500,
+            "read_latency": {
+              "count": 256,
+              "max_nanos": 2582083,
+              "min_nanos": 1170333,
+              "p50_nanos": 1211375,
+              "p95_nanos": 2430042,
+              "p99_nanos": 2476375
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "page",
+            "readers": 1,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 660.3971927959954,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "page-1-readers-writer-true",
+            "elapsed_nanos": 3922662208,
+            "read_latency": {
+              "count": 256,
+              "max_nanos": 5331167,
+              "min_nanos": 1187542,
+              "p50_nanos": 1264042,
+              "p95_nanos": 4111000,
+              "p99_nanos": 4681541
+            },
+            "read_requests_within_writer_phase": 256,
+            "read_shape": "page",
+            "readers": 1,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 195.78540268741895,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 125898250,
+              "min_nanos": 4409333,
+              "p50_nanos": 5482958,
+              "p95_nanos": 9592750,
+              "p99_nanos": 116957250
+            },
+            "writers": 1
+          },
+          {
+            "case": "page-4-readers-writer-false",
+            "elapsed_nanos": 543349917,
+            "read_latency": {
+              "count": 1024,
+              "max_nanos": 3607084,
+              "min_nanos": 1184625,
+              "p50_nanos": 2019666,
+              "p95_nanos": 3032125,
+              "p99_nanos": 3353375
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "page",
+            "readers": 4,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 1884.6050546097717,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "page-4-readers-writer-true",
+            "elapsed_nanos": 4388550041,
+            "read_latency": {
+              "count": 1024,
+              "max_nanos": 6482041,
+              "min_nanos": 1303333,
+              "p50_nanos": 2071166,
+              "p95_nanos": 3203042,
+              "p99_nanos": 5621459
+            },
+            "read_requests_within_writer_phase": 1024,
+            "read_shape": "page",
+            "readers": 4,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 350.001705722831,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 15728375,
+              "min_nanos": 4594709,
+              "p50_nanos": 9346625,
+              "p95_nanos": 11361917,
+              "p99_nanos": 13025875
+            },
+            "writers": 1
+          },
+          {
+            "case": "page-8-readers-writer-false",
+            "elapsed_nanos": 1755566500,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 9123125,
+              "min_nanos": 1445083,
+              "p50_nanos": 6818666,
+              "p95_nanos": 7398959,
+              "p99_nanos": 8172916
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "page",
+            "readers": 8,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 1166.5750058456913,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "page-8-readers-writer-true",
+            "elapsed_nanos": 3424274458,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 11062000,
+              "min_nanos": 1323042,
+              "p50_nanos": 6968708,
+              "p95_nanos": 7481750,
+              "p99_nanos": 8585125
+            },
+            "read_requests_within_writer_phase": 2048,
+            "read_shape": "page",
+            "readers": 8,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 747.6036256437246,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 14938209,
+              "min_nanos": 4511167,
+              "p50_nanos": 5530250,
+              "p95_nanos": 10310750,
+              "p99_nanos": 11547834
+            },
+            "writers": 1
+          }
+        ]
+      },
+      {
+        "pair": 2,
+        "variant": "candidate",
+        "elapsed_seconds": 55.960336208343506,
+        "stdout_sha256": "198a6456a14f19d8df7fc11018d5743680b45aecd8f1f34b10ece8a97c65e4d6",
+        "stderr_sha256": "d11583d1636cb6a0fdf8f8c3ca0f397a5508c1800ec3efaac435d10f4d0a9430",
+        "timed_requests": 23552,
+        "recovered_rows_verified": 216576,
+        "cases": [
+          {
+            "case": "writer-only",
+            "elapsed_nanos": 4576949291,
+            "read_latency": {
+              "count": 0
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 0,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 111.8649055183513,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 14669667,
+              "min_nanos": 4599167,
+              "p50_nanos": 9103375,
+              "p95_nanos": 10474750,
+              "p99_nanos": 13434584
+            },
+            "writers": 1
+          },
+          {
+            "case": "point-1-readers-writer-false",
+            "elapsed_nanos": 99982959,
+            "read_latency": {
+              "count": 512,
+              "max_nanos": 1288125,
+              "min_nanos": 48667,
+              "p50_nanos": 54292,
+              "p95_nanos": 1190959,
+              "p99_nanos": 1223833
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 1,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 5120.87264790793,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "point-1-readers-writer-true",
+            "elapsed_nanos": 4412811875,
+            "read_latency": {
+              "count": 512,
+              "max_nanos": 3958625,
+              "min_nanos": 48833,
+              "p50_nanos": 51584,
+              "p95_nanos": 1269583,
+              "p99_nanos": 2987416
+            },
+            "read_requests_within_writer_phase": 511,
+            "read_shape": "point",
+            "readers": 1,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 232.05158728866047,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 15405125,
+              "min_nanos": 4614667,
+              "p50_nanos": 8686000,
+              "p95_nanos": 10453958,
+              "p99_nanos": 11808833
+            },
+            "writers": 1
+          },
+          {
+            "case": "point-4-readers-writer-false",
+            "elapsed_nanos": 64927542,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 2043500,
+              "min_nanos": 48291,
+              "p50_nanos": 77084,
+              "p95_nanos": 102041,
+              "p99_nanos": 1406250
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 4,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 31542.854340612495,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "point-4-readers-writer-true",
+            "elapsed_nanos": 4460915375,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 4713125,
+              "min_nanos": 49583,
+              "p50_nanos": 77958,
+              "p95_nanos": 106458,
+              "p99_nanos": 2930208
+            },
+            "read_requests_within_writer_phase": 2048,
+            "read_shape": "point",
+            "readers": 4,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 573.8732490526118,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 16444625,
+              "min_nanos": 4620958,
+              "p50_nanos": 8697125,
+              "p95_nanos": 10271750,
+              "p99_nanos": 11413667
+            },
+            "writers": 1
+          },
+          {
+            "case": "point-8-readers-writer-false",
+            "elapsed_nanos": 131296250,
+            "read_latency": {
+              "count": 4096,
+              "max_nanos": 2708042,
+              "min_nanos": 49209,
+              "p50_nanos": 239958,
+              "p95_nanos": 322625,
+              "p99_nanos": 1606125
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 8,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 31196.625950855414,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "point-8-readers-writer-true",
+            "elapsed_nanos": 5615174833,
+            "read_latency": {
+              "count": 4096,
+              "max_nanos": 112708500,
+              "min_nanos": 51250,
+              "p50_nanos": 239208,
+              "p95_nanos": 387291,
+              "p99_nanos": 24415416
+            },
+            "read_requests_within_writer_phase": 4096,
+            "read_shape": "point",
+            "readers": 8,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 820.6333973644236,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 147145959,
+              "min_nanos": 7528625,
+              "p50_nanos": 9398583,
+              "p95_nanos": 10692334,
+              "p99_nanos": 129333042
+            },
+            "writers": 1
+          },
+          {
+            "case": "page-1-readers-writer-false",
+            "elapsed_nanos": 384615500,
+            "read_latency": {
+              "count": 256,
+              "max_nanos": 3734792,
+              "min_nanos": 1162333,
+              "p50_nanos": 1185583,
+              "p95_nanos": 2405459,
+              "p99_nanos": 3517959
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "page",
+            "readers": 1,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 665.5998003200599,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "page-1-readers-writer-true",
+            "elapsed_nanos": 4486212834,
+            "read_latency": {
+              "count": 256,
+              "max_nanos": 4643000,
+              "min_nanos": 1188333,
+              "p50_nanos": 1229583,
+              "p95_nanos": 3430666,
+              "p99_nanos": 4282500
+            },
+            "read_requests_within_writer_phase": 255,
+            "read_shape": "page",
+            "readers": 1,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 171.19116466777956,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 16014958,
+              "min_nanos": 4612000,
+              "p50_nanos": 9395042,
+              "p95_nanos": 10685417,
+              "p99_nanos": 12471292
+            },
+            "writers": 1
+          },
+          {
+            "case": "page-4-readers-writer-false",
+            "elapsed_nanos": 551253041,
+            "read_latency": {
+              "count": 1024,
+              "max_nanos": 3717541,
+              "min_nanos": 1186333,
+              "p50_nanos": 2067625,
+              "p95_nanos": 2859500,
+              "p99_nanos": 3288833
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "page",
+            "readers": 4,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 1857.586124409244,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "page-4-readers-writer-true",
+            "elapsed_nanos": 4184930750,
+            "read_latency": {
+              "count": 1024,
+              "max_nanos": 6268875,
+              "min_nanos": 1277000,
+              "p50_nanos": 2042833,
+              "p95_nanos": 3502625,
+              "p99_nanos": 5540292
+            },
+            "read_requests_within_writer_phase": 1024,
+            "read_shape": "page",
+            "readers": 4,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 367.0311629409877,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 14530667,
+              "min_nanos": 4501250,
+              "p50_nanos": 8589834,
+              "p95_nanos": 10567750,
+              "p99_nanos": 11708000
+            },
+            "writers": 1
+          },
+          {
+            "case": "page-8-readers-writer-false",
+            "elapsed_nanos": 1815441542,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 10071333,
+              "min_nanos": 1705125,
+              "p50_nanos": 7018833,
+              "p95_nanos": 7821333,
+              "p99_nanos": 8701417
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "page",
+            "readers": 8,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 1128.1002183875332,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "page-8-readers-writer-true",
+            "elapsed_nanos": 3204555792,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 15312792,
+              "min_nanos": 1472167,
+              "p50_nanos": 7562250,
+              "p95_nanos": 8794167,
+              "p99_nanos": 11603541
+            },
+            "read_requests_within_writer_phase": 2048,
+            "read_shape": "page",
+            "readers": 8,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 798.8626711979556,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 17776458,
+              "min_nanos": 4320875,
+              "p50_nanos": 5490750,
+              "p95_nanos": 10154666,
+              "p99_nanos": 11459333
+            },
+            "writers": 1
+          }
+        ]
+      },
+      {
+        "pair": 2,
+        "variant": "main",
+        "elapsed_seconds": 58.15244698524475,
+        "stdout_sha256": "1fb5c9180574bfb5662249050d3174c2994c022b11dec4e39daae1301b20d246",
+        "stderr_sha256": "d11583d1636cb6a0fdf8f8c3ca0f397a5508c1800ec3efaac435d10f4d0a9430",
+        "timed_requests": 23552,
+        "recovered_rows_verified": 216576,
+        "cases": [
+          {
+            "case": "writer-only",
+            "elapsed_nanos": 4623191166,
+            "read_latency": {
+              "count": 0
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 0,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 110.74601538551218,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 24846042,
+              "min_nanos": 4556542,
+              "p50_nanos": 9322333,
+              "p95_nanos": 10650083,
+              "p99_nanos": 12758084
+            },
+            "writers": 1
+          },
+          {
+            "case": "point-1-readers-writer-false",
+            "elapsed_nanos": 108912459,
+            "read_latency": {
+              "count": 512,
+              "max_nanos": 1373958,
+              "min_nanos": 66750,
+              "p50_nanos": 68375,
+              "p95_nanos": 1229583,
+              "p99_nanos": 1283708
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 1,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 4701.023231878366,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "point-1-readers-writer-true",
+            "elapsed_nanos": 5732808833,
+            "read_latency": {
+              "count": 512,
+              "max_nanos": 397753125,
+              "min_nanos": 120292,
+              "p50_nanos": 8899167,
+              "p95_nanos": 26775334,
+              "p99_nanos": 55007334
+            },
+            "read_requests_within_writer_phase": 352,
+            "read_shape": "point",
+            "readers": 1,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 178.6209918784501,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 141387792,
+              "min_nanos": 4619208,
+              "p50_nanos": 9289042,
+              "p95_nanos": 11560792,
+              "p99_nanos": 129997291
+            },
+            "writers": 1
+          },
+          {
+            "case": "point-4-readers-writer-false",
+            "elapsed_nanos": 76312167,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 4868625,
+              "min_nanos": 66250,
+              "p50_nanos": 89667,
+              "p95_nanos": 120209,
+              "p99_nanos": 1561208
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 4,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 26837.135944521142,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "point-4-readers-writer-true",
+            "elapsed_nanos": 4450786875,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 225018833,
+              "min_nanos": 128709,
+              "p50_nanos": 1213500,
+              "p95_nanos": 28261042,
+              "p99_nanos": 85435958
+            },
+            "read_requests_within_writer_phase": 1317,
+            "read_shape": "point",
+            "readers": 4,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 575.179192331019,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 21585125,
+              "min_nanos": 4778417,
+              "p50_nanos": 8913917,
+              "p95_nanos": 11688750,
+              "p99_nanos": 13152917
+            },
+            "writers": 1
+          },
+          {
+            "case": "point-8-readers-writer-false",
+            "elapsed_nanos": 126574625,
+            "read_latency": {
+              "count": 4096,
+              "max_nanos": 2665542,
+              "min_nanos": 67833,
+              "p50_nanos": 222334,
+              "p95_nanos": 317292,
+              "p99_nanos": 1619708
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 8,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 32360.356588060207,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "point-8-readers-writer-true",
+            "elapsed_nanos": 4732915041,
+            "read_latency": {
+              "count": 4096,
+              "max_nanos": 211862375,
+              "min_nanos": 165542,
+              "p50_nanos": 345625,
+              "p95_nanos": 24015500,
+              "p99_nanos": 36302542
+            },
+            "read_requests_within_writer_phase": 4096,
+            "read_shape": "point",
+            "readers": 8,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 973.6071660027924,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 17080500,
+              "min_nanos": 4788834,
+              "p50_nanos": 9232459,
+              "p95_nanos": 13096500,
+              "p99_nanos": 14817000
+            },
+            "writers": 1
+          },
+          {
+            "case": "page-1-readers-writer-false",
+            "elapsed_nanos": 386847375,
+            "read_latency": {
+              "count": 256,
+              "max_nanos": 2514042,
+              "min_nanos": 1183542,
+              "p50_nanos": 1206167,
+              "p95_nanos": 2423709,
+              "p99_nanos": 2467250
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "page",
+            "readers": 1,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 661.7596926953427,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "page-1-readers-writer-true",
+            "elapsed_nanos": 4282084417,
+            "read_latency": {
+              "count": 256,
+              "max_nanos": 135937125,
+              "min_nanos": 1471667,
+              "p50_nanos": 9498958,
+              "p95_nanos": 32166292,
+              "p99_nanos": 47214000
+            },
+            "read_requests_within_writer_phase": 256,
+            "read_shape": "page",
+            "readers": 1,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 179.35190556987098,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 17566250,
+              "min_nanos": 4823542,
+              "p50_nanos": 8470666,
+              "p95_nanos": 10477875,
+              "p99_nanos": 11686792
+            },
+            "writers": 1
+          },
+          {
+            "case": "page-4-readers-writer-false",
+            "elapsed_nanos": 555018750,
+            "read_latency": {
+              "count": 1024,
+              "max_nanos": 3709208,
+              "min_nanos": 1243709,
+              "p50_nanos": 2083542,
+              "p95_nanos": 2871000,
+              "p99_nanos": 3240166
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "page",
+            "readers": 4,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 1844.982714547932,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "page-4-readers-writer-true",
+            "elapsed_nanos": 4254459292,
+            "read_latency": {
+              "count": 1024,
+              "max_nanos": 185624875,
+              "min_nanos": 1658583,
+              "p50_nanos": 12440042,
+              "p95_nanos": 40915209,
+              "p99_nanos": 85990791
+            },
+            "read_requests_within_writer_phase": 601,
+            "read_shape": "page",
+            "readers": 4,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 361.032952621797,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 15815292,
+              "min_nanos": 4752750,
+              "p50_nanos": 6779167,
+              "p95_nanos": 11623250,
+              "p99_nanos": 13180125
+            },
+            "writers": 1
+          },
+          {
+            "case": "page-8-readers-writer-false",
+            "elapsed_nanos": 1799863500,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 9594792,
+              "min_nanos": 1730000,
+              "p50_nanos": 6992291,
+              "p95_nanos": 7624875,
+              "p99_nanos": 8099084
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "page",
+            "readers": 8,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 1137.8640658027678,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "page-8-readers-writer-true",
+            "elapsed_nanos": 5002674917,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 152078875,
+              "min_nanos": 1545917,
+              "p50_nanos": 7025708,
+              "p95_nanos": 73264208,
+              "p99_nanos": 95141584
+            },
+            "read_requests_within_writer_phase": 514,
+            "read_shape": "page",
+            "readers": 8,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 511.7262349589525,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 18866167,
+              "min_nanos": 4765416,
+              "p50_nanos": 6471791,
+              "p95_nanos": 13012084,
+              "p99_nanos": 15400042
+            },
+            "writers": 1
+          }
+        ]
+      },
+      {
+        "pair": 3,
+        "variant": "main",
+        "elapsed_seconds": 63.05643391609192,
+        "stdout_sha256": "4fe3f696db5dc5dc8e7e832ceb25398c93864623411d2afc3df41055f1fb0d84",
+        "stderr_sha256": "d11583d1636cb6a0fdf8f8c3ca0f397a5508c1800ec3efaac435d10f4d0a9430",
+        "timed_requests": 23552,
+        "recovered_rows_verified": 216576,
+        "cases": [
+          {
+            "case": "writer-only",
+            "elapsed_nanos": 5244018666,
+            "read_latency": {
+              "count": 0
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 0,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 97.63504529829223,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 127637708,
+              "min_nanos": 4642750,
+              "p50_nanos": 8490333,
+              "p95_nanos": 10518792,
+              "p99_nanos": 118088792
+            },
+            "writers": 1
+          },
+          {
+            "case": "point-1-readers-writer-false",
+            "elapsed_nanos": 108889167,
+            "read_latency": {
+              "count": 512,
+              "max_nanos": 1340791,
+              "min_nanos": 66792,
+              "p50_nanos": 68916,
+              "p95_nanos": 1226708,
+              "p99_nanos": 1263917
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 1,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 4702.028806961119,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "point-1-readers-writer-true",
+            "elapsed_nanos": 4522745750,
+            "read_latency": {
+              "count": 512,
+              "max_nanos": 225150917,
+              "min_nanos": 119292,
+              "p50_nanos": 8573958,
+              "p95_nanos": 20849584,
+              "p99_nanos": 30638458
+            },
+            "read_requests_within_writer_phase": 359,
+            "read_shape": "point",
+            "readers": 1,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 226.4111353153115,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 20480459,
+              "min_nanos": 4600708,
+              "p50_nanos": 8656333,
+              "p95_nanos": 10471208,
+              "p99_nanos": 12488167
+            },
+            "writers": 1
+          },
+          {
+            "case": "point-4-readers-writer-false",
+            "elapsed_nanos": 72047750,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 2020292,
+              "min_nanos": 66333,
+              "p50_nanos": 90791,
+              "p95_nanos": 123584,
+              "p99_nanos": 1411458
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 4,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 28425.5927492531,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "point-4-readers-writer-true",
+            "elapsed_nanos": 4953807417,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 204542375,
+              "min_nanos": 183209,
+              "p50_nanos": 9333417,
+              "p95_nanos": 26723834,
+              "p99_nanos": 38162875
+            },
+            "read_requests_within_writer_phase": 2011,
+            "read_shape": "point",
+            "readers": 4,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 516.7742272771521,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 18961125,
+              "min_nanos": 4692250,
+              "p50_nanos": 9485917,
+              "p95_nanos": 12409916,
+              "p99_nanos": 15795209
+            },
+            "writers": 1
+          },
+          {
+            "case": "point-8-readers-writer-false",
+            "elapsed_nanos": 130606208,
+            "read_latency": {
+              "count": 4096,
+              "max_nanos": 2697250,
+              "min_nanos": 71250,
+              "p50_nanos": 234042,
+              "p95_nanos": 327833,
+              "p99_nanos": 1618208
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 8,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 31361.449526197102,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "point-8-readers-writer-true",
+            "elapsed_nanos": 4691689750,
+            "read_latency": {
+              "count": 4096,
+              "max_nanos": 200261291,
+              "min_nanos": 162083,
+              "p50_nanos": 354250,
+              "p95_nanos": 17420375,
+              "p99_nanos": 31081625
+            },
+            "read_requests_within_writer_phase": 4096,
+            "read_shape": "point",
+            "readers": 8,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 982.1621303923603,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 16323417,
+              "min_nanos": 4569500,
+              "p50_nanos": 8764167,
+              "p95_nanos": 12436875,
+              "p99_nanos": 14025250
+            },
+            "writers": 1
+          },
+          {
+            "case": "page-1-readers-writer-false",
+            "elapsed_nanos": 387887625,
+            "read_latency": {
+              "count": 256,
+              "max_nanos": 2501417,
+              "min_nanos": 1193000,
+              "p50_nanos": 1214667,
+              "p95_nanos": 2421291,
+              "p99_nanos": 2481500
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "page",
+            "readers": 1,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 659.9849634285188,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "page-1-readers-writer-true",
+            "elapsed_nanos": 4064169917,
+            "read_latency": {
+              "count": 256,
+              "max_nanos": 193357125,
+              "min_nanos": 1432667,
+              "p50_nanos": 9335875,
+              "p95_nanos": 25138459,
+              "p99_nanos": 42461916
+            },
+            "read_requests_within_writer_phase": 255,
+            "read_shape": "page",
+            "readers": 1,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 188.9684771267894,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 12081542,
+              "min_nanos": 4506000,
+              "p50_nanos": 8362625,
+              "p95_nanos": 9587459,
+              "p99_nanos": 10495375
+            },
+            "writers": 1
+          },
+          {
+            "case": "page-4-readers-writer-false",
+            "elapsed_nanos": 547736917,
+            "read_latency": {
+              "count": 1024,
+              "max_nanos": 3670542,
+              "min_nanos": 1239166,
+              "p50_nanos": 2051458,
+              "p95_nanos": 2940084,
+              "p99_nanos": 3306583
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "page",
+            "readers": 4,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 1869.510650493547,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "page-4-readers-writer-true",
+            "elapsed_nanos": 3921451583,
+            "read_latency": {
+              "count": 1024,
+              "max_nanos": 430239125,
+              "min_nanos": 1434667,
+              "p50_nanos": 2427000,
+              "p95_nanos": 42860500,
+              "p99_nanos": 235700583
+            },
+            "read_requests_within_writer_phase": 336,
+            "read_shape": "page",
+            "readers": 4,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 391.6916905614132,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 16614541,
+              "min_nanos": 4446875,
+              "p50_nanos": 6393208,
+              "p95_nanos": 10917000,
+              "p99_nanos": 13217542
+            },
+            "writers": 1
+          },
+          {
+            "case": "page-8-readers-writer-false",
+            "elapsed_nanos": 2132548875,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 94885959,
+              "min_nanos": 1274833,
+              "p50_nanos": 7321583,
+              "p95_nanos": 13324708,
+              "p99_nanos": 46995250
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "page",
+            "readers": 8,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 960.3531361033871,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "page-8-readers-writer-true",
+            "elapsed_nanos": 7349196750,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 628267291,
+              "min_nanos": 2196416,
+              "p50_nanos": 13111750,
+              "p95_nanos": 96091666,
+              "p99_nanos": 301355000
+            },
+            "read_requests_within_writer_phase": 167,
+            "read_shape": "page",
+            "readers": 8,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 348.33738802815424,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 20511333,
+              "min_nanos": 5363209,
+              "p50_nanos": 6479291,
+              "p95_nanos": 9508125,
+              "p99_nanos": 11319583
+            },
+            "writers": 1
+          }
+        ]
+      },
+      {
+        "pair": 3,
+        "variant": "candidate",
+        "elapsed_seconds": 59.90414786338806,
+        "stdout_sha256": "ac682fc6495861c9b76c2a8ad6ab4cf923f8e5ef12aebf3ab4a7eb5ea9d2bf69",
+        "stderr_sha256": "d11583d1636cb6a0fdf8f8c3ca0f397a5508c1800ec3efaac435d10f4d0a9430",
+        "timed_requests": 23552,
+        "recovered_rows_verified": 216576,
+        "cases": [
+          {
+            "case": "writer-only",
+            "elapsed_nanos": 4341129792,
+            "read_latency": {
+              "count": 0
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 0,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 117.94164757375677,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 20819958,
+              "min_nanos": 6480042,
+              "p50_nanos": 8357500,
+              "p95_nanos": 11460667,
+              "p99_nanos": 14944167
+            },
+            "writers": 1
+          },
+          {
+            "case": "point-1-readers-writer-false",
+            "elapsed_nanos": 107672250,
+            "read_latency": {
+              "count": 512,
+              "max_nanos": 1337750,
+              "min_nanos": 50958,
+              "p50_nanos": 59834,
+              "p95_nanos": 1279958,
+              "p99_nanos": 1308667
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 1,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 4755.171364952436,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "point-1-readers-writer-true",
+            "elapsed_nanos": 4910940000,
+            "read_latency": {
+              "count": 512,
+              "max_nanos": 3981125,
+              "min_nanos": 51125,
+              "p50_nanos": 56375,
+              "p95_nanos": 1298708,
+              "p99_nanos": 3102709
+            },
+            "read_requests_within_writer_phase": 512,
+            "read_shape": "point",
+            "readers": 1,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 208.51405229955975,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 38199000,
+              "min_nanos": 4615708,
+              "p50_nanos": 9588833,
+              "p95_nanos": 13476000,
+              "p99_nanos": 17390500
+            },
+            "writers": 1
+          },
+          {
+            "case": "point-4-readers-writer-false",
+            "elapsed_nanos": 70590208,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 2034792,
+              "min_nanos": 55792,
+              "p50_nanos": 85250,
+              "p95_nanos": 168750,
+              "p99_nanos": 1418750
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 4,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 29012.522530037026,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "point-4-readers-writer-true",
+            "elapsed_nanos": 4974696250,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 4734541,
+              "min_nanos": 53458,
+              "p50_nanos": 78084,
+              "p95_nanos": 128375,
+              "p99_nanos": 2475666
+            },
+            "read_requests_within_writer_phase": 2048,
+            "read_shape": "point",
+            "readers": 4,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 514.6042836283723,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 21160208,
+              "min_nanos": 4623959,
+              "p50_nanos": 9766916,
+              "p95_nanos": 12432750,
+              "p99_nanos": 13772375
+            },
+            "writers": 1
+          },
+          {
+            "case": "point-8-readers-writer-false",
+            "elapsed_nanos": 141292834,
+            "read_latency": {
+              "count": 4096,
+              "max_nanos": 2726958,
+              "min_nanos": 54667,
+              "p50_nanos": 261750,
+              "p95_nanos": 356083,
+              "p99_nanos": 1699750
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "point",
+            "readers": 8,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 28989.43905392966,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "point-8-readers-writer-true",
+            "elapsed_nanos": 3160877416,
+            "read_latency": {
+              "count": 4096,
+              "max_nanos": 5550458,
+              "min_nanos": 53416,
+              "p50_nanos": 253459,
+              "p95_nanos": 331667,
+              "p99_nanos": 2498500
+            },
+            "read_requests_within_writer_phase": 4096,
+            "read_shape": "point",
+            "readers": 8,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 1457.8230641513749,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 16743292,
+              "min_nanos": 4449791,
+              "p50_nanos": 5760833,
+              "p95_nanos": 8482708,
+              "p99_nanos": 9515000
+            },
+            "writers": 1
+          },
+          {
+            "case": "page-1-readers-writer-false",
+            "elapsed_nanos": 403632875,
+            "read_latency": {
+              "count": 256,
+              "max_nanos": 2690791,
+              "min_nanos": 1176750,
+              "p50_nanos": 1248125,
+              "p95_nanos": 2595500,
+              "p99_nanos": 2676959
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "page",
+            "readers": 1,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 634.2397159795272,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "page-1-readers-writer-true",
+            "elapsed_nanos": 3355727167,
+            "read_latency": {
+              "count": 256,
+              "max_nanos": 5474917,
+              "min_nanos": 1191125,
+              "p50_nanos": 1287375,
+              "p95_nanos": 3914000,
+              "p99_nanos": 4736792
+            },
+            "read_requests_within_writer_phase": 256,
+            "read_shape": "page",
+            "readers": 1,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 228.86246759047083,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 16027167,
+              "min_nanos": 4346875,
+              "p50_nanos": 5563833,
+              "p95_nanos": 10459666,
+              "p99_nanos": 13384000
+            },
+            "writers": 1
+          },
+          {
+            "case": "page-4-readers-writer-false",
+            "elapsed_nanos": 635083250,
+            "read_latency": {
+              "count": 1024,
+              "max_nanos": 4874959,
+              "min_nanos": 1259875,
+              "p50_nanos": 2188209,
+              "p95_nanos": 3534750,
+              "p99_nanos": 4146125
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "page",
+            "readers": 4,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 1612.3870374474527,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "page-4-readers-writer-true",
+            "elapsed_nanos": 4412802125,
+            "read_latency": {
+              "count": 1024,
+              "max_nanos": 6187834,
+              "min_nanos": 1219166,
+              "p50_nanos": 2064792,
+              "p95_nanos": 3635791,
+              "p99_nanos": 5571958
+            },
+            "read_requests_within_writer_phase": 1024,
+            "read_shape": "page",
+            "readers": 4,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 348.078150003157,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 141211875,
+              "min_nanos": 4329250,
+              "p50_nanos": 6552334,
+              "p95_nanos": 9559458,
+              "p99_nanos": 129321292
+            },
+            "writers": 1
+          },
+          {
+            "case": "page-8-readers-writer-false",
+            "elapsed_nanos": 1804310250,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 9602167,
+              "min_nanos": 1527834,
+              "p50_nanos": 7020333,
+              "p95_nanos": 7600708,
+              "p99_nanos": 8175917
+            },
+            "read_requests_within_writer_phase": 0,
+            "read_shape": "page",
+            "readers": 8,
+            "recovered_commit_epoch": 131,
+            "recovered_rows_verified": 16384,
+            "requests_per_second": 1135.05978254017,
+            "write_latency": {
+              "count": 0
+            },
+            "writers": 0
+          },
+          {
+            "case": "page-8-readers-writer-true",
+            "elapsed_nanos": 3149861750,
+            "read_latency": {
+              "count": 2048,
+              "max_nanos": 11011417,
+              "min_nanos": 1378875,
+              "p50_nanos": 7826250,
+              "p95_nanos": 8421916,
+              "p99_nanos": 9223875
+            },
+            "read_requests_within_writer_phase": 2047,
+            "read_shape": "page",
+            "readers": 8,
+            "recovered_commit_epoch": 643,
+            "recovered_rows_verified": 16896,
+            "requests_per_second": 812.7340826942643,
+            "write_latency": {
+              "count": 512,
+              "max_nanos": 17315500,
+              "min_nanos": 4546041,
+              "p50_nanos": 5563000,
+              "p95_nanos": 8756416,
+              "p99_nanos": 9666166
+            },
+            "writers": 1
+          }
+        ]
+      }
+    ]
+  },
+  "paired_p95_and_throughput_changes": [
+    {
+      "case": "writer-only",
+      "pairs": [
+        {
+          "pair": 1,
+          "throughput_change_percent": 2.8717819434849856,
+          "read_latency_p95_change_percent": null,
+          "write_latency_p95_change_percent": -1.4000582259125705
+        },
+        {
+          "pair": 2,
+          "throughput_change_percent": 1.0103208941145247,
+          "read_latency_p95_change_percent": null,
+          "write_latency_p95_change_percent": -1.646306418457022
+        },
+        {
+          "pair": 3,
+          "throughput_change_percent": 20.798476831166823,
+          "read_latency_p95_change_percent": null,
+          "write_latency_p95_change_percent": 8.954212613007284
+        }
+      ]
+    },
+    {
+      "case": "point-1-readers-writer-false",
+      "pairs": [
+        {
+          "pair": 1,
+          "throughput_change_percent": 10.693812822825599,
+          "read_latency_p95_change_percent": -0.21359785079562155,
+          "write_latency_p95_change_percent": null
+        },
+        {
+          "pair": 2,
+          "throughput_change_percent": 8.931021935448014,
+          "read_latency_p95_change_percent": -3.141227554382253,
+          "write_latency_p95_change_percent": null
+        },
+        {
+          "pair": 3,
+          "throughput_change_percent": 1.130204857797601,
+          "read_latency_p95_change_percent": 4.3408863396994235,
+          "write_latency_p95_change_percent": null
+        }
+      ]
+    },
+    {
+      "case": "point-1-readers-writer-true",
+      "pairs": [
+        {
+          "pair": 1,
+          "throughput_change_percent": 4.345349254248743,
+          "read_latency_p95_change_percent": -93.40147283366767,
+          "write_latency_p95_change_percent": -0.3076586360120981
+        },
+        {
+          "pair": 2,
+          "throughput_change_percent": 29.91283098829134,
+          "read_latency_p95_change_percent": -95.25838594581117,
+          "write_latency_p95_change_percent": -9.57403264413026
+        },
+        {
+          "pair": 3,
+          "throughput_change_percent": -7.904683217469566,
+          "read_latency_p95_change_percent": -93.77106037223572,
+          "write_latency_p95_change_percent": 28.695753154745862
+        }
+      ]
+    },
+    {
+      "case": "point-4-readers-writer-false",
+      "pairs": [
+        {
+          "pair": 1,
+          "throughput_change_percent": 12.12357174227292,
+          "read_latency_p95_change_percent": -11.307053941908718,
+          "write_latency_p95_change_percent": null
+        },
+        {
+          "pair": 2,
+          "throughput_change_percent": 17.534353911010527,
+          "read_latency_p95_change_percent": -15.113677012536497,
+          "write_latency_p95_change_percent": null
+        },
+        {
+          "pair": 3,
+          "throughput_change_percent": 2.0647934625720232,
+          "read_latency_p95_change_percent": 36.54680217503885,
+          "write_latency_p95_change_percent": null
+        }
+      ]
+    },
+    {
+      "case": "point-4-readers-writer-true",
+      "pairs": [
+        {
+          "pair": 1,
+          "throughput_change_percent": 10.39133946364914,
+          "read_latency_p95_change_percent": -99.52261162596928,
+          "write_latency_p95_change_percent": -15.143731995729336
+        },
+        {
+          "pair": 2,
+          "throughput_change_percent": -0.22704981261832957,
+          "read_latency_p95_change_percent": -99.62330475995896,
+          "write_latency_p95_change_percent": -12.122767618436537
+        },
+        {
+          "pair": 3,
+          "throughput_change_percent": -0.41990167741396967,
+          "read_latency_p95_change_percent": -99.5196235689834,
+          "write_latency_p95_change_percent": 0.1839980222267501
+        }
+      ]
+    },
+    {
+      "case": "point-8-readers-writer-false",
+      "pairs": [
+        {
+          "pair": 1,
+          "throughput_change_percent": -1.718514162344964,
+          "read_latency_p95_change_percent": -2.9468044393417547,
+          "write_latency_p95_change_percent": null
+        },
+        {
+          "pair": 2,
+          "throughput_change_percent": -3.596161352666205,
+          "read_latency_p95_change_percent": 1.6807861528182144,
+          "write_latency_p95_change_percent": null
+        },
+        {
+          "pair": 3,
+          "throughput_change_percent": -7.563459304666509,
+          "read_latency_p95_change_percent": 8.617192289976906,
+          "write_latency_p95_change_percent": null
+        }
+      ]
+    },
+    {
+      "case": "point-8-readers-writer-true",
+      "pairs": [
+        {
+          "pair": 1,
+          "throughput_change_percent": 11.876934112175451,
+          "read_latency_p95_change_percent": -98.49935666696614,
+          "write_latency_p95_change_percent": -21.07322934745509
+        },
+        {
+          "pair": 2,
+          "throughput_change_percent": -15.712062727148224,
+          "read_latency_p95_change_percent": -98.38732901667673,
+          "write_latency_p95_change_percent": -18.3573168403772
+        },
+        {
+          "pair": 3,
+          "throughput_change_percent": 48.429981063207414,
+          "read_latency_p95_change_percent": -98.09609724245317,
+          "write_latency_p95_change_percent": -31.793895170611584
+        }
+      ]
+    },
+    {
+      "case": "page-1-readers-writer-false",
+      "pairs": [
+        {
+          "pair": 1,
+          "throughput_change_percent": -0.7543404992447877,
+          "read_latency_p95_change_percent": 3.0588875939600912,
+          "write_latency_p95_change_percent": null
+        },
+        {
+          "pair": 2,
+          "throughput_change_percent": 0.5802873259137975,
+          "read_latency_p95_change_percent": -0.7529781834370364,
+          "write_latency_p95_change_percent": null
+        },
+        {
+          "pair": 3,
+          "throughput_change_percent": -3.9008839406354134,
+          "read_latency_p95_change_percent": 7.194880747502053,
+          "write_latency_p95_change_percent": null
+        }
+      ]
+    },
+    {
+      "case": "page-1-readers-writer-true",
+      "pairs": [
+        {
+          "pair": 1,
+          "throughput_change_percent": 12.891343893152252,
+          "read_latency_p95_change_percent": -82.90217933788055,
+          "write_latency_p95_change_percent": -9.137692046702906
+        },
+        {
+          "pair": 2,
+          "throughput_change_percent": -4.550127792710967,
+          "read_latency_p95_change_percent": -89.33459287132007,
+          "write_latency_p95_change_percent": 1.98076422938811
+        },
+        {
+          "pair": 3,
+          "throughput_change_percent": 21.1114525926535,
+          "read_latency_p95_change_percent": -84.43023098591684,
+          "write_latency_p95_change_percent": 9.097373975732248
+        }
+      ]
+    },
+    {
+      "case": "page-4-readers-writer-false",
+      "pairs": [
+        {
+          "pair": 1,
+          "throughput_change_percent": 1.3469756359602014,
+          "read_latency_p95_change_percent": 1.9844439772966238,
+          "write_latency_p95_change_percent": null
+        },
+        {
+          "pair": 2,
+          "throughput_change_percent": 0.6831180456018604,
+          "read_latency_p95_change_percent": -0.40055729710901655,
+          "write_latency_p95_change_percent": null
+        },
+        {
+          "pair": 3,
+          "throughput_change_percent": -13.753524911891468,
+          "read_latency_p95_change_percent": 20.22615680368316,
+          "write_latency_p95_change_percent": null
+        }
+      ]
+    },
+    {
+      "case": "page-4-readers-writer-true",
+      "pairs": [
+        {
+          "pair": 1,
+          "throughput_change_percent": 7.259738365143553,
+          "read_latency_p95_change_percent": -94.04238067959159,
+          "write_latency_p95_change_percent": -8.615758306942144
+        },
+        {
+          "pair": 2,
+          "throughput_change_percent": 1.6614024497298985,
+          "read_latency_p95_change_percent": -91.43930805779338,
+          "write_latency_p95_change_percent": -9.080936915234549
+        },
+        {
+          "pair": 3,
+          "throughput_change_percent": -11.134660655104723,
+          "read_latency_p95_change_percent": -91.51715215641441,
+          "write_latency_p95_change_percent": -12.435119538334705
+        }
+      ]
+    },
+    {
+      "case": "page-8-readers-writer-false",
+      "pairs": [
+        {
+          "pair": 1,
+          "throughput_change_percent": -1.2841082921097091,
+          "read_latency_p95_change_percent": 0.662684942689018,
+          "write_latency_p95_change_percent": null
+        },
+        {
+          "pair": 2,
+          "throughput_change_percent": -0.8580855753051786,
+          "read_latency_p95_change_percent": 2.5765405990262114,
+          "write_latency_p95_change_percent": null
+        },
+        {
+          "pair": 3,
+          "throughput_change_percent": 18.191917105165256,
+          "read_latency_p95_change_percent": -42.957789393958954,
+          "write_latency_p95_change_percent": null
+        }
+      ]
+    },
+    {
+      "case": "page-8-readers-writer-true",
+      "pairs": [
+        {
+          "pair": 1,
+          "throughput_change_percent": 50.34555679298298,
+          "read_latency_p95_change_percent": -88.5469028953255,
+          "write_latency_p95_change_percent": -19.68466020046684
+        },
+        {
+          "pair": 2,
+          "throughput_change_percent": 56.1113377863137,
+          "read_latency_p95_change_percent": -87.99663950506364,
+          "write_latency_p95_change_percent": -21.959726051568683
+        },
+        {
+          "pair": 3,
+          "throughput_change_percent": 133.31807340433275,
+          "read_latency_p95_change_percent": -91.23553961485068,
+          "write_latency_p95_change_percent": -7.9059646355091
+        }
+      ]
+    }
+  ],
+  "independent_validation": [
+    {
+      "directory": "matrix",
+      "processes": 6,
+      "cases": 78,
+      "requests": 141312,
+      "recovered_rows": 1299456,
+      "quantiles_worker_intervals_overlap_throughput_counts": "pass"
+    }
+  ],
+  "qualification": {
+    "ready_for_review": true,
+    "issue_226_performance_gate": "not met",
+    "limitations": "Writer-only p95 rises 9.0% in pair three; four-reader read-only point p95 changes -11.3%, -15.1%, +36.5%. Single-reader page read and mixed write regressions remain. Historical macOS/Linux failed cohorts are retained. No current-runtime Linux, Windows, production Mem, capacity, or simulated power-loss qualification is inferred. Ready for review does not close #226 or approve/merge the PR."
+  },
+  "sources": {
+    "allocation-probe.rs": "use hawdb::{Database, Value};\nuse std::alloc::{GlobalAlloc, Layout, System};\nuse std::hint::black_box;\nuse std::sync::atomic::{AtomicU64, Ordering};\nuse std::time::Instant;\n\nstruct CountingAllocator;\nstatic CALLS: AtomicU64 = AtomicU64::new(0);\nstatic BYTES: AtomicU64 = AtomicU64::new(0);\nunsafe impl GlobalAlloc for CountingAllocator {\n    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {\n        CALLS.fetch_add(1, Ordering::Relaxed);\n        BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);\n        unsafe { System.alloc(layout) }\n    }\n    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {\n        unsafe { System.dealloc(pointer, layout) }\n    }\n    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {\n        CALLS.fetch_add(1, Ordering::Relaxed);\n        BYTES.fetch_add(size as u64, Ordering::Relaxed);\n        unsafe { System.realloc(pointer, layout, size) }\n    }\n}\n#[global_allocator]\nstatic ALLOCATOR: CountingAllocator = CountingAllocator;\nconst INSERT: &str = \"INSERT INTO thread_messages (content_message_id, thread_storage_id, order_index, content, token_count) VALUES ($1, $2, $3, $4, $5)\";\nfn values(id: usize) -> Vec<Value> {\n    vec![Value::String(format!(\"message-{id:08}\")), Value::String(format!(\"thread-{:04}\", id / 128)), Value::Int((id % 128) as i64), Value::String(\"x\".repeat(1024)), Value::Int(256)]\n}\nfn fixture() -> Database {\n    let mut db = Database::new();\n    db.query_sql(\"CREATE TABLE thread_messages (content_message_id TEXT PRIMARY KEY, thread_storage_id TEXT NOT NULL, order_index BIGINT NOT NULL, content TEXT NOT NULL, token_count BIGINT NOT NULL)\").unwrap();\n    db.query_sql(\"CREATE INDEX idx_thread_messages_order ON thread_messages (thread_storage_id, order_index, content_message_id)\").unwrap();\n    for thread in 0..128 {\n        let mut tx = db.begin_transaction();\n        for message in 0..128 {\n            tx.query_sql_with_params(INSERT, &values(thread * 128 + message)).unwrap();\n        }\n        tx.commit().unwrap();\n    }\n    db\n}\nfn measure(round: usize, label: &str, count: usize, mut action: impl FnMut(usize)) {\n    CALLS.store(0, Ordering::Relaxed);\n    BYTES.store(0, Ordering::Relaxed);\n    let start = Instant::now();\n    for i in 0..count { action(i); }\n    let elapsed = start.elapsed().as_nanos();\n    let calls = CALLS.load(Ordering::Relaxed);\n    let bytes = BYTES.load(Ordering::Relaxed);\n    println!(\"{round},{label},{count},{elapsed},{calls},{bytes}\");\n}\nfn main() {\n    println!(\"round,case,count,elapsed_ns,allocation_calls,allocated_bytes\");\n    for round in 0..3 {\n        for offset in 0..3 {\n            let mode = (round + offset) % 3;\n            let mut db = fixture();\n            if mode == 0 {\n                measure(round, \"direct_snapshot\", 4096, |_| { black_box(db.begin_read_transaction()); });\n                measure(round, \"direct_write\", 512, |i| { db.query_sql_with_params(INSERT, &values(16384 + i)).unwrap(); });\n                assert_eq!(db.query_sql(\"SELECT count(*) AS n FROM thread_messages\").unwrap().rows[0][\"n\"], Value::Int(16896));\n            } else if mode == 1 {\n                let mut snapshot = db.begin_read_transaction();\n                measure(round, \"standing_snapshot_write\", 512, |i| {\n                    db.query_sql_with_params(INSERT, &values(16384 + i)).unwrap();\n                    snapshot = db.begin_read_transaction();\n                });\n                assert_eq!(snapshot.query_sql(\"SELECT count(*) AS n FROM thread_messages\").unwrap().rows[0][\"n\"], Value::Int(16896));\n            } else {\n                let concurrent = db.into_concurrent();\n                measure(round, \"published_snapshot\", 4096, |_| { black_box(concurrent.begin_read_transaction().unwrap()); });\n                const POINT: &str = \"SELECT content_message_id, thread_storage_id, order_index, content, token_count FROM thread_messages WHERE content_message_id = $1\";\n                const PAGE: &str = \"SELECT content_message_id, thread_storage_id, order_index, content, token_count FROM thread_messages WHERE thread_storage_id = $1 ORDER BY order_index, content_message_id LIMIT $2\";\n                let point = vec![Value::String(\"message-00000000\".into())];\n                let page = vec![Value::String(\"thread-0000\".into()), Value::Int(32)];\n                let expected_ids = (0..32).map(|i| Value::String(format!(\"message-{i:08}\"))).collect::<Vec<_>>();\n                let expected_thread = Value::String(\"thread-0000\".into());\n                let expected_content = Value::String(\"x\".repeat(1024));\n                let check = |output: hawdb::QueryOutput, count: usize| {\n                    assert_eq!(output.rows.len(), count);\n                    for (i, row) in output.rows.iter().enumerate() {\n                        assert_eq!(row[\"content_message_id\"], expected_ids[i]);\n                        assert_eq!(row[\"thread_storage_id\"], expected_thread);\n                        assert_eq!(row[\"order_index\"], Value::Int(i as i64));\n                        assert_eq!(row[\"content\"], expected_content);\n                        assert_eq!(row[\"token_count\"], Value::Int(256));\n                    }\n                };\n                check(concurrent.query_sql_with_params(POINT, &point).unwrap(), 1);\n                check(concurrent.query_sql_with_params(PAGE, &page).unwrap(), 32);\n                measure(round, \"published_point\", 4096, |_| {\n                    check(concurrent.query_sql_with_params(POINT, &point).unwrap(), 1);\n                });\n                measure(round, \"published_page\", 1024, |_| {\n                    check(concurrent.query_sql_with_params(PAGE, &page).unwrap(), 32);\n                });\n                measure(round, \"concurrent_write\", 512, |i| { concurrent.query_sql_with_params(INSERT, &values(16384 + i)).unwrap(); });\n                assert_eq!(concurrent.query_sql(\"SELECT count(*) AS n FROM thread_messages\").unwrap().rows[0][\"n\"], Value::Int(16896));\n            }\n        }\n    }\n}\n",
+    "read-profile.rs": "use hawdb::{ConcurrentDatabase, Database, Value};\nuse std::path::PathBuf;\nuse std::sync::{Arc, Barrier};\nuse std::time::{Duration, Instant};\nconst INSERT: &str = \"INSERT INTO thread_messages (content_message_id, thread_storage_id, order_index, content, token_count) VALUES ($1, $2, $3, $4, $5)\";\nconst POINT: &str = \"SELECT content_message_id, thread_storage_id, order_index, content, token_count FROM thread_messages WHERE content_message_id = $1\";\nfn main() {\n let root=PathBuf::from(std::env::args().nth(1).unwrap());\n std::fs::create_dir_all(&root).unwrap();let path=root.join(\"database\");\n let mut db=Database::open(&path).unwrap();\n db.query_sql(\"CREATE TABLE thread_messages (content_message_id TEXT PRIMARY KEY, thread_storage_id TEXT NOT NULL, order_index BIGINT NOT NULL, content TEXT NOT NULL, token_count BIGINT NOT NULL)\").unwrap();\n db.query_sql(\"CREATE INDEX idx_thread_messages_order ON thread_messages (thread_storage_id, order_index, content_message_id)\").unwrap();\n for thread in 0..128 {let mut tx=db.begin_transaction();for message in 0..128 {\n  tx.query_sql_with_params(INSERT,&[Value::String(format!(\"message-{thread:04}-{message:04}\")),Value::String(format!(\"thread-{thread:04}\")),Value::Int(message),Value::String(\"x\".repeat(1024)),Value::Int(256)]).unwrap();\n }tx.commit().unwrap();}db.checkpoint().unwrap();drop(db);\n let db=ConcurrentDatabase::open(&path).unwrap();\n let check=|output:hawdb::QueryOutput,thread:usize,message:usize|{\n  assert_eq!(output.rows.len(),1);let row=&output.rows[0];assert_eq!(row.len(),5);\n  assert_eq!(row[\"content_message_id\"],Value::String(format!(\"message-{thread:04}-{message:04}\")));\n  assert_eq!(row[\"thread_storage_id\"],Value::String(format!(\"thread-{thread:04}\")));\n  assert_eq!(row[\"order_index\"],Value::Int(message as i64));\n  assert_eq!(row[\"content\"],Value::String(\"x\".repeat(1024)));assert_eq!(row[\"token_count\"],Value::Int(256));\n };\n for worker in 0..4 {for request in 0..128 {let thread=(worker*17+request*13)%128;let message=(worker*11+request*7)%128;\n  check(db.query_sql_with_params(POINT,&[Value::String(format!(\"message-{thread:04}-{message:04}\"))]).unwrap(),thread,message);\n }}\n std::fs::write(root.join(\"ready\"),b\"ready\").unwrap();\n while !root.join(\"start\").exists(){std::thread::sleep(Duration::from_millis(1));}\n let barrier=Arc::new(Barrier::new(5));let started=Instant::now();\n let samples=std::thread::scope(|scope|{let mut handles=Vec::new();for worker in 0..4 {\n  let db=db.clone();let barrier=Arc::clone(&barrier);let check=&check;\n  handles.push(scope.spawn(move||{let mut elapsed=Vec::with_capacity(65536);barrier.wait();for request in 0..65536 {\n   let thread=(worker*17+request*13)%128;let message=(worker*11+request*7)%128;\n   let params=[Value::String(format!(\"message-{thread:04}-{message:04}\"))];let start=Instant::now();\n   let output=db.query_sql_with_params(POINT,&params).unwrap();elapsed.push(start.elapsed().as_nanos() as u64);check(output,thread,message);\n  }elapsed}));}barrier.wait();handles.into_iter().flat_map(|h|h.join().unwrap()).collect::<Vec<_>>()});\n let phase=started.elapsed();assert_eq!(samples.len(),262144);let mut samples=samples;samples.sort_unstable();\n println!(\"requests={},phase_ns={},p50_ns={},p95_ns={},p99_ns={}\",samples.len(),phase.as_nanos(),samples[samples.len()/2],samples[(samples.len()*95).div_ceil(100)-1],samples[(samples.len()*99).div_ceil(100)-1]);\n drop(db);let mut db=Database::open(&path).unwrap();assert_eq!(db.query_sql(\"SELECT count(*) AS n FROM thread_messages\").unwrap().rows[0][\"n\"],Value::Int(16384));drop(db);\n std::fs::remove_dir_all(path).unwrap();\n}\n",
+    "run-campaign.py": "import hashlib,json,os,subprocess,time\nfrom pathlib import Path\nroot=Path(__file__).parent\nreport=root/\"matrix\"\nreport.mkdir(exist_ok=True)\norder=[(1,\"main\"),(1,\"candidate\"),(2,\"candidate\"),(2,\"main\"),(3,\"main\"),(3,\"candidate\")]\nrecords=[]\nfor pair,variant in order:\n    binary=root/(\"matrix-main\" if variant==\"main\" else \"matrix-after\")\n    label=f\"pair-{pair}-{variant}\"\n    print(f\"starting {label}\",flush=True)\n    started=time.time()\n    stdout=report/(label+\".stdout\")\n    stderr=report/(label+\".stderr\")\n    with stdout.open(\"w\") as out,stderr.open(\"w\") as err:\n        child=subprocess.run([str(binary)],stdout=out,stderr=err,env={**os.environ,\"TMPDIR\":str(root)},check=True)\n    data=json.loads(stdout.read_text().removeprefix(\"concurrent_snapshot_reads \"))\n    assert not data[\"smoke\"]\n    assert data[\"durability\"]==\"SyncOnEveryWrite\" and data[\"group_commit\"]==\"default_disabled\"\n    assert len(data[\"cases\"])==13\n    measured=sum(len(w[\"requests\"]) for c in data[\"cases\"] for w in c[\"workers\"])\n    recovered=sum(c[\"recovered_rows_verified\"] for c in data[\"cases\"])\n    assert measured==23552 and recovered==216576\n    record={\"pair\":pair,\"variant\":variant,\"elapsed_seconds\":time.time()-started,\"stdout_sha256\":hashlib.sha256(stdout.read_bytes()).hexdigest(),\"stderr_sha256\":hashlib.sha256(stderr.read_bytes()).hexdigest(),\"timed_requests\":measured,\"recovered_rows_verified\":recovered,\"cases\":[{k:v for k,v in c.items() if k!=\"workers\"} for c in data[\"cases\"]]}\n    records.append(record)\n    (report/\"summary.json\").write_text(json.dumps({\"order\":order,\"runs\":records},indent=2)+\"\\n\")\n    print(f\"completed {label}: {measured} requests and {recovered} recovered rows, {record['elapsed_seconds']:.1f}s\",flush=True)\n",
+    "run-diagnostics.py": "from pathlib import Path\nimport subprocess,time\nroot=Path(__file__).parent\nfixture=root/'profile-after';fixture.mkdir(exist_ok=True)\nwith (root/'profile-after.stdout').open('w') as out,(root/'profile-after.stderr').open('w') as err:\n child=subprocess.Popen([str(root/'read-profile-after'),str(fixture)],stdout=out,stderr=err)\n print('profile pid',child.pid,flush=True)\n while not (fixture/'ready').exists():\n  assert child.poll() is None;time.sleep(.05)\n (fixture/'start').write_text('start')\n result=subprocess.run(['/usr/bin/sample',str(child.pid),'5','1','-mayDie','-file',str(root/'profile-after.sample')],capture_output=True,text=True)\n (root/'sample-after.stdout').write_text(result.stdout);(root/'sample-after.stderr').write_text(result.stderr)\n print('sample exit',result.returncode,flush=True);assert result.returncode==0\n assert child.wait()==0\n print((root/'profile-after.stdout').read_text(),flush=True)\nfor variant in ['before','after']:\n print('allocation starting',variant,flush=True)\n with (root/f'allocation-{variant}.csv').open('w') as out:\n  subprocess.run([str(root/f'allocation-{variant}')],stdout=out,check=True)\n print('allocation completed',variant,flush=True)\nprint('diagnostics complete',flush=True)\n",
+    "validate-raw-reports.py": "from pathlib import Path\nimport hashlib,json,math\nroot=Path(__file__).parent\n\ndef summarize(samples):\n if not samples:return {'count':0}\n s=sorted(samples);n=len(s)\n return {'count':n,'min_nanos':s[0],'p50_nanos':s[(n*50+99)//100-1],'p95_nanos':s[(n*95+99)//100-1],'p99_nanos':s[(n*99+99)//100-1],'max_nanos':s[-1]}\n\nresults=[]\nfor directory in ['matrix']:\n summary=json.loads((root/directory/'summary.json').read_text())\n assert len(summary['runs'])==6\n count=recovered=0\n for run in summary['runs']:\n  path=root/directory/f\"pair-{run['pair']}-{run['variant']}.stdout\"\n  assert hashlib.sha256(path.read_bytes()).hexdigest()==run['stdout_sha256']\n  report=json.loads(path.read_text().removeprefix('concurrent_snapshot_reads '))\n  assert not report['smoke'] and report['durability']=='SyncOnEveryWrite' and report['group_commit']=='default_disabled' and len(report['cases'])==13\n  for case in report['cases']:\n   reads=[];writes=[];read_intervals=[];writer=None\n   assert len(case['workers'])==case['readers']+case['writers']\n   for worker in case['workers']:\n    assert worker['finished_nanos']>=worker['started_nanos']\n    previous=worker['started_nanos']\n    for request in worker['requests']:\n     start=request['started_nanos'];end=start+request['elapsed_nanos']\n     assert start>=previous and end<=worker['finished_nanos']\n     previous=end\n     (reads if worker['kind']=='read' else writes).append(request['elapsed_nanos'])\n     if worker['kind']=='read':read_intervals.append((start,end))\n    assert worker['latency']==summarize([r['elapsed_nanos'] for r in worker['requests']])\n    if worker['kind']=='write':\n     assert writer is None;writer=worker\n   assert len(reads)==case['readers']*(512 if case['read_shape']=='point' else 256)\n   assert len(writes)==case['writers']*512\n   assert case['read_latency']==summarize(reads) and case['write_latency']==summarize(writes)\n   elapsed=max(w['finished_nanos'] for w in case['workers'])-min(w['started_nanos'] for w in case['workers'])\n   assert case['elapsed_nanos']==elapsed\n   assert math.isclose(case['requests_per_second'],(len(reads)+len(writes))*1e9/elapsed,rel_tol=1e-12)\n   overlap=0 if writer is None else sum(start>=writer['started_nanos'] and end<=writer['finished_nanos'] for start,end in read_intervals)\n   assert case['read_requests_within_writer_phase']==overlap\n   assert case['recovered_rows_verified']==16384+len(writes)\n   assert case['recovered_commit_epoch']==131+len(writes)\n   count+=len(reads)+len(writes);recovered+=case['recovered_rows_verified']\n  assert run['cases']==[{k:v for k,v in c.items() if k!='workers'} for c in report['cases']]\n assert count==141312 and recovered==1299456\n results.append({'directory':directory,'processes':6,'cases':78,'requests':count,'recovered_rows':recovered,'quantiles_worker_intervals_overlap_throughput_counts':'pass'})\n(root/'independent-validation.json').write_text(json.dumps(results,indent=2)+'\\n')\nprint(json.dumps(results,indent=2))\n"
+  },
+  "artifacts": [
+    {
+      "path": "allocation-after",
+      "bytes": 15760048,
+      "sha256": "4d8eec22fe0a4f2af49186f0b745fafea415fa0449a94113072e4bc4eaf80c7e"
+    },
+    {
+      "path": "allocation-after.csv",
+      "bytes": 1081,
+      "sha256": "532ea9f121d629bee35622700718d7a47cc1f2a22d641c4f07904b9c1de11d78"
+    },
+    {
+      "path": "allocation-before",
+      "bytes": 15760272,
+      "sha256": "8b068c8b8210fea9049ca4f8b90d2386de74b0be84a550d830cfb6b114f5fa57"
+    },
+    {
+      "path": "allocation-before.csv",
+      "bytes": 1090,
+      "sha256": "464a89c89b93870c7c0c58ce2586b6af1a940b0a56a0791d7c614b192f2e83a0"
+    },
+    {
+      "path": "allocation-build.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "allocation-probe.rs",
+      "bytes": 6006,
+      "sha256": "cfa8b406ad64446ace51794369c758e2cc56a43e02505acbc825a8f640a53943"
+    },
+    {
+      "path": "bazel-prepared-regression-final.log",
+      "bytes": 191,
+      "sha256": "ce6593020e29d1f4df30c27341ad26218447a446bb111c9825298774322ecf69"
+    },
+    {
+      "path": "bazel-prepared-regression.log",
+      "bytes": 100,
+      "sha256": "ac0b4b261aa9a4a267fb2cfa941bd7867141fdcdfff341d567176518a0bea327"
+    },
+    {
+      "path": "bazel-shutdown.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "bazel-tests-retry.log",
+      "bytes": 9836,
+      "sha256": "93f40c38ddd4a26886f7f904aa6ea4eef0a77e9b86aa7995ca396ad546caf3ee"
+    },
+    {
+      "path": "bazel-tests.log",
+      "bytes": 16953,
+      "sha256": "8f1927b98ed89f39be388966da59f27161eb8539ddd3dfcdd06250bb6c995f0e"
+    },
+    {
+      "path": "build-metadata.json",
+      "bytes": 776,
+      "sha256": "1522bf8c76b8915247489690e638f20497cb6630c25b54b8abf936e3853cabd4"
+    },
+    {
+      "path": "campaign-progress.log",
+      "bytes": 582,
+      "sha256": "e299b74ad80d19fb9e629c2e15651305ee36a1a5b9d092f3ea2ae7ec46349a32"
+    },
+    {
+      "path": "diagnostic-progress.log",
+      "bytes": 238,
+      "sha256": "7f3a820b50b31a4ac3bc6edfffd3ebfa4b55030aba6c0a89504e45c6d12b3098"
+    },
+    {
+      "path": "fuzz-timeout.log",
+      "bytes": 397,
+      "sha256": "1d094b58a447853c1781f494e4a16dcf3adc25964bfe1f12af57986205164ebd"
+    },
+    {
+      "path": "independent-validation.json",
+      "bytes": 198,
+      "sha256": "4e12072b8a6d0b92572dfbfca1d3ccd4394b8dd57dc5c57247c53b546b5aaf83"
+    },
+    {
+      "path": "library-tests.log",
+      "bytes": 189907,
+      "sha256": "6543f970eaf9f0236632e0c58db404f9c6e9a56cde75f63c81be6677ef983bf4"
+    },
+    {
+      "path": "matrix/pair-1-candidate.stderr",
+      "bytes": 1710,
+      "sha256": "d11583d1636cb6a0fdf8f8c3ca0f397a5508c1800ec3efaac435d10f4d0a9430"
+    },
+    {
+      "path": "matrix/pair-1-candidate.stdout",
+      "bytes": 1218921,
+      "sha256": "dcba96e0b4ba2f9e5afd72cdafdbb1891978ce8c0cb39486a18c62700cb20a96"
+    },
+    {
+      "path": "matrix/pair-1-main.stderr",
+      "bytes": 1710,
+      "sha256": "d11583d1636cb6a0fdf8f8c3ca0f397a5508c1800ec3efaac435d10f4d0a9430"
+    },
+    {
+      "path": "matrix/pair-1-main.stdout",
+      "bytes": 1241461,
+      "sha256": "ea676f1b8c667801527a61e1df1d91763aee73edbd738ab45036869dfe5bfec0"
+    },
+    {
+      "path": "matrix/pair-2-candidate.stderr",
+      "bytes": 1710,
+      "sha256": "d11583d1636cb6a0fdf8f8c3ca0f397a5508c1800ec3efaac435d10f4d0a9430"
+    },
+    {
+      "path": "matrix/pair-2-candidate.stdout",
+      "bytes": 1221817,
+      "sha256": "198a6456a14f19d8df7fc11018d5743680b45aecd8f1f34b10ece8a97c65e4d6"
+    },
+    {
+      "path": "matrix/pair-2-main.stderr",
+      "bytes": 1710,
+      "sha256": "d11583d1636cb6a0fdf8f8c3ca0f397a5508c1800ec3efaac435d10f4d0a9430"
+    },
+    {
+      "path": "matrix/pair-2-main.stdout",
+      "bytes": 1240359,
+      "sha256": "1fb5c9180574bfb5662249050d3174c2994c022b11dec4e39daae1301b20d246"
+    },
+    {
+      "path": "matrix/pair-3-candidate.stderr",
+      "bytes": 1710,
+      "sha256": "d11583d1636cb6a0fdf8f8c3ca0f397a5508c1800ec3efaac435d10f4d0a9430"
+    },
+    {
+      "path": "matrix/pair-3-candidate.stdout",
+      "bytes": 1220192,
+      "sha256": "ac682fc6495861c9b76c2a8ad6ab4cf923f8e5ef12aebf3ab4a7eb5ea9d2bf69"
+    },
+    {
+      "path": "matrix/pair-3-main.stderr",
+      "bytes": 1710,
+      "sha256": "d11583d1636cb6a0fdf8f8c3ca0f397a5508c1800ec3efaac435d10f4d0a9430"
+    },
+    {
+      "path": "matrix/pair-3-main.stdout",
+      "bytes": 1241179,
+      "sha256": "4fe3f696db5dc5dc8e7e832ceb25398c93864623411d2afc3df41055f1fb0d84"
+    },
+    {
+      "path": "matrix/summary.json",
+      "bytes": 61612,
+      "sha256": "fe2de9c6bf2020643eb0e776fc4873d2062d13672bf616864ba5fc5beb18e426"
+    },
+    {
+      "path": "matrix-after",
+      "bytes": 14584464,
+      "sha256": "9393681662f7da09ba6a17f9ed7d10debe1ef775d7abe249e84232b668451a62"
+    },
+    {
+      "path": "matrix-before",
+      "bytes": 14584592,
+      "sha256": "c99b73881c188332c2de227aacbc5c7793b4980473f03d6e0c34638ef15753db"
+    },
+    {
+      "path": "matrix-main",
+      "bytes": 14560656,
+      "sha256": "2e7bbfeda1a09092d4714cad22d00f746121174921dc8b9734aee462b85356d1"
+    },
+    {
+      "path": "prek.log",
+      "bytes": 160,
+      "sha256": "0bdfb3db81dee654862b4a367e8cdeeb0af1c186615b2b8bbf8c4592fe1698bf"
+    },
+    {
+      "path": "profile-after-build.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "profile-after.sample",
+      "bytes": 443005,
+      "sha256": "cc998053e2e17e8c57fef8c8c7d25001c7d214eee1be0e49ab5e539d9c9250e8"
+    },
+    {
+      "path": "profile-after.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "profile-after.stdout",
+      "bytes": 76,
+      "sha256": "3df70e3bd50de48748823967e8a749f3d2fb13f8079ddcd0a8377758ae219dbd"
+    },
+    {
+      "path": "profile-before-progress.log",
+      "bytes": 118,
+      "sha256": "060742329de80f44c917c5edb0b565cc0702d924a537ee11090c258a91a98473"
+    },
+    {
+      "path": "profile-before.sample",
+      "bytes": 1523979,
+      "sha256": "fbc6d0e0e0fef3e842895b95777ed9a83b95932b1fd444f05819b34f8a9100e0"
+    },
+    {
+      "path": "profile-before.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "profile-before.stdout",
+      "bytes": 78,
+      "sha256": "3ddfe40283e37cfc1bd0fe03a61ba84a64269a8278dbfc1b1da86e996dd07f81"
+    },
+    {
+      "path": "profile-build-final.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "profile-build.log",
+      "bytes": 751,
+      "sha256": "968378c84a247cbe584813cca6e85738cfa7d157620d9e5a1b432b8a36723dc5"
+    },
+    {
+      "path": "read-profile-after",
+      "bytes": 14651088,
+      "sha256": "fa9cb1c23aa79e1c65848b477a214374b543202b9044d81f68dec140f6b6b50d"
+    },
+    {
+      "path": "read-profile-before",
+      "bytes": 14651248,
+      "sha256": "e402246222308dc4af423e648a86a759de5284da609f15cac4afa0949d989875"
+    },
+    {
+      "path": "read-profile.rs",
+      "bytes": 3601,
+      "sha256": "d3b87ea56b7cebf42ffee12cf94e90271d9b5ddb697cff9cf977a9b7c9b14cc7"
+    },
+    {
+      "path": "release-build.log",
+      "bytes": 316,
+      "sha256": "e7a4e84463175433d0784e0300f28f8f94d58be2664126e32b79ebe05a95b6a3"
+    },
+    {
+      "path": "run-campaign.py",
+      "bytes": 1727,
+      "sha256": "060a07d7ac604b6111edf9aacad4b954c05fe00d4dd1b0fc3695a82182f69a51"
+    },
+    {
+      "path": "run-diagnostics.py",
+      "bytes": 1226,
+      "sha256": "cb9a038f1456574c617c34a2a7130681750b9db75f106cba1a153f3727c2da95"
+    },
+    {
+      "path": "sample-after.stderr",
+      "bytes": 240,
+      "sha256": "f2f0efdb06c645cb74a0be91f5f87c48f61e558627b9c81361429c6b041ba0df"
+    },
+    {
+      "path": "sample-after.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "sample-before.stderr",
+      "bytes": 241,
+      "sha256": "bb061645300c5b7f9c4be61cedf3079cef640dfea2681b791fd2c405a01334c4"
+    },
+    {
+      "path": "sample-before.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source-commit.log",
+      "bytes": 816,
+      "sha256": "4d974bf8e9113bfcd46295583d339c45f1a81f4af2efb293191d3c13776c920c"
+    },
+    {
+      "path": "validate-raw-reports.py",
+      "bytes": 2958,
+      "sha256": "826c540b1784f50eae4bc8e995977c502b48db056c9624c6d7402b62ac6a2667"
+    },
+    {
+      "path": "wasm-clippy.log",
+      "bytes": 209,
+      "sha256": "1d54203597822c2fb2c79e0c1f009e34f9e4cb9ac488169c3112c0caca2cb3a7"
+    }
+  ]
+}

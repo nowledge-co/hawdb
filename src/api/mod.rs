@@ -831,6 +831,13 @@ impl DatabaseReadSnapshot {
         &self,
         task_context: &hawdb_core::RuntimeTaskContext,
     ) -> Result<DatabaseReadTransaction> {
+        self.fork(Some(task_context.clone()))
+    }
+
+    fn fork(
+        &self,
+        task_context: Option<hawdb_core::RuntimeTaskContext>,
+    ) -> Result<DatabaseReadTransaction> {
         self.ensure_usable()?;
         let source = &self.0;
         Ok(DatabaseReadTransaction {
@@ -847,7 +854,7 @@ impl DatabaseReadSnapshot {
             branch_catalog_path: source.branch_catalog_path.clone(),
             current_branch: source.current_branch.clone(),
             projection_relational: None,
-            task_context: Some(task_context.clone()),
+            task_context,
             _pin: Arc::clone(&source._pin),
         })
     }
@@ -1521,6 +1528,12 @@ impl Database {
         Ok(DatabaseReadSnapshot(self.begin_read_transaction()?))
     }
 
+    fn read_snapshot_without_observations(&self) -> Result<DatabaseReadSnapshot> {
+        Ok(DatabaseReadSnapshot(
+            self.read_transaction_state(None, None)?,
+        ))
+    }
+
     /// Pins the selected branch's schema and data after successful admission.
     pub fn begin_read_transaction(&self) -> Result<DatabaseReadTransaction> {
         self.begin_read_transaction_inner(None, None)
@@ -1589,6 +1602,17 @@ impl Database {
         projection_relational: Option<ProjectionRelationalReadSnapshot>,
         task_context: Option<hawdb_core::RuntimeTaskContext>,
     ) -> Result<DatabaseReadTransaction> {
+        let mut snapshot = self.read_transaction_state(projection_relational, task_context)?;
+        snapshot.slow_query_snapshot = self.slow_query_log.borrow().snapshot();
+        snapshot.statement_summary_snapshot = self.statement_summary.borrow().snapshot();
+        Ok(snapshot)
+    }
+
+    fn read_transaction_state(
+        &self,
+        projection_relational: Option<ProjectionRelationalReadSnapshot>,
+        task_context: Option<hawdb_core::RuntimeTaskContext>,
+    ) -> Result<DatabaseReadTransaction> {
         Ok({
             let (published_read_view, pin) = self.pin_read_view()?;
             DatabaseReadTransaction {
@@ -1601,8 +1625,8 @@ impl Database {
                     &self.runtime.get()?.relational_plan_template_cache,
                 ),
                 optimizer_planning_cache: Arc::clone(&self.runtime.get()?.optimizer_planning_cache),
-                slow_query_snapshot: self.slow_query_log.borrow().snapshot(),
-                statement_summary_snapshot: self.statement_summary.borrow().snapshot(),
+                slow_query_snapshot: Vec::new(),
+                statement_summary_snapshot: Vec::new(),
                 config: self.config.clone(),
                 branch_catalog_path: self.branch_catalog_path().ok(),
                 current_branch: self.current_branch()?,
@@ -19709,9 +19733,13 @@ fn knowledge_entity_projection_source_id(entity: &KnowledgeEntity) -> Option<Str
 
 impl ReaderPins {
     fn oldest_epoch(&self) -> Option<u64> {
+        self.oldest_epoch_excluding(None)
+    }
+
+    fn oldest_epoch_excluding(&self, excluded: Option<u64>) -> Option<u64> {
         self.active_views
-            .values()
-            .map(|view| view.visible_commit_epoch())
+            .iter()
+            .filter_map(|(&id, view)| (Some(id) != excluded).then_some(view.visible_commit_epoch()))
             .min()
     }
 
@@ -20532,8 +20560,8 @@ pub(super) fn execute_database_transaction_prepared_sql(
             pending_generated_read_table.expect("pending generated table was checked")
         )));
     }
-    if let Some(plan) = crate::relational_sql::compile_append_select_sql(
-        sql_text,
+    if let Some(plan) = crate::relational_sql::compile_prepared_append_select_sql(
+        &prepared.template,
         parameters,
         &state.append_state,
         runtime.config.max_read_result_rows.unwrap_or(usize::MAX),
@@ -20555,8 +20583,8 @@ pub(super) fn execute_database_transaction_prepared_sql(
             rows: crate::relational_sql::project_append_rows(&plan, &output.rows)?.into(),
         }));
     }
-    if let Some(plan) = crate::relational_sql::compile_append_explain_sql(
-        sql_text,
+    if let Some(plan) = crate::relational_sql::compile_prepared_append_explain_sql(
+        &prepared.template,
         parameters,
         &state.append_state,
         runtime.config.max_read_result_rows.unwrap_or(usize::MAX),
@@ -22325,8 +22353,8 @@ where
             return Ok(output);
         }
 
-        if let Some(plan) = crate::relational_sql::compile_append_select_sql(
-            sql_text,
+        if let Some(plan) = crate::relational_sql::compile_prepared_append_select_sql(
+            &prepared.template,
             parameters,
             self.store.append_state(),
             max_rows.unwrap_or(usize::MAX),
@@ -22343,8 +22371,8 @@ where
                 rows: crate::relational_sql::project_append_rows(&plan, &output.rows)?.into(),
             });
         }
-        if let Some(plan) = crate::relational_sql::compile_append_explain_sql(
-            sql_text,
+        if let Some(plan) = crate::relational_sql::compile_prepared_append_explain_sql(
+            &prepared.template,
             parameters,
             self.store.append_state(),
             max_rows.unwrap_or(usize::MAX),
