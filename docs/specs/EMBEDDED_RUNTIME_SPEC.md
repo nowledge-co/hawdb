@@ -232,11 +232,45 @@ returning a successful result without reacquiring the publication mutex.
 Invalidation is sticky until reopen; a later healthy commit guard cannot restore
 the serving boundary. Checkpoints refresh the physical generation even
 when the logical epoch is unchanged; descendants retain the old generation until
-their final pin drops. The standing publication itself contributes a current
-reader pin to storage-pressure and reclamation reports. Observation tables are
+their final pin drops. The standing publication retains a physical-generation
+pin for reclamation. The host-facing `oldest_reader_commit_epoch` excludes that
+pin only while both the publication Arc and its pin Arc have no external owner;
+borrowed queries, explicit read transactions, older retained publications, and
+writer workspaces still contribute. Idle publication alone therefore reports
+None. Persisted reclamation watermarks retain the complete internal pin set.
+Observation tables are
 captured at read acquisition and include completed reads since the last write.
 This synchronous facade does not add runtime-governor admission; hosts retain
 their existing admission responsibilities.
+
+The lock order is writer mutex before publication mutex. Read acquisition
+clones the publication under its short mutex and releases it before checking
+health or executing; it never takes the writer mutex while holding publication.
+Old publication pins are released outside the publication mutex. Mutable guard
+access conservatively captures a new view even after rejected statements or
+exclusive read fallback: physical generations, variables, and caches can change
+without a logical epoch change. Shared observation recorders refresh separately.
+`begin_transaction`, checkpoint publication, `storage_pressure_snapshot`,
+`storage_residency_report`, `storage_recovery_report`, and exclusive mutation or
+control paths still take the writer mutex.
+
+Checkpoint reclamation runs before the guard swaps the standing publication,
+so an otherwise idle preceding publication can retain files through that pass.
+Its pin then retires, and a subsequent reclamation pass can remove those files;
+reader lifetime may extend this delay. The checkpoint allocator shares its
+namespace with WAL rotation and uses `max(checkpoint_generation, wal_generation)
++ 1`. Physical generation IDs may skip; logical WAL replay boundaries remain
+contiguous. Reclamation must preserve the actual previous checkpoint, rather
+than assuming it has ID `current - 1`.
+
+Allocating beyond the active WAL prevents checkpoint preparation from replacing
+acknowledged recovery bytes. A torn unpublished candidate is not an active WAL
+dependency, and successful publication retains its normal file/selector barriers.
+This argument addresses generation reuse, not full filesystem durability:
+namespace persistence and lost-write/reordering qualification remain #834/#820
+obligations. Read snapshots clone the live store's integrity and post-WAL-apply
+poison atomics; an explicit transaction acquired before a failing group flush
+therefore also rejects later reads.
 
 An optimistic concurrent transaction begins from a private copy-on-write
 snapshot. Commit enters the serialized publication span and applies

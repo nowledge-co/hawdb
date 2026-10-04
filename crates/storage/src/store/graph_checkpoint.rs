@@ -1214,7 +1214,11 @@ impl GraphStore {
         // after every in-memory view has adopted the published generation, and
         // its failure must not change the checkpoint outcome.
         if let Some(durable) = self.durable.as_mut() {
-            durable.reclaim_old_generations(generation, pinned_reader_generations);
+            durable.reclaim_old_generations(
+                generation,
+                prepared.source_checkpoint_epoch,
+                pinned_reader_generations,
+            );
         }
         self.reclaim_version_history();
         Ok(())

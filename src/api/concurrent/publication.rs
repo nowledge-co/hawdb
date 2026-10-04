@@ -108,6 +108,79 @@ mod tests {
     }
 
     #[test]
+    fn reader_pressure_excludes_only_the_idle_internal_publication() {
+        let db = Database::new().into_concurrent();
+        let epoch = db.commit_epoch().unwrap();
+        let oldest = || {
+            db.storage_pressure_snapshot()
+                .unwrap()
+                .oldest_reader_commit_epoch
+        };
+        assert_eq!(oldest(), None);
+        let borrowed = db.inner.commits.read_view().unwrap();
+        assert_eq!(oldest(), Some(epoch));
+        drop(borrowed);
+        assert_eq!(oldest(), None);
+        let reader = db.begin_read_transaction().unwrap();
+        assert_eq!(oldest(), Some(epoch));
+        db.query("CREATE (:Memory {id: 1})").unwrap();
+        assert_eq!(db.commit_epoch().unwrap(), epoch + 1);
+        assert_eq!(oldest(), Some(epoch));
+        drop(reader);
+        assert_eq!(oldest(), None);
+    }
+
+    #[test]
+    fn published_primary_key_reads_keep_row_and_payload_limits() {
+        let mut database = Database::new();
+        database
+            .query_sql("CREATE TABLE records (id BIGINT PRIMARY KEY, body TEXT)")
+            .unwrap();
+        database
+            .query_sql("INSERT INTO records (id, body) VALUES (1, 'nonempty payload')")
+            .unwrap();
+        let db = database.into_concurrent();
+        let view = db.inner.commits.read_view().unwrap();
+        let snapshot = &view.snapshot.0;
+        let prepared = snapshot
+            .relational_plan_template_cache
+            .prepare("SELECT body FROM records WHERE id = $1")
+            .unwrap();
+        for (rows, payload, expected) in [
+            (0, 4096, "max_output_rows"),
+            (16, 1, "max_output_payload_bytes"),
+        ] {
+            // Keep the intermediate budget independent so this exercises the
+            // final output bounds of the primary-key reservation fast path.
+            let limits = crate::api::relational_query_limits_with_payload(
+                &snapshot.config,
+                Some(rows),
+                Some(payload),
+            );
+            let query = |id| {
+                crate::relational_sql::execute_prepared_relational_query_with_resources(
+                    prepared.clone(),
+                    &[Value::Int(id)],
+                    snapshot.store.relational_state(),
+                    crate::relational_sql::RelationalQueryReadModes::new(
+                        crate::relational_sql::RelationalIndexReadMode::Materialized,
+                        crate::relational_sql::RelationalRowReadMode::CanonicalMemory,
+                    ),
+                    crate::relational_sql::RelationalQueryResourceContext::new(
+                        hawdb_optimizer::RelationalJoinEnumerationConfig::default(),
+                        limits,
+                        &snapshot.config.execution_memory,
+                        None,
+                    ),
+                )
+            };
+            let error = query(1).unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+            assert!(query(2).unwrap().rows.is_empty());
+        }
+    }
+
+    #[test]
     fn committed_read_publication_waits_for_group_durability() {
         for fail_sync in [false, true] {
             let path = std::env::temp_dir().join(format!(
@@ -173,6 +246,10 @@ mod tests {
             assert_eq!(old.published_read_view(), before);
             if fail_sync {
                 assert!(committed.is_err());
+                // Snapshots share the live store's poison atomics, including
+                // explicit reads acquired before the failing durability barrier.
+                assert!(old.query("RETURN 1").is_err());
+                assert!(old_publication.snapshot.ensure_usable().is_err());
                 assert!(db.begin_read_transaction().is_err());
                 assert!(db.published_read_view().is_err());
                 assert!(db

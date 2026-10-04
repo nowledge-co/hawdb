@@ -89,6 +89,31 @@ impl CommitSequencer {
         Ok(view)
     }
 
+    pub(super) fn storage_pressure_snapshot(
+        &self,
+    ) -> Result<hawdb_storage::pressure::StoragePressureSnapshot> {
+        let database = self.lock()?;
+        let excluded = {
+            // Lock order is writer -> publication. A borrowed query retains
+            // the publication Arc; an explicit read retains the pin Arc.
+            let published = self
+                .published_read
+                .lock()
+                .map_err(|_| read_publication_poisoned_error())?;
+            (Arc::strong_count(&published) == 1
+                && Arc::strong_count(&published.snapshot.0._pin) == 1)
+                .then_some(published.snapshot.0._pin.id)
+        };
+        let oldest = database
+            .reader_pins
+            .lock()
+            .expect("database reader pins lock should not be poisoned")
+            .oldest_epoch_excluding(excluded);
+        // Only the host metric excludes an idle internal publication. Actual
+        // checkpoint/WAL reclamation still uses every physical-generation pin.
+        Ok(database.store.storage_pressure_snapshot(oldest))
+    }
+
     fn ensure_read_usable(&self, view: &PublishedConcurrentRead) -> Result<()> {
         if self.read_publication_failed.load(Ordering::Acquire)
             || self.database.is_poisoned()
@@ -436,6 +461,10 @@ impl std::ops::Deref for CommitGuard<'_> {
 
 impl std::ops::DerefMut for CommitGuard<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // Mutable access conservatively republishes even on a rejected
+        // statement: variables/caches and physical generations can change
+        // without advancing the logical commit epoch. Observation recorders
+        // use their shared state and are refreshed independently on reads.
         self.mutated = true;
         &mut self.database
     }

@@ -249,9 +249,10 @@ impl ConcurrentDatabase {
     }
 
     /// Returns storage debt and cache accounting from the same serialized
-    /// commit view used by writers.
+    /// commit view used by writers. The reader epoch excludes the idle internal
+    /// publication, but includes borrowed queries and explicit reader/writer pins.
     pub fn storage_pressure_snapshot(&self) -> Result<StoragePressureSnapshot> {
-        Ok(self.inner.commits.lock()?.storage_pressure_snapshot())
+        self.inner.commits.storage_pressure_snapshot()
     }
 
     /// Returns the generation-pinned storage residency view without scanning

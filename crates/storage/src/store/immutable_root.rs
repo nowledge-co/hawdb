@@ -2951,10 +2951,12 @@ mod tests {
             .expect("write unrelated branch state");
         let active_wal_path = store.durable.as_ref().unwrap().wal_path.clone();
         let active_wal_bytes = fs::read(&active_wal_path).unwrap();
+        let previous_checkpoint = store.durable.as_ref().unwrap().checkpoint_epoch;
         let checkpoint = store
             .prepare_checkpoint(&catalog)
             .expect("prepare source checkpoint after root sealing")
             .expect("persistent source has a checkpoint candidate");
+        assert!(checkpoint.generation > previous_checkpoint + 1);
         assert_eq!(
             fs::read(&active_wal_path).unwrap(),
             active_wal_bytes,
@@ -2963,6 +2965,12 @@ mod tests {
         store
             .publish_prepared_checkpoint(checkpoint, None)
             .expect("advance source checkpoint after root sealing");
+        assert!(
+            database
+                .join(format!("canonical.{previous_checkpoint}.hawdb"))
+                .exists(),
+            "retain the actual preceding checkpoint across a generation gap"
+        );
         drop(store);
         assert_ne!(
             root_manifest,

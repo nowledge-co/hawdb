@@ -287,7 +287,7 @@ fn concurrent_writer_pin_retires_on_every_transaction_exit() {
                 db.storage_pressure_snapshot()
                     .unwrap()
                     .oldest_reader_commit_epoch,
-                Some(db.commit_epoch().unwrap()),
+                None,
                 "{finish}"
             );
         }
@@ -311,7 +311,7 @@ fn concurrent_writer_pin_retires_on_every_transaction_exit() {
         db.storage_pressure_snapshot()
             .unwrap()
             .oldest_reader_commit_epoch,
-        Some(db.commit_epoch().unwrap())
+        None
     );
 }
 
@@ -349,7 +349,7 @@ fn concurrent_writer_pin_refreshes_with_first_pessimistic_statement() {
         db.storage_pressure_snapshot()
             .unwrap()
             .oldest_reader_commit_epoch,
-        Some(db.commit_epoch().unwrap())
+        None
     );
 }
 

@@ -19173,9 +19173,13 @@ fn knowledge_entity_projection_source_id(entity: &KnowledgeEntity) -> Option<Str
 
 impl ReaderPins {
     fn oldest_epoch(&self) -> Option<u64> {
+        self.oldest_epoch_excluding(None)
+    }
+
+    fn oldest_epoch_excluding(&self, excluded: Option<u64>) -> Option<u64> {
         self.active_views
-            .values()
-            .map(|view| view.visible_commit_epoch())
+            .iter()
+            .filter_map(|(&id, view)| (Some(id) != excluded).then_some(view.visible_commit_epoch()))
             .min()
     }
 
