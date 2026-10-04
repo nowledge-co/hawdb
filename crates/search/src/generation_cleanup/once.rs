@@ -20,8 +20,9 @@ use crate::build_memory::{directory, BuildMemory};
 use crate::Result;
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
+use hawdb_storage::file_io as fs;
+use std::io;
 use std::path::Path;
-use std::{fs, io};
 
 pub(crate) struct PreparedCleanup {
     // Reserve before publication; the complete synchronous pass uses no fresh
