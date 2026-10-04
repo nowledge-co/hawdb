@@ -3694,13 +3694,25 @@ mod tests {
 
     static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+    thread_local! {
+        // Each libtest thread owns its fresh fixture domains through cleanup.
+        // Existing unknown roots on Windows require conservative alias probes;
+        // fixtures must not borrow another concurrent test's exhausted domain.
+        static TEST_PROJECTS: std::cell::RefCell<Vec<hawdb_storage::file_descriptors::ProjectFileDescriptors>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
     fn test_dir(name: &str) -> PathBuf {
         let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
             "hawdb-search-out-of-core-{name}-{}-{sequence}",
             std::process::id()
         ));
-        fs::create_dir_all(&path).unwrap();
+        let files = hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire(
+            &path,
+            hawdb_storage::file_descriptors::DEFAULT_MAX_OPEN_FILES,
+        )
+        .unwrap();
+        TEST_PROJECTS.with_borrow_mut(|owners| owners.push(files));
         path
     }
 
