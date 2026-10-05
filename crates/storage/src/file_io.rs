@@ -585,64 +585,94 @@ pub fn symlink_metadata(path: impl AsRef<Path>) -> io::Result<Metadata> {
 pub fn canonicalize(path: impl AsRef<Path>) -> io::Result<PathBuf> {
     temporary(path.as_ref(), || std::fs::canonicalize(path.as_ref()))
 }
+#[derive(Clone, Copy)]
+enum NamespaceOperation {
+    CreateDirectory,
+    CreateDirectories,
+    Remove,
+    Rename,
+    HardLink,
+}
+
+/// Dispatch native namespace mutation and its fault-model observation together.
+/// Descriptor admission remains with the caller and precedes both paths.
+fn namespace_io<T>(
+    operation: NamespaceOperation,
+    path: &Path,
+    destination: Option<&Path>,
+    native: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        let context = context_for_path(path)?;
+        match operation {
+            NamespaceOperation::Rename | NamespaceOperation::HardLink => {
+                let destination = destination.expect("two-path namespace operation has a target");
+                let event = match operation {
+                    NamespaceOperation::Rename => crate::power_loss::IoEvent::Rename,
+                    _ => crate::power_loss::IoEvent::HardLink,
+                };
+                crate::power_loss::two_paths(
+                    &context,
+                    &context_for_path(destination)?,
+                    path,
+                    destination,
+                    Some(event),
+                    |engine, source, destination| match operation {
+                        NamespaceOperation::Rename => engine.rename(source, destination),
+                        _ => engine.hard_link(source, destination),
+                    },
+                    native,
+                )
+            }
+            _ => crate::power_loss::namespace(
+                &context,
+                path,
+                matches!(operation, NamespaceOperation::Remove)
+                    .then_some(crate::power_loss::IoEvent::Remove),
+                |engine, path| match operation {
+                    NamespaceOperation::CreateDirectory => {
+                        engine.create_directory(path).map(|_| ())
+                    }
+                    NamespaceOperation::CreateDirectories => {
+                        crate::power_loss::create_directories(engine, path)
+                    }
+                    NamespaceOperation::Remove => engine.remove(path),
+                    _ => unreachable!("two-path operations are dispatched separately"),
+                },
+                native,
+            ),
+        }
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        let _ = (operation, path, destination);
+        native()
+    }
+}
+
 pub fn create_dir(path: impl AsRef<Path>) -> io::Result<()> {
     let path = path.as_ref();
     temporary(path, || {
-        let native = || std::fs::create_dir(path);
-        #[cfg(any(test, feature = "test-support"))]
-        {
-            crate::power_loss::namespace(
-                &context_for_path(path)?,
-                path,
-                None,
-                |engine, path| engine.create_directory(path).map(|_| ()),
-                native,
-            )
-        }
-        #[cfg(not(any(test, feature = "test-support")))]
-        {
-            native()
-        }
+        namespace_io(NamespaceOperation::CreateDirectory, path, None, || {
+            std::fs::create_dir(path)
+        })
     })
 }
 pub fn create_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
     let path = path.as_ref();
     temporary(path, || {
-        let native = || std::fs::create_dir_all(path);
-        #[cfg(any(test, feature = "test-support"))]
-        {
-            crate::power_loss::namespace(
-                &context_for_path(path)?,
-                path,
-                None,
-                crate::power_loss::create_directories,
-                native,
-            )
-        }
-        #[cfg(not(any(test, feature = "test-support")))]
-        {
-            native()
-        }
+        namespace_io(NamespaceOperation::CreateDirectories, path, None, || {
+            std::fs::create_dir_all(path)
+        })
     })
 }
 pub fn remove_file(path: impl AsRef<Path>) -> io::Result<()> {
     let path = path.as_ref();
     temporary(path, || {
-        let native = || std::fs::remove_file(path);
-        #[cfg(any(test, feature = "test-support"))]
-        {
-            crate::power_loss::namespace(
-                &context_for_path(path)?,
-                path,
-                Some(crate::power_loss::IoEvent::Remove),
-                |engine, path| engine.remove(path),
-                native,
-            )
-        }
-        #[cfg(not(any(test, feature = "test-support")))]
-        {
-            native()
-        }
+        namespace_io(NamespaceOperation::Remove, path, None, || {
+            std::fs::remove_file(path)
+        })
     })?;
     unbind_immutable_path(path)
 }
@@ -656,42 +686,19 @@ pub(crate) fn unbind_immutable_path(path: &Path) -> io::Result<()> {
 pub fn remove_dir(path: impl AsRef<Path>) -> io::Result<()> {
     let path = path.as_ref();
     temporary(path, || {
-        let native = || std::fs::remove_dir(path);
-        #[cfg(any(test, feature = "test-support"))]
-        {
-            crate::power_loss::namespace(
-                &context_for_path(path)?,
-                path,
-                Some(crate::power_loss::IoEvent::Remove),
-                |engine, path| engine.remove(path),
-                native,
-            )
-        }
-        #[cfg(not(any(test, feature = "test-support")))]
-        {
-            native()
-        }
+        namespace_io(NamespaceOperation::Remove, path, None, || {
+            std::fs::remove_dir(path)
+        })
     })
 }
 pub fn rename(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Result<()> {
     two_paths(source.as_ref(), destination.as_ref(), || {
-        let native = || std::fs::rename(source.as_ref(), destination.as_ref());
-        #[cfg(any(test, feature = "test-support"))]
-        {
-            crate::power_loss::two_paths(
-                &context_for_path(source.as_ref())?,
-                &context_for_path(destination.as_ref())?,
-                source.as_ref(),
-                destination.as_ref(),
-                Some(crate::power_loss::IoEvent::Rename),
-                |engine, source, destination| engine.rename(source, destination),
-                native,
-            )
-        }
-        #[cfg(not(any(test, feature = "test-support")))]
-        {
-            native()
-        }
+        namespace_io(
+            NamespaceOperation::Rename,
+            source.as_ref(),
+            Some(destination.as_ref()),
+            || std::fs::rename(source.as_ref(), destination.as_ref()),
+        )
     })?;
     // Captured logical readers retain their immutable identity, while future
     // opens must observe the replacement or the removed source name.
@@ -702,23 +709,12 @@ pub fn rename(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Re
 }
 pub fn hard_link(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Result<()> {
     two_paths(source.as_ref(), destination.as_ref(), || {
-        let native = || std::fs::hard_link(source.as_ref(), destination.as_ref());
-        #[cfg(any(test, feature = "test-support"))]
-        {
-            crate::power_loss::two_paths(
-                &context_for_path(source.as_ref())?,
-                &context_for_path(destination.as_ref())?,
-                source.as_ref(),
-                destination.as_ref(),
-                Some(crate::power_loss::IoEvent::HardLink),
-                |engine, source, destination| engine.hard_link(source, destination),
-                native,
-            )
-        }
-        #[cfg(not(any(test, feature = "test-support")))]
-        {
-            native()
-        }
+        namespace_io(
+            NamespaceOperation::HardLink,
+            source.as_ref(),
+            Some(destination.as_ref()),
+            || std::fs::hard_link(source.as_ref(), destination.as_ref()),
+        )
     })
 }
 

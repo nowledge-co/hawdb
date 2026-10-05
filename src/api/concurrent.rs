@@ -437,14 +437,6 @@ impl ConcurrentDatabase {
             });
         }
         let view = self.inner.commits.read_view()?;
-        if let SqlStatement::Branch(crate::sql::BranchSqlStatement::UseBranch(_)) =
-            prepared.statement()
-        {
-            return Err(HawDBError::BranchCommandUnsupported {
-                command: "USE BRANCH",
-                context: "shared concurrent runtime",
-            });
-        }
         if !sql_statement_uses_snapshot(prepared.statement()) {
             drop(view);
             return self.with_autocommit_exclusive(move |database| {

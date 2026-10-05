@@ -196,10 +196,8 @@ fn doctor_rejects_invalid_checkpoint_boundary_without_modifying_wal() {
 
 #[test]
 fn branch_headed_wal_doctor_repairs_a_torn_tail_past_the_published_prefix() {
-    // The branch-aware path of WalRepairBoundary::load (branch.head lookup,
-    // catalog/sealed-root validation, active-WAL-prefix identity check) had
-    // no test coverage at all before this: every existing doctor test used
-    // the legacy single-root manifest layout instead.
+    // Exercise the default branch selector in addition to the child UUID,
+    // sealed-root, and head-change fences covered by branch_lifecycle tests.
     let path = checkpointed_branch_database("branch_torn_tail_safe");
     let directory = branch_directory(&path);
     {

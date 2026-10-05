@@ -1370,18 +1370,7 @@ impl Database {
         if let Some(telemetry) = &telemetry
             && let Some(runtime) = self.runtime.peek()
         {
-            let recovery = runtime.store.storage_recovery_report();
-            if recovery.durable {
-                telemetry.record_kernel(KernelTelemetry {
-                    operation: KernelTelemetryOperation::Recovery,
-                    success: true,
-                    elapsed_micros: 0,
-                    item_count: recovery.replayed_wal_entries,
-                    byte_count: recovery.replayed_wal_bytes,
-                    fsync_micros: 0,
-                    generation: recovery.wal_generation,
-                });
-            }
+            runtime_cell::record_recovery_telemetry(&runtime.store, telemetry.as_ref());
         }
         if let Some(runtime) = self.runtime.peek_mut() {
             crate::store::StoreTelemetry::set_telemetry_sink(&mut runtime.store, telemetry.clone());

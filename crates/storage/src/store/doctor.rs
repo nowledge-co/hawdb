@@ -27,7 +27,7 @@ pub use hawdb_storage::{
     ownership::DatabaseDirectoryLease,
 };
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 const DOCTOR_DIRECTORY: &str = "doctor";
@@ -44,18 +44,25 @@ struct WalRepairBoundary {
     published_prefix_len: u64,
 }
 
+/// Missing selectors still belong to their project's branch namespace. Never
+/// classify them as legacy stores or give them an independent FD domain.
+fn is_branch_directory(path: &Path) -> Result<bool> {
+    if fs::try_exists(path.join("branch.head"))? {
+        return Ok(true);
+    }
+    let Some(parent) = path
+        .parent()
+        .filter(|parent| parent.file_name().is_some_and(|name| name == "branches"))
+    else {
+        return Ok(false);
+    };
+    Ok(fs::try_exists(parent.join("catalog.hawdb"))?)
+}
+
 impl WalRepairBoundary {
     fn load(path: &Path, max_wal_bytes: Option<u64>) -> Result<Self> {
         let head_path = path.join("branch.head");
-        if !fs::try_exists(&head_path)? {
-            if let Some(parent) = path.parent()
-                && parent.file_name().and_then(|name| name.to_str()) == Some("branches")
-                && fs::try_exists(parent.join("catalog.hawdb"))?
-            {
-                return Err(HawDBError::StorageIntegrity(
-                    "WAL repair branch head is missing; retain its recovery evidence".into(),
-                ));
-            }
+        if !is_branch_directory(path)? {
             let manifest_path = path.join(MANIFEST_FILE);
             let manifest = DurableManifest::load(&manifest_path)?;
             manifest.validate()?;
@@ -67,8 +74,17 @@ impl WalRepairBoundary {
                 published_prefix_len: 0,
             });
         }
-        let head = crate::branch_head::read_branch_head(&head_path)
-            .map_err(HawDBError::from_storage_error)?;
+        let head =
+            crate::branch_head::read_branch_head(&head_path).map_err(|error| match error {
+                crate::branch_head::BranchHeadError::Io { source, .. }
+                    if source.kind() == io::ErrorKind::NotFound =>
+                {
+                    HawDBError::StorageIntegrity(
+                        "WAL repair branch head is missing; retain its recovery evidence".into(),
+                    )
+                }
+                error => HawDBError::from_storage_error(error),
+            })?;
         let branch_id =
             crate::branch_catalog::BranchId::new(hawdb_core::Uuid::from_bytes(head.branch_id))
                 .map_err(HawDBError::from_storage_error)?;
@@ -166,7 +182,7 @@ impl WalRepairBoundary {
 pub(super) fn repair_directory(path: &Path) -> Result<PathBuf> {
     // A project-level doctor operation repairs its default main. A caller may
     // also provide an exact UUID directory; both paths acquire the UUID lease.
-    if fs::try_exists(path.join("branch.head"))? {
+    if is_branch_directory(path)? {
         return Ok(path.to_path_buf());
     }
     match crate::branch_project::inspect_project_manifest(path)? {
@@ -182,15 +198,7 @@ pub(super) fn repair_file_descriptors(
 ) -> Result<crate::file_descriptors::ProjectFileDescriptors> {
     // A missing head is corrupt publication evidence, not a reason to create
     // an independent descriptor domain below the containing project's limit.
-    let catalog_parent = path
-        .parent()
-        .filter(|parent| parent.file_name().is_some_and(|name| name == "branches"));
-    let branch_directory = fs::try_exists(path.join("branch.head"))?
-        || catalog_parent
-            .map(|parent| fs::try_exists(parent.join("catalog.hawdb")))
-            .transpose()?
-            .unwrap_or(false);
-    let project = if branch_directory {
+    let project = if is_branch_directory(path)? {
         path.parent().and_then(Path::parent).ok_or_else(|| {
             HawDBError::StorageIntegrity("WAL repair branch has no project root".into())
         })?

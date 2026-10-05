@@ -1076,11 +1076,7 @@ impl GraphStore {
         recovered_commit_epoch: u64,
         reason: impl Into<String>,
     ) {
-        if self.relational_index_shadow.recovery_builder.is_some()
-            || self.relational_index_shadow.read_view.is_some()
-        {
-            self.mark_relational_index_recovery_unavailable(recovered_commit_epoch, reason.into());
-        }
+        self.mark_relational_index_recovery_unavailable(recovered_commit_epoch, reason.into());
     }
 
     pub(super) fn finish_relational_index_recovery(
@@ -1224,13 +1220,14 @@ impl GraphStore {
 mod tests {
     use super::*;
     use crate::schema::Catalog;
+    use crate::wal::WalOp;
     use hawdb_storage::relational_index_view::RelationalIndexReadViewKind;
     use hawdb_storage::{
         config::{DurabilityPolicy, WalReplayConfig},
         relational::{
-            RelationalColumnSchema, RelationalConflictAction, RelationalForeignKeySchema,
-            RelationalIndexSchema, RelationalInsertMode, RelationalKey,
-            RelationalReferentialAction, RelationalRow, RelationalScalarType,
+            encode_relational_checkpoint, RelationalColumnSchema, RelationalConflictAction,
+            RelationalForeignKeySchema, RelationalIndexSchema, RelationalInsertMode, RelationalKey,
+            RelationalReferentialAction, RelationalRow, RelationalScalarType, RelationalState,
             RelationalTableSchema, RelationalTransaction, RelationalUpsertAssignment,
             RelationalUpsertValue, RelationalValue, RelationalWrite,
         },
@@ -1902,6 +1899,143 @@ mod tests {
                 .exists());
         }
         std::fs::remove_dir_all(path).expect("remove abandoned candidate fixture");
+    }
+
+    #[test]
+    fn snapshot_wal_invalidates_live_relational_indexes_without_changing_pinned_reads() {
+        for unavailable in [false, true] {
+            let path = std::env::temp_dir().join(format!(
+                "hawdb-snapshot-wal-live-index-{}-{unavailable}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            {
+                let mut catalog = Catalog::default();
+                let mut store = GraphStore::open_with_durability_and_replay_config(
+                    &path,
+                    &mut catalog,
+                    DurabilityPolicy::default(),
+                    WalReplayConfig {
+                        relational_index_mode: hawdb_storage::config::RelationalIndexMode::Shadow,
+                        ..WalReplayConfig::default()
+                    },
+                )
+                .unwrap();
+                store
+                    .commit_relational_transaction(
+                        &mut catalog,
+                        create_recovery_documents_table("old"),
+                    )
+                    .unwrap();
+                store.checkpoint(&catalog).unwrap();
+                store
+                    .commit_relational_transaction(
+                        &mut catalog,
+                        RelationalTransaction {
+                            writes: vec![RelationalWrite::Insert {
+                                table: "documents".into(),
+                                rows: vec![RelationalRow::new(vec![
+                                    RelationalValue::Text("live".into()),
+                                    RelationalValue::Text("owner-1".into()),
+                                ])],
+                                mode: RelationalInsertMode::Error,
+                            }],
+                        },
+                    )
+                    .unwrap();
+                let pinned = store.snapshot();
+                let pinned_view = Arc::clone(current_index_view(&pinned));
+                let base_generation = pinned_view.identity().base_generation;
+                let base_commit_epoch = pinned_view.identity().base_commit_epoch;
+                if unavailable {
+                    store
+                        .commit_relational_transaction(
+                            &mut catalog,
+                            RelationalTransaction {
+                                writes: vec![RelationalWrite::CreateIndex {
+                                    table: "documents".into(),
+                                    index: RelationalIndexSchema {
+                                        name: "new_schema_index".into(),
+                                        columns: vec!["id".into()],
+                                        unique: false,
+                                    },
+                                }],
+                            },
+                        )
+                        .unwrap();
+                    assert!(matches!(
+                        store.relational_index_shadow.recovery_status,
+                        RelationalIndexShadowRecoveryStatus::LiveUnavailable { .. }
+                    ));
+                } else {
+                    assert!(matches!(
+                        store.relational_index_shadow.recovery_status,
+                        RelationalIndexShadowRecoveryStatus::LiveCurrent { .. }
+                    ));
+                }
+                let replacement = RelationalState::default()
+                    .stage_transaction(
+                        create_recovery_documents_table("replacement"),
+                        store.relational_mutation_limits,
+                        store.relational_overflow_config,
+                    )
+                    .unwrap();
+                let epoch = store.commit_epoch + 1;
+                let record = encode_relational_checkpoint(epoch, &replacement).unwrap();
+                store
+                    .apply_wal_op(
+                        &mut catalog,
+                        WalOp::RelationalSnapshot {
+                            record: record.into(),
+                        },
+                    )
+                    .unwrap();
+                store.commit_epoch = epoch;
+                assert!(store.relational_index_shadow.read_view.is_none());
+                assert!(store.relational_index_shadow.recovery_builder.is_none());
+                assert!(store.relational_index_shadow.recovery_report.is_none());
+                // LiveUnavailable has already released its view, but still
+                // needs its recovery epoch/status invalidated by replacement.
+                assert!(matches!(
+                    store.relational_index_shadow.recovery_status,
+                    RelationalIndexShadowRecoveryStatus::RecoveryUnavailable {
+                        base_generation: generation,
+                        base_commit_epoch: base_epoch,
+                        recovered_commit_epoch,
+                        ..
+                    } if generation == base_generation
+                        && base_epoch == base_commit_epoch
+                        && recovered_commit_epoch == epoch
+                ));
+                let key = |id: &str| RelationalKey(vec![RelationalValue::Text(id.into())]);
+                assert!(store
+                    .relational_state()
+                    .row("documents", &key("old"))
+                    .is_none());
+                assert!(store
+                    .relational_state()
+                    .row("documents", &key("replacement"))
+                    .is_some());
+                assert!(pinned
+                    .relational_state()
+                    .row("documents", &key("old"))
+                    .is_some());
+                assert!(Arc::ptr_eq(&pinned_view, current_index_view(&pinned)));
+                assert_qualification_ready(
+                    &pinned
+                        .qualify_relational_index_read_view(
+                            RelationalIndexViewQualificationOptions::default(),
+                        )
+                        .unwrap(),
+                    2,
+                    4,
+                );
+            }
+            std::fs::remove_dir_all(path).unwrap();
+        }
     }
 
     #[test]

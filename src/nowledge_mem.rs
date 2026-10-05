@@ -2292,6 +2292,9 @@ impl Drop for EmbeddedStoreWriteGuard<'_> {
             self.read_publication_failed.store(true, Ordering::Release);
             return;
         }
+        if self.read_publication_failed.load(Ordering::Acquire) {
+            return;
+        }
         // Capture before publication and before releasing the writer guard.
         // Refresh even when a checkpoint changes only the physical generation.
         let next = match PublishedCanonicalRead::capture(&self.store) {

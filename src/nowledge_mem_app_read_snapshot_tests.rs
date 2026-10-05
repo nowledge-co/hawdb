@@ -786,6 +786,88 @@ fn user_keeps_shared_snapshot_pins_across_same_epoch_checkpoints_until_last_fork
 }
 
 #[test]
+fn failed_snapshot_publication_retains_the_last_generation_and_requires_reopen() {
+    let root = SnapshotTestRoot::new();
+    let handle = durable_snapshot_handle(&root);
+    let clone = handle.clone();
+    let (permit, mut reader) = handle.canonical_read_transaction(4096, None).unwrap();
+    let before = reader.published_read_view();
+    let committed = {
+        let mut store = handle.write_store().unwrap();
+        let database = store.graph_mut().database_mut();
+        database
+            .query("CREATE (:Record {id: 'new-commit'})")
+            .unwrap();
+        assert!(database.commit_epoch().unwrap() > before.visible_commit_epoch());
+        // A real deferred handle cannot admit while the committed database
+        // still owns main's writer lease. Capture must surface that failure.
+        let pending = Database::open_with_config(&root.0, database.config().clone()).unwrap();
+        let committed = std::mem::replace(database, pending);
+        assert!(matches!(
+            database.read_snapshot(),
+            Err(crate::HawDBError::BranchBusy { .. })
+        ));
+        committed
+    };
+    // Publication failure must neither drop the previous pin nor expose its
+    // stale contents as the newly committed current view.
+    assert_eq!(
+        handle
+            .published_read
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .begin_read_transaction(&hawdb_core::RuntimeTaskContext::default())
+            .unwrap()
+            .published_read_view(),
+        before
+    );
+    assert_eq!(
+        reader
+            .query("MATCH (r:Record) RETURN r.id")
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+    assert!(matches!(
+        handle.finish_canonical_read(Ok(())),
+        Err(crate::HawDBError::Execution(reason)) if reason.contains("poisoned")
+    ));
+    for handle in [&handle, &clone] {
+        assert!(matches!(
+            handle.with_read_transaction(4096, |_| Ok(())),
+            Err(crate::HawDBError::Execution(reason)) if reason.contains("poisoned")
+        ));
+    }
+    // Restoring an admissible writer does not silently clear lost-publication
+    // evidence. A fresh handle recovers the successful transaction instead.
+    {
+        let mut store = handle.write_store().unwrap();
+        *store.graph_mut().database_mut() = committed;
+    }
+    assert!(matches!(
+        handle.with_read_transaction(4096, |_| Ok(())),
+        Err(crate::HawDBError::Execution(reason)) if reason.contains("poisoned")
+    ));
+    drop(reader);
+    drop(permit);
+    drop(clone);
+    drop(handle);
+    let mut reopened = Database::open(&root.0).unwrap();
+    assert_eq!(
+        reopened
+            .query("MATCH (r:Record) RETURN r.id")
+            .unwrap()
+            .rows
+            .len(),
+        2
+    );
+}
+
+#[test]
 fn user_rejects_late_snapshot_success_after_post_wal_apply_failure() {
     for bounded in [false, true] {
         assert_late_snapshot_rejected(bounded, || crate::store::set_wal_apply_failpoint(Some(1)));

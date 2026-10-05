@@ -102,22 +102,11 @@ impl BranchRuntimeCell {
         let runtime = self.admitted.get().map(Box::as_ref).ok_or_else(|| {
             HawDBError::StorageIntegrity("completed branch admission has no runtime".into())
         })?;
-        let recovery = runtime.store.storage_recovery_report();
         // Host callbacks may read this database. Publish the complete bundle
         // and release admission before notifying them, including on a panic.
         drop(admission);
-        if recovery.durable
-            && let Some(telemetry) = &pending.telemetry
-        {
-            telemetry.record_kernel(super::KernelTelemetry {
-                operation: super::KernelTelemetryOperation::Recovery,
-                success: true,
-                elapsed_micros: 0,
-                item_count: recovery.replayed_wal_entries,
-                byte_count: recovery.replayed_wal_bytes,
-                fsync_micros: 0,
-                generation: recovery.wal_generation,
-            });
+        if let Some(telemetry) = &pending.telemetry {
+            record_recovery_telemetry(&runtime.store, telemetry.as_ref());
         }
         Ok(runtime)
     }
@@ -176,6 +165,21 @@ impl BranchRuntimeCell {
             .ok_or_else(|| {
                 HawDBError::StorageIntegrity("candidate branch runtime was not admitted".into())
             })
+    }
+}
+
+pub(super) fn record_recovery_telemetry(store: &GraphStore, telemetry: &dyn TelemetrySink) {
+    let recovery = store.storage_recovery_report();
+    if recovery.durable {
+        telemetry.record_kernel(super::KernelTelemetry {
+            operation: super::KernelTelemetryOperation::Recovery,
+            success: true,
+            elapsed_micros: 0,
+            item_count: recovery.replayed_wal_entries,
+            byte_count: recovery.replayed_wal_bytes,
+            fsync_micros: 0,
+            generation: recovery.wal_generation,
+        });
     }
 }
 
