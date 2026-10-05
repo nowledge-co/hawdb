@@ -1387,9 +1387,9 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
 name = "sqlparser"
-version = "0.61.0"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dbf5ea8d4d7c808e1af1cbabebca9a2abe603bcefc22294c5b95018d53200cb7"
+checksum = "3679862809bd1f92e563cf6fd820e28f39135303668001c10331d5027183e8b4"
 dependencies = [
  "log",
  "recursive",
