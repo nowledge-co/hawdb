@@ -498,10 +498,16 @@ fn classify_load_error(error: ProjectionError) -> RaBitQCandidateProjectionLoadE
     }
 }
 
-fn projection_error(error: hawdb_vector_projection::ProjectionError) -> HawDBError {
+fn projection_error(error: ProjectionError) -> HawDBError {
+    map_projection_error(error, "HawDB RaBitQ projection")
+}
+
+// Resident load, generation build and mapped serving must preserve the same
+// typed IO cause. Keep their diagnostic context separate from classification.
+pub(crate) fn map_projection_error(error: ProjectionError, context: &str) -> HawDBError {
     match error {
         ProjectionError::Io(error) => HawDBError::from_storage_error(error),
-        error => HawDBError::Storage(format!("HawDB RaBitQ projection: {error}")),
+        error => HawDBError::Storage(format!("{context}: {error}")),
     }
 }
 

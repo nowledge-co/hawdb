@@ -68,15 +68,9 @@ pub(crate) fn stage_removal_bytes(root: &Path) -> Result<usize> {
     // plus the iterator/entry/native-path scratch and overlapping Vec growth.
     let root_bytes = root.as_os_str().as_encoded_bytes().len();
     let verbatim = matches!(root.components().next(), Some(Component::Prefix(prefix)) if prefix.kind().is_verbatim());
-    let joined = add(root_bytes, add(ENTRY_NAME_BYTES, 1)?)?;
-    // Retained capacity is smaller than join's transient normalization/growth
-    // envelope (covered separately by scan_bytes). Unix appends the separator
-    // and then the full name: at most two growth steps from the root capacity.
-    let child_capacity = if verbatim {
-        mul(joined.max(8), 4)?
-    } else {
-        joined.max(mul(root_bytes, 4)?).max(16)
-    };
+    // scan_bytes covers one transient normalization workspace. Each completed
+    // child contributes only its retained capacity, shared with join_bytes.
+    let child_capacity = path::retained_join_bytes(root_bytes, ENTRY_NAME_BYTES, verbatim)?;
     let paths = mul(STAGE_REMOVAL_BATCH_ENTRIES, child_capacity)?;
     let tuples = mul(
         2 * STAGE_REMOVAL_BATCH_ENTRIES,

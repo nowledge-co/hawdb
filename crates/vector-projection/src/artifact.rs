@@ -20,8 +20,12 @@ use crate::model::{
 };
 use crc32fast::Hasher;
 #[cfg(feature = "storage-io")]
+use hawdb_storage::file_io::try_exists as target_exists;
+#[cfg(feature = "storage-io")]
 use hawdb_storage::file_io::{self as fs, File, OpenOptions};
 use memmap2::Mmap;
+#[cfg(not(feature = "storage-io"))]
+use std::fs::exists as target_exists;
 #[cfg(not(feature = "storage-io"))]
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -537,17 +541,6 @@ fn read_u32(reader: &mut impl Read) -> Result<u32> {
 fn temporary_path(target: &Path) -> PathBuf {
     let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     target.with_extension(format!("tmp.{}.{}", std::process::id(), sequence))
-}
-
-fn target_exists(path: &Path) -> std::io::Result<bool> {
-    #[cfg(feature = "storage-io")]
-    {
-        fs::try_exists(path)
-    }
-    #[cfg(not(feature = "storage-io"))]
-    {
-        fs::exists(path)
-    }
 }
 
 #[cfg(unix)]

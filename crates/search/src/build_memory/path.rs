@@ -139,11 +139,22 @@ pub(crate) fn join_bytes(parent: usize, name: usize, verbatim: bool) -> Result<u
     // Preserve the standard library's platform-specific normalization semantics.
     if verbatim {
         add(
-            mul(length.max(8), 4)?,
+            retained_join_bytes(parent, name, verbatim)?,
             mul(mul(length.max(4), 4)?, size_of::<Component<'_>>())?,
         )
     } else {
         mul(length.max(8), 3)
+    }
+}
+
+/// Capacity retained by a joined path after temporary normalization is freed.
+pub(crate) fn retained_join_bytes(parent: usize, name: usize, verbatim: bool) -> Result<usize> {
+    let length = add(parent, add(name, 1)?)?;
+    if verbatim {
+        mul(length.max(8), 4)
+    } else {
+        // Appending the separator and name can grow the root buffer twice.
+        Ok(length.max(mul(parent, 4)?).max(16))
     }
 }
 

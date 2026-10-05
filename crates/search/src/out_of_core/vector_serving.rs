@@ -811,12 +811,7 @@ fn checkpoint_vector_task(task_context: Option<&crate::RuntimeTaskContext>) -> R
 pub(super) fn vector_projection_error(
     error: hawdb_vector_projection::ProjectionError,
 ) -> HawDBError {
-    match error {
-        hawdb_vector_projection::ProjectionError::Io(error) => {
-            HawDBError::from_storage_error(error)
-        }
-        error => HawDBError::Storage(format!("search RaBitQ projection: {error}")),
-    }
+    crate::rabitq_projection::map_projection_error(error, "search RaBitQ projection")
 }
 
 #[cfg(all(test, feature = "vector-search"))]
