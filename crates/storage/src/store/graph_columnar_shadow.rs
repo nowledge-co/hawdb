@@ -140,10 +140,7 @@ pub(super) use hawdb_storage::column_group::shadow::ColumnarShadowState;
 use hawdb_storage::column_group::shadow::DEFAULT_SHADOW_BUFFER_BUDGET_BYTES;
 
 fn shadow_error(error: ColumnGroupError) -> HawDBError {
-    match HawDBError::from_storage_error(error) {
-        HawDBError::Storage(message) => HawDBError::Storage(format!("columnar shadow: {message}")),
-        error => error,
-    }
+    HawDBError::from_storage_error_with_context(error, "columnar shadow")
 }
 
 #[cfg(test)]

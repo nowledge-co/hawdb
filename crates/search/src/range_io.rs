@@ -173,11 +173,11 @@ impl SearchIndex {
                 }
                 Ok::<(), HawDBError>(())
             })
-            .map_err(|error| match HawDBError::from_storage_error(error) {
-                HawDBError::Storage(message) => {
-                    HawDBError::Storage(format!("search segment range execution failed: {message}"))
-                }
-                error => error,
+            .map_err(|error| {
+                HawDBError::from_storage_error_with_context(
+                    error,
+                    "search segment range execution failed",
+                )
             })?;
         let expected_document_count = matching_segments
             .iter()
