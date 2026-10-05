@@ -1,4 +1,4 @@
 # Python test dependencies for the Bazel runner; no runtime Python dependencies.
-pytest==8.4.2
+pytest==9.0.3
 # pytest's Windows dependency, included so the same lock works on every host.
 colorama==0.4.6
