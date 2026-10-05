@@ -30,10 +30,16 @@ Rust toolchain. It retains the discovered cases, actual test output, source
 revision, platform, toolchain and terminal status as artifacts. The existing
 required-test wrapper rejects a zero-test or fully ignored selection; a
 successful build or discovery step alone is not a qualification result. Cases
-run serially to bound simultaneous crash-image materialization. A workflow
+run serially, and each fault image is removed after its verification scope to
+bound scratch occupancy. Artifacts include disk capacity before and after the
+matrix so native I/O failures retain resource context. A workflow
 definition does not establish a passing run: release evidence must identify a
 successful artifact for the exact candidate revision on each required platform.
 Windows namespace persistence remains outside this Unix recorder.
+The existing macOS/Windows storage jobs separately execute default and minimal
+project-open integration tests and the branch lifecycle suite. These include
+bounded pending-receipt recovery and the native file synchronization path;
+passing cross-target Clippy alone does not establish those runtime results.
 
 Routine local fuzz remains local-only:
 
@@ -78,12 +84,13 @@ and are materialized in isolated directories. Recovery uses ordinary
 | Checkpoint/head | Both durability policies, before/after head replacement; completed prefix survives, with exact schema/data and allowed relaxed-tail loss before completion. |
 | Source seal/private rotation | Both policies and before/after seven actual boundaries: successor creation/write/file sync, sealed-WAL installation, sealed-root installation, source-head rename, and its directory barrier. Each cut recovers lost/persisted changes; completed seal acknowledgment covers the whole prefix. |
 | Create reservation/completion | Both policies, before/after each catalog replacement; durable receipts retain one UUID/outcome across retries. A reservation that never persisted has no acknowledged identity; a missing pre-publication head may produce the same UUID's terminal abort. |
+| Pending-create recovery | Actual interrupted-create images must be reconciled by ordinary open before a matching CREATE retry. Separately, both policies and before/after the recovery catalog replacement model a second interruption: the same complete child reopens, repeat recovery preserves catalog bytes, and main remains deferred during the scan. |
 | Logical deletion | Both policies, before/after Deleting and Deleted catalog replacement; repeat the original UUID/revision request, preserve one tombstone, and recover the unleased descendant. |
 | GC | Both policies, acknowledged deletion plus actual orphan unlink, deleted-directory retirement before its name barrier, first retired child unlink, and final directory unlink through `Database::reclaim_branch_storage` while main remains admitted. Crash images resume cleanup through the same API, repeat it idempotently, and reopen the exact main/descendant schema, SQL rows and graph data; the deleted UUID remains tombstoned. |
 | Admission | Before/after actual checkpoint hard-link alias installation; exact committed schema/data survive replay without copying a parent dataset. |
 | Configurations | `Auto`, `Materialized`, and `OutOfCore` crossed with all four existing relational index modes; indexed queries, child DDL/DML/checkpoint, nested fork, parent deletion and reopen under a 32-FD domain. |
 
-Checkpoint/head, create/delete catalog and GC cuts additionally replay
+Checkpoint/head, create/recover/delete catalog and GC cuts additionally replay
 uncovered operations in reverse order and each operation in isolation. The
 oracle still retains every completed file/directory barrier; these schedules
 never weaken an acknowledged prefix. The executed log records actual pending

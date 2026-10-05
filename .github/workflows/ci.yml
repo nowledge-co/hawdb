@@ -138,6 +138,17 @@ jobs:
       - name: Test storage artifacts and ownership
         run: cargo test -p hawdb-storage
 
+      - name: Test ordinary project opening and pending recovery
+        shell: bash
+        run: |
+          bash scripts/cargo-test-required.sh --locked -p hawdb --test branch_project_open
+          bash scripts/cargo-test-required.sh --locked -p hawdb --no-default-features --test branch_project_open
+
+      - name: Test branch lifecycle and creation retries
+        shell: bash
+        run: |
+          bash scripts/cargo-test-required.sh --locked -p hawdb --features acl --lib api::branch_lifecycle::tests::
+
       - name: Test durable storage recovery
         run: cargo test -p hawdb --features acl --lib api::tests::storage_recovery
 

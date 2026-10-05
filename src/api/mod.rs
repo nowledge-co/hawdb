@@ -115,6 +115,10 @@ pub use branch_lifecycle::{
 pub(crate) use hawdb_executor::runtime_admission::runtime_planning_request;
 #[cfg(feature = "tokio-runtime")]
 pub(crate) use hawdb_executor::runtime_admission::RuntimeAdmissionPlan;
+pub use hawdb_storage::branch_create_recovery::{
+    BranchCreateRecoveryEntry, BranchCreateRecoveryLimits, BranchCreateRecoveryReport,
+    BranchCreateRecoveryStatus,
+};
 pub(crate) use query_runtime::PreparedRuntimeQuery;
 #[cfg(feature = "tokio-runtime")]
 pub(crate) use query_runtime::RuntimePlanningSnapshot;
@@ -234,6 +238,7 @@ fn hawdb_lightning_initial_import_source_fingerprint_key(
 pub struct Database {
     runtime: runtime_cell::BranchRuntimeCell,
     project_root_path: Option<PathBuf>,
+    branch_create_recovery: Option<BranchCreateRecoveryReport>,
     durability: DurabilityPolicy,
     slow_query_log: Arc<SharedState<system_sql::SlowQueryLog>>,
     statement_summary: Arc<SharedState<system_sql::StatementSummary>>,
@@ -278,6 +283,8 @@ impl<T> SharedState<T> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatabaseConfig {
     pub read_only: bool,
+    /// Bounded pending-child recovery during a writable project open.
+    pub branch_create_recovery_limits: BranchCreateRecoveryLimits,
     pub max_read_result_rows: Option<usize>,
     pub max_read_result_payload_bytes: Option<usize>,
     pub execution_memory: executor::ExecutionMemoryConfig,
@@ -514,6 +521,7 @@ impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
             read_only: false,
+            branch_create_recovery_limits: BranchCreateRecoveryLimits::default(),
             max_read_result_rows: Some(DEFAULT_MAX_READ_RESULT_ROWS),
             max_read_result_payload_bytes: Some(DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES),
             execution_memory: executor::ExecutionMemoryConfig::default(),
@@ -952,6 +960,7 @@ impl Default for Database {
             derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
+            branch_create_recovery: None,
         }
     }
 }
@@ -1048,6 +1057,7 @@ impl Database {
             derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
+            branch_create_recovery: None,
         }
     }
 
@@ -1107,7 +1117,9 @@ impl Database {
     /// Data access lazily recovers default main; busy, damaged, or resource-
     /// rejected admission returns an error and can be retried. Catalog SQL and
     /// `USE BRANCH` can run before main is admitted. Successful metadata open
-    /// does not certify that the selected branch's data is ready.
+    /// does not certify that the selected branch's data is ready. Writable opens
+    /// also attempt bounded pending-child recovery; inspect
+    /// `branch_create_recovery_report` for retained, busy or unattempted receipts.
     ///
     /// The first writable open publishes the project's main branch from the
     /// complete legacy state. Read-only legacy opens do not adopt that layout.
@@ -1162,7 +1174,7 @@ impl Database {
             hawdb_storage::branch_project::ProjectManifest::Branch(_)
         ) {
             let metadata = hawdb_storage::branch_project::ProjectMetadata::from_files(files)?;
-            return Ok(Self::from_project_metadata(metadata, durability, config));
+            return Self::from_project_metadata(metadata, durability, config);
         }
         let replay_config = config.wal_replay_config();
         let mut store = if config.read_only {
@@ -1222,6 +1234,7 @@ impl Database {
             derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
+            branch_create_recovery: None,
         };
         if database.config.read_only {
             database.apply_engine_system_schema()?;
@@ -1290,20 +1303,25 @@ impl Database {
         let config = database.config.clone();
         drop(database);
         let metadata = hawdb_storage::branch_project::ProjectMetadata::from_files(files)?;
-        Ok(Self::from_project_metadata(metadata, durability, config))
+        Self::from_project_metadata(metadata, durability, config)
     }
 
     fn from_project_metadata(
         metadata: hawdb_storage::branch_project::ProjectMetadata,
         durability: DurabilityPolicy,
         config: DatabaseConfig,
-    ) -> Self {
+    ) -> Result<Self> {
+        let branch_create_recovery = if config.read_only {
+            None
+        } else {
+            Some(metadata.recover_pending_creates(config.branch_create_recovery_limits)?)
+        };
         let files = metadata.file_descriptors().clone();
         let selector = metadata.selector();
         let project_root_path = Some(files.root().to_path_buf());
         drop(metadata);
         let local_qos_scheduler = LocalQosScheduler::new(config.local_qos_policy);
-        Self {
+        Ok(Self {
             runtime: runtime_cell::BranchRuntimeCell::deferred(
                 runtime_cell::DeferredBranchAdmission {
                     files,
@@ -1329,7 +1347,8 @@ impl Database {
             derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
-        }
+            branch_create_recovery,
+        })
     }
 
     pub fn config(&self) -> &DatabaseConfig {

@@ -1302,7 +1302,7 @@ selected head/WAL and candidate evidence. Generation reclamation follows a
 successful head handoff.
 
 Facade retries dispatch a matching pending receipt directly to
-`recover_create_from_head_file`. This recovery owns the child's UUID lease and
+the bounded `branch_create_recovery::recover_create_from_head_file`. This recovery owns the child's UUID lease and
 derives its WAL path from the child's head; it never resolves or seals the
 parent again. Parent advancement, deletion, directory loss, or human-name reuse
 cannot change the original reserved child's identity or captured revision.
@@ -1310,8 +1310,28 @@ Fingerprint conflicts reject before recovery, and SQL result admission uses the
 prospective completion revision before changing the catalog.
 An active creator already holds this lease before publishing `Creating`, so a
 retry cannot abort the creator between reservation and file publication.
-The ordinary opener does not yet scan pending receipts automatically; explicit
-recovery and matching request retries remain the implemented recovery entries.
+Writable ordinary opens also scan pending receipts through the same validator,
+without admitting main or consulting a parent's current runtime. Default
+`BranchCreateRecoveryLimits` admit 64 receipts, 10,000 dependency read passes,
+and 256 MiB of aggregate dependency bytes. Repeated reads consume the budget
+again; bounded catalog decoding retains its separate 16 MiB ceiling. Hosts can
+set these positive limits in `DatabaseConfig` and explicitly retry through
+`Database::recover_pending_branch_creates` with larger finite bounds.
+`ConcurrentDatabase` exposes the same retry and report through its writer
+coordinator without admitting main or retiring existing read publications.
+
+Recovery validates the exact head/WAL identity, sealed-root epoch/replay bounds,
+and every immutable closure object's length and content identity. It streams
+large objects, synchronizes the complete closure and head/WAL pair, then
+publishes `Ready`. A known missing head or private WAL publishes the same
+receipt's terminal abort. Busy leases, corrupt/ambiguous dependencies, I/O
+errors and exhausted budgets retain the pending receipt and its evidence.
+The typed `branch_create_recovery_report` distinguishes completed, aborted,
+busy, retained and unattempted receipts; incomplete recovery never makes a
+child ready or prevents metadata inspection and independent healthy-branch
+admission. Read-only opens skip repair and explicit recovery rejects writes.
+Catalog serialization rechecks pending state before creating a lease directory,
+so a stale recovery cannot recreate a reclaimed terminal branch.
 
 An unchanged checkpoint is identified by its exact durable-manifest reference
 and recovery boundary. Seal reuses the validated root's checkpoint references

@@ -30,6 +30,8 @@ pub mod backup;
 #[doc(hidden)]
 pub mod branch_catalog;
 #[doc(hidden)]
+pub mod branch_create_recovery;
+#[doc(hidden)]
 pub mod branch_head;
 #[doc(hidden)]
 pub mod branch_project;

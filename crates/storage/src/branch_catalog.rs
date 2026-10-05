@@ -1407,6 +1407,7 @@ pub fn recover_create_file(
         child_head_path,
         Some(child_wal_path),
         max_active_wal_bytes,
+        |_, _| Ok(()),
     )
 }
 
@@ -1419,17 +1420,59 @@ pub fn recover_create_from_head_file(
     child_head_path: &Path,
     max_active_wal_bytes: u64,
 ) -> Result<CreateRecoveryOutcome, BranchCreateError> {
+    recover_create_with_validation(
+        catalog_path,
+        branch_id,
+        child_head_path,
+        max_active_wal_bytes,
+        |_, _| Ok(()),
+    )
+}
+
+pub(crate) fn recover_create_with_validation(
+    catalog_path: &Path,
+    branch_id: BranchId,
+    child_head_path: &Path,
+    max_active_wal_bytes: u64,
+    validate_dependencies: impl FnMut(Option<&BranchHead>, &Path) -> Result<(), BranchCreateError>,
+) -> Result<CreateRecoveryOutcome, BranchCreateError> {
     let directory = child_head_path
         .parent()
         .ok_or(BranchCreateError::InconsistentRequest(
             "child head has no branch directory",
         ))?;
-    fs::create_dir_all(directory).map_err(|source| {
-        BranchCreateError::Head(BranchHeadError::Io {
-            operation: "create pending child lease directory",
-            source,
-        })
-    })?;
+    // Serialize only the pending-state check and lease-directory creation.
+    // A stale scanner must never recreate the directory of a deleted branch.
+    // Drop metadata ownership before acquiring the child lease.
+    {
+        let project = catalog_path
+            .parent()
+            .ok_or(BranchCreateError::InconsistentRequest(
+                "catalog has no directory",
+            ))?;
+        let _metadata = CatalogMetadataLease::acquire_blocking(project)
+            .map_err(|error| BranchCreateError::Catalog(CatalogFileTransitionError::Io(error)))?;
+        let catalog = read_catalog(catalog_path)
+            .map_err(|error| BranchCreateError::Catalog(CatalogFileTransitionError::Io(error)))?;
+        let branch = catalog
+            .branches
+            .iter()
+            .find(|branch| branch.id == branch_id)
+            .ok_or(BranchCreateError::InconsistentRequest(
+                "pending branch is missing",
+            ))?;
+        match branch.create_outcome {
+            CreateOutcome::Succeeded => return Ok(CreateRecoveryOutcome::Completed),
+            CreateOutcome::Aborted => return Ok(CreateRecoveryOutcome::Aborted),
+            CreateOutcome::Pending => {}
+        }
+        fs::create_dir_all(directory).map_err(|source| {
+            BranchCreateError::Head(BranchHeadError::Io {
+                operation: "create pending child lease directory",
+                source,
+            })
+        })?;
+    }
     let _lease = DatabaseDirectoryLease::acquire(directory).map_err(BranchCreateError::Lease)?;
     recover_create_file_inner(
         catalog_path,
@@ -1437,6 +1480,7 @@ pub fn recover_create_from_head_file(
         child_head_path,
         None,
         max_active_wal_bytes,
+        validate_dependencies,
     )
 }
 
@@ -1446,6 +1490,7 @@ fn recover_create_file_inner(
     child_head_path: &Path,
     child_wal_path: Option<&Path>,
     max_active_wal_bytes: u64,
+    mut validate_dependencies: impl FnMut(Option<&BranchHead>, &Path) -> Result<(), BranchCreateError>,
 ) -> Result<CreateRecoveryOutcome, BranchCreateError> {
     let catalog = read_catalog(catalog_path)
         .map_err(|error| BranchCreateError::Catalog(CatalogFileTransitionError::Io(error)))?;
@@ -1456,7 +1501,12 @@ fn recover_create_file_inner(
         .ok_or(BranchCreateError::Catalog(
             CatalogFileTransitionError::Transition(CatalogTransitionError::MissingBranch),
         ))?;
-    if branch.state != BranchState::Creating || branch.create_outcome != CreateOutcome::Pending {
+    match branch.create_outcome {
+        CreateOutcome::Succeeded => return Ok(CreateRecoveryOutcome::Completed),
+        CreateOutcome::Aborted => return Ok(CreateRecoveryOutcome::Aborted),
+        CreateOutcome::Pending => {}
+    }
+    if branch.state != BranchState::Creating {
         return Err(BranchCreateError::Catalog(
             CatalogFileTransitionError::Transition(CatalogTransitionError::InvalidState(
                 "recovery requires a pending child create",
@@ -1468,6 +1518,7 @@ fn recover_create_file_inner(
         metadata_revision: branch.metadata_revision,
         replayed: false,
     };
+    validate_dependencies(None, child_head_path)?;
     let head = match crate::branch_head::read_branch_head(child_head_path) {
         Ok(head) => head,
         Err(BranchHeadError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
@@ -1502,6 +1553,7 @@ fn recover_create_file_inner(
             }));
         }
     }
+    validate_dependencies(Some(&head), child_wal_path)?;
     let wal = crate::branch_head::active_wal_identity_from_file(
         child_wal_path,
         head.active_wal.generation,

@@ -212,6 +212,16 @@ pub struct ImmutableObjectStore {
 }
 
 impl ImmutableObjectStore {
+    pub(crate) fn open_existing(root: PathBuf, max_object_bytes: u64) -> Self {
+        Self {
+            root,
+            max_object_bytes,
+            poisoned: false,
+            synchronized_kinds: BTreeSet::new(),
+            namespace_synchronized: false,
+        }
+    }
+
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, ImmutableObjectError> {
         Self::open_with_limit(root, DEFAULT_MAX_OBJECT_BYTES)
     }
@@ -336,7 +346,10 @@ impl ImmutableObjectStore {
             "read immutable object metadata",
             fs::symlink_metadata(&path),
         )?;
-        if !metadata.file_type().is_file() || metadata.len() > self.max_object_bytes {
+        if !metadata.file_type().is_file()
+            || metadata.len() != reference.byte_length
+            || metadata.len() > self.max_object_bytes
+        {
             return Err(ImmutableObjectError::ExistingObjectCorrupt { path });
         }
         let capacity = usize::try_from(metadata.len())
@@ -354,6 +367,62 @@ impl ImmutableObjectStore {
             return Err(ImmutableObjectError::ExistingObjectCorrupt { path });
         }
         Ok(bytes)
+    }
+
+    /// Authenticate a recovery dependency with bounded memory before making
+    /// its bytes and namespace durable. The caller holds its branch lease.
+    pub(crate) fn verify_and_sync(
+        &self,
+        reference: ObjectReference,
+    ) -> Result<(), ImmutableObjectError> {
+        let path = self.object_path(reference);
+        let metadata = map_io(
+            "inspect immutable recovery dependency",
+            fs::symlink_metadata(&path),
+        )?;
+        if !metadata.is_file()
+            || metadata.len() != reference.byte_length
+            || metadata.len() > self.max_object_bytes
+            || reference.format_version == 0
+        {
+            return Err(ImmutableObjectError::ExistingObjectCorrupt { path });
+        }
+        // Windows requires write access for FlushFileBuffers. Never create or
+        // truncate a missing dependency while recovering an existing receipt.
+        let mut file = map_io(
+            "open immutable recovery dependency",
+            OpenOptions::new().read(true).write(true).open(&path),
+        )?;
+        let mut hasher = identity_hasher(
+            reference.kind,
+            reference.format_version,
+            reference.byte_length,
+        );
+        let mut remaining = reference.byte_length;
+        let mut buffer = [0; 64 * 1024];
+        while remaining != 0 {
+            let length = usize::try_from(remaining.min(buffer.len() as u64)).expect("buffer width");
+            map_io(
+                "read immutable recovery dependency",
+                file.read_exact(&mut buffer[..length]),
+            )?;
+            hasher.update(&buffer[..length]);
+            remaining -= length as u64;
+        }
+        if hasher.finish().sha256 != reference.sha256
+            || map_io("recheck immutable recovery dependency", file.metadata())?.len()
+                != reference.byte_length
+        {
+            return Err(ImmutableObjectError::ExistingObjectCorrupt { path });
+        }
+        map_io("sync immutable recovery dependency", file.sync_all())?;
+        drop(file);
+        map_io(
+            "sync immutable recovery namespace",
+            crate::durability::sync_directory_ancestors(
+                path.parent().expect("object kind directory"),
+            ),
+        )
     }
 
     /// Reclaims only explicitly inventoried objects that are unreachable from

@@ -2553,6 +2553,29 @@ fn request_fingerprint(request: &BranchCreateRequest) -> [u8; 32] {
 }
 
 impl Database {
+    /// The last pending-create scan, including incomplete outcomes. Read-only
+    /// and in-memory opens do not scan and return `None`. This admits no data.
+    pub fn branch_create_recovery_report(&self) -> Option<&super::BranchCreateRecoveryReport> {
+        self.branch_create_recovery.as_ref()
+    }
+
+    /// Retry pending child receipts with explicit aggregate bounds, without
+    /// requiring main or any healthy child runtime to close first.
+    pub fn recover_pending_branch_creates(
+        &mut self,
+        limits: super::BranchCreateRecoveryLimits,
+    ) -> crate::error::Result<super::BranchCreateRecoveryReport> {
+        self.ensure_branch_writable()?;
+        let root = self.project_root_path.as_ref().ok_or_else(|| {
+            HawDBError::Storage("pending branch recovery requires a persistent project".into())
+        })?;
+        let metadata =
+            hawdb_storage::branch_project::ProjectMetadata::open(root, self.config.max_open_files)?;
+        let report = metadata.recover_pending_creates(limits)?;
+        self.branch_create_recovery = Some(report.clone());
+        Ok(report)
+    }
+
     /// Reclaims unreachable immutable objects and deleted branch directories.
     /// Keep calling after readers or other branch owners retire if the report
     /// indicates a conservative deferral. This never expires live branches.
@@ -3148,21 +3171,26 @@ impl Database {
                     ))
                 }
                 storage::CreateOutcome::Pending => {
-                    let completed = create_result_info(existing)?;
-                    let outcome = storage::recover_create_from_head_file(
-                        &catalog_path,
-                        existing.id,
-                        &self.branch_head_path(existing.id.as_uuid())?,
-                        self.config.max_wal_replay_bytes.unwrap_or(u64::MAX),
-                    )
-                    .map_err(|error| match error {
-                        storage::BranchCreateError::Lease(
-                            hawdb_storage::ownership::DatabaseDirectoryLeaseError::AlreadyOpen,
-                        ) => BranchLifecycleError::SourceBusy("pending child creation"),
-                        error => BranchLifecycleError::storage(error),
-                    })?;
+                    let outcome =
+                        hawdb_storage::branch_create_recovery::recover_create_from_head_file(
+                            &catalog_path,
+                            existing.id,
+                            &self.branch_head_path(existing.id.as_uuid())?,
+                            self.config.max_wal_replay_bytes.unwrap_or(u64::MAX),
+                            self.config.branch_create_recovery_limits,
+                        )
+                        .map_err(|error| match error {
+                            storage::BranchCreateError::Lease(
+                                hawdb_storage::ownership::DatabaseDirectoryLeaseError::AlreadyOpen,
+                            ) => BranchLifecycleError::SourceBusy("pending child creation"),
+                            error => BranchLifecycleError::storage(error),
+                        })?;
                     return match outcome {
-                        storage::CreateRecoveryOutcome::Completed => Ok(completed),
+                        storage::CreateRecoveryOutcome::Completed => {
+                            // Another recovery may have completed and then
+                            // deleted this receipt since the initial read.
+                            self.describe_branch(BranchSelector::Id(existing.id.as_uuid()))
+                        }
                         storage::CreateRecoveryOutcome::Aborted => {
                             Err(BranchLifecycleError::Transition(
                                 storage::CatalogTransitionError::InvalidState(

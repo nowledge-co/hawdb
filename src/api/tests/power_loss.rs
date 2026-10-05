@@ -541,6 +541,24 @@ fn catalog_publication_cuts_preserve_creation_identity_after_a_lost_response() {
                         .iter()
                         .any(|record| Value::Uuid(record.id.as_uuid()) == child);
                     let mut recovered = open(&root, durability);
+                    if let Some(pending) = catalog.branches.iter().find(|record| {
+                        Value::Uuid(record.id.as_uuid()) == child
+                            && record.create_outcome
+                                == hawdb_storage::branch_catalog::CreateOutcome::Pending
+                    }) {
+                        let entry = recovered
+                            .branch_create_recovery_report()
+                            .unwrap()
+                            .entries
+                            .iter()
+                            .find(|entry| entry.branch_id == pending.id.as_uuid())
+                            .expect("ordinary open must attempt the interrupted receipt");
+                        assert!(matches!(
+                            entry.status,
+                            crate::BranchCreateRecoveryStatus::Completed
+                                | crate::BranchCreateRecoveryStatus::Aborted
+                        ));
+                    }
                     let retried = match recovered.query_sql_with_params(CREATE_BRANCH, &request) {
                         Ok(retried) => retried,
                         Err(HawDBError::Storage(message))
@@ -614,6 +632,102 @@ fn catalog_publication_cuts_preserve_creation_identity_after_a_lost_response() {
                         Value::String("whole".into())
                     );
                 }
+            }
+        }
+    }
+}
+
+#[test]
+fn pending_recovery_publication_cuts_reopen_the_same_complete_child() {
+    use hawdb_storage::branch_catalog::{self, BranchState, CreateOutcome};
+
+    for durability in [
+        DurabilityPolicy::SyncOnEveryWrite,
+        DurabilityPolicy::SyncOnCheckpoint,
+    ] {
+        for boundary in [ObservationBoundary::Before, ObservationBoundary::After] {
+            let mut fixture = Fixture::new();
+            let mut database = open(&fixture.root, durability);
+            commit_mixed(&mut database);
+            let main = database
+                .describe_branch(BranchSelector::Name("main".into()))
+                .unwrap()
+                .id;
+            let child = fork(&mut database, main, "recovering-child");
+            // The creation-cut matrix above supplies actual interrupted
+            // receipts. Here a durable pending fixture isolates a second
+            // interruption while the ordinary opener publishes recovery.
+            let catalog_path = fixture.root.join("branches/catalog.hawdb");
+            let mut catalog = branch_catalog::read_catalog(&catalog_path).unwrap();
+            let pending = catalog
+                .branches
+                .iter_mut()
+                .find(|branch| branch.id.as_uuid() == child)
+                .unwrap();
+            pending.state = BranchState::Creating;
+            pending.create_outcome = CreateOutcome::Pending;
+            branch_catalog::write_catalog(&catalog_path, &catalog).unwrap();
+            drop(database);
+            fixture
+                .model
+                .observe(ObservationPoint {
+                    event: IoEvent::Rename,
+                    relative_path: PathBuf::from("branches/catalog.hawdb"),
+                    boundary,
+                    skip_matches: 0,
+                    include_descendants: false,
+                    keep_last: false,
+                })
+                .unwrap();
+            let recovered = open(&fixture.root, durability);
+            let report = recovered.branch_create_recovery_report().unwrap();
+            assert_eq!(report.entries.len(), 1);
+            assert_eq!(report.entries[0].branch_id, child);
+            assert_eq!(
+                report.entries[0].status,
+                crate::BranchCreateRecoveryStatus::Completed
+            );
+            assert_eq!(
+                recovered
+                    .file_descriptor_metrics()
+                    .unwrap()
+                    .admitted_runtimes,
+                0
+            );
+            let acknowledged = fixture.model.capture().unwrap();
+            let cut = fixture
+                .model
+                .take_observation()
+                .unwrap()
+                .expect("actual recovery publication");
+            drop(recovered);
+            let plans = publication_fault_plans(&cut)
+                .into_iter()
+                .map(|plan| (&cut, plan))
+                .chain(std::iter::once((&acknowledged, CrashPlan::default())));
+            for (snapshot, plan) in plans {
+                let root = fixture.image(snapshot, &plan);
+                let mut recovered = open(&root, durability);
+                assert_eq!(
+                    recovered
+                        .describe_branch(BranchSelector::Id(child))
+                        .unwrap()
+                        .state,
+                    crate::BranchLifecycleState::Ready
+                );
+                let catalog_path = root.join("branches/catalog.hawdb");
+                let before = std::fs::read(&catalog_path).unwrap();
+                assert!(recovered
+                    .recover_pending_branch_creates(crate::BranchCreateRecoveryLimits::default())
+                    .unwrap()
+                    .entries
+                    .is_empty());
+                assert_eq!(std::fs::read(&catalog_path).unwrap(), before);
+                assert!(assert_atomic(&mut recovered, main));
+                recovered
+                    .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(child)])
+                    .unwrap();
+                assert!(assert_atomic(&mut recovered, main));
             }
         }
     }
