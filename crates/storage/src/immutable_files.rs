@@ -97,6 +97,40 @@ impl ImmutableFileHandles {
         Ok(())
     }
 
+    /// The caller's reachability barrier excludes new users of this object.
+    /// Refuse to unlink an in-flight read; idle cache entries must not retain
+    /// unlinked storage indefinitely in a long-lived project.
+    pub(crate) fn retire_unreachable(&self, reference: ObjectReference) -> io::Result<()> {
+        let _opening = self
+            .opening
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut handles = self
+            .handles
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if handles
+            .get(&reference)
+            .is_some_and(|file| Arc::strong_count(file) != 1)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "unreachable immutable object still has an active read",
+            ));
+        }
+        let removed = handles.remove(&reference);
+        drop(handles);
+        if removed.is_some() {
+            drop(removed);
+            self.state.record_cache_evictions(1);
+        }
+        self.bindings
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .retain(|_, binding| binding.reference != reference);
+        Ok(())
+    }
+
     /// Mounts verified checkpoint content without copying the dataset. The
     /// alias and the immutable object share an inode; mutable opens detach it.
     pub(crate) fn mount(

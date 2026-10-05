@@ -174,6 +174,7 @@ pub struct ReclamationReport {
     pub retained_objects: u64,
     pub reclaimed_objects: u64,
     pub reclaimed_bytes: u64,
+    pub reclaimed_branch_directories: u64,
     /// Active owners may hold unpublished roots or reader generations.
     pub deferred_for_active_leases: bool,
 }
@@ -193,6 +194,11 @@ pub struct BranchReclamationEntry {
 pub struct BranchReclamationInventory {
     pub objects: Vec<ObjectReference>,
     pub branches: Vec<BranchReclamationEntry>,
+}
+
+pub(crate) struct ImmutableObjectInventory {
+    pub objects: Vec<ObjectReference>,
+    pub staging: Vec<(PathBuf, u64)>,
 }
 
 /// Owns the immutable-object namespace for one project.
@@ -244,6 +250,82 @@ impl ImmutableObjectStore {
             .join(OBJECTS_DIRECTORY)
             .join(reference.kind.directory())
             .join(reference.path_component())
+    }
+
+    /// Inventory only the currently supported immutable namespace. Unknown
+    /// versions, names and non-files fail closed before any sweep can start.
+    pub(crate) fn inventory(
+        &self,
+        max_objects: usize,
+        max_bytes: u64,
+    ) -> io::Result<ImmutableObjectInventory> {
+        let mut objects = Vec::new();
+        let mut staging = Vec::new();
+        let mut total_bytes = 0u64;
+        let directories = [
+            ObjectKind::Checkpoint,
+            ObjectKind::SealedWal,
+            ObjectKind::SealedRoot,
+            ObjectKind::CheckpointArtifact,
+            ObjectKind::DurableManifest,
+        ]
+        .into_iter()
+        .map(|kind| (kind.directory(), Some(kind)))
+        .chain([(STAGING_DIRECTORY, None)]);
+        for (name, kind) in directories {
+            let directory = self.root.join(OBJECTS_DIRECTORY).join(name);
+            match fs::symlink_metadata(&directory) {
+                Ok(metadata) if metadata.is_dir() => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+                Ok(_) => return Err(io::Error::other("invalid immutable object directory")),
+            }
+            for entry in fs::read_dir(&directory)? {
+                let entry = entry?;
+                if objects.len() + staging.len() >= max_objects {
+                    return Err(io::Error::other("branch reclamation object limit exceeded"));
+                }
+                let metadata = fs::symlink_metadata(entry.path())?;
+                if !metadata.is_file() {
+                    return Err(io::Error::other("invalid immutable object inventory entry"));
+                }
+                total_bytes = total_bytes
+                    .checked_add(metadata.len())
+                    .filter(|bytes| *bytes <= max_bytes)
+                    .ok_or_else(|| io::Error::other("branch reclamation byte limit exceeded"))?;
+                let name = entry.file_name();
+                let name = name.to_str().ok_or_else(|| {
+                    io::Error::other("immutable object name is not a canonical digest")
+                })?;
+                let Some(kind) = kind else {
+                    let valid = name
+                        .strip_suffix(".stage")
+                        .and_then(|name| name.split_once('-'))
+                        .is_some_and(|(pid, sequence)| {
+                            !pid.is_empty()
+                                && !sequence.is_empty()
+                                && pid.bytes().all(|byte| byte.is_ascii_digit())
+                                && sequence.bytes().all(|byte| byte.is_ascii_digit())
+                        });
+                    if !valid {
+                        return Err(io::Error::other("unrecognized immutable staging entry"));
+                    }
+                    staging.push((entry.path(), metadata.len()));
+                    continue;
+                };
+                let sha256: Sha256Digest = name.parse().map_err(io::Error::other)?;
+                if sha256.to_string() != name {
+                    return Err(io::Error::other("immutable object digest is not canonical"));
+                }
+                objects.push(ObjectReference {
+                    kind,
+                    format_version: if kind == ObjectKind::SealedRoot { 2 } else { 1 },
+                    byte_length: metadata.len(),
+                    sha256,
+                });
+            }
+        }
+        Ok(ImmutableObjectInventory { objects, staging })
     }
 
     /// Reads an immutable object after validating its complete reference.
@@ -326,10 +408,21 @@ impl ImmutableObjectStore {
             retained_objects: inventory.intersection(&reachable).count() as u64,
             reclaimed_objects: 0,
             reclaimed_bytes: 0,
+            reclaimed_branch_directories: 0,
             deferred_for_active_leases: false,
         };
         for reference in inventory.difference(&reachable) {
             let path = self.object_path(*reference);
+            let context = map_io(
+                "admit unreachable object cache retirement",
+                crate::file_descriptors::context_for_path(&path),
+            )?;
+            if let Some(handles) = context.state.existing_immutable_handles() {
+                map_io(
+                    "retire unreachable object cache",
+                    handles.retire_unreachable(*reference),
+                )?;
+            }
             match fs::remove_file(&path) {
                 Ok(()) => {
                     crate::durability::sync_parent_directory(&path).map_err(|source| {
@@ -360,7 +453,15 @@ impl ImmutableObjectStore {
         &mut self,
         inventory: &BranchReclamationInventory,
     ) -> Result<ReclamationReport, ImmutableObjectError> {
-        let mut roots = Vec::new();
+        self.reclaim_branches_with_roots(inventory, &[])
+    }
+
+    pub(crate) fn reclaim_branches_with_roots(
+        &mut self,
+        inventory: &BranchReclamationInventory,
+        retained_roots: &[ObjectReference],
+    ) -> Result<ReclamationReport, ImmutableObjectError> {
+        let mut roots = retained_roots.to_vec();
         for branch in &inventory.branches {
             let removable = matches!(branch.state, crate::branch_catalog::BranchState::Deleted)
                 && !branch.active_lease;
@@ -383,31 +484,22 @@ impl ImmutableObjectStore {
                 retained_objects: inventory.objects.len() as u64,
                 reclaimed_objects: 0,
                 reclaimed_bytes: 0,
+                reclaimed_branch_directories: 0,
                 deferred_for_active_leases: true,
             });
         }
-        let report = self.reclaim_unreachable(&inventory.objects, &roots)?;
+        let mut report = self.reclaim_unreachable(&inventory.objects, &roots)?;
         for branch in &inventory.branches {
             if matches!(branch.state, crate::branch_catalog::BranchState::Deleted)
                 && !branch.active_lease
-                && branch.directory.exists()
             {
                 // A reclamation owner can remove namespace paths. Revalidate
                 // kind names before any subsequent publication by this store.
                 self.synchronized_kinds.clear();
                 self.namespace_synchronized = false;
-                fs::remove_dir_all(&branch.directory).map_err(|source| {
-                    ImmutableObjectError::Io {
-                        operation: "remove deleted branch directory",
-                        source,
-                    }
-                })?;
-                crate::durability::sync_parent_directory(&branch.directory).map_err(|source| {
-                    ImmutableObjectError::Io {
-                        operation: "sync branch directory parent after reclamation",
-                        source,
-                    }
-                })?;
+                if reclaim_deleted_directory(&branch.directory)? {
+                    report.reclaimed_branch_directories += 1;
+                }
             }
         }
         Ok(report)
@@ -536,6 +628,68 @@ impl ImmutableObjectStore {
         }
         Ok(PublishOutcome::Reused)
     }
+}
+
+fn reclaim_deleted_directory(directory: &Path) -> Result<bool, ImmutableObjectError> {
+    use crate::ownership::DatabaseDirectoryLease;
+
+    let name = directory.file_name().and_then(|name| name.to_str()).ok_or(
+        ImmutableObjectError::BranchMetadataIncomplete(
+            "deleted branch directory has no valid name",
+        ),
+    )?;
+    let retired = directory.with_file_name(format!(".reclaim-{name}"));
+    let present = map_io(
+        "inspect deleted branch directory",
+        fs::try_exists(directory),
+    )?;
+    let pending = map_io("inspect retired branch directory", fs::try_exists(&retired))?;
+    if present && pending {
+        return Err(ImmutableObjectError::BranchMetadataIncomplete(
+            "both original and retired branch directories exist",
+        ));
+    }
+    if present || pending {
+        let source = if present { directory } else { &retired };
+        let metadata = map_io(
+            "inspect cleanup directory kind",
+            fs::symlink_metadata(source),
+        )?;
+        if !metadata.is_dir() {
+            return Err(ImmutableObjectError::BranchMetadataIncomplete(
+                "branch cleanup path is not a directory",
+            ));
+        }
+        let _lease =
+            DatabaseDirectoryLease::acquire(source).map_err(|error| ImmutableObjectError::Io {
+                operation: "lease deleted branch before cleanup",
+                source: io::Error::other(error),
+            })?;
+        if present {
+            // Retire the UUID path while its original lock still excludes
+            // delayed openers. Never unlink a lock inode at an admissible path.
+            map_io(
+                "retire deleted branch directory",
+                fs::rename(directory, &retired),
+            )?;
+        }
+        // Repeat this barrier on retry: seeing the retired name after a process
+        // interruption does not prove the original UUID is durably absent.
+        map_io(
+            "sync retired branch directory name",
+            crate::durability::sync_parent_directory(&retired),
+        )?;
+        map_io(
+            "remove retired branch directory",
+            fs::remove_dir_all(&retired),
+        )?;
+    }
+    // Also cover a prior successful unlink whose final barrier failed.
+    map_io(
+        "sync branch directory parent after reclamation",
+        crate::durability::sync_parent_directory(directory),
+    )?;
+    Ok(present || pending)
 }
 
 fn validate_reference(
@@ -926,6 +1080,60 @@ mod tests {
             .unwrap();
         assert_eq!(report.reclaimed_objects, 2);
         assert_eq!(report.reclaimed_bytes, (first.len() + second.len()) as u64);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn deleted_directory_cleanup_revalidates_lease_and_resumes_retirement() {
+        use crate::ownership::DatabaseDirectoryLease;
+
+        let root = test_root("reclamation-retirement");
+        let directory = root.join("deleted");
+        fs::create_dir_all(directory.join("data")).unwrap();
+        fs::write(directory.join("data/payload"), b"retained until unpinned").unwrap();
+        let lease = DatabaseDirectoryLease::acquire(&directory).unwrap();
+        assert!(super::reclaim_deleted_directory(&directory).is_err());
+        assert_eq!(
+            fs::read(directory.join("data/payload")).unwrap(),
+            b"retained until unpinned"
+        );
+        drop(lease);
+
+        let retired = root.join(".reclaim-deleted");
+        fs::rename(&directory, &retired).unwrap();
+        assert!(DatabaseDirectoryLease::acquire(&directory).is_err());
+        assert!(super::reclaim_deleted_directory(&directory).unwrap());
+        assert!(!retired.exists());
+        assert!(!super::reclaim_deleted_directory(&directory).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reclamation_rejects_active_cached_reads_and_releases_idle_descriptors() {
+        use crate::file_descriptors::ProjectFileDescriptors;
+        use crate::immutable_files::ImmutableFileBinding;
+
+        let root = test_root("reclamation-cache");
+        let project = ProjectFileDescriptors::acquire(&root, 8).unwrap();
+        let context = project.io_context();
+        let handles = context.state.immutable_handles();
+        let mut store = ImmutableObjectStore::open(&root).unwrap();
+        let object =
+            ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, b"cached orphan");
+        store.publish(object, b"cached orphan").unwrap();
+        let binding = ImmutableFileBinding {
+            reference: object,
+            object_path: store.object_path(object),
+        };
+        let reader = handles.get(&binding, &context).unwrap();
+        assert_eq!(project.metrics().cached_handles, 1);
+        assert!(store.reclaim_unreachable(&[object], &[]).is_err());
+        assert!(store.object_path(object).exists());
+        drop(reader);
+        let report = store.reclaim_unreachable(&[object], &[]).unwrap();
+        assert_eq!(report.reclaimed_objects, 1);
+        assert_eq!(project.metrics().cached_handles, 0);
+        assert!(!store.object_path(object).exists());
         fs::remove_dir_all(root).unwrap();
     }
 

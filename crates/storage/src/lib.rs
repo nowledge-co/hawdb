@@ -33,6 +33,8 @@ pub mod branch_catalog;
 pub mod branch_head;
 #[doc(hidden)]
 pub mod branch_project;
+#[doc(hidden)]
+pub mod branch_reclamation;
 pub mod cache;
 pub mod canonical;
 pub mod canonical_adjacency;

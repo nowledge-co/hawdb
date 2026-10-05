@@ -63,6 +63,261 @@ fn values(database: &mut Database) -> Vec<BTreeMap<String, Value>> {
 }
 
 #[test]
+fn live_writer_reclamation_retains_readers_descendants_and_budget_retries() {
+    use hawdb::BranchReclamationLimits;
+    use hawdb_storage::immutable_object::{ImmutableObjectStore, ObjectKind, ObjectReference};
+
+    let project = Project::new();
+    let mut database = Database::open_with_config(
+        &project.0,
+        DatabaseConfig {
+            max_open_files: 32,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    database.query("CREATE (:Memory {id: 'main'})").unwrap();
+    database.checkpoint().unwrap();
+    let revision = database.commit_epoch().unwrap();
+    database
+        .query_sql(&format!(
+            "CREATE BRANCH parent FROM main AT REVISION {revision} REQUEST KEY 'reclaim-parent'"
+        ))
+        .unwrap();
+    database
+        .query_sql(&format!(
+            "CREATE BRANCH sibling FROM main AT REVISION {revision} REQUEST KEY 'reclaim-sibling'"
+        ))
+        .unwrap();
+    database.query_sql("USE BRANCH parent").unwrap();
+    database.query("CREATE (:Memory {id: 'parent'})").unwrap();
+    database
+        .query_sql("CREATE TABLE inherited (id BIGINT PRIMARY KEY, body TEXT)")
+        .unwrap();
+    database
+        .query_sql("INSERT INTO inherited (id, body) VALUES (7, 'parent schema and data')")
+        .unwrap();
+    database.checkpoint().unwrap();
+    let revision = database.commit_epoch().unwrap();
+    database.query_sql(&format!(
+        "CREATE BRANCH descendant FROM parent AT REVISION {revision} REQUEST KEY 'reclaim-descendant'"
+    )).unwrap();
+    let parent = database
+        .describe_branch(BranchSelector::Name("parent".into()))
+        .unwrap();
+    let descendant = database
+        .describe_branch(BranchSelector::Name("descendant".into()))
+        .unwrap();
+    let catalog =
+        hawdb_storage::branch_catalog::read_catalog(&project.0.join("branches/catalog.hawdb"))
+            .unwrap();
+    let baseline = catalog
+        .branches
+        .iter()
+        .find(|record| record.id.as_uuid() == descendant.id)
+        .unwrap()
+        .base_root_digest
+        .unwrap();
+    let initial_head = hawdb_storage::branch_head::read_branch_head(
+        &project
+            .0
+            .join("branches")
+            .join(descendant.id.to_string())
+            .join("branch.head"),
+    )
+    .unwrap();
+    assert_eq!(initial_head.sealed_root.sha256.as_bytes(), &baseline);
+    let mut objects = ImmutableObjectStore::open(project.0.join("branches/objects")).unwrap();
+    let baseline_path = objects.object_path(initial_head.sealed_root);
+    database.query_sql("USE BRANCH descendant").unwrap();
+    database
+        .query("CREATE (:Memory {id: 'descendant'})")
+        .unwrap();
+    database.checkpoint().unwrap();
+    database.query_sql("USE BRANCH main").unwrap();
+    database
+        .query_sql(&format!(
+            "DROP BRANCH ID '{}' AT REVISION {}",
+            parent.id, parent.metadata_revision
+        ))
+        .unwrap();
+    let parent_directory = project.0.join("branches").join(parent.id.to_string());
+    assert!(parent_directory.exists());
+    let orphan = ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, b"unpublished");
+    objects.publish(orphan, b"unpublished").unwrap();
+    let orphan_path = objects.object_path(orphan);
+    let staging = project
+        .0
+        .join("branches/objects/objects/.staging/999999-1.stage");
+    std::fs::write(&staging, b"interrupted publisher").unwrap();
+    let snapshot = database.begin_read_transaction().unwrap();
+    let deferred = database
+        .reclaim_branch_storage(BranchReclamationLimits::default())
+        .unwrap();
+    assert!(deferred.deferred_for_active_leases);
+    assert_eq!(deferred.reclaimed_objects, 0);
+    assert!(orphan_path.exists());
+    assert!(parent_directory.exists());
+    drop(snapshot);
+    assert!(database
+        .reclaim_branch_storage(BranchReclamationLimits {
+            max_objects: 1,
+            ..Default::default()
+        })
+        .is_err());
+    assert!(orphan_path.exists());
+    assert!(parent_directory.exists());
+    assert!(staging.exists());
+    let report = database
+        .reclaim_branch_storage(BranchReclamationLimits::default())
+        .unwrap();
+    assert!(!report.deferred_for_active_leases, "{report:?}");
+    assert!(report.reclaimed_objects > 0);
+    assert!(report.reclaimed_bytes >= orphan.byte_length);
+    assert_eq!(report.reclaimed_branch_directories, 1);
+    assert_eq!(report.reclaimed_staging_files, 1);
+    assert!(!staging.exists());
+    assert!(!orphan_path.exists());
+    assert!(!parent_directory.exists());
+    assert!(
+        baseline_path.exists(),
+        "a catalog creation baseline remains a GC root after head advancement"
+    );
+    assert_eq!(values(&mut database)[0]["id"], Value::String("main".into()));
+    database
+        .query("CREATE (:Memory {id: 'still-writable'})")
+        .unwrap();
+    assert!(
+        !database
+            .reclaim_branch_storage(BranchReclamationLimits::default())
+            .unwrap()
+            .deferred_for_active_leases
+    );
+    assert!(database.file_descriptor_metrics().unwrap().high_water <= 32);
+    drop(database);
+
+    let mut reopened = Database::open(&project.0).unwrap();
+    reopened.query_sql("USE BRANCH descendant").unwrap();
+    assert_eq!(values(&mut reopened).len(), 3);
+    assert_eq!(
+        reopened
+            .query_sql("SELECT body FROM inherited WHERE id = 7")
+            .unwrap()
+            .rows[0]["body"],
+        Value::String("parent schema and data".into())
+    );
+    reopened.query_sql("USE BRANCH sibling").unwrap();
+    assert_eq!(values(&mut reopened).len(), 1);
+    reopened.query_sql("USE BRANCH main").unwrap();
+    assert_eq!(values(&mut reopened).len(), 2);
+    assert!(reopened.query_sql("USE BRANCH parent").is_err());
+}
+
+#[test]
+fn concurrent_reclamation_retires_only_idle_publication_pins() {
+    use hawdb::BranchReclamationLimits;
+    use hawdb_storage::immutable_object::{ImmutableObjectStore, ObjectKind, ObjectReference};
+
+    let project = Project::new();
+    let mut database = Database::open(&project.0).unwrap();
+    database.query("CREATE (:Memory {id: 'before'})").unwrap();
+    database.checkpoint().unwrap();
+    let database = database.into_concurrent();
+    let mut reader = database.begin_read_transaction().unwrap();
+    database.query("CREATE (:Memory {id: 'after'})").unwrap();
+    database.checkpoint().unwrap();
+    let mut objects = ImmutableObjectStore::open(project.0.join("branches/objects")).unwrap();
+    let orphan =
+        ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, b"concurrent-orphan");
+    objects.publish(orphan, b"concurrent-orphan").unwrap();
+    assert!(
+        database
+            .reclaim_branch_storage(BranchReclamationLimits::default())
+            .unwrap()
+            .deferred_for_active_leases
+    );
+    assert!(objects.object_path(orphan).exists());
+    assert_eq!(
+        reader
+            .query("MATCH (m:Memory) RETURN m.id")
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+    drop(reader);
+    let report = database
+        .reclaim_branch_storage(BranchReclamationLimits::default())
+        .unwrap();
+    assert!(!report.deferred_for_active_leases, "{report:?}");
+    assert!(!objects.object_path(orphan).exists());
+    assert_eq!(
+        database
+            .query("MATCH (m:Memory) RETURN m.id")
+            .unwrap()
+            .rows
+            .len(),
+        2
+    );
+    database
+        .query("CREATE (:Memory {id: 'after-maintenance'})")
+        .unwrap();
+    assert_eq!(
+        database
+            .query("MATCH (m:Memory) RETURN m.id")
+            .unwrap()
+            .rows
+            .len(),
+        3
+    );
+}
+
+#[test]
+fn reclamation_rejects_corrupt_inventory_and_unrelated_writer_then_retries() {
+    use hawdb::BranchReclamationLimits;
+    use hawdb_storage::immutable_object::{ImmutableObjectStore, ObjectKind, ObjectReference};
+
+    let project = Project::new();
+    let mut database = Database::open(&project.0).unwrap();
+    database.query("CREATE (:Memory {id: 'retained'})").unwrap();
+    database.checkpoint().unwrap();
+    let revision = database.commit_epoch().unwrap();
+    database
+        .query_sql(&format!(
+            "CREATE BRANCH other FROM main AT REVISION {revision} REQUEST KEY 'gc-other'"
+        ))
+        .unwrap();
+    let mut other = Database::open(&project.0).unwrap();
+    other.query_sql("USE BRANCH other").unwrap();
+    let mut objects = ImmutableObjectStore::open(project.0.join("branches/objects")).unwrap();
+    let orphan = ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, b"retained-orphan");
+    objects.publish(orphan, b"retained-orphan").unwrap();
+    let path = objects.object_path(orphan);
+    assert!(
+        database
+            .reclaim_branch_storage(BranchReclamationLimits::default())
+            .unwrap()
+            .deferred_for_active_leases
+    );
+    assert!(path.exists());
+    drop(other);
+    std::fs::write(&path, b"damaged-orphan").unwrap();
+    assert!(database
+        .reclaim_branch_storage(BranchReclamationLimits::default())
+        .is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), b"damaged-orphan");
+    assert_eq!(values(&mut database).len(), 1);
+    std::fs::write(&path, b"retained-orphan").unwrap();
+    let report = database
+        .reclaim_branch_storage(BranchReclamationLimits::default())
+        .unwrap();
+    assert!(!report.deferred_for_active_leases);
+    assert!(!path.exists());
+    database.query_sql("USE BRANCH other").unwrap();
+    assert_eq!(values(&mut database).len(), 1);
+}
+
+#[test]
 fn storage_inventory_tracks_selection_and_retries_budget_exhaustion() {
     use hawdb_storage::file_descriptors::ProjectFileDescriptors;
     use hawdb_storage::file_io::OpenOptions;

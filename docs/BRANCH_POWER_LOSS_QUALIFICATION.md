@@ -11,7 +11,7 @@ Use the pinned Rust toolchain and locked dependencies:
 
 ```sh
 cargo test --locked -p hawdb-storage --all-features
-cargo test --locked -p hawdb --all-features --lib api::tests::power_loss:: -- --nocapture
+bash scripts/cargo-test-required.sh --locked -p hawdb --all-features --lib api::tests::power_loss:: -- --nocapture --test-threads=1
 cargo test --locked -p hawdb --all-features --test branch_project_open
 cargo test --locked -p hawdb --all-features --lib api::branch_lifecycle::tests::
 ```
@@ -22,7 +22,20 @@ The existing Bazel storage unit target includes its recorder/image-engine tests
 under `cfg(test)`. The ordinary Bazel facade target does not enable the storage
 recorder; run the explicit Cargo matrix rather than claiming its filtered Bazel
 invocation executes fault cases. Default/minimal project-open integration tests
-have existing Bazel targets. Routine local fuzz remains local-only:
+have existing Bazel targets.
+
+The weekly/manual [platform workflow](../.github/workflows/ci.yml) runs the
+complete facade matrix on Linux and macOS with locked dependencies and the pinned
+Rust toolchain. It retains the discovered cases, actual test output, source
+revision, platform, toolchain and terminal status as artifacts. The existing
+required-test wrapper rejects a zero-test or fully ignored selection; a
+successful build or discovery step alone is not a qualification result. Cases
+run serially to bound simultaneous crash-image materialization. A workflow
+definition does not establish a passing run: release evidence must identify a
+successful artifact for the exact candidate revision on each required platform.
+Windows namespace persistence remains outside this Unix recorder.
+
+Routine local fuzz remains local-only:
 
 ```sh
 bazel test //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
@@ -66,7 +79,7 @@ and are materialized in isolated directories. Recovery uses ordinary
 | Source seal/private rotation | Both policies and before/after seven actual boundaries: successor creation/write/file sync, sealed-WAL installation, sealed-root installation, source-head rename, and its directory barrier. Each cut recovers lost/persisted changes; completed seal acknowledgment covers the whole prefix. |
 | Create reservation/completion | Both policies, before/after each catalog replacement; durable receipts retain one UUID/outcome across retries. A reservation that never persisted has no acknowledged identity; a missing pre-publication head may produce the same UUID's terminal abort. |
 | Logical deletion | Both policies, before/after Deleting and Deleted catalog replacement; repeat the original UUID/revision request, preserve one tombstone, and recover the unleased descendant. |
-| GC | Acknowledged deletion plus actual orphan unlink before its name barrier; an unleased modified descendant retains inherited graph data and its own schema/SQL state after parent cleanup. |
+| GC | Both policies, acknowledged deletion plus actual orphan unlink, deleted-directory retirement before its name barrier, first retired child unlink, and final directory unlink through `Database::reclaim_branch_storage` while main remains admitted. Crash images resume cleanup through the same API, repeat it idempotently, and reopen the exact main/descendant schema, SQL rows and graph data; the deleted UUID remains tombstoned. |
 | Admission | Before/after actual checkpoint hard-link alias installation; exact committed schema/data survive replay without copying a parent dataset. |
 | Configurations | `Auto`, `Materialized`, and `OutOfCore` crossed with all four existing relational index modes; indexed queries, child DDL/DML/checkpoint, nested fork, parent deletion and reopen under a 32-FD domain. |
 
@@ -140,14 +153,19 @@ proof or an exact process-wide descriptor census. Derived projection completion
 and error classification are delivered in #839; derived-recovery and pruned
 range error preservation are delivered in #841. Each PR targets `main` directly.
 
-Pending/running/failed host jobs block `USE BRANCH` and retain the current runtime;
+Pending/running/failed host jobs block `USE BRANCH` and reclamation with a typed
+branch-busy error, retaining the current runtime and candidate objects;
 completed jobs keep their outcome and monotonically increasing IDs across
-selection. Read snapshots retain their runtime lease. Catalog-backed GC holds
-metadata serialization through inspection and sweep, and defers all reclamation
-if any branch lease is live. It does not speculate that an unknown owner has no
-pins. The fault matrix exercises that conservative implementation. Independent
-job-owned roots and finer concurrent mark/revalidate/sweep schedules remain
-separate #819/#820 work; this PR adds neither capability.
+selection. Read snapshots and prepared handoffs retain their runtime lease.
+Catalog-backed GC holds metadata serialization through inspection and sweep.
+The production maintenance API can exempt its uniquely held writer lease;
+unrelated owners and outstanding readers/candidates still defer reclamation.
+Concurrent maintenance retires only an idle internal read publication before
+checking that ownership. The fault matrix exercises this conservative contract
+and restartable directory retirement, including the barrier that makes the
+original UUID path durably absent before recursive cleanup. Independent job-owned
+roots and sweeping through unrelated active owners remain separate #778/#819/#820
+work; these schedules do not establish those capabilities.
 
 ## Model mapping and limits
 

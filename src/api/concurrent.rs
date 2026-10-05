@@ -298,6 +298,15 @@ impl ConcurrentDatabase {
             .publish_prepared_checkpoint(prepared)
     }
 
+    /// Runs project reclamation through the writer coordinator. Active readers,
+    /// transactions and checkpoint candidates retain their reachability pins.
+    pub fn reclaim_branch_storage(
+        &self,
+        limits: super::BranchReclamationLimits,
+    ) -> Result<super::BranchReclamationReport> {
+        self.inner.commits.reclaim_branch_storage(limits)
+    }
+
     pub fn begin_transaction(
         &self,
         options: ConcurrentTransactionOptions,

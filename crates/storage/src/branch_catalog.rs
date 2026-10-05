@@ -20,7 +20,7 @@ use crate::immutable_object::{
 use crate::ownership::{DatabaseDirectoryLease, DatabaseDirectoryLeaseError};
 use hawdb_core::Uuid;
 use hawdb_integrity::crc32c;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Display, Formatter};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -1307,37 +1307,72 @@ pub fn reclaim_catalog_branches(
     let _metadata_lease = CatalogMetadataLease::acquire_blocking(project_directory)
         .map_err(BranchReclamationError::Catalog)?;
     let catalog = read_catalog(catalog_path).map_err(BranchReclamationError::Catalog)?;
+    let branches = reclamation_entries(&catalog, paths, None)?;
+    object_store
+        .reclaim_branches(&BranchReclamationInventory {
+            objects: objects.to_vec(),
+            branches,
+        })
+        .map_err(BranchReclamationError::Objects)
+}
+
+pub(crate) fn reclamation_entries(
+    catalog: &Catalog,
+    paths: &[BranchReclamationPath],
+    exclusive_owner: Option<(&DatabaseDirectoryLease, &BranchHead)>,
+) -> Result<Vec<BranchReclamationEntry>, BranchReclamationError> {
+    let indexed_paths: BTreeMap<_, _> = paths.iter().map(|path| (path.id, path)).collect();
+    if indexed_paths.len() != paths.len() {
+        return Err(BranchReclamationError::Catalog(invalid_data(
+            "duplicate reclamation path identity",
+        )));
+    }
     let mut branches = Vec::with_capacity(catalog.branches.len());
     for record in &catalog.branches {
-        let path = paths
-            .iter()
-            .find(|candidate| candidate.id == record.id)
+        let path = indexed_paths
+            .get(&record.id)
             .ok_or(BranchReclamationError::MissingPath(record.id))?;
-        let active_lease =
-            if matches!(record.state, BranchState::Deleted) && !path.directory.exists() {
-                false
-            } else {
-                match DatabaseDirectoryLease::acquire(&path.directory) {
-                    Ok(lease) => {
-                        drop(lease);
-                        false
-                    }
-                    Err(DatabaseDirectoryLeaseError::AlreadyOpen) => true,
-                    Err(DatabaseDirectoryLeaseError::Canonicalize(error))
-                    | Err(DatabaseDirectoryLeaseError::OpenLockFile(error))
-                    | Err(DatabaseDirectoryLeaseError::Lock(error)) => {
-                        return Err(BranchReclamationError::Lease(error));
-                    }
+        let owned = if let Some((lease, head)) = exclusive_owner {
+            record.state == BranchState::Ready
+                && head.branch_id == *record.id.as_uuid().as_bytes()
+                && lease
+                    .owns_directory(&path.directory)
+                    .map_err(BranchReclamationError::Lease)?
+        } else {
+            false
+        };
+        let active_lease = if owned
+            || (matches!(record.state, BranchState::Deleted)
+                && !fs::try_exists(&path.directory).map_err(BranchReclamationError::Lease)?)
+        {
+            false
+        } else {
+            match DatabaseDirectoryLease::acquire(&path.directory) {
+                Ok(lease) => {
+                    drop(lease);
+                    false
                 }
-            };
+                Err(DatabaseDirectoryLeaseError::AlreadyOpen) => true,
+                Err(DatabaseDirectoryLeaseError::Canonicalize(error))
+                | Err(DatabaseDirectoryLeaseError::OpenLockFile(error))
+                | Err(DatabaseDirectoryLeaseError::Lock(error)) => {
+                    return Err(BranchReclamationError::Lease(error));
+                }
+            }
+        };
         let sealed_root = if matches!(record.state, BranchState::Deleted) {
             None
         } else {
-            Some(
-                read_branch_head(&path.head_path)
-                    .map_err(BranchReclamationError::Head)?
-                    .sealed_root,
-            )
+            let head = read_branch_head(&path.head_path).map_err(BranchReclamationError::Head)?;
+            if head.project_id != *catalog.project_id.as_uuid().as_bytes()
+                || head.branch_id != *record.id.as_uuid().as_bytes()
+                || (owned && exclusive_owner.is_some_and(|(_, expected)| *expected != head))
+            {
+                return Err(BranchReclamationError::Catalog(invalid_data(
+                    "reclamation head does not match its catalog or admitted owner",
+                )));
+            }
+            Some(head.sealed_root)
         };
         branches.push(BranchReclamationEntry {
             state: record.state,
@@ -1346,12 +1381,7 @@ pub fn reclaim_catalog_branches(
             active_lease,
         });
     }
-    object_store
-        .reclaim_branches(&BranchReclamationInventory {
-            objects: objects.to_vec(),
-            branches,
-        })
-        .map_err(BranchReclamationError::Objects)
+    Ok(branches)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
