@@ -165,16 +165,22 @@ pub(crate) mod evidence {
 
     thread_local! {
         static PATHS: Cell<usize> = const { Cell::new(0) };
+        static CANCEL_ARMED: Cell<bool> = const { Cell::new(false) };
         static CANCEL: RefCell<Option<RuntimeCancellationToken>> = const { RefCell::new(None) };
     }
 
     pub(super) fn record() {
         PATHS.set(PATHS.get() + 1);
-        CANCEL.with_borrow_mut(|value| {
-            if let Some(token) = value.take() {
-                token.cancel();
-            }
-        });
+        // Keep inactive fault injection from initializing droppable TLS during
+        // allocation measurements. Its native destructor bookkeeping outlives
+        // the measured path and is absent from production builds.
+        if CANCEL_ARMED.replace(false) {
+            CANCEL.with_borrow_mut(|value| {
+                if let Some(token) = value.take() {
+                    token.cancel();
+                }
+            });
+        }
     }
 
     pub(crate) fn take() -> usize {
@@ -183,5 +189,6 @@ pub(crate) mod evidence {
 
     pub(crate) fn cancel_next(token: RuntimeCancellationToken) {
         CANCEL.with_borrow_mut(|value| *value = Some(token));
+        CANCEL_ARMED.set(true);
     }
 }

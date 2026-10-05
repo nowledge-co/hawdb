@@ -1,0 +1,47 @@
+name: Python Bindings
+
+on:
+  pull_request:
+    paths:
+      - "bindings/python/**"
+  push:
+    branches: [main]
+    paths:
+      - "bindings/python/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: bindings/python
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: clippy, rustfmt
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install maturin and pytest
+        run: pip install "maturin>=1.8,<2.0" "pytest>=8.0"
+
+      - name: Build the extension wheel
+        run: maturin build --release --out dist
+
+      - name: Install the built wheel
+        run: pip install dist/*.whl
+
+      - name: Run tests
+        run: pytest

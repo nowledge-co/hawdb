@@ -1,0 +1,45 @@
+# Copyright 2026 Nowledge
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+[build-system]
+build-backend = "maturin"
+requires = ["maturin>=1.0,<2.0"]
+
+[project]
+classifiers = [
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: Implementation :: CPython",
+]
+description = "HawDB Python bindings"
+license = "Apache-2.0"
+name = "hawdb"
+readme = "README.md"
+requires-python = ">=3.11"
+
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/nowledge-co/hawdb"
+
+[dependency-groups]
+dev = ["maturin>=1.8"]
+test = ["pytest>=8.0"]
+
+[tool.maturin]
+features = ["pyo3/extension-module", "abi3"]
+module-name = "hawdb._hawdb"
+python-source = "python"
+
+[tool.uv]
+package = false
