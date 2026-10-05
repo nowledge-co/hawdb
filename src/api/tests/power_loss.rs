@@ -27,7 +27,36 @@ use std::sync::atomic::{AtomicU64, Ordering};
 struct Fixture {
     root: PathBuf,
     model: PowerLossModel,
-    images: Vec<PathBuf>,
+    next_image: usize,
+}
+
+// Each fault schedule owns its image only until that schedule's reopened
+// handles have closed. Keeping every image until the fixture ends makes the
+// disk requirement grow with the number of generated fault plans.
+struct MaterializedImage(PathBuf);
+
+impl std::ops::Deref for MaterializedImage {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for MaterializedImage {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for MaterializedImage {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.0)
+            && !std::thread::panicking()
+        {
+            panic!("remove crash image {}: {error}", self.0.display());
+        }
+    }
 }
 
 impl Fixture {
@@ -43,25 +72,28 @@ impl Fixture {
         Self {
             root,
             model,
-            images: Vec::new(),
+            next_image: 0,
         }
     }
 
-    fn image(&mut self, snapshot: &PowerLossSnapshot, plan: &CrashPlan) -> PathBuf {
-        let root = self
-            .root
-            .with_extension(format!("crash-{}", self.images.len()));
-        snapshot.crash(plan).unwrap().materialize(&root).unwrap();
-        self.images.push(root.clone());
+    fn image(&mut self, snapshot: &PowerLossSnapshot, plan: &CrashPlan) -> MaterializedImage {
+        let root = MaterializedImage(
+            self.root
+                .with_extension(format!("crash-{}", self.next_image)),
+        );
+        self.next_image += 1;
+        snapshot
+            .crash(plan)
+            .unwrap()
+            .materialize(&root)
+            .unwrap_or_else(|error| panic!("materialize crash image {}: {error}", root.display()));
         root
     }
 }
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        for path in std::iter::once(&self.root).chain(&self.images) {
-            let _ = std::fs::remove_dir_all(path);
-        }
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 

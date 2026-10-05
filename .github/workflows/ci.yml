@@ -209,6 +209,7 @@ jobs:
           git rev-parse HEAD > branch-power-loss-results/source-revision.txt
           rustc --version --verbose > branch-power-loss-results/toolchain.txt
           uname -a > branch-power-loss-results/platform.txt
+          df -Pk . "${TMPDIR:-/tmp}" > branch-power-loss-results/disk-before.txt
           cargo test --locked -p hawdb --all-features --lib \
             api::tests::power_loss:: -- --list 2>&1 \
             | tee branch-power-loss-results/discovery.txt
@@ -218,6 +219,7 @@ jobs:
             | tee branch-power-loss-results/test-output.txt
           test_status=$?
           set -e
+          df -Pk . "${TMPDIR:-/tmp}" > branch-power-loss-results/disk-after.txt
           printf '{"protocol":"hawdb-branch-power-loss-ci-v1","source_revision":"%s","runner_os":"%s","test_status":%s}\n' \
             "$GITHUB_SHA" "$RUNNER_OS" "$test_status" \
             > branch-power-loss-results/manifest.json
