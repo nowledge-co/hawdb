@@ -1,19 +1,53 @@
 name: Python Bindings
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - "bindings/python/**"
+      - "MODULE.bazel"
+      - "BUILD.bazel"
+      - ".bazelrc"
+      - ".github/workflows/python-bindings.yml"
   push:
     branches: [main]
     paths:
       - "bindings/python/**"
+      - "MODULE.bazel"
+      - "BUILD.bazel"
+      - ".bazelrc"
+      - ".github/workflows/python-bindings.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  bazel:
+    name: Bazel build and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    env:
+      USE_BAZEL_VERSION: "9.2.0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Bazel
+        uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+
+      - name: Build the Python package and native extension
+        run: bazel build //bindings/python:hawdb
+
+      - name: Test the Bazel extension and dependency lock
+        run: bazel test //bindings/python/...
+
   test:
     name: Build and test
     runs-on: ubuntu-24.04

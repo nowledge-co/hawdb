@@ -6,6 +6,9 @@ module(
 bazel_dep(name = "rules_rust", version = "0.67.0")
 bazel_dep(name = "rules_shell", version = "0.6.1")
 bazel_dep(name = "rules_tla", version = "0.2.0")
+bazel_dep(name = "bazel_skylib", version = "1.8.2")
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "rules_python", version = "1.7.0")
 
 # Maintain the rules locally so the authoritative check also retains evidence.
 local_path_override(
@@ -27,3 +30,52 @@ crate.from_cargo(
     manifests = ["//:Cargo.toml"],
 )
 use_repo(crate, "crate_index")
+
+# The binding remains outside the library's Cargo workspace. Resolve only its
+# PyO3 dependency here and reuse //:hawdb for the embedded engine itself.
+crate.spec(
+    features = [
+        "abi3-py311",
+        "extension-module",
+    ],
+    package = "pyo3",
+    repositories = ["python_crates"],
+    version = "0.29",
+)
+crate.from_specs(
+    name = "python_crates",
+    cargo_lockfile = "//bindings/python:Cargo.Bazel.lock",
+)
+
+_PYTHON_BUILD_ENV = {
+    "PYO3_BUILD_EXTENSION_MODULE": "1",
+    "PYO3_NO_PYTHON": "1",
+}
+
+crate.annotation(
+    build_script_env = _PYTHON_BUILD_ENV,
+    crate = "pyo3",
+    repositories = ["python_crates"],
+)
+crate.annotation(
+    build_script_env = _PYTHON_BUILD_ENV,
+    crate = "pyo3-build-config",
+    repositories = ["python_crates"],
+)
+crate.annotation(
+    build_script_env = _PYTHON_BUILD_ENV,
+    crate = "pyo3-ffi",
+    repositories = ["python_crates"],
+)
+use_repo(crate, "python_crates")
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(python_version = "3.11")
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    hub_name = "python_test_deps",
+    python_version = "3.11",
+    requirements_lock = "//bindings/python:requirements.txt",
+)
+use_repo(pip, "python_test_deps")

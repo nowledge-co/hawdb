@@ -1,0 +1,88 @@
+load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
+load("@python_test_deps//:requirements.bzl", "requirement")
+load("@rules_python//python:defs.bzl", "py_library", "py_test")
+load("@rules_python//python:pip.bzl", "compile_pip_requirements")
+load("@rules_rust//rust:defs.bzl", "rust_shared_library")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_shared_library(
+    name = "_hawdb",
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = ["abi3"],
+    crate_name = "_hawdb",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    # Python supplies its symbols when importing an extension on macOS.
+    rustc_flags = select({
+        "@platforms//os:macos": [
+            "-C",
+            "link-arg=-undefined",
+            "-C",
+            "link-arg=dynamic_lookup",
+            "-C",
+            "link-arg=-Wl,-no_fixup_chains",
+        ],
+        "//conditions:default": [],
+    }),
+    version = "0.3.0",
+    deps = [
+        "//:hawdb",
+        "@python_crates//:pyo3",
+    ],
+)
+
+copy_file(
+    name = "extension_unix",
+    src = ":_hawdb",
+    out = "python/hawdb/_hawdb.so",
+    target_compatible_with = select({
+        "@platforms//os:windows": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+)
+
+copy_file(
+    name = "extension_windows",
+    src = ":_hawdb",
+    out = "python/hawdb/_hawdb.pyd",
+    target_compatible_with = select({
+        "@platforms//os:windows": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+)
+
+alias(
+    name = "extension",
+    actual = select({
+        "@platforms//os:windows": ":extension_windows",
+        "//conditions:default": ":extension_unix",
+    }),
+)
+
+py_library(
+    name = "hawdb",
+    srcs = ["python/hawdb/__init__.py"],
+    data = [":extension"] + glob(["python/hawdb/*.pyi"]),
+    imports = ["python"],
+)
+
+py_test(
+    name = "hawdb_python_tests",
+    size = "small",
+    srcs = glob(["tests/*.py"]),
+    legacy_create_init = False,
+    main = "tests/pytest_main.py",
+    deps = [
+        ":hawdb",
+        requirement("pytest"),
+    ],
+)
+
+compile_pip_requirements(
+    name = "requirements",
+    extra_args = ["--generate-hashes"],
+    python_version = "3.11",
+    requirements_in = "requirements.in",
+    requirements_txt = "requirements.txt",
+)

@@ -13,6 +13,23 @@ workloads. It is not yet published to PyPI.
 
 ## Build from source
 
+From the repository root, Bazel builds the native extension and runs the same
+Python smoke tests with a hermetic CPython 3.11 interpreter and locked pytest
+dependencies. No virtual environment, maturin, or preinstalled HawDB wheel is
+needed:
+
+```bash
+bazel build //bindings/python:hawdb
+bazel test //bindings/python:hawdb_python_tests
+```
+
+The Python package is also available as a `py_library` dependency at
+`//bindings/python:hawdb`. Its native module is built from the existing Rust
+binding against `//:hawdb`, with the same Python 3.11 stable ABI as the maturin
+build. Bazel outputs stay under `bazel-bin/bindings/python/python/hawdb/`.
+
+For wheel packaging or an editable installation, use maturin:
+
 Requires the repo-pinned Rust toolchain and Python 3.11+ (abi3 wheels).
 
 ```bash
@@ -47,6 +64,16 @@ Errors raise `hawdb.exceptions` subclasses (`ParseError`, `SemanticError`,
 ```bash
 pytest tests/
 ```
+
+To refresh the Bazel test dependency lock:
+
+```bash
+bazel run //bindings/python:requirements.update
+```
+
+The separate `Cargo.Bazel.lock` locks the PyO3 dependencies for Bazel; the
+binding stays outside the library's Cargo workspace. To update it deliberately,
+run `CARGO_BAZEL_REPIN=1 CARGO_BAZEL_REPIN_ONLY=python_crates bazel build //bindings/python:hawdb`.
 
 ## Scope and follow-ups
 
