@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Check current advisories and licenses
         uses: EmbarkStudios/cargo-deny-action@v2
@@ -48,7 +48,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install nightly Rust with standard library sources
         uses: dtolnay/rust-toolchain@nightly
@@ -75,7 +75,7 @@ jobs:
       HAWDB_SOAK_PAYLOAD_BYTES: ${{ inputs.soak_payload_bytes || '4096' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.97.1
@@ -147,7 +147,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.97.1

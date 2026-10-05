@@ -21,7 +21,7 @@ jobs:
         os: [macos-latest, windows-latest]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.97.1
@@ -81,7 +81,7 @@ jobs:
             runner: windows-2025
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.97.1
@@ -130,7 +130,7 @@ jobs:
         os: [macos-latest, windows-latest]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.97.1
@@ -194,7 +194,7 @@ jobs:
         os: [macos-latest, windows-latest]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.97.1
