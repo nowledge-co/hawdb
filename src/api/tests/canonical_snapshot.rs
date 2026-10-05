@@ -156,7 +156,7 @@ fn canonical_snapshot_export_uses_pinned_read_transaction_state() {
         )
         .unwrap();
 
-    let read_tx = db.begin_read_transaction();
+    let read_tx = db.begin_read_transaction().unwrap();
     db.query("CREATE (:Memory {id: 'later', title: 'Later'})")
         .unwrap();
 
@@ -198,7 +198,7 @@ fn canonical_snapshot_export_uses_pinned_read_transaction_state() {
         .iter()
         .any(|node| { node.properties.get("id") == Some(&Value::String("later".to_string())) }));
 
-    let latest = db.export_canonical_graph_snapshot();
+    let latest = db.export_canonical_graph_snapshot().unwrap();
     assert_eq!(latest.graph_commit_epoch, 2);
     assert_eq!(latest.nodes.len(), 3);
     assert_ne!(snapshot.logical_checksum, latest.logical_checksum);
@@ -212,7 +212,7 @@ fn canonical_snapshot_export_reports_duplicate_stable_ids() {
     db.query("CREATE (:Memory {id: 'dup', title: 'Second'})")
         .unwrap();
 
-    let snapshot = db.export_canonical_graph_snapshot();
+    let snapshot = db.export_canonical_graph_snapshot().unwrap();
 
     assert!(snapshot.stable_identity.requires_stable_id_mapping);
     assert_eq!(
@@ -230,7 +230,7 @@ fn canonical_snapshot_export_validation_accepts_consistent_snapshot() {
         )
         .unwrap();
 
-    let snapshot = db.export_canonical_graph_snapshot();
+    let snapshot = db.export_canonical_graph_snapshot().unwrap();
     let validation = snapshot.validate();
 
     assert!(validation.is_valid);
@@ -261,7 +261,7 @@ fn canonical_snapshot_export_validation_reports_corrupt_snapshot() {
         )
         .unwrap();
 
-    let mut snapshot = db.export_canonical_graph_snapshot();
+    let mut snapshot = db.export_canonical_graph_snapshot().unwrap();
     snapshot.nodes[1].node_id = snapshot.nodes[0].node_id;
     snapshot.relationships[0].target_node_id = 99;
     snapshot.relationships[0].stable_id = None;
@@ -295,7 +295,7 @@ fn canonical_snapshot_stable_id_mapping_makes_export_import_ready() {
         )
         .unwrap();
 
-    let snapshot = db.export_canonical_graph_snapshot();
+    let snapshot = db.export_canonical_graph_snapshot().unwrap();
     assert!(snapshot.validate().is_valid);
     assert!(!snapshot.validate().is_import_ready);
     assert_eq!(
@@ -333,7 +333,7 @@ fn canonical_snapshot_stable_id_mapping_rejects_duplicate_overlay() {
     db.query("MATCH (m:Memory {id: 'root'}), (e:Entity {id: 'mid'}) CREATE (m)-[:MENTIONS]->(e)")
         .unwrap();
 
-    let snapshot = db.export_canonical_graph_snapshot();
+    let snapshot = db.export_canonical_graph_snapshot().unwrap();
     let mapped = snapshot.with_stable_id_mapping(&CanonicalStableIdMapping {
         relationship_stable_ids: BTreeMap::from([
             (0, Value::String("duplicate-rel".to_string())),
@@ -370,7 +370,7 @@ fn persisted_stable_id_mapping_survives_reopen_without_wal_write() {
         let validation = snapshot.validate();
         let wal_after = read_test_wal(&path).unwrap();
 
-        assert!(path.join("stable_ids.hawdb").exists());
+        assert!(active_storage_root(&path).join("stable_ids.hawdb").exists());
         assert_eq!(wal_after, wal_before);
         assert!(validation.is_import_ready);
         assert!(validation.stable_identity_ready);
@@ -382,6 +382,7 @@ fn persisted_stable_id_mapping_survives_reopen_without_wal_write() {
         assert_eq!(
             db.segment_cache_snapshot()
                 .expect("durable database has a segment cache")
+                .unwrap()
                 .resident_bytes,
             0,
             "opening the stable identity header must not load mapping pages"
@@ -416,7 +417,7 @@ fn persisted_stable_id_mapping_covers_out_of_core_base_records() {
             },
         )
         .unwrap();
-        let residency = db.storage_residency_report();
+        let residency = db.storage_residency_report().unwrap();
         assert!(residency.out_of_core);
         assert_eq!(residency.delta_node_count, 0);
         assert_eq!(residency.delta_relationship_count, 0);
@@ -445,6 +446,7 @@ fn persisted_stable_id_mapping_covers_out_of_core_base_records() {
         let cache_before_export = db
             .segment_cache_snapshot()
             .expect("durable database has a segment cache")
+            .unwrap()
             .resident_bytes;
         assert!(
             cache_before_export
@@ -457,6 +459,7 @@ fn persisted_stable_id_mapping_covers_out_of_core_base_records() {
         assert!(
             db.segment_cache_snapshot()
                 .expect("durable database has a segment cache")
+                .unwrap()
                 .resident_bytes
                 >= cache_before_export.saturating_add(
                     hawdb_storage::stable_identity::DEFAULT_STABLE_IDENTITY_PAGE_BYTES as u64
@@ -501,7 +504,7 @@ fn persisted_stable_id_mapping_disambiguates_and_prunes_duplicate_property_ids()
         let mut db = Database::open(&path).unwrap();
         db.query("CREATE (:Memory {id: 'duplicate'})").unwrap();
         db.query("CREATE (:Entity {id: 'duplicate'})").unwrap();
-        let raw = db.export_canonical_graph_snapshot();
+        let raw = db.export_canonical_graph_snapshot().unwrap();
         assert_eq!(
             raw.stable_identity.duplicate_node_stable_ids,
             vec![Value::String("duplicate".to_string())]
@@ -513,7 +516,14 @@ fn persisted_stable_id_mapping_disambiguates_and_prunes_duplicate_property_ids()
         assert!(mapped.validate().is_import_ready);
         assert_ne!(mapped.nodes[0].stable_id, mapped.nodes[1].stable_id);
         assert_eq!(
-            db.store.stable_id_mapping().unwrap().node_stable_ids.len(),
+            db.runtime
+                .get()
+                .unwrap()
+                .store
+                .stable_id_mapping()
+                .unwrap()
+                .node_stable_ids
+                .len(),
             2
         );
 
@@ -534,6 +544,9 @@ fn persisted_stable_id_mapping_disambiguates_and_prunes_duplicate_property_ids()
             ])
         );
         assert!(db
+            .runtime
+            .get()
+            .unwrap()
             .store
             .stable_id_mapping()
             .unwrap()
@@ -544,6 +557,9 @@ fn persisted_stable_id_mapping_disambiguates_and_prunes_duplicate_property_ids()
     {
         let db = Database::open(&path).unwrap();
         assert!(db
+            .runtime
+            .get()
+            .unwrap()
             .store
             .stable_id_mapping()
             .unwrap()
@@ -602,11 +618,12 @@ fn storage_scrub_detects_cold_stable_id_mapping_corruption() {
     assert!(
         db.segment_cache_snapshot()
             .expect("durable database has a segment cache")
+            .unwrap()
             .resident_bytes
             < hawdb_storage::stable_identity::DEFAULT_STABLE_IDENTITY_PAGE_BYTES as u64,
         "stable identity pages must remain cold before scrub"
     );
-    let mapping_path = path.join("stable_ids.hawdb");
+    let mapping_path = active_storage_root(&path).join("stable_ids.hawdb");
     let artifact_path =
         hawdb_storage::stable_identity::stable_identity_generation_artifact_path(&mapping_path, 1)
             .unwrap();
@@ -621,7 +638,7 @@ fn storage_scrub_detects_cold_stable_id_mapping_corruption() {
         error.to_string().contains("stable identity"),
         "unexpected scrub failure: {error}"
     );
-    assert!(db.storage_handle_poisoned());
+    assert!(db.storage_handle_poisoned().unwrap());
 
     drop(db);
     std::fs::remove_dir_all(path).unwrap();
@@ -650,7 +667,7 @@ fn persisted_stable_id_mapping_respects_read_only_open() {
             .unwrap_err();
 
         assert!(error.to_string().contains("read-only mode"));
-        assert!(!path.join("stable_ids.hawdb").exists());
+        assert!(!active_storage_root(&path).join("stable_ids.hawdb").exists());
     }
 
     std::fs::remove_dir_all(path).unwrap();
@@ -864,7 +881,9 @@ fn hawdb_lightning_initial_import_readiness_requires_graph_and_projection_waterm
         embedding_dimension: Some(3),
     };
 
-    let readiness = db.hawdb_lightning_initial_import_readiness(&manifest, Some(&projection));
+    let readiness = db
+        .hawdb_lightning_initial_import_readiness(&manifest, Some(&projection))
+        .unwrap();
 
     assert!(readiness.ready);
     assert!(readiness.graph_import_caught_up);
@@ -885,7 +904,9 @@ fn hawdb_lightning_initial_import_readiness_blocks_missing_or_stale_projection()
     db.query("CREATE (:Memory {id: 'after-bootstrap'})")
         .unwrap();
 
-    let missing = db.hawdb_lightning_initial_import_readiness(&manifest, None);
+    let missing = db
+        .hawdb_lightning_initial_import_readiness(&manifest, None)
+        .unwrap();
     assert!(!missing.ready);
     assert!(missing
         .blocker_codes
@@ -906,7 +927,9 @@ fn hawdb_lightning_initial_import_readiness_blocks_missing_or_stale_projection()
         embedding_dimension: None,
     };
 
-    let stale = db.hawdb_lightning_initial_import_readiness(&manifest, Some(&stale_projection));
+    let stale = db
+        .hawdb_lightning_initial_import_readiness(&manifest, Some(&stale_projection))
+        .unwrap();
 
     assert!(!stale.ready);
     assert_eq!(stale.target_graph_commit_epoch, 2);
@@ -1258,13 +1281,15 @@ fn hawdb_lightning_initial_import_plan_reports_ready_cutover() {
     let freshness = initial_import_projection_freshness(&export.manifest);
     let checkpoint = test_hawdb_lightning_checkpoint(&export.manifest);
 
-    let plan = db.hawdb_lightning_initial_import_plan(
-        &export.graph_stream.encoded,
-        &export.relational_stream.encoded,
-        &export.manifest,
-        Some(&freshness),
-        Some(&checkpoint),
-    );
+    let plan = db
+        .hawdb_lightning_initial_import_plan(
+            &export.graph_stream.encoded,
+            &export.relational_stream.encoded,
+            &export.manifest,
+            Some(&freshness),
+            Some(&checkpoint),
+        )
+        .unwrap();
 
     assert!(plan.ready_for_graph_import);
     assert!(plan.ready_for_cutover);
@@ -1301,14 +1326,16 @@ fn hawdb_lightning_initial_import_plan_accepts_complete_document_identity_covera
     let checkpoint = test_hawdb_lightning_checkpoint(&export.manifest);
     let document_identities = all_initial_import_document_identities();
 
-    let plan = db.hawdb_lightning_initial_import_plan_with_document_identities(
-        &export.graph_stream.encoded,
-        &export.relational_stream.encoded,
-        &export.manifest,
-        Some(&freshness),
-        Some(&checkpoint),
-        &document_identities,
-    );
+    let plan = db
+        .hawdb_lightning_initial_import_plan_with_document_identities(
+            &export.graph_stream.encoded,
+            &export.relational_stream.encoded,
+            &export.manifest,
+            Some(&freshness),
+            Some(&checkpoint),
+            &document_identities,
+        )
+        .unwrap();
 
     assert!(plan.ready_for_graph_import);
     assert!(plan.ready_for_cutover);
@@ -1927,17 +1954,19 @@ fn hawdb_lightning_initial_import_startup_readiness_accepts_ready_session() {
     let freshness = initial_import_projection_freshness(&export.manifest);
 
     let projection_batches = [delta];
-    let report = db.hawdb_lightning_initial_import_startup_readiness(
-        HawDBLightningInitialImportReadinessInputs {
-            encoded_graph_stream: &export.graph_stream.encoded,
-            encoded_relational_stream: &export.relational_stream.encoded,
-            manifest: &export.manifest,
-            projection_batches: &projection_batches,
-            target_projection_freshness: Some(&freshness),
-            live_projection_freshness: Some(&freshness),
-        },
-        Some(&durable_state),
-    );
+    let report = db
+        .hawdb_lightning_initial_import_startup_readiness(
+            HawDBLightningInitialImportReadinessInputs {
+                encoded_graph_stream: &export.graph_stream.encoded,
+                encoded_relational_stream: &export.relational_stream.encoded,
+                manifest: &export.manifest,
+                projection_batches: &projection_batches,
+                target_projection_freshness: Some(&freshness),
+                live_projection_freshness: Some(&freshness),
+            },
+            Some(&durable_state),
+        )
+        .unwrap();
 
     assert!(report.ready);
     assert!(report.source_bundle.ready);
@@ -1980,17 +2009,19 @@ fn hawdb_lightning_initial_import_startup_readiness_blocks_live_projection_lag()
         Some(export.manifest.graph_commit_epoch.saturating_sub(1));
 
     let projection_batches = [delta];
-    let report = db.hawdb_lightning_initial_import_startup_readiness(
-        HawDBLightningInitialImportReadinessInputs {
-            encoded_graph_stream: &export.graph_stream.encoded,
-            encoded_relational_stream: &export.relational_stream.encoded,
-            manifest: &export.manifest,
-            projection_batches: &projection_batches,
-            target_projection_freshness: Some(&target_freshness),
-            live_projection_freshness: Some(&live_freshness),
-        },
-        Some(&durable_state),
-    );
+    let report = db
+        .hawdb_lightning_initial_import_startup_readiness(
+            HawDBLightningInitialImportReadinessInputs {
+                encoded_graph_stream: &export.graph_stream.encoded,
+                encoded_relational_stream: &export.relational_stream.encoded,
+                manifest: &export.manifest,
+                projection_batches: &projection_batches,
+                target_projection_freshness: Some(&target_freshness),
+                live_projection_freshness: Some(&live_freshness),
+            },
+            Some(&durable_state),
+        )
+        .unwrap();
 
     assert!(!report.ready);
     assert!(report.source_bundle.ready);
@@ -2035,17 +2066,19 @@ fn hawdb_lightning_initial_import_recovery_readiness_resumes_encoded_state() {
     let freshness = initial_import_projection_freshness(&export.manifest);
 
     let projection_batches = [delta];
-    let report = db.hawdb_lightning_initial_import_recovery_readiness(
-        HawDBLightningInitialImportReadinessInputs {
-            encoded_graph_stream: &export.graph_stream.encoded,
-            encoded_relational_stream: &export.relational_stream.encoded,
-            manifest: &export.manifest,
-            projection_batches: &projection_batches,
-            target_projection_freshness: Some(&freshness),
-            live_projection_freshness: Some(&freshness),
-        },
-        Some(&encoded),
-    );
+    let report = db
+        .hawdb_lightning_initial_import_recovery_readiness(
+            HawDBLightningInitialImportReadinessInputs {
+                encoded_graph_stream: &export.graph_stream.encoded,
+                encoded_relational_stream: &export.relational_stream.encoded,
+                manifest: &export.manifest,
+                projection_batches: &projection_batches,
+                target_projection_freshness: Some(&freshness),
+                live_projection_freshness: Some(&freshness),
+            },
+            Some(&encoded),
+        )
+        .unwrap();
 
     assert!(report.ready);
     assert!(report.durable_state_payload_present);
@@ -2066,17 +2099,19 @@ fn hawdb_lightning_initial_import_recovery_readiness_quarantines_invalid_payload
     db.query("CREATE (:Memory {id: 'root'})").unwrap();
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
 
-    let report = db.hawdb_lightning_initial_import_recovery_readiness(
-        HawDBLightningInitialImportReadinessInputs {
-            encoded_graph_stream: &export.graph_stream.encoded,
-            encoded_relational_stream: &export.relational_stream.encoded,
-            manifest: &export.manifest,
-            projection_batches: &[],
-            target_projection_freshness: None,
-            live_projection_freshness: None,
-        },
-        Some("{"),
-    );
+    let report = db
+        .hawdb_lightning_initial_import_recovery_readiness(
+            HawDBLightningInitialImportReadinessInputs {
+                encoded_graph_stream: &export.graph_stream.encoded,
+                encoded_relational_stream: &export.relational_stream.encoded,
+                manifest: &export.manifest,
+                projection_batches: &[],
+                target_projection_freshness: None,
+                live_projection_freshness: None,
+            },
+            Some("{"),
+        )
+        .unwrap();
 
     assert!(!report.ready);
     assert!(report.durable_state_payload_present);
@@ -2120,17 +2155,19 @@ fn hawdb_lightning_initial_import_recovery_readiness_quarantines_source_mismatch
     value["source_fingerprint"]["schema_checksum"] = serde_json::json!(0);
     let encoded = serde_json::to_string(&value).unwrap();
 
-    let report = db.hawdb_lightning_initial_import_recovery_readiness(
-        HawDBLightningInitialImportReadinessInputs {
-            encoded_graph_stream: &export.graph_stream.encoded,
-            encoded_relational_stream: &export.relational_stream.encoded,
-            manifest: &export.manifest,
-            projection_batches: &[],
-            target_projection_freshness: None,
-            live_projection_freshness: None,
-        },
-        Some(&encoded),
-    );
+    let report = db
+        .hawdb_lightning_initial_import_recovery_readiness(
+            HawDBLightningInitialImportReadinessInputs {
+                encoded_graph_stream: &export.graph_stream.encoded,
+                encoded_relational_stream: &export.relational_stream.encoded,
+                manifest: &export.manifest,
+                projection_batches: &[],
+                target_projection_freshness: None,
+                live_projection_freshness: None,
+            },
+            Some(&encoded),
+        )
+        .unwrap();
 
     assert!(!report.ready);
     assert!(report
@@ -2216,17 +2253,24 @@ fn database_initial_import_cutover_catch_up_uses_current_graph_epoch() {
         &export.graph_stream.encoded,
         &export.relational_stream.encoded,
         &export.manifest,
-        target.store.commit_epoch(),
+        target.runtime.get().unwrap().store.commit_epoch(),
         Some(&freshness),
         Some(&durable_state),
     );
 
-    let report =
-        target.hawdb_lightning_initial_import_cutover_catch_up_report(&session, Some(&freshness));
+    let report = target
+        .hawdb_lightning_initial_import_cutover_catch_up_report(&session, Some(&freshness))
+        .unwrap();
 
     assert!(report.ready);
-    assert_eq!(report.live_graph_commit_epoch, target.store.commit_epoch());
-    assert_eq!(report.cutover_watermark, Some(target.store.commit_epoch()));
+    assert_eq!(
+        report.live_graph_commit_epoch,
+        target.runtime.get().unwrap().store.commit_epoch()
+    );
+    assert_eq!(
+        report.cutover_watermark,
+        Some(target.runtime.get().unwrap().store.commit_epoch())
+    );
 }
 
 #[test]
@@ -2737,14 +2781,16 @@ fn hawdb_lightning_initial_import_plan_blocks_incomplete_document_identity_cover
         initial_import_document_identity(SearchProjectionKind::Community, "community:1"),
     ];
 
-    let plan = db.hawdb_lightning_initial_import_plan_with_document_identities(
-        &export.graph_stream.encoded,
-        &export.relational_stream.encoded,
-        &export.manifest,
-        Some(&freshness),
-        Some(&checkpoint),
-        &document_identities,
-    );
+    let plan = db
+        .hawdb_lightning_initial_import_plan_with_document_identities(
+            &export.graph_stream.encoded,
+            &export.relational_stream.encoded,
+            &export.manifest,
+            Some(&freshness),
+            Some(&checkpoint),
+            &document_identities,
+        )
+        .unwrap();
 
     assert!(plan.ready_for_graph_import);
     assert!(!plan.ready_for_cutover);
@@ -2769,13 +2815,15 @@ fn hawdb_lightning_initial_import_plan_fails_closed_for_invalid_stream_and_missi
         .encoded
         .replace("checksum\t", "bad-checksum\t");
 
-    let plan = db.hawdb_lightning_initial_import_plan(
-        &invalid_stream,
-        &export.relational_stream.encoded,
-        &export.manifest,
-        None,
-        None,
-    );
+    let plan = db
+        .hawdb_lightning_initial_import_plan(
+            &invalid_stream,
+            &export.relational_stream.encoded,
+            &export.manifest,
+            None,
+            None,
+        )
+        .unwrap();
 
     assert!(!plan.ready_for_graph_import);
     assert!(!plan.ready_for_cutover);
@@ -2978,8 +3026,18 @@ fn hawdb_lightning_initial_import_rejects_corrupt_relational_stream_atomically()
         .plan
         .blocker_codes
         .contains(&"hawdb_lightning_relational_stream_invalid".to_string()));
-    assert!(target.export_canonical_graph_snapshot().nodes.is_empty());
-    assert!(target.store.relational_state().is_empty());
+    assert!(target
+        .export_canonical_graph_snapshot()
+        .unwrap()
+        .nodes
+        .is_empty());
+    assert!(target
+        .runtime
+        .get()
+        .unwrap()
+        .store
+        .relational_state()
+        .is_empty());
 }
 
 #[test]
@@ -3008,8 +3066,18 @@ fn hawdb_lightning_initial_import_rejects_stream_without_engine_registry() {
         .unwrap_err();
 
     assert!(error.to_string().contains("registry table"));
-    assert!(target.export_canonical_graph_snapshot().nodes.is_empty());
-    assert!(target.store.relational_state().is_empty());
+    assert!(target
+        .export_canonical_graph_snapshot()
+        .unwrap()
+        .nodes
+        .is_empty());
+    assert!(target
+        .runtime
+        .get()
+        .unwrap()
+        .store
+        .relational_state()
+        .is_empty());
 }
 
 #[test]
@@ -3114,7 +3182,7 @@ fn hawdb_lightning_initial_import_apply_rejects_non_empty_target_without_writing
     assert!(report
         .blocker_codes
         .contains(&"hawdb_lightning_initial_import_target_not_empty".to_string()));
-    let snapshot = target.export_canonical_graph_snapshot();
+    let snapshot = target.export_canonical_graph_snapshot().unwrap();
     assert_eq!(snapshot.nodes.len(), 1);
     assert_eq!(snapshot.relationships.len(), 0);
 }
@@ -3145,7 +3213,11 @@ fn hawdb_lightning_initial_import_rejects_non_empty_relational_target() {
     assert!(report
         .blocker_codes
         .contains(&"hawdb_lightning_initial_import_target_not_empty".to_string()));
-    assert!(target.export_canonical_graph_snapshot().nodes.is_empty());
+    assert!(target
+        .export_canonical_graph_snapshot()
+        .unwrap()
+        .nodes
+        .is_empty());
     assert!(
         target
             .query_sql(
@@ -3181,7 +3253,13 @@ fn hawdb_lightning_initial_import_rejects_non_empty_graph_schema_target() {
     assert!(report
         .blocker_codes
         .contains(&"hawdb_lightning_initial_import_target_not_empty".to_string()));
-    assert!(target.catalog.label_id("Existing").is_some());
+    assert!(target
+        .runtime
+        .get()
+        .unwrap()
+        .catalog
+        .label_id("Existing")
+        .is_some());
 }
 
 #[test]
@@ -3189,6 +3267,7 @@ fn hawdb_lightning_bootstrap_export_background_plan_uses_import_lane() {
     let mut db = Database::new();
     assert!(db
         .hawdb_lightning_bootstrap_export_background_work_plan(BackgroundWorkHint::default())
+        .unwrap()
         .is_none());
 
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS]->(:Entity {id: 'mid'})")
@@ -3198,6 +3277,7 @@ fn hawdb_lightning_bootstrap_export_background_plan_uses_import_lane() {
             active_topic: true,
             ..BackgroundWorkHint::default()
         })
+        .unwrap()
         .unwrap();
 
     assert_eq!(plan.request.class, WorkClass::Import);
@@ -3213,7 +3293,8 @@ fn hawdb_lightning_bootstrap_export_background_plan_counts_relational_state() {
 
     let plan = db
         .hawdb_lightning_bootstrap_export_background_work_plan(BackgroundWorkHint::default())
-        .expect("relational state must produce import work");
+        .expect("relational state must produce import work")
+        .unwrap();
 
     assert_eq!(plan.request.class, WorkClass::Import);
     assert_eq!(plan.request.estimated_operations, 1);
@@ -3239,12 +3320,12 @@ fn hawdb_lightning_background_bootstrap_export_uses_qos_without_gating_direct_ex
         assert!(error
             .to_string()
             .contains("background HawDB Lightning bootstrap export deferred"));
-        assert!(!path.join("stable_ids.hawdb").exists());
+        assert!(!active_storage_root(&path).join("stable_ids.hawdb").exists());
 
         let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
         assert_eq!(export.manifest.node_count, 2);
         assert_eq!(export.manifest.relationship_count, 1);
-        assert!(path.join("stable_ids.hawdb").exists());
+        assert!(active_storage_root(&path).join("stable_ids.hawdb").exists());
     }
 
     std::fs::remove_dir_all(path).unwrap();
@@ -3293,10 +3374,10 @@ fn hawdb_lightning_scheduled_background_bootstrap_export_releases_import_budget(
 #[test]
 fn hawdb_lightning_graph_stream_validation_skips_length_coded_metadata() {
     let mut db = Database::new();
-    let root = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    let root = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Memory",
             BTreeMap::from([
                 ("id".to_string(), Value::String("root".to_string())),
@@ -3316,21 +3397,24 @@ fn hawdb_lightning_graph_stream_validation_skips_length_coded_metadata() {
                 ),
             ]),
         )
-        .unwrap();
-    let target = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    }
+    .unwrap();
+    let target = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Entity",
             BTreeMap::from([
                 ("id".to_string(), Value::String("target".to_string())),
                 ("name".to_string(), Value::String("Target".to_string())),
             ]),
         )
-        .unwrap();
-    db.store
-        .create_relationship(
-            &mut db.catalog,
+    }
+    .unwrap();
+    {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_relationship(
+            &mut branch_runtime.catalog,
             root,
             target,
             "LINKS",
@@ -3345,7 +3429,8 @@ fn hawdb_lightning_graph_stream_validation_skips_length_coded_metadata() {
                 ),
             ]),
         )
-        .unwrap();
+    }
+    .unwrap();
 
     let export = db.prepare_hawdb_lightning_bootstrap_export().unwrap();
     let validation = export
@@ -3371,14 +3456,14 @@ fn canonical_snapshot_export_matches_wal_and_checkpoint_recovery() {
                 "MATCH (m:Memory {id: 'root'}), (e:Entity {id: 'mid'}) CREATE (m)-[:MENTIONS {id: 'edge-root-mention'}]->(e)",
             )
             .unwrap();
-        let snapshot = db.export_canonical_graph_snapshot();
+        let snapshot = db.export_canonical_graph_snapshot().unwrap();
         assert!(snapshot.validate().is_valid);
         snapshot
     };
 
     {
         let db = Database::open(&path).unwrap();
-        let recovered = db.export_canonical_graph_snapshot();
+        let recovered = db.export_canonical_graph_snapshot().unwrap();
         assert_eq!(recovered, live_snapshot);
         assert!(recovered.validate().is_valid);
     }
@@ -3386,14 +3471,14 @@ fn canonical_snapshot_export_matches_wal_and_checkpoint_recovery() {
     {
         let mut db = Database::open(&path).unwrap();
         db.checkpoint().unwrap();
-        let checkpointed = db.export_canonical_graph_snapshot();
+        let checkpointed = db.export_canonical_graph_snapshot().unwrap();
         assert_eq!(checkpointed, live_snapshot);
         assert!(checkpointed.validate().is_valid);
     }
 
     {
         let db = Database::open(&path).unwrap();
-        let recovered = db.export_canonical_graph_snapshot();
+        let recovered = db.export_canonical_graph_snapshot().unwrap();
         assert_eq!(recovered, live_snapshot);
         assert!(recovered.validate().is_valid);
     }

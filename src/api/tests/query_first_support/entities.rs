@@ -69,7 +69,7 @@ pub(in crate::api) fn knowledge_entity_details_via_query_runtime(
         .and_then(knowledge_entity_from_value)
     else {
         return Ok(KnowledgeEntityDetailsOutput {
-            graph_commit_epoch: db.store.commit_epoch(),
+            graph_commit_epoch: db.runtime.get().unwrap().store.commit_epoch(),
             entity: None,
             neighbor_count: 0,
             relationship_count: 0,
@@ -108,7 +108,7 @@ pub(in crate::api) fn knowledge_entity_details_via_query_runtime(
         .and_then(value_to_non_negative_u64)
         .unwrap_or(0);
     Ok(KnowledgeEntityDetailsOutput {
-        graph_commit_epoch: db.store.commit_epoch(),
+        graph_commit_epoch: db.runtime.get().unwrap().store.commit_epoch(),
         entity: Some(entity),
         neighbor_count,
         relationship_count,
@@ -204,7 +204,7 @@ pub(in crate::api) fn lookup_entities_via_query_runtime_strict(
     db: &Database,
     entities: &[KnowledgeEntityRequest],
 ) -> Result<KnowledgeEntityLookup> {
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
     let mut found = BTreeMap::new();
     for query in build_entity_lookup_queries(entities) {
         let output =

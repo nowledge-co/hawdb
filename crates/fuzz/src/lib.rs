@@ -790,9 +790,13 @@ fn execute_mutations_query(
             return error_observation("mutation", error);
         }
     }
-    let snapshot_epoch = db.commit_epoch();
+    let mut snapshot = match db.begin_read_transaction() {
+        Ok(snapshot) => snapshot,
+        Err(error) => return error_observation("snapshot", error),
+    };
+    let snapshot_epoch = snapshot.commit_epoch();
     execute_snapshot_case(
-        &mut db.begin_read_transaction(),
+        &mut snapshot,
         snapshot_epoch,
         query,
         OptimizerSearchDirective::Memo,
@@ -926,8 +930,11 @@ fn prepare_case(
         }
     }
 
-    let snapshot_epoch = db.commit_epoch();
-    Ok((db.begin_read_transaction(), snapshot_epoch))
+    let snapshot = db
+        .begin_read_transaction()
+        .map_err(|error| Box::new(error_observation("snapshot", error)))?;
+    let snapshot_epoch = snapshot.commit_epoch();
+    Ok((snapshot, snapshot_epoch))
 }
 
 fn execute_snapshot_case(

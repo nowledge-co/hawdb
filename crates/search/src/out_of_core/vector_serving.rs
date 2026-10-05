@@ -49,7 +49,10 @@ impl RabitqScanError {
             hawdb_vector_projection::ProjectionError::ResourceBudgetExceeded { .. } => {
                 Self::Budget(vector_projection_error(error))
             }
-            _ => Self::Failure(vector_projection_error(error)),
+            _ => match vector_projection_error(error) {
+                error @ HawDBError::FileDescriptors(_) => Self::Budget(error),
+                error => Self::Failure(error),
+            },
         }
     }
 }
@@ -808,7 +811,7 @@ fn checkpoint_vector_task(task_context: Option<&crate::RuntimeTaskContext>) -> R
 pub(super) fn vector_projection_error(
     error: hawdb_vector_projection::ProjectionError,
 ) -> HawDBError {
-    HawDBError::Storage(format!("search RaBitQ projection: {error}"))
+    crate::rabitq_projection::map_projection_error(error, "search RaBitQ projection")
 }
 
 #[cfg(all(test, feature = "vector-search"))]
@@ -827,6 +830,24 @@ mod tests {
             }),
             RabitqScanError::Budget(_)
         ));
+        for resource in [
+            hawdb_core::error::FileDescriptorError::BudgetExceeded {
+                requested: 1,
+                available: 0,
+                limit: 4,
+            },
+            hawdb_core::error::FileDescriptorError::OsLimit {
+                requested: 1,
+                os_code: None,
+            },
+        ] {
+            assert!(matches!(
+                RabitqScanError::projection(ProjectionError::Io(std::io::Error::other(
+                    resource.clone()
+                ))),
+                RabitqScanError::Budget(crate::HawDBError::FileDescriptors(actual)) if actual == resource
+            ));
+        }
         for error in [
             ProjectionError::CorruptArtifact("resource budget exceeded".into()),
             ProjectionError::InvalidVector("resource budget exceeded".into()),

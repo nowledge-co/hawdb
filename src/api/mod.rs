@@ -95,6 +95,7 @@ mod observability;
 mod plan_cache;
 mod query_runtime;
 mod resource_profile;
+mod runtime_cell;
 mod schema_guidance;
 mod search_projection_catch_up;
 mod search_projection_consumer;
@@ -230,25 +231,17 @@ fn hawdb_lightning_initial_import_source_fingerprint_key(
 
 #[derive(Debug)]
 pub struct Database {
-    catalog: Catalog,
-    store: GraphStore,
+    runtime: runtime_cell::BranchRuntimeCell,
     project_root_path: Option<PathBuf>,
-    branch_selection: Option<branch_lifecycle::BranchSelection>,
     durability: DurabilityPolicy,
-    optimizer: CascadesOptimizer,
-    plan_cache: Arc<SharedState<PlanCache>>,
-    relational_plan_template_cache: Arc<crate::relational_sql::RelationalPlanTemplateCache>,
-    optimizer_planning_cache: Arc<SharedState<OptimizerPlanningCache>>,
     slow_query_log: Arc<SharedState<system_sql::SlowQueryLog>>,
     statement_summary: Arc<SharedState<system_sql::StatementSummary>>,
     config: DatabaseConfig,
     local_qos_scheduler: LocalQosScheduler,
     system_variables: QuerySystemVariables,
-    reader_pins: Arc<Mutex<ReaderPins>>,
     derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue,
     telemetry: Option<Arc<dyn TelemetrySink>>,
     runtime_governor: Option<hawdb_qos::RuntimeGovernor>,
-    projection_consumers: search_projection_consumer::ConsumerRegistry,
 }
 
 pub(crate) struct DatabaseCheckpointSource {
@@ -920,23 +913,31 @@ impl Default for Database {
         configure_search_projection_changefeed(&mut store, &config);
         configure_relational_fast_paths(&mut store, &config);
         Self {
-            catalog: Catalog::default(),
+            runtime: runtime_cell::BranchRuntimeCell::admitted(
+                runtime_cell::AdmittedBranchRuntime {
+                    catalog: Catalog::default(),
+                    branch_selection: None,
+                    projection_consumers: search_projection_consumer::ConsumerRegistry::load(
+                        store.search_projection_registry_root(),
+                        store.search_projection_database_identity(),
+                    ),
+                    store,
+                    optimizer: optimizer_from_database_config(&config),
+                    plan_cache: Arc::new(SharedState::new(PlanCache::new(
+                        config.max_plan_cache_entries,
+                    ))),
+                    relational_plan_template_cache:
+                        relational_plan_template_cache_from_database_config(&config),
+                    optimizer_planning_cache: Arc::new(SharedState::new(
+                        OptimizerPlanningCache::default(),
+                    )),
+                    reader_pins: Arc::new(Mutex::new(ReaderPins::default())),
+                },
+            ),
             project_root_path: None,
-            branch_selection: None,
+
             durability: DurabilityPolicy::default(),
-            projection_consumers: search_projection_consumer::ConsumerRegistry::load(
-                store.search_projection_registry_root(),
-                store.search_projection_database_identity(),
-            ),
-            store,
-            optimizer: optimizer_from_database_config(&config),
-            plan_cache: Arc::new(SharedState::new(PlanCache::new(
-                config.max_plan_cache_entries,
-            ))),
-            relational_plan_template_cache: relational_plan_template_cache_from_database_config(
-                &config,
-            ),
-            optimizer_planning_cache: Arc::new(SharedState::new(OptimizerPlanningCache::default())),
+
             slow_query_log: Arc::new(SharedState::new(system_sql::SlowQueryLog::new(
                 config.slow_query_log_capacity,
             ))),
@@ -946,7 +947,7 @@ impl Default for Database {
             config,
             local_qos_scheduler,
             system_variables: QuerySystemVariables::default(),
-            reader_pins: Arc::new(Mutex::new(ReaderPins::default())),
+
             derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
@@ -962,7 +963,7 @@ impl Database {
     pub fn projection_generation_store(
         &self,
     ) -> Result<hawdb_storage::projection_generation::ProjectionGenerationStore> {
-        self.store.projection_generation_store()
+        self.runtime.get()?.store.projection_generation_store()
     }
 
     /// Encodes a row for a relational projection table using the durable
@@ -973,6 +974,8 @@ impl Database {
         row: hawdb_storage::relational::RelationalRow,
     ) -> Result<hawdb_storage::projection_generation::ProjectionGenerationMember> {
         let schema = self
+            .runtime
+            .get()?
             .store
             .relational_state()
             .table_schema(table)
@@ -1006,23 +1009,31 @@ impl Database {
         configure_relational_fast_paths(&mut store, &config);
         let optimizer = optimizer_from_database_config(&config);
         Self {
-            catalog: Catalog::default(),
+            runtime: runtime_cell::BranchRuntimeCell::admitted(
+                runtime_cell::AdmittedBranchRuntime {
+                    catalog: Catalog::default(),
+                    branch_selection: None,
+                    projection_consumers: search_projection_consumer::ConsumerRegistry::load(
+                        store.search_projection_registry_root(),
+                        store.search_projection_database_identity(),
+                    ),
+                    store,
+                    optimizer,
+                    plan_cache: Arc::new(SharedState::new(PlanCache::new(
+                        config.max_plan_cache_entries,
+                    ))),
+                    relational_plan_template_cache:
+                        relational_plan_template_cache_from_database_config(&config),
+                    optimizer_planning_cache: Arc::new(SharedState::new(
+                        OptimizerPlanningCache::default(),
+                    )),
+                    reader_pins: Arc::new(Mutex::new(ReaderPins::default())),
+                },
+            ),
             project_root_path: None,
-            branch_selection: None,
+
             durability: DurabilityPolicy::default(),
-            projection_consumers: search_projection_consumer::ConsumerRegistry::load(
-                store.search_projection_registry_root(),
-                store.search_projection_database_identity(),
-            ),
-            store,
-            optimizer,
-            plan_cache: Arc::new(SharedState::new(PlanCache::new(
-                config.max_plan_cache_entries,
-            ))),
-            relational_plan_template_cache: relational_plan_template_cache_from_database_config(
-                &config,
-            ),
-            optimizer_planning_cache: Arc::new(SharedState::new(OptimizerPlanningCache::default())),
+
             slow_query_log: Arc::new(SharedState::new(system_sql::SlowQueryLog::new(
                 config.slow_query_log_capacity,
             ))),
@@ -1032,37 +1043,40 @@ impl Database {
             config,
             local_qos_scheduler,
             system_variables: QuerySystemVariables::default(),
-            reader_pins: Arc::new(Mutex::new(ReaderPins::default())),
+
             derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
         }
     }
 
-    pub fn commit_epoch(&self) -> u64 {
-        self.store.commit_epoch()
+    /// Returns the selected branch's committed epoch, admitting default main
+    /// first when this handle has only opened project metadata.
+    pub fn commit_epoch(&self) -> Result<u64> {
+        Ok(self.runtime.get()?.store.commit_epoch())
     }
 
-    pub fn published_read_view(&self) -> PublishedReadView {
-        self.store.published_read_view()
+    pub fn published_read_view(&self) -> Result<PublishedReadView> {
+        Ok(self.runtime.get()?.store.published_read_view())
     }
 
     pub(crate) fn begin_wal_sync_group(&mut self) -> Result<bool> {
-        self.store.begin_wal_sync_group()
-    }
-
-    pub(crate) fn wal_sync_group_progress(&self) -> crate::store::WalSyncGroupProgress {
-        self.store.wal_sync_group_progress()
+        self.runtime.get_mut()?.store.begin_wal_sync_group()
     }
 
     pub(crate) fn finish_wal_sync_group(&mut self) -> Result<crate::store::WalSyncGroupFlush> {
-        self.store.finish_wal_sync_group()
+        self.runtime.get_mut()?.store.finish_wal_sync_group()
     }
 
     pub(crate) fn search_projection_changefeed_status(
         &self,
-    ) -> hawdb_storage::projection::SearchProjectionChangefeedStatus {
-        self.store.search_projection_changefeed_status()
+    ) -> Result<hawdb_storage::projection::SearchProjectionChangefeedStatus> {
+        Ok({
+            self.runtime
+                .get()?
+                .store
+                .search_projection_changefeed_status()
+        })
     }
 
     pub fn search_projection_changefeed_readiness(
@@ -1070,18 +1084,32 @@ impl Database {
         search_index: &SearchIndex,
         require_restart_recoverable: bool,
         max_operations: Option<usize>,
-    ) -> hawdb_storage::projection::SearchProjectionChangefeedReadiness {
-        let freshness = search_index.projection_freshness();
-        self.store
-            .search_projection_changefeed_status()
-            .readiness_after(
-                freshness.source_graph_commit_epoch,
-                freshness.durable_source_graph_commit_epoch,
-                require_restart_recoverable,
-                max_operations,
-            )
+    ) -> Result<hawdb_storage::projection::SearchProjectionChangefeedReadiness> {
+        Ok({
+            let freshness = search_index.projection_freshness();
+            self.runtime
+                .get()?
+                .store
+                .search_projection_changefeed_status()
+                .readiness_after(
+                    freshness.source_graph_commit_epoch,
+                    freshness.durable_source_graph_commit_epoch,
+                    require_restart_recoverable,
+                    max_operations,
+                )
+        })
     }
 
+    /// Opens a persistent project with power-loss-safe writes by default.
+    ///
+    /// Published projects open metadata without taking a branch writer lease.
+    /// Data access lazily recovers default main; busy, damaged, or resource-
+    /// rejected admission returns an error and can be retried. Catalog SQL and
+    /// `USE BRANCH` can run before main is admitted. Successful metadata open
+    /// does not certify that the selected branch's data is ready.
+    ///
+    /// The first writable open publishes the project's main branch from the
+    /// complete legacy state. Read-only legacy opens do not adopt that layout.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_with_durability(path, DurabilityPolicy::default())
     }
@@ -1108,9 +1136,33 @@ impl Database {
             ));
         }
         let config = effective_database_config(config);
+        if config.read_only && !hawdb_storage::file_io::try_exists(path.as_ref())? {
+            return Err(HawDBError::Storage(format!(
+                "read-only database path does not exist: {}",
+                path.as_ref().display()
+            )));
+        }
         let local_qos_scheduler = LocalQosScheduler::new(config.local_qos_policy);
         let mut catalog = Catalog::default();
-        let project_root_path = path.as_ref().to_path_buf();
+        let files = if config.read_only {
+            hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_existing(
+                path.as_ref(),
+                config.max_open_files,
+            )?
+        } else {
+            hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire(
+                path.as_ref(),
+                config.max_open_files,
+            )?
+        };
+        let project_root_path = files.root().to_path_buf();
+        if matches!(
+            hawdb_storage::branch_project::inspect_project_manifest(files.root())?,
+            hawdb_storage::branch_project::ProjectManifest::Branch(_)
+        ) {
+            let metadata = hawdb_storage::branch_project::ProjectMetadata::from_files(files)?;
+            return Ok(Self::from_project_metadata(metadata, durability, config));
+        }
         let replay_config = config.wal_replay_config();
         let mut store = if config.read_only {
             GraphStore::open_read_only_with_durability_and_replay_config(
@@ -1131,23 +1183,31 @@ impl Database {
         configure_search_projection_changefeed(&mut store, &config);
         configure_relational_fast_paths(&mut store, &config);
         let mut database = Self {
-            catalog,
+            runtime: runtime_cell::BranchRuntimeCell::admitted(
+                runtime_cell::AdmittedBranchRuntime {
+                    catalog,
+                    branch_selection: None,
+                    projection_consumers: search_projection_consumer::ConsumerRegistry::load(
+                        store.search_projection_registry_root(),
+                        store.search_projection_database_identity(),
+                    ),
+                    store,
+                    optimizer: optimizer_from_database_config(&config),
+                    plan_cache: Arc::new(SharedState::new(PlanCache::new(
+                        config.max_plan_cache_entries,
+                    ))),
+                    relational_plan_template_cache:
+                        relational_plan_template_cache_from_database_config(&config),
+                    optimizer_planning_cache: Arc::new(SharedState::new(
+                        OptimizerPlanningCache::default(),
+                    )),
+                    reader_pins: Arc::new(Mutex::new(ReaderPins::default())),
+                },
+            ),
             project_root_path: Some(project_root_path),
-            branch_selection: None,
+
             durability,
-            projection_consumers: search_projection_consumer::ConsumerRegistry::load(
-                store.search_projection_registry_root(),
-                store.search_projection_database_identity(),
-            ),
-            store,
-            optimizer: optimizer_from_database_config(&config),
-            plan_cache: Arc::new(SharedState::new(PlanCache::new(
-                config.max_plan_cache_entries,
-            ))),
-            relational_plan_template_cache: relational_plan_template_cache_from_database_config(
-                &config,
-            ),
-            optimizer_planning_cache: Arc::new(SharedState::new(OptimizerPlanningCache::default())),
+
             slow_query_log: Arc::new(SharedState::new(system_sql::SlowQueryLog::new(
                 config.slow_query_log_capacity,
             ))),
@@ -1157,16 +1217,118 @@ impl Database {
             config,
             local_qos_scheduler,
             system_variables: QuerySystemVariables::default(),
-            reader_pins: Arc::new(Mutex::new(ReaderPins::default())),
+
             derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
         };
-        if !database.config.read_only {
-            database.complete_required_relational_row_checkpoint("writable recovery")?;
+        if database.config.read_only {
+            database.apply_engine_system_schema()?;
+            return Ok(database);
         }
+        let proposed = hawdb_storage::branch_project::ProjectSelector::new(
+            hawdb_storage::branch_catalog::BranchId::new(hawdb_core::generate_uuidv7()?)
+                .map_err(HawDBError::from_storage_error)?,
+            hawdb_storage::branch_catalog::BranchId::new(hawdb_core::generate_uuidv7()?)
+                .map_err(HawDBError::from_storage_error)?,
+        )?;
+        let selector = database
+            .runtime
+            .get()?
+            .store
+            .reserve_branch_project_identity(proposed)?;
+        let head_path = database.branch_head_path(selector.main_branch_id().as_uuid())?;
+        // Check uncertain bootstrap publication before an implicit schema
+        // upgrade or row checkpoint can advance the retained legacy history.
+        if !hawdb_storage::file_io::try_exists(&head_path)? {
+            let catalog_path = database.branch_catalog_path()?;
+            if hawdb_storage::file_io::try_exists(&catalog_path)? {
+                let catalog = hawdb_storage::branch_catalog::read_catalog(&catalog_path)
+                    .map_err(HawDBError::from_storage_error)?;
+                let main = catalog
+                    .branches
+                    .iter()
+                    .find(|record| record.id == selector.main_branch_id())
+                    .ok_or_else(|| {
+                        HawDBError::StorageIntegrity("bootstrap main is absent".into())
+                    })?;
+                if main.base_root_digest.is_some() {
+                    return Err(HawDBError::StorageIntegrity(
+                        "initialized main branch is missing its head".into(),
+                    ));
+                }
+            }
+        }
+        database.complete_required_relational_row_checkpoint("writable recovery")?;
         database.apply_engine_system_schema()?;
-        Ok(database)
+        if !hawdb_storage::file_io::try_exists(&head_path)? {
+            let watermark = database.storage_reclamation_watermark()?;
+            // Generation zero has no checkpoint. A clean bootstrap retry must
+            // reuse its checkpoint and private WAL generation: advancing it
+            // here could bypass a damaged WAL left by interrupted publication.
+            if watermark
+                .checkpoint_epoch
+                .is_none_or(|generation| generation == 0)
+                || watermark.checkpoint_commit_epoch != Some(watermark.current_commit_epoch)
+                || database.relational_row_schema_checkpoint_required()?
+            {
+                database.checkpoint()?;
+            }
+        }
+        database.initialize_main_branch(
+            selector.project_id().as_uuid(),
+            selector.main_branch_id().as_uuid(),
+        )?;
+        database
+            .runtime
+            .get()?
+            .store
+            .publish_branch_project_selector(selector)?;
+        // Release the old directory/WAL owner before admitting any data runtime.
+        // Its immutable closure and old files remain durable recovery evidence.
+        let config = database.config.clone();
+        drop(database);
+        let metadata = hawdb_storage::branch_project::ProjectMetadata::from_files(files)?;
+        Ok(Self::from_project_metadata(metadata, durability, config))
+    }
+
+    fn from_project_metadata(
+        metadata: hawdb_storage::branch_project::ProjectMetadata,
+        durability: DurabilityPolicy,
+        config: DatabaseConfig,
+    ) -> Self {
+        let files = metadata.file_descriptors().clone();
+        let selector = metadata.selector();
+        let project_root_path = Some(files.root().to_path_buf());
+        drop(metadata);
+        let local_qos_scheduler = LocalQosScheduler::new(config.local_qos_policy);
+        Self {
+            runtime: runtime_cell::BranchRuntimeCell::deferred(
+                runtime_cell::DeferredBranchAdmission {
+                    files,
+                    selector,
+                    config: config.clone(),
+                    durability,
+                    scheduler: local_qos_scheduler.clone(),
+                    telemetry: None,
+                    governor: None,
+                },
+            ),
+            project_root_path,
+            durability,
+            slow_query_log: Arc::new(SharedState::new(system_sql::SlowQueryLog::new(
+                config.slow_query_log_capacity,
+            ))),
+            statement_summary: Arc::new(SharedState::new(system_sql::StatementSummary::new(
+                config.statement_summary_capacity,
+            ))),
+            config,
+            local_qos_scheduler,
+            system_variables: QuerySystemVariables::default(),
+            derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue::default(),
+            telemetry: None,
+            runtime_governor: None,
+        }
     }
 
     pub fn config(&self) -> &DatabaseConfig {
@@ -1177,7 +1339,7 @@ impl Database {
     pub fn file_descriptor_metrics(
         &self,
     ) -> Option<hawdb_storage::file_descriptors::FileDescriptorMetrics> {
-        self.store.file_descriptor_metrics()
+        self.runtime.file_descriptor_metrics()
     }
 
     /// Returns a handle to the database-owned runtime QoS scheduler.
@@ -1205,21 +1367,17 @@ impl Database {
                     .map(|telemetry| runtime_telemetry_sink(telemetry.clone())),
             );
         }
-        if let Some(telemetry) = &telemetry {
-            let recovery = self.store.storage_recovery_report();
-            if recovery.durable {
-                telemetry.record_kernel(KernelTelemetry {
-                    operation: KernelTelemetryOperation::Recovery,
-                    success: true,
-                    elapsed_micros: 0,
-                    item_count: recovery.replayed_wal_entries,
-                    byte_count: recovery.replayed_wal_bytes,
-                    fsync_micros: 0,
-                    generation: recovery.wal_generation,
-                });
-            }
+        if let Some(telemetry) = &telemetry
+            && let Some(runtime) = self.runtime.peek()
+        {
+            runtime_cell::record_recovery_telemetry(&runtime.store, telemetry.as_ref());
         }
-        crate::store::StoreTelemetry::set_telemetry_sink(&mut self.store, telemetry.clone());
+        if let Some(runtime) = self.runtime.peek_mut() {
+            crate::store::StoreTelemetry::set_telemetry_sink(&mut runtime.store, telemetry.clone());
+        }
+        if let Some(pending) = self.runtime.pending_mut() {
+            pending.telemetry = telemetry.clone();
+        }
         self.local_qos_scheduler.set_telemetry_sink(
             telemetry
                 .as_ref()
@@ -1288,8 +1446,8 @@ impl Database {
                     "read-only query runtime must not execute a mutation".to_string(),
                 ));
             }
-            let mut catalog = self.catalog.clone();
-            let mut store = self.store.snapshot();
+            let mut catalog = self.runtime.get()?.catalog.clone();
+            let mut store = self.runtime.get()?.store.snapshot();
             let parameters = BTreeMap::new();
             let memory = executor::ExecutionMemoryConfig::default();
             let mut external = executor::NoExternalReadOperator;
@@ -1302,7 +1460,10 @@ impl Database {
                 rows: profiled.rows,
             })
         })();
-        self.store.poison_on_storage_error(&query_result);
+        self.runtime
+            .get()?
+            .store
+            .poison_on_storage_error(&query_result);
         self.record_statement_execution(
             "cypher",
             cypher_text,
@@ -1314,29 +1475,32 @@ impl Database {
         query_result
     }
 
-    pub fn begin_transaction(&mut self) -> DatabaseTransaction<'_> {
+    /// Begins a transaction after recovering the selected branch. Admission
+    /// failure leaves the project handle available for retry or SQL selection.
+    pub fn begin_transaction(&mut self) -> Result<DatabaseTransaction<'_>> {
         self.begin_transaction_inner(None)
     }
 
     pub fn begin_transaction_with_context(
         &mut self,
         task_context: &hawdb_core::RuntimeTaskContext,
-    ) -> DatabaseTransaction<'_> {
+    ) -> Result<DatabaseTransaction<'_>> {
         self.begin_transaction_inner(Some(task_context.clone()))
     }
 
     fn begin_transaction_inner(
         &mut self,
         task_context: Option<hawdb_core::RuntimeTaskContext>,
-    ) -> DatabaseTransaction<'_> {
-        let runtime = DatabaseTransactionRuntime::from_database(self);
-        let state = DatabaseTransactionState::from_database(self);
-        DatabaseTransaction {
+    ) -> Result<DatabaseTransaction<'_>> {
+        self.runtime.get_mut()?;
+        let runtime = DatabaseTransactionRuntime::from_database(self)?;
+        let state = DatabaseTransactionState::from_database(self)?;
+        Ok(DatabaseTransaction {
             db: self,
             runtime,
             state,
             task_context,
-        }
+        })
     }
 
     pub fn session(&mut self) -> DatabaseSession<'_> {
@@ -1349,22 +1513,25 @@ impl Database {
         }
     }
 
-    pub(crate) fn read_snapshot(&self) -> DatabaseReadSnapshot {
-        DatabaseReadSnapshot(self.begin_read_transaction())
+    pub(crate) fn read_snapshot(&self) -> Result<DatabaseReadSnapshot> {
+        Ok(DatabaseReadSnapshot(self.begin_read_transaction()?))
     }
 
-    fn read_snapshot_without_observations(&self) -> DatabaseReadSnapshot {
-        DatabaseReadSnapshot(self.read_transaction_state(None, None))
+    fn read_snapshot_without_observations(&self) -> Result<DatabaseReadSnapshot> {
+        Ok(DatabaseReadSnapshot(
+            self.read_transaction_state(None, None)?,
+        ))
     }
 
-    pub fn begin_read_transaction(&self) -> DatabaseReadTransaction {
+    /// Pins the selected branch's schema and data after successful admission.
+    pub fn begin_read_transaction(&self) -> Result<DatabaseReadTransaction> {
         self.begin_read_transaction_inner(None, None)
     }
 
     pub fn begin_read_transaction_with_context(
         &self,
         task_context: &hawdb_core::RuntimeTaskContext,
-    ) -> DatabaseReadTransaction {
+    ) -> Result<DatabaseReadTransaction> {
         self.begin_read_transaction_inner(None, Some(task_context.clone()))
     }
 
@@ -1389,73 +1556,93 @@ impl Database {
             )));
         }
         for table in binding.tables() {
-            if self.store.relational_state().table_schema(table).is_none() {
+            if self
+                .runtime
+                .get()?
+                .store
+                .relational_state()
+                .table_schema(table)
+                .is_none()
+            {
                 return Err(HawDBError::Semantic(format!(
                     "projection relational table {table} has no durable PostgreSQL schema"
                 )));
             }
-            let canonical_rows = self.store.relational_state().row_count(table);
+            let canonical_rows = self
+                .runtime
+                .get()?
+                .store
+                .relational_state()
+                .row_count(table);
             if canonical_rows != 0 {
                 return Err(HawDBError::StorageIntegrity(format!(
                     "projection relational table {table} contains {canonical_rows} canonical rows"
                 )));
             }
         }
-        Ok(self.begin_read_transaction_inner(
+        self.begin_read_transaction_inner(
             Some(ProjectionRelationalReadSnapshot { binding, reader }),
             None,
-        ))
+        )
     }
 
     fn begin_read_transaction_inner(
         &self,
         projection_relational: Option<ProjectionRelationalReadSnapshot>,
         task_context: Option<hawdb_core::RuntimeTaskContext>,
-    ) -> DatabaseReadTransaction {
-        let mut snapshot = self.read_transaction_state(projection_relational, task_context);
+    ) -> Result<DatabaseReadTransaction> {
+        let mut snapshot = self.read_transaction_state(projection_relational, task_context)?;
         snapshot.slow_query_snapshot = self.slow_query_log.borrow().snapshot();
         snapshot.statement_summary_snapshot = self.statement_summary.borrow().snapshot();
-        snapshot
+        Ok(snapshot)
     }
 
     fn read_transaction_state(
         &self,
         projection_relational: Option<ProjectionRelationalReadSnapshot>,
         task_context: Option<hawdb_core::RuntimeTaskContext>,
-    ) -> DatabaseReadTransaction {
-        let (published_read_view, pin) = self.pin_read_view();
-        DatabaseReadTransaction {
-            catalog: self.catalog.clone(),
-            store: self.store.snapshot_for_read(),
-            published_read_view,
-            optimizer: self.optimizer.clone(),
-            plan_cache: SharedState::new(PlanCache::new(self.config.max_plan_cache_entries)),
-            relational_plan_template_cache: Arc::clone(&self.relational_plan_template_cache),
-            optimizer_planning_cache: Arc::clone(&self.optimizer_planning_cache),
-            slow_query_snapshot: Vec::new(),
-            statement_summary_snapshot: Vec::new(),
-            config: self.config.clone(),
-            branch_catalog_path: self.branch_catalog_path().ok(),
-            current_branch: self.current_branch(),
-            projection_relational,
-            task_context,
-            _pin: Arc::new(pin),
-        }
+    ) -> Result<DatabaseReadTransaction> {
+        Ok({
+            let (published_read_view, pin) = self.pin_read_view()?;
+            DatabaseReadTransaction {
+                catalog: self.runtime.get()?.catalog.clone(),
+                store: self.runtime.get()?.store.snapshot_for_read(),
+                published_read_view,
+                optimizer: self.runtime.get()?.optimizer.clone(),
+                plan_cache: SharedState::new(PlanCache::new(self.config.max_plan_cache_entries)),
+                relational_plan_template_cache: Arc::clone(
+                    &self.runtime.get()?.relational_plan_template_cache,
+                ),
+                optimizer_planning_cache: Arc::clone(&self.runtime.get()?.optimizer_planning_cache),
+                slow_query_snapshot: Vec::new(),
+                statement_summary_snapshot: Vec::new(),
+                config: self.config.clone(),
+                branch_catalog_path: self.branch_catalog_path().ok(),
+                current_branch: self.current_branch()?,
+                projection_relational,
+                task_context,
+                _pin: Arc::new(pin),
+            }
+        })
     }
 
-    fn pin_read_view(&self) -> (PublishedReadView, ReaderPin) {
-        let published_read_view = self.store.published_read_view();
-        let mut pins = self
-            .reader_pins
-            .lock()
-            .expect("database reader pins lock should not be poisoned");
-        let id = pins.next_reader_id;
-        pins.next_reader_id += 1;
-        pins.active_views.insert(id, published_read_view);
-        (
-            published_read_view,
-            ReaderPin::new(id, Arc::clone(&self.reader_pins)),
-        )
+    fn pin_read_view(&self) -> Result<(PublishedReadView, ReaderPin)> {
+        Ok({
+            let published_read_view = self.runtime.get()?.store.published_read_view();
+            let mut pins = self
+                .runtime
+                .get()?
+                .reader_pins
+                .lock()
+                .expect("database reader pins lock should not be poisoned");
+            let id = pins.next_reader_id;
+            pins.next_reader_id += 1;
+            pins.active_views.insert(id, published_read_view);
+            (
+                published_read_view,
+                ReaderPin::new(id, Arc::clone(&self.runtime.get()?.reader_pins)),
+            )
+        })
     }
 
     pub fn explain_query(&self, cypher_text: &str) -> Result<ExplainOutput> {
@@ -1489,7 +1676,7 @@ impl Database {
         parameters: &BTreeMap<String, Value>,
         access_control: Option<QueryAccessControlContext>,
     ) -> Result<ExplainOutput> {
-        self.store.ensure_usable()?;
+        self.runtime.get()?.store.ensure_usable()?;
         let statement = cypher::parse(cypher_text)?;
         let work_request = query_work_request_for_statement(&self.system_variables, &statement)?;
         let optimized = self.optimized_explain_query_plan_with_access_control(
@@ -1542,7 +1729,7 @@ impl Database {
         parameters: &BTreeMap<String, Value>,
         access_control: Option<QueryAccessControlContext>,
     ) -> Result<ExplainAnalyzeOutput> {
-        self.store.ensure_usable()?;
+        self.runtime.get()?.store.ensure_usable()?;
         let statement = cypher::parse(cypher_text)?;
         let work_request = query_work_request_for_statement(&self.system_variables, &statement)?;
         let optimized = self.optimized_explain_query_plan_with_access_control(
@@ -1567,9 +1754,16 @@ impl Database {
                 self.config.max_read_result_rows,
                 self.config.max_read_result_payload_bytes,
             ),
-            executor::ExecutionResources::new(&mut self.catalog, &mut self.store, &mut external),
+            {
+                let branch_runtime = self.runtime.get_mut()?;
+                executor::ExecutionResources::new(
+                    &mut branch_runtime.catalog,
+                    &mut branch_runtime.store,
+                    &mut external,
+                )
+            },
         );
-        self.store.poison_on_storage_error(&profiled);
+        self.runtime.get()?.store.poison_on_storage_error(&profiled);
         let profiled = profiled?;
         Ok(ExplainAnalyzeOutput {
             output: QueryOutput {
@@ -1584,12 +1778,12 @@ impl Database {
         })
     }
 
-    pub fn plan_cache_stats(&self) -> PlanCacheStats {
-        self.plan_cache.borrow().stats()
+    pub fn plan_cache_stats(&self) -> Result<PlanCacheStats> {
+        Ok(self.runtime.get()?.plan_cache.borrow().stats())
     }
 
-    pub fn relational_plan_template_cache_stats(&self) -> PlanCacheStats {
-        self.relational_plan_template_cache.stats()
+    pub fn relational_plan_template_cache_stats(&self) -> Result<PlanCacheStats> {
+        Ok(self.runtime.get()?.relational_plan_template_cache.stats())
     }
 
     fn optimized_query_plan_with_access_control(
@@ -1663,12 +1857,12 @@ impl Database {
             cache_mode,
             trace_mode,
             PlanCacheContext {
-                catalog: &self.catalog,
-                store: &self.store,
-                optimizer: &self.optimizer,
+                catalog: &self.runtime.get()?.catalog,
+                store: &self.runtime.get()?.store,
+                optimizer: &self.runtime.get()?.optimizer,
                 config: &self.config,
-                cache: &self.plan_cache,
-                planning_cache: &self.optimizer_planning_cache,
+                cache: &self.runtime.get()?.plan_cache,
+                planning_cache: &self.runtime.get()?.optimizer_planning_cache,
                 access_control,
                 optimizer_search,
             },
@@ -1689,16 +1883,19 @@ impl Database {
         transaction: AppendTransaction,
     ) -> Result<AppendCommitResult> {
         self.ensure_writable()?;
-        let summary = self.store.commit_kernel_write_batch(
-            &mut self.catalog,
-            KernelWriteBatch {
-                append: transaction,
-                ..KernelWriteBatch::default()
-            },
-            self.config.mutation_limits,
-        )?;
+        let summary = {
+            let branch_runtime = self.runtime.get_mut()?;
+            branch_runtime.store.commit_kernel_write_batch(
+                &mut branch_runtime.catalog,
+                KernelWriteBatch {
+                    append: transaction,
+                    ..KernelWriteBatch::default()
+                },
+                self.config.mutation_limits,
+            )
+        }?;
         Ok(AppendCommitResult {
-            commit_epoch: self.store.commit_epoch(),
+            commit_epoch: self.runtime.get()?.store.commit_epoch(),
             mutations: summary.append_mutation_outcomes,
         })
     }
@@ -1708,8 +1905,14 @@ impl Database {
         batch: KernelWriteBatch,
     ) -> Result<MutationSummary> {
         self.ensure_writable()?;
-        self.store
-            .commit_kernel_write_batch(&mut self.catalog, batch, self.config.mutation_limits)
+        {
+            let branch_runtime = self.runtime.get_mut()?;
+            branch_runtime.store.commit_kernel_write_batch(
+                &mut branch_runtime.catalog,
+                batch,
+                self.config.mutation_limits,
+            )
+        }
     }
 
     pub fn read_append_partition(
@@ -1748,7 +1951,7 @@ impl Database {
             .map_or(max_payload_bytes, |configured| {
                 configured.min(max_payload_bytes)
             });
-        self.store.read_append_partition_bounded(
+        self.runtime.get()?.store.read_append_partition_bounded(
             table,
             partition,
             after,
@@ -1757,12 +1960,12 @@ impl Database {
         )
     }
 
-    pub fn append_table_schema(&self, table: &str) -> Option<&AppendTableSchema> {
-        self.store.append_table_schema(table)
+    pub fn append_table_schema(&self, table: &str) -> Result<Option<&AppendTableSchema>> {
+        Ok(self.runtime.get()?.store.append_table_schema(table))
     }
 
-    pub fn append_storage_residency_report(&self) -> crate::AppendStorageResidencyReport {
-        self.store.append_storage_residency_report()
+    pub fn append_storage_residency_report(&self) -> Result<crate::AppendStorageResidencyReport> {
+        Ok(self.runtime.get()?.store.append_storage_residency_report())
     }
 
     /// Rewrites sparse physical row-page generations through the ordinary
@@ -1784,12 +1987,21 @@ impl Database {
     ) -> Result<crate::store::RelationalRowPageCompactionReport> {
         self.ensure_writable()?;
         let oldest_reader_epoch = self
+            .runtime
+            .get()?
             .reader_pins
             .lock()
             .expect("database reader pins lock should not be poisoned")
             .oldest_epoch();
-        self.store
-            .compact_relational_row_pages(&self.catalog, oldest_reader_epoch, config, task)
+        {
+            let branch_runtime = self.runtime.get_mut()?;
+            branch_runtime.store.compact_relational_row_pages(
+                &branch_runtime.catalog,
+                oldest_reader_epoch,
+                config,
+                task,
+            )
+        }
     }
 
     /// Runs an explicitly admitted full relational-row closure scan and
@@ -1809,12 +2021,21 @@ impl Database {
     ) -> Result<crate::store::RelationalOverflowCompactionReport> {
         self.ensure_writable()?;
         let oldest_reader_epoch = self
+            .runtime
+            .get()?
             .reader_pins
             .lock()
             .expect("database reader pins lock should not be poisoned")
             .oldest_epoch();
-        self.store
-            .compact_relational_overflow(&self.catalog, oldest_reader_epoch, config, task)
+        {
+            let branch_runtime = self.runtime.get_mut()?;
+            branch_runtime.store.compact_relational_overflow(
+                &branch_runtime.catalog,
+                oldest_reader_epoch,
+                config,
+                task,
+            )
+        }
     }
 
     /// Checkpoint entry carrying an explicit pre-admitted columnar-shadow
@@ -1832,8 +2053,8 @@ impl Database {
 
     /// The builder-lifetime byte reservation one shadow build needs; zero
     /// when `graph_columnar_shadow_checkpoint` is off.
-    pub fn columnar_shadow_admission_bytes(&self) -> u64 {
-        self.store.columnar_shadow_admission_bytes()
+    pub fn columnar_shadow_admission_bytes(&self) -> Result<u64> {
+        Ok(self.runtime.get()?.store.columnar_shadow_admission_bytes())
     }
 
     fn checkpoint_internal(
@@ -1842,18 +2063,22 @@ impl Database {
     ) -> Result<()> {
         self.ensure_writable()?;
         let started = hawdb_core::time::Instant::now();
-        let durable = self.store.storage_recovery_report().durable;
+        let durable = self.runtime.get()?.store.storage_recovery_report().durable;
         let prepared = self.checkpoint_source()?.prepare()?;
         let result = match prepared {
             Some(prepared) => {
                 let (oldest_reader_epoch, pinned_reader_generations) = {
                     let pins = self
+                        .runtime
+                        .get()?
                         .reader_pins
                         .lock()
                         .expect("database reader pins lock should not be poisoned");
                     (pins.oldest_epoch(), pins.pinned_physical_generations())
                 };
-                self.store
+                self.runtime
+                    .get_mut()?
+                    .store
                     .publish_prepared_checkpoint_with_reader_generations(
                         prepared,
                         oldest_reader_epoch,
@@ -1862,7 +2087,7 @@ impl Database {
                     )
             }
             None => {
-                self.store.reclaim_version_history();
+                self.runtime.get_mut()?.store.reclaim_version_history();
                 Ok(())
             }
         };
@@ -1874,22 +2099,22 @@ impl Database {
                 item_count: 1,
                 byte_count: 0,
                 fsync_micros: 0,
-                generation: self.storage_reclamation_watermark().checkpoint_epoch,
+                generation: self.storage_reclamation_watermark()?.checkpoint_epoch,
             });
         }
         result
     }
 
     fn complete_required_relational_row_checkpoint(&mut self, context: &str) -> Result<()> {
-        if !self.relational_row_schema_checkpoint_required() {
+        if !self.relational_row_schema_checkpoint_required()? {
             return Ok(());
         }
-        if self.store.wal_sync_group_active() {
+        if self.runtime.get()?.store.wal_sync_group_active() {
             return Ok(());
         }
         let checkpoint = self.checkpoint_internal(None);
         let result = match checkpoint {
-            Ok(()) if !self.relational_row_schema_checkpoint_required() => Ok(()),
+            Ok(()) if !self.relational_row_schema_checkpoint_required()? => Ok(()),
             Ok(()) => Err(HawDBError::StorageIntegrity(format!(
                 "canonical relational row schema checkpoint remained required after {context}"
             ))),
@@ -1897,19 +2122,24 @@ impl Database {
                 "canonical relational row schema checkpoint failed after {context}; the durable WAL remains authoritative and writable reopen will retry: {error}"
             ))),
         };
-        self.store.poison_on_storage_error(&result);
+        self.runtime.get()?.store.poison_on_storage_error(&result);
         result
     }
 
-    fn relational_row_schema_checkpoint_required(&self) -> bool {
-        self.store.relational_row_schema_checkpoint_required()
+    fn relational_row_schema_checkpoint_required(&self) -> Result<bool> {
+        Ok({
+            self.runtime
+                .get()?
+                .store
+                .relational_row_schema_checkpoint_required()
+        })
     }
 
     pub(crate) fn checkpoint_source(&self) -> Result<DatabaseCheckpointSource> {
         self.ensure_writable()?;
         Ok(DatabaseCheckpointSource {
-            catalog: self.catalog.clone(),
-            store: self.store.checkpoint_source(),
+            catalog: self.runtime.get()?.catalog.clone(),
+            store: self.runtime.get()?.store.checkpoint_source(),
         })
     }
 
@@ -1919,12 +2149,16 @@ impl Database {
     ) -> Result<()> {
         let (oldest_reader_epoch, pinned_reader_generations) = {
             let pins = self
+                .runtime
+                .get()?
                 .reader_pins
                 .lock()
                 .expect("database reader pins lock should not be poisoned");
             (pins.oldest_epoch(), pins.pinned_physical_generations())
         };
-        self.store
+        self.runtime
+            .get_mut()?
+            .store
             .publish_prepared_checkpoint_with_reader_generations(
                 prepared,
                 oldest_reader_epoch,
@@ -1935,11 +2169,16 @@ impl Database {
 
     pub fn backup_to(&mut self, destination: impl AsRef<Path>) -> Result<StorageBackupReport> {
         self.ensure_writable()?;
-        self.store.backup_to(&self.catalog, destination)
+        {
+            let branch_runtime = self.runtime.get_mut()?;
+            branch_runtime
+                .store
+                .backup_to(&branch_runtime.catalog, destination)
+        }
     }
 
     pub fn scrub_storage(&mut self) -> Result<StorageScrubReport> {
-        self.store.scrub_storage()
+        self.runtime.get_mut()?.store.scrub_storage()
     }
 
     pub fn restore_backup(
@@ -1949,30 +2188,61 @@ impl Database {
         restore_storage_backup(backup, destination)
     }
 
-    pub fn storage_reclamation_watermark(&self) -> StorageReclamationWatermark {
-        let oldest_reader_epoch = self
-            .reader_pins
-            .lock()
-            .expect("database reader pins lock should not be poisoned")
-            .oldest_epoch();
-        self.store
-            .storage_reclamation_watermark(oldest_reader_epoch)
+    pub fn storage_reclamation_watermark(&self) -> Result<StorageReclamationWatermark> {
+        Ok({
+            let oldest_reader_epoch = self
+                .runtime
+                .get()?
+                .reader_pins
+                .lock()
+                .expect("database reader pins lock should not be poisoned")
+                .oldest_epoch();
+            self.runtime
+                .get()?
+                .store
+                .storage_reclamation_watermark(oldest_reader_epoch)
+        })
     }
 
-    pub fn storage_recovery_report(&self) -> StorageRecoveryReport {
-        self.store.storage_recovery_report()
+    pub fn storage_recovery_report(&self) -> Result<StorageRecoveryReport> {
+        Ok(self.runtime.get()?.store.storage_recovery_report())
+    }
+
+    /// Inventories regular files in the selected branch's durable artifact
+    /// directory for storage qualification. The directory handle participates
+    /// in the project's FD budget; immutable closure objects live separately.
+    #[doc(hidden)]
+    pub fn storage_artifact_file_sizes(&self) -> Result<BTreeMap<String, u64>> {
+        let runtime = self.runtime.get()?;
+        let root = runtime.store.durable_root_path().ok_or_else(|| {
+            HawDBError::Execution("storage artifact inventory requires a durable database".into())
+        })?;
+        let mut files = BTreeMap::new();
+        for entry in hawdb_storage::file_io::read_dir(root)? {
+            let entry = entry?;
+            let metadata = entry.metadata()?;
+            if metadata.is_file() {
+                let name = entry.file_name().into_string().map_err(|_| {
+                    HawDBError::Storage("storage artifact inventory found a non-UTF-8 name".into())
+                })?;
+                files.insert(name, metadata.len());
+            }
+        }
+        Ok(files)
     }
 
     pub(crate) fn poison_on_storage_error<T>(&self, result: &Result<T>) {
-        self.store.poison_on_storage_error(result);
+        if let Some(runtime) = self.runtime.peek() {
+            runtime.store.poison_on_storage_error(result);
+        }
     }
 
-    pub fn storage_handle_poisoned(&self) -> bool {
-        self.store.storage_handle_poisoned()
+    pub fn storage_handle_poisoned(&self) -> Result<bool> {
+        Ok(self.runtime.get()?.store.storage_handle_poisoned())
     }
 
-    pub fn storage_residency_report(&self) -> crate::store::StorageResidencyReport {
-        self.store.storage_residency_report()
+    pub fn storage_residency_report(&self) -> Result<crate::store::StorageResidencyReport> {
+        Ok(self.runtime.get()?.store.storage_residency_report())
     }
 
     /// Threads the engine's runtime governor into the storage layer so
@@ -1983,7 +2253,12 @@ impl Database {
         if let Some(telemetry) = &self.telemetry {
             governor.set_telemetry_sink(Some(runtime_telemetry_sink(telemetry.clone())));
         }
-        self.store.set_runtime_governor(governor.clone());
+        if let Some(runtime) = self.runtime.peek_mut() {
+            runtime.store.set_runtime_governor(governor.clone());
+        }
+        if let Some(pending) = self.runtime.pending_mut() {
+            pending.governor = Some(governor.clone());
+        }
         self.runtime_governor = Some(governor);
     }
 
@@ -1992,13 +2267,20 @@ impl Database {
     /// derived shadow checkpoint.
     pub fn columnar_shadow_checkpoint_report(
         &self,
-    ) -> Option<crate::store::ColumnarShadowCheckpointReport> {
-        self.store.columnar_shadow_checkpoint_report()
+    ) -> Result<Option<crate::store::ColumnarShadowCheckpointReport>> {
+        Ok({
+            self.runtime
+                .get()?
+                .store
+                .columnar_shadow_checkpoint_report()
+        })
     }
 
     /// What recovery observed about the columnar shadow catalog.
-    pub fn columnar_shadow_recovery_status(&self) -> crate::store::ColumnarShadowRecoveryStatus {
-        self.store.columnar_shadow_recovery_status()
+    pub fn columnar_shadow_recovery_status(
+        &self,
+    ) -> Result<crate::store::ColumnarShadowRecoveryStatus> {
+        Ok(self.runtime.get()?.store.columnar_shadow_recovery_status())
     }
 
     /// Publication evidence for the derived relational index-page store.
@@ -2006,45 +2288,70 @@ impl Database {
     /// attempt.
     pub fn relational_index_shadow_checkpoint_report(
         &self,
-    ) -> Option<&crate::store::RelationalIndexShadowCheckpointReport> {
-        self.store.relational_index_shadow_checkpoint_report()
+    ) -> Result<Option<&crate::store::RelationalIndexShadowCheckpointReport>> {
+        Ok({
+            self.runtime
+                .get()?
+                .store
+                .relational_index_shadow_checkpoint_report()
+        })
     }
 
     /// Recovery's bounded manifest-only assessment of the relational index
     /// store. Selected pages remain lazily validated on first SQL access.
     pub fn relational_index_shadow_recovery_status(
         &self,
-    ) -> &crate::store::RelationalIndexShadowRecoveryStatus {
-        self.store.relational_index_shadow_recovery_status()
+    ) -> Result<&crate::store::RelationalIndexShadowRecoveryStatus> {
+        Ok({
+            self.runtime
+                .get()?
+                .store
+                .relational_index_shadow_recovery_status()
+        })
     }
 
     /// Resource and publication evidence for WAL index deltas derived during
     /// the most recent open.
     pub fn relational_index_recovery_report(
         &self,
-    ) -> Option<&hawdb_storage::relational::RelationalIndexRecoveryReport> {
-        self.store.relational_index_recovery_report()
+    ) -> Result<Option<&hawdb_storage::relational::RelationalIndexRecoveryReport>> {
+        Ok(self.runtime.get()?.store.relational_index_recovery_report())
     }
 
-    pub fn storage_pressure_snapshot(&self) -> StoragePressureSnapshot {
-        let oldest_reader_epoch = self
-            .reader_pins
-            .lock()
-            .expect("database reader pins lock should not be poisoned")
-            .oldest_epoch();
-        self.store.storage_pressure_snapshot(oldest_reader_epoch)
+    pub fn storage_pressure_snapshot(&self) -> Result<StoragePressureSnapshot> {
+        Ok({
+            let oldest_reader_epoch = self
+                .runtime
+                .get()?
+                .reader_pins
+                .lock()
+                .expect("database reader pins lock should not be poisoned")
+                .oldest_epoch();
+            self.runtime
+                .get()?
+                .store
+                .storage_pressure_snapshot(oldest_reader_epoch)
+        })
     }
 
-    pub fn segment_cache_snapshot(&self) -> Option<SegmentCacheSnapshot> {
-        self.store.segment_cache_snapshot()
+    pub fn segment_cache_snapshot(&self) -> Result<Option<SegmentCacheSnapshot>> {
+        Ok(self.runtime.get()?.store.segment_cache_snapshot())
     }
 
-    pub fn export_canonical_graph_snapshot(&self) -> CanonicalGraphSnapshotExport {
-        export_canonical_graph_snapshot_for(&self.catalog, &self.store)
+    pub fn export_canonical_graph_snapshot(&self) -> Result<CanonicalGraphSnapshotExport> {
+        Ok({
+            export_canonical_graph_snapshot_for(
+                &self.runtime.get()?.catalog,
+                &self.runtime.get()?.store,
+            )
+        })
     }
 
     pub fn try_export_canonical_graph_snapshot(&self) -> Result<CanonicalGraphSnapshotExport> {
-        canonical_snapshot::try_export_canonical_graph_snapshot_for(&self.catalog, &self.store)
+        canonical_snapshot::try_export_canonical_graph_snapshot_for(
+            &self.runtime.get()?.catalog,
+            &self.runtime.get()?.store,
+        )
     }
 
     pub fn export_canonical_graph_snapshot_with_persisted_stable_ids(
@@ -2084,7 +2391,9 @@ impl Database {
             .map(|relationship| RelId(relationship.relationship_id))
             .collect::<BTreeSet<_>>();
         let mapping = CanonicalStableIdMapping::from(
-            self.store
+            self.runtime
+                .get_mut()?
+                .store
                 .ensure_stable_id_mapping(&required_node_ids, &required_relationship_ids)?,
         );
         Ok(snapshot.with_stable_id_mapping(&mapping))
@@ -2096,7 +2405,7 @@ impl Database {
         let snapshot = self.export_canonical_graph_snapshot_with_persisted_stable_ids()?;
         let relational_state = self.hawdb_lightning_relational_state()?;
         let relational_stream = HawDBLightningRelationalStream::from_state(
-            self.store.commit_epoch(),
+            self.runtime.get()?.store.commit_epoch(),
             &relational_state,
         )?;
         let manifest = snapshot.hawdb_lightning_bootstrap_manifest(&relational_stream);
@@ -2113,24 +2422,28 @@ impl Database {
         &self,
         manifest: &HawDBLightningBootstrapManifest,
         projection_freshness: Option<&SearchProjectionFreshness>,
-    ) -> HawDBLightningInitialImportReadiness {
-        hawdb_lightning_initial_import_readiness(
-            manifest,
-            self.store.commit_epoch(),
-            projection_freshness,
-        )
+    ) -> Result<HawDBLightningInitialImportReadiness> {
+        Ok({
+            hawdb_lightning_initial_import_readiness(
+                manifest,
+                self.runtime.get()?.store.commit_epoch(),
+                projection_freshness,
+            )
+        })
     }
 
     pub fn hawdb_lightning_initial_import_cutover_catch_up_report(
         &self,
         session: &HawDBLightningInitialImportSessionReport,
         live_projection_freshness: Option<&SearchProjectionFreshness>,
-    ) -> HawDBLightningInitialImportCutoverCatchUpReport {
-        hawdb_lightning_initial_import_cutover_catch_up_report(
-            session,
-            self.store.commit_epoch(),
-            live_projection_freshness,
-        )
+    ) -> Result<HawDBLightningInitialImportCutoverCatchUpReport> {
+        Ok({
+            hawdb_lightning_initial_import_cutover_catch_up_report(
+                session,
+                self.runtime.get()?.store.commit_epoch(),
+                live_projection_freshness,
+            )
+        })
     }
 
     pub fn hawdb_lightning_initial_import_session_bundle_readiness(
@@ -2154,24 +2467,28 @@ impl Database {
         &self,
         inputs: HawDBLightningInitialImportReadinessInputs<'_>,
         durable_state: Option<&HawDBLightningInitialImportDurableState>,
-    ) -> HawDBLightningInitialImportStartupReadinessReport {
-        hawdb_lightning_initial_import_startup_readiness(
-            inputs,
-            self.store.commit_epoch(),
-            durable_state,
-        )
+    ) -> Result<HawDBLightningInitialImportStartupReadinessReport> {
+        Ok({
+            hawdb_lightning_initial_import_startup_readiness(
+                inputs,
+                self.runtime.get()?.store.commit_epoch(),
+                durable_state,
+            )
+        })
     }
 
     pub fn hawdb_lightning_initial_import_recovery_readiness(
         &self,
         inputs: HawDBLightningInitialImportReadinessInputs<'_>,
         durable_state_payload: Option<&str>,
-    ) -> HawDBLightningInitialImportRecoveryReadinessReport {
-        hawdb_lightning_initial_import_recovery_readiness(
-            inputs,
-            self.store.commit_epoch(),
-            durable_state_payload,
-        )
+    ) -> Result<HawDBLightningInitialImportRecoveryReadinessReport> {
+        Ok({
+            hawdb_lightning_initial_import_recovery_readiness(
+                inputs,
+                self.runtime.get()?.store.commit_epoch(),
+                durable_state_payload,
+            )
+        })
     }
 
     pub fn hawdb_lightning_initial_import_plan(
@@ -2181,15 +2498,17 @@ impl Database {
         manifest: &HawDBLightningBootstrapManifest,
         projection_freshness: Option<&SearchProjectionFreshness>,
         checkpoint: Option<&HawDBLightningInitialImportCheckpoint>,
-    ) -> HawDBLightningInitialImportPlan {
-        hawdb_lightning_initial_import_plan(
-            encoded_graph_stream,
-            encoded_relational_stream,
-            manifest,
-            self.store.commit_epoch(),
-            projection_freshness,
-            checkpoint,
-        )
+    ) -> Result<HawDBLightningInitialImportPlan> {
+        Ok({
+            hawdb_lightning_initial_import_plan(
+                encoded_graph_stream,
+                encoded_relational_stream,
+                manifest,
+                self.runtime.get()?.store.commit_epoch(),
+                projection_freshness,
+                checkpoint,
+            )
+        })
     }
 
     pub fn hawdb_lightning_initial_import_plan_with_document_identities(
@@ -2200,16 +2519,18 @@ impl Database {
         projection_freshness: Option<&SearchProjectionFreshness>,
         checkpoint: Option<&HawDBLightningInitialImportCheckpoint>,
         document_identities: &[HawDBLightningInitialImportDocumentIdentity],
-    ) -> HawDBLightningInitialImportPlan {
-        hawdb_lightning_initial_import_plan_with_document_identities(
-            encoded_graph_stream,
-            encoded_relational_stream,
-            manifest,
-            self.store.commit_epoch(),
-            projection_freshness,
-            checkpoint,
-            Some(document_identities),
-        )
+    ) -> Result<HawDBLightningInitialImportPlan> {
+        Ok({
+            hawdb_lightning_initial_import_plan_with_document_identities(
+                encoded_graph_stream,
+                encoded_relational_stream,
+                manifest,
+                self.runtime.get()?.store.commit_epoch(),
+                projection_freshness,
+                checkpoint,
+                Some(document_identities),
+            )
+        })
     }
 
     pub fn hawdb_lightning_initial_import_apply(
@@ -2264,7 +2585,7 @@ impl Database {
             encoded_graph_stream,
             encoded_relational_stream,
             manifest,
-            self.store.commit_epoch(),
+            self.runtime.get()?.store.commit_epoch(),
             projection_freshness,
             checkpoint,
             document_identities,
@@ -2273,16 +2594,26 @@ impl Database {
             blocker_codes.insert("hawdb_lightning_database_streams_not_import_ready".to_string());
         }
         let source_fingerprint = hawdb_lightning_initial_import_source_fingerprint_key(manifest);
-        if let Some(imported_source_fingerprint) = self.store.initial_import_source_fingerprint() {
+        if let Some(imported_source_fingerprint) = self
+            .runtime
+            .get()?
+            .store
+            .initial_import_source_fingerprint()
+        {
             if imported_source_fingerprint == source_fingerprint && plan.ready_for_database_import {
                 let (relational_table_count, relational_row_count) =
-                    relational_state_counts(self.store.relational_state());
+                    relational_state_counts(self.runtime.get()?.store.relational_state());
                 return Ok(HawDBLightningInitialImportApplyReport {
                     applied: false,
                     ready_for_cutover: plan.ready_for_cutover,
-                    database_commit_epoch: self.store.commit_epoch(),
-                    node_count: self.store.basic_statistics().node_count as usize,
-                    relationship_count: self.store.basic_statistics().relationship_count as usize,
+                    database_commit_epoch: self.runtime.get()?.store.commit_epoch(),
+                    node_count: self.runtime.get()?.store.basic_statistics().node_count as usize,
+                    relationship_count: self
+                        .runtime
+                        .get()?
+                        .store
+                        .basic_statistics()
+                        .relationship_count as usize,
                     relational_table_count,
                     relational_row_count,
                     plan,
@@ -2295,14 +2626,14 @@ impl Database {
                 );
             }
         }
-        let statistics = self.store.basic_statistics();
+        let statistics = self.runtime.get()?.store.basic_statistics();
         let target_has_only_engine_bootstrap = self.has_only_engine_system_schema_bootstrap()?;
-        let relational_target_empty =
-            self.store.relational_state().is_empty() || target_has_only_engine_bootstrap;
+        let relational_target_empty = self.runtime.get()?.store.relational_state().is_empty()
+            || target_has_only_engine_bootstrap;
         let target_empty = statistics.node_count == 0
             && statistics.relationship_count == 0
             && relational_target_empty
-            && self.catalog.is_empty();
+            && self.runtime.get_mut()?.catalog.is_empty();
         if !target_empty {
             blocker_codes.insert("hawdb_lightning_initial_import_target_not_empty".to_string());
         }
@@ -2338,13 +2669,18 @@ impl Database {
         }
         if !blocker_codes.is_empty() {
             let (relational_table_count, relational_row_count) =
-                relational_state_counts(self.store.relational_state());
+                relational_state_counts(self.runtime.get()?.store.relational_state());
             return Ok(HawDBLightningInitialImportApplyReport {
                 applied: false,
                 ready_for_cutover: false,
-                database_commit_epoch: self.store.commit_epoch(),
-                node_count: self.store.basic_statistics().node_count as usize,
-                relationship_count: self.store.basic_statistics().relationship_count as usize,
+                database_commit_epoch: self.runtime.get()?.store.commit_epoch(),
+                node_count: self.runtime.get()?.store.basic_statistics().node_count as usize,
+                relationship_count: self
+                    .runtime
+                    .get()?
+                    .store
+                    .basic_statistics()
+                    .relationship_count as usize,
                 relational_table_count,
                 relational_row_count,
                 plan,
@@ -2400,35 +2736,45 @@ impl Database {
                 ))
             })
             .collect::<Result<Vec<GraphSnapshotRelationshipImport>>>()?;
-        self.store
-            .import_hawdb_snapshot_rows_with_source_fingerprint(
-                &mut self.catalog,
-                HawDBSnapshotRowsImport {
-                    stable_id_mapping,
-                    source_fingerprint,
-                    nodes: node_rows,
-                    relationships: relationship_rows,
-                    relational_state,
-                    target_has_only_engine_bootstrap,
-                },
-            )?;
+        {
+            let branch_runtime = self.runtime.get_mut()?;
+            branch_runtime
+                .store
+                .import_hawdb_snapshot_rows_with_source_fingerprint(
+                    &mut branch_runtime.catalog,
+                    HawDBSnapshotRowsImport {
+                        stable_id_mapping,
+                        source_fingerprint,
+                        nodes: node_rows,
+                        relationships: relationship_rows,
+                        relational_state,
+                        target_has_only_engine_bootstrap,
+                    },
+                )
+        }?;
+        self.complete_required_relational_row_checkpoint("HawDB Lightning initial import")?;
         let updated_plan = hawdb_lightning_initial_import_plan_with_document_identities(
             encoded_graph_stream,
             encoded_relational_stream,
             manifest,
-            self.store.commit_epoch(),
+            self.runtime.get()?.store.commit_epoch(),
             projection_freshness,
             checkpoint,
             document_identities,
         );
         let (relational_table_count, relational_row_count) =
-            relational_state_counts(self.store.relational_state());
+            relational_state_counts(self.runtime.get()?.store.relational_state());
         Ok(HawDBLightningInitialImportApplyReport {
             applied: true,
             ready_for_cutover: updated_plan.ready_for_cutover,
-            database_commit_epoch: self.store.commit_epoch(),
-            node_count: self.store.basic_statistics().node_count as usize,
-            relationship_count: self.store.basic_statistics().relationship_count as usize,
+            database_commit_epoch: self.runtime.get()?.store.commit_epoch(),
+            node_count: self.runtime.get()?.store.basic_statistics().node_count as usize,
+            relationship_count: self
+                .runtime
+                .get()?
+                .store
+                .basic_statistics()
+                .relationship_count as usize,
             relational_table_count,
             relational_row_count,
             plan: updated_plan,
@@ -2439,16 +2785,19 @@ impl Database {
     pub fn hawdb_lightning_bootstrap_export_background_work_plan(
         &self,
         hint: BackgroundWorkHint,
-    ) -> Option<BackgroundWorkPlan> {
-        let estimated_operations = self.hawdb_lightning_bootstrap_export_estimated_operations();
-        if estimated_operations == 0 {
-            return None;
-        }
-        Some(BackgroundWorkPlan::background(
-            WorkClass::Import,
-            estimated_operations,
-            hint,
-        ))
+    ) -> Result<Option<BackgroundWorkPlan>> {
+        Ok({
+            let estimated_operations =
+                self.hawdb_lightning_bootstrap_export_estimated_operations()?;
+            if estimated_operations == 0 {
+                return Ok(None);
+            }
+            Some(BackgroundWorkPlan::background(
+                WorkClass::Import,
+                estimated_operations,
+                hint,
+            ))
+        })
     }
 
     pub fn prepare_background_hawdb_lightning_bootstrap_export(
@@ -2457,7 +2806,7 @@ impl Database {
         state: &LocalQosState,
     ) -> Result<HawDBLightningBootstrapExport> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
-        let estimated_operations = self.hawdb_lightning_bootstrap_export_estimated_operations();
+        let estimated_operations = self.hawdb_lightning_bootstrap_export_estimated_operations()?;
         if estimated_operations == 0 {
             return self.prepare_hawdb_lightning_bootstrap_export();
         }
@@ -2477,7 +2826,7 @@ impl Database {
         &mut self,
     ) -> Result<HawDBLightningBootstrapExport> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
-        let estimated_operations = self.hawdb_lightning_bootstrap_export_estimated_operations();
+        let estimated_operations = self.hawdb_lightning_bootstrap_export_estimated_operations()?;
         if estimated_operations == 0 {
             return self.prepare_hawdb_lightning_bootstrap_export();
         }
@@ -2505,32 +2854,40 @@ impl Database {
         result
     }
 
-    fn hawdb_lightning_bootstrap_export_estimated_operations(&self) -> usize {
-        let statistics = self.store.basic_statistics();
-        let graph_total = statistics
-            .node_count
-            .saturating_add(statistics.relationship_count);
-        let relational_total = self
-            .store
-            .relational_state()
-            .table_schemas()
-            .map(|schema| {
-                1usize.saturating_add(self.store.relational_state().row_count(&schema.name))
-            })
-            .fold(0usize, usize::saturating_add)
-            .saturating_add(self.store.relational_state().overflow_segment_count());
-        usize::try_from(graph_total)
-            .unwrap_or(usize::MAX)
-            .saturating_add(relational_total)
+    fn hawdb_lightning_bootstrap_export_estimated_operations(&self) -> Result<usize> {
+        Ok({
+            let runtime = self.runtime.get()?;
+            let statistics = runtime.store.basic_statistics();
+            let graph_total = statistics
+                .node_count
+                .saturating_add(statistics.relationship_count);
+            let relational_total = runtime
+                .store
+                .relational_state()
+                .table_schemas()
+                .map(|schema| {
+                    1usize.saturating_add(runtime.store.relational_state().row_count(&schema.name))
+                })
+                .fold(0usize, usize::saturating_add)
+                .saturating_add(runtime.store.relational_state().overflow_segment_count());
+            usize::try_from(graph_total)
+                .unwrap_or(usize::MAX)
+                .saturating_add(relational_total)
+        })
     }
 
-    pub fn storage_version(&self) -> &'static str {
-        self.store.storage_version()
+    pub fn storage_version(&self) -> Result<&'static str> {
+        Ok(self.runtime.get()?.store.storage_version())
     }
 
     #[cfg(test)]
-    pub(crate) fn statistics(&self) -> GraphStatistics {
-        self.store.statistics(&self.catalog)
+    pub(crate) fn statistics(&self) -> Result<GraphStatistics> {
+        Ok({
+            self.runtime
+                .get()?
+                .store
+                .statistics(&self.runtime.get()?.catalog)
+        })
     }
 
     pub fn refresh_optimizer_statistics_external(
@@ -2538,43 +2895,66 @@ impl Database {
         options: &crate::store::OptimizerStatisticsRefreshOptions,
     ) -> Result<crate::store::OptimizerStatisticsRefreshReport> {
         self.ensure_writable()?;
-        let previous_statistics = self.store.checkpoint_statistics_snapshot();
-        let previous_dirty_state = self.store.advanced_statistics_dirty_snapshot();
-        let mut report = self
+        let previous_statistics = self.runtime.get()?.store.checkpoint_statistics_snapshot();
+        let previous_dirty_state = self
+            .runtime
+            .get()?
             .store
-            .refresh_optimizer_statistics_external(&self.catalog, options)?;
+            .advanced_statistics_dirty_snapshot();
+        let mut report = {
+            let branch_runtime = self.runtime.get_mut()?;
+            branch_runtime
+                .store
+                .refresh_optimizer_statistics_external(&branch_runtime.catalog, options)
+        }?;
         if let Err(error) = self.checkpoint() {
-            self.store
+            self.runtime
+                .get_mut()?
+                .store
                 .restore_checkpoint_statistics(previous_statistics, previous_dirty_state);
             return Err(error);
         }
         report.checkpoint_persisted = true;
-        *self.plan_cache.borrow_mut() = PlanCache::new(self.config.max_plan_cache_entries);
-        self.optimizer_planning_cache.borrow_mut().invalidate();
+        *self.runtime.get()?.plan_cache.borrow_mut() =
+            PlanCache::new(self.config.max_plan_cache_entries);
+        self.runtime
+            .get()?
+            .optimizer_planning_cache
+            .borrow_mut()
+            .invalidate();
         Ok(report)
     }
 
-    fn optimizer_statistics_refresh_work(&self) -> Option<OptimizerStatisticsRefreshWork> {
-        if self.config.read_only {
-            return None;
-        }
-        self.store.optimizer_statistics_refresh_work(&self.catalog)
+    fn optimizer_statistics_refresh_work(&self) -> Result<Option<OptimizerStatisticsRefreshWork>> {
+        Ok({
+            if self.config.read_only {
+                return Ok(None);
+            }
+            self.runtime
+                .get()?
+                .store
+                .optimizer_statistics_refresh_work(&self.runtime.get()?.catalog)
+        })
     }
 
     pub fn optimizer_statistics_refresh_background_work_plan(
         &self,
         mut hint: BackgroundWorkHint,
-    ) -> Option<BackgroundWorkPlan> {
-        let work = self.optimizer_statistics_refresh_work()?;
-        hint.recent_delta_operations = hint
-            .recent_delta_operations
-            .max(work.recent_delta_operations);
-        hint.source_graph_commit_lag = hint.source_graph_commit_lag.max(work.source_commit_lag);
-        Some(BackgroundWorkPlan::background(
-            WorkClass::Projection,
-            work.estimated_operations,
-            hint,
-        ))
+    ) -> Result<Option<BackgroundWorkPlan>> {
+        Ok({
+            let Some(work) = self.optimizer_statistics_refresh_work()? else {
+                return Ok(None);
+            };
+            hint.recent_delta_operations = hint
+                .recent_delta_operations
+                .max(work.recent_delta_operations);
+            hint.source_graph_commit_lag = hint.source_graph_commit_lag.max(work.source_commit_lag);
+            Some(BackgroundWorkPlan::background(
+                WorkClass::Projection,
+                work.estimated_operations,
+                hint,
+            ))
+        })
     }
 
     pub fn refresh_background_optimizer_statistics(
@@ -2585,7 +2965,7 @@ impl Database {
         hint: BackgroundWorkHint,
     ) -> Result<Option<crate::store::OptimizerStatisticsRefreshReport>> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
-        let Some(plan) = self.optimizer_statistics_refresh_background_work_plan(hint) else {
+        let Some(plan) = self.optimizer_statistics_refresh_background_work_plan(hint)? else {
             return Ok(None);
         };
         match policy.admit(state, &plan.request) {
@@ -2607,7 +2987,7 @@ impl Database {
         hint: BackgroundWorkHint,
     ) -> Result<Option<crate::store::OptimizerStatisticsRefreshReport>> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
-        let Some(plan) = self.optimizer_statistics_refresh_background_work_plan(hint) else {
+        let Some(plan) = self.optimizer_statistics_refresh_background_work_plan(hint)? else {
             return Ok(None);
         };
         let scheduler = self.local_qos_scheduler_for_work();
@@ -2634,47 +3014,54 @@ impl Database {
     }
 
     #[cfg(test)]
-    pub(crate) fn basic_statistics(&self) -> crate::schema::BasicGraphStatistics {
-        self.store.basic_statistics()
+    pub(crate) fn basic_statistics(&self) -> Result<crate::schema::BasicGraphStatistics> {
+        Ok(self.runtime.get()?.store.basic_statistics())
     }
 
-    pub fn basic_statistics_consistency_report(&self) -> BasicStatisticsConsistencyReport {
-        self.store.basic_statistics_consistency_report()
+    pub fn basic_statistics_consistency_report(&self) -> Result<BasicStatisticsConsistencyReport> {
+        Ok({
+            self.runtime
+                .get()?
+                .store
+                .basic_statistics_consistency_report()
+        })
     }
 
-    pub fn adjacency_consistency_report(&self) -> AdjacencyConsistencyReport {
-        self.store.adjacency_consistency_report()
+    pub fn adjacency_consistency_report(&self) -> Result<AdjacencyConsistencyReport> {
+        Ok(self.runtime.get()?.store.adjacency_consistency_report())
     }
 
-    pub fn adjacency_consolidation_plan(&self) -> AdjacencyConsolidationPlan {
-        self.store.adjacency_consolidation_plan()
+    pub fn adjacency_consolidation_plan(&self) -> Result<AdjacencyConsolidationPlan> {
+        Ok(self.runtime.get()?.store.adjacency_consolidation_plan())
     }
 
     pub fn storage_checkpoint_background_work_plan(
         &self,
         mut hint: BackgroundWorkHint,
-    ) -> Option<BackgroundWorkPlan> {
-        if self.config.read_only {
-            return None;
-        }
-        let pressure = self.storage_pressure_snapshot();
-        if !pressure.recommends_checkpoint() {
-            return None;
-        }
-        hint.recent_delta_operations = hint
-            .recent_delta_operations
-            .max(self.store.checkpoint_estimated_operations());
-        hint.source_graph_commit_lag = hint.source_graph_commit_lag.max(
-            pressure
-                .current_commit_epoch
-                .saturating_sub(pressure.checkpoint_commit_epoch),
-        );
-        hint.staleness_millis = hint.staleness_millis.max(pressure.wal_age_millis);
-        Some(BackgroundWorkPlan::background(
-            WorkClass::Mutation,
-            self.store.checkpoint_estimated_operations(),
-            hint,
-        ))
+    ) -> Result<Option<BackgroundWorkPlan>> {
+        Ok({
+            if self.config.read_only {
+                return Ok(None);
+            }
+            let pressure = self.storage_pressure_snapshot()?;
+            if !pressure.recommends_checkpoint() {
+                return Ok(None);
+            }
+            hint.recent_delta_operations = hint
+                .recent_delta_operations
+                .max(self.runtime.get()?.store.checkpoint_estimated_operations());
+            hint.source_graph_commit_lag = hint.source_graph_commit_lag.max(
+                pressure
+                    .current_commit_epoch
+                    .saturating_sub(pressure.checkpoint_commit_epoch),
+            );
+            hint.staleness_millis = hint.staleness_millis.max(pressure.wal_age_millis);
+            Some(BackgroundWorkPlan::background(
+                WorkClass::Mutation,
+                self.runtime.get()?.store.checkpoint_estimated_operations(),
+                hint,
+            ))
+        })
     }
 
     pub fn checkpoint_background(
@@ -2684,7 +3071,7 @@ impl Database {
         hint: BackgroundWorkHint,
     ) -> Result<()> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
-        let Some(plan) = self.storage_checkpoint_background_work_plan(hint) else {
+        let Some(plan) = self.storage_checkpoint_background_work_plan(hint)? else {
             return Ok(());
         };
         match policy.admit(state, &plan.request) {
@@ -2700,7 +3087,7 @@ impl Database {
 
     pub fn checkpoint_scheduled_background(&mut self, hint: BackgroundWorkHint) -> Result<()> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
-        let Some(plan) = self.storage_checkpoint_background_work_plan(hint) else {
+        let Some(plan) = self.storage_checkpoint_background_work_plan(hint)? else {
             return Ok(());
         };
         let scheduler = self.local_qos_scheduler_for_work();
@@ -2727,20 +3114,29 @@ impl Database {
         &self,
         max_estimated_entries: usize,
         hint: BackgroundWorkHint,
-    ) -> Option<BackgroundWorkPlan> {
-        let estimated_entries = self
-            .store
-            .bounded_adjacency_consolidation_estimated_entries(max_estimated_entries);
-        (estimated_entries > 0)
-            .then(|| BackgroundWorkPlan::background(WorkClass::Mutation, estimated_entries, hint))
+    ) -> Result<Option<BackgroundWorkPlan>> {
+        Ok({
+            let estimated_entries = self
+                .runtime
+                .get()?
+                .store
+                .bounded_adjacency_consolidation_estimated_entries(max_estimated_entries);
+            (estimated_entries > 0).then(|| {
+                BackgroundWorkPlan::background(WorkClass::Mutation, estimated_entries, hint)
+            })
+        })
     }
 
     pub fn consolidate_bounded_adjacency_deltas(
         &mut self,
         max_estimated_entries: usize,
-    ) -> AdjacencyConsolidationReport {
-        self.store
-            .consolidate_bounded_adjacency_deltas(max_estimated_entries)
+    ) -> Result<AdjacencyConsolidationReport> {
+        Ok({
+            self.runtime
+                .get_mut()?
+                .store
+                .consolidate_bounded_adjacency_deltas(max_estimated_entries)
+        })
     }
 
     pub fn consolidate_bounded_background_adjacency_deltas(
@@ -2751,17 +3147,19 @@ impl Database {
     ) -> Result<AdjacencyConsolidationReport> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let estimated_entries = self
+            .runtime
+            .get()?
             .store
             .bounded_adjacency_consolidation_estimated_entries(max_estimated_entries);
         if estimated_entries == 0 {
-            return Ok(self.consolidate_bounded_adjacency_deltas(max_estimated_entries));
+            return self.consolidate_bounded_adjacency_deltas(max_estimated_entries);
         }
         match policy.admit(
             state,
             &WorkRequest::background(WorkClass::Mutation, estimated_entries),
         ) {
             QosAdmission::Admit => {
-                Ok(self.consolidate_bounded_adjacency_deltas(max_estimated_entries))
+                Ok(self.consolidate_bounded_adjacency_deltas(max_estimated_entries)?)
             }
             QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
                 "background adjacency consolidation deferred: {reason}"
@@ -2778,10 +3176,12 @@ impl Database {
     ) -> Result<AdjacencyConsolidationReport> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let estimated_entries = self
+            .runtime
+            .get()?
             .store
             .bounded_adjacency_consolidation_estimated_entries(max_estimated_entries);
         if estimated_entries == 0 {
-            return Ok(self.consolidate_bounded_adjacency_deltas(max_estimated_entries));
+            return self.consolidate_bounded_adjacency_deltas(max_estimated_entries);
         }
         let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(WorkRequest::background(
@@ -2802,63 +3202,102 @@ impl Database {
             Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
         };
 
-        let result = Ok(self.consolidate_bounded_adjacency_deltas(max_estimated_entries));
+        let result = Ok(self.consolidate_bounded_adjacency_deltas(max_estimated_entries)?);
         permit.finish_with_outcome(result.is_ok());
         result
     }
 
-    pub fn degree_statistics_consistency_report(&self) -> DegreeStatisticsConsistencyReport {
-        self.store.degree_statistics_consistency_report()
+    pub fn degree_statistics_consistency_report(
+        &self,
+    ) -> Result<DegreeStatisticsConsistencyReport> {
+        Ok({
+            self.runtime
+                .get()?
+                .store
+                .degree_statistics_consistency_report()
+        })
     }
 
     pub fn distinct_value_statistics_consistency_report(
         &self,
-    ) -> DistinctValueStatisticsConsistencyReport {
-        self.store
-            .distinct_value_statistics_consistency_report(&self.catalog)
+    ) -> Result<DistinctValueStatisticsConsistencyReport> {
+        Ok({
+            self.runtime
+                .get()?
+                .store
+                .distinct_value_statistics_consistency_report(&self.runtime.get()?.catalog)
+        })
     }
 
-    pub fn property_index_consistency_report(&self) -> PropertyIndexConsistencyReport {
-        self.store.property_index_consistency_report(&self.catalog)
+    pub fn property_index_consistency_report(&self) -> Result<PropertyIndexConsistencyReport> {
+        Ok({
+            self.runtime
+                .get()?
+                .store
+                .property_index_consistency_report(&self.runtime.get()?.catalog)
+        })
     }
 
     #[cfg(test)]
-    pub(crate) fn property_indexes(&self) -> Vec<IndexDescriptor> {
-        self.catalog.property_indexes().cloned().collect()
+    pub(crate) fn property_indexes(&self) -> Result<Vec<IndexDescriptor>> {
+        Ok({
+            self.runtime
+                .get()?
+                .catalog
+                .property_indexes()
+                .cloned()
+                .collect()
+        })
     }
 
     #[cfg(test)]
-    pub(crate) fn composite_property_indexes(&self) -> Vec<CompositeIndexDescriptor> {
-        self.catalog.composite_property_indexes().cloned().collect()
+    pub(crate) fn composite_property_indexes(&self) -> Result<Vec<CompositeIndexDescriptor>> {
+        Ok({
+            self.runtime
+                .get()?
+                .catalog
+                .composite_property_indexes()
+                .cloned()
+                .collect()
+        })
     }
 
     pub fn rebuild_bounded_property_index_projections(
         &mut self,
         max_estimated_operations: usize,
-    ) -> QueryOutput {
-        property_index_projection_rebuild_output(
-            self.store.rebuild_bounded_property_index_projections(
-                &self.catalog,
-                max_estimated_operations,
-            ),
-        )
+    ) -> Result<QueryOutput> {
+        Ok({
+            property_index_projection_rebuild_output({
+                let branch_runtime = self.runtime.get_mut()?;
+                branch_runtime
+                    .store
+                    .rebuild_bounded_property_index_projections(
+                        &branch_runtime.catalog,
+                        max_estimated_operations,
+                    )
+            })
+        })
     }
 
     pub fn property_index_projection_background_work_plan(
         &self,
         hint: BackgroundWorkHint,
-    ) -> Option<BackgroundWorkPlan> {
-        let estimated_operations = self
-            .store
-            .property_index_projection_estimated_operations(&self.catalog);
-        if estimated_operations == 0 {
-            return None;
-        }
-        Some(BackgroundWorkPlan::background(
-            WorkClass::Projection,
-            estimated_operations,
-            hint,
-        ))
+    ) -> Result<Option<BackgroundWorkPlan>> {
+        Ok({
+            let estimated_operations = self
+                .runtime
+                .get()?
+                .store
+                .property_index_projection_estimated_operations(&self.runtime.get()?.catalog);
+            if estimated_operations == 0 {
+                return Ok(None);
+            }
+            Some(BackgroundWorkPlan::background(
+                WorkClass::Projection,
+                estimated_operations,
+                hint,
+            ))
+        })
     }
 
     pub fn rebuild_bounded_background_property_index_projections(
@@ -2868,19 +3307,22 @@ impl Database {
         max_estimated_operations: usize,
     ) -> Result<QueryOutput> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
-        let estimated_operations = self
-            .store
-            .bounded_property_index_projection_estimated_operations(
-                &self.catalog,
-                max_estimated_operations,
-            );
+        let estimated_operations = {
+            let branch_runtime = self.runtime.get_mut()?;
+            branch_runtime
+                .store
+                .bounded_property_index_projection_estimated_operations(
+                    &branch_runtime.catalog,
+                    max_estimated_operations,
+                )
+        };
         if estimated_operations == 0 {
-            return Ok(self.rebuild_bounded_property_index_projections(max_estimated_operations));
+            return self.rebuild_bounded_property_index_projections(max_estimated_operations);
         }
         let request = WorkRequest::background(WorkClass::Projection, estimated_operations);
         match policy.admit(state, &request) {
             QosAdmission::Admit => {
-                Ok(self.rebuild_bounded_property_index_projections(max_estimated_operations))
+                Ok(self.rebuild_bounded_property_index_projections(max_estimated_operations)?)
             }
             QosAdmission::Defer { reason, .. } => Err(HawDBError::Storage(format!(
                 "background property index projection rebuild deferred: {reason}"
@@ -2896,14 +3338,17 @@ impl Database {
         max_estimated_operations: usize,
     ) -> Result<QueryOutput> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
-        let estimated_operations = self
-            .store
-            .bounded_property_index_projection_estimated_operations(
-                &self.catalog,
-                max_estimated_operations,
-            );
+        let estimated_operations = {
+            let branch_runtime = self.runtime.get_mut()?;
+            branch_runtime
+                .store
+                .bounded_property_index_projection_estimated_operations(
+                    &branch_runtime.catalog,
+                    max_estimated_operations,
+                )
+        };
         if estimated_operations == 0 {
-            return Ok(self.rebuild_bounded_property_index_projections(max_estimated_operations));
+            return self.rebuild_bounded_property_index_projections(max_estimated_operations);
         }
         let scheduler = self.local_qos_scheduler_for_work();
         let permit = match scheduler.try_start(WorkRequest::background(
@@ -2924,96 +3369,144 @@ impl Database {
             Err(QosAdmission::Admit) => unreachable!("admitted work returns a permit"),
         };
 
-        let result = Ok(self.rebuild_bounded_property_index_projections(max_estimated_operations));
+        let result = Ok(self.rebuild_bounded_property_index_projections(max_estimated_operations)?);
         permit.finish_with_outcome(result.is_ok());
         result
     }
 
     #[cfg(test)]
-    pub(crate) fn unique_constraints(&self) -> Vec<ConstraintDescriptor> {
-        self.catalog.unique_constraints().cloned().collect()
+    pub(crate) fn unique_constraints(&self) -> Result<Vec<ConstraintDescriptor>> {
+        Ok({
+            self.runtime
+                .get()?
+                .catalog
+                .unique_constraints()
+                .cloned()
+                .collect()
+        })
     }
 
     #[cfg(test)]
-    pub(crate) fn node_property_exists_constraints(&self) -> Vec<ConstraintDescriptor> {
-        self.catalog
-            .node_property_exists_constraints()
-            .cloned()
-            .collect()
+    pub(crate) fn node_property_exists_constraints(&self) -> Result<Vec<ConstraintDescriptor>> {
+        Ok({
+            self.runtime
+                .get()?
+                .catalog
+                .node_property_exists_constraints()
+                .cloned()
+                .collect()
+        })
     }
 
     #[cfg(test)]
-    pub(crate) fn relationship_property_exists_constraints(&self) -> Vec<ConstraintDescriptor> {
-        self.catalog
-            .relationship_property_exists_constraints()
-            .cloned()
-            .collect()
+    pub(crate) fn relationship_property_exists_constraints(
+        &self,
+    ) -> Result<Vec<ConstraintDescriptor>> {
+        Ok({
+            self.runtime
+                .get()?
+                .catalog
+                .relationship_property_exists_constraints()
+                .cloned()
+                .collect()
+        })
     }
 
     #[cfg(test)]
-    pub(crate) fn relationship_unique_constraints(&self) -> Vec<ConstraintDescriptor> {
-        self.catalog
-            .relationship_unique_constraints()
-            .cloned()
-            .collect()
+    pub(crate) fn relationship_unique_constraints(&self) -> Result<Vec<ConstraintDescriptor>> {
+        Ok({
+            self.runtime
+                .get()?
+                .catalog
+                .relationship_unique_constraints()
+                .cloned()
+                .collect()
+        })
     }
 
     #[cfg(test)]
-    pub(crate) fn table_descriptors(&self) -> Vec<TableDescriptor> {
-        self.catalog.table_descriptors().cloned().collect()
+    pub(crate) fn table_descriptors(&self) -> Result<Vec<TableDescriptor>> {
+        Ok({
+            self.runtime
+                .get()?
+                .catalog
+                .table_descriptors()
+                .cloned()
+                .collect()
+        })
     }
 
     #[cfg(test)]
-    pub(crate) fn property_descriptors(&self) -> Vec<PropertyDescriptor> {
-        self.catalog.property_descriptors().cloned().collect()
+    pub(crate) fn property_descriptors(&self) -> Result<Vec<PropertyDescriptor>> {
+        Ok({
+            self.runtime
+                .get()?
+                .catalog
+                .property_descriptors()
+                .cloned()
+                .collect()
+        })
     }
 
-    pub fn plan_schema_maintenance(&self) -> QueryOutput {
-        let rows: Vec<Row> = self
-            .store
-            .plan_schema_maintenance(&self.catalog)
-            .into_iter()
-            .map(|item| {
-                BTreeMap::from([
-                    ("object_type".to_string(), Value::String(item.object_type)),
-                    ("object".to_string(), Value::String(item.object)),
-                    (
-                        "from_state".to_string(),
-                        schema_state_value(item.from_state),
-                    ),
-                    (
-                        "to_state".to_string(),
-                        item.to_state.map(schema_state_value).unwrap_or(Value::Null),
-                    ),
-                    ("action".to_string(), Value::String(item.action)),
-                    (
-                        "estimated_operations".to_string(),
-                        Value::Int(i64::try_from(item.estimated_operations).unwrap_or(i64::MAX)),
-                    ),
-                ])
-            })
-            .collect();
-        QueryOutput { rows: rows.into() }
+    pub fn plan_schema_maintenance(&self) -> Result<QueryOutput> {
+        Ok({
+            let rows: Vec<Row> = self
+                .runtime
+                .get()?
+                .store
+                .plan_schema_maintenance(&self.runtime.get()?.catalog)
+                .into_iter()
+                .map(|item| {
+                    BTreeMap::from([
+                        ("object_type".to_string(), Value::String(item.object_type)),
+                        ("object".to_string(), Value::String(item.object)),
+                        (
+                            "from_state".to_string(),
+                            schema_state_value(item.from_state),
+                        ),
+                        (
+                            "to_state".to_string(),
+                            item.to_state.map(schema_state_value).unwrap_or(Value::Null),
+                        ),
+                        ("action".to_string(), Value::String(item.action)),
+                        (
+                            "estimated_operations".to_string(),
+                            Value::Int(
+                                i64::try_from(item.estimated_operations).unwrap_or(i64::MAX),
+                            ),
+                        ),
+                    ])
+                })
+                .collect();
+            QueryOutput { rows: rows.into() }
+        })
     }
 
     pub fn schema_maintenance_background_work_plan(
         &self,
         hint: BackgroundWorkHint,
-    ) -> Option<BackgroundWorkPlan> {
-        let estimated_operations = self.schema_maintenance_estimated_operations();
-        if estimated_operations == 0 {
-            return None;
-        }
-        Some(BackgroundWorkPlan::background(
-            WorkClass::Mutation,
-            estimated_operations,
-            hint,
-        ))
+    ) -> Result<Option<BackgroundWorkPlan>> {
+        Ok({
+            let estimated_operations = self.schema_maintenance_estimated_operations()?;
+            if estimated_operations == 0 {
+                return Ok(None);
+            }
+            Some(BackgroundWorkPlan::background(
+                WorkClass::Mutation,
+                estimated_operations,
+                hint,
+            ))
+        })
     }
 
     pub fn run_schema_maintenance(&mut self) -> Result<QueryOutput> {
         self.ensure_writable()?;
-        let actions = self.store.run_schema_maintenance(&mut self.catalog)?;
+        let actions = {
+            let branch_runtime = self.runtime.get_mut()?;
+            branch_runtime
+                .store
+                .run_schema_maintenance(&mut branch_runtime.catalog)
+        }?;
         Ok(schema_maintenance_actions_output(actions))
     }
 
@@ -3022,9 +3515,13 @@ impl Database {
         max_estimated_operations: usize,
     ) -> Result<QueryOutput> {
         self.ensure_writable()?;
-        let actions = self
-            .store
-            .run_bounded_schema_maintenance(&mut self.catalog, max_estimated_operations)?;
+        let actions = {
+            let branch_runtime = self.runtime.get_mut()?;
+            branch_runtime.store.run_bounded_schema_maintenance(
+                &mut branch_runtime.catalog,
+                max_estimated_operations,
+            )
+        }?;
         Ok(schema_maintenance_actions_output(actions))
     }
 
@@ -3055,7 +3552,7 @@ impl Database {
     ) -> Result<QueryOutput> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let estimated_operations =
-            self.bounded_schema_maintenance_estimated_operations(max_estimated_operations);
+            self.bounded_schema_maintenance_estimated_operations(max_estimated_operations)?;
         if estimated_operations == 0 {
             return self.run_bounded_schema_maintenance(max_estimated_operations);
         }
@@ -3079,7 +3576,7 @@ impl Database {
         self.run_background_schema_maintenance(
             policy,
             state,
-            self.schema_maintenance_estimated_operations(),
+            self.schema_maintenance_estimated_operations()?,
         )
     }
 
@@ -3118,7 +3615,7 @@ impl Database {
     ) -> Result<QueryOutput> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let estimated_operations =
-            self.bounded_schema_maintenance_estimated_operations(max_estimated_operations);
+            self.bounded_schema_maintenance_estimated_operations(max_estimated_operations)?;
         if estimated_operations == 0 {
             return self.run_bounded_schema_maintenance(max_estimated_operations);
         }
@@ -3148,43 +3645,61 @@ impl Database {
 
     pub fn run_planned_scheduled_background_schema_maintenance(&mut self) -> Result<QueryOutput> {
         self.run_scheduled_background_schema_maintenance(
-            self.schema_maintenance_estimated_operations(),
+            self.schema_maintenance_estimated_operations()?,
         )
     }
 
-    fn schema_maintenance_estimated_operations(&self) -> usize {
-        self.store
-            .plan_schema_maintenance(&self.catalog)
-            .into_iter()
-            .map(|item| item.estimated_operations)
-            .fold(0usize, usize::saturating_add)
+    fn schema_maintenance_estimated_operations(&self) -> Result<usize> {
+        Ok({
+            self.runtime
+                .get()?
+                .store
+                .plan_schema_maintenance(&self.runtime.get()?.catalog)
+                .into_iter()
+                .map(|item| item.estimated_operations)
+                .fold(0usize, usize::saturating_add)
+        })
     }
 
     fn bounded_schema_maintenance_estimated_operations(
         &self,
         max_estimated_operations: usize,
-    ) -> usize {
-        let mut used_estimated_operations = 0usize;
-        for item in self.store.plan_schema_maintenance(&self.catalog) {
-            let Some(next) = used_estimated_operations.checked_add(item.estimated_operations)
-            else {
-                continue;
-            };
-            if next <= max_estimated_operations {
-                used_estimated_operations = next;
+    ) -> Result<usize> {
+        Ok({
+            let mut used_estimated_operations = 0usize;
+            for item in self
+                .runtime
+                .get()?
+                .store
+                .plan_schema_maintenance(&self.runtime.get()?.catalog)
+            {
+                let Some(next) = used_estimated_operations.checked_add(item.estimated_operations)
+                else {
+                    continue;
+                };
+                if next <= max_estimated_operations {
+                    used_estimated_operations = next;
+                }
             }
-        }
-        used_estimated_operations
+            used_estimated_operations
+        })
     }
 
     #[cfg(test)]
-    pub(crate) fn projected_graph_statuses(&self) -> Vec<crate::store::ProjectedGraphStatus> {
-        self.store.projected_graph_statuses()
+    pub(crate) fn projected_graph_statuses(
+        &self,
+    ) -> Result<Vec<crate::store::ProjectedGraphStatus>> {
+        Ok(self.runtime.get()?.store.projected_graph_statuses())
     }
 
     pub fn rebuild_projected_graph_artifacts(&mut self) -> Result<()> {
         self.ensure_writable()?;
-        self.store.rebuild_projected_graph_artifacts(&self.catalog)
+        {
+            let branch_runtime = self.runtime.get_mut()?;
+            branch_runtime
+                .store
+                .rebuild_projected_graph_artifacts(&branch_runtime.catalog)
+        }
     }
 
     pub fn rebuild_search_projection(
@@ -3192,15 +3707,19 @@ impl Database {
         search_index: &mut SearchIndex,
         options: SearchRebuildOptions,
     ) -> Result<SearchRebuildSummary> {
-        search_index.rebuild_from_graph(&self.catalog, &self.store, options)
+        search_index.rebuild_from_graph(
+            &self.runtime.get()?.catalog,
+            &self.runtime.get()?.store,
+            options,
+        )
     }
 
     pub fn search_projection_rebuild_background_work_plan(
         &self,
         search_index: &SearchIndex,
         hint: BackgroundWorkHint,
-    ) -> Option<BackgroundWorkPlan> {
-        search_index.rebuild_background_work_plan(&self.store, hint)
+    ) -> Result<Option<BackgroundWorkPlan>> {
+        Ok(search_index.rebuild_background_work_plan(&self.runtime.get()?.store, hint))
     }
 
     pub fn rebuild_background_search_projection(
@@ -3214,8 +3733,8 @@ impl Database {
         search_index.rebuild_background_derived_artifacts(
             policy,
             state,
-            &self.catalog,
-            &self.store,
+            &self.runtime.get()?.catalog,
+            &self.runtime.get()?.store,
             options,
         )
     }
@@ -3229,8 +3748,8 @@ impl Database {
         let scheduler = self.local_qos_scheduler_for_work();
         search_index.rebuild_scheduled_background_derived_artifacts(
             &scheduler,
-            &self.catalog,
-            &self.store,
+            &self.runtime.get()?.catalog,
+            &self.runtime.get()?.store,
             options,
         )
     }
@@ -3240,15 +3759,19 @@ impl Database {
         search_index: &mut SearchIndex,
         options: MetadataRepairOptions,
     ) -> Result<MetadataRepairSummary> {
-        search_index.repair_metadata_from_graph(&self.catalog, &self.store, options)
+        search_index.repair_metadata_from_graph(
+            &self.runtime.get()?.catalog,
+            &self.runtime.get()?.store,
+            options,
+        )
     }
 
     pub fn search_projection_metadata_repair_background_work_plan(
         &self,
         search_index: &SearchIndex,
         hint: BackgroundWorkHint,
-    ) -> Option<BackgroundWorkPlan> {
-        search_index.metadata_repair_background_work_plan(&self.store, hint)
+    ) -> Result<Option<BackgroundWorkPlan>> {
+        Ok(search_index.metadata_repair_background_work_plan(&self.runtime.get()?.store, hint))
     }
 
     pub fn repair_background_search_projection_metadata(
@@ -3263,8 +3786,8 @@ impl Database {
         search_index.repair_background_metadata_from_graph(
             policy,
             state,
-            &self.catalog,
-            &self.store,
+            &self.runtime.get()?.catalog,
+            &self.runtime.get()?.store,
             options,
             estimated_operations,
         )
@@ -3280,8 +3803,8 @@ impl Database {
         let scheduler = self.local_qos_scheduler_for_work();
         search_index.repair_scheduled_background_metadata_from_graph(
             &scheduler,
-            &self.catalog,
-            &self.store,
+            &self.runtime.get()?.catalog,
+            &self.runtime.get()?.store,
             options,
             estimated_operations,
         )
@@ -3308,60 +3831,68 @@ impl Database {
         search_index: &SearchIndex,
         request: &SearchProjectionGraphDeltaRequest,
         mut hint: BackgroundWorkHint,
-    ) -> Option<BackgroundWorkPlan> {
-        if hint.recent_delta_operations == 0 {
-            hint.recent_delta_operations = request.operation_count();
-        }
-        if hint.source_graph_commit_lag == 0 {
-            hint.source_graph_commit_lag = search_projection_commit_lag(
-                search_index,
-                self.store
-                    .search_projection_changefeed_status()
-                    .required_projection_commit_epoch(),
-            );
-        }
-        if request.operation_count() == 0
-            && hint.source_graph_commit_lag > 0
-            && request.complete_through_graph_commit_epoch.is_some()
-        {
+    ) -> Result<Option<BackgroundWorkPlan>> {
+        Ok({
             if hint.recent_delta_operations == 0 {
-                hint.recent_delta_operations = 1;
+                hint.recent_delta_operations = request.operation_count();
             }
-            return Some(BackgroundWorkPlan::background(
-                WorkClass::Projection,
-                1,
-                hint,
-            ));
-        }
-        request.background_work_plan(hint)
+            if hint.source_graph_commit_lag == 0 {
+                hint.source_graph_commit_lag = search_projection_commit_lag(
+                    search_index,
+                    self.runtime
+                        .get()?
+                        .store
+                        .search_projection_changefeed_status()
+                        .required_projection_commit_epoch(),
+                );
+            }
+            if request.operation_count() == 0
+                && hint.source_graph_commit_lag > 0
+                && request.complete_through_graph_commit_epoch.is_some()
+            {
+                if hint.recent_delta_operations == 0 {
+                    hint.recent_delta_operations = 1;
+                }
+                return Ok(Some(BackgroundWorkPlan::background(
+                    WorkClass::Projection,
+                    1,
+                    hint,
+                )));
+            }
+            request.background_work_plan(hint)
+        })
     }
 
     pub fn search_projection_freshness_lag_background_work_plan(
         &self,
         search_index: &SearchIndex,
         mut hint: BackgroundWorkHint,
-    ) -> Option<BackgroundWorkPlan> {
-        let source_graph_commit_lag = search_projection_commit_lag(
-            search_index,
-            self.store
-                .search_projection_changefeed_status()
-                .required_projection_commit_epoch(),
-        );
-        if source_graph_commit_lag == 0 {
-            return None;
-        }
-        let operation_count = usize::try_from(source_graph_commit_lag).unwrap_or(usize::MAX);
-        if hint.recent_delta_operations == 0 {
-            hint.recent_delta_operations = operation_count;
-        }
-        if hint.source_graph_commit_lag == 0 {
-            hint.source_graph_commit_lag = source_graph_commit_lag;
-        }
-        Some(BackgroundWorkPlan::background(
-            WorkClass::Projection,
-            operation_count,
-            hint,
-        ))
+    ) -> Result<Option<BackgroundWorkPlan>> {
+        Ok({
+            let source_graph_commit_lag = search_projection_commit_lag(
+                search_index,
+                self.runtime
+                    .get()?
+                    .store
+                    .search_projection_changefeed_status()
+                    .required_projection_commit_epoch(),
+            );
+            if source_graph_commit_lag == 0 {
+                return Ok(None);
+            }
+            let operation_count = usize::try_from(source_graph_commit_lag).unwrap_or(usize::MAX);
+            if hint.recent_delta_operations == 0 {
+                hint.recent_delta_operations = operation_count;
+            }
+            if hint.source_graph_commit_lag == 0 {
+                hint.source_graph_commit_lag = source_graph_commit_lag;
+            }
+            Some(BackgroundWorkPlan::background(
+                WorkClass::Projection,
+                operation_count,
+                hint,
+            ))
+        })
     }
 
     pub fn build_search_projection_graph_delta_request_after(
@@ -3390,11 +3921,15 @@ impl Database {
         source_commit_epoch: u64,
         max_operations: Option<usize>,
     ) -> Result<Option<SearchProjectionChangeBatch>> {
-        let current_epoch = self.store.commit_epoch();
+        let current_epoch = self.runtime.get()?.store.commit_epoch();
         if source_commit_epoch >= current_epoch {
             return Ok(None);
         }
-        let change_log_start_epoch = self.store.search_projection_change_log_start_epoch();
+        let change_log_start_epoch = self
+            .runtime
+            .get()?
+            .store
+            .search_projection_change_log_start_epoch();
         if source_commit_epoch < change_log_start_epoch {
             return Err(HawDBError::Storage(format!(
                 "search projection change log starts at commit epoch {change_log_start_epoch}; requested source commit epoch {source_commit_epoch}; full search projection rebuild required"
@@ -3408,6 +3943,8 @@ impl Database {
         let mut complete_through_commit_epoch = source_commit_epoch;
         let mut truncated_by_budget = false;
         for change in self
+            .runtime
+            .get()?
             .store
             .search_projection_changes_after(source_commit_epoch)
         {
@@ -3537,160 +4074,169 @@ impl Database {
         &self,
         search_index: Option<&SearchIndex>,
         options: BackgroundMaintenanceOptions,
-    ) -> Vec<BackgroundMaintenanceCandidate> {
-        let mut candidates = Vec::new();
+    ) -> Result<Vec<BackgroundMaintenanceCandidate>> {
+        Ok({
+            let mut candidates = Vec::new();
 
-        if options.include_storage_checkpoint
-            && let Some(plan) = self.storage_checkpoint_background_work_plan(options.hint.clone())
-        {
-            candidates.push(BackgroundMaintenanceCandidate::new(
-                BackgroundMaintenanceKind::StorageCheckpoint,
-                plan,
-            ));
-        }
+            if options.include_storage_checkpoint
+                && let Some(plan) =
+                    self.storage_checkpoint_background_work_plan(options.hint.clone())?
+            {
+                candidates.push(BackgroundMaintenanceCandidate::new(
+                    BackgroundMaintenanceKind::StorageCheckpoint,
+                    plan,
+                ));
+            }
 
-        if options.include_schema_maintenance
-            && let Some(plan) = self.schema_maintenance_background_work_plan(options.hint.clone())
-        {
-            candidates.push(BackgroundMaintenanceCandidate::new(
-                BackgroundMaintenanceKind::SchemaMaintenance,
-                plan,
-            ));
-        }
+            if options.include_schema_maintenance
+                && let Some(plan) =
+                    self.schema_maintenance_background_work_plan(options.hint.clone())?
+            {
+                candidates.push(BackgroundMaintenanceCandidate::new(
+                    BackgroundMaintenanceKind::SchemaMaintenance,
+                    plan,
+                ));
+            }
 
-        if options.include_property_index_projection
-            && let Some(plan) =
-                self.property_index_projection_background_work_plan(options.hint.clone())
-        {
-            candidates.push(BackgroundMaintenanceCandidate::new(
-                BackgroundMaintenanceKind::PropertyIndexProjection,
-                plan,
-            ));
-        }
+            if options.include_property_index_projection
+                && let Some(plan) =
+                    self.property_index_projection_background_work_plan(options.hint.clone())?
+            {
+                candidates.push(BackgroundMaintenanceCandidate::new(
+                    BackgroundMaintenanceKind::PropertyIndexProjection,
+                    plan,
+                ));
+            }
 
-        if options.include_optimizer_statistics_refresh
-            && let Some(plan) =
-                self.optimizer_statistics_refresh_background_work_plan(options.hint.clone())
-        {
-            candidates.push(BackgroundMaintenanceCandidate::new(
-                BackgroundMaintenanceKind::OptimizerStatisticsRefresh,
-                plan,
-            ));
-        }
+            if options.include_optimizer_statistics_refresh
+                && let Some(plan) =
+                    self.optimizer_statistics_refresh_background_work_plan(options.hint.clone())?
+            {
+                candidates.push(BackgroundMaintenanceCandidate::new(
+                    BackgroundMaintenanceKind::OptimizerStatisticsRefresh,
+                    plan,
+                ));
+            }
 
-        if let Some(delta_request) = &options.search_projection_graph_delta {
-            let plan = match search_index {
-                Some(search_index) => self
-                    .search_projection_graph_delta_freshness_background_work_plan(
-                        search_index,
+            if let Some(delta_request) = &options.search_projection_graph_delta {
+                let plan = match search_index {
+                    Some(search_index) => self
+                        .search_projection_graph_delta_freshness_background_work_plan(
+                            search_index,
+                            delta_request,
+                            options.hint.clone(),
+                        )?,
+                    None => self.search_projection_graph_delta_background_work_plan(
                         delta_request,
                         options.hint.clone(),
                     ),
-                None => self.search_projection_graph_delta_background_work_plan(
-                    delta_request,
-                    options.hint.clone(),
-                ),
-            };
-            if let Some(plan) = plan {
-                candidates.push(
-                    BackgroundMaintenanceCandidate::new(
-                        BackgroundMaintenanceKind::SearchProjectionGraphDelta,
-                        plan,
-                    )
-                    .with_search_projection_graph_delta(delta_request.clone()),
-                );
-            }
-        } else if options.include_search_projection_graph_delta_freshness
-            && let Some(search_index) = search_index
-        {
-            let executable_request = self
-                .build_search_projection_graph_delta_request_from_freshness(search_index, None)
-                .ok()
-                .flatten();
-            if let Some(request) = executable_request {
-                if let Some(plan) = self
-                    .search_projection_graph_delta_freshness_background_work_plan(
-                        search_index,
-                        &request,
-                        options.hint.clone(),
-                    )
-                {
+                };
+                if let Some(plan) = plan {
                     candidates.push(
                         BackgroundMaintenanceCandidate::new(
                             BackgroundMaintenanceKind::SearchProjectionGraphDelta,
                             plan,
                         )
-                        .with_search_projection_graph_delta(request),
+                        .with_search_projection_graph_delta(delta_request.clone()),
                     );
                 }
-            } else if let Some(plan) = self.search_projection_freshness_lag_background_work_plan(
-                search_index,
-                options.hint.clone(),
-            ) {
-                candidates.push(BackgroundMaintenanceCandidate::new(
-                    BackgroundMaintenanceKind::SearchProjectionGraphDelta,
-                    plan,
-                ));
-            }
-        }
-
-        if let Some(search_index) = search_index {
-            if options.include_search_projection_rebuild {
-                let mut hint = options.hint.clone();
-                if hint.source_graph_commit_lag == 0 {
-                    hint.source_graph_commit_lag = search_projection_commit_lag(
+            } else if options.include_search_projection_graph_delta_freshness
+                && let Some(search_index) = search_index
+            {
+                let executable_request = self
+                    .build_search_projection_graph_delta_request_from_freshness(search_index, None)
+                    .ok()
+                    .flatten();
+                if let Some(request) = executable_request {
+                    if let Some(plan) = self
+                        .search_projection_graph_delta_freshness_background_work_plan(
+                            search_index,
+                            &request,
+                            options.hint.clone(),
+                        )?
+                    {
+                        candidates.push(
+                            BackgroundMaintenanceCandidate::new(
+                                BackgroundMaintenanceKind::SearchProjectionGraphDelta,
+                                plan,
+                            )
+                            .with_search_projection_graph_delta(request),
+                        );
+                    }
+                } else if let Some(plan) = self
+                    .search_projection_freshness_lag_background_work_plan(
                         search_index,
-                        self.store
-                            .search_projection_changefeed_status()
-                            .required_projection_commit_epoch(),
-                    );
-                }
-                if let Some(plan) =
-                    self.search_projection_rebuild_background_work_plan(search_index, hint)
+                        options.hint.clone(),
+                    )?
                 {
                     candidates.push(BackgroundMaintenanceCandidate::new(
-                        BackgroundMaintenanceKind::SearchProjectionRebuild,
+                        BackgroundMaintenanceKind::SearchProjectionGraphDelta,
                         plan,
                     ));
                 }
             }
 
-            if options.include_search_projection_metadata_repair
-                && let Some(plan) = self.search_projection_metadata_repair_background_work_plan(
-                    search_index,
-                    options.hint.clone(),
-                )
+            if let Some(search_index) = search_index {
+                if options.include_search_projection_rebuild {
+                    let mut hint = options.hint.clone();
+                    if hint.source_graph_commit_lag == 0 {
+                        hint.source_graph_commit_lag = search_projection_commit_lag(
+                            search_index,
+                            self.runtime
+                                .get()?
+                                .store
+                                .search_projection_changefeed_status()
+                                .required_projection_commit_epoch(),
+                        );
+                    }
+                    if let Some(plan) =
+                        self.search_projection_rebuild_background_work_plan(search_index, hint)?
+                    {
+                        candidates.push(BackgroundMaintenanceCandidate::new(
+                            BackgroundMaintenanceKind::SearchProjectionRebuild,
+                            plan,
+                        ));
+                    }
+                }
+
+                if options.include_search_projection_metadata_repair
+                    && let Some(plan) = self
+                        .search_projection_metadata_repair_background_work_plan(
+                            search_index,
+                            options.hint.clone(),
+                        )?
+                {
+                    candidates.push(BackgroundMaintenanceCandidate::new(
+                        BackgroundMaintenanceKind::SearchProjectionMetadataRepair,
+                        plan,
+                    ));
+                }
+            }
+
+            if options.include_hawdb_lightning_bootstrap_export
+                && let Some(plan) = self
+                    .hawdb_lightning_bootstrap_export_background_work_plan(options.hint.clone())?
             {
                 candidates.push(BackgroundMaintenanceCandidate::new(
-                    BackgroundMaintenanceKind::SearchProjectionMetadataRepair,
+                    BackgroundMaintenanceKind::HawDBLightningBootstrapExport,
                     plan,
                 ));
             }
-        }
 
-        if options.include_hawdb_lightning_bootstrap_export
-            && let Some(plan) =
-                self.hawdb_lightning_bootstrap_export_background_work_plan(options.hint.clone())
-        {
-            candidates.push(BackgroundMaintenanceCandidate::new(
-                BackgroundMaintenanceKind::HawDBLightningBootstrapExport,
-                plan,
-            ));
-        }
+            if options.include_external_content_artifact_jobs
+                && let Some(plan) = self.external_content_artifact_job_background_work_plan(
+                    options.hint,
+                    options.external_content_artifact_estimated_operations,
+                )
+            {
+                candidates.push(BackgroundMaintenanceCandidate::new(
+                    BackgroundMaintenanceKind::ExternalContentArtifactJob,
+                    plan,
+                ));
+            }
 
-        if options.include_external_content_artifact_jobs
-            && let Some(plan) = self.external_content_artifact_job_background_work_plan(
-                options.hint,
-                options.external_content_artifact_estimated_operations,
-            )
-        {
-            candidates.push(BackgroundMaintenanceCandidate::new(
-                BackgroundMaintenanceKind::ExternalContentArtifactJob,
-                plan,
-            ));
-        }
-
-        candidates
+            candidates
+        })
     }
 
     pub fn rank_background_maintenance(
@@ -3699,26 +4245,30 @@ impl Database {
         policy: &LocalQosPolicy,
         state: &LocalQosState,
         options: BackgroundMaintenanceOptions,
-    ) -> Vec<RankedBackgroundMaintenance> {
-        let candidates = self.background_maintenance_candidates(search_index, options);
-        let plans = candidates
-            .iter()
-            .map(|candidate| candidate.plan.clone())
-            .collect::<Vec<_>>();
-        policy
-            .rank_background_work(state, &plans)
-            .into_iter()
-            .map(|ranked| {
-                let candidate = &candidates[ranked.index];
-                RankedBackgroundMaintenance {
-                    kind: candidate.kind,
-                    name: candidate.name.clone(),
-                    plan: candidate.plan.clone(),
-                    decision: ranked.decision,
-                    search_projection_graph_delta: candidate.search_projection_graph_delta.clone(),
-                }
-            })
-            .collect()
+    ) -> Result<Vec<RankedBackgroundMaintenance>> {
+        Ok({
+            let candidates = self.background_maintenance_candidates(search_index, options)?;
+            let plans = candidates
+                .iter()
+                .map(|candidate| candidate.plan.clone())
+                .collect::<Vec<_>>();
+            policy
+                .rank_background_work(state, &plans)
+                .into_iter()
+                .map(|ranked| {
+                    let candidate = &candidates[ranked.index];
+                    RankedBackgroundMaintenance {
+                        kind: candidate.kind,
+                        name: candidate.name.clone(),
+                        plan: candidate.plan.clone(),
+                        decision: ranked.decision,
+                        search_projection_graph_delta: candidate
+                            .search_projection_graph_delta
+                            .clone(),
+                    }
+                })
+                .collect()
+        })
     }
 
     pub fn background_maintenance_summary(
@@ -3727,17 +4277,23 @@ impl Database {
         policy: &LocalQosPolicy,
         state: &LocalQosState,
         options: BackgroundMaintenanceOptions,
-    ) -> BackgroundMaintenanceSummary {
-        let ranked = self.rank_background_maintenance(search_index, policy, state, options);
-        BackgroundMaintenanceSummary::from_ranked(ranked, policy, state)
+    ) -> Result<BackgroundMaintenanceSummary> {
+        Ok({
+            let ranked = self.rank_background_maintenance(search_index, policy, state, options)?;
+            BackgroundMaintenanceSummary::from_ranked(ranked, policy, state)
+        })
     }
 
     pub fn build_search_projection_graph_delta(
         &self,
         request: &SearchProjectionGraphDeltaRequest,
     ) -> Result<SearchProjectionDelta> {
-        let result = search_projection_graph_delta_for(&self.catalog, &self.store, request);
-        self.store.poison_on_storage_error(&result);
+        let result = search_projection_graph_delta_for(
+            &self.runtime.get()?.catalog,
+            &self.runtime.get()?.store,
+            request,
+        );
+        self.runtime.get()?.store.poison_on_storage_error(&result);
         result
     }
 
@@ -3871,8 +4427,8 @@ impl Database {
         request: &KnowledgeRetrievalRequest,
     ) -> Result<KnowledgeRetrievalOutput> {
         KnowledgeRetrievalGraphContext {
-            catalog: &self.catalog,
-            store: &self.store,
+            catalog: &self.runtime.get()?.catalog,
+            store: &self.runtime.get()?.store,
             compressed_vector_search_mode: self.config.compressed_vector_search_mode,
             adaptive_vector_backend_policy: self.config.adaptive_vector_backend_policy,
             query_memory_budget: self.config.execution_memory.query_memory_bytes,
@@ -3890,8 +4446,8 @@ impl Database {
         request: &KnowledgeRetrievalRequest,
     ) -> Result<KnowledgeRetrievalOutput> {
         KnowledgeRetrievalGraphContext {
-            catalog: &self.catalog,
-            store: &self.store,
+            catalog: &self.runtime.get()?.catalog,
+            store: &self.runtime.get()?.store,
             compressed_vector_search_mode: self.config.compressed_vector_search_mode,
             adaptive_vector_backend_policy: self.config.adaptive_vector_backend_policy,
             query_memory_budget: self.config.execution_memory.query_memory_bytes,
@@ -3910,8 +4466,8 @@ impl Database {
         request: &KnowledgeRetrievalRequest,
     ) -> Result<KnowledgeRetrievalOutput> {
         KnowledgeRetrievalGraphContext {
-            catalog: &self.catalog,
-            store: &self.store,
+            catalog: &self.runtime.get()?.catalog,
+            store: &self.runtime.get()?.store,
             compressed_vector_search_mode: self.config.compressed_vector_search_mode,
             adaptive_vector_backend_policy: self.config.adaptive_vector_backend_policy,
             query_memory_budget: self.config.execution_memory.query_memory_bytes,
@@ -4450,7 +5006,7 @@ impl Database {
 
 impl Database {
     fn ensure_writable(&self) -> Result<()> {
-        self.store.ensure_usable()?;
+        self.runtime.get()?.store.ensure_usable()?;
         if self.config.read_only {
             return Err(HawDBError::Execution(
                 "database is opened in read-only mode".to_string(),
@@ -4459,15 +5015,20 @@ impl Database {
         Ok(())
     }
 
-    pub fn project_graph(&self, rel_type: Option<&str>) -> ProjectedGraph {
-        match rel_type {
-            Some(name) => self
-                .catalog
-                .rel_type_id(name)
-                .map(|rel_type_id| ProjectedGraph::from_store(&self.store, Some(rel_type_id)))
-                .unwrap_or_else(|| ProjectedGraph::from_store_without_edges(&self.store)),
-            None => ProjectedGraph::from_store(&self.store, None),
-        }
+    pub fn project_graph(&self, rel_type: Option<&str>) -> Result<ProjectedGraph> {
+        Ok({
+            let runtime = self.runtime.get()?;
+            match rel_type {
+                Some(name) => runtime
+                    .catalog
+                    .rel_type_id(name)
+                    .map(|rel_type_id| {
+                        ProjectedGraph::from_store(&runtime.store, Some(rel_type_id))
+                    })
+                    .unwrap_or_else(|| ProjectedGraph::from_store_without_edges(&runtime.store)),
+                None => ProjectedGraph::from_store(&runtime.store, None),
+            }
+        })
     }
 }
 
@@ -6602,8 +7163,8 @@ pub(super) fn knowledge_community_entity_visibility_via_query_runtime(
     request: &KnowledgeCommunityEntityVisibilityRequest,
 ) -> Result<KnowledgeCommunityEntityVisibilityOutput> {
     validate_knowledge_community_entity_visibility_request(request)?;
-    let graph_commit_epoch = db.store.commit_epoch();
-    if db.catalog.label_id("Entity").is_none() || db.catalog.label_id("Memory").is_none() {
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
+    if db.runtime.get().unwrap().catalog.label_id("Entity").is_none() || db.runtime.get().unwrap().catalog.label_id("Memory").is_none() {
         return Ok(empty_community_entity_visibility_output(graph_commit_epoch));
     }
 
@@ -6865,7 +7426,7 @@ pub(super) fn knowledge_community_memories_via_query_runtime(
     request: &KnowledgeCommunityMemoryListRequest,
 ) -> Result<KnowledgeCommunityMemoryListOutput> {
     validate_knowledge_community_memory_list_request(request)?;
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::new();
 
     if matches!(
@@ -7192,7 +7753,7 @@ pub(super) fn knowledge_crystals_via_query_runtime(
     request: &KnowledgeCrystalListRequest,
 ) -> Result<KnowledgeCrystalListOutput> {
     validate_knowledge_crystal_list_request(request)?;
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
     let mut parameters = BTreeMap::new();
     let predicate = knowledge_crystal_list_query_predicate(request, &mut parameters);
     let query = format!("MATCH (m:Memory){predicate} RETURN m AS memory");
@@ -7418,7 +7979,7 @@ pub(super) fn knowledge_crystal_communities_via_query_runtime(
     request: &KnowledgeCrystalCommunityListRequest,
 ) -> Result<KnowledgeCrystalCommunityListOutput> {
     validate_knowledge_crystal_community_list_request(request)?;
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
     let mut parameters = BTreeMap::new();
     let predicate = knowledge_crystal_community_query_predicate(request, &mut parameters);
     let query = format!(
@@ -7600,7 +8161,7 @@ pub(super) fn knowledge_crystal_source_visibility_via_query_runtime(
     request: &KnowledgeCrystalSourceVisibilityRequest,
 ) -> Result<KnowledgeCrystalSourceVisibilityOutput> {
     validate_knowledge_crystal_source_visibility_request(request)?;
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
     let parameters = BTreeMap::from([(
         "community_ids".to_string(),
         Value::List(request.community_ids.clone()),
@@ -7742,10 +8303,10 @@ pub(super) fn create_knowledge_entity_for(
     db.ensure_writable()?;
     validate_knowledge_entity_create(request)?;
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     if let Some(existing) = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         request.label.as_str(),
         request.external_id.as_str(),
     )? {
@@ -7764,15 +8325,15 @@ pub(super) fn create_knowledge_entity_for(
     let created_node_count = output.rows.len();
     let created = created_node_count > 0;
     let node_id = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         request.label.as_str(),
         request.external_id.as_str(),
     )?
     .map(|node| node.id.0);
     Ok(KnowledgeEntityCreateOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         node_id,
         created,
         already_exists: false,
@@ -7789,7 +8350,7 @@ pub(super) fn create_knowledge_entity_batch_for(
         validate_knowledge_entity_create(create)?;
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.creates.len());
     let mut created_count = 0;
     let mut already_exists_count = 0;
@@ -7798,8 +8359,8 @@ pub(super) fn create_knowledge_entity_batch_for(
 
     for create in &request.creates {
         if let Some(existing) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             create.label.as_str(),
             create.external_id.as_str(),
         )? {
@@ -7848,7 +8409,7 @@ pub(super) fn create_knowledge_entity_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for create in &eligible_creates {
         let (cypher, parameters) = knowledge_entity_create_statement(create);
         tx.query_with_params(cypher.as_str(), &parameters)?;
@@ -7857,8 +8418,8 @@ pub(super) fn create_knowledge_entity_batch_for(
     for row in &mut rows {
         if row.created {
             row.node_id = try_seed_node_by_label_and_external_id(
-                &db.catalog,
-                &db.store,
+                &db.runtime.get().unwrap().catalog,
+                &db.runtime.get().unwrap().store,
                 row.label.as_str(),
                 row.external_id.as_str(),
             )?
@@ -7867,7 +8428,7 @@ pub(super) fn create_knowledge_entity_batch_for(
     }
     Ok(KnowledgeEntityCreateBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         created_count,
         already_exists_count,
@@ -7926,11 +8487,11 @@ pub(super) fn upsert_knowledge_entity_for(
     db.ensure_writable()?;
     validate_knowledge_entity_upsert(request)?;
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let update_properties = knowledge_entity_upsert_update_properties(request);
     if let Some(existing) = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         request.label.as_str(),
         request.external_id.as_str(),
     )? {
@@ -7969,7 +8530,7 @@ pub(super) fn upsert_knowledge_entity_for(
         db.query_with_params(cypher.as_str(), &parameters)?;
         return Ok(KnowledgeEntityUpsertOutput {
             graph_commit_epoch_before,
-            graph_commit_epoch_after: db.store.commit_epoch(),
+            graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
             node_id: Some(node_id),
             created: false,
             updated: true,
@@ -7984,15 +8545,15 @@ pub(super) fn upsert_knowledge_entity_for(
     let (cypher, parameters) = knowledge_entity_create_statement(&create);
     let output = db.query_with_params(cypher.as_str(), &parameters)?;
     let node_id = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         request.label.as_str(),
         request.external_id.as_str(),
     )?
     .map(|node| node.id.0);
     Ok(KnowledgeEntityUpsertOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         node_id,
         created: true,
         updated: false,
@@ -8012,7 +8573,7 @@ pub(super) fn upsert_knowledge_entity_batch_for(
         validate_knowledge_entity_upsert(upsert)?;
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.upserts.len());
     let mut created_count = 0;
     let mut updated_count = 0;
@@ -8025,8 +8586,8 @@ pub(super) fn upsert_knowledge_entity_batch_for(
 
     for upsert in &request.upserts {
         if let Some(existing) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             upsert.label.as_str(),
             upsert.external_id.as_str(),
         )? {
@@ -8121,7 +8682,7 @@ pub(super) fn upsert_knowledge_entity_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for create in &eligible_creates {
         let (cypher, parameters) = knowledge_entity_create_statement(create);
         tx.query_with_params(cypher.as_str(), &parameters)?;
@@ -8135,8 +8696,8 @@ pub(super) fn upsert_knowledge_entity_batch_for(
     for row in &mut rows {
         if row.created {
             row.node_id = try_seed_node_by_label_and_external_id(
-                &db.catalog,
-                &db.store,
+                &db.runtime.get().unwrap().catalog,
+                &db.runtime.get().unwrap().store,
                 row.label.as_str(),
                 row.external_id.as_str(),
             )?
@@ -8145,7 +8706,7 @@ pub(super) fn upsert_knowledge_entity_batch_for(
     }
     Ok(KnowledgeEntityUpsertBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         created_count,
         updated_count,
@@ -8277,10 +8838,10 @@ pub(super) fn update_scoped_knowledge_properties_for(
         validate_cypher_identifier(property, "property")?;
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let Some(seed) = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         request.update.entity.label.as_str(),
         request.update.entity.external_id.as_str(),
     )?
@@ -8296,8 +8857,8 @@ pub(super) fn update_scoped_knowledge_properties_for(
     };
     if !request.metadata_filters.is_empty()
         && !knowledge_graph_seed_matches_filters(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             &seed,
             &request.metadata_filters,
         )
@@ -8322,7 +8883,7 @@ pub(super) fn update_scoped_knowledge_properties_for(
     db.query_with_params(cypher.as_str(), &parameters)?;
     Ok(KnowledgePropertyUpdateOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         node_id: Some(node_id),
         matched: true,
         filtered_out: false,
@@ -8379,7 +8940,7 @@ pub(super) fn update_scoped_knowledge_properties_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.updates.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -8390,8 +8951,8 @@ pub(super) fn update_scoped_knowledge_properties_batch_for(
 
     for update in &request.updates {
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             update.entity.label.as_str(),
             update.entity.external_id.as_str(),
         )?
@@ -8422,8 +8983,8 @@ pub(super) fn update_scoped_knowledge_properties_batch_for(
         }
         if !request.metadata_filters.is_empty()
             && !knowledge_graph_seed_matches_filters(
-                &db.catalog,
-                &db.store,
+                &db.runtime.get().unwrap().catalog,
+                &db.runtime.get().unwrap().store,
                 &seed,
                 &request.metadata_filters,
             )
@@ -8467,7 +9028,7 @@ pub(super) fn update_scoped_knowledge_properties_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (update, node_id) in &eligible_updates {
         let (cypher, parameters) = knowledge_property_update_statement(
             update.entity.label.as_str(),
@@ -8479,7 +9040,7 @@ pub(super) fn update_scoped_knowledge_properties_batch_for(
     tx.commit()?;
     Ok(KnowledgePropertyUpdateBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -8502,7 +9063,7 @@ pub(super) fn move_knowledge_normalized_space_batch_for(
         ));
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.external_ids.len());
     let mut moved_external_ids = Vec::new();
     let mut matched_count = 0;
@@ -8515,8 +9076,8 @@ pub(super) fn move_knowledge_normalized_space_batch_for(
 
     for external_id in &request.external_ids {
         let Some(node) = try_node_by_label_property_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             request.label.as_str(),
             request.identity_property.as_str(),
             external_id.as_str(),
@@ -8616,7 +9177,7 @@ pub(super) fn move_knowledge_normalized_space_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (node_id, assignments) in &eligible_updates {
         let (cypher, parameters) =
             knowledge_property_update_statement(request.label.as_str(), node_id.0, assignments);
@@ -8625,7 +9186,7 @@ pub(super) fn move_knowledge_normalized_space_batch_for(
     tx.commit()?;
     Ok(KnowledgeNormalizedSpaceMoveBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         moved_external_ids,
         matched_count,
@@ -8658,7 +9219,7 @@ pub(super) fn touch_knowledge_memory_access_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.touches.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -8669,8 +9230,8 @@ pub(super) fn touch_knowledge_memory_access_batch_for(
 
     for touch in &request.touches {
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             "Memory",
             &touch.memory_id,
         )?
@@ -8747,7 +9308,7 @@ pub(super) fn touch_knowledge_memory_access_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (node_id, touch) in &eligible_touches {
         let (cypher, parameters) = knowledge_memory_access_touch_statement(*node_id, touch);
         tx.query_with_params(cypher.as_str(), &parameters)?;
@@ -8756,7 +9317,7 @@ pub(super) fn touch_knowledge_memory_access_batch_for(
 
     Ok(KnowledgeMemoryAccessBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -8821,7 +9382,7 @@ pub(super) fn update_knowledge_memory_content_batch_for(
         validate_knowledge_memory_content_update(update)?;
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.updates.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -8834,8 +9395,8 @@ pub(super) fn update_knowledge_memory_content_batch_for(
 
     for update in &request.updates {
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             "Memory",
             &update.memory_id,
         )?
@@ -8911,7 +9472,7 @@ pub(super) fn update_knowledge_memory_content_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (node_id, assignments) in &eligible_updates {
         let (cypher, parameters) =
             knowledge_property_update_statement("Memory", node_id.0, assignments);
@@ -8921,7 +9482,7 @@ pub(super) fn update_knowledge_memory_content_batch_for(
 
     Ok(KnowledgeMemoryContentBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -9021,7 +9582,7 @@ pub(super) fn update_knowledge_memory_metadata_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.updates.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -9034,8 +9595,8 @@ pub(super) fn update_knowledge_memory_metadata_batch_for(
 
     for update in &request.updates {
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             "Memory",
             &update.memory_id,
         )?
@@ -9114,7 +9675,7 @@ pub(super) fn update_knowledge_memory_metadata_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (node_id, assignments) in &eligible_updates {
         let (cypher, parameters) =
             knowledge_property_update_statement("Memory", node_id.0, assignments);
@@ -9124,7 +9685,7 @@ pub(super) fn update_knowledge_memory_metadata_batch_for(
 
     Ok(KnowledgeMemoryMetadataBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -9146,7 +9707,7 @@ pub(super) fn update_knowledge_memory_dedup_reviewed_batch_for(
         ));
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.memory_ids.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -9157,7 +9718,7 @@ pub(super) fn update_knowledge_memory_dedup_reviewed_batch_for(
 
     for memory_id in &request.memory_ids {
         let Some(seed) =
-            try_seed_node_by_label_and_external_id(&db.catalog, &db.store, "Memory", memory_id)?
+            try_seed_node_by_label_and_external_id(&db.runtime.get().unwrap().catalog, &db.runtime.get().unwrap().store, "Memory", memory_id)?
         else {
             missing_count += 1;
             rows.push(KnowledgeMemoryDedupReviewedBatchRow {
@@ -9224,7 +9785,7 @@ pub(super) fn update_knowledge_memory_dedup_reviewed_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (node_id, assignments) in &eligible_updates {
         let (cypher, parameters) =
             knowledge_property_update_statement("Memory", node_id.0, assignments);
@@ -9234,7 +9795,7 @@ pub(super) fn update_knowledge_memory_dedup_reviewed_batch_for(
 
     Ok(KnowledgeMemoryDedupReviewedBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -9253,7 +9814,7 @@ pub(super) fn update_knowledge_memory_decay_refresh_batch_for(
         validate_knowledge_memory_decay_refresh_update(update)?;
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.updates.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -9266,8 +9827,8 @@ pub(super) fn update_knowledge_memory_decay_refresh_batch_for(
 
     for update in &request.updates {
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             "Memory",
             &update.memory_id,
         )?
@@ -9343,7 +9904,7 @@ pub(super) fn update_knowledge_memory_decay_refresh_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (node_id, assignments) in &eligible_updates {
         let (cypher, parameters) =
             knowledge_property_update_statement("Memory", node_id.0, assignments);
@@ -9353,7 +9914,7 @@ pub(super) fn update_knowledge_memory_decay_refresh_batch_for(
 
     Ok(KnowledgeMemoryDecayRefreshBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -9417,7 +9978,7 @@ pub(super) fn adjust_knowledge_source_memory_count_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.adjustments.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -9428,8 +9989,8 @@ pub(super) fn adjust_knowledge_source_memory_count_batch_for(
 
     for adjustment in &request.adjustments {
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             "Source",
             &adjustment.source_id,
         )?
@@ -9513,7 +10074,7 @@ pub(super) fn adjust_knowledge_source_memory_count_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (node_id, adjustment) in &aggregates {
         let (cypher, parameters) =
             knowledge_source_memory_count_set_statement(*node_id, adjustment.new_count);
@@ -9523,7 +10084,7 @@ pub(super) fn adjust_knowledge_source_memory_count_batch_for(
 
     Ok(KnowledgeSourceMemoryCountBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -9601,7 +10162,7 @@ pub(super) fn update_knowledge_source_lifecycle_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.updates.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -9615,8 +10176,8 @@ pub(super) fn update_knowledge_source_lifecycle_batch_for(
 
     for update in &request.updates {
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             "Source",
             &update.source_id,
         )?
@@ -9730,7 +10291,7 @@ pub(super) fn update_knowledge_source_lifecycle_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (node_id, assignments) in &eligible_updates {
         let (cypher, parameters) =
             knowledge_property_update_statement("Source", node_id.0, assignments);
@@ -9740,7 +10301,7 @@ pub(super) fn update_knowledge_source_lifecycle_batch_for(
 
     Ok(KnowledgeSourceLifecycleBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -9765,7 +10326,7 @@ pub(super) fn update_knowledge_source_metadata_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.updates.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -9778,8 +10339,8 @@ pub(super) fn update_knowledge_source_metadata_batch_for(
 
     for update in &request.updates {
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             "Source",
             &update.source_id,
         )?
@@ -9858,7 +10419,7 @@ pub(super) fn update_knowledge_source_metadata_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (node_id, assignments) in &eligible_updates {
         let (cypher, parameters) =
             knowledge_property_update_statement("Source", node_id.0, assignments);
@@ -9868,7 +10429,7 @@ pub(super) fn update_knowledge_source_metadata_batch_for(
 
     Ok(KnowledgeSourceMetadataBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -9904,7 +10465,7 @@ pub(super) fn update_knowledge_source_parsed_metadata_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.updates.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -9917,8 +10478,8 @@ pub(super) fn update_knowledge_source_parsed_metadata_batch_for(
 
     for update in &request.updates {
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             "Source",
             &update.source_id,
         )?
@@ -9994,7 +10555,7 @@ pub(super) fn update_knowledge_source_parsed_metadata_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (node_id, assignments) in &eligible_updates {
         let (cypher, parameters) =
             knowledge_property_update_statement("Source", node_id.0, assignments);
@@ -10004,7 +10565,7 @@ pub(super) fn update_knowledge_source_parsed_metadata_batch_for(
 
     Ok(KnowledgeSourceParsedMetadataBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -10621,7 +11182,7 @@ pub(super) fn update_knowledge_memory_lifecycle_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.updates.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -10634,8 +11195,8 @@ pub(super) fn update_knowledge_memory_lifecycle_batch_for(
 
     for update in &request.updates {
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             "Memory",
             &update.memory_id,
         )?
@@ -10719,7 +11280,7 @@ pub(super) fn update_knowledge_memory_lifecycle_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (node_id, assignments) in &eligible_updates {
         let (cypher, parameters) =
             knowledge_property_update_statement("Memory", node_id.0, assignments);
@@ -10729,7 +11290,7 @@ pub(super) fn update_knowledge_memory_lifecycle_batch_for(
 
     Ok(KnowledgeMemoryLifecycleBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -10753,7 +11314,7 @@ pub(super) fn update_knowledge_memory_latest_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.updates.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -10766,8 +11327,8 @@ pub(super) fn update_knowledge_memory_latest_batch_for(
 
     for update in &request.updates {
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             "Memory",
             &update.memory_id,
         )?
@@ -10855,7 +11416,7 @@ pub(super) fn update_knowledge_memory_latest_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (node_id, assignments) in &eligible_updates {
         let (cypher, parameters) =
             knowledge_property_update_statement("Memory", node_id.0, assignments);
@@ -10865,7 +11426,7 @@ pub(super) fn update_knowledge_memory_latest_batch_for(
 
     Ok(KnowledgeMemoryLatestBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -11021,7 +11582,7 @@ pub(super) fn update_knowledge_skill_usage_stats_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.updates.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -11034,8 +11595,8 @@ pub(super) fn update_knowledge_skill_usage_stats_batch_for(
 
     for update in &request.updates {
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             "Skill",
             &update.skill_id,
         )?
@@ -11122,7 +11683,7 @@ pub(super) fn update_knowledge_skill_usage_stats_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (node_id, assignments) in &eligible_updates {
         let (cypher, parameters) =
             knowledge_property_update_statement("Skill", node_id.0, assignments);
@@ -11132,7 +11693,7 @@ pub(super) fn update_knowledge_skill_usage_stats_batch_for(
 
     Ok(KnowledgeSkillUsageStatsBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -11156,7 +11717,7 @@ pub(super) fn update_knowledge_skill_metadata_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.updates.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -11169,8 +11730,8 @@ pub(super) fn update_knowledge_skill_metadata_batch_for(
 
     for update in &request.updates {
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             "Skill",
             &update.skill_id,
         )?
@@ -11249,7 +11810,7 @@ pub(super) fn update_knowledge_skill_metadata_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (node_id, assignments) in &eligible_updates {
         let (cypher, parameters) =
             knowledge_property_update_statement("Skill", node_id.0, assignments);
@@ -11259,7 +11820,7 @@ pub(super) fn update_knowledge_skill_metadata_batch_for(
 
     Ok(KnowledgeSkillMetadataBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -11371,7 +11932,7 @@ pub(super) fn update_knowledge_skill_lifecycle_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.updates.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -11384,8 +11945,8 @@ pub(super) fn update_knowledge_skill_lifecycle_batch_for(
 
     for update in &request.updates {
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             "Skill",
             &update.skill_id,
         )?
@@ -11461,7 +12022,7 @@ pub(super) fn update_knowledge_skill_lifecycle_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (node_id, assignments) in &eligible_updates {
         let (cypher, parameters) =
             knowledge_property_update_statement("Skill", node_id.0, assignments);
@@ -11471,7 +12032,7 @@ pub(super) fn update_knowledge_skill_lifecycle_batch_for(
 
     Ok(KnowledgeSkillLifecycleBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -11547,7 +12108,7 @@ pub(super) fn update_knowledge_thread_metadata_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.updates.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -11560,8 +12121,8 @@ pub(super) fn update_knowledge_thread_metadata_batch_for(
 
     for update in &request.updates {
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             "Thread",
             &update.thread_id,
         )?
@@ -11640,7 +12201,7 @@ pub(super) fn update_knowledge_thread_metadata_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (node_id, assignments) in &eligible_updates {
         let (cypher, parameters) =
             knowledge_property_update_statement("Thread", node_id.0, assignments);
@@ -11650,7 +12211,7 @@ pub(super) fn update_knowledge_thread_metadata_batch_for(
 
     Ok(KnowledgeThreadMetadataBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -11720,7 +12281,7 @@ pub(super) fn update_knowledge_thread_message_count_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.updates.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -11734,8 +12295,8 @@ pub(super) fn update_knowledge_thread_message_count_batch_for(
 
     for update in &request.updates {
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             "Thread",
             &update.thread_id,
         )?
@@ -11826,7 +12387,7 @@ pub(super) fn update_knowledge_thread_message_count_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (node_id, assignments) in &eligible_updates {
         let (cypher, parameters) =
             knowledge_property_update_statement("Thread", node_id.0, assignments);
@@ -11836,7 +12397,7 @@ pub(super) fn update_knowledge_thread_message_count_batch_for(
 
     Ok(KnowledgeThreadMessageCountBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -11923,8 +12484,8 @@ pub(super) fn delete_knowledge_thread_identities_for(
     db.ensure_writable()?;
     validate_knowledge_thread_identity_delete_request(request)?;
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
-    let deleted_node_ids = thread_identity_delete_candidates(&db.catalog, &db.store, request)?
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
+    let deleted_node_ids = thread_identity_delete_candidates(&db.runtime.get().unwrap().catalog, &db.runtime.get().unwrap().store, request)?
         .into_iter()
         .map(|node| node.id.0)
         .collect::<Vec<_>>();
@@ -11974,7 +12535,7 @@ pub(super) fn delete_knowledge_thread_identities_for(
 
     Ok(KnowledgeThreadIdentityDeleteOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         matched_identity_count,
         deleted_identity_count: deleted_node_ids.len(),
         deleted_node_ids,
@@ -12050,16 +12611,16 @@ pub(super) fn create_knowledge_thread_compaction_link_for(
     db.ensure_writable()?;
     validate_knowledge_thread_compaction_link_request(request)?;
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let thread = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         "Thread",
         request.thread_id.as_str(),
     )?;
     let memory = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         "Memory",
         request.memory_id.as_str(),
     )?;
@@ -12163,10 +12724,10 @@ pub(super) fn delete_knowledge_thread_messages_for(
         ));
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let Some(thread) = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         "Thread",
         &request.thread_id,
     )?
@@ -12183,7 +12744,7 @@ pub(super) fn delete_knowledge_thread_messages_for(
     };
 
     let thread_node_id = thread.id;
-    let message_node_ids = thread_message_node_ids(&db.catalog, &db.store, thread_node_id)?;
+    let message_node_ids = thread_message_node_ids(&db.runtime.get().unwrap().catalog, &db.runtime.get().unwrap().store, thread_node_id)?;
     let matched_relationship_count = message_node_ids.len();
     let deleted_message_count = message_node_ids.into_iter().collect::<BTreeSet<_>>().len();
 
@@ -12209,7 +12770,7 @@ pub(super) fn delete_knowledge_thread_messages_for(
 
     Ok(KnowledgeThreadMessageDeleteOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         thread_id: request.thread_id.clone(),
         thread_node_id: Some(thread_node_id.0),
         found_thread: true,
@@ -12276,7 +12837,7 @@ pub(super) fn update_knowledge_label_lifecycle_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.updates.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -12289,8 +12850,8 @@ pub(super) fn update_knowledge_label_lifecycle_batch_for(
 
     for update in &request.updates {
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             "Label",
             &update.label_id,
         )?
@@ -12366,7 +12927,7 @@ pub(super) fn update_knowledge_label_lifecycle_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (node_id, assignments) in &eligible_updates {
         let (cypher, parameters) =
             knowledge_property_update_statement("Label", node_id.0, assignments);
@@ -12376,7 +12937,7 @@ pub(super) fn update_knowledge_label_lifecycle_batch_for(
 
     Ok(KnowledgeLabelLifecycleBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -12414,10 +12975,10 @@ pub(super) fn delete_knowledge_memory_labels_for(
     db.ensure_writable()?;
     validate_knowledge_memory_label_delete_request(request)?;
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let memory = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         "Memory",
         request.memory_id.as_str(),
     )?;
@@ -12448,7 +13009,7 @@ pub(super) fn delete_knowledge_memory_labels_for(
     let (label_node_id, found_label, relationship_ids) = match request.label_id.as_ref() {
         Some(label_id) => {
             let label =
-                try_seed_node_by_label_and_external_id(&db.catalog, &db.store, "Label", label_id)?;
+                try_seed_node_by_label_and_external_id(&db.runtime.get().unwrap().catalog, &db.runtime.get().unwrap().store, "Label", label_id)?;
             let label_node_id = label.as_ref().map(|node| node.id.0);
             let Some(label) = label else {
                 return Ok(knowledge_memory_label_delete_empty_output(
@@ -12475,13 +13036,13 @@ pub(super) fn delete_knowledge_memory_labels_for(
             (
                 label_node_id,
                 true,
-                memory_label_relationship_ids(&db.catalog, &db.store, memory.id, Some(label.id))?,
+                memory_label_relationship_ids(&db.runtime.get().unwrap().catalog, &db.runtime.get().unwrap().store, memory.id, Some(label.id))?,
             )
         }
         None => (
             None,
             true,
-            memory_label_relationship_ids(&db.catalog, &db.store, memory.id, None)?,
+            memory_label_relationship_ids(&db.runtime.get().unwrap().catalog, &db.runtime.get().unwrap().store, memory.id, None)?,
         ),
     };
 
@@ -12497,7 +13058,7 @@ pub(super) fn delete_knowledge_memory_labels_for(
         ));
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for relationship_id in &relationship_ids {
         tx.query_with_params(
             "MATCH (:Memory)-[r:HAS_LABEL]->(:Label) WHERE id(r) = $relationship_id DELETE r",
@@ -12511,7 +13072,7 @@ pub(super) fn delete_knowledge_memory_labels_for(
 
     Ok(KnowledgeMemoryLabelDeleteOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         memory_id: request.memory_id.clone(),
         label_id: request.label_id.clone(),
         memory_node_id,
@@ -12605,16 +13166,16 @@ pub(super) fn transfer_knowledge_label_memory_edges_for(
     db.ensure_writable()?;
     validate_knowledge_label_memory_transfer_request(request)?;
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let source_label = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         "Label",
         request.source_label_id.as_str(),
     )?;
     let target_label = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         "Label",
         request.target_label_id.as_str(),
     )?;
@@ -12653,7 +13214,7 @@ pub(super) fn transfer_knowledge_label_memory_edges_for(
     }
 
     let memory_candidates =
-        source_label_memory_transfer_candidates(&db.catalog, &db.store, source_label.id)?;
+        source_label_memory_transfer_candidates(&db.runtime.get().unwrap().catalog, &db.runtime.get().unwrap().store, source_label.id)?;
     if memory_candidates.is_empty() {
         return Ok(knowledge_label_memory_transfer_empty_output(
             request,
@@ -12745,7 +13306,7 @@ pub(super) fn transfer_knowledge_label_memory_edges_for(
 
     Ok(KnowledgeLabelMemoryTransferOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         source_label_id: request.source_label_id.clone(),
         target_label_id: request.target_label_id.clone(),
         source_label_node_id,
@@ -12845,16 +13406,16 @@ pub(super) fn transfer_knowledge_memory_label_edges_for(
     db.ensure_writable()?;
     validate_knowledge_memory_label_transfer_request(request)?;
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let older_memory = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         "Memory",
         request.older_memory_id.as_str(),
     )?;
     let newer_memory = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         "Memory",
         request.newer_memory_id.as_str(),
     )?;
@@ -12922,7 +13483,7 @@ pub(super) fn transfer_knowledge_memory_label_edges_for(
     }
 
     let (label_candidates, duplicate_source_edge_count) =
-        memory_label_transfer_candidates(&db.catalog, &db.store, older_memory.id)?;
+        memory_label_transfer_candidates(&db.runtime.get().unwrap().catalog, &db.runtime.get().unwrap().store, older_memory.id)?;
     if label_candidates.is_empty() {
         return Ok(knowledge_memory_label_transfer_empty_output(
             request,
@@ -13019,7 +13580,7 @@ pub(super) fn transfer_knowledge_memory_label_edges_for(
 
     Ok(KnowledgeMemoryLabelTransferOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         older_memory_id: request.older_memory_id.clone(),
         newer_memory_id: request.newer_memory_id.clone(),
         space_id: request.space_id.clone(),
@@ -13148,7 +13709,7 @@ pub(super) fn knowledge_entity_labels_via_query_runtime(
     request: &KnowledgeEntityLabelListRequest,
 ) -> Result<KnowledgeEntityLabelListOutput> {
     validate_knowledge_entity_label_list_request(request)?;
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
     let entities = knowledge_entity_label_entities_via_query_runtime(
         db,
         &request.entity_label,
@@ -13199,7 +13760,7 @@ pub(super) fn knowledge_entity_label_projected_list_via_query_runtime(
     request: &KnowledgeEntityLabelProjectedListRequest,
 ) -> Result<KnowledgeEntityLabelProjectedListOutput> {
     validate_knowledge_entity_label_projected_list_request(request)?;
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
     let entities = knowledge_entity_label_entities_via_query_runtime(
         db,
         &request.list.entity_label,
@@ -13472,7 +14033,7 @@ pub(super) fn update_knowledge_pagerank_scores_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.updates.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -13485,8 +14046,8 @@ pub(super) fn update_knowledge_pagerank_scores_batch_for(
     for update in &request.updates {
         let label = pagerank_label(update.label.as_str());
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             label,
             update.external_id.as_str(),
         )?
@@ -13560,7 +14121,7 @@ pub(super) fn update_knowledge_pagerank_scores_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (label, node_id, assignments) in &eligible_updates {
         let (cypher, parameters) =
             knowledge_property_update_statement(label.as_str(), node_id.0, assignments);
@@ -13570,7 +14131,7 @@ pub(super) fn update_knowledge_pagerank_scores_batch_for(
 
     Ok(KnowledgePageRankScoreBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -13594,7 +14155,7 @@ pub(super) fn clear_knowledge_pagerank_scores_for(
         validate_pagerank_label(label.as_str())?;
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::new();
     let mut candidate_count = 0;
     let mut cleared_count = 0;
@@ -13604,10 +14165,10 @@ pub(super) fn clear_knowledge_pagerank_scores_for(
 
     for requested_label in &request.labels {
         let label = pagerank_label(requested_label.as_str());
-        let Some(label_id) = db.catalog.label_id(label) else {
+        let Some(label_id) = db.runtime.get().unwrap().catalog.label_id(label) else {
             continue;
         };
-        db.store.visit_nodes_owned(Some(label_id), |node| {
+        db.runtime.get().unwrap().store.visit_nodes_owned(Some(label_id), |node| {
             if !seen_node_ids.insert(node.id) {
                 return crate::store::GraphScanControl::Continue;
             }
@@ -13656,7 +14217,7 @@ pub(super) fn clear_knowledge_pagerank_scores_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for (label, node_id, assignments) in &eligible_updates {
         let (cypher, parameters) =
             knowledge_property_update_statement(label.as_str(), node_id.0, assignments);
@@ -13666,7 +14227,7 @@ pub(super) fn clear_knowledge_pagerank_scores_for(
 
     Ok(KnowledgePageRankClearOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         candidate_count,
         cleared_count,
@@ -13708,7 +14269,7 @@ pub(super) fn clear_knowledge_community_assignments_for(
         validate_cypher_identifier(label.as_str(), "node label")?;
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::new();
     let mut candidate_count = 0;
     let mut cleared_count = 0;
@@ -13727,7 +14288,7 @@ pub(super) fn clear_knowledge_community_assignments_for(
         )?;
     } else {
         for label in &request.labels {
-            let Some(label_id) = db.catalog.label_id(label.as_str()) else {
+            let Some(label_id) = db.runtime.get().unwrap().catalog.label_id(label.as_str()) else {
                 continue;
             };
             collect_knowledge_community_assignment_clears(
@@ -13752,7 +14313,7 @@ pub(super) fn clear_knowledge_community_assignments_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for node_id in &eligible_updates {
         let (cypher, parameters) = community_assignment_clear_statement(*node_id);
         tx.query_with_params(cypher.as_str(), &parameters)?;
@@ -13761,7 +14322,7 @@ pub(super) fn clear_knowledge_community_assignments_for(
 
     Ok(KnowledgeCommunityAssignmentClearOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         candidate_count,
         cleared_count,
@@ -13777,7 +14338,7 @@ pub(super) fn collect_knowledge_community_assignment_clears(
     candidate_count: &mut usize,
     cleared_count: &mut usize,
 ) -> Result<()> {
-    db.store.visit_nodes_owned(label_id, |node| {
+    db.runtime.get().unwrap().store.visit_nodes_owned(label_id, |node| {
         if !seen_node_ids.insert(node.id) {
             return crate::store::GraphScanControl::Continue;
         }
@@ -13792,7 +14353,7 @@ pub(super) fn collect_knowledge_community_assignment_clears(
         *cleared_count += 1;
         eligible_updates.push(node.id);
         rows.push(KnowledgeCommunityAssignmentClearRow {
-            labels: node_label_names(&db.catalog, &node),
+            labels: node_label_names(&db.runtime.get().unwrap().catalog, &node),
             external_id: node_external_id(&node),
             node_id: node.id.0,
             cleared: true,
@@ -13821,7 +14382,7 @@ pub(super) fn create_knowledge_community_memberships_batch_for(
         validate_knowledge_community_membership_create(membership)?;
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let creates = request
         .memberships
         .iter()
@@ -13929,7 +14490,7 @@ pub(super) fn knowledge_communities_via_query_runtime(
     let returned_count = rows.len();
 
     Ok(KnowledgeCommunityListOutput {
-        graph_commit_epoch: db.store.commit_epoch(),
+        graph_commit_epoch: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         returned_count,
@@ -13967,7 +14528,7 @@ pub(super) fn knowledge_community_via_query_runtime(
         .map(|community| knowledge_community_row_from_entity(&community));
     let found = row.is_some();
     Ok(KnowledgeCommunityOutput {
-        graph_commit_epoch: db.store.commit_epoch(),
+        graph_commit_epoch: db.runtime.get().unwrap().store.commit_epoch(),
         row,
         found,
     })
@@ -14047,7 +14608,7 @@ pub(super) fn update_knowledge_communities_batch_for(
         validate_knowledge_community_summary_update(update)?;
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut create_rows = Vec::with_capacity(request.creates.len());
     let mut summary_update_rows = Vec::with_capacity(request.summary_updates.len());
     let mut created_count = 0;
@@ -14064,7 +14625,7 @@ pub(super) fn update_knowledge_communities_batch_for(
 
     for create in &request.creates {
         if let Some(existing) =
-            try_seed_node_by_label_and_external_id(&db.catalog, &db.store, "Community", &create.id)?
+            try_seed_node_by_label_and_external_id(&db.runtime.get().unwrap().catalog, &db.runtime.get().unwrap().store, "Community", &create.id)?
         {
             already_exists_count += 1;
             create_rows.push(KnowledgeCommunityCreateBatchRow {
@@ -14101,8 +14662,8 @@ pub(super) fn update_knowledge_communities_batch_for(
 
     for update in &request.summary_updates {
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             "Community",
             &update.id,
         )?
@@ -14183,7 +14744,7 @@ pub(super) fn update_knowledge_communities_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for create in &eligible_creates {
         let (cypher, parameters) = knowledge_entity_create_statement(create);
         tx.query_with_params(cypher.as_str(), &parameters)?;
@@ -14197,8 +14758,8 @@ pub(super) fn update_knowledge_communities_batch_for(
     for row in &mut create_rows {
         if row.created {
             row.node_id = try_seed_node_by_label_and_external_id(
-                &db.catalog,
-                &db.store,
+                &db.runtime.get().unwrap().catalog,
+                &db.runtime.get().unwrap().store,
                 "Community",
                 &row.id,
             )?
@@ -14208,7 +14769,7 @@ pub(super) fn update_knowledge_communities_batch_for(
 
     Ok(KnowledgeCommunityLifecycleBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         create_rows,
         summary_update_rows,
         created_count,
@@ -14323,8 +14884,8 @@ pub(super) fn delete_knowledge_communities_for(
     request: &KnowledgeCommunityCleanupRequest,
 ) -> Result<KnowledgeCommunityCleanupOutput> {
     db.ensure_writable()?;
-    let graph_commit_epoch_before = db.store.commit_epoch();
-    let Some(label_id) = db.catalog.label_id("Community") else {
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
+    let Some(label_id) = db.runtime.get().unwrap().catalog.label_id("Community") else {
         return Ok(KnowledgeCommunityCleanupOutput {
             graph_commit_epoch_before,
             graph_commit_epoch_after: graph_commit_epoch_before,
@@ -14335,7 +14896,7 @@ pub(super) fn delete_knowledge_communities_for(
     };
 
     let mut rows = Vec::new();
-    db.store.visit_nodes_owned(Some(label_id), |node| {
+    db.runtime.get().unwrap().store.visit_nodes_owned(Some(label_id), |node| {
         rows.push(KnowledgeCommunityCleanupRow {
             id: node_external_id(&node),
             node_id: node.id.0,
@@ -14355,7 +14916,7 @@ pub(super) fn delete_knowledge_communities_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for row in &rows {
         let (cypher, parameters) =
             knowledge_community_cleanup_statement(NodeId(row.node_id), request.detach)?;
@@ -14366,7 +14927,7 @@ pub(super) fn delete_knowledge_communities_for(
 
     Ok(KnowledgeCommunityCleanupOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         candidate_count: rows.len(),
         rows,
         deleted_count,
@@ -14392,10 +14953,10 @@ pub(super) fn delete_knowledge_graph_meta_for(
 ) -> Result<KnowledgeGraphMetaDeleteOutput> {
     db.ensure_writable()?;
     validate_graph_meta_request(request)?;
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let Some(node_id) = try_node_by_label_property_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         "GraphMeta",
         "meta_id",
         &request.meta_id,
@@ -14411,13 +14972,13 @@ pub(super) fn delete_knowledge_graph_meta_for(
     };
 
     let (cypher, parameters) = knowledge_graph_meta_delete_statement(node_id)?;
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     tx.query_with_params(cypher.as_str(), &parameters)?;
     tx.commit()?;
 
     Ok(KnowledgeGraphMetaDeleteOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         node_id: Some(node_id.0),
         matched: true,
         deleted: true,
@@ -14470,7 +15031,7 @@ pub(super) fn stamp_knowledge_graph_meta_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.stamps.len());
     let mut created_count = 0;
     let mut updated_count = 0;
@@ -14494,8 +15055,8 @@ pub(super) fn stamp_knowledge_graph_meta_batch_for(
         }
 
         let existing = try_node_by_label_property_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             "GraphMeta",
             "meta_id",
             stamp.meta_id.as_str(),
@@ -14548,7 +15109,7 @@ pub(super) fn stamp_knowledge_graph_meta_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for operation in &eligible_stamps {
         let (cypher, parameters) = graph_meta_stamp_statement(operation);
         tx.query_with_params(cypher.as_str(), &parameters)?;
@@ -14558,8 +15119,8 @@ pub(super) fn stamp_knowledge_graph_meta_batch_for(
     for row in &mut rows {
         if row.created {
             row.node_id = try_node_by_label_property_external_id(
-                &db.catalog,
-                &db.store,
+                &db.runtime.get().unwrap().catalog,
+                &db.runtime.get().unwrap().store,
                 "GraphMeta",
                 "meta_id",
                 row.meta_id.as_str(),
@@ -14570,7 +15131,7 @@ pub(super) fn stamp_knowledge_graph_meta_batch_for(
 
     Ok(KnowledgeGraphMetaStampBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         created_count,
         updated_count,
@@ -14634,7 +15195,7 @@ pub(super) fn apply_knowledge_schema_migrations_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.migrations.len());
     let mut created_count = 0;
     let mut already_applied_count = 0;
@@ -14644,8 +15205,8 @@ pub(super) fn apply_knowledge_schema_migrations_batch_for(
 
     for migration in &request.migrations {
         let existing = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             "SchemaMigrationLog",
             migration.migration_id.as_str(),
         )?;
@@ -14699,7 +15260,7 @@ pub(super) fn apply_knowledge_schema_migrations_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for create in &eligible_creates {
         let (cypher, parameters) = knowledge_entity_create_statement(create);
         tx.query_with_params(cypher.as_str(), &parameters)?;
@@ -14709,8 +15270,8 @@ pub(super) fn apply_knowledge_schema_migrations_batch_for(
     for row in &mut rows {
         if row.created {
             row.node_id = try_seed_node_by_label_and_external_id(
-                &db.catalog,
-                &db.store,
+                &db.runtime.get().unwrap().catalog,
+                &db.runtime.get().unwrap().store,
                 "SchemaMigrationLog",
                 row.migration_id.as_str(),
             )?
@@ -14720,7 +15281,7 @@ pub(super) fn apply_knowledge_schema_migrations_batch_for(
 
     Ok(KnowledgeSchemaMigrationApplyBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         created_count,
         already_applied_count,
@@ -14737,7 +15298,7 @@ pub(super) fn update_knowledge_augmentation_jobs_batch_for(
         validate_augmentation_job_lifecycle_update(update)?;
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.updates.len());
     let mut created_count = 0;
     let mut updated_count = 0;
@@ -14769,8 +15330,8 @@ pub(super) fn update_knowledge_augmentation_jobs_batch_for(
         match &update.transition {
             KnowledgeAugmentationJobLifecycleTransition::Create { .. } => {
                 if let Some(existing) = try_node_by_label_property_external_id(
-                    &db.catalog,
-                    &db.store,
+                    &db.runtime.get().unwrap().catalog,
+                    &db.runtime.get().unwrap().store,
                     "AugmentationJob",
                     "job_id",
                     update.job_id.as_str(),
@@ -14811,8 +15372,8 @@ pub(super) fn update_knowledge_augmentation_jobs_batch_for(
             }
             _ => {
                 let Some(existing) = try_node_by_label_property_external_id(
-                    &db.catalog,
-                    &db.store,
+                    &db.runtime.get().unwrap().catalog,
+                    &db.runtime.get().unwrap().store,
                     "AugmentationJob",
                     "job_id",
                     update.job_id.as_str(),
@@ -14888,7 +15449,7 @@ pub(super) fn update_knowledge_augmentation_jobs_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for operation in &eligible_operations {
         let (cypher, parameters) = augmentation_job_lifecycle_statement(operation);
         tx.query_with_params(cypher.as_str(), &parameters)?;
@@ -14898,8 +15459,8 @@ pub(super) fn update_knowledge_augmentation_jobs_batch_for(
     for row in &mut rows {
         if row.created {
             row.node_id = try_node_by_label_property_external_id(
-                &db.catalog,
-                &db.store,
+                &db.runtime.get().unwrap().catalog,
+                &db.runtime.get().unwrap().store,
                 "AugmentationJob",
                 "job_id",
                 row.job_id.as_str(),
@@ -14910,7 +15471,7 @@ pub(super) fn update_knowledge_augmentation_jobs_batch_for(
 
     Ok(KnowledgeAugmentationJobLifecycleBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         created_count,
         updated_count,
@@ -15147,8 +15708,8 @@ pub(super) fn interrupt_knowledge_augmentation_jobs_for(
         ));
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
-    let Some(label_id) = db.catalog.label_id("AugmentationJob") else {
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
+    let Some(label_id) = db.runtime.get().unwrap().catalog.label_id("AugmentationJob") else {
         return Ok(KnowledgeAugmentationJobInterruptOutput {
             graph_commit_epoch_before,
             graph_commit_epoch_after: graph_commit_epoch_before,
@@ -15160,7 +15721,7 @@ pub(super) fn interrupt_knowledge_augmentation_jobs_for(
     };
 
     let mut rows = Vec::new();
-    db.store.visit_nodes_owned(Some(label_id), |node| {
+    db.runtime.get().unwrap().store.visit_nodes_owned(Some(label_id), |node| {
         if let Some(previous_status) = augmentation_job_status(&node)
             && matches!(previous_status.as_str(), "pending" | "running")
         {
@@ -15203,7 +15764,7 @@ pub(super) fn interrupt_knowledge_augmentation_jobs_for(
         ),
         ("completed_at".to_string(), request.completed_at.clone()),
     ]);
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for row in &rows {
         let (cypher, parameters) =
             knowledge_property_update_statement("AugmentationJob", row.node_id, &assignments);
@@ -15218,7 +15779,7 @@ pub(super) fn interrupt_knowledge_augmentation_jobs_for(
 
     Ok(KnowledgeAugmentationJobInterruptOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         candidate_count: rows.len(),
         rows,
         interrupted_count,
@@ -15246,10 +15807,10 @@ pub(super) fn delete_scoped_knowledge_entity_for(
     db.ensure_writable()?;
     validate_cypher_identifier(&request.delete.entity.label, "label")?;
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let Some(seed) = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         request.delete.entity.label.as_str(),
         request.delete.entity.external_id.as_str(),
     )?
@@ -15276,8 +15837,8 @@ pub(super) fn delete_scoped_knowledge_entity_for(
     }
     if !request.metadata_filters.is_empty()
         && !knowledge_graph_seed_matches_filters(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             &seed,
             &request.metadata_filters,
         )
@@ -15304,7 +15865,7 @@ pub(super) fn delete_scoped_knowledge_entity_for(
     let deleted_node_count = output.rows.len();
     Ok(KnowledgeEntityDeleteOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         node_id: Some(node_id),
         matched: deleted_node_count > 0,
         filtered_out: false,
@@ -15332,7 +15893,7 @@ pub(super) fn delete_scoped_knowledge_entity_batch_for(
     db.ensure_writable()?;
     validate_cypher_identifier(&request.delete.label, "label")?;
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.delete.external_ids.len());
     let mut matched_count = 0;
     let mut missing_count = 0;
@@ -15343,8 +15904,8 @@ pub(super) fn delete_scoped_knowledge_entity_batch_for(
 
     for external_id in &request.delete.external_ids {
         let Some(seed) = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             request.delete.label.as_str(),
             external_id.as_str(),
         )?
@@ -15373,8 +15934,8 @@ pub(super) fn delete_scoped_knowledge_entity_batch_for(
         }
         if !request.metadata_filters.is_empty()
             && !knowledge_graph_seed_matches_filters(
-                &db.catalog,
-                &db.store,
+                &db.runtime.get().unwrap().catalog,
+                &db.runtime.get().unwrap().store,
                 &seed,
                 &request.metadata_filters,
             )
@@ -15433,7 +15994,7 @@ pub(super) fn delete_scoped_knowledge_entity_batch_for(
     let deleted_node_count = output.rows.len();
     Ok(KnowledgeEntityDeleteBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_count,
@@ -15469,16 +16030,16 @@ pub(super) fn create_scoped_knowledge_relationship_for(
         validate_cypher_identifier(property, "relationship property")?;
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let source = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         request.create.source.label.as_str(),
         request.create.source.external_id.as_str(),
     )?;
     let target = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         request.create.target.label.as_str(),
         request.create.target.external_id.as_str(),
     )?;
@@ -15513,15 +16074,15 @@ pub(super) fn create_scoped_knowledge_relationship_for(
 
     let source_filtered_out = !request.source_metadata_filters.is_empty()
         && !knowledge_graph_seed_matches_filters(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             &source,
             &request.source_metadata_filters,
         );
     let target_filtered_out = !request.target_metadata_filters.is_empty()
         && !knowledge_graph_seed_matches_filters(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             &target,
             &request.target_metadata_filters,
         );
@@ -15542,7 +16103,7 @@ pub(super) fn create_scoped_knowledge_relationship_for(
     db.query_with_params(cypher.as_str(), &parameters)?;
     Ok(KnowledgeRelationshipCreateOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         source_node_id,
         target_node_id,
         matched: true,
@@ -15613,7 +16174,7 @@ pub(super) fn create_scoped_knowledge_relationship_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.creates.len());
     let mut matched_count = 0;
     let mut missing_endpoint_count = 0;
@@ -15624,14 +16185,14 @@ pub(super) fn create_scoped_knowledge_relationship_batch_for(
 
     for create in &request.creates {
         let source = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             create.source.label.as_str(),
             create.source.external_id.as_str(),
         )?;
         let target = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             create.target.label.as_str(),
             create.target.external_id.as_str(),
         )?;
@@ -15672,15 +16233,15 @@ pub(super) fn create_scoped_knowledge_relationship_batch_for(
 
         let source_filtered_out = !request.source_metadata_filters.is_empty()
             && !knowledge_graph_seed_matches_filters(
-                &db.catalog,
-                &db.store,
+                &db.runtime.get().unwrap().catalog,
+                &db.runtime.get().unwrap().store,
                 &source,
                 &request.source_metadata_filters,
             );
         let target_filtered_out = !request.target_metadata_filters.is_empty()
             && !knowledge_graph_seed_matches_filters(
-                &db.catalog,
-                &db.store,
+                &db.runtime.get().unwrap().catalog,
+                &db.runtime.get().unwrap().store,
                 &target,
                 &request.target_metadata_filters,
             );
@@ -15734,7 +16295,7 @@ pub(super) fn create_scoped_knowledge_relationship_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for create in &eligible_creates {
         let (cypher, parameters) = knowledge_relationship_create_statement(create);
         tx.query_with_params(cypher.as_str(), &parameters)?;
@@ -15743,7 +16304,7 @@ pub(super) fn create_scoped_knowledge_relationship_batch_for(
     let created_relationship_count = output.rows.len();
     Ok(KnowledgeRelationshipCreateBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_endpoint_count,
@@ -15775,16 +16336,16 @@ pub(super) fn upsert_scoped_knowledge_relationship_for(
     db.ensure_writable()?;
     validate_knowledge_relationship_upsert(&request.upsert)?;
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let source = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         request.upsert.source.label.as_str(),
         request.upsert.source.external_id.as_str(),
     )?;
     let target = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         request.upsert.target.label.as_str(),
         request.upsert.target.external_id.as_str(),
     )?;
@@ -15827,15 +16388,15 @@ pub(super) fn upsert_scoped_knowledge_relationship_for(
 
     let source_filtered_out = !request.source_metadata_filters.is_empty()
         && !knowledge_graph_seed_matches_filters(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             &source,
             &request.source_metadata_filters,
         );
     let target_filtered_out = !request.target_metadata_filters.is_empty()
         && !knowledge_graph_seed_matches_filters(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             &target,
             &request.target_metadata_filters,
         );
@@ -15859,8 +16420,8 @@ pub(super) fn upsert_scoped_knowledge_relationship_for(
     let source_id = source.id;
     let target_id = target.id;
     if let Some(relationship_id) = existing_knowledge_relationship_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         source_id,
         target_id,
         request.upsert.relationship_type.as_str(),
@@ -15885,15 +16446,15 @@ pub(super) fn upsert_scoped_knowledge_relationship_for(
     let (cypher, parameters) = knowledge_relationship_create_statement(&create);
     let output = db.query_with_params(cypher.as_str(), &parameters)?;
     let relationship_id = existing_knowledge_relationship_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         source_id,
         target_id,
         request.upsert.relationship_type.as_str(),
     )?;
     Ok(KnowledgeRelationshipUpsertOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         source_node_id,
         target_node_id,
         relationship_id,
@@ -15930,7 +16491,7 @@ pub(super) fn upsert_scoped_knowledge_relationship_batch_for(
         validate_knowledge_relationship_upsert(upsert)?;
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.upserts.len());
     let mut matched_count = 0;
     let mut created_count = 0;
@@ -15944,14 +16505,14 @@ pub(super) fn upsert_scoped_knowledge_relationship_batch_for(
 
     for upsert in &request.upserts {
         let source = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             upsert.source.label.as_str(),
             upsert.source.external_id.as_str(),
         )?;
         let target = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             upsert.target.label.as_str(),
             upsert.target.external_id.as_str(),
         )?;
@@ -15998,15 +16559,15 @@ pub(super) fn upsert_scoped_knowledge_relationship_batch_for(
 
         let source_filtered_out = !request.source_metadata_filters.is_empty()
             && !knowledge_graph_seed_matches_filters(
-                &db.catalog,
-                &db.store,
+                &db.runtime.get().unwrap().catalog,
+                &db.runtime.get().unwrap().store,
                 &source,
                 &request.source_metadata_filters,
             );
         let target_filtered_out = !request.target_metadata_filters.is_empty()
             && !knowledge_graph_seed_matches_filters(
-                &db.catalog,
-                &db.store,
+                &db.runtime.get().unwrap().catalog,
+                &db.runtime.get().unwrap().store,
                 &target,
                 &request.target_metadata_filters,
             );
@@ -16036,8 +16597,8 @@ pub(super) fn upsert_scoped_knowledge_relationship_batch_for(
 
         matched_count += 1;
         if let Some(relationship_id) = existing_knowledge_relationship_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             source.id,
             target.id,
             upsert.relationship_type.as_str(),
@@ -16114,7 +16675,7 @@ pub(super) fn upsert_scoped_knowledge_relationship_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for create in &eligible_creates {
         let (cypher, parameters) = knowledge_relationship_create_statement(create);
         tx.query_with_params(cypher.as_str(), &parameters)?;
@@ -16126,8 +16687,8 @@ pub(super) fn upsert_scoped_knowledge_relationship_batch_for(
                 (row.source_node_id, row.target_node_id)
         {
             row.relationship_id = existing_knowledge_relationship_id(
-                &db.catalog,
-                &db.store,
+                &db.runtime.get().unwrap().catalog,
+                &db.runtime.get().unwrap().store,
                 NodeId(source_node_id),
                 NodeId(target_node_id),
                 row.relationship_type.as_str(),
@@ -16136,7 +16697,7 @@ pub(super) fn upsert_scoped_knowledge_relationship_batch_for(
     }
     Ok(KnowledgeRelationshipUpsertBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         created_count,
@@ -16225,16 +16786,16 @@ pub(super) fn delete_scoped_knowledge_relationship_for(
         validate_cypher_identifier(property, "relationship property")?;
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let source = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         request.delete.source.label.as_str(),
         request.delete.source.external_id.as_str(),
     )?;
     let target = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         request.delete.target.label.as_str(),
         request.delete.target.external_id.as_str(),
     )?;
@@ -16269,15 +16830,15 @@ pub(super) fn delete_scoped_knowledge_relationship_for(
 
     let source_filtered_out = !request.source_metadata_filters.is_empty()
         && !knowledge_graph_seed_matches_filters(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             &source,
             &request.source_metadata_filters,
         );
     let target_filtered_out = !request.target_metadata_filters.is_empty()
         && !knowledge_graph_seed_matches_filters(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             &target,
             &request.target_metadata_filters,
         );
@@ -16299,7 +16860,7 @@ pub(super) fn delete_scoped_knowledge_relationship_for(
     let deleted_relationship_count = output.rows.len();
     Ok(KnowledgeRelationshipDeleteOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         source_node_id,
         target_node_id,
         matched: deleted_relationship_count > 0,
@@ -16366,16 +16927,16 @@ pub(super) fn update_scoped_knowledge_relationship_for(
     db.ensure_writable()?;
     validate_knowledge_relationship_update(&request.update)?;
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let source = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         request.update.source.label.as_str(),
         request.update.source.external_id.as_str(),
     )?;
     let target = try_seed_node_by_label_and_external_id(
-        &db.catalog,
-        &db.store,
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
         request.update.target.label.as_str(),
         request.update.target.external_id.as_str(),
     )?;
@@ -16412,15 +16973,15 @@ pub(super) fn update_scoped_knowledge_relationship_for(
 
     let source_filtered_out = !request.source_metadata_filters.is_empty()
         && !knowledge_graph_seed_matches_filters(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             &source,
             &request.source_metadata_filters,
         );
     let target_filtered_out = !request.target_metadata_filters.is_empty()
         && !knowledge_graph_seed_matches_filters(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             &target,
             &request.target_metadata_filters,
         );
@@ -16443,7 +17004,7 @@ pub(super) fn update_scoped_knowledge_relationship_for(
     let updated_relationship_count = output.rows.len();
     Ok(KnowledgeRelationshipUpdateOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         source_node_id,
         target_node_id,
         matched: updated_relationship_count > 0,
@@ -16477,7 +17038,7 @@ pub(super) fn update_scoped_knowledge_relationship_batch_for(
         validate_knowledge_relationship_update(update)?;
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.updates.len());
     let mut matched_count = 0;
     let mut missing_endpoint_count = 0;
@@ -16489,14 +17050,14 @@ pub(super) fn update_scoped_knowledge_relationship_batch_for(
 
     for update in &request.updates {
         let source = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             update.source.label.as_str(),
             update.source.external_id.as_str(),
         )?;
         let target = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             update.target.label.as_str(),
             update.target.external_id.as_str(),
         )?;
@@ -16539,15 +17100,15 @@ pub(super) fn update_scoped_knowledge_relationship_batch_for(
 
         let source_filtered_out = !request.source_metadata_filters.is_empty()
             && !knowledge_graph_seed_matches_filters(
-                &db.catalog,
-                &db.store,
+                &db.runtime.get().unwrap().catalog,
+                &db.runtime.get().unwrap().store,
                 &source,
                 &request.source_metadata_filters,
             );
         let target_filtered_out = !request.target_metadata_filters.is_empty()
             && !knowledge_graph_seed_matches_filters(
-                &db.catalog,
-                &db.store,
+                &db.runtime.get().unwrap().catalog,
+                &db.runtime.get().unwrap().store,
                 &target,
                 &request.target_metadata_filters,
             );
@@ -16606,7 +17167,7 @@ pub(super) fn update_scoped_knowledge_relationship_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for update in &eligible_updates {
         let (cypher, parameters) = knowledge_relationship_update_statement(update);
         tx.query_with_params(cypher.as_str(), &parameters)?;
@@ -16615,7 +17176,7 @@ pub(super) fn update_scoped_knowledge_relationship_batch_for(
     let updated_relationship_count = output.rows.len();
     Ok(KnowledgeRelationshipUpdateBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_endpoint_count,
@@ -16719,7 +17280,7 @@ pub(super) fn delete_scoped_knowledge_relationship_batch_for(
         }
     }
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let mut rows = Vec::with_capacity(request.deletes.len());
     let mut matched_count = 0;
     let mut missing_endpoint_count = 0;
@@ -16730,14 +17291,14 @@ pub(super) fn delete_scoped_knowledge_relationship_batch_for(
 
     for delete in &request.deletes {
         let source = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             delete.source.label.as_str(),
             delete.source.external_id.as_str(),
         )?;
         let target = try_seed_node_by_label_and_external_id(
-            &db.catalog,
-            &db.store,
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
             delete.target.label.as_str(),
             delete.target.external_id.as_str(),
         )?;
@@ -16778,15 +17339,15 @@ pub(super) fn delete_scoped_knowledge_relationship_batch_for(
 
         let source_filtered_out = !request.source_metadata_filters.is_empty()
             && !knowledge_graph_seed_matches_filters(
-                &db.catalog,
-                &db.store,
+                &db.runtime.get().unwrap().catalog,
+                &db.runtime.get().unwrap().store,
                 &source,
                 &request.source_metadata_filters,
             );
         let target_filtered_out = !request.target_metadata_filters.is_empty()
             && !knowledge_graph_seed_matches_filters(
-                &db.catalog,
-                &db.store,
+                &db.runtime.get().unwrap().catalog,
+                &db.runtime.get().unwrap().store,
                 &target,
                 &request.target_metadata_filters,
             );
@@ -16840,7 +17401,7 @@ pub(super) fn delete_scoped_knowledge_relationship_batch_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for delete in &eligible_deletes {
         let (cypher, parameters) = knowledge_relationship_delete_statement(delete);
         tx.query_with_params(cypher.as_str(), &parameters)?;
@@ -16849,7 +17410,7 @@ pub(super) fn delete_scoped_knowledge_relationship_batch_for(
     let deleted_relationship_count = output.rows.len();
     Ok(KnowledgeRelationshipDeleteBatchOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         rows,
         matched_count,
         missing_endpoint_count,
@@ -16887,8 +17448,8 @@ pub(super) fn delete_knowledge_source_reference_relationships_for(
         "source-reference relationship cleanup",
     )?;
 
-    let graph_commit_epoch_before = db.store.commit_epoch();
-    let Some(rel_type_id) = db.catalog.rel_type_id("RELATES_TO") else {
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
+    let Some(rel_type_id) = db.runtime.get().unwrap().catalog.rel_type_id("RELATES_TO") else {
         return Ok(KnowledgeSourceReferenceRelationshipCleanupOutput {
             graph_commit_epoch_before,
             graph_commit_epoch_after: graph_commit_epoch_before,
@@ -16899,7 +17460,7 @@ pub(super) fn delete_knowledge_source_reference_relationships_for(
     };
 
     let mut candidates = Vec::new();
-    db.store
+    db.runtime.get().unwrap().store
         .try_visit_relationships_owned(Some(rel_type_id), |relationship| {
             if relationship
                 .properties
@@ -16911,12 +17472,12 @@ pub(super) fn delete_knowledge_source_reference_relationships_for(
                     source_node_id: relationship.source.0,
                     target_node_id: relationship.target.0,
                     source_external_id: db
-                        .store
+                        .runtime.get().unwrap().store
                         .node_owned(relationship.source)?
                         .as_ref()
                         .and_then(node_external_id),
                     target_external_id: db
-                        .store
+                        .runtime.get().unwrap().store
                         .node_owned(relationship.target)?
                         .as_ref()
                         .and_then(node_external_id),
@@ -16936,7 +17497,7 @@ pub(super) fn delete_knowledge_source_reference_relationships_for(
         });
     }
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for candidate in &candidates {
         let (cypher, parameters) =
             knowledge_source_reference_relationship_delete_statement(candidate.relationship_id)?;
@@ -16958,7 +17519,7 @@ pub(super) fn delete_knowledge_source_reference_relationships_for(
 
     Ok(KnowledgeSourceReferenceRelationshipCleanupOutput {
         graph_commit_epoch_before,
-        graph_commit_epoch_after: db.store.commit_epoch(),
+        graph_commit_epoch_after: db.runtime.get().unwrap().store.commit_epoch(),
         candidate_count: rows.len(),
         rows,
         deleted_relationship_count,
@@ -17027,7 +17588,7 @@ fn knowledge_scoped_neighbors_via_query_runtime(
     request: &KnowledgeScopedNeighborsRequest,
 ) -> Result<KnowledgeNeighborsOutput> {
     let navigation = &request.navigation;
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
     let seed_request = KnowledgeEntityRequest {
         label: navigation.label.clone(),
         external_id: navigation.external_id.clone(),
@@ -17096,7 +17657,7 @@ fn knowledge_scoped_neighbors_via_query_runtime(
     }
 
     let relationship_type_name = match navigation.relationship_type.as_deref() {
-        Some(name) => match db.catalog.rel_type_id(name) {
+        Some(name) => match db.runtime.get().unwrap().catalog.rel_type_id(name) {
             Some(_) => {
                 validate_cypher_identifier(name, "relationship type")?;
                 Some(name.to_string())
@@ -17259,14 +17820,15 @@ fn knowledge_scoped_relationships_via_query_runtime(
     request: &KnowledgeScopedRelationshipsRequest,
 ) -> Result<KnowledgeRelationshipsOutput> {
     let relationship_type_name = match request.relationships.relationship_type.as_deref() {
-        Some(name) => match db.catalog.rel_type_id(name) {
+        Some(name) => match db.runtime.get().unwrap().catalog.rel_type_id(name) {
             Some(_) => {
                 validate_cypher_identifier(name, "relationship type")?;
                 Some(name.to_string())
             }
             None => {
                 return Ok(knowledge_empty_relationship_groups_for_missing_type(
-                    &db.store, request,
+                    &db.runtime.get().unwrap().store,
+                    request,
                 ));
             }
         },
@@ -17324,7 +17886,7 @@ fn knowledge_scoped_relationships_via_query_runtime(
     }
 
     Ok(KnowledgeRelationshipsOutput {
-        graph_commit_epoch: db.store.commit_epoch(),
+        graph_commit_epoch: db.runtime.get().unwrap().store.commit_epoch(),
         groups,
         relationship_type_found: true,
         found_seed_count,
@@ -17340,7 +17902,14 @@ fn knowledge_relationship_seed_via_query_runtime(
     seed: &KnowledgeEntityRequest,
 ) -> Result<Option<KnowledgeEntity>> {
     validate_cypher_identifier(&seed.label, "seed label")?;
-    if db.catalog.label_id(&seed.label).is_none() {
+    if db
+        .runtime
+        .get()
+        .unwrap()
+        .catalog
+        .label_id(&seed.label)
+        .is_none()
+    {
         return Ok(None);
     }
     let query = format!(
@@ -17385,11 +17954,12 @@ fn knowledge_relationship_rows_via_query_runtime(
     Vec<KnowledgeFanoutReasonDetail>,
 )> {
     let mut fanout_reason_details = Vec::new();
-    let relationship_type = relationship_type_name.and_then(|name| db.catalog.rel_type_id(name));
+    let relationship_type =
+        relationship_type_name.and_then(|name| db.runtime.get().unwrap().catalog.rel_type_id(name));
     record_dense_adjacency_diagnostics(
         DenseAdjacencyDiagnosticContext {
-            catalog: &db.catalog,
-            store: &db.store,
+            catalog: &db.runtime.get().unwrap().catalog,
+            store: &db.runtime.get().unwrap().store,
             operation: "knowledge_neighbors",
             relationship_type,
             requested_direction: direction,
@@ -17622,7 +18192,7 @@ fn knowledge_scoped_paths_via_query_runtime(
 ) -> Result<KnowledgePathOutput> {
     let navigation = &request.navigation;
 
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
     let source_request = KnowledgeEntityRequest {
         label: navigation.source_label.clone(),
         external_id: navigation.source_external_id.clone(),
@@ -17756,7 +18326,7 @@ fn knowledge_scoped_paths_via_query_runtime(
     }
 
     let relationship_type_name = match navigation.relationship_type.as_deref() {
-        Some(name) => match db.catalog.rel_type_id(name) {
+        Some(name) => match db.runtime.get().unwrap().catalog.rel_type_id(name) {
             Some(_) => {
                 validate_cypher_identifier(name, "relationship type")?;
                 Some(name.to_string())
@@ -17852,7 +18422,8 @@ fn expand_knowledge_paths_via_query_runtime(
     max_hops: usize,
     limit: usize,
 ) -> Result<(Vec<KnowledgeGraphPath>, Vec<KnowledgeFanoutReasonDetail>)> {
-    let relationship_type = relationship_type_name.and_then(|name| db.catalog.rel_type_id(name));
+    let relationship_type =
+        relationship_type_name.and_then(|name| db.runtime.get().unwrap().catalog.rel_type_id(name));
     let mut paths = Vec::new();
     let mut fanout_reason_details = Vec::new();
     let mut reported_dense_groups = BTreeSet::new();
@@ -17868,8 +18439,8 @@ fn expand_knowledge_paths_via_query_runtime(
         }
         record_dense_adjacency_diagnostics(
             DenseAdjacencyDiagnosticContext {
-                catalog: &db.catalog,
-                store: &db.store,
+                catalog: &db.runtime.get().unwrap().catalog,
+                store: &db.runtime.get().unwrap().store,
                 operation: "knowledge_paths",
                 relationship_type,
                 requested_direction: direction,
@@ -18029,7 +18600,7 @@ fn knowledge_scoped_subgraph_via_query_runtime(
 ) -> Result<KnowledgeSubgraphOutput> {
     let navigation = &request.navigation;
 
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
     let seed_request = KnowledgeEntityRequest {
         label: navigation.label.clone(),
         external_id: navigation.external_id.clone(),
@@ -18100,7 +18671,7 @@ fn knowledge_scoped_subgraph_via_query_runtime(
     }
 
     let relationship_type_name = match navigation.relationship_type.as_deref() {
-        Some(name) => match db.catalog.rel_type_id(name) {
+        Some(name) => match db.runtime.get().unwrap().catalog.rel_type_id(name) {
             Some(_) => {
                 validate_cypher_identifier(name, "relationship type")?;
                 Some(name.to_string())
@@ -18207,7 +18778,8 @@ fn expand_knowledge_subgraph_via_query_runtime(
     nodes.push(seed.clone());
     seen_nodes.insert(seed.node_id);
 
-    let relationship_type = relationship_type_name.and_then(|name| db.catalog.rel_type_id(name));
+    let relationship_type =
+        relationship_type_name.and_then(|name| db.runtime.get().unwrap().catalog.rel_type_id(name));
 
     while let Some((current_node, depth)) = frontier.pop_front() {
         if depth >= max_hops {
@@ -18215,8 +18787,8 @@ fn expand_knowledge_subgraph_via_query_runtime(
         }
         record_dense_adjacency_diagnostics(
             DenseAdjacencyDiagnosticContext {
-                catalog: &db.catalog,
-                store: &db.store,
+                catalog: &db.runtime.get().unwrap().catalog,
+                store: &db.runtime.get().unwrap().store,
                 operation: "knowledge_subgraph",
                 relationship_type,
                 requested_direction: direction,
@@ -18868,7 +19440,7 @@ fn knowledge_induced_edges_via_query_runtime(
 ) -> Result<KnowledgeInducedEdgeListOutput> {
     validate_knowledge_induced_edges_request(request)?;
 
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
     let requested_ids = request
         .external_ids
         .iter()
@@ -19488,7 +20060,7 @@ impl<'a> NowledgeGraphAdapter<'a> {
         &mut self,
         statements: &[NowledgeGraphStatement],
     ) -> Result<NowledgeGraphTransactionOutput> {
-        let mut tx = self.db.begin_transaction();
+        let mut tx = self.db.begin_transaction()?;
         let mut statement_outputs = Vec::with_capacity(statements.len());
         for statement in statements {
             statement_outputs.push(tx.query_with_params(&statement.cypher, &statement.parameters)?);
@@ -19519,26 +20091,27 @@ impl<'a> NowledgeGraphAdapter<'a> {
 }
 
 impl DatabaseTransactionRuntime {
-    fn from_database(db: &Database) -> Self {
+    fn from_database(db: &Database) -> Result<Self> {
         Self::from_database_with_system_variables(db, db.system_variables.clone())
     }
 
     fn from_database_with_system_variables(
         db: &Database,
         system_variables: QuerySystemVariables,
-    ) -> Self {
-        Self {
-            optimizer: db.optimizer.clone(),
+    ) -> Result<Self> {
+        let runtime = db.runtime.get()?;
+        Ok(Self {
+            optimizer: runtime.optimizer.clone(),
             plan_cache: SharedState::new(PlanCache::new(db.config.max_plan_cache_entries)),
-            relational_plan_template_cache: Arc::clone(&db.relational_plan_template_cache),
+            relational_plan_template_cache: Arc::clone(&runtime.relational_plan_template_cache),
             optimizer_planning_cache: SharedState::new(
-                db.optimizer_planning_cache.borrow().clone(),
+                runtime.optimizer_planning_cache.borrow().clone(),
             ),
             config: db.config.clone(),
             system_variables,
             branch_catalog_path: db.branch_catalog_path().ok(),
-            current_branch: db.current_branch(),
-        }
+            current_branch: db.current_branch()?,
+        })
     }
 
     fn ensure_writable(&self, store: &GraphStore) -> Result<()> {
@@ -19553,26 +20126,27 @@ impl DatabaseTransactionRuntime {
 }
 
 impl DatabaseTransactionState {
-    fn from_database(db: &Database) -> Self {
-        let (_, pin) = db.pin_read_view();
-        Self {
+    fn from_database(db: &Database) -> Result<Self> {
+        let runtime = db.runtime.get()?;
+        let (_, pin) = db.pin_read_view()?;
+        Ok(Self {
             snapshot_pin: Some(pin),
-            graph_transaction: Some(db.store.begin_mutation_transaction(&db.catalog)),
+            graph_transaction: Some(runtime.store.begin_mutation_transaction(&runtime.catalog)),
             relational_transaction: hawdb_storage::relational::RelationalTransaction::default(),
-            relational_state: db.store.relational_state().clone(),
+            relational_state: runtime.store.relational_state().clone(),
             append_transaction: hawdb_storage::append_table::AppendTransaction::default(),
-            append_state: db.store.append_state().clone(),
+            append_state: runtime.store.append_state().clone(),
             pending_generated_append_tables: BTreeSet::new(),
             relational_returning: Vec::new(),
-            relational_index: db
+            relational_index: runtime
                 .store
                 .begin_authoritative_relational_transaction_index()
                 .map_err(|error| error.to_string()),
-            relational_rows: db
+            relational_rows: runtime
                 .store
                 .begin_authoritative_relational_transaction_rows()
                 .map_err(|error| error.to_string()),
-        }
+        })
     }
 
     fn rollback(&mut self) {
@@ -20465,7 +21039,7 @@ fn commit_database_transaction_state(
     allow_stale_rebase: bool,
 ) -> Result<TransactionCommitResult> {
     let result = commit_database_transaction_state_inner(db, state, allow_stale_rebase);
-    db.store.poison_on_storage_error(&result);
+    db.poison_on_storage_error(&result);
     result
 }
 
@@ -20482,23 +21056,27 @@ fn commit_database_transaction_state_inner(
         .expect("database transaction must own a graph workspace");
     let relational_transaction = std::mem::take(&mut state.relational_transaction);
     let append_transaction = std::mem::take(&mut state.append_transaction);
+    let branch_runtime = db.runtime.get_mut()?;
     let summary = if allow_stale_rebase {
-        db.store
+        branch_runtime
+            .store
             .commit_rebased_mutation_transaction_relational_and_append(
-                &mut db.catalog,
+                &mut branch_runtime.catalog,
                 graph_transaction,
                 relational_transaction,
                 append_transaction,
                 db.config.mutation_limits,
             )?
     } else {
-        db.store.commit_mutation_transaction_relational_and_append(
-            &mut db.catalog,
-            graph_transaction,
-            relational_transaction,
-            append_transaction,
-            db.config.mutation_limits,
-        )?
+        branch_runtime
+            .store
+            .commit_mutation_transaction_relational_and_append(
+                &mut branch_runtime.catalog,
+                graph_transaction,
+                relational_transaction,
+                append_transaction,
+                db.config.mutation_limits,
+            )?
     };
     db.complete_required_relational_row_checkpoint("transaction commit")?;
     if returning.len() != summary.relational_mutation_outcomes.len() {
@@ -20508,6 +21086,7 @@ fn commit_database_transaction_state_inner(
             summary.relational_mutation_outcomes.len()
         )));
     }
+    let branch_runtime = db.runtime.get()?;
     let mutations = summary
         .relational_mutation_outcomes
         .iter()
@@ -20516,7 +21095,7 @@ fn commit_database_transaction_state_inner(
             project_relational_mutation_outcome(
                 outcome,
                 returning.as_ref(),
-                db.store.relational_state(),
+                branch_runtime.store.relational_state(),
                 db.config.mutation_limits,
                 false,
             )
@@ -20635,7 +21214,12 @@ impl DatabaseSession<'_> {
         if self.graph_transaction.is_none() {
             return self.db.query_sql_with_params(sql_text, parameters);
         }
-        let prepared = self.db.relational_plan_template_cache.prepare(sql_text)?;
+        let prepared = self
+            .db
+            .runtime
+            .get()?
+            .relational_plan_template_cache
+            .prepare(sql_text)?;
         if let crate::sql::SqlStatement::Branch(statement) = prepared.statement() {
             let runtime = self
                 .transaction_runtime
@@ -20721,10 +21305,14 @@ impl DatabaseSession<'_> {
                     DatabaseTransactionRuntime::from_database_with_system_variables(
                         self.db,
                         self.system_variables.clone(),
-                    ),
+                    )?,
                 );
-                self.graph_transaction =
-                    Some(self.db.store.begin_mutation_transaction(&self.db.catalog));
+                let branch_runtime = self.db.runtime.get()?;
+                self.graph_transaction = Some(
+                    branch_runtime
+                        .store
+                        .begin_mutation_transaction(&branch_runtime.catalog),
+                );
                 Ok(QueryOutput {
                     rows: Vec::new().into(),
                 })
@@ -20738,12 +21326,15 @@ impl DatabaseSession<'_> {
                 };
                 self.transaction_runtime.take();
                 self.db.ensure_writable()?;
-                let summary = self.db.store.commit_mutation_transaction_and_relational(
-                    &mut self.db.catalog,
-                    transaction,
-                    hawdb_storage::relational::RelationalTransaction::default(),
-                    self.db.config.mutation_limits,
-                )?;
+                let branch_runtime = self.db.runtime.get_mut()?;
+                let summary = branch_runtime
+                    .store
+                    .commit_mutation_transaction_and_relational(
+                        &mut branch_runtime.catalog,
+                        transaction,
+                        hawdb_storage::relational::RelationalTransaction::default(),
+                        self.db.config.mutation_limits,
+                    )?;
                 Ok(QueryOutput {
                     rows: summary.rows.into(),
                 })
@@ -20838,13 +21429,16 @@ impl DatabaseSession<'_> {
                     self.db.config.max_read_result_rows,
                     self.db.config.max_read_result_payload_bytes,
                 ),
-                executor::ExecutionResources::new(
-                    &mut self.db.catalog,
-                    &mut self.db.store,
-                    &mut external,
-                ),
+                {
+                    let branch_runtime = self.db.runtime.get_mut()?;
+                    executor::ExecutionResources::new(
+                        &mut branch_runtime.catalog,
+                        &mut branch_runtime.store,
+                        &mut external,
+                    )
+                },
             );
-            self.db.store.poison_on_storage_error(&profiled);
+            self.db.poison_on_storage_error(&profiled);
             let profiled = profiled?;
             return Ok(QueryOutput {
                 rows: vec![explain_analyze_output_row(

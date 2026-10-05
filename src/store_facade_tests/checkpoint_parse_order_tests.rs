@@ -13,29 +13,19 @@
 // limitations under the License.
 
 use crate::store_facade_tests::{
-    active_checkpoint_path, read_durable_text, rewrite_checksummed_file, unique_test_dir,
+    active_checkpoint_path, read_durable_text, rewrite_checksummed_file,
+    CheckpointCodecFixture as Fixture,
 };
 use crate::{Database, DatabaseConfig, Value};
 use hawdb_storage::text::encode_properties;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
-
-struct Fixture(PathBuf);
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
 
 fn assert_inline_checkpoint_statistics(include_statistics: bool) {
-    let root = Fixture(unique_test_dir("checkpoint_parse_order"));
-    let mut database = Database::open(&root.0).unwrap();
-    database
-        .query("CREATE (:InlineCheckpoint {id: 1})-[:INLINE_LINK]->(:InlineCheckpoint {id: 2})")
-        .unwrap();
-    database.checkpoint().unwrap();
-    drop(database);
+    let root = Fixture::new("checkpoint_parse_order", |database| {
+        database
+            .query("CREATE (:InlineCheckpoint {id: 1})-[:INLINE_LINK]->(:InlineCheckpoint {id: 2})")
+            .unwrap();
+    });
 
     let first = encode_properties(&BTreeMap::from([("id".to_string(), Value::Int(1))]));
     let second = encode_properties(&BTreeMap::from([("id".to_string(), Value::Int(2))]));
@@ -66,7 +56,7 @@ fn assert_inline_checkpoint_statistics(include_statistics: bool) {
             },
         )
         .unwrap();
-        let statistics = database.basic_statistics();
+        let statistics = database.basic_statistics().unwrap();
         assert_eq!(statistics.node_count, 2);
         assert_eq!(statistics.relationship_count, 1);
         assert_eq!(statistics.label_counts.values().copied().sum::<u64>(), 2);

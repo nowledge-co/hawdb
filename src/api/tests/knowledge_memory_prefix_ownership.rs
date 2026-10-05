@@ -41,7 +41,7 @@ fn memory_prefix_ownership_uses_one_fixed_bounded_query() {
         ),
         ("limit".to_string(), Value::Int(2)),
     ]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     db.query("CREATE (:Memory {id: 'skill:alpha:3', space_id: 'late'})")
         .unwrap();
 

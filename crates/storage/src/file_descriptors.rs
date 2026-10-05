@@ -21,7 +21,7 @@ use std::io;
 use std::marker::PhantomData;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 pub const DEFAULT_MAX_OPEN_FILES: usize = 256;
@@ -98,6 +98,9 @@ pub(crate) struct BudgetState {
     cache: Mutex<Option<Weak<dyn DescriptorCache>>>,
     immutable_handles: Mutex<Weak<crate::immutable_files::ImmutableFileHandles>>,
     active_reservations: AtomicUsize,
+    root_namespace_durable: AtomicBool,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) power_loss: Mutex<Weak<crate::power_loss::ModelCore>>,
 }
 
 impl BudgetState {
@@ -109,6 +112,9 @@ impl BudgetState {
             cache: Mutex::new(None),
             immutable_handles: Mutex::new(Weak::new()),
             active_reservations: AtomicUsize::new(0),
+            root_namespace_durable: AtomicBool::new(false),
+            #[cfg(any(test, feature = "test-support"))]
+            power_loss: Mutex::new(Weak::new()),
         }
     }
 
@@ -256,7 +262,12 @@ impl ProjectFileDescriptors {
     #[doc(hidden)]
     pub fn acquire_component(root: &Path, create: bool) -> Result<Self, HawDBError> {
         match Self::containing(root)? {
-            Some(project) => Ok(project),
+            Some(project) => {
+                if create {
+                    ensure_project_namespace(&project.state, project.root())?;
+                }
+                Ok(project)
+            }
             None => Self::acquire_root(root, DEFAULT_MAX_OPEN_FILES, create),
         }
     }
@@ -299,14 +310,50 @@ impl ProjectFileDescriptors {
         let mut projects = PROJECTS.lock().unwrap_or_else(|error| error.into_inner());
         projects.retain(|_, state| state.strong_count() != 0);
         if let Some(state) = projects.get(&lexical).and_then(Weak::upgrade) {
-            return configured_state(state, limit);
+            let project = configured_state(state, limit)?;
+            if create {
+                ensure_project_namespace(&project.state, project.root())?;
+            }
+            return Ok(project);
         }
         let tentative = Arc::new(BudgetState::new(lexical.clone(), limit));
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            // A recorder rooted at an existing durable ancestor also observes
+            // first-time project installation. Keep resource domains separate;
+            // only their test recorder is shared. Do not reenter PROJECTS here.
+            if let Some(parent) = projects
+                .iter()
+                .filter(|(path, _)| lexical.starts_with(path))
+                .filter_map(|(path, state)| state.upgrade().map(|state| (path, state)))
+                .max_by_key(|(path, _)| path.components().count())
+                .map(|(_, state)| state)
+            {
+                *tentative
+                    .power_loss
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = parent
+                    .power_loss
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone();
+            }
+        }
         let tentative_probe =
             FileOpenContext::from_state(tentative.clone()).acquire(DescriptorKind::Transient)?;
         // A directory installed by this operation is a new project object,
         // including when its parent path uses a filesystem alias. Existing
         // roots require alias resolution before choosing their resource domain.
+        #[cfg(any(test, feature = "test-support"))]
+        let created = create
+            && crate::power_loss::namespace(
+                &FileOpenContext::from_state(tentative.clone()),
+                &lexical,
+                Some(crate::power_loss::IoEvent::CreateDirectory),
+                crate::power_loss::create_directories,
+                || create_project_directory(&lexical),
+            )?;
+        #[cfg(not(any(test, feature = "test-support")))]
         let created = create && create_project_directory(&lexical)?;
         // Windows canonicalization opens a directory handle. Reserve across
         // possible alias domains until its identity is known. Unix realpath
@@ -330,8 +377,14 @@ impl ProjectFileDescriptors {
         drop(probe_permits);
         if let Some(state) = projects.get(&canonical).and_then(Weak::upgrade) {
             let project = configured_state(state, limit)?;
+            if create {
+                ensure_project_namespace(&project.state, project.root())?;
+            }
             projects.insert(lexical, Arc::downgrade(&project.state));
             return Ok(project);
+        }
+        if create {
+            ensure_project_namespace(&tentative, &canonical)?;
         }
         let mut state = tentative;
         Arc::get_mut(&mut state)
@@ -382,7 +435,8 @@ impl ProjectFileDescriptors {
     /// Reserve the target's lock/WAL and bounded IO-wave capacity through
     /// candidate validation. Nested storage calls borrow the outer operation's
     /// quota; independent contexts can use the remaining project capacity.
-    pub(crate) fn reserve_admission(&self, minimum: usize) -> io::Result<DescriptorReservation> {
+    #[doc(hidden)]
+    pub fn reserve_admission(&self, minimum: usize) -> io::Result<DescriptorReservation> {
         if let Some(inventory) = FileOpenContext::from_state(self.state.clone()).inventory {
             let inner = inventory
                 .inner
@@ -426,6 +480,15 @@ impl ProjectFileDescriptors {
             _thread: PhantomData,
         }
     }
+}
+
+fn ensure_project_namespace(state: &Arc<BudgetState>, root: &Path) -> io::Result<()> {
+    if !state.root_namespace_durable.load(Ordering::Acquire) {
+        let context = FileOpenContext::from_state(state.clone());
+        crate::durability::sync_directory_tree_with_context(root, &context, None)?;
+        state.root_namespace_durable.store(true, Ordering::Release);
+    }
+    Ok(())
 }
 
 fn create_project_directory(path: &Path) -> io::Result<bool> {
@@ -605,6 +668,15 @@ pub struct FileOpenContext {
 }
 
 impl FileOpenContext {
+    pub(crate) fn project_root(&self) -> &Path {
+        &self.state.root
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn metadata(&self, path: &Path) -> io::Result<std::fs::Metadata> {
+        self.temporary(|| std::fs::metadata(path))
+    }
+
     pub fn for_path(path: &Path) -> io::Result<Self> {
         context_for_path(path)
     }

@@ -380,6 +380,8 @@ fn measure(
     database
         .query_sql("CREATE TABLE public.messages (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
         .expect("benchmark schema must be created");
+    database.checkpoint().expect("checkpoint benchmark setup");
+    let checkpoint_commit_epoch = database.commit_epoch().expect("benchmark setup epoch");
     let database = ConcurrentDatabase::new_with_wal_group_commit(database, group_commit);
     progress.start("warmup");
     let warmup_commit_count = if warm_fsync_baseline {
@@ -429,6 +431,7 @@ fn measure(
         &path,
         ExpectedRecovery {
             final_epoch,
+            checkpoint_commit_epoch,
             commit_count,
             warmup_start_id: CONCURRENT_COMMIT_COUNT,
             warmup_commit_count,

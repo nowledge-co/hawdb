@@ -100,7 +100,7 @@ fn community_assignment_clear_rejects_invalid_label_before_wal() {
     let mut db = Database::open(&path).unwrap();
     db.query("CREATE (:Memory {id: 'memory_community_1', community_id: 7})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let wal_before = read_test_wal(&path).unwrap();
 
     let error = db
@@ -110,7 +110,10 @@ fn community_assignment_clear_rejects_invalid_label_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("node label identifier is empty"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
     assert_eq!(read_test_wal(&path).unwrap(), wal_before);
     std::fs::remove_dir_all(path).unwrap();
 }

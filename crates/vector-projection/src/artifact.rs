@@ -19,7 +19,14 @@ use crate::model::{
     ProjectionManifest, QuantizedSegment, RaBitQBitWidth, SegmentDescriptor,
 };
 use crc32fast::Hasher;
+#[cfg(feature = "storage-io")]
+use hawdb_storage::file_io::try_exists as target_exists;
+#[cfg(feature = "storage-io")]
+use hawdb_storage::file_io::{self as fs, File, OpenOptions};
 use memmap2::Mmap;
+#[cfg(not(feature = "storage-io"))]
+use std::fs::exists as target_exists;
+#[cfg(not(feature = "storage-io"))]
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -29,6 +36,12 @@ use std::sync::Arc;
 const FOOTER_MAGIC: &[u8; 8] = b"SKRQBF01";
 const FOOTER_BYTES: u64 = 8 + 4 + FOOTER_MAGIC.len() as u64;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(all(test, feature = "storage-io"))]
+thread_local! {
+    static BEFORE_PROJECTION_OPEN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 #[cfg(test)]
 thread_local! {
@@ -56,7 +69,7 @@ impl ProjectionWriter {
             )
         })?;
         fs::create_dir_all(parent)?;
-        if target.exists() {
+        if target_exists(&target)? {
             return Err(ProjectionError::InvalidConfiguration(format!(
                 "projection generation already exists at {}",
                 target.display()
@@ -109,10 +122,27 @@ impl ProjectionWriter {
         file.write_all(FOOTER_MAGIC)?;
         file.sync_all()?;
         drop(self.file.take());
+        // Admit and validate the complete mapping before publishing the name.
+        // Keep capacity through rename and the directory barrier so another
+        // project owner cannot exhaust this operation's remaining IO slots.
+        #[cfg(feature = "storage-io")]
+        let _publication_quota = {
+            let project =
+                hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_component(
+                    self.temporary
+                        .parent()
+                        .expect("temporary artifact has a parent"),
+                    false,
+                )
+                .map_err(|error| ProjectionError::Io(std::io::Error::other(error)))?;
+            project.reserve_admission(2)?
+        };
+        let mut projection = FileProjection::open(&self.temporary)?;
+        projection.path.clone_from(&self.target);
         fs::rename(&self.temporary, &self.target)?;
         sync_parent(&self.target)?;
         self.finished = true;
-        FileProjection::open(&self.target)
+        Ok(projection)
     }
 
     fn flush_segment(&mut self, reserve_next_segment: bool) -> Result<()> {
@@ -175,6 +205,9 @@ impl Drop for ProjectionWriter {
     fn drop(&mut self) {
         if !self.finished {
             drop(self.file.take());
+            // Budget/OS exhaustion may defer best-effort removal. Retain the
+            // unpublished temporary name for explicit cleanup; never bypass
+            // descriptor admission or remove the final published generation.
             let _ = fs::remove_file(&self.temporary);
         }
     }
@@ -190,6 +223,10 @@ pub struct FileProjection {
 impl FileProjection {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
+        #[cfg(all(test, feature = "storage-io"))]
+        if let Some(callback) = BEFORE_PROJECTION_OPEN.with(|slot| slot.replace(None)) {
+            callback();
+        }
         let mut file = File::open(&path)?;
         let file_bytes = file.metadata()?.len();
         if file_bytes < FOOTER_BYTES {
@@ -235,6 +272,9 @@ impl FileProjection {
         // SAFETY: the artifact is published via atomic rename and never mutated in
         // place after that point, so external truncation/mutation racing this map is
         // not part of HawDB's supported artifact lifecycle.
+        #[cfg(feature = "storage-io")]
+        let mmap = Arc::new(unsafe { file.map_read_only()? });
+        #[cfg(not(feature = "storage-io"))]
         let mmap = Arc::new(unsafe { Mmap::map(&file)? });
 
         verify_projection_payload(&mmap, &manifest)?;
@@ -640,7 +680,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    fn unique_test_dir(name: &str) -> PathBuf {
+    pub(super) fn unique_test_dir(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -651,3 +691,6 @@ mod tests {
         ))
     }
 }
+
+#[cfg(all(test, feature = "storage-io"))]
+mod descriptor_tests;

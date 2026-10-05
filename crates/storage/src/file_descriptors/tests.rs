@@ -636,7 +636,7 @@ fn nested_admission_rejects_insufficient_remaining_quota_before_opening() {
 }
 
 #[test]
-fn failed_mutable_open_invalidates_binding_before_native_io() {
+fn failed_copy_on_write_preserves_the_logical_binding_and_snapshot() {
     let fixture = Fixture::new(2);
     let binding = fixture.binding("object", b"snapshot");
     let alias = fixture.root.join("missing-directory/logical");
@@ -655,12 +655,114 @@ fn failed_mutable_open_invalidates_binding_before_native_io() {
         .immutable_handles
         .binding(&alias)
         .unwrap()
-        .is_none());
-    assert_eq!(
-        File::open(&alias).unwrap_err().kind(),
-        std::io::ErrorKind::NotFound
-    );
+        .is_some());
+    // Failure occurred before a private inode could be installed. Keep the
+    // original logical reader rather than losing its immutable identity.
+    assert_eq!(file_io::read(&alias).unwrap(), b"snapshot");
     let mut text = String::new();
     snapshot.read_to_string(&mut text).unwrap();
     assert_eq!(text, "snapshot");
+}
+
+#[cfg(unix)]
+#[test]
+fn ancestry_barriers_use_one_project_descriptor_at_a_time() {
+    let fixture = Fixture::new(1);
+    let nested = fixture.root.join("new/a/b/c");
+    file_io::create_dir_all(&nested).unwrap();
+    crate::durability::sync_directory_ancestors(&nested).unwrap();
+    assert_eq!(fixture.project.metrics().open, 0);
+    assert_eq!(fixture.project.metrics().high_water, 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn writable_admission_retries_root_ancestry_after_a_read_only_domain() {
+    let fixture = Fixture::new(1);
+    let root = fixture.root.with_extension("read-only");
+    std::fs::create_dir_all(&root).unwrap();
+    let read_only = ProjectFileDescriptors::acquire_existing(&root, 1).unwrap();
+    let failure = crate::durability::fail_sync_directory_for(read_only.root());
+    assert!(ProjectFileDescriptors::acquire(&root, 1).is_err());
+    assert!(!read_only
+        .state
+        .root_namespace_durable
+        .load(Ordering::Acquire));
+    assert_eq!(read_only.metrics().open, 0);
+    drop(failure);
+    let writable = ProjectFileDescriptors::acquire(&root, 1).unwrap();
+    assert!(Arc::ptr_eq(&read_only.state, &writable.state));
+    assert!(writable
+        .state
+        .root_namespace_durable
+        .load(Ordering::Acquire));
+    assert_eq!(writable.metrics().open, 0);
+    assert_eq!(writable.metrics().high_water, 1);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn same_project_rename_and_hard_link_use_one_remaining_slot() {
+    let fixture = Fixture::new(4);
+    let source = fixture.root.join("source");
+    let destination = fixture.root.join("renamed");
+    let linked = fixture.root.join("linked");
+    std::fs::write(&source, b"same-project-publication").unwrap();
+    let held = (0..3)
+        .map(|_| File::open(&source).unwrap())
+        .collect::<Vec<_>>();
+    file_io::rename(&source, &destination).unwrap();
+    file_io::hard_link(&destination, &linked).unwrap();
+    assert!(!source.exists());
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"same-project-publication"
+    );
+    assert_eq!(std::fs::read(&linked).unwrap(), b"same-project-publication");
+    assert_eq!(fixture.project.metrics().open, 3);
+    assert_eq!(fixture.project.metrics().reserved, 0);
+    assert_eq!(fixture.project.metrics().high_water, 4);
+    drop(held);
+    assert_eq!(fixture.project.metrics().open, 0);
+}
+
+#[test]
+fn cross_project_rename_admits_both_domains_before_mutation() {
+    let source_project = Fixture::new(4);
+    let destination_project = Fixture::new(4);
+    let source = source_project.root.join("source");
+    let destination = destination_project.root.join("destination");
+    let sentinel = destination_project.root.join("sentinel");
+    std::fs::write(&source, b"cross-project-publication").unwrap();
+    std::fs::write(&sentinel, b"destination-budget-owner").unwrap();
+    let source_held = (0..3)
+        .map(|_| File::open(&source).unwrap())
+        .collect::<Vec<_>>();
+    let mut destination_held = (0..4)
+        .map(|_| File::open(&sentinel).unwrap())
+        .collect::<Vec<_>>();
+    let error = file_io::rename(&source, &destination).unwrap_err();
+    assert!(matches!(
+        file_descriptor_error(&error),
+        Some(FileDescriptorError::BudgetExceeded { .. })
+    ));
+    assert_eq!(
+        std::fs::read(&source).unwrap(),
+        b"cross-project-publication"
+    );
+    assert!(!destination.exists());
+    assert_eq!(source_project.project.metrics().open, 3);
+    assert_eq!(destination_project.project.metrics().open, 4);
+    drop(destination_held.pop());
+    file_io::rename(&source, &destination).unwrap();
+    assert!(!source.exists());
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"cross-project-publication"
+    );
+    assert_eq!(source_project.project.metrics().high_water, 4);
+    assert_eq!(destination_project.project.metrics().high_water, 4);
+    drop((source_held, destination_held));
+    assert_eq!(source_project.project.metrics().open, 0);
+    assert_eq!(destination_project.project.metrics().open, 0);
 }

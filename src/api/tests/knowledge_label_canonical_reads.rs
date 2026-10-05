@@ -106,7 +106,7 @@ fn label_canonical_reads_use_fixed_bounded_queries() {
         ),
         ("limit".to_string(), Value::Int(1)),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     db.query("CREATE (:Label {id: 'late', name: 'Late', canonical_name: 'target'})")
         .unwrap();

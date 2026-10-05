@@ -66,7 +66,7 @@ fn memory_evolves_neighbors_use_fixed_directional_queries() {
         ("memory_id".to_string(), Value::String("target".to_string())),
         ("limit".to_string(), Value::Int(2)),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     db.query("CREATE (:Memory {id: 'late', title: 'Late'})")
         .unwrap();
@@ -126,7 +126,7 @@ fn memory_evolves_neighbors_missing_anchor_returns_no_rows() {
         ),
         ("limit".to_string(), Value::Int(1)),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     let output = snapshot
         .query_with_params_bounded(MEMORY_EVOLVES_OUTGOING_QUERY, &parameters, Some(1))

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::active_runtime_manifest_path;
 use crate::{
     AppendGeneratedRow, AppendTransaction, AppendWrite, ConcurrentDatabase,
     ConcurrentTransactionOptions, Database, HawDBError, RelationalValue, Value,
@@ -134,7 +135,7 @@ fn optimistic_group_admission_batches_disjoint_writes_and_rejects_overlap() {
         drop(db);
         let mut reopened = Database::open(&path).unwrap();
         assert_eq!(reopened.query(query).unwrap().rows, rows);
-        assert_eq!(reopened.commit_epoch(), epoch + accepted as u64);
+        assert_eq!(reopened.commit_epoch().unwrap(), epoch + accepted as u64);
         drop(reopened);
         std::fs::remove_dir_all(path).unwrap();
     }
@@ -207,6 +208,14 @@ fn concurrent_writer_pins_canonical_generation_until_rollback() {
     database.checkpoint().unwrap();
     let db = database.into_concurrent();
     let pinned_epoch = db.commit_epoch().unwrap();
+    let pinned_generation = db
+        .published_read_view()
+        .unwrap()
+        .physical_generation()
+        .unwrap()
+        .0;
+    let data = super::active_storage_root(&path);
+    let mut generations = vec![pinned_generation];
     let mut writer = db
         .begin_transaction(ConcurrentTransactionOptions::optimistic())
         .unwrap();
@@ -220,14 +229,23 @@ fn concurrent_writer_pins_canonical_generation_until_rollback() {
         )
         .unwrap();
         db.checkpoint().unwrap();
+        generations.push(
+            db.published_read_view()
+                .unwrap()
+                .physical_generation()
+                .unwrap()
+                .0,
+        );
     }
     // Retain only the writer's old generation, not every intermediate one.
-    assert!(path.join("canonical.1.hawdb").exists());
-    assert!(!path.join("canonical.2.hawdb").exists());
-    assert!(!path.join("canonical.3.hawdb").exists());
-    assert!(path.join("canonical.4.hawdb").exists());
-    assert!(path.join("canonical.5.hawdb").exists());
-    let manifest = std::fs::read_to_string(path.join("manifest.hawdb")).unwrap();
+    for (index, generation) in generations.iter().enumerate() {
+        let expected = index == 0 || index >= generations.len() - 2;
+        assert_eq!(
+            data.join(format!("canonical.{generation}.hawdb")).exists(),
+            expected
+        );
+    }
+    let manifest = std::fs::read_to_string(active_runtime_manifest_path(&path)).unwrap();
     assert!(manifest.contains(&format!("oldest_reader_commit_epoch\t{pinned_epoch}\n")));
     let rows = writer
         .query("MATCH (m:Memory) RETURN m.id AS id, m.value AS value")
@@ -242,9 +260,11 @@ fn concurrent_writer_pins_canonical_generation_until_rollback() {
     );
     writer.rollback();
     db.checkpoint().unwrap();
-    assert!(!path.join("canonical.1.hawdb").exists());
-    let manifest = std::fs::read_to_string(path.join("manifest.hawdb")).unwrap();
-    // Only the current committed publication remains pinned after rollback.
+    assert!(!data
+        .join(format!("canonical.{pinned_generation}.hawdb"))
+        .exists());
+    let manifest = std::fs::read_to_string(active_runtime_manifest_path(&path)).unwrap();
+    // The current committed publication still pins its physical generation.
     assert!(manifest.contains(&format!(
         "oldest_reader_commit_epoch\t{}\n",
         db.commit_epoch().unwrap()
@@ -357,19 +377,21 @@ fn concurrent_writer_pin_refreshes_with_first_pessimistic_statement() {
 fn writer_pin_moves_with_the_queued_commit_workspace() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 1})").unwrap();
-    let mut state = super::super::DatabaseTransactionState::from_database(&db);
-    let epoch = db.commit_epoch();
+    let mut state = super::super::DatabaseTransactionState::from_database(&db).unwrap();
+    let epoch = db.commit_epoch().unwrap();
     let queued = state.take_for_commit();
     // Dropping the submitting transaction must not release the queued owner.
     drop(state);
     assert_eq!(
         db.storage_reclamation_watermark()
+            .unwrap()
             .oldest_reader_commit_epoch,
         Some(epoch)
     );
     drop(queued);
     assert_eq!(
         db.storage_reclamation_watermark()
+            .unwrap()
             .oldest_reader_commit_epoch,
         None
     );
@@ -732,7 +754,11 @@ fn optimistic_mvcc_reopen_preserves_disjoint_commits_and_same_key_conflicts() {
         let committed_epoch = db.commit_epoch().unwrap();
         drop(db);
         let mut reopened = Database::open(&path).unwrap();
-        assert_eq!(reopened.commit_epoch(), committed_epoch, "{layout}");
+        assert_eq!(
+            reopened.commit_epoch().unwrap(),
+            committed_epoch,
+            "{layout}"
+        );
         assert_eq!(reopened.query(query).unwrap().rows, expected, "{layout}");
         drop(reopened);
         std::fs::remove_dir_all(path).unwrap();
@@ -782,7 +808,7 @@ fn optimistic_mvcc_reopen_preserves_both_database_barrier_directions() {
             drop(db);
 
             let mut reopened = Database::open(&path).unwrap();
-            assert_eq!(reopened.commit_epoch(), read_epoch + 1);
+            assert_eq!(reopened.commit_epoch().unwrap(), read_epoch + 1);
             let rows = reopened
                 .query("MATCH (m:Memory) WHERE m.id = 1 RETURN m.value AS value")
                 .unwrap()
@@ -1841,6 +1867,11 @@ fn wal_group_commit_shares_one_sync_without_changing_record_order() {
     database
         .query_sql("CREATE TABLE public.messages (id BIGINT PRIMARY KEY, body TEXT NOT NULL)")
         .unwrap();
+    let branch = super::test_main_branch_directory(&path).unwrap();
+    let first_user_lsn = hawdb_storage::branch_head::read_branch_head(&branch.join("branch.head"))
+        .unwrap()
+        .active_wal
+        .replay_start_lsn;
     let group_commit = WalGroupCommitConfig::benchmark_candidate(
         NonZeroUsize::new(WRITERS).unwrap(),
         NonZeroU64::new(1024 * 1024).unwrap(),
@@ -1890,14 +1921,17 @@ fn wal_group_commit_shares_one_sync_without_changing_record_order() {
         .lines()
         .map(|line| line.split('\t').next().unwrap().parse::<u64>().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(lsns, (1..=WRITERS as u64 + 2).collect::<Vec<_>>());
+    assert_eq!(
+        lsns,
+        (first_user_lsn..=WRITERS as u64 + 2).collect::<Vec<_>>()
+    );
 
     let mut reopened = Database::open(&path).unwrap();
     let rows = reopened
         .query_sql("SELECT id FROM public.messages ORDER BY id")
         .unwrap();
     assert_eq!(rows.rows.len(), WRITERS);
-    assert_eq!(reopened.commit_epoch(), WRITERS as u64 + 2);
+    assert_eq!(reopened.commit_epoch().unwrap(), WRITERS as u64 + 2);
     drop(reopened);
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -2817,6 +2851,7 @@ fn concurrent_transaction_publishes_graph_relational_and_append_writes_in_one_wa
     let path = super::unique_test_dir("concurrent_mixed_transaction");
     {
         let db = crate::ConcurrentDatabase::open(&path).unwrap();
+        let transaction_wal = super::active_wal_path(&path);
         let mut tx = db
             .begin_transaction(ConcurrentTransactionOptions::pessimistic(
                 Duration::from_secs(1),
@@ -2853,11 +2888,15 @@ fn concurrent_transaction_publishes_graph_relational_and_append_writes_in_one_wa
         .unwrap();
         tx.commit().unwrap();
         assert_eq!(db.commit_epoch().unwrap(), 2);
+        // Schema publication checkpoints the batch and rotates the active WAL.
+        // The original private generation must contain exactly one mixed batch.
+        let wal = crate::store::render_wal_records_for_test(&transaction_wal).unwrap();
+        assert_eq!(wal.lines().count(), 1);
+        assert!(wal.contains("\tbatch\t"));
     }
 
     let wal = super::read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 2);
-    assert!(wal.contains("\tbatch\t"));
+    assert!(wal.is_empty());
     {
         let db = crate::ConcurrentDatabase::open(&path).unwrap();
         assert_eq!(

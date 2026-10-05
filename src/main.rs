@@ -420,7 +420,7 @@ fn main() -> Result<()> {
             )?;
             let explain = db.explain_query_with_params(&query, &parameters)?;
             let rendered =
-                explain_output_json(&query, &parameters, &explain, &db.plan_cache_stats());
+                explain_output_json(&query, &parameters, &explain, &db.plan_cache_stats()?);
             println!("{}", serde_json::to_string_pretty(&rendered).unwrap());
             return Ok(());
         }
@@ -456,7 +456,7 @@ fn main() -> Result<()> {
             )?;
             let explain = db.explain_analyze_query_with_params(&query, &parameters)?;
             let rendered =
-                explain_analyze_output_json(&query, &parameters, &explain, &db.plan_cache_stats());
+                explain_analyze_output_json(&query, &parameters, &explain, &db.plan_cache_stats()?);
             println!("{}", serde_json::to_string_pretty(&rendered).unwrap());
             return Ok(());
         }
@@ -904,7 +904,7 @@ fn main() -> Result<()> {
                     ..DatabaseConfig::default()
                 },
             )?;
-            let report = background_maintenance_report_json_with_options(&db, &options);
+            let report = background_maintenance_report_json_with_options(&db, &options)?;
             println!("{}", serde_json::to_string_pretty(&report).unwrap());
             if require_cutover_ready {
                 let health = background_maintenance_evidence_health_from_bundle(
@@ -1127,10 +1127,10 @@ fn main() -> Result<()> {
                 },
             )?;
             let rendered =
-                storage_recovery_report_json(db.storage_version(), &db.storage_recovery_report());
+                storage_recovery_report_json(db.storage_version()?, &db.storage_recovery_report()?);
             println!("{}", serde_json::to_string_pretty(&rendered).unwrap());
             enforce_storage_recovery_requirements(
-                &db.storage_recovery_report(),
+                &db.storage_recovery_report()?,
                 StorageRecoveryRequirements {
                     require_durable,
                     require_checkpoint_boundary,
@@ -1248,8 +1248,8 @@ fn main() -> Result<()> {
             let export = db.prepare_hawdb_lightning_bootstrap_export()?;
             let rendered = hawdb_lightning_bootstrap_bundle_json_with_storage_recovery(
                 &export,
-                db.storage_version(),
-                &db.storage_recovery_report(),
+                db.storage_version()?,
+                &db.storage_recovery_report()?,
             );
             println!("{}", serde_json::to_string_pretty(&rendered).unwrap());
             if require_ready
@@ -1290,8 +1290,8 @@ fn main() -> Result<()> {
             let catalog = stage_hawdb_lightning_bootstrap_export_with_storage_recovery(
                 &export,
                 staging_dir,
-                db.storage_version(),
-                &db.storage_recovery_report(),
+                db.storage_version()?,
+                &db.storage_recovery_report()?,
             )?;
             println!("{}", serde_json::to_string_pretty(&catalog).unwrap());
             if require_ready
@@ -2343,14 +2343,14 @@ struct BackgroundMaintenanceReportOptions {
 fn background_maintenance_report_json_with_options(
     database: &Database,
     options: &BackgroundMaintenanceReportOptions,
-) -> serde_json::Value {
+) -> Result<serde_json::Value> {
     let search_index = SearchIndex::in_memory();
     let summary = database.background_maintenance_summary(
         Some(&search_index),
         &options.policy,
         &options.state,
         options.maintenance.clone(),
-    );
+    )?;
     let mut report = background_maintenance_summary_to_json(&summary);
     if let Some(object) = report.as_object_mut() {
         object.insert(
@@ -2370,7 +2370,7 @@ fn background_maintenance_report_json_with_options(
             background_maintenance_qos_state_json(&options.state),
         );
     }
-    report
+    Ok(report)
 }
 
 fn background_maintenance_slow_query_json(database: &Database) -> serde_json::Value {
@@ -4099,7 +4099,8 @@ mod tests {
         let json = background_maintenance_report_json_with_options(
             &db,
             &BackgroundMaintenanceReportOptions::default(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(json["protocol"], "hawdb-background-maintenance-report");
         assert_eq!(json["qos_policy"]["background_enabled"], true);
@@ -4138,7 +4139,8 @@ mod tests {
                 },
                 ..BackgroundMaintenanceReportOptions::default()
             },
-        );
+        )
+        .unwrap();
 
         assert_eq!(json["protocol"], "hawdb-background-maintenance-report");
         assert_eq!(
@@ -4200,7 +4202,8 @@ mod tests {
         let report = background_maintenance_report_json_with_options(
             &db,
             &BackgroundMaintenanceReportOptions::default(),
-        );
+        )
+        .unwrap();
         let bundle = serde_json::json!({
             "background_maintenance": report
         });
@@ -4390,7 +4393,12 @@ mod tests {
         let output = db
             .explain_analyze_query_with_params(query, &parameters)
             .unwrap();
-        let json = explain_analyze_output_json(query, &parameters, &output, &db.plan_cache_stats());
+        let json = explain_analyze_output_json(
+            query,
+            &parameters,
+            &output,
+            &db.plan_cache_stats().unwrap(),
+        );
 
         assert_eq!(json["protocol"], "hawdb-explain-analyze");
         assert_eq!(json["protocol_version"], 1);

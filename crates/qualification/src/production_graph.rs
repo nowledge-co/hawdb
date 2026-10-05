@@ -997,7 +997,7 @@ mod tests {
             database
                 .query("CREATE INDEX ON :Memory(body)")
                 .expect("fixture padding index should be created");
-            let mut transaction = database.begin_transaction();
+            let mut transaction = database.begin_transaction().unwrap();
             for row in 0..64 {
                 transaction
                     .query_with_params(
@@ -1014,7 +1014,8 @@ mod tests {
                 .checkpoint()
                 .expect("fixture checkpoint should succeed");
             database.commit_epoch()
-        };
+        }
+        .unwrap();
         let identity = ProductionQualificationIdentity {
             source_revision: "test-revision".to_string(),
             rust_toolchain: "test-toolchain".to_string(),

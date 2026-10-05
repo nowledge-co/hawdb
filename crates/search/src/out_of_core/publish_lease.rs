@@ -207,6 +207,7 @@ mod tests {
     use super::*;
     use hawdb_storage::file_io as fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -424,14 +425,19 @@ mod tests {
     }
 
     fn test_dir() -> PathBuf {
+        // Parallel tests may observe the same clock tick on macOS. Each fixture
+        // must own a distinct directory so its cleanup cannot remove another.
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "hawdb_search_publish_lease_{}_{}",
+            "hawdb_search_publish_lease_{}_{}_{}",
             std::process::id(),
-            nanos
+            nanos,
+            sequence
         ))
     }
 }

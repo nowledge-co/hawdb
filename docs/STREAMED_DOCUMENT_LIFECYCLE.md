@@ -109,11 +109,11 @@ bazel test //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:
 
 ### Local receipt: 2026-10-05
 
-The tested tree is the uncommitted implementation on
-`feat/392-streaming-document-lifecycle`, based on
-`df052fc3effe438c3eba7440e230f5daf7fe1c4f`. The SHA-256 source fingerprint is
-`a5838a79b03da16bac1f9fe3505eab3ce6a195aa29996b145a3fde282ce8fb98`.
-It covers 1,593 tracked or nonignored new source/configuration files: sorted
+The tested tree combines implementation commit
+`cdf37a668759822fd7bce0f1adc1eab465dc1886` with main at
+`e1305decb20f29e9275989761a403ba044383d44`. Its SHA-256 source fingerprint is
+`8bb823fe041dce7befee56ade1c895216d9ece6b17442312e82f435ae5ca2b82`.
+It covers 1,603 tracked or nonignored new source/configuration files: sorted
 paths ending in `.rs`, `.toml`, `.lock`, `.bzl`, `.tla`, `.cfg`, plus
 `BUILD.bazel` and `MODULE.bazel`; hash each path, a NUL, then the raw SHA-256 of
 its complete bytes into the aggregate. Markdown receipt edits are excluded.
@@ -123,25 +123,35 @@ Environment: Linux 7.1.10-zen1-1-zen, x86_64, pinned Rust 1.97.1
 
 | Check | Observed outcome |
 | --- | --- |
-| Complete search library, all features including ACL/vector/text | 752 passed, 20 ignored, zero failed |
-| Complete search library, no default features | 583 passed, 20 ignored, zero failed |
+| Complete search library, all features including ACL/vector/text | 756 passed, 20 ignored, zero failed |
+| Complete search library, no default features | 585 passed, 20 ignored, zero failed |
 | Facade `search_generation_context`, all features | 11 passed, zero failed |
-| Candidate/owned mode parity, only `full-text-search` enabled | 1 selected and passed, 700 filtered |
 | `prek run --all-files` | Workspace format and strict all-target/all-feature Clippy both passed |
 | Minimal WASM strict Clippy, library and `in_memory_portable` test | Passed with the command in `AGENTS.md` and compiler/archiver setup in `WASM.md`; Clang 23.1.1 was temporarily unpacked from the official package after checking its repository SHA-256 |
-| Required local Bazel fuzz command | Blocked before analysis/test execution: cached `@@rules_rust+//rust:defs.bzl` has no package/BUILD; zero processes and zero tests ran |
+| Required local Bazel fuzz command | See [PR #847](https://github.com/nowledge-co/hawdb/pull/847) for the full-suite run and timeout follow-up receipt |
 
-The initial receipt used unchanged Bazel configuration. A subsequent cache repair
-separated the host's repository cache from its disk-cache GC; the required fuzz
-command is being rerun. Cargo checks do not replace that pending Bazel/fuzz
-evidence. Full lifecycle and high
-cardinality fixtures above are included in the 752-test result, not ignored
-benchmarks. The 20 pre-existing ignored tests are not claimed as coverage.
+The initial implementation also passed the text-only candidate/owned parity
+case (one selected test, 700 filtered) before the merge. Full lifecycle and
+high-cardinality fixtures above are included in the complete search result,
+not ignored benchmarks. The 20 pre-existing ignored tests are not claimed as
+coverage.
+
+The initial fuzz attempt ran zero tests because cached `rules_rust` source and
+BUILD files had disappeared. The host placed repository sources inside its
+action-cache GC root; extracted archive timestamps made those sources eligible
+for deletion. The repair separated the repository cache into a sibling
+directory, preserved the old configuration and damaged external tree, and
+reused complete immutable downloads before refetching. Repository Bazel
+configuration, dependency versions, test selection and timeouts are unchanged.
+See the cache-layout guidance in [CONTRIBUTING.md](../CONTRIBUTING.md).
+
+The merge from main includes #829, #839 and #841. The streamed stage owner
+retains deferred cleanup while reusing the upstream path-capacity bounds;
+vector artifacts now use the upstream counted storage bridge.
 
 Remaining release gates include complete supported-feature/platform coverage,
-private-stage recovery, reconciliation with counted vector publication/cleanup
-in #839, full source/token/indivisible-unit boundary qualification and independent
-semantic negative controls. Benchmark matched host workloads for throughput,
-foreground p95/p99, RSS, cumulative writes and cancellation response before
+private-stage recovery, full source/token/indivisible-unit boundary qualification
+and independent semantic negative controls. Benchmark matched host workloads for
+throughput, foreground p95/p99, RSS, cumulative writes and cancellation response before
 selecting adaptive profiles or changing defaults. The complete identical-corpus
 acceptance in #206 and Mem release/full-verification policy remain independent.

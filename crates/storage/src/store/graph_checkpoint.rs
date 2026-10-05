@@ -1209,6 +1209,7 @@ impl GraphStore {
         self.record_columnar_shadow_checkpoint(prepared.source_commit_epoch, shadow_admission);
         if self.admitted_branch_head().is_some() {
             self.publish_admitted_branch_root()?;
+            checkpoint_publish_failpoint(CheckpointPublishStage::BranchHeadPublished)?;
         }
         // Generation reclamation is post-commit maintenance. It must run only
         // after every in-memory view has adopted the published generation, and

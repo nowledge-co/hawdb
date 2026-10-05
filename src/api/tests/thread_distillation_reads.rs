@@ -51,7 +51,7 @@ fn thread_distillation_uses_fixed_count_and_page_queries() {
         ("offset".to_string(), Value::Int(0)),
         ("limit".to_string(), Value::Int(2)),
     ]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
 
     let count = read
         .query_with_params_bounded(THREAD_DISTILLATION_COUNT_QUERY, &parameters, Some(1))
@@ -88,7 +88,7 @@ fn thread_distillation_optional_source_stays_in_query() {
         ("offset".to_string(), Value::Int(0)),
         ("limit".to_string(), Value::Int(2)),
     ]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
 
     let output = read
         .query_with_params_bounded(THREAD_DISTILLATION_PAGE_QUERY, &parameters, Some(2))

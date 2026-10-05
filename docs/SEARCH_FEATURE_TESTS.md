@@ -90,3 +90,39 @@ Prow's current explicit target lists do not include the search feature matrix.
 A green presubmit result is not evidence that these configurations executed
 remotely. Before merge, retain the local matrix evidence separately; the weekly
 workflow validates the merged default-branch revision.
+
+## Project descriptor admission for derived artifacts
+
+The embedded `vector-search` feature enables `hawdb-vector-projection/storage-io`.
+Standalone projection users can omit it; native Cargo and Bazel search paths
+select counted storage IO. Storage exposes the optional `artifact-mmap` bridge
+without exposing or cloning a raw native file. This adds no new crate or on-disk
+format. Cargo minimal/browser builds omit the bridge; the existing native Bazel
+storage target selects it for its shared vector consumers.
+
+The mapping uses the existing immutable-artifact contract: the file may not be
+mutated or truncated while mapped. It does not keep an open file-descriptor
+permit after its temporary mapping handle closes. Mapping memory and virtual
+address space are separate from the FD budget.
+
+Run the resource regressions with the pinned toolchain and locked dependencies:
+
+```bash
+cargo test --locked -p hawdb-vector-projection --features storage-io --lib artifact::descriptor_tests::
+cargo test --locked -p hawdb-search --all-features --lib descriptor_exhaustion_is_a_retryable_resource_error
+cargo test --locked -p hawdb-search --all-features --lib stage_cleanup_retains_unpublished_files
+```
+
+These cover sibling writers sharing one project cap, independent registered
+projects, rejection before create/map, immutable bytes still readable through
+an existing mapping at a full FD cap, handle release and successful retry,
+typed search load errors without quarantine or silent fallback, and bounded
+stage cleanup retaining unpublished bytes at exhaustion. Owned stages remove
+four paths per batch; ordinary storage/GC traversal keeps its existing 64-path
+batch. Cleanup reserves the actual iterator scratch, retained paths, tuple
+capacity/growth and pending-root workspace before creating the stage and retains
+that charge through cancellation and unwind. The existing allocation test must
+fit that charge on Windows too; switching from native std deletion to admitted
+traversal cannot reuse std's smaller workspace estimate. The tests do not
+promise automatic cleanup of retained stages or a process-wide descriptor cap
+for unrelated host IO.

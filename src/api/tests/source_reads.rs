@@ -63,7 +63,7 @@ fn source_detail_count_page_and_ids_use_fixed_queries() {
         .unwrap();
     db.query("CREATE (:Source {id: 'source-c', lifecycle_state: 'deleted'})")
         .unwrap();
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
 
     let exact_parameters = BTreeMap::from([(
         "source_id".to_string(),
@@ -123,7 +123,7 @@ fn source_memory_reads_use_named_count_and_page_queries() {
         "source_id".to_string(),
         Value::String("source-a".to_string()),
     )]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
 
     let count = read
         .query_with_params_bounded(SOURCE_MEMORY_COUNT_QUERY, &parameters, Some(1))
@@ -156,7 +156,7 @@ fn memory_source_attributions_are_bounded_by_input_ids() {
             Value::String("missing".to_string()),
         ]),
     )]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
 
     let output = read
         .query_with_params_bounded(MEMORY_SOURCE_ATTRIBUTIONS_QUERY, &parameters, Some(2))

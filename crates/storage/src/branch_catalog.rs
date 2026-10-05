@@ -1223,6 +1223,9 @@ pub fn create_branch_from_parent(
             complete_create_file(catalog_path, reservation).map_err(BranchCreateError::Catalog)?;
             Ok(BranchCreateResult { head, lease })
         }
+        Err(error @ BranchHeadError::CandidatePublicationUncertain { .. }) => {
+            Err(BranchCreateError::Head(error))
+        }
         Err(error) => {
             abort_create_file(catalog_path, reservation).map_err(BranchCreateError::Catalog)?;
             Err(BranchCreateError::Head(error))
@@ -1478,6 +1481,25 @@ fn recover_create_file_inner(
     .map_err(BranchCreateError::Head)?;
     if wal != head.active_wal {
         return Err(BranchCreateError::Head(BranchHeadError::InvalidWalIdentity));
+    }
+    // Visibility and digest validation do not establish durability. These files
+    // can be leftovers from an interrupted creation before its final barriers.
+    for path in [child_wal_path, child_head_path] {
+        // Windows FlushFileBuffers requires write access. Do not truncate or
+        // create: recovery synchronizes exactly the pair validated above.
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .and_then(|file| file.sync_all())
+            .and_then(|_| {
+                crate::durability::sync_directory_ancestors(
+                    path.parent().unwrap_or_else(|| Path::new(".")),
+                )
+            })
+            .map_err(|source| {
+                BranchCreateError::Head(BranchHeadError::CandidatePublicationUncertain { source })
+            })?;
     }
     complete_create_file(catalog_path, reservation).map_err(BranchCreateError::Catalog)?;
     Ok(CreateRecoveryOutcome::Completed)
@@ -2403,6 +2425,99 @@ mod tests {
             BranchState::Ready
         );
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pending_recovery_syncs_complete_but_unsynchronized_files_before_ready() {
+        use crate::file_descriptors::ProjectFileDescriptors;
+        use crate::power_loss::{
+            image::{CrashPlan, ImageLimits},
+            PowerLossModel,
+        };
+        for inject_failure in [false, true] {
+            let (directory, catalog_path) = temporary_catalog_path();
+            let project = ProjectFileDescriptors::acquire(&directory, 32).unwrap();
+            let model = PowerLossModel::attach(&project, ImageLimits::default()).unwrap();
+            write_catalog(&catalog_path, &catalog()).unwrap();
+            let root = ObjectReference::for_bytes(ObjectKind::SealedRoot, 1, b"root");
+            let mut request = create_request();
+            request.base_root_digest = *root.sha256.as_bytes();
+            let reservation = reserve_create_file(&catalog_path, request).unwrap();
+            let child_directory = directory.join("new/child");
+            fs::create_dir_all(&child_directory).unwrap();
+            let wal_path = child_directory.join("child.wal");
+            let head_path = child_directory.join("child.head");
+            let wal = crate::wal::frame::encode_binary_wal_header(1, 42);
+            fs::write(&wal_path, wal).unwrap();
+            let identity =
+                crate::branch_head::active_wal_identity_from_file(&wal_path, 1, 42, 1024).unwrap();
+            let head = BranchHead {
+                project_id: *catalog().project_id.as_uuid().as_bytes(),
+                branch_id: *reservation.id.as_uuid().as_bytes(),
+                physical_generation: 1,
+                sealed_root: root,
+                logical_commit_epoch: 7,
+                active_wal: identity,
+            };
+            fs::write(&head_path, head.encode().unwrap()).unwrap();
+            let before_head = fs::read(&head_path).unwrap();
+            let before_wal = fs::read(&wal_path).unwrap();
+            if inject_failure {
+                let failure = crate::durability::fail_sync_directory_for(project.root());
+                assert!(matches!(
+                    recover_create_file(&catalog_path, reservation.id, &head_path, &wal_path, 1024),
+                    Err(BranchCreateError::Head(
+                        BranchHeadError::CandidatePublicationUncertain { .. }
+                    ))
+                ));
+                assert_eq!(fs::read(&head_path).unwrap(), before_head);
+                assert_eq!(fs::read(&wal_path).unwrap(), before_wal);
+                assert_eq!(
+                    read_catalog(&catalog_path)
+                        .unwrap()
+                        .branches
+                        .iter()
+                        .find(|branch| branch.id == reservation.id)
+                        .unwrap()
+                        .state,
+                    BranchState::Creating
+                );
+                drop(failure);
+            }
+            assert_eq!(
+                recover_create_file(&catalog_path, reservation.id, &head_path, &wal_path, 1024)
+                    .unwrap(),
+                CreateRecoveryOutcome::Completed
+            );
+            let image = model
+                .capture()
+                .unwrap()
+                .crash(&CrashPlan::default())
+                .unwrap();
+            assert_eq!(
+                image.bytes(Path::new("new/child/child.head")).unwrap(),
+                before_head
+            );
+            assert_eq!(
+                image.bytes(Path::new("new/child/child.wal")).unwrap(),
+                before_wal
+            );
+            let recovered_catalog =
+                Catalog::decode(image.bytes(Path::new("catalog.hawdb")).unwrap()).unwrap();
+            assert_eq!(
+                recovered_catalog
+                    .branches
+                    .iter()
+                    .find(|branch| branch.id == reservation.id)
+                    .unwrap()
+                    .state,
+                BranchState::Ready
+            );
+            assert_eq!(project.metrics().open, 0);
+            assert!(project.metrics().high_water <= 32);
+            std::fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[test]

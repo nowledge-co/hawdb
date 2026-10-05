@@ -39,7 +39,9 @@ fn graph_rag_schema_context_guides_queries_through_the_read_runtime() {
     )
     .unwrap();
 
-    let context = db.graph_rag_schema_context(GraphRagSchemaContextOptions::default());
+    let context = db
+        .graph_rag_schema_context(GraphRagSchemaContextOptions::default())
+        .unwrap();
     assert_eq!(context.labels.len(), 2);
     assert_eq!(context.relationship_types.len(), 1);
     assert_eq!(context.routes.len(), 1);
@@ -87,7 +89,7 @@ fn graph_rag_schema_context_guides_queries_through_the_read_runtime() {
     );
     assert_eq!(db.slow_query_log_snapshot().len(), slow_query_count + 1);
 
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     let error = read.query("CREATE (:InventedByModel)").unwrap_err();
     assert!(error
         .to_string()
@@ -124,7 +126,9 @@ fn graph_rag_two_hop_draft_runs_through_the_query_runtime() {
     )
     .unwrap();
 
-    let context = db.graph_rag_schema_context(GraphRagSchemaContextOptions::default());
+    let context = db
+        .graph_rag_schema_context(GraphRagSchemaContextOptions::default())
+        .unwrap();
     let generated = context
         .generate_query(&GraphRagQueryDraft {
             schema_fingerprint: context.fingerprint,
@@ -170,11 +174,13 @@ fn graph_rag_two_hop_draft_runs_through_the_query_runtime() {
 fn graph_rag_schema_context_is_pinned_to_the_read_snapshot() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'memory-1'})").unwrap();
-    let read = db.begin_read_transaction();
+    let read = db.begin_read_transaction().unwrap();
     let pinned = read.graph_rag_schema_context(GraphRagSchemaContextOptions::default());
 
     db.query("CREATE (:Entity {id: 'entity-1'})").unwrap();
-    let latest = db.graph_rag_schema_context(GraphRagSchemaContextOptions::default());
+    let latest = db
+        .graph_rag_schema_context(GraphRagSchemaContextOptions::default())
+        .unwrap();
     let pinned_again = read.graph_rag_schema_context(GraphRagSchemaContextOptions::default());
 
     assert_eq!(pinned, pinned_again);
@@ -189,7 +195,9 @@ fn graph_rag_generated_predicates_follow_the_cypher_parser_contract() {
     db.query("CREATE NODE TABLE Memory").unwrap();
     db.query("CREATE PROPERTY ON NODE TABLE Memory(title) TYPE STRING")
         .unwrap();
-    let context = db.graph_rag_schema_context(GraphRagSchemaContextOptions::default());
+    let context = db
+        .graph_rag_schema_context(GraphRagSchemaContextOptions::default())
+        .unwrap();
     let operators = [
         GraphRagQueryPredicateOperator::Eq,
         GraphRagQueryPredicateOperator::NotEq,
@@ -243,7 +251,9 @@ fn generated_graph_rag_query_validates_parameters_before_canonical_execution() {
     db.query("CREATE PROPERTY ON NODE TABLE Memory(id) TYPE STRING NOT NULL")
         .unwrap();
     db.query("CREATE (:Memory {id: 'memory-1'})").unwrap();
-    let context = db.graph_rag_schema_context(GraphRagSchemaContextOptions::default());
+    let context = db
+        .graph_rag_schema_context(GraphRagSchemaContextOptions::default())
+        .unwrap();
     let generated = context
         .generate_query(&GraphRagQueryDraft {
             schema_fingerprint: context.fingerprint,
@@ -265,7 +275,7 @@ fn generated_graph_rag_query_validates_parameters_before_canonical_execution() {
         })
         .unwrap();
 
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     let output = read
         .query_generated_graph_rag(
             &generated,
@@ -369,7 +379,9 @@ fn generated_graph_rag_query_rejects_a_newer_pinned_schema_epoch() {
     db.query("CREATE NODE TABLE Memory").unwrap();
     db.query("CREATE PROPERTY ON NODE TABLE Memory(id) TYPE STRING NOT NULL")
         .unwrap();
-    let context = db.graph_rag_schema_context(GraphRagSchemaContextOptions::default());
+    let context = db
+        .graph_rag_schema_context(GraphRagSchemaContextOptions::default())
+        .unwrap();
     let generated = context
         .generate_query(&GraphRagQueryDraft {
             schema_fingerprint: context.fingerprint,
@@ -387,7 +399,7 @@ fn generated_graph_rag_query_rejects_a_newer_pinned_schema_epoch() {
         .unwrap();
 
     db.query("CREATE (:Memory {id: 'memory-1'})").unwrap();
-    let mut newer_read = db.begin_read_transaction();
+    let mut newer_read = db.begin_read_transaction().unwrap();
     let error = newer_read
         .query_generated_graph_rag(&generated, &BTreeMap::new())
         .unwrap_err();

@@ -19,7 +19,7 @@ fn transaction_merge_deduplicates_pending_nodes_in_one_wal_batch() {
     let path = unique_test_dir("merge_transaction_batch");
     {
         let mut db = Database::open(&path).unwrap();
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("MERGE (:Memory {id: 1, title: 'Graph foundations'})")
             .unwrap();
         tx.query("MERGE (:Memory {id: 1, title: 'Graph foundations'})")
@@ -32,7 +32,8 @@ fn transaction_merge_deduplicates_pending_nodes_in_one_wal_batch() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 2);
+    // Engine bootstrap is already checkpointed; count the private user WAL.
+    assert_eq!(wal.lines().count(), 1);
     assert_eq!(wal.matches("create_node").count(), 1);
     {
         let mut db = Database::open(&path).unwrap();
@@ -49,7 +50,7 @@ fn transaction_merge_on_create_set_deduplicates_pending_nodes_by_match_key() {
     let path = unique_test_dir("merge_on_create_transaction_batch");
     {
         let mut db = Database::open(&path).unwrap();
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query(
             "MERGE (m:SchemaMigrationLog {id: 'migration-1'}) ON CREATE SET m.note = 'created'",
         )
@@ -66,7 +67,8 @@ fn transaction_merge_on_create_set_deduplicates_pending_nodes_by_match_key() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 2);
+    // Engine bootstrap is already checkpointed; count the private user WAL.
+    assert_eq!(wal.lines().count(), 1);
     assert_eq!(wal.matches("create_node").count(), 1);
     {
         let mut db = Database::open(&path).unwrap();
@@ -86,7 +88,7 @@ fn transaction_merge_node_on_match_set_updates_pending_create() {
     let path = unique_test_dir("merge_on_match_transaction_batch");
     {
         let mut db = Database::open(&path).unwrap();
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query(
                 "MERGE (l:Label {id: 'label-1'}) ON CREATE SET l.name = 'Important', l.canonical_name = null, l.updated_at = 1 ON MATCH SET l.updated_at = 2, l.canonical_name = COALESCE(l.canonical_name, 'important')",
             )
@@ -103,7 +105,8 @@ fn transaction_merge_node_on_match_set_updates_pending_create() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 2);
+    // Engine bootstrap is already checkpointed; count the private user WAL.
+    assert_eq!(wal.lines().count(), 1);
     assert_eq!(wal.matches("create_node").count(), 1);
     assert_eq!(wal.matches("set_node_property").count(), 0);
     {
@@ -129,7 +132,7 @@ fn transaction_merge_node_post_set_updates_pending_create() {
     let path = unique_test_dir("merge_post_set_transaction_batch");
     {
         let mut db = Database::open(&path).unwrap();
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query(
                 "MERGE (m:GraphMeta {meta_id: 'main'}) SET m.pagerank_applied = true, m.pagerank_algorithm = 'pagerank'",
             )
@@ -146,7 +149,8 @@ fn transaction_merge_node_post_set_updates_pending_create() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 2);
+    // Engine bootstrap is already checkpointed; count the private user WAL.
+    assert_eq!(wal.lines().count(), 1);
     assert_eq!(wal.matches("create_node").count(), 1);
     assert_eq!(wal.matches("set_node_property").count(), 0);
     {
@@ -174,7 +178,7 @@ fn transaction_merge_relationship_on_create_set_deduplicates_pending_relationshi
         let mut db = Database::open(&path).unwrap();
         db.query("CREATE (:Memory {id: 'm1'})").unwrap();
         db.query("CREATE (:Label {id: 'l1'})").unwrap();
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query(
                 "MATCH (m:Memory {id: 'm1'}), (l:Label {id: 'l1'}) MERGE (m)-[r:HAS_LABEL]->(l) ON CREATE SET r.assigned_by = 'system'",
             )
@@ -213,7 +217,7 @@ fn transaction_merge_relationship_deduplicates_pending_pattern() {
     let path = unique_test_dir("merge_relationship_transaction_batch");
     {
         let mut db = Database::open(&path).unwrap();
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query(
                 "MERGE (:Memory {id: 1, title: 'Graph foundations'})-[:MENTIONS]->(:Entity {id: 10, name: 'Rust'})",
             )
@@ -230,7 +234,8 @@ fn transaction_merge_relationship_deduplicates_pending_pattern() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 2);
+    // Engine bootstrap is already checkpointed; count the private user WAL.
+    assert_eq!(wal.lines().count(), 1);
     assert_eq!(wal.matches("create_node").count(), 2);
     assert_eq!(wal.matches("create_rel").count(), 1);
     {
@@ -249,8 +254,8 @@ fn transaction_relationship_replay_sees_pending_node_upsert() {
     db.query("CREATE (:Source {id: 'source-v1'})").unwrap();
 
     for _ in 0..2 {
-        let commit_epoch_before = db.store.commit_epoch();
-        let mut transaction = db.begin_transaction();
+        let commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
+        let mut transaction = db.begin_transaction().unwrap();
         transaction
             .query("MERGE (:Source {id: 'source-v2'})")
             .unwrap();
@@ -267,7 +272,10 @@ fn transaction_relationship_replay_sees_pending_node_upsert() {
             )
             .unwrap();
         transaction.commit().unwrap();
-        assert_eq!(db.store.commit_epoch(), commit_epoch_before + 1);
+        assert_eq!(
+            db.runtime.get().unwrap().store.commit_epoch(),
+            commit_epoch_before + 1
+        );
     }
 
     let output = db
@@ -291,7 +299,7 @@ fn transaction_set_updates_pending_node_before_relationship_match() {
     {
         let mut db = Database::open(&path).unwrap();
         db.query("CREATE (:Source {id: 'source-v1'})").unwrap();
-        let mut transaction = db.begin_transaction();
+        let mut transaction = db.begin_transaction().unwrap();
         transaction
             .query("MERGE (:Source {id: 'source-v2'})")
             .unwrap();
@@ -311,7 +319,8 @@ fn transaction_set_updates_pending_node_before_relationship_match() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 3);
+    // Engine bootstrap is already checkpointed; count the private user WAL.
+    assert_eq!(wal.lines().count(), 2);
     assert_eq!(wal.matches("create_node").count(), 2);
     assert_eq!(wal.matches("set_node_property").count(), 0);
     assert_eq!(wal.matches("create_rel").count(), 1);
@@ -346,7 +355,7 @@ fn transaction_set_updates_pending_relationship_properties() {
         let mut db = Database::open(&path).unwrap();
         db.query("CREATE (:Source {id: 'source-v1'})").unwrap();
         db.query("CREATE (:Source {id: 'source-v2'})").unwrap();
-        let mut transaction = db.begin_transaction();
+        let mut transaction = db.begin_transaction().unwrap();
         transaction
             .query(
                 "MATCH (newer:Source {id: 'source-v2'}), (older:Source {id: 'source-v1'})
@@ -398,8 +407,8 @@ fn transaction_delete_removes_pending_relationship_create() {
         let mut db = Database::open(&path).unwrap();
         db.query("CREATE (:Source {id: 'source-v1'})").unwrap();
         db.query("CREATE (:Source {id: 'source-v2'})").unwrap();
-        let commit_epoch_before = db.commit_epoch();
-        let mut transaction = db.begin_transaction();
+        let commit_epoch_before = db.commit_epoch().unwrap();
+        let mut transaction = db.begin_transaction().unwrap();
         transaction
             .query(
                 "MATCH (newer:Source {id: 'source-v2'}), (older:Source {id: 'source-v1'})
@@ -413,7 +422,7 @@ fn transaction_delete_removes_pending_relationship_create() {
             )
             .unwrap();
         transaction.commit().unwrap();
-        assert_eq!(db.commit_epoch(), commit_epoch_before);
+        assert_eq!(db.commit_epoch().unwrap(), commit_epoch_before);
     }
 
     let wal = read_test_wal(&path).unwrap();
@@ -438,8 +447,8 @@ fn transaction_delete_removes_pending_node_create() {
     let path = unique_test_dir("pending_node_delete");
     {
         let mut db = Database::open(&path).unwrap();
-        let commit_epoch_before = db.commit_epoch();
-        let mut transaction = db.begin_transaction();
+        let commit_epoch_before = db.commit_epoch().unwrap();
+        let mut transaction = db.begin_transaction().unwrap();
         transaction
             .query("MERGE (s:Source {id: 'source-temp'})")
             .unwrap();
@@ -450,7 +459,7 @@ fn transaction_delete_removes_pending_node_create() {
             .query("MATCH (s:Source {id: 'source-temp'}) DELETE s")
             .unwrap();
         transaction.commit().unwrap();
-        assert_eq!(db.commit_epoch(), commit_epoch_before);
+        assert_eq!(db.commit_epoch().unwrap(), commit_epoch_before);
     }
 
     let wal = read_test_wal(&path).unwrap_or_default();
@@ -472,7 +481,7 @@ fn transaction_delete_removes_pending_node_create() {
 #[test]
 fn transaction_delete_pending_node_rejects_pending_relationship_without_detach() {
     let mut db = Database::new();
-    let mut transaction = db.begin_transaction();
+    let mut transaction = db.begin_transaction().unwrap();
     transaction
         .query(
             "MERGE (:Source {id: 'source-v2'})-[:REVISED_AS {revision_type: 'update'}]->(:Source {id: 'source-v1'})",
@@ -490,8 +499,8 @@ fn transaction_detach_delete_removes_pending_node_and_relationship_create() {
     let path = unique_test_dir("pending_node_detach_delete");
     {
         let mut db = Database::open(&path).unwrap();
-        let commit_epoch_before = db.commit_epoch();
-        let mut transaction = db.begin_transaction();
+        let commit_epoch_before = db.commit_epoch().unwrap();
+        let mut transaction = db.begin_transaction().unwrap();
         transaction
             .query(
                 "MERGE (:Source {id: 'source-v2'})-[:REVISED_AS {revision_type: 'update'}]->(:Source {id: 'source-v1'})",
@@ -501,7 +510,7 @@ fn transaction_detach_delete_removes_pending_node_and_relationship_create() {
             .query("MATCH (s:Source {id: 'source-v2'}) DETACH DELETE s")
             .unwrap();
         transaction.commit().unwrap();
-        assert_eq!(db.commit_epoch(), commit_epoch_before + 1);
+        assert_eq!(db.commit_epoch().unwrap(), commit_epoch_before + 1);
     }
 
     let wal = read_test_wal(&path).unwrap();
@@ -527,8 +536,8 @@ fn transaction_detach_delete_target_nodes_sees_pending_relationship() {
     let path = unique_test_dir("pending_relationship_target_delete");
     {
         let mut db = Database::open(&path).unwrap();
-        let commit_epoch_before = db.commit_epoch();
-        let mut transaction = db.begin_transaction();
+        let commit_epoch_before = db.commit_epoch().unwrap();
+        let mut transaction = db.begin_transaction().unwrap();
         transaction
             .query("MERGE (:Source {id: 'source-v2'})-[:REVISED_AS]->(:Source {id: 'source-v1'})")
             .unwrap();
@@ -539,7 +548,7 @@ fn transaction_detach_delete_target_nodes_sees_pending_relationship() {
             )
             .unwrap();
         transaction.commit().unwrap();
-        assert_eq!(db.commit_epoch(), commit_epoch_before + 1);
+        assert_eq!(db.commit_epoch().unwrap(), commit_epoch_before + 1);
     }
 
     let wal = read_test_wal(&path).unwrap_or_default();
@@ -565,7 +574,7 @@ fn transaction_retarget_to_matched_pending_target_sees_pending_old_relationship(
     let path = unique_test_dir("pending_retarget_to_matched_target");
     {
         let mut db = Database::open(&path).unwrap();
-        let mut transaction = db.begin_transaction();
+        let mut transaction = db.begin_transaction().unwrap();
         transaction
             .query("MERGE (:Memory {id: 'm1'})-[:HAS_LABEL]->(:Label {id: 'src'})")
             .unwrap();
@@ -582,7 +591,8 @@ fn transaction_retarget_to_matched_pending_target_sees_pending_old_relationship(
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 2);
+    // Engine bootstrap is already checkpointed; count the private user WAL.
+    assert_eq!(wal.lines().count(), 1);
     assert_eq!(wal.matches("create_node").count(), 3);
     assert_eq!(wal.matches("create_rel").count(), 2);
 
@@ -608,7 +618,7 @@ fn transaction_retarget_from_pending_source_sees_pending_old_relationship() {
     let path = unique_test_dir("pending_retarget_from_matched_source");
     {
         let mut db = Database::open(&path).unwrap();
-        let mut transaction = db.begin_transaction();
+        let mut transaction = db.begin_transaction().unwrap();
         transaction
             .query("MERGE (:Memory {id: 'old'})-[:HAS_LABEL]->(:Label {id: 'shared'})")
             .unwrap();
@@ -625,7 +635,8 @@ fn transaction_retarget_from_pending_source_sees_pending_old_relationship() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 2);
+    // Engine bootstrap is already checkpointed; count the private user WAL.
+    assert_eq!(wal.lines().count(), 1);
     assert_eq!(wal.matches("create_node").count(), 3);
     assert_eq!(wal.matches("create_rel").count(), 2);
 
@@ -653,7 +664,7 @@ fn transaction_copy_merge_sees_pending_matched_relationship_properties() {
     let path = unique_test_dir("pending_copy_merge_relationship");
     {
         let mut db = Database::open(&path).unwrap();
-        let mut transaction = db.begin_transaction();
+        let mut transaction = db.begin_transaction().unwrap();
         transaction
             .query(
                 "MERGE (:Memory {id: 'child'})-[:CRYSTALLIZED_FROM {contribution_weight: 7}]->(:Memory {id: 'source'})",
@@ -670,7 +681,8 @@ fn transaction_copy_merge_sees_pending_matched_relationship_properties() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 2);
+    // Engine bootstrap is already checkpointed; count the private user WAL.
+    assert_eq!(wal.lines().count(), 1);
     assert_eq!(wal.matches("create_node").count(), 2);
     assert_eq!(wal.matches("create_rel").count(), 2);
 

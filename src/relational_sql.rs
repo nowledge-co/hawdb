@@ -370,7 +370,7 @@ mod tests {
             .expect("ignore UUID default conflict");
         assert!(conflict.rows.is_empty());
 
-        let mut transaction = database.begin_transaction();
+        let mut transaction = database.begin_transaction().unwrap();
         let staged = transaction
             .query_sql_with_result(
                 "INSERT INTO feeds (url) VALUES ('https://transaction.example') RETURNING id",
@@ -391,7 +391,7 @@ mod tests {
             .expect("commit UUID default insert");
         assert_eq!(committed.output.rows[0]["id"], Value::Uuid(staged_id));
 
-        let mut rollback = database.begin_transaction();
+        let mut rollback = database.begin_transaction().unwrap();
         let staged = rollback
             .query_sql_with_result(
                 "INSERT INTO feeds (url) VALUES ('https://rollback.example') RETURNING id",
@@ -553,7 +553,7 @@ mod tests {
         database
             .query_sql("INSERT INTO children (id, parent_id) VALUES (30, 3)")
             .expect("insert rollback child");
-        let mut rollback = database.begin_transaction();
+        let mut rollback = database.begin_transaction().unwrap();
         rollback
             .query_sql("DELETE FROM parents WHERE id = 3")
             .expect("stage delete cascade");
@@ -720,7 +720,7 @@ mod tests {
             Value::Int(-1)
         );
 
-        let mut transaction = database.begin_transaction();
+        let mut transaction = database.begin_transaction().unwrap();
         transaction
             .query_sql("UPDATE counters SET count = count + 1 WHERE id = 1")
             .expect("stage first transaction-local increment");
@@ -1471,7 +1471,7 @@ mod tests {
             assert!(info.contains("backward_lookups=1"));
             assert!(info.contains("early_stop_lookups=1"));
 
-            let mut transaction = database.begin_transaction();
+            let mut transaction = database.begin_transaction().unwrap();
             transaction
                 .query_sql(
                     "INSERT INTO sessions (id, org_id, last_seen_at) \
@@ -1649,7 +1649,7 @@ mod tests {
     #[test]
     fn database_transaction_stages_strict_append_sql_atomically() {
         let mut database = Database::new();
-        let mut transaction = database.begin_transaction();
+        let mut transaction = database.begin_transaction().unwrap();
         transaction
             .query_sql(
                 "CREATE TABLE events (\
@@ -1724,9 +1724,9 @@ mod tests {
         database
             .query_sql("CREATE TABLE metadata (id BIGINT PRIMARY KEY, value TEXT NOT NULL)")
             .expect("create row-page table");
-        let before_commit_epoch = database.commit_epoch();
+        let before_commit_epoch = database.commit_epoch().unwrap();
 
-        let mut transaction = database.begin_transaction();
+        let mut transaction = database.begin_transaction().unwrap();
         transaction
             .query("CREATE (:CommitMarker {id: 1})")
             .expect("stage graph row");
@@ -1756,7 +1756,7 @@ mod tests {
         let committed = transaction
             .commit_with_result()
             .expect("commit generated rows");
-        assert_eq!(database.commit_epoch(), before_commit_epoch + 1);
+        assert_eq!(database.commit_epoch().unwrap(), before_commit_epoch + 1);
         assert_eq!(committed.mutations.len(), 1);
         assert_eq!(committed.mutations[0].affected_rows, 1);
         assert_eq!(committed.append_mutations.len(), 1);
@@ -1962,7 +1962,7 @@ mod tests {
             .iter()
             .any(|row| matches!(row.get("actRows"), Some(Value::Int(2)))));
 
-        let snapshot = database.begin_read_transaction();
+        let snapshot = database.begin_read_transaction().unwrap();
         let snapshot_output = snapshot
             .query_sql("SELECT id FROM public.messages ORDER BY id")
             .expect("query relational snapshot");
@@ -2397,8 +2397,40 @@ mod tests {
             relational_index_mode: hawdb_storage::config::RelationalIndexMode::DemandPaged,
             ..DatabaseConfig::default()
         };
-        let published_generation;
-        let published_pages;
+        {
+            // In-memory storage has no published index view. Durable branch
+            // DDL now checkpoints its schema before returning successfully.
+            let mut database = Database::new_with_config(config.clone());
+            database
+                .query_sql(
+                    "CREATE TABLE documents (id TEXT PRIMARY KEY, owner TEXT NOT NULL, body TEXT NOT NULL)",
+                )
+                .unwrap();
+            database
+                .query_sql("CREATE INDEX documents_owner_id_idx ON documents (owner, id)")
+                .unwrap();
+            database
+                .query_sql(
+                    "INSERT INTO documents (id, owner, body) VALUES ('doc-1', 'owner-1', 'body-1')",
+                )
+                .unwrap();
+            let fallback = database
+                .query_sql("EXPLAIN ANALYZE SELECT id FROM documents WHERE owner = 'owner-1'")
+                .expect("fall back without a durable relational index view");
+            let fallback_info = relational_explain_operator_info(&fallback, "IndexRangeScanExec");
+            assert!(fallback_info.contains("runtime_path=canonical_fallback"));
+            assert!(fallback_info.contains("fallback_reasons=read_view_unavailable"));
+            assert_eq!(
+                database
+                    .query_sql("SELECT id FROM documents WHERE owner = 'owner-1'")
+                    .unwrap()
+                    .rows,
+                vec![std::collections::BTreeMap::from([(
+                    "id".to_owned(),
+                    Value::String("doc-1".to_owned()),
+                )])],
+            );
+        }
         {
             let mut database = Database::open_with_durability_and_config(
                 &path,
@@ -2441,21 +2473,22 @@ mod tests {
                 .query_sql("INSERT INTO anchors (id, document_id) VALUES ('anchor-1', 'doc-1')")
                 .expect("insert base anchor");
 
-            let fallback = database
+            let schema_checkpoint = database
                 .query_sql("EXPLAIN ANALYZE SELECT id FROM documents WHERE owner = 'owner-1'")
-                .expect("fall back before a relational index view is published");
-            let fallback_info = relational_explain_operator_info(&fallback, "IndexRangeScanExec");
-            assert!(fallback_info.contains("runtime_path=canonical_fallback"));
-            assert!(fallback_info.contains("fallback_reasons=read_view_unavailable"));
+                .expect("read the index view published by durable branch DDL");
+            let schema_checkpoint_info =
+                relational_explain_operator_info(&schema_checkpoint, "IndexRangeScanExec");
+            assert!(schema_checkpoint_info.contains("runtime_path=demand_paged"));
+            assert!(schema_checkpoint_info.contains("canonical_fallback=0"));
 
             database
                 .checkpoint()
                 .expect("publish relational index base");
             let published = database
                 .relational_index_shadow_checkpoint_report()
-                .expect("published relational index evidence");
-            published_generation = published.generation;
-            published_pages = published.pages_written;
+                .expect("published relational index evidence")
+                .unwrap();
+            assert!(published.pages_written > 0);
             let primary = database
                 .query_sql("EXPLAIN ANALYZE SELECT id FROM documents WHERE id = 'doc-1'")
                 .expect("read the demand-paged primary row");
@@ -2486,7 +2519,7 @@ mod tests {
             assert_eq!(grouped.rows.len(), 1);
             assert_eq!(grouped.rows[0]["anchor_count"], Value::Int(1));
             {
-                let mut transaction = database.begin_transaction();
+                let mut transaction = database.begin_transaction().unwrap();
                 transaction
                     .query_sql(
                         "INSERT INTO documents (id, owner, body) VALUES ('doc-tx', 'owner-1', 'body-tx')",
@@ -2705,11 +2738,29 @@ mod tests {
         {
             use std::io::{Read, Seek, SeekFrom, Write};
 
+            // A standalone backup retains lazy index-page validation. Branch
+            // admission validates the immutable closure before data access.
+            let backup = path.with_extension("index-corruption");
+            let (published_generation, published_pages) = {
+                let mut database = Database::open_with_durability_and_config(
+                    &path,
+                    DurabilityPolicy::default(),
+                    config.clone(),
+                )
+                .unwrap();
+                database.backup_to(&backup).unwrap();
+                let published = database
+                    .relational_index_shadow_checkpoint_report()
+                    .unwrap()
+                    .unwrap();
+                (published.generation, published.pages_written)
+            };
+            assert!(published_pages > 0);
             let page_bytes = hawdb_storage::relational::RelationalIndexShadowConfig::default()
                 .page_limits
                 .max_page_bytes
                 .get() as u64;
-            let artifact = path.join(
+            let artifact = backup.join(
                 hawdb_storage::relational::relational_index_shadow_artifact_file(
                     published_generation,
                 ),
@@ -2734,9 +2785,10 @@ mod tests {
             file.sync_all().expect("sync corruption fixture");
 
             let mut database = Database::open_with_durability_and_config(
-                &path,
+                &backup,
                 DurabilityPolicy::default(),
                 DatabaseConfig {
+                    read_only: true,
                     relational_index_mode: hawdb_storage::config::RelationalIndexMode::DemandPaged,
                     ..DatabaseConfig::default()
                 },
@@ -2746,6 +2798,8 @@ mod tests {
                 .query_sql("SELECT id FROM documents WHERE owner = 'owner-1'")
                 .expect_err("selected corrupt relational index must fail closed");
             assert!(error.to_string().contains("storage integrity"));
+            drop(database);
+            std::fs::remove_dir_all(backup).unwrap();
         }
         std::fs::remove_dir_all(path).expect("remove demand-index SQL fixture");
     }
@@ -2778,7 +2832,7 @@ mod tests {
             .expect("read through the schema-bound canonical row checkpoint");
         let scan_info = relational_explain_operator_info(&rows, "TableFullScanExec");
         assert!(scan_info.contains("row_runtime_path=snapshot_rows"));
-        assert!(!database.storage_handle_poisoned());
+        assert!(!database.storage_handle_poisoned().unwrap());
 
         drop(database);
         std::fs::remove_dir_all(path).expect("remove schema row-checkpoint fixture");
@@ -2962,7 +3016,7 @@ mod tests {
                 },
             )
             .expect("open authoritative transaction database");
-            let mut transaction = database.begin_transaction();
+            let mut transaction = database.begin_transaction().unwrap();
             transaction
                 .query_sql(
                     "INSERT INTO parents (id, code, body) VALUES ('parent-1', 'code-1', 'body-1')",
@@ -3098,7 +3152,7 @@ mod tests {
             .query_sql("INSERT INTO messages (id, body) VALUES (1, 'ready')")
             .expect("insert cancellation row");
 
-        let read = database.begin_read_transaction();
+        let read = database.begin_read_transaction().unwrap();
         let cancellation = hawdb_core::RuntimeCancellationToken::new();
         cancellation.cancel();
         let context = hawdb_core::RuntimeTaskContext::without_deadline(cancellation);
@@ -3139,7 +3193,7 @@ mod tests {
             .query_sql("INSERT INTO messages (id, body) VALUES (1, 'ready')")
             .expect("insert profiled-read row");
 
-        let read = database.begin_read_transaction();
+        let read = database.begin_read_transaction().unwrap();
         let profiled = read
             .query_sql_with_params_options_profiled(
                 "SELECT body FROM messages WHERE id = $1",
@@ -3232,7 +3286,7 @@ mod tests {
             )
             .expect("insert wildcard children");
 
-        let read = database.begin_read_transaction();
+        let read = database.begin_read_transaction().unwrap();
         let wildcard_sql = "SELECT * FROM wildcard_parents AS p INNER JOIN wildcard_children AS c ON c.parent_ref = p.parent_id WHERE c.child_id = 11";
         let wildcard = read
             .query_sql_with_params_options_profiled(
@@ -3304,7 +3358,9 @@ mod tests {
 
         let constrained_context = hawdb_core::RuntimeTaskContext::default()
             .with_memory_reservation(hawdb_core::RuntimeMemoryReservation::new(1, 1));
-        let constrained_read = database.begin_read_transaction_with_context(&constrained_context);
+        let constrained_read = database
+            .begin_read_transaction_with_context(&constrained_context)
+            .unwrap();
         let error = constrained_read
             .query_sql_with_params_options_with_join_planning(
                 wildcard_sql,
@@ -3352,7 +3408,7 @@ mod tests {
             )
             .expect("insert profile children");
 
-        let read = database.begin_read_transaction();
+        let read = database.begin_read_transaction().unwrap();
         let full = read
             .query_sql_with_params_options_profiled(
                 SELECT,
@@ -3506,7 +3562,7 @@ mod tests {
               ON e.tenant = p.tenant AND e.category = p.category";
 
         fn estimated_join_rows(database: &Database, sql: &str) -> usize {
-            let read = database.begin_read_transaction();
+            let read = database.begin_read_transaction().unwrap();
             let profiled = read
                 .query_sql_with_params_options_profiled(
                     sql,
@@ -3880,8 +3936,8 @@ mod tests {
 
         const EXPLAIN: &str = "EXPLAIN SELECT id FROM template_rows \
                                WHERE left_key = $1 AND right_key = $2";
-        let graph_cache_before = database.plan_cache_stats();
-        let before = database.relational_plan_template_cache_stats();
+        let graph_cache_before = database.plan_cache_stats().unwrap();
+        let before = database.relational_plan_template_cache_stats().unwrap();
         assert_eq!(before.entries, 0, "DDL and DML must bypass the query cache");
         let right_selective = database
             .query_sql_with_params(EXPLAIN, &[text("hot"), text("rare")])
@@ -3892,7 +3948,7 @@ mod tests {
                 "table:template_rows, index:idx_template_right".to_string()
             ))
         );
-        let after_miss = database.relational_plan_template_cache_stats();
+        let after_miss = database.relational_plan_template_cache_stats().unwrap();
         assert_eq!(after_miss.misses, before.misses + 1);
         assert_eq!(after_miss.admissions, before.admissions + 1);
         assert_eq!(after_miss.entries, before.entries + 1);
@@ -3906,7 +3962,7 @@ mod tests {
                 "table:template_rows, index:idx_template_left".to_string()
             ))
         );
-        let after_parameter_hit = database.relational_plan_template_cache_stats();
+        let after_parameter_hit = database.relational_plan_template_cache_stats().unwrap();
         assert_eq!(after_parameter_hit.hits, after_miss.hits + 1);
         assert_eq!(after_parameter_hit.misses, after_miss.misses);
 
@@ -3943,7 +3999,7 @@ mod tests {
         assert_eq!(after_schema_change.rows[0]["kind"], text("unknown"));
 
         const SNAPSHOT_SELECT: &str = "SELECT id FROM template_rows ORDER BY id";
-        let pinned = database.begin_read_transaction();
+        let pinned = database.begin_read_transaction().unwrap();
         let pinned_before = pinned
             .query_sql_with_params_options(
                 SNAPSHOT_SELECT,
@@ -3977,7 +4033,7 @@ mod tests {
             .expect("reuse shared template without changing the pinned snapshot");
         assert_eq!(pinned_after.rows.len(), 10);
 
-        assert_eq!(database.plan_cache_stats(), graph_cache_before);
+        assert_eq!(database.plan_cache_stats().unwrap(), graph_cache_before);
     }
 
     #[test]
@@ -4140,7 +4196,7 @@ mod tests {
             ))
         );
 
-        let read_transaction = database.begin_read_transaction();
+        let read_transaction = database.begin_read_transaction().unwrap();
         let snapshot_tables = read_transaction
             .query_sql(
                 "SELECT table_name, table_type FROM information_schema.tables \
@@ -4181,7 +4237,7 @@ mod tests {
     fn postgres_catalog_reads_observe_transaction_private_ddl() {
         let mut database = Database::new();
         {
-            let mut transaction = database.begin_transaction();
+            let mut transaction = database.begin_transaction().unwrap();
             transaction
                 .query_sql("CREATE TABLE public.pending (id BIGINT PRIMARY KEY)")
                 .expect("stage relational table");
@@ -4223,7 +4279,7 @@ mod tests {
     fn database_transaction_commits_cypher_and_sql_in_one_epoch() {
         let mut database = Database::new();
         {
-            let mut transaction = database.begin_transaction();
+            let mut transaction = database.begin_transaction().unwrap();
             transaction
                 .query("CREATE (:Marker {id: 'graph-1'})")
                 .expect("stage graph mutation");
@@ -4251,7 +4307,7 @@ mod tests {
             transaction.commit().expect("commit mixed transaction");
         }
 
-        assert_eq!(database.commit_epoch(), 1);
+        assert_eq!(database.commit_epoch().unwrap(), 1);
         assert_eq!(
             database
                 .query("MATCH (m:Marker) RETURN m.id AS id")

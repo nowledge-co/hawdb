@@ -1,0 +1,228 @@
+// Copyright 2026 Nowledge
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use super::*;
+use crate::file_descriptors::ProjectFileDescriptors;
+use crate::schema::{Catalog, LabelId};
+use crate::store::{encode_projected_graph_artifacts, GraphStore};
+use crate::{NodeId, NodeRecord, Value};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+thread_local! {
+    static AFTER_FIRST_PUBLICATION: RefCell<Option<Box<dyn FnOnce()>>> =
+        const { RefCell::new(None) };
+}
+
+pub(super) fn after_first_publication() {
+    if let Some(callback) = AFTER_FIRST_PUBLICATION.with_borrow_mut(Option::take) {
+        callback();
+    }
+}
+
+struct Fixture {
+    store: Option<GraphStore>,
+    project: ProjectFileDescriptors,
+    root: PathBuf,
+    staging: PathBuf,
+    source_scan_publication: source_scan::SourceScanPublication,
+    old: Vec<Vec<u8>>,
+    new: Vec<Vec<u8>>,
+    manifest: Vec<u8>,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "hawdb-sidecar-admission-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let project = ProjectFileDescriptors::acquire(&root, 8).unwrap();
+        let mut catalog = Catalog::default();
+        let store = GraphStore::open_with_durability_and_replay_config(
+            &root,
+            &mut catalog,
+            crate::config::DurabilityPolicy::default(),
+            crate::config::WalReplayConfig {
+                max_open_files: 8,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let durable = store.durable.as_ref().unwrap();
+        durable
+            .write_projected_graph_artifacts(&encode_projected_graph_artifacts(&catalog, &store, 1))
+            .unwrap();
+        write_source_scan(&root, 1);
+        let old = read_sidecars(&root);
+        let manifest = std::fs::read(durable.manifest_path()).unwrap();
+        let staging = durable.prepare_checkpoint_staging(7).unwrap();
+        durable
+            .write_projected_graph_artifacts_to(
+                &staging.join(PROJECTED_GRAPHS_FILE),
+                &encode_projected_graph_artifacts(&catalog, &store, 2),
+            )
+            .unwrap();
+        let source_scan_publication = write_source_scan(&staging, 2);
+        let new = read_sidecars(&staging);
+        assert!(old.iter().zip(&new).all(|(old, new)| old != new));
+        Self {
+            store: Some(store),
+            project,
+            root,
+            staging,
+            source_scan_publication,
+            old,
+            new,
+            manifest,
+        }
+    }
+
+    fn durable(&self) -> &DurableStore {
+        self.store.as_ref().unwrap().durable.as_ref().unwrap()
+    }
+
+    fn publish(&self) -> Result<()> {
+        self.durable().publish_checkpoint_sidecars(
+            &self.staging,
+            true,
+            Some(self.source_scan_publication),
+        )
+    }
+
+    fn assert_published(&self) {
+        assert_eq!(read_sidecars(&self.root), self.new);
+        assert!(!self.staging.exists());
+        assert_eq!(
+            std::fs::read(self.durable().manifest_path()).unwrap(),
+            self.manifest
+        );
+        assert!(source_scan::load(
+            &self.root,
+            self.source_scan_publication.graph_epoch(),
+            self.source_scan_publication.descriptor_checksum(),
+        )
+        .unwrap()
+        .is_some());
+        assert_eq!(self.project.metrics().reserved, 0);
+        assert!(self.project.metrics().high_water <= 8);
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        drop(self.store.take());
+        assert_eq!(self.project.metrics().open, 0);
+        std::fs::remove_dir_all(&self.root).unwrap();
+    }
+}
+
+fn write_source_scan(root: &Path, epoch: u64) -> source_scan::SourceScanPublication {
+    let node = NodeRecord {
+        id: NodeId(epoch),
+        labels: BTreeSet::from([LabelId(1)]),
+        properties: BTreeMap::from([("id".into(), Value::String(format!("source-{epoch}")))]),
+    };
+    let mut projection = source_scan::build(epoch, Some(LabelId(1)), std::iter::once(&node));
+    source_scan::write(root, &mut projection).unwrap()
+}
+
+fn read_sidecars(root: &Path) -> Vec<Vec<u8>> {
+    [
+        PROJECTED_GRAPHS_FILE,
+        source_scan::SOURCE_SCAN_PAYLOAD_FILE,
+        source_scan::SOURCE_SCAN_DESCRIPTOR_FILE,
+    ]
+    .map(|file| std::fs::read(root.join(file)).unwrap())
+    .into()
+}
+
+#[test]
+fn checkpoint_sidecar_admission_rejects_before_replacement_and_retries() {
+    let fixture = Fixture::new();
+    let baseline = fixture.project.metrics().open;
+    let held_count = 8 - baseline - (SIDECAR_PUBLICATION_DESCRIPTORS - 1);
+    let held = (0..held_count)
+        .map(|_| File::open(fixture.durable().manifest_path()).unwrap())
+        .collect::<Vec<_>>();
+    let error = fixture.publish().unwrap_err();
+    assert_eq!(
+        error,
+        HawDBError::FileDescriptors(hawdb_core::error::FileDescriptorError::BudgetExceeded {
+            requested: SIDECAR_PUBLICATION_DESCRIPTORS,
+            available: SIDECAR_PUBLICATION_DESCRIPTORS - 1,
+            limit: 8,
+        })
+    );
+    assert_eq!(read_sidecars(&fixture.root), fixture.old);
+    assert_eq!(read_sidecars(&fixture.staging), fixture.new);
+    assert_eq!(
+        std::fs::read(fixture.durable().manifest_path()).unwrap(),
+        fixture.manifest
+    );
+    assert_eq!(fixture.project.metrics().reserved, 0);
+    assert_eq!(fixture.project.metrics().open, baseline + held_count);
+    drop(held);
+    fixture.publish().unwrap();
+    fixture.assert_published();
+    assert_eq!(fixture.project.metrics().open, baseline);
+}
+
+#[test]
+fn checkpoint_sidecar_reservation_survives_competing_owner_after_first_replacement() {
+    let fixture = Fixture::new();
+    let baseline = fixture.project.metrics().open;
+    let held = Arc::new(Mutex::new(Vec::new()));
+    let owner = held.clone();
+    let project = fixture.project.clone();
+    let path = fixture.durable().manifest_path().to_path_buf();
+    AFTER_FIRST_PUBLICATION.with_borrow_mut(|callback| {
+        assert!(callback.is_none());
+        *callback = Some(Box::new(move || {
+            // A separate thread has no inherited quota. Occupy every slot that
+            // remains available to an independent owner after the first rename.
+            let files = std::thread::spawn(move || {
+                let metrics = project.metrics();
+                let files = (0..metrics.limit - metrics.open - metrics.reserved)
+                    .map(|_| File::open(&path).unwrap())
+                    .collect::<Vec<_>>();
+                let metrics = project.metrics();
+                assert_eq!(metrics.open + metrics.reserved, 8);
+                files
+            })
+            .join()
+            .unwrap();
+            *owner.lock().unwrap() = files;
+        }));
+    });
+    let result = fixture.publish();
+    assert!(
+        result.is_ok(),
+        "sidecar publication failed: {result:?}; projected replaced={}, source payload retained={}",
+        std::fs::read(fixture.root.join(PROJECTED_GRAPHS_FILE)).unwrap() == fixture.new[0],
+        std::fs::read(fixture.root.join(source_scan::SOURCE_SCAN_PAYLOAD_FILE)).unwrap()
+            == fixture.old[1],
+    );
+    fixture.assert_published();
+    assert_eq!(
+        fixture.project.metrics().open,
+        baseline + held.lock().unwrap().len()
+    );
+    held.lock().unwrap().clear();
+    assert_eq!(fixture.project.metrics().open, baseline);
+}

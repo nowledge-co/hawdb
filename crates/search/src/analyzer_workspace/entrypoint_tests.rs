@@ -97,7 +97,13 @@ impl Drop for Observe {
     }
 }
 
-struct Directory(PathBuf);
+struct Directory {
+    path: PathBuf,
+    // Establish this fresh fixture's own default domain before installing its
+    // directory. Windows existing-root alias probes must not borrow an unrelated
+    // concurrent test's exhausted project; retain ownership through cleanup.
+    _project: hawdb_storage::file_descriptors::ProjectFileDescriptors,
+}
 
 impl Directory {
     fn new() -> Self {
@@ -107,14 +113,21 @@ impl Directory {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::create_dir(&path).unwrap();
-        Self(path)
+        let project = hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire(
+            &path,
+            hawdb_storage::file_descriptors::DEFAULT_MAX_OPEN_FILES,
+        )
+        .unwrap();
+        Self {
+            path,
+            _project: project,
+        }
     }
 }
 
 impl Drop for Directory {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = std::fs::remove_dir_all(&self.path);
     }
 }
 
@@ -151,7 +164,7 @@ fn write(
 #[test]
 fn checkpoint_and_delta_entrypoints_join_before_return_and_keep_snapshots() {
     let directory = Directory::new();
-    let mut index = SearchIndex::open(&directory.0).unwrap();
+    let mut index = SearchIndex::open(&directory.path).unwrap();
     let text = "\u{9f98}\u{9750}\u{9f49} GraphStorage";
     index.upsert(document("a", text)).unwrap();
     index.upsert(document("b", text)).unwrap();
@@ -182,7 +195,7 @@ fn checkpoint_and_delta_entrypoints_join_before_return_and_keep_snapshots() {
     checkpoint.assert_joined(1);
     drop(index);
     checkpoint.assert_released();
-    let reopened = SearchIndex::open(&directory.0).unwrap();
+    let reopened = SearchIndex::open(&directory.path).unwrap();
     assert_eq!(reopened.documents.len(), 1);
     assert_eq!(
         reopened.documents["a"].content,
@@ -201,7 +214,7 @@ fn checkpoint_analyzer_denial_and_cancellation_leave_no_artifacts_or_leases() {
             task.cancellation().cancel();
         }
         let observation = Observe::new();
-        let error = write(&directory.0, &document("a", WARMUP), &memory, &task).unwrap_err();
+        let error = write(&directory.path, &document("a", WARMUP), &memory, &task).unwrap_err();
         assert!(error.to_string().contains(if cancelled {
             "cancel"
         } else {
@@ -210,7 +223,7 @@ fn checkpoint_analyzer_denial_and_cancellation_leave_no_artifacts_or_leases() {
         observation.assert_joined(if cancelled { 0 } else { 1 });
         observation.assert_released();
         assert_eq!(memory.ledger.snapshot().used_bytes, 0);
-        assert_eq!(std::fs::read_dir(&directory.0).unwrap().count(), 0);
+        assert_eq!(std::fs::read_dir(&directory.path).unwrap().count(), 0);
     }
 }
 
@@ -218,7 +231,7 @@ fn checkpoint_analyzer_denial_and_cancellation_leave_no_artifacts_or_leases() {
 fn failed_delta_analysis_joins_then_preserves_the_existing_mutation_fallback() {
     for deleting in [false, true] {
         let directory = Directory::new();
-        let mut index = SearchIndex::open(&directory.0).unwrap();
+        let mut index = SearchIndex::open(&directory.path).unwrap();
         index.upsert(document("a", WARMUP)).unwrap();
         index.checkpoint().unwrap();
         let old_delta = index.lexical_delta.lock().unwrap().clone();
@@ -244,7 +257,7 @@ fn failed_delta_analysis_joins_then_preserves_the_existing_mutation_fallback() {
 #[test]
 fn non_han_checkpoint_and_delta_keep_the_inline_path() {
     let directory = Directory::new();
-    let mut index = SearchIndex::open(&directory.0).unwrap();
+    let mut index = SearchIndex::open(&directory.path).unwrap();
     let observation = Observe::new();
     index
         .upsert(document("a", "GraphStorage HTTPServer"))

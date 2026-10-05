@@ -124,7 +124,7 @@ pub(super) fn qualify_thread_ownership_moves(
     let update_document = corpus_statement(corpus, "update_owned_document_space_guarded")?;
     let update_messages = corpus_statement(corpus, "update_thread_messages_space_guarded")?;
     let page = corpus_statement(corpus, "thread_messages_page")?;
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
     for fixture in THREAD_MOVES {
         transaction.query_with_params(
             "MATCH (t:Thread {id: $thread_id}) WHERE t.space_id = $expected_space_id SET t.space_id = $target_space_id, t.updated_at = $updated_at",
@@ -182,7 +182,7 @@ pub(super) fn qualify_thread_ownership_moves(
         )?;
     }
     transaction.commit()?;
-    let committed_epoch = database.commit_epoch();
+    let committed_epoch = database.commit_epoch()?;
     if committed_epoch <= seed_commit_epoch {
         return Err(HawDBError::Execution(format!(
             "content-store thread ownership epoch {committed_epoch} did not advance beyond seed epoch {seed_commit_epoch}"
@@ -213,7 +213,7 @@ pub(super) fn qualify_thread_ownership_moves(
 
     database.checkpoint()?;
     let checkpoint_generation = database
-        .relational_index_shadow_checkpoint_report()
+        .relational_index_shadow_checkpoint_report()?
         .ok_or_else(|| {
             HawDBError::Execution(
                 "content-store thread ownership checkpoint did not publish relational indexes"
@@ -293,7 +293,7 @@ fn seed_thread_ownership_rows(
 ) -> Result<u64> {
     let document = corpus_statement(corpus, "upsert_content_document")?;
     let message = corpus_statement(corpus, "upsert_thread_message")?;
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
     for fixture in THREAD_MOVES {
         transaction.query_with_params(
             "CREATE (:Thread {id: $thread_id, space_id: $space_id, updated_at: $updated_at})",
@@ -303,7 +303,7 @@ fn seed_thread_ownership_rows(
         transaction.query_sql_with_params(&message.sql, &message_parameters(fixture))?;
     }
     transaction.commit()?;
-    Ok(database.commit_epoch())
+    database.commit_epoch()
 }
 
 fn read_thread_pages(

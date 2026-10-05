@@ -20,26 +20,29 @@ fn retrieves_bounded_multi_hop_knowledge_context() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root', title: 'Root traversal', content: 'Two hop graph context'})-[:LINKS]->(:Entity {id: 'mid', name: 'Mid'})")
             .unwrap();
-    let leaf = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    let leaf = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Entity",
             BTreeMap::from([
                 ("id".to_string(), Value::String("leaf".to_string())),
                 ("name".to_string(), Value::String("Leaf".to_string())),
             ]),
         )
-        .unwrap();
-    db.store
-        .create_relationship(
-            &mut db.catalog,
+    }
+    .unwrap();
+    {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_relationship(
+            &mut branch_runtime.catalog,
             NodeId(1),
             leaf,
             "LINKS",
             BTreeMap::from([("weight".to_string(), Value::Int(2))]),
         )
-        .unwrap();
+    }
+    .unwrap();
 
     let mut search_index = SearchIndex::in_memory();
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
@@ -373,9 +376,10 @@ fn scoring_spec_request(spec: ScoringSpec, limit: usize) -> KnowledgeRetrievalRe
 fn scoring_spec_database() -> (Database, NodeId, NodeId) {
     let mut db = Database::new();
     let mut create = |id: &str, pagerank: i64| {
-        db.store
-            .create_node(
-                &mut db.catalog,
+        {
+            let branch_runtime = db.runtime.get_mut().unwrap();
+            branch_runtime.store.create_node(
+                &mut branch_runtime.catalog,
                 "Memory",
                 BTreeMap::from([
                     ("id".to_string(), Value::String(id.to_string())),
@@ -390,7 +394,8 @@ fn scoring_spec_database() -> (Database, NodeId, NodeId) {
                     ("pagerank".to_string(), Value::Int(pagerank)),
                 ]),
             )
-            .unwrap()
+        }
+        .unwrap()
     };
     let low = create("memory:low_rank", 7);
     let high = create("memory:high_rank", 65_000);

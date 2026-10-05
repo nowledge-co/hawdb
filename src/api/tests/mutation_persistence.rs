@@ -80,7 +80,14 @@ fn relationship_set_persists_and_replays_from_wal() {
     assert!(wal.contains("set_rel_property"));
     {
         let db = Database::open(&path).unwrap();
-        let relationship = db.store.scan_relationships(None).next().unwrap();
+        let relationship = db
+            .runtime
+            .get()
+            .unwrap()
+            .store
+            .scan_relationships(None)
+            .next()
+            .unwrap();
         assert_eq!(relationship.properties.get("weight"), Some(&Value::Int(2)));
     }
     std::fs::remove_dir_all(path).unwrap();
@@ -92,7 +99,7 @@ fn transaction_delete_commits_and_rolls_back() {
     db.query("CREATE (:Memory {id: 1, title: 'Original'})")
         .unwrap();
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("MATCH (m:Memory) WHERE m.id = 1 DELETE m")
             .unwrap();
         tx.rollback();
@@ -103,7 +110,7 @@ fn transaction_delete_commits_and_rolls_back() {
     assert_eq!(output.rows.len(), 1);
 
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("MATCH (m:Memory) WHERE m.id = 1 DELETE m")
             .unwrap();
         let output = tx.commit().unwrap();
@@ -123,7 +130,7 @@ fn transaction_relationship_delete_commits_and_rolls_back() {
     )
     .unwrap();
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("MATCH (m:Memory)-[r:MENTIONS]->(e:Entity) WHERE m.id = 1 DELETE r")
             .unwrap();
         tx.rollback();
@@ -134,7 +141,7 @@ fn transaction_relationship_delete_commits_and_rolls_back() {
     assert_eq!(rels.rows.len(), 1);
 
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("MATCH (m:Memory)-[r:MENTIONS]->(e:Entity) WHERE m.id = 1 DELETE r")
             .unwrap();
         let output = tx.commit().unwrap();
@@ -152,7 +159,7 @@ fn transaction_detach_delete_after_relationship_match_commits_and_rolls_back() {
     db.query("CREATE (:Thread {id: 'thread-1'})-[:CONTAINS]->(:Message {id: 'msg-1'})")
         .unwrap();
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("MATCH (t:Thread {id: 'thread-1'})-[:CONTAINS]->(m:Message) DETACH DELETE m")
             .unwrap();
         tx.rollback();
@@ -163,7 +170,7 @@ fn transaction_detach_delete_after_relationship_match_commits_and_rolls_back() {
     assert_eq!(messages.rows[0].get("total"), Some(&Value::Int(1)));
 
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("MATCH (t:Thread {id: 'thread-1'})-[:CONTAINS]->(m:Message) DETACH DELETE m")
             .unwrap();
         let output = tx.commit().unwrap();
@@ -183,21 +190,35 @@ fn transaction_relationship_set_commits_and_rolls_back() {
     )
     .unwrap();
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("MATCH (m:Memory)-[r:MENTIONS]->(e:Entity) WHERE m.id = 1 SET r.weight = 2")
             .unwrap();
         tx.rollback();
     }
-    let relationship = db.store.scan_relationships(None).next().unwrap();
+    let relationship = db
+        .runtime
+        .get()
+        .unwrap()
+        .store
+        .scan_relationships(None)
+        .next()
+        .unwrap();
     assert_eq!(relationship.properties.get("weight"), Some(&Value::Int(1)));
 
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("MATCH (m:Memory)-[r:MENTIONS]->(e:Entity) WHERE m.id = 1 SET r.weight = 3")
             .unwrap();
         let output = tx.commit().unwrap();
         assert_eq!(output.rows.len(), 1);
     }
-    let relationship = db.store.scan_relationships(None).next().unwrap();
+    let relationship = db
+        .runtime
+        .get()
+        .unwrap()
+        .store
+        .scan_relationships(None)
+        .next()
+        .unwrap();
     assert_eq!(relationship.properties.get("weight"), Some(&Value::Int(3)));
 }

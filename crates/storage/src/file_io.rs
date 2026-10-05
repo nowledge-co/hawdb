@@ -44,6 +44,18 @@ struct NativeFile {
     // Declaration order closes the native handle before returning its capacity.
     inner: std::fs::File,
     permit: DescriptorPermit,
+    #[cfg(any(test, feature = "test-support"))]
+    trace: Option<Box<crate::power_loss::NativeTrace>>,
+}
+
+impl NativeFile {
+    fn io<T>(&self, operation: impl FnOnce(&std::fs::File) -> io::Result<T>) -> io::Result<T> {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(trace) = &self.trace {
+            return trace.io(|| operation(&self.inner));
+        }
+        operation(&self.inner)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -109,7 +121,12 @@ impl File {
                     .inner
                     .try_clone()
                     .map_err(|error| file.permit.context.map_open_error(error))?;
-                FileBacking::Native(NativeFile { inner, permit })
+                FileBacking::Native(NativeFile {
+                    inner,
+                    permit,
+                    #[cfg(any(test, feature = "test-support"))]
+                    trace: file.trace.clone(),
+                })
             }
         };
         Ok(Self { backing })
@@ -120,7 +137,7 @@ impl File {
         operation: impl FnOnce(&std::fs::File) -> io::Result<T>,
     ) -> io::Result<T> {
         match &self.backing {
-            FileBacking::Native(file) => operation(&file.inner),
+            FileBacking::Native(file) => file.io(operation),
             FileBacking::Immutable(file) => {
                 let lease = file.handles.get(&file.binding, &file.context)?;
                 lease.with_native(operation)
@@ -138,16 +155,35 @@ impl File {
         }
     }
 
+    /// Map an immutable artifact through its admitted native handle.
+    /// The mapping retains the OS mapping, not the file descriptor permit.
+    ///
+    /// # Safety
+    /// The underlying file must not be mutated or truncated while the mapping
+    /// exists, including by another process.
+    #[cfg(feature = "artifact-mmap")]
+    pub unsafe fn map_read_only(&self) -> io::Result<memmap2::Mmap> {
+        // SAFETY: the caller guarantees the immutable artifact lifetime. The
+        // native handle and its permit stay together throughout map creation.
+        self.with_native(|file| unsafe { memmap2::Mmap::map(file) })
+    }
+
     pub fn metadata(&self) -> io::Result<Metadata> {
         self.with_native(std::fs::File::metadata)
     }
     pub fn sync_all(&self) -> io::Result<()> {
-        self.with_native(std::fs::File::sync_all)
+        self.synchronize(false)
     }
     pub fn sync_data(&self) -> io::Result<()> {
-        self.with_native(std::fs::File::sync_data)
+        self.synchronize(true)
     }
     pub fn set_len(&self, size: u64) -> io::Result<()> {
+        #[cfg(any(test, feature = "test-support"))]
+        if let FileBacking::Native(file) = &self.backing
+            && let Some(trace) = &file.trace
+        {
+            return trace.truncate(size, || file.inner.set_len(size));
+        }
         self.writable_native()?.set_len(size)
     }
     pub fn set_permissions(&self, permissions: Permissions) -> io::Result<()> {
@@ -167,7 +203,7 @@ impl File {
 
     fn read_sequential(&self, buffer: &mut [u8]) -> io::Result<usize> {
         match &self.backing {
-            FileBacking::Native(file) => (&file.inner).read(buffer),
+            FileBacking::Native(file) => file.io(|mut inner| inner.read(buffer)),
             FileBacking::Immutable(file) => {
                 let mut cursor = file
                     .cursor
@@ -189,7 +225,7 @@ impl File {
 
     fn read_sequential_vectored(&self, buffers: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
         match &self.backing {
-            FileBacking::Native(file) => (&file.inner).read_vectored(buffers),
+            FileBacking::Native(file) => file.io(|mut inner| inner.read_vectored(buffers)),
             FileBacking::Immutable(_) => match buffers.iter_mut().find(|buffer| !buffer.is_empty())
             {
                 Some(buffer) => self.read_sequential(buffer),
@@ -200,7 +236,7 @@ impl File {
 
     fn seek_sequential(&self, position: SeekFrom) -> io::Result<u64> {
         match &self.backing {
-            FileBacking::Native(file) => (&file.inner).seek(position),
+            FileBacking::Native(file) => file.io(|mut inner| inner.seek(position)),
             FileBacking::Immutable(file) => {
                 let mut cursor = file
                     .cursor
@@ -223,6 +259,49 @@ impl File {
             }
         }
     }
+
+    fn synchronize(&self, data_only: bool) -> io::Result<()> {
+        match &self.backing {
+            FileBacking::Native(file) => {
+                let sync = || {
+                    if data_only {
+                        file.inner.sync_data()
+                    } else {
+                        file.inner.sync_all()
+                    }
+                };
+                #[cfg(any(test, feature = "test-support"))]
+                if let Some(trace) = &file.trace {
+                    return trace.sync(sync);
+                }
+                sync()
+            }
+            FileBacking::Immutable(file) => file
+                .handles
+                .get(&file.binding, &file.context)?
+                .synchronize(data_only),
+        }
+    }
+
+    fn write_sequential(&self, buffer: &[u8]) -> io::Result<usize> {
+        #[cfg(any(test, feature = "test-support"))]
+        if let FileBacking::Native(file) = &self.backing
+            && let Some(trace) = &file.trace
+        {
+            return trace.write(&file.inner, buffer);
+        }
+        self.writable_native()?.write(buffer)
+    }
+
+    fn write_sequential_vectored(&self, buffers: &[io::IoSlice<'_>]) -> io::Result<usize> {
+        #[cfg(any(test, feature = "test-support"))]
+        if let FileBacking::Native(file) = &self.backing
+            && let Some(trace) = &file.trace
+        {
+            return trace.write_vectored(&file.inner, buffers);
+        }
+        self.writable_native()?.write_vectored(buffers)
+    }
 }
 
 impl Read for File {
@@ -243,10 +322,10 @@ impl Read for &File {
 }
 impl Write for File {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.writable_native()?.write(buffer)
+        self.write_sequential(buffer)
     }
     fn write_vectored(&mut self, buffers: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        self.writable_native()?.write_vectored(buffers)
+        self.write_sequential_vectored(buffers)
     }
     fn flush(&mut self) -> io::Result<()> {
         self.writable_native()?.flush()
@@ -254,10 +333,10 @@ impl Write for File {
 }
 impl Write for &File {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.writable_native()?.write(buffer)
+        self.write_sequential(buffer)
     }
     fn write_vectored(&mut self, buffers: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        self.writable_native()?.write_vectored(buffers)
+        self.write_sequential_vectored(buffers)
     }
     fn flush(&mut self) -> io::Result<()> {
         self.writable_native()?.flush()
@@ -369,21 +448,65 @@ impl OpenOptions {
                 })),
             });
         }
+        if (mutable || self.native_options)
+            && !self.mutable[4]
+            && let Some(handles) = handles.as_ref()
+            && handles.binding(path)?.is_some()
+        {
+            // Native options can override access mode or request truncation.
+            // Give opaque native opens a private inode too. create_new must
+            // still reject an existing alias without changing its binding.
+            handles.detach_for_write(path, context, self.mutable[2])?;
+        }
+        // COW charges each of its native handles before opening it, then
+        // closes the candidate before acquiring this final handle's capacity.
         let permit = context.acquire(self.kind)?;
         // Later readers must see the mutable path. Existing logical readers
         // retain their captured immutable identity and remain snapshot-safe.
         // Invalidate before the native open can truncate or modify the path.
         if (mutable || self.native_options)
-            && let Some(handles) = handles
+            && !self.mutable[4]
+            && let Some(handles) = handles.as_ref()
         {
             handles.unbind(path)?;
         }
+        #[cfg(any(test, feature = "test-support"))]
+        let (inner, trace) = match crate::power_loss::for_path(context, path)? {
+            Some(core) => crate::power_loss::NativeTrace::open(
+                core,
+                path,
+                &self.inner,
+                self.mutable,
+                self.native_options,
+            )
+            .map(|(inner, trace)| (inner, Some(Box::new(trace))))
+            .map_err(|error| context.map_open_error(error))?,
+            None => (
+                self.inner
+                    .open(path)
+                    .map_err(|error| context.map_open_error(error))?,
+                None,
+            ),
+        };
+        #[cfg(not(any(test, feature = "test-support")))]
         let inner = self
             .inner
             .open(path)
             .map_err(|error| context.map_open_error(error))?;
+        if self.mutable[4]
+            && let Some(handles) = handles
+        {
+            // A rejected create_new must preserve the existing alias. Clear
+            // a stale binding only after native creation actually succeeds.
+            handles.unbind(path)?;
+        }
         Ok(File {
-            backing: FileBacking::Native(NativeFile { inner, permit }),
+            backing: FileBacking::Native(NativeFile {
+                inner,
+                permit,
+                #[cfg(any(test, feature = "test-support"))]
+                trace,
+            }),
         })
     }
 }
@@ -469,6 +592,23 @@ fn temporary<T>(path: &Path, operation: impl FnOnce() -> io::Result<T>) -> io::R
     operation().map_err(|error| context.map_open_error(error))
 }
 
+fn two_paths<T>(
+    source: &Path,
+    destination: &Path,
+    operation: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    let source_context = context_for_path(source)?;
+    let destination_context = context_for_path(destination)?;
+    let _source_permit = source_context.acquire(DescriptorKind::Transient)?;
+    if Arc::ptr_eq(&source_context.state, &destination_context.state) {
+        // One filesystem operation in one project is one temporary admission.
+        operation().map_err(|error| source_context.map_open_error(error))
+    } else {
+        let _destination_permit = destination_context.acquire(DescriptorKind::Transient)?;
+        operation().map_err(|error| destination_context.map_open_error(error))
+    }
+}
+
 pub fn metadata(path: impl AsRef<Path>) -> io::Result<Metadata> {
     temporary(path.as_ref(), || std::fs::metadata(path.as_ref()))
 }
@@ -485,30 +625,136 @@ pub fn symlink_metadata(path: impl AsRef<Path>) -> io::Result<Metadata> {
 pub fn canonicalize(path: impl AsRef<Path>) -> io::Result<PathBuf> {
     temporary(path.as_ref(), || std::fs::canonicalize(path.as_ref()))
 }
+#[derive(Clone, Copy)]
+enum NamespaceOperation {
+    CreateDirectory,
+    CreateDirectories,
+    Remove,
+    Rename,
+    HardLink,
+}
+
+/// Dispatch native namespace mutation and its fault-model observation together.
+/// Descriptor admission remains with the caller and precedes both paths.
+fn namespace_io<T>(
+    operation: NamespaceOperation,
+    path: &Path,
+    destination: Option<&Path>,
+    native: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        let context = context_for_path(path)?;
+        match operation {
+            NamespaceOperation::Rename | NamespaceOperation::HardLink => {
+                let destination = destination.expect("two-path namespace operation has a target");
+                let event = match operation {
+                    NamespaceOperation::Rename => crate::power_loss::IoEvent::Rename,
+                    _ => crate::power_loss::IoEvent::HardLink,
+                };
+                crate::power_loss::two_paths(
+                    &context,
+                    &context_for_path(destination)?,
+                    path,
+                    destination,
+                    Some(event),
+                    |engine, source, destination| match operation {
+                        NamespaceOperation::Rename => engine.rename(source, destination),
+                        _ => engine.hard_link(source, destination),
+                    },
+                    native,
+                )
+            }
+            _ => crate::power_loss::namespace(
+                &context,
+                path,
+                matches!(operation, NamespaceOperation::Remove)
+                    .then_some(crate::power_loss::IoEvent::Remove),
+                |engine, path| match operation {
+                    NamespaceOperation::CreateDirectory => {
+                        engine.create_directory(path).map(|_| ())
+                    }
+                    NamespaceOperation::CreateDirectories => {
+                        crate::power_loss::create_directories(engine, path)
+                    }
+                    NamespaceOperation::Remove => engine.remove(path),
+                    _ => unreachable!("two-path operations are dispatched separately"),
+                },
+                native,
+            ),
+        }
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        let _ = (operation, path, destination);
+        native()
+    }
+}
+
 pub fn create_dir(path: impl AsRef<Path>) -> io::Result<()> {
-    temporary(path.as_ref(), || std::fs::create_dir(path.as_ref()))
-}
-pub fn create_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
-    temporary(path.as_ref(), || std::fs::create_dir_all(path.as_ref()))
-}
-pub fn remove_file(path: impl AsRef<Path>) -> io::Result<()> {
-    temporary(path.as_ref(), || std::fs::remove_file(path.as_ref()))
-}
-pub fn remove_dir(path: impl AsRef<Path>) -> io::Result<()> {
-    temporary(path.as_ref(), || std::fs::remove_dir(path.as_ref()))
-}
-pub fn rename(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Result<()> {
-    temporary(source.as_ref(), || {
-        temporary(destination.as_ref(), || {
-            std::fs::rename(source.as_ref(), destination.as_ref())
+    let path = path.as_ref();
+    temporary(path, || {
+        namespace_io(NamespaceOperation::CreateDirectory, path, None, || {
+            std::fs::create_dir(path)
         })
     })
 }
-pub fn hard_link(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Result<()> {
-    temporary(source.as_ref(), || {
-        temporary(destination.as_ref(), || {
-            std::fs::hard_link(source.as_ref(), destination.as_ref())
+pub fn create_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
+    let path = path.as_ref();
+    temporary(path, || {
+        namespace_io(NamespaceOperation::CreateDirectories, path, None, || {
+            std::fs::create_dir_all(path)
         })
+    })
+}
+pub fn remove_file(path: impl AsRef<Path>) -> io::Result<()> {
+    let path = path.as_ref();
+    temporary(path, || {
+        namespace_io(NamespaceOperation::Remove, path, None, || {
+            std::fs::remove_file(path)
+        })
+    })?;
+    unbind_immutable_path(path)
+}
+
+pub(crate) fn unbind_immutable_path(path: &Path) -> io::Result<()> {
+    if let Some(handles) = context_for_path(path)?.state.existing_immutable_handles() {
+        handles.unbind(path)?;
+    }
+    Ok(())
+}
+pub fn remove_dir(path: impl AsRef<Path>) -> io::Result<()> {
+    let path = path.as_ref();
+    temporary(path, || {
+        namespace_io(NamespaceOperation::Remove, path, None, || {
+            std::fs::remove_dir(path)
+        })
+    })
+}
+pub fn rename(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Result<()> {
+    two_paths(source.as_ref(), destination.as_ref(), || {
+        namespace_io(
+            NamespaceOperation::Rename,
+            source.as_ref(),
+            Some(destination.as_ref()),
+            || std::fs::rename(source.as_ref(), destination.as_ref()),
+        )
+    })?;
+    // Captured logical readers retain their immutable identity, while future
+    // opens must observe the replacement or the removed source name.
+    for path in [source.as_ref(), destination.as_ref()] {
+        unbind_immutable_path(path)?;
+    }
+    Ok(())
+}
+pub fn hard_link(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Result<()> {
+    two_paths(source.as_ref(), destination.as_ref(), || {
+        namespace_io(
+            NamespaceOperation::HardLink,
+            source.as_ref(),
+            Some(destination.as_ref()),
+            || std::fs::hard_link(source.as_ref(), destination.as_ref()),
+        )
     })
 }
 
@@ -568,9 +814,28 @@ impl DirEntry {
     }
 }
 
+/// Maximum children retained while removing one admitted directory batch.
+#[doc(hidden)]
+pub const DIRECTORY_REMOVAL_BATCH_ENTRIES: usize = 64;
+
 /// Close each directory batch before descending: depth and breadth never retain
 /// one native directory descriptor per node in the deletion tree.
 pub fn remove_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
+    remove_dir_all_with_batch_size(path, DIRECTORY_REMOVAL_BATCH_ENTRIES)
+}
+
+/// Internal callers can bound retained path memory with a smaller batch.
+#[doc(hidden)]
+pub fn remove_dir_all_with_batch_size(
+    path: impl AsRef<Path>,
+    batch_entries: usize,
+) -> io::Result<()> {
+    if batch_entries == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "directory removal batch must be nonzero",
+        ));
+    }
     let path = path.as_ref();
     let root = symlink_metadata(path)?;
     if root.file_type().is_symlink() {
@@ -591,7 +856,7 @@ pub fn remove_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
         let children = {
             let entries = read_dir(&directory)?;
             entries
-                .take(64)
+                .take(batch_entries)
                 .map(|entry| {
                     let entry = entry?;
                     Ok((entry.path(), entry.file_type()?))

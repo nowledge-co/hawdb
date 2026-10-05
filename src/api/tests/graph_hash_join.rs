@@ -94,7 +94,7 @@ fn graph_hash_join_facade_preserves_residuals_parameters_profiles_and_snapshot()
         assert_eq!(memory.spilled_bytes > 0, budget == 128 * 1024);
         assert!(memory.peak_tracked_bytes <= memory.budget_bytes);
 
-        let mut snapshot = db.begin_read_transaction();
+        let mut snapshot = db.begin_read_transaction().unwrap();
         db.query("CREATE (:Right {id: 999, key: 0, parity: 0})")
             .unwrap();
         let parameters = BTreeMap::from([("minimum".into(), Value::Int(0))]);

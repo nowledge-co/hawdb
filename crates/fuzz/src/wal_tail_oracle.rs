@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use hawdb::{Database, DatabaseConfig, RecoveryMode, StorageResidencyMode, Value};
+use hawdb::{BranchSelector, Database, DatabaseConfig, RecoveryMode, StorageResidencyMode, Value};
 use serde_json::{json, Value as JsonValue};
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -56,8 +56,10 @@ fn run_case(path: &Path, seed: u64) -> Result<JsonValue, Box<dyn Error>> {
     db.query("CREATE (:Memory {id: 2, payload: 'acknowledged'})")?;
     let query = "MATCH (m:Memory) RETURN m.id AS id, m.payload AS payload ORDER BY id";
     let expected = db.query(query)?.rows;
-    let expected_epoch = db.commit_epoch();
-    let wal = fs::read_dir(path)?
+    let expected_epoch = db.commit_epoch()?;
+    let main = db.describe_branch(BranchSelector::Name("main".into()))?;
+    let branch_directory = path.join("branches").join(main.id.to_string());
+    let wal = fs::read_dir(&branch_directory)?
         .filter_map(|entry| {
             let path = entry.ok()?.path();
             let generation = path
@@ -75,7 +77,7 @@ fn run_case(path: &Path, seed: u64) -> Result<JsonValue, Box<dyn Error>> {
     let prefix = fs::read(&wal)?;
     let payload_len = 32 * 1024 + (seed.rotate_right(13) as usize % (64 * 1024));
     let payload = "x".repeat(payload_len);
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction()?;
     for index in 0..(2 + seed % 3) {
         tx.query_with_params(
             "CREATE (:Memory {id: $id, payload: $payload})",
@@ -110,8 +112,9 @@ fn run_case(path: &Path, seed: u64) -> Result<JsonValue, Box<dyn Error>> {
     // result comes from the pre-batch query, independently of decoder framing.
     let torn = &complete[..cut];
     fs::write(&wal, torn)?;
-    if Database::open_with_config(path, config.clone()).is_ok() {
-        return Err("strict open accepted the incomplete batch".into());
+    let mut strict = Database::open_with_config(path, config.clone())?;
+    if strict.query(query).is_ok() {
+        return Err("strict data admission accepted the incomplete batch".into());
     }
     if fs::read(&wal)? != torn {
         return Err("strict open modified the WAL".into());
@@ -123,10 +126,10 @@ fn run_case(path: &Path, seed: u64) -> Result<JsonValue, Box<dyn Error>> {
             ..config.clone()
         },
     )?;
-    if repaired.query(query)?.rows != expected || repaired.commit_epoch() != expected_epoch {
+    if repaired.query(query)?.rows != expected || repaired.commit_epoch()? != expected_epoch {
         return Err("repair did not recover exactly the acknowledged prefix".into());
     }
-    let report = repaired.storage_recovery_report();
+    let report = repaired.storage_recovery_report()?;
     if !report.torn_tail_repaired || report.discarded_wal_tail_bytes != (cut - prefix.len()) as u64
     {
         return Err("repair report disagrees with the injected tail".into());
@@ -134,7 +137,8 @@ fn run_case(path: &Path, seed: u64) -> Result<JsonValue, Box<dyn Error>> {
     if fs::read(&wal)? != prefix {
         return Err("repair changed the acknowledged WAL prefix".into());
     }
-    let audits = fs::read_dir(path.join("doctor"))?
+    drop(strict);
+    let audits = fs::read_dir(branch_directory.join("doctor"))?
         .filter_map(|entry| {
             let path = entry.ok()?.path();
             path.to_string_lossy()
@@ -149,14 +153,14 @@ fn run_case(path: &Path, seed: u64) -> Result<JsonValue, Box<dyn Error>> {
     let quarantine = audit["quarantine_file"]
         .as_str()
         .ok_or("missing quarantine identity")?;
-    if fs::read(path.join("doctor/quarantine").join(quarantine))? != torn {
+    if fs::read(branch_directory.join("doctor/quarantine").join(quarantine))? != torn {
         return Err("quarantine did not retain exact damaged WAL bytes".into());
     }
     repaired.query("CREATE (:Memory {id: 3, payload: 'after-repair'})")?;
     let after_repair = repaired.query(query)?.rows;
     drop(repaired);
     let mut reopened = Database::open_with_config(path, config)?;
-    if reopened.query(query)?.rows != after_repair || reopened.commit_epoch() != expected_epoch + 1
+    if reopened.query(query)?.rows != after_repair || reopened.commit_epoch()? != expected_epoch + 1
     {
         return Err("post-repair append did not survive strict reopen".into());
     }

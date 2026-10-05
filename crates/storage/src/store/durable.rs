@@ -81,6 +81,9 @@ pub(super) struct DurableStore {
     project_files: crate::file_descriptors::ProjectFileDescriptors,
     _directory_lease: Arc<DatabaseDirectoryLease>,
     pub(super) branch_runtime: Option<super::immutable_root::BranchRuntimeBinding>,
+    // UUID-leased branch admission may reconstruct derived row/index deltas
+    // even for read-only queries. This never authorizes WAL or head writes.
+    pub(super) recovery_artifact_writes_allowed: bool,
     pub(super) root_path: PathBuf,
     pub(super) checkpoint_path: PathBuf,
     manifest_path: PathBuf,
@@ -231,6 +234,12 @@ pub(super) enum DurableOpenMode {
 }
 
 impl DurableStore {
+    pub(super) fn project_file_descriptors(
+        &self,
+    ) -> &crate::file_descriptors::ProjectFileDescriptors {
+        &self.project_files
+    }
+
     pub(super) fn reserve_project_bootstrap_identity(
         &self,
         proposed: crate::branch_project::ProjectSelector,
@@ -371,15 +380,17 @@ impl DurableStore {
         artifact_path: &Path,
         durability: DurabilityPolicy,
         replay_config: WalReplayConfig,
+        read_only: bool,
+        load_rebuildable_artifacts: bool,
     ) -> Result<Self> {
-        Self::open_existing_with_artifacts(
+        let mut store = Self::open_existing_with_artifacts(
             runtime_path,
             artifact_path,
             durability,
             DurableStoreOpenOptions {
-                read_only: false,
+                read_only,
                 initialize_if_empty: false,
-                load_rebuildable_artifacts: true,
+                load_rebuildable_artifacts,
                 segment_cache_capacity_bytes: replay_config.segment_cache_capacity_bytes,
                 max_graph_manifest_open_bytes: replay_config.max_graph_manifest_open_bytes,
                 max_wal_bytes: replay_config.max_bytes,
@@ -387,7 +398,9 @@ impl DurableStore {
                 max_batch_operations: replay_config.max_batch_operations,
                 automatic_tail_repair: None,
             },
-        )
+        )?;
+        store.recovery_artifact_writes_allowed = true;
+        Ok(store)
     }
 
     fn open_existing_with_artifacts(
@@ -507,6 +520,7 @@ impl DurableStore {
             project_files,
             _directory_lease: Arc::new(directory_lease),
             branch_runtime: None,
+            recovery_artifact_writes_allowed: !read_only,
             root_path: artifact_path.to_path_buf(),
             checkpoint_path,
             manifest_path,

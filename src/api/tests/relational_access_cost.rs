@@ -41,7 +41,7 @@ fn relational_cost_selection_preserves_results_and_reports_actual_access() {
             )
             .unwrap();
     }
-    let read = database.begin_read_transaction();
+    let read = database.begin_read_transaction().unwrap();
     for (column, value, payload, expected, operator) in [
         (
             "bucket",

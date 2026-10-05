@@ -442,7 +442,7 @@ mod tests {
         let graph_commit_epoch = {
             let mut database = Database::open_with_config(&graph_path, database_config.clone())
                 .expect("fixture database should open");
-            let mut transaction = database.begin_transaction();
+            let mut transaction = database.begin_transaction().unwrap();
             transaction
                 .query("CREATE (:Left {id: 'left'})")
                 .expect("left row should be inserted");
@@ -471,7 +471,8 @@ mod tests {
                 .checkpoint()
                 .expect("fixture checkpoint should succeed");
             database.commit_epoch()
-        };
+        }
+        .unwrap();
         let identity = ProductionQualificationIdentity {
             source_revision: "revision".to_string(),
             rust_toolchain: "toolchain".to_string(),

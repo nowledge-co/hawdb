@@ -341,7 +341,7 @@ fn validate_content_store_schema() -> Result<()> {
     let statements = nowledge_content_store_schema_statements()?;
     let mut tables = BTreeSet::new();
     let mut database = hawdb::Database::new();
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
     for statement in statements {
         let lowered = hawdb::sql::parse_postgres_sql(statement)?;
         if let hawdb::sql::SqlStatement::CreateTable(create) = &lowered {
@@ -730,7 +730,7 @@ mod tests {
                     sample_mutation_parameter(&statement.name, data_type, position + 1)
                 })
                 .collect::<Vec<_>>();
-            let mut transaction = database.begin_transaction();
+            let mut transaction = database.begin_transaction().unwrap();
             transaction
                 .query_sql_with_params(&statement.sql, &parameters)
                 .unwrap_or_else(|error| panic!("{} did not stage: {error}", statement.name));
@@ -758,7 +758,7 @@ mod tests {
 
     fn materialized_content_store() -> hawdb::Database {
         let mut database = hawdb::Database::new();
-        let mut transaction = database.begin_transaction();
+        let mut transaction = database.begin_transaction().unwrap();
         for statement in
             nowledge_content_store_schema_statements().expect("valid schema statements")
         {

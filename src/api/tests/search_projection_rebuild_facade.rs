@@ -36,6 +36,7 @@ fn database_facade_background_search_projection_rebuild_uses_qos_admission() {
                 ..BackgroundWorkHint::default()
             },
         )
+        .unwrap()
         .unwrap();
     assert_eq!(plan.request.class, WorkClass::Projection);
     assert_eq!(plan.request.estimated_operations, 2);
@@ -152,6 +153,7 @@ fn database_facade_background_search_projection_metadata_repair_uses_qos_admissi
                 ..BackgroundWorkHint::default()
             },
         )
+        .unwrap()
         .unwrap();
     assert_eq!(plan.request.class, WorkClass::Projection);
     assert_eq!(plan.request.estimated_operations, 1);

@@ -100,12 +100,12 @@ pub(super) fn execute_qualified_read(
     phase: ContentStoreRowPageReadPhase,
     expected_rows: usize,
 ) -> Result<ContentStoreRowPageReadReport> {
-    let before = database.segment_cache_snapshot().ok_or_else(|| {
+    let before = database.segment_cache_snapshot()?.ok_or_else(|| {
         HawDBError::Execution(
             "content-store row-page qualification requires a segment cache".to_string(),
         )
     })?;
-    let transaction = database.begin_read_transaction();
+    let transaction = database.begin_read_transaction()?;
     let profiled = transaction.query_sql_with_params_options_profiled(
         &statement.sql,
         &parameters,
@@ -116,7 +116,7 @@ pub(super) fn execute_qualified_read(
     )?;
     let output = profiled.output;
     let execution = execution_evidence(statement, profiled.profile)?;
-    let after = database.segment_cache_snapshot().ok_or_else(|| {
+    let after = database.segment_cache_snapshot()?.ok_or_else(|| {
         HawDBError::Execution(
             "content-store row-page qualification lost its segment cache".to_string(),
         )

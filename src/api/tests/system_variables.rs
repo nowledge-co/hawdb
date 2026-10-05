@@ -142,8 +142,8 @@ fn optimizer_search_hint_is_statement_scoped_on_one_read_snapshot() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 1, title: 'Graph'})")
         .unwrap();
-    let snapshot_epoch = db.commit_epoch();
-    let mut snapshot = db.begin_read_transaction();
+    let snapshot_epoch = db.commit_epoch().unwrap();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     let memo_cypher = "CYPHER system.optimizer_search = 'memo' \
                        MATCH (m:Memory) RETURN m.id AS id";
@@ -179,7 +179,7 @@ fn optimizer_search_hint_is_statement_scoped_on_one_read_snapshot() {
     assert_eq!(memo, fallback);
     assert_eq!(auto_explain.trace.search_mode.as_str(), "memo");
     drop(snapshot);
-    assert_eq!(db.commit_epoch(), snapshot_epoch);
+    assert_eq!(db.commit_epoch().unwrap(), snapshot_epoch);
 }
 
 #[test]
@@ -361,7 +361,7 @@ fn set_system_variables_reject_invalid_values_without_wal() {
     let path = unique_test_dir("set_system_variables_invalid_without_wal");
     let mut db = Database::open(&path).unwrap();
     db.query("CREATE (:Memory {id: 'stable'})").unwrap();
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
     let wal_before = read_test_wal(&path).unwrap();
 
     let bad_priority = db.query("SET system.work_priority = 'urgent'").unwrap_err();
@@ -375,7 +375,10 @@ fn set_system_variables_reject_invalid_values_without_wal() {
         .contains("foreground or background"));
     assert!(bad_estimate.to_string().contains("non-negative integer"));
     assert!(unknown.to_string().contains("unknown system variable"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch
+    );
     assert_eq!(read_test_wal(&path).unwrap(), wal_before);
 }
 
@@ -383,7 +386,7 @@ fn set_system_variables_reject_invalid_values_without_wal() {
 fn set_system_variable_is_rejected_inside_transactions() {
     let mut db = Database::new();
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         let error = tx
             .query("SET system.work_priority = 'background'")
             .unwrap_err();
@@ -404,7 +407,7 @@ fn set_system_variable_is_rejected_inside_transactions() {
         session.query("ROLLBACK").unwrap();
     }
 
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
     let error = snapshot
         .query("SET system.work_priority = 'background'")
         .unwrap_err();

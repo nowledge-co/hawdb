@@ -1507,7 +1507,7 @@ impl SearchIndex {
         if registered {
             index.load_registered_rabitq_projection()?;
         } else {
-            index.load_rabitq_projection();
+            index.load_rabitq_projection()?;
         }
         index.retry_projection_cleanup(SearchProjectionCleanupOptions::default());
         Ok(index)
@@ -1593,11 +1593,18 @@ impl SearchIndex {
     }
 
     #[cfg(feature = "vector-search")]
-    fn load_rabitq_projection(&self) {
+    fn load_rabitq_projection(&self) -> Result<()> {
         let Some(path) = &self.path else {
-            return;
+            return Ok(());
         };
-        for (generation, artifact_path) in rabitq_artifacts_descending(path) {
+        let artifacts = match rabitq_artifacts_descending(path) {
+            Ok(artifacts) => artifacts,
+            Err(error @ HawDBError::FileDescriptors(_)) => return Err(error),
+            // An optional resident projection can be rebuilt or served by the
+            // existing exact path. Keep its historical non-resource fallback.
+            Err(_) => return Ok(()),
+        };
+        for (generation, artifact_path) in artifacts {
             let identity = self.rabitq_projection_identity(generation);
             match RaBitQCandidateProjection::load_from_path_classified(
                 &artifact_path,
@@ -1610,16 +1617,20 @@ impl SearchIndex {
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner()) =
                         Some(Arc::new(projection));
-                    return;
+                    return Ok(());
                 }
                 Err(error) if error.should_quarantine() => {
                     if let Some(name) = artifact_path.file_name().and_then(|name| name.to_str()) {
                         quarantine_rebuildable_artifact(path, name);
                     }
                 }
+                Err(rabitq_projection::RaBitQCandidateProjectionLoadError::Resource(error)) => {
+                    return Err(error);
+                }
                 Err(_) => {}
             }
         }
+        Ok(())
     }
 
     #[cfg(feature = "vector-search")]
@@ -2617,7 +2628,7 @@ impl SearchIndex {
             .rabitq_projection()
             .map(|projection| projection.manifest().identity.generation)
             .unwrap_or(0);
-        let artifact_generation = latest_rabitq_artifact(path)
+        let artifact_generation = latest_rabitq_artifact(path)?
             .map(|(generation, _)| generation)
             .unwrap_or(0);
         let generation = loaded_generation.max(artifact_generation).saturating_add(1);
@@ -4191,27 +4202,30 @@ fn rabitq_artifact_generation(name: &str) -> Option<u64> {
 }
 
 #[cfg(feature = "vector-search")]
-fn latest_rabitq_artifact(path: &Path) -> Option<(u64, PathBuf)> {
-    rabitq_artifacts_descending(path).into_iter().next()
+fn latest_rabitq_artifact(path: &Path) -> Result<Option<(u64, PathBuf)>> {
+    Ok(rabitq_artifacts_descending(path)?.into_iter().next())
 }
 
 #[cfg(feature = "vector-search")]
-fn rabitq_artifacts_descending(path: &Path) -> Vec<(u64, PathBuf)> {
-    let Ok(entries) = fs::read_dir(path) else {
-        return Vec::new();
+fn rabitq_artifacts_descending(path: &Path) -> Result<Vec<(u64, PathBuf)>> {
+    let entries = match fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
     };
-    let mut artifacts = entries
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| {
-            let generation = entry
-                .file_name()
-                .to_str()
-                .and_then(rabitq_artifact_generation)?;
-            Some((generation, entry.path()))
-        })
-        .collect::<Vec<_>>();
+    let mut artifacts = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if let Some(generation) = entry
+            .file_name()
+            .to_str()
+            .and_then(rabitq_artifact_generation)
+        {
+            artifacts.push((generation, entry.path()));
+        }
+    }
     artifacts.sort_unstable_by_key(|(generation, _)| std::cmp::Reverse(*generation));
-    artifacts
+    Ok(artifacts)
 }
 
 const NOWLEDGE_SEARCH_PROJECTION_TABLES: &[(&str, &str, bool)] = &[
@@ -10707,7 +10721,10 @@ mod tests {
     #[cfg(feature = "vector-search")]
     fn rabitq_reopen_preserves_stale_valid_generation() {
         let path = unique_test_dir("rabitq_stale_generation");
-        {
+        // Retain this fixture's descriptor domain across index closure. Windows
+        // alias discovery for an unregistered existing root may otherwise probe
+        // another parallel fixture whose descriptor budget is exhausted.
+        let project_files = {
             let mut index = SearchIndex::open(&path).unwrap();
             index
                 .upsert(doc(
@@ -10727,7 +10744,9 @@ mod tests {
                 ))
                 .unwrap();
             index.checkpoint().unwrap();
-        }
+            index._project_files.as_ref().unwrap().clone()
+        };
+        assert_eq!(project_files.metrics().open, 0);
 
         let stale = path.join(rabitq_artifact_file(1));
         let stale_bytes = std::fs::read(&stale).unwrap();
@@ -10751,7 +10770,10 @@ mod tests {
     #[cfg(feature = "vector-search")]
     fn rabitq_reopen_falls_back_to_previous_valid_generation() {
         let path = unique_test_dir("rabitq_generation_fallback");
-        {
+        // Retain this fixture's descriptor domain across index closure. Windows
+        // alias discovery for an unregistered existing root may otherwise probe
+        // another parallel fixture whose descriptor budget is exhausted.
+        let project_files = {
             let mut index = SearchIndex::open(&path).unwrap();
             index
                 .upsert(doc(
@@ -10763,7 +10785,9 @@ mod tests {
                 .unwrap();
             index.checkpoint().unwrap();
             index.checkpoint().unwrap();
-        }
+            index._project_files.as_ref().unwrap().clone()
+        };
+        assert_eq!(project_files.metrics().open, 0);
 
         let latest = path.join(rabitq_artifact_file(2));
         let mut bytes = std::fs::read(&latest).unwrap();
@@ -11467,6 +11491,125 @@ mod tests {
                 value_summary_used: false,
             }]
         );
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
+    fn pruned_range_read_budget_rejection_is_typed_and_retryable() {
+        use hawdb_core::error::FileDescriptorError;
+        use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+
+        let path = unique_test_dir("search_range_fd_retry");
+        let project = ProjectFileDescriptors::acquire(&path, 32).unwrap();
+        let mut index = SearchIndex::open(&path).unwrap();
+        for (id, space) in [
+            ("memory:0", "space-a"),
+            ("memory:1", "space-a"),
+            ("memory:2", "space-b"),
+        ] {
+            index
+                .upsert(SearchDocument {
+                    id: id.to_string(),
+                    title: id.to_string(),
+                    content: "bounded physical range".to_string(),
+                    embedding: None,
+                    metadata: BTreeMap::from([("space_id".to_string(), space.to_string())]),
+                })
+                .unwrap();
+        }
+        index.checkpoint().unwrap();
+        drop(index);
+        let index = SearchIndex::open(&path).unwrap();
+        let payload = path.join(SEARCH_SEGMENT_PAYLOAD_FILE);
+        let original_payload = std::fs::read(&payload).unwrap();
+        let options = SearchQueryOptions {
+            limit: 10,
+            offset: 0,
+            rank_window: None,
+            fusion_weights: SearchFusionWeights::default(),
+            metadata_filters: BTreeMap::from([("space_id".to_string(), "space-b".to_string())]),
+            policy_epoch: None,
+        };
+        let before = index
+            .try_search_with_options(
+                "bounded physical range",
+                None,
+                SearchMode::Text,
+                options.clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            before
+                .candidate_set
+                .metadata_predicate_pushdown
+                .physical_range_read_count,
+            1
+        );
+        let baseline_open = project.metrics().open;
+        let mut held = Vec::new();
+        loop {
+            match File::create(path.join(format!("held-{}", held.len()))) {
+                Ok(file) => held.push(file),
+                Err(error) => {
+                    assert!(matches!(
+                        HawDBError::from(error),
+                        HawDBError::FileDescriptors(FileDescriptorError::BudgetExceeded { .. })
+                    ));
+                    break;
+                }
+            }
+        }
+        assert_eq!(project.metrics().open, 32);
+        let error = index
+            .try_search_with_options(
+                "bounded physical range",
+                None,
+                SearchMode::Text,
+                options.clone(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                HawDBError::FileDescriptors(FileDescriptorError::BudgetExceeded { .. })
+            ),
+            "range-read rejection lost its resource cause: {error:?}"
+        );
+        assert_eq!(project.metrics().open, 32);
+        assert_eq!(project.metrics().reserved, 0);
+        drop(held);
+        assert_eq!(std::fs::read(&payload).unwrap(), original_payload);
+        let result = index
+            .try_search_with_options("bounded physical range", None, SearchMode::Text, options)
+            .unwrap();
+        assert_eq!(
+            result
+                .hits
+                .iter()
+                .map(|hit| hit.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["memory:2"]
+        );
+        assert_eq!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .physical_range_read_count,
+            1
+        );
+        assert!(
+            result
+                .candidate_set
+                .metadata_predicate_pushdown
+                .physical_bytes_read
+                > 0
+        );
+        assert!(project.metrics().open <= baseline_open);
+        assert_eq!(project.metrics().reserved, 0);
+        drop(index);
+        assert_eq!(project.metrics().open, 0);
+        drop(project);
         std::fs::remove_dir_all(path).unwrap();
     }
 

@@ -131,14 +131,14 @@ fn mutation_affected_row_limit_rejects_set_return_atomically() {
         .unwrap();
     db.query("CREATE (:Thread {id: 'two', state: 'ready'})")
         .unwrap();
-    let epoch = db.statistics().computed_at_commit_epoch;
+    let epoch = db.statistics().unwrap().computed_at_commit_epoch;
 
     let error = db
         .query("MATCH (t:Thread) SET t.state = 'changed' RETURN t.id AS id")
         .unwrap_err();
 
     assert!(error.to_string().contains("max_mutation_affected_rows 1"));
-    assert_eq!(db.statistics().computed_at_commit_epoch, epoch);
+    assert_eq!(db.statistics().unwrap().computed_at_commit_epoch, epoch);
     let rows = db
         .query("MATCH (t:Thread) RETURN t.id AS id, t.state AS state ORDER BY id")
         .unwrap();
@@ -155,7 +155,7 @@ fn mutation_payload_limit_rejects_set_return_before_commit() {
     let mut db = Database::new_with_config(config);
     db.query("CREATE (:Thread {id: 'payload', state: 'ready'})")
         .unwrap();
-    let epoch = db.statistics().computed_at_commit_epoch;
+    let epoch = db.statistics().unwrap().computed_at_commit_epoch;
 
     let error = db
         .query("MATCH (t:Thread) SET t.state = 'this-payload-is-larger-than-the-configured-limit' RETURN t.state AS state")
@@ -164,7 +164,7 @@ fn mutation_payload_limit_rejects_set_return_before_commit() {
     assert!(error
         .to_string()
         .contains("max_mutation_result_payload_bytes 32"));
-    assert_eq!(db.statistics().computed_at_commit_epoch, epoch);
+    assert_eq!(db.statistics().unwrap().computed_at_commit_epoch, epoch);
     let rows = db
         .query("MATCH (t:Thread {id: 'payload'}) RETURN t.state AS state")
         .unwrap();
@@ -182,7 +182,7 @@ fn transaction_mutation_return_error_restores_the_statement_savepoint() {
     db.query("CREATE (:Thread {id: 'payload', state: 'ready'})")
         .unwrap();
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction().unwrap();
     let error = tx
         .query("MATCH (t:Thread) SET t.state = 'this-payload-is-larger-than-the-configured-limit' RETURN t.state AS state")
         .unwrap_err();
@@ -229,7 +229,7 @@ fn transaction_mutation_count_return_uses_projected_result_limit() {
     db.query("CREATE (:Thread {id: 'two', state: 'ready'})")
         .unwrap();
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction().unwrap();
     let output = tx
         .query("MATCH (t:Thread) SET t.state = 'changed' RETURN count(t)")
         .unwrap();
@@ -250,7 +250,7 @@ fn transaction_operation_limit_rejects_the_complete_batch() {
     let mut config = DatabaseConfig::default();
     config.mutation_limits.max_operations = std::num::NonZeroUsize::new(1).unwrap();
     let mut db = Database::new_with_config(config);
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction().unwrap();
     tx.query("CREATE (:Memory {id: 'one'})").unwrap();
     tx.query("CREATE (:Memory {id: 'two'})").unwrap();
 
@@ -271,8 +271,8 @@ fn wal_batch_limit_rejects_transaction_before_append() {
     let epoch;
     {
         let mut db = Database::open_with_config(&path, config.clone()).unwrap();
-        epoch = db.statistics().computed_at_commit_epoch;
-        let mut tx = db.begin_transaction();
+        epoch = db.statistics().unwrap().computed_at_commit_epoch;
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("CREATE (:Memory {id: 'one'})").unwrap();
         tx.query("CREATE (:Memory {id: 'two'})").unwrap();
 
@@ -281,7 +281,7 @@ fn wal_batch_limit_rejects_transaction_before_append() {
         assert!(error
             .to_string()
             .contains("WAL batch operation limit exceeded before append"));
-        assert_eq!(db.statistics().computed_at_commit_epoch, epoch);
+        assert_eq!(db.statistics().unwrap().computed_at_commit_epoch, epoch);
         assert!(db
             .query("MATCH (m:Memory) RETURN m.id AS id")
             .unwrap()
@@ -290,7 +290,7 @@ fn wal_batch_limit_rejects_transaction_before_append() {
     }
     {
         let mut db = Database::open_with_config(&path, config).unwrap();
-        assert_eq!(db.statistics().computed_at_commit_epoch, epoch);
+        assert_eq!(db.statistics().unwrap().computed_at_commit_epoch, epoch);
         assert!(db
             .query("MATCH (m:Memory) RETURN m.id AS id")
             .unwrap()
@@ -314,7 +314,7 @@ fn wal_record_byte_limit_rejects_mutation_before_append() {
     let epoch;
     {
         let mut db = Database::open_with_config(&path, config.clone()).unwrap();
-        epoch = db.statistics().computed_at_commit_epoch;
+        epoch = db.statistics().unwrap().computed_at_commit_epoch;
         let payload = "x".repeat(512);
 
         let error = db
@@ -327,11 +327,11 @@ fn wal_record_byte_limit_rejects_mutation_before_append() {
         assert!(error
             .to_string()
             .contains("WAL record byte limit exceeded before append"));
-        assert_eq!(db.statistics().computed_at_commit_epoch, epoch);
+        assert_eq!(db.statistics().unwrap().computed_at_commit_epoch, epoch);
     }
     {
         let mut db = Database::open_with_config(&path, config).unwrap();
-        assert_eq!(db.statistics().computed_at_commit_epoch, epoch);
+        assert_eq!(db.statistics().unwrap().computed_at_commit_epoch, epoch);
         assert!(db
             .query("MATCH (m:Memory) RETURN m.id AS id")
             .unwrap()
@@ -361,7 +361,7 @@ fn read_only_database_rejects_transaction_mutations() {
         ..DatabaseConfig::default()
     });
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction().unwrap();
     let error = tx.query("CREATE (:Memory {id: 1})").unwrap_err();
     assert!(error.to_string().contains("read-only mode"));
 

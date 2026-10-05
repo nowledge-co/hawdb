@@ -190,7 +190,7 @@ fn knowledge_entity_batch_delete_rejects_invalid_identifier() {
         .unwrap_err();
 
     assert!(error.to_string().contains("label identifier"));
-    assert_eq!(db.store.commit_epoch(), 1);
+    assert_eq!(db.runtime.get().unwrap().store.commit_epoch(), 1);
 }
 
 #[test]

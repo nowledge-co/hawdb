@@ -196,8 +196,8 @@ fn ordered_range_executor_propagates_consumer_errors() {
     let mut calls = 0;
     let expected = HawDBError::Execution("ordered range consumer stopped".to_string());
     let error = hawdb_executor::store::GraphExecutionRead::visit_nodes_by_property_range_owned(
-        &db.store,
-        db.catalog.label_id("Item").unwrap(),
+        &db.runtime.get().unwrap().store,
+        db.runtime.get().unwrap().catalog.label_id("Item").unwrap(),
         "rank",
         Some(&(Value::Int(0), false)),
         None,
@@ -230,10 +230,16 @@ fn ordered_range_cache_and_prepared_plans_track_projection_availability() {
     db.query("CREATE RANGE INDEX ON :Item(rank)").unwrap();
     let query = "MATCH (n:Item) WHERE n.rank > $a RETURN n.rank AS rank ORDER BY n.rank";
     let parameters = BTreeMap::from([("a".to_string(), Value::Int(0))]);
-    let old = db.runtime_planning_snapshot();
+    let old = db.runtime_planning_snapshot().unwrap();
     let prepare = || old.prepare(query.to_string(), &parameters).unwrap();
-    let (_, cold) = prepare().into_execution(&db.catalog, &db.store);
-    let (_, warm) = prepare().into_execution(&db.catalog, &db.store);
+    let (_, cold) = prepare().into_execution(
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
+    );
+    let (_, warm) = prepare().into_execution(
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
+    );
     assert!(cold
         .optimized
         .unwrap()
@@ -245,20 +251,26 @@ fn ordered_range_cache_and_prepared_plans_track_projection_availability() {
         PlanCacheLookup::Hit
     );
     let old_prepared = prepare();
-    let epoch = db.store.commit_epoch();
+    let epoch = db.runtime.get().unwrap().store.commit_epoch();
     let before = db.query_with_params(query, &parameters).unwrap().rows;
     db.checkpoint().unwrap();
-    assert_eq!(db.store.commit_epoch(), epoch);
-    let (_, stale) = old_prepared.into_execution(&db.catalog, &db.store);
+    assert_eq!(db.runtime.get().unwrap().store.commit_epoch(), epoch);
+    let (_, stale) = old_prepared.into_execution(
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
+    );
     assert!(
         stale.optimized.is_none(),
         "capability change must invalidate a prepared plan without DDL"
     );
-    let new = db.runtime_planning_snapshot();
+    let new = db.runtime_planning_snapshot().unwrap();
     let (_, cold) = new
         .prepare(query.to_string(), &parameters)
         .unwrap()
-        .into_execution(&db.catalog, &db.store);
+        .into_execution(
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
+        );
     let cold = cold.optimized.unwrap();
     assert_eq!(cold.plan_cache_lookup, PlanCacheLookup::Miss);
     // Plan legality changes independently of costing: missing out-of-core
@@ -271,13 +283,19 @@ fn ordered_range_cache_and_prepared_plans_track_projection_availability() {
     let (_, warm) = new
         .prepare(query.to_string(), &parameters)
         .unwrap()
-        .into_execution(&db.catalog, &db.store);
+        .into_execution(
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
+        );
     assert_eq!(
         warm.optimized.unwrap().plan_cache_lookup,
         PlanCacheLookup::Hit
     );
     // An older snapshot shares the cache but must never reuse the new plan.
-    let (_, old_again) = prepare().into_execution(&db.catalog, &db.store);
+    let (_, old_again) = prepare().into_execution(
+        &db.runtime.get().unwrap().catalog,
+        &db.runtime.get().unwrap().store,
+    );
     assert!(old_again.optimized.is_none());
     assert_eq!(
         db.query_with_params(query, &parameters).unwrap().rows,

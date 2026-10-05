@@ -41,7 +41,7 @@ pub(super) fn qualify_content_store_isolation(
     let point_parameters = message_point_parameters(&content_message_id);
     let point_options = message_point_options();
 
-    let read = database.begin_read_transaction();
+    let read = database.begin_read_transaction()?;
     let cancellation = RuntimeCancellationToken::new();
     cancellation.cancel();
     let cancelled_context = RuntimeTaskContext::without_deadline(cancellation);
@@ -69,7 +69,7 @@ pub(super) fn qualify_content_store_isolation(
     require_one_message(&before_lock.rows, &content_message_id, "isolation")?;
     let row_sha256 = rows_sha256(&before_lock.rows);
     let cancellation_pinned_bytes_after = database
-        .segment_cache_snapshot()
+        .segment_cache_snapshot()?
         .ok_or_else(|| {
             HawDBError::Execution(
                 "content-store isolation requires an out-of-core segment cache".to_string(),

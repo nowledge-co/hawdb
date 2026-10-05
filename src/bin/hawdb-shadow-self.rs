@@ -56,7 +56,7 @@ impl ExternalShadowProtocolBackend for SelfShadowBackend {
         &mut self,
         request: ExternalShadowProjectGraphRequest,
     ) -> Result<ExternalShadowProjectGraphReply> {
-        let graph = self.db.project_graph(request.rel_type.as_deref());
+        let graph = self.db.project_graph(request.rel_type.as_deref())?;
         let page_rank_scores = graph
             .page_rank(Default::default())
             .into_iter()

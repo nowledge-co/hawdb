@@ -61,7 +61,7 @@ fn memory_detail_page_uses_one_fixed_bounded_query() {
         ("is_crystal".to_string(), Value::Bool(false)),
         ("limit".to_string(), Value::Int(2)),
     ]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
 
     let first = read
         .query_with_params_bounded(MEMORY_DETAIL_PAGE_QUERY, &parameters, Some(2))
@@ -92,7 +92,7 @@ fn memory_business_projection_is_explicit_in_query() {
         ("unit_type".to_string(), Value::String("fact".to_string())),
         ("limit".to_string(), Value::Int(2)),
     ]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
 
     let output = read
         .query_with_params_bounded(MEMORY_FEATURE_PAGE_QUERY, &parameters, Some(2))

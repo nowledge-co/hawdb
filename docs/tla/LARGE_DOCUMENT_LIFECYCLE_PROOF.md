@@ -172,10 +172,11 @@ orphan-stage debt after process restart remains a recovery obligation, not a cla
 that Rust permits survive a crash. Conservative retained disk reservations are
 not measurements of live file bytes or cumulative write amplification.
 
-The descriptor work in #829, #839 and #841 remains separately tracked; #839 was
-still open when last inspected. Complete counted vector publication/cleanup,
-additional public failure/pressure/feature/platform tests, and private-stage crash
-recovery remain qualification gaps. The resident `SearchIndex` checkpoint and
+The descriptor work in #829, #839 and #841 has been merged from main. This
+implementation retains the counted vector bridge, typed errors and shared path
+capacity bounds while adding explicit private-stage cleanup ownership. Additional
+public failure/pressure/feature/platform tests and private-stage crash recovery
+remain qualification gaps. The resident `SearchIndex` checkpoint and
 mini-delta entrypoints retain their resident contract; the new source path uses
 durable immutable generation publication. Stage 4 requires supported-path and
 host-performance evidence before changing any policy defaults.

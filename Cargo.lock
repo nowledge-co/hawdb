@@ -747,6 +747,7 @@ dependencies = [
  "hawdb-qos",
  "hawdb-telemetry",
  "libc",
+ "memmap2",
  "rayon",
  "roaring",
  "serde",
@@ -782,6 +783,7 @@ version = "0.3.0"
 dependencies = [
  "crc32fast",
  "hawdb-core",
+ "hawdb-storage",
  "memmap2",
  "serde",
  "serde_json",

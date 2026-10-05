@@ -169,7 +169,10 @@ fn measure(path: &Path, durable: bool, grouped: bool, writers: usize, serial: bo
     drop(database);
     if durable {
         let mut reopened = Database::open(path).unwrap();
-        assert_eq!(reopened.commit_epoch(), initial_epoch + COMMITS as u64);
+        assert_eq!(
+            reopened.commit_epoch().unwrap(),
+            initial_epoch + COMMITS as u64
+        );
         assert_eq!(reopened.query(READ).unwrap().rows, expected(1));
         drop(reopened);
         std::fs::remove_dir_all(path).unwrap();

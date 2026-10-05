@@ -43,7 +43,7 @@ background-maintenance = []
 full-text-search = []
 graph-analytics = []
 qualification = []
-vector-search = ["dep:hawdb-vector-projection"]
+vector-search = ["dep:hawdb-vector-projection", "hawdb-vector-projection/storage-io"]
 
 [dev-dependencies]
 hawdb-vector-projection = { path = "../vector-projection", version = "0.3.0" }

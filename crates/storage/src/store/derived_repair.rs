@@ -21,19 +21,21 @@ use super::{
 use crate::error::{HawDBError, Result};
 use hawdb_storage::derived_repair::{plan_identity, validate_options, validate_plan};
 pub use hawdb_storage::derived_repair::{
-    DerivedArtifactHealth, DerivedArtifactHealthReport, DerivedArtifactHealthState,
-    DerivedArtifactKind, DerivedArtifactRebuildOptions, DerivedArtifactRepairPlan,
-    DerivedArtifactRepairReport, DERIVED_ARTIFACT_REPAIR_PROTOCOL,
+    DerivedArtifactBranchSource, DerivedArtifactHealth, DerivedArtifactHealthReport,
+    DerivedArtifactHealthState, DerivedArtifactKind, DerivedArtifactRebuildOptions,
+    DerivedArtifactRepairPlan, DerivedArtifactRepairReport, DERIVED_ARTIFACT_REPAIR_PROTOCOL,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[path = "derived_repair/audit.rs"]
 #[doc(hidden)]
 pub mod audit;
+#[path = "derived_repair/publication.rs"]
+pub(super) mod publication;
 use audit::{
-    finalize_repair, load_matching_pending_record, load_single_pending_record,
-    pending_record_paths, prepare_repair, validate_pending_record,
+    finalize_repair, load_matching_pending_record, load_single_pending_record, prepare_repair,
+    validate_pending_record,
 };
 
 struct DerivedInspection {
@@ -49,8 +51,11 @@ impl DatabaseDoctor {
         options: DerivedArtifactRebuildOptions,
     ) -> Result<DerivedArtifactHealthReport> {
         validate_options(options)?;
-        let path = path.as_ref();
+        let directory = super::doctor::repair_directory(path.as_ref())?;
+        let path = directory.as_path();
+        let _files = super::doctor::repair_file_descriptors(path)?;
         if let Some(record) = load_single_pending_record(path)? {
+            validate_pending_record(path, &record)?;
             let inspection = inspect(path, record.plan.options)?;
             return Ok(inspection.health);
         }
@@ -62,13 +67,15 @@ impl DatabaseDoctor {
         options: DerivedArtifactRebuildOptions,
     ) -> Result<DerivedArtifactRepairPlan> {
         validate_options(options)?;
-        let path = path.as_ref();
+        let directory = super::doctor::repair_directory(path.as_ref())?;
+        let path = directory.as_path();
+        let _files = super::doctor::repair_file_descriptors(path)?;
         if let Some(record) = load_single_pending_record(path)? {
             validate_pending_record(path, &record)?;
             return Ok(record.plan);
         }
         let inspection = inspect(path, options)?;
-        plan_from_inspection(path, &inspection, options)
+        plan_from_inspection(&inspection, options)
     }
 
     pub fn apply_derived_artifact_rebuild(
@@ -76,30 +83,72 @@ impl DatabaseDoctor {
         plan: &DerivedArtifactRepairPlan,
     ) -> Result<DerivedArtifactRepairReport> {
         validate_plan(plan)?;
-        let path = path.as_ref();
-        if let Some(record) = load_matching_pending_record(path, &plan.plan_id)? {
-            let inspection = inspect(path, record.plan.options)?;
-            if inspection.manifest.checkpoint_epoch == record.plan.target_generation
-                && !inspection.health.repair_required
-            {
-                return finalize_repair(path, record, true);
+        let directory = super::doctor::repair_directory(path.as_ref())?;
+        let path = directory.as_path();
+        let _files = super::doctor::repair_file_descriptors(path)?;
+        let pending = load_matching_pending_record(path, &plan.plan_id)?;
+        if let Some(record) = &pending {
+            validate_pending_record(path, record)?;
+            if record.plan != *plan {
+                return Err(HawDBError::Storage(
+                    "pending derived repair plan differs from the requested plan".into(),
+                ));
             }
         }
-
         let mut inspection = inspect(path, plan.options)?;
-        let current_plan = plan_from_inspection(path, &inspection, plan.options)?;
-        if current_plan != *plan {
+        if let Some(record) = &pending
+            && inspection.manifest.checkpoint_epoch == record.plan.target_generation
+            && inspection.manifest.checkpoint_commit_epoch == plan.source_commit_epoch
+            && inspection.store.commit_epoch == plan.source_commit_epoch
+            && !inspection.health.repair_required
+        {
+            // Keep the UUID lease through validation and audit completion.
+            return finalize_repair(path, record.clone(), true);
+        }
+        if pending.is_none() && plan_from_inspection(&inspection, plan.options)? != *plan {
             return Err(HawDBError::Storage(
                 "derived artifact repair plan no longer matches the current database state"
                     .to_string(),
             ));
         }
-        let prepared = match load_matching_pending_record(path, &plan.plan_id)? {
+        validate_source_identity(path, plan)?;
+        if inspection.manifest.checkpoint_epoch != plan.source_generation
+            || inspection.store.commit_epoch != plan.source_commit_epoch
+            || inspection.health.source_node_count != plan.source_node_count
+            || inspection.health.source_relationship_count != plan.source_relationship_count
+            || inspection.health.source_logical_bytes != plan.source_logical_bytes
+            || inspection
+                .store
+                .durable
+                .as_ref()
+                .unwrap()
+                .next_checkpoint_generation()?
+                != plan.target_generation
+        {
+            return Err(HawDBError::Storage(
+                "derived repair source no longer matches the planned recovery".into(),
+            ));
+        }
+        let resumed = pending.is_some();
+        let prepared = match pending {
             Some(record) => record,
             None => prepare_repair(path, plan)?,
         };
         validate_pending_record(path, &prepared)?;
-        validate_source_identity(path, plan)?;
+        if resumed && plan.branch.is_some() {
+            audit::archive_unpublished_checkpoint(
+                path,
+                &prepared,
+                inspection.store.durable.as_ref().unwrap().root_path(),
+            )?;
+        }
+        if plan.branch.is_some() {
+            inspection
+                .store
+                .authorize_derived_repair_publication(Arc::new(
+                    publication::DerivedRepairPublication::from_prepared(path, prepared.clone()),
+                ))?;
+        }
         inspection.store.enable_derived_repair_writes()?;
         let build_config = build_config(plan.options)?;
         inspection
@@ -109,25 +158,40 @@ impl DatabaseDoctor {
                 None,
                 build_config,
             )?;
-        drop(inspection.store);
-
-        let published = inspect(path, plan.options)?;
-        if published.manifest.checkpoint_epoch != plan.target_generation
-            || published.manifest.checkpoint_commit_epoch != plan.source_commit_epoch
-            || published.health.repair_required
+        let durable = inspection.store.durable.as_ref().unwrap();
+        let manifest = match &plan.branch {
+            Some(source) => DurableManifest::load(&published_branch(path, source)?.manifest_path)?,
+            None => DurableManifest::load(durable.manifest_path())?,
+        };
+        if manifest.checkpoint_epoch != plan.target_generation
+            || manifest.checkpoint_commit_epoch != plan.source_commit_epoch
+            || assess_artifacts(
+                durable.root_path(),
+                &inspection.store,
+                manifest,
+                plan.options,
+            )?
+            .iter()
+            .any(|artifact| artifact.state == DerivedArtifactHealthState::RepairRequired)
         {
             return Err(HawDBError::Storage(
                 "derived artifact rebuild did not publish one healthy target generation; pending audit was retained"
                     .to_string(),
             ));
         }
-        drop(published.store);
-        finalize_repair(path, prepared, false)
+        let prepared = if plan.branch.is_some() {
+            load_matching_pending_record(path, &plan.plan_id)?.ok_or_else(|| {
+                HawDBError::Storage("published branch repair lost its pending audit".into())
+            })?
+        } else {
+            prepared
+        };
+        finalize_repair(path, prepared, resumed)
     }
 }
 
-pub(super) fn reject_pending_derived_artifact_repair(path: &Path) -> Result<()> {
-    let pending = pending_record_paths(path)?;
+pub(crate) fn reject_pending_derived_artifact_repair(path: &Path) -> Result<()> {
+    let pending = audit::pending_record_paths_at_directory(path)?;
     if pending.is_empty() {
         return Ok(());
     }
@@ -148,12 +212,13 @@ fn inspect(path: &Path, options: DerivedArtifactRebuildOptions) -> Result<Derive
         max_out_of_core_delta_bytes: Some(options.max_source_logical_bytes),
         ..WalReplayConfig::default()
     };
-    let (store, recovered_catalog, _) = GraphStore::open_for_derived_repair(path, replay)?;
-    let manifest = DurableManifest::load(&path.join(MANIFEST_FILE))?;
+    let (store, recovered_catalog) = GraphStore::open_for_derived_repair(path, replay)?;
+    let durable = store.durable.as_ref().expect("repair source is durable");
+    let manifest = DurableManifest::load(durable.manifest_path())?;
     manifest.validate()?;
     let (node_count, relationship_count, logical_bytes) =
         validate_canonical_source(&store, options)?;
-    let artifacts = assess_artifacts(path, &store, manifest, options);
+    let artifacts = assess_artifacts(durable.root_path(), &store, manifest, options)?;
     let repair_required = artifacts
         .iter()
         .any(|artifact| artifact.state == DerivedArtifactHealthState::RepairRequired);
@@ -216,17 +281,18 @@ fn assess_artifacts(
     store: &GraphStore,
     manifest: DurableManifest,
     options: DerivedArtifactRebuildOptions,
-) -> Vec<DerivedArtifactHealth> {
+) -> Result<Vec<DerivedArtifactHealth>> {
     if manifest.checkpoint_generation.is_none() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let canonical_relationship_count = store
         .canonical_base
         .as_ref()
         .map(|reader| reader.manifest().relationship_count)
         .unwrap_or_default();
-    vec![
+    Ok(vec![
         assess_one(DerivedArtifactKind::CanonicalAdjacency, || {
+            validate_branch_derived_objects(store, DerivedArtifactKind::CanonicalAdjacency)?;
             let cache = Arc::new(SegmentCache::new(options.segment_cache_capacity_bytes));
             let mut open_budget =
                 GraphManifestOpenBudget::new(options.max_graph_manifest_open_bytes);
@@ -249,8 +315,12 @@ fn assess_artifacts(
                 .deep_scrub()
                 .map(|_| ())
                 .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))
-        }),
+        })?,
         assess_one(DerivedArtifactKind::PersistentPropertyProjection, || {
+            validate_branch_derived_objects(
+                store,
+                DerivedArtifactKind::PersistentPropertyProjection,
+            )?;
             let cache = Arc::new(SegmentCache::new(options.segment_cache_capacity_bytes));
             let mut open_budget =
                 GraphManifestOpenBudget::new(options.max_graph_manifest_open_bytes);
@@ -270,30 +340,72 @@ fn assess_artifacts(
                 .deep_scrub()
                 .map(|_| ())
                 .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))
-        }),
+        })?,
+    ])
+}
+
+pub(super) fn rebuildable_artifact_kind(
+    path: &str,
+    generation: u64,
+) -> Option<DerivedArtifactKind> {
+    [
+        DerivedArtifactKind::CanonicalAdjacency,
+        DerivedArtifactKind::PersistentPropertyProjection,
     ]
+    .into_iter()
+    .find(|kind| {
+        audit::target_files(*kind, generation)
+            .iter()
+            .any(|name| name == path)
+    })
+}
+
+fn validate_branch_derived_objects(store: &GraphStore, kind: DerivedArtifactKind) -> Result<()> {
+    let durable = store.durable.as_ref().expect("repair source is durable");
+    let Some(branch) = &durable.branch_runtime else {
+        return Ok(());
+    };
+    let objects =
+        crate::immutable_object::ImmutableObjectStore::open(branch.immutable_store_root())
+            .map_err(HawDBError::from_storage_error)?;
+    let references = branch
+        .root()
+        .checkpoint_bindings
+        .iter()
+        .filter(|binding| {
+            rebuildable_artifact_kind(&binding.relative_path, durable.checkpoint_epoch)
+                == Some(kind)
+        })
+        .map(|binding| binding.reference)
+        .collect::<std::collections::BTreeSet<_>>();
+    for reference in references {
+        objects
+            .read(reference)
+            .map_err(HawDBError::from_storage_error)?;
+    }
+    Ok(())
 }
 
 fn assess_one(
     kind: DerivedArtifactKind,
     check: impl FnOnce() -> Result<()>,
-) -> DerivedArtifactHealth {
+) -> Result<DerivedArtifactHealth> {
     match check() {
-        Ok(()) => DerivedArtifactHealth {
+        Ok(()) => Ok(DerivedArtifactHealth {
             kind,
             state: DerivedArtifactHealthState::Healthy,
             reason_code: None,
-        },
-        Err(_) => DerivedArtifactHealth {
+        }),
+        Err(error @ HawDBError::FileDescriptors(_)) => Err(error),
+        Err(_) => Ok(DerivedArtifactHealth {
             kind,
             state: DerivedArtifactHealthState::RepairRequired,
             reason_code: Some("artifact_missing_corrupt_or_inconsistent".to_string()),
-        },
+        }),
     }
 }
 
 fn plan_from_inspection(
-    path: &Path,
     inspection: &DerivedInspection,
     options: DerivedArtifactRebuildOptions,
 ) -> Result<DerivedArtifactRepairPlan> {
@@ -320,13 +432,34 @@ fn plan_from_inspection(
             options.max_temporary_bytes
         )));
     }
-    let manifest_identity = file_checksum(&path.join(MANIFEST_FILE))?;
-    let wal_identity = file_checksum(&inspection.manifest.wal_path(path))?;
+    let durable = inspection
+        .store
+        .durable
+        .as_ref()
+        .expect("repair source is durable");
+    let manifest_identity = file_checksum(durable.manifest_path())?;
+    let wal_identity = file_checksum(&durable.wal_path)?;
+    let branch = durable
+        .branch_runtime
+        .as_ref()
+        .map(|branch| {
+            let head = file_checksum(branch.head_path())?;
+            Ok::<_, HawDBError>(DerivedArtifactBranchSource {
+                project_id: hawdb_core::Uuid::from_bytes(branch.head.project_id),
+                branch_id: hawdb_core::Uuid::from_bytes(branch.head.branch_id),
+                metadata_revision: branch.metadata_revision(),
+                head_len: head.0,
+                head_crc32c: head.1,
+                head_sha256: head.2.to_string(),
+            })
+        })
+        .transpose()?;
     let mut plan = DerivedArtifactRepairPlan {
         protocol: DERIVED_ARTIFACT_REPAIR_PROTOCOL.to_string(),
         plan_id: String::new(),
+        branch,
         source_generation: inspection.manifest.checkpoint_epoch,
-        target_generation: inspection.manifest.checkpoint_epoch.saturating_add(1),
+        target_generation: durable.next_checkpoint_generation()?,
         source_commit_epoch: inspection.store.commit_epoch,
         manifest_len: manifest_identity.0,
         manifest_crc32c: manifest_identity.1,
@@ -348,9 +481,28 @@ fn plan_from_inspection(
 pub(crate) use hawdb_storage::derived_repair::build_config;
 
 fn validate_source_identity(path: &Path, plan: &DerivedArtifactRepairPlan) -> Result<()> {
-    let manifest = file_checksum(&path.join(MANIFEST_FILE))?;
-    let durable_manifest = DurableManifest::load(&path.join(MANIFEST_FILE))?;
-    let wal = file_checksum(&durable_manifest.wal_path(path))?;
+    let (manifest_path, wal_path) = match &plan.branch {
+        Some(source) => {
+            let published = published_branch(path, source)?;
+            let head = file_checksum(&path.join("branch.head"))?;
+            if head.0 != source.head_len
+                || head.1 != source.head_crc32c
+                || head.2.to_string() != source.head_sha256
+            {
+                return Err(HawDBError::Storage(
+                    "derived artifact repair branch head changed after planning".into(),
+                ));
+            }
+            (published.manifest_path, published.wal_path)
+        }
+        None => {
+            let manifest_path = path.join(MANIFEST_FILE);
+            let manifest = DurableManifest::load(&manifest_path)?;
+            (manifest_path, manifest.wal_path(path))
+        }
+    };
+    let manifest = file_checksum(&manifest_path)?;
+    let wal = file_checksum(&wal_path)?;
     if manifest.0 != plan.manifest_len
         || manifest.1 != plan.manifest_crc32c
         || manifest.2.to_string() != plan.manifest_sha256
@@ -363,4 +515,84 @@ fn validate_source_identity(path: &Path, plan: &DerivedArtifactRepairPlan) -> Re
         ));
     }
     Ok(())
+}
+
+struct PublishedRepairBranch {
+    head: crate::branch_head::BranchHead,
+    root: crate::sealed_root::SealedRoot,
+    objects: crate::immutable_object::ImmutableObjectStore,
+    manifest_path: PathBuf,
+    wal_path: PathBuf,
+}
+
+/// Resolves only the durable selector and its metadata objects. Disposable
+/// runtime manifests never decide whether a branch repair was committed.
+fn published_branch(
+    path: &Path,
+    source: &DerivedArtifactBranchSource,
+) -> Result<PublishedRepairBranch> {
+    let id = source.branch_id.to_string();
+    let branches = path
+        .parent()
+        .filter(|parent| {
+            parent.file_name().is_some_and(|name| name == "branches")
+                && path.file_name().is_some_and(|name| name == id.as_str())
+        })
+        .ok_or_else(|| {
+            HawDBError::StorageIntegrity("repair path does not identify its branch UUID".into())
+        })?;
+    let catalog = crate::branch_catalog::read_catalog(&branches.join("catalog.hawdb"))?;
+    let record = catalog
+        .branches
+        .iter()
+        .find(|record| record.id.as_uuid() == source.branch_id)
+        .ok_or_else(|| {
+            HawDBError::StorageIntegrity("repair branch is absent from the catalog".into())
+        })?;
+    if catalog.project_id.as_uuid() != source.project_id
+        || record.metadata_revision != source.metadata_revision
+        || record.state != crate::branch_catalog::BranchState::Ready
+    {
+        return Err(HawDBError::StorageIntegrity(
+            "repair branch catalog identity changed".into(),
+        ));
+    }
+    let head = crate::branch_head::read_branch_head(&path.join("branch.head"))
+        .map_err(HawDBError::from_storage_error)?;
+    if head.project_id != *source.project_id.as_bytes()
+        || head.branch_id != *source.branch_id.as_bytes()
+    {
+        return Err(HawDBError::StorageIntegrity(
+            "repair branch head identity changed".into(),
+        ));
+    }
+    let objects = crate::immutable_object::ImmutableObjectStore::open(branches.join("objects"))
+        .map_err(HawDBError::from_storage_error)?;
+    let root = crate::sealed_root::SealedRoot::decode(
+        &objects
+            .read(head.sealed_root)
+            .map_err(HawDBError::from_storage_error)?,
+    )
+    .map_err(HawDBError::from_storage_error)?;
+    if root.commit_epoch != head.logical_commit_epoch
+        || root.replay_end_lsn() != head.active_wal.replay_start_lsn
+    {
+        return Err(HawDBError::StorageIntegrity(
+            "repair branch root does not match its head".into(),
+        ));
+    }
+    objects
+        .read(root.durable_manifest)
+        .map_err(HawDBError::from_storage_error)?;
+    let manifest_path = objects.object_path(root.durable_manifest);
+    let wal_path = path.join(crate::artifact_files::wal_generation_file(
+        head.active_wal.generation,
+    ));
+    Ok(PublishedRepairBranch {
+        head,
+        root,
+        objects,
+        manifest_path,
+        wal_path,
+    })
 }

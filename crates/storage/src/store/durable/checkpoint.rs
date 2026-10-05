@@ -43,6 +43,14 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+// Same-project path operations use one transient slot. Windows replacement
+// additionally holds its write-capable candidate during rename.
+const SIDECAR_PUBLICATION_DESCRIPTORS: usize = if cfg!(windows) { 2 } else { 1 };
+
+#[cfg(test)]
+#[path = "checkpoint/tests.rs"]
+mod tests;
+
 impl DurableStore {
     pub(in crate::store) fn read_checkpoint_text(&self, config: WalReplayConfig) -> Result<String> {
         let metadata = fs::metadata(&self.checkpoint_path)?;
@@ -161,6 +169,14 @@ impl DurableStore {
         publish_projected_graph_artifacts: bool,
         source_scan_publication: Option<source_scan::SourceScanPublication>,
     ) -> Result<()> {
+        // Admit the whole IO wave before changing the first cache file. Reuse
+        // these slots across replacements even if another owner fills all
+        // remaining project capacity. Filesystem failures can still leave a
+        // partial cache publication; the checkpoint manifest remains authority.
+        let _publication_resources = self
+            .project_files
+            .reserve_admission(SIDECAR_PUBLICATION_DESCRIPTORS)
+            .map_err(HawDBError::from_storage_error)?;
         if publish_projected_graph_artifacts {
             durable_replace_file(
                 &staging_path.join(PROJECTED_GRAPHS_FILE),
@@ -169,6 +185,8 @@ impl DurableStore {
         } else {
             self.remove_projected_graph_artifacts()?;
         }
+        #[cfg(test)]
+        tests::after_first_publication();
         if source_scan_publication.is_some() {
             for file in [
                 source_scan::SOURCE_SCAN_PAYLOAD_FILE,

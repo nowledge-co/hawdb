@@ -285,7 +285,8 @@ fn matched_relationship_create_uses_one_wal_batch() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 4);
+    // Engine bootstrap is already checkpointed; count the private user WAL.
+    assert_eq!(wal.lines().count(), 3);
     assert_eq!(wal.matches("create_node").count(), 2);
     assert_eq!(wal.matches("create_rel").count(), 1);
     {
@@ -314,7 +315,8 @@ fn merge_relationship_existing_pattern_does_not_write_wal() {
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.lines().count(), 2);
+    // Engine bootstrap is already checkpointed; count the private user WAL.
+    assert_eq!(wal.lines().count(), 1);
     assert_eq!(wal.matches("create_node").count(), 2);
     assert_eq!(wal.matches("create_rel").count(), 1);
     {

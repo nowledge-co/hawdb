@@ -67,7 +67,7 @@ fn memory_evolves_successors_use_one_fixed_bounded_query_per_parent() {
     db.query("MATCH (old:Memory {id: 'old'}), (source:Source {id: 'not-memory'}) CREATE (old)-[:EVOLVES {content_relation: 'ignored'}]->(source)")
         .unwrap();
     let parameters = successor_parameters("old", 0, 2);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     db.query("CREATE (:Memory {id: 'new-c', title: 'C', updated_at: 40})")
         .unwrap();
@@ -119,7 +119,7 @@ fn memory_evolves_successors_updated_order_pages_with_fixed_query() {
     }
     let first_parameters = successor_parameters("old", 0, 1);
     let second_parameters = successor_parameters("old", 1, 2);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     let first = snapshot
         .query_with_params_bounded(

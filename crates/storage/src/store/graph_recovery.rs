@@ -662,8 +662,13 @@ impl GraphStore {
                         // Release the read handle before resizing the WAL on Windows.
                         drop(cursor);
                         let durable = self.durable.as_mut().expect("durable WAL replay");
+                        let repair_directory = durable.wal_path.parent().ok_or_else(|| {
+                            HawDBError::StorageIntegrity(
+                                "WAL repair has no parent directory".into(),
+                            )
+                        })?;
                         let repair = super::doctor::automatic_wal_tail_repair_locked(
-                            &durable.root_path,
+                            repair_directory,
                             config,
                         )?;
                         durable.wal_bytes = repair.retained_wal_len;

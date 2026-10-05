@@ -51,17 +51,19 @@ const GROUP_COMMIT_LIVENESS_CHECK_INTERVAL: Duration = Duration::from_millis(250
 
 pub(super) struct CommitSequencer {
     database: Mutex<Database>,
-    published_read: Mutex<Arc<PublishedConcurrentRead>>,
+    published_read: Mutex<Option<Arc<PublishedConcurrentRead>>>,
     read_publication_failed: AtomicBool,
     group_commit: GroupCommitCoordinator,
 }
 
 impl CommitSequencer {
     pub(super) fn new(database: Database, group_commit: WalGroupCommitConfig) -> Self {
-        let published = PublishedConcurrentRead::capture(&database);
         Self {
             database: Mutex::new(database),
-            published_read: Mutex::new(Arc::new(published)),
+            // Opening a concurrent project must not take main's writer lease.
+            // The first data operation publishes a complete, validated view;
+            // a failed admission leaves this empty and remains retryable.
+            published_read: Mutex::new(None),
             read_publication_failed: AtomicBool::new(false),
             group_commit: GroupCommitCoordinator::new(group_commit),
         }
@@ -85,8 +87,57 @@ impl CommitSequencer {
             .lock()
             .map_err(|_| read_publication_poisoned_error())?
             .clone();
+        let view = match view {
+            Some(view) => view,
+            None => {
+                let database = self.lock()?;
+                // Preserve writer -> publication lock order. Another first
+                // reader or writer may have published while we waited.
+                let mut publication = self
+                    .published_read
+                    .lock()
+                    .map_err(|_| read_publication_poisoned_error())?;
+                if let Some(view) = publication.as_ref() {
+                    Arc::clone(view)
+                } else {
+                    // Admission can invoke a host recovery callback. Do not
+                    // hold the publication mutex across that callback.
+                    drop(publication);
+                    let view = Arc::new(PublishedConcurrentRead::capture(&database)?);
+                    publication = self
+                        .published_read
+                        .lock()
+                        .map_err(|_| read_publication_poisoned_error())?;
+                    *publication = Some(Arc::clone(&view));
+                    view
+                }
+            }
+        };
         self.ensure_read_usable(&view)?;
         Ok(view)
+    }
+
+    pub(super) fn prepare_sql(
+        &self,
+        sql_text: &str,
+    ) -> Result<crate::relational_sql::PreparedRelationalSql> {
+        let view = self
+            .published_read
+            .lock()
+            .map_err(|_| read_publication_poisoned_error())?
+            .clone();
+        match view {
+            Some(view) => view
+                .snapshot
+                .0
+                .relational_plan_template_cache
+                .prepare(sql_text),
+            // Parsing has no data dependency. Keep cold catalog inspection
+            // independent of main admission; steady reads retain their cache.
+            None => {
+                crate::relational_sql::RelationalPlanTemplateCache::new(Some(0)).prepare(sql_text)
+            }
+        }
     }
 
     pub(super) fn storage_pressure_snapshot(
@@ -100,18 +151,21 @@ impl CommitSequencer {
                 .published_read
                 .lock()
                 .map_err(|_| read_publication_poisoned_error())?;
-            (Arc::strong_count(&published) == 1
-                && Arc::strong_count(&published.snapshot.0._pin) == 1)
-                .then_some(published.snapshot.0._pin.id)
+            published.as_ref().and_then(|published| {
+                (Arc::strong_count(published) == 1
+                    && Arc::strong_count(&published.snapshot.0._pin) == 1)
+                    .then_some(published.snapshot.0._pin.id)
+            })
         };
-        let oldest = database
+        let runtime = database.runtime.get()?;
+        let oldest = runtime
             .reader_pins
             .lock()
             .expect("database reader pins lock should not be poisoned")
             .oldest_epoch_excluding(excluded);
         // Only the host metric excludes an idle internal publication. Actual
         // checkpoint/WAL reclamation still uses every physical-generation pin.
-        Ok(database.store.storage_pressure_snapshot(oldest))
+        Ok(runtime.store.storage_pressure_snapshot(oldest))
     }
 
     fn ensure_read_usable(&self, view: &PublishedConcurrentRead) -> Result<()> {
@@ -339,11 +393,17 @@ impl CommitSequencer {
             if completed.len() == 1 {
                 group_commit_process_crash("after_first_group_task");
             }
-            if database.relational_row_schema_checkpoint_required() {
+            // The group was admitted before any task ran. Inspect that bundle
+            // without a new fallible admission after acknowledging mutations.
+            // If a task unexpectedly removes it, stop collecting and let the
+            // shared finish barrier report the failure to all completed callers.
+            let Some(runtime) = database.runtime.peek() else {
                 break;
-            }
-            let progress = database.wal_sync_group_progress();
-            if progress.byte_count >= self.group_commit.config.max_bytes().get() {
+            };
+            if runtime.store.relational_row_schema_checkpoint_required()
+                || runtime.store.wal_sync_group_progress().byte_count
+                    >= self.group_commit.config.max_bytes().get()
+            {
                 break;
             }
         }
@@ -446,7 +506,7 @@ impl CommitSequencer {
 
 pub(super) struct CommitGuard<'a> {
     database: MutexGuard<'a, Database>,
-    published: &'a Mutex<Arc<PublishedConcurrentRead>>,
+    published: &'a Mutex<Option<Arc<PublishedConcurrentRead>>>,
     read_publication_failed: &'a AtomicBool,
     mutated: bool,
 }
@@ -477,9 +537,15 @@ impl Drop for CommitGuard<'_> {
         }
         // The guard spans the entire group durability barrier. An unfinished
         // group or unwind must never expose its partially published live state.
-        let usable = !std::thread::panicking()
-            && !self.database.store.wal_sync_group_active()
-            && self.database.store.ensure_usable().is_ok();
+        if std::thread::panicking() {
+            self.read_publication_failed.store(true, Ordering::Release);
+            return;
+        }
+        let Some(runtime) = self.database.runtime.peek() else {
+            return;
+        };
+        let usable =
+            !runtime.store.wal_sync_group_active() && runtime.store.ensure_usable().is_ok();
         if !usable {
             self.read_publication_failed.store(true, Ordering::Release);
             return;
@@ -487,7 +553,13 @@ impl Drop for CommitGuard<'_> {
         if self.read_publication_failed.load(Ordering::Acquire) {
             return;
         }
-        let next = Arc::new(PublishedConcurrentRead::capture(&self.database));
+        let next = match PublishedConcurrentRead::capture(&self.database) {
+            Ok(next) => Some(Arc::new(next)),
+            Err(_) => {
+                self.read_publication_failed.store(true, Ordering::Release);
+                return;
+            }
+        };
         let previous = std::mem::replace(
             &mut *self
                 .published

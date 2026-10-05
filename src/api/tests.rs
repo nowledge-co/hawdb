@@ -377,7 +377,7 @@ fn public_unwind_mutation_batches_direct_and_transactional_bootstrap_rows() {
     )
     .unwrap();
 
-    let mut transaction = db.begin_transaction();
+    let mut transaction = db.begin_transaction().unwrap();
     let error = transaction
         .query_with_params(
             query,
@@ -473,9 +473,9 @@ fn unwind_transaction_matches_sequential_merges_and_wal_for_repeated_keys() {
             let mut db = Database::open(&path).unwrap();
             db.query("CREATE (:Entity {id: 0, name: 'existing', aliases: []})")
                 .unwrap();
-            let epoch = db.store.commit_epoch();
+            let epoch = db.runtime.get().unwrap().store.commit_epoch();
             let prefix = std::fs::read(active_wal_path(&path)).unwrap();
-            let mut transaction = db.begin_transaction();
+            let mut transaction = db.begin_transaction().unwrap();
             if batched {
                 transaction
                     .query_with_params(
@@ -495,7 +495,7 @@ fn unwind_transaction_matches_sequential_merges_and_wal_for_repeated_keys() {
             assert_eq!(staged.rows.len(), 11);
             assert_eq!(std::fs::read(active_wal_path(&path)).unwrap(), prefix);
             transaction.commit().unwrap();
-            assert_eq!(db.store.commit_epoch(), epoch + 1);
+            assert_eq!(db.runtime.get().unwrap().store.commit_epoch(), epoch + 1);
             let committed_wal = std::fs::read(active_wal_path(&path)).unwrap();
             assert!(committed_wal.len() > prefix.len());
             drop(db);
@@ -526,7 +526,7 @@ fn unwind_transaction_rejection_preserves_prior_statement_and_wal() {
     };
     let mut db = Database::open_with_config(&path, config).unwrap();
     let prefix = std::fs::read(active_wal_path(&path)).unwrap();
-    let mut transaction = db.begin_transaction();
+    let mut transaction = db.begin_transaction().unwrap();
     transaction.query("CREATE (:Entity {id: 'prior'})").unwrap();
     let query = "UNWIND $rows AS row CREATE (:Entity {id: row.id})";
     let parameters = |ids: &[&str]| {
@@ -611,7 +611,7 @@ fn reads_crystals_for_wiki_and_okf_shapes() {
         .unwrap();
     db.query("CREATE (:Memory {id: 'crystal-non', is_crystal: false, crystal_title: 'Non Crystal', importance: 5.0, created_at: 99})")
         .unwrap();
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
 
     let wiki_detail = db
         .query_crystals_via_cypher(&KnowledgeCrystalListRequest {
@@ -622,7 +622,10 @@ fn reads_crystals_for_wiki_and_okf_shapes() {
         })
         .unwrap();
     assert_eq!(wiki_detail.graph_commit_epoch, graph_commit_epoch);
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch
+    );
     assert_eq!(wiki_detail.matched_count, 1);
     assert_eq!(wiki_detail.returned_count, 1);
     assert_eq!(
@@ -730,7 +733,7 @@ fn crystal_reads_use_query_runtime_plan_cache() {
         first.rows[0].memory_id.as_deref(),
         Some("crystal-cache-alpha")
     );
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.entries, 1);
     assert_eq!(stats.misses, 1);
     assert_eq!(stats.hits, 1);
@@ -783,7 +786,7 @@ fn merges_crystal_source_for_mcp_create_crystal_shape() {
         );
         assert_eq!(properties.rows[0].get("created_at"), Some(&Value::Int(100)));
 
-        let commit_epoch_after_create = db.store.commit_epoch();
+        let commit_epoch_after_create = db.runtime.get().unwrap().store.commit_epoch();
         let second = db
             .merge_knowledge_crystal_source(&KnowledgeCrystalSourceMergeRequest {
                 crystal_memory_id: "crystal-source-1".to_string(),
@@ -798,7 +801,10 @@ fn merges_crystal_source_for_mcp_create_crystal_shape() {
         assert_eq!(second.relationship_id, output.relationship_id);
         assert_eq!(second.created_relationship_count, 0);
         assert_eq!(second.graph_commit_epoch_after, commit_epoch_after_create);
-        assert_eq!(db.store.commit_epoch(), commit_epoch_after_create);
+        assert_eq!(
+            db.runtime.get().unwrap().store.commit_epoch(),
+            commit_epoch_after_create
+        );
 
         let unchanged = db
             .query("MATCH (:Memory {id: 'crystal-source-1'})-[r:SYNTHESIZED_FROM]->(:Memory {id: 'source-memory-1'}) RETURN r.weight AS weight, r.occasion_key AS occasion_key, r.created_at AS created_at")
@@ -870,7 +876,7 @@ fn crystal_source_merge_reports_missing_endpoint_and_rejects_invalid_inputs() {
 
     db.query("CREATE (:Memory {id: 'crystal-source-1', is_crystal: true})")
         .unwrap();
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
     let missing = db
         .merge_knowledge_crystal_source(&KnowledgeCrystalSourceMergeRequest {
             crystal_memory_id: "crystal-source-1".to_string(),
@@ -890,7 +896,10 @@ fn crystal_source_merge_reports_missing_endpoint_and_rejects_invalid_inputs() {
     assert_eq!(missing.created_relationship_count, 0);
     assert_eq!(missing.graph_commit_epoch_before, graph_commit_epoch);
     assert_eq!(missing.graph_commit_epoch_after, graph_commit_epoch);
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch
+    );
 }
 
 #[test]
@@ -957,7 +966,7 @@ fn reads_crystal_communities_for_topic_ranking_and_okf_mapping() {
         "MATCH (s:Memory {id: 'source-three'}), (e:Entity {id: 'entity-three'}) CREATE (s)-[:MENTIONS]->(e)",
     )
     .unwrap();
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
 
     let topic = db
         .query_crystal_communities_via_cypher(&KnowledgeCrystalCommunityListRequest {
@@ -967,7 +976,10 @@ fn reads_crystal_communities_for_topic_ranking_and_okf_mapping() {
         })
         .unwrap();
     assert_eq!(topic.graph_commit_epoch, graph_commit_epoch);
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch
+    );
     assert_eq!(topic.matched_path_count, 3);
     assert_eq!(topic.matched_pair_count, 1);
     assert_eq!(topic.returned_count, 1);
@@ -1060,7 +1072,7 @@ fn crystal_community_reads_use_query_runtime_plan_cache() {
     assert_eq!(first.returned_count, 1);
     assert_eq!(first.rows[0].hit_count, 3);
     assert_eq!(first.rows[0].source_memory_count, 2);
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.entries, 1);
     assert_eq!(stats.misses, 1);
     assert_eq!(stats.hits, 1);
@@ -1128,7 +1140,7 @@ fn reads_crystal_source_visibility_for_wiki_community_rows() {
         "MATCH (s:Memory {id: 'source-three'}), (e:Entity {id: 'entity-three'}) CREATE (s)-[:MENTIONS]->(e)",
     )
     .unwrap();
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
 
     let visibility = db
         .query_crystal_source_visibility_via_cypher(&KnowledgeCrystalSourceVisibilityRequest {
@@ -1137,7 +1149,10 @@ fn reads_crystal_source_visibility_for_wiki_community_rows() {
         })
         .unwrap();
     assert_eq!(visibility.graph_commit_epoch, graph_commit_epoch);
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch
+    );
     assert_eq!(visibility.matched_path_count, 5);
     assert_eq!(visibility.returned_count, 5);
     assert_eq!(
@@ -1250,7 +1265,7 @@ fn crystal_source_visibility_uses_query_runtime_plan_cache() {
         first.rows[0].crystal_memory_id.as_deref(),
         Some("visibility-cache-crystal")
     );
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.entries, 1);
     assert_eq!(stats.misses, 1);
     assert_eq!(stats.hits, 1);
@@ -1343,7 +1358,7 @@ fn scoped_knowledge_entity_batch_uses_query_runtime_plan_cache() {
     assert_eq!(first.found_count, 1);
     assert_eq!(first.filtered_out_count, 1);
     assert_eq!(first.missing_count, 1);
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.entries, 1);
     assert_eq!(stats.misses, 1);
     assert_eq!(stats.hits, 1);
@@ -1559,7 +1574,7 @@ fn create_knowledge_entity_rejects_invalid_identifiers_and_id_mismatch() {
     assert!(id_mismatch
         .to_string()
         .contains("does not match external id"));
-    assert_eq!(db.store.commit_epoch(), 0);
+    assert_eq!(db.runtime.get().unwrap().store.commit_epoch(), 0);
 }
 
 #[test]
@@ -1729,7 +1744,7 @@ fn knowledge_entity_upsert_rejects_id_mismatch_before_writing() {
         .unwrap_err();
 
     assert!(error.to_string().contains("does not match external id"));
-    assert_eq!(db.store.commit_epoch(), 0);
+    assert_eq!(db.runtime.get().unwrap().store.commit_epoch(), 0);
 }
 
 #[test]
@@ -2048,7 +2063,7 @@ fn knowledge_property_batch_uses_query_runtime_plan_cache() {
         first.rows[0].properties.get("title"),
         Some(&Some(Value::String("Second".to_string())))
     );
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.entries, 1);
     assert_eq!(stats.misses, 1);
     assert_eq!(stats.hits, 1);
@@ -2146,7 +2161,7 @@ fn scoped_knowledge_property_batch_uses_query_runtime_plan_cache() {
         Some(&Some(Value::String("First".to_string())))
     );
     assert!(first.rows[1].filtered_out);
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.entries, 1);
     assert_eq!(stats.misses, 1);
     assert_eq!(stats.hits, 1);
@@ -2267,7 +2282,7 @@ fn knowledge_property_update_rejects_invalid_identifiers() {
         .unwrap_err();
 
     assert!(error.to_string().contains("property identifier"));
-    assert_eq!(db.store.commit_epoch(), 1);
+    assert_eq!(db.runtime.get().unwrap().store.commit_epoch(), 1);
 }
 
 #[test]
@@ -2511,7 +2526,7 @@ fn knowledge_normalized_space_move_batch_rejects_invalid_identifiers() {
         .unwrap_err();
 
     assert!(error.to_string().contains("identity property identifier"));
-    assert_eq!(db.store.commit_epoch(), 0);
+    assert_eq!(db.runtime.get().unwrap().store.commit_epoch(), 0);
 }
 
 #[test]
@@ -2674,7 +2689,7 @@ fn touches_memory_access_batch_with_incremental_counters() {
 fn knowledge_memory_access_batch_rejects_negative_dwell_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'memory_1'})").unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .touch_knowledge_memory_access_batch(&KnowledgeMemoryAccessBatchRequest {
@@ -2687,7 +2702,10 @@ fn knowledge_memory_access_batch_rejects_negative_dwell_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-negative dwell time"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -2911,7 +2929,7 @@ fn updates_memory_metadata_batch_for_nowledge_replace_shapes() {
         Value::Int(id) => id.to_string(),
         other => panic!("expected projected id int, got {other:?}"),
     };
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let output = db
         .update_knowledge_memory_metadata_batch(&KnowledgeMemoryMetadataBatchRequest {
@@ -3003,7 +3021,7 @@ fn memory_metadata_update_rejects_empty_id_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'memory_1', metadata: '{}'})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .update_knowledge_memory_metadata_batch(&KnowledgeMemoryMetadataBatchRequest {
@@ -3016,7 +3034,10 @@ fn memory_metadata_update_rejects_empty_id_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-empty memory id"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -3090,7 +3111,7 @@ fn typed_memory_metadata_update_persists_as_one_wal_batch_and_replays() {
 fn memory_content_update_rejects_invalid_rows_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'memory_1'})").unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let empty_id = db
         .update_knowledge_memory_content_batch(&KnowledgeMemoryContentBatchRequest {
@@ -3118,7 +3139,10 @@ fn memory_content_update_rejects_invalid_rows_before_wal() {
         })
         .unwrap_err();
     assert!(unit_type_error.to_string().contains("non-empty unit type"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -3249,7 +3273,7 @@ fn updates_memory_dedup_reviewed_batch_for_scheduler_shape() {
 fn memory_dedup_reviewed_rejects_empty_ids_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'memory_1'})").unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .update_knowledge_memory_dedup_reviewed_batch(&KnowledgeMemoryDedupReviewedBatchRequest {
@@ -3259,7 +3283,10 @@ fn memory_dedup_reviewed_rejects_empty_ids_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-empty memory ids"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -3329,7 +3356,7 @@ fn updates_memory_decay_refresh_batch_for_scheduler_shapes() {
         Value::Int(id) => id.to_string(),
         other => panic!("expected projected id int, got {other:?}"),
     };
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let output = db
         .update_knowledge_memory_decay_refresh_batch(&KnowledgeMemoryDecayRefreshBatchRequest {
@@ -3417,7 +3444,7 @@ fn memory_decay_refresh_rejects_invalid_rows_before_wal() {
     let mut db = Database::open(&path).unwrap();
     db.query("CREATE (:Memory {id: 'decay-refresh-memory-1', decay_score_cached: 1.0})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let wal_before = read_test_wal(&path).unwrap();
 
     let empty_id = db
@@ -3457,7 +3484,10 @@ fn memory_decay_refresh_rejects_invalid_rows_before_wal() {
         .to_string()
         .contains("numeric finite confidence"));
 
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
     assert_eq!(read_test_wal(&path).unwrap(), wal_before);
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -3620,7 +3650,7 @@ fn source_memory_count_batch_rejects_zero_delta_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Source {id: 'source_1', memory_count: 1})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .adjust_knowledge_source_memory_count_batch(&KnowledgeSourceMemoryCountBatchRequest {
@@ -3632,7 +3662,10 @@ fn source_memory_count_batch_rejects_zero_delta_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-zero delta"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -3816,7 +3849,7 @@ fn source_lifecycle_batch_rejects_invalid_rows_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Source {id: 'source_1', lifecycle_state: 'parsed'})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .update_knowledge_source_lifecycle_batch(&KnowledgeSourceLifecycleBatchRequest {
@@ -3831,7 +3864,10 @@ fn source_lifecycle_batch_rejects_invalid_rows_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-negative chunk count"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -4002,7 +4038,7 @@ fn source_metadata_batch_rejects_empty_source_id_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Source {id: 'source_1', metadata: '{}', updated_at: 1})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .update_knowledge_source_metadata_batch(&KnowledgeSourceMetadataBatchRequest {
@@ -4015,7 +4051,10 @@ fn source_metadata_batch_rejects_empty_source_id_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-empty source id"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -4151,7 +4190,7 @@ fn deletes_sources_for_nowledge_detach_delete_shape() {
 fn source_delete_rejects_empty_source_id_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Source {id: 'source_1'})").unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .delete_knowledge_sources(&KnowledgeSourceDeleteBatchRequest {
@@ -4160,7 +4199,10 @@ fn source_delete_rejects_empty_source_id_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-empty source id"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -4320,7 +4362,7 @@ fn source_label_assignment_rejects_empty_fields_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Source {id: 'source_1'})").unwrap();
     db.query("CREATE (:Label {id: 'label_1'})").unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .assign_knowledge_source_labels_batch(&KnowledgeSourceLabelAssignmentBatchRequest {
@@ -4335,7 +4377,10 @@ fn source_label_assignment_rejects_empty_fields_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-empty assigned_by"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -4473,7 +4518,7 @@ fn source_label_delete_rejects_empty_fields_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Source {id: 'source_1'})").unwrap();
     db.query("CREATE (:Label {id: 'label_1'})").unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .delete_knowledge_source_labels_batch(&KnowledgeSourceLabelDeleteBatchRequest {
@@ -4485,7 +4530,10 @@ fn source_label_delete_rejects_empty_fields_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-empty source id"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -4719,7 +4767,7 @@ fn source_parsed_metadata_batch_rejects_invalid_rows_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Source {id: 'source_1', lifecycle_state: 'ingested'})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let mut invalid = source_parsed_metadata_update("source_1", "Invalid", "sha-invalid");
     invalid.size_bytes = -1;
@@ -4730,7 +4778,10 @@ fn source_parsed_metadata_batch_rejects_invalid_rows_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-negative size bytes"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -4981,7 +5032,7 @@ fn source_parsed_create_batch_rejects_invalid_rows_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("positive version"));
-    assert_eq!(db.store.commit_epoch(), 0);
+    assert_eq!(db.runtime.get().unwrap().store.commit_epoch(), 0);
 }
 
 #[test]
@@ -5074,8 +5125,8 @@ fn reads_source_latest_version_with_fixed_parameterized_queries() {
         .unwrap();
     db.query("CREATE (:Source {id: 'source-sha-v4', original_name: 'Other.md', sha256: 'sha-a', space_id: 'default', version: 4, created_at: 40})")
         .unwrap();
-    let graph_commit_epoch = db.commit_epoch();
-    let mut read = db.begin_read_transaction();
+    let graph_commit_epoch = db.commit_epoch().unwrap();
+    let mut read = db.begin_read_transaction().unwrap();
     let by_name_parameters = BTreeMap::from([
         (
             "original_name".to_string(),
@@ -5128,7 +5179,7 @@ fn source_latest_version_values_remain_parameters() {
     let mut db = Database::new();
     db.query("CREATE (:Source {id: 'source-v1', original_name: 'Doc.md', space_id: 'default', version: 1})")
         .unwrap();
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     let parameters = BTreeMap::from([
         (
             "original_name".to_string(),
@@ -5178,7 +5229,7 @@ fn source_latest_version_query_uses_plan_cache() {
         Some(&Value::String("source-v2".to_string()))
     );
     assert_eq!(first.rows[0].get("version"), Some(&Value::Int(2)));
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.entries, 1);
     assert_eq!(stats.misses, 1);
     assert_eq!(stats.hits, 1);
@@ -5281,7 +5332,7 @@ fn creates_source_revision_batch_for_nowledge_revision_edges() {
 fn source_revision_create_batch_rejects_empty_ids_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Source {id: 'newer'})").unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .create_knowledge_source_revision_batch(&KnowledgeSourceRevisionCreateBatchRequest {
@@ -5294,7 +5345,10 @@ fn source_revision_create_batch_rejects_empty_ids_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("older source id"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -5449,7 +5503,7 @@ fn memory_lifecycle_batch_rejects_empty_state_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'memory_1', lifecycle_state: 'active'})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .update_knowledge_memory_lifecycle_batch(&KnowledgeMemoryLifecycleBatchRequest {
@@ -5464,7 +5518,10 @@ fn memory_lifecycle_batch_rejects_empty_state_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-empty lifecycle state"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -5638,7 +5695,7 @@ fn memory_latest_batch_rejects_empty_id_before_wal() {
     let mut db = Database::open(&path).unwrap();
     db.query("CREATE (:Memory {id: 'memory_1', is_latest: true})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let wal_before = read_test_wal(&path).unwrap();
 
     let error = db
@@ -5652,7 +5709,10 @@ fn memory_latest_batch_rejects_empty_id_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-empty memory id"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
     assert_eq!(read_test_wal(&path).unwrap(), wal_before);
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -5848,7 +5908,7 @@ fn memory_evolves_create_rejects_empty_fields_before_wal() {
     let mut db = Database::open(&path).unwrap();
     db.query("CREATE (:Memory {id: 'older'})").unwrap();
     db.query("CREATE (:Memory {id: 'newer'})").unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let wal_before = read_test_wal(&path).unwrap();
 
     let error = db
@@ -5868,7 +5928,10 @@ fn memory_evolves_create_rejects_empty_fields_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("content relation"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
     assert_eq!(read_test_wal(&path).unwrap(), wal_before);
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -5879,7 +5942,7 @@ fn memory_evolves_create_rejects_non_numeric_confidence_before_wal() {
     let mut db = Database::open(&path).unwrap();
     db.query("CREATE (:Memory {id: 'older'})").unwrap();
     db.query("CREATE (:Memory {id: 'newer'})").unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let wal_before = read_test_wal(&path).unwrap();
 
     let error = db
@@ -5899,7 +5962,10 @@ fn memory_evolves_create_rejects_non_numeric_confidence_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("numeric finite confidence"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
     assert_eq!(read_test_wal(&path).unwrap(), wal_before);
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -6097,7 +6163,7 @@ fn skill_usage_stats_batch_rejects_negative_use_count_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Skill {id: 'skill_1', use_count: 1})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .update_knowledge_skill_usage_stats_batch(&KnowledgeSkillUsageStatsBatchRequest {
@@ -6113,7 +6179,10 @@ fn skill_usage_stats_batch_rejects_negative_use_count_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-negative use count"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -6298,7 +6367,7 @@ fn skill_metadata_update_rejects_empty_id_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Skill {id: 'skill_1', metadata: '{}', updated_at: 1})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .update_knowledge_skill_metadata_batch(&KnowledgeSkillMetadataBatchRequest {
@@ -6311,7 +6380,10 @@ fn skill_metadata_update_rejects_empty_id_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-empty skill id"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -6585,7 +6657,7 @@ fn skill_lifecycle_batch_rejects_empty_stage_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Skill {id: 'skill_1', stage: 'candidate'})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .update_knowledge_skill_lifecycle_batch(&KnowledgeSkillLifecycleBatchRequest {
@@ -6598,7 +6670,10 @@ fn skill_lifecycle_batch_rejects_empty_stage_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-empty stage"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -6752,7 +6827,7 @@ fn deletes_skills_for_nowledge_detach_delete_shape() {
 fn skill_delete_rejects_empty_skill_id_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Skill {id: 'skill_1'})").unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .delete_knowledge_skills(&KnowledgeSkillDeleteBatchRequest {
@@ -6761,7 +6836,10 @@ fn skill_delete_rejects_empty_skill_id_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-empty skill id"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -6857,7 +6935,7 @@ fn merges_skill_source_for_rest_skills_write_shape() {
         );
         assert_eq!(properties.rows[0].get("created_at"), Some(&Value::Int(100)));
 
-        let commit_epoch_after_create = db.store.commit_epoch();
+        let commit_epoch_after_create = db.runtime.get().unwrap().store.commit_epoch();
         let second = db
             .merge_knowledge_skill_source(&KnowledgeSkillSourceMergeRequest {
                 skill_id: "skill-source-1".to_string(),
@@ -6872,7 +6950,10 @@ fn merges_skill_source_for_rest_skills_write_shape() {
         assert_eq!(second.relationship_id, output.relationship_id);
         assert_eq!(second.created_relationship_count, 0);
         assert_eq!(second.graph_commit_epoch_after, commit_epoch_after_create);
-        assert_eq!(db.store.commit_epoch(), commit_epoch_after_create);
+        assert_eq!(
+            db.runtime.get().unwrap().store.commit_epoch(),
+            commit_epoch_after_create
+        );
         let unchanged = db
             .query("MATCH (:Skill {id: 'skill-source-1'})-[r:SYNTHESIZED_FROM]->(:Memory {id: 'memory-source-1'}) RETURN r.weight AS weight, r.occasion_key AS occasion_key, r.created_at AS created_at")
             .unwrap();
@@ -6929,7 +7010,7 @@ fn skill_source_merge_reports_missing_endpoint_and_rejects_empty_ids() {
 
     db.query("CREATE (:Skill {id: 'skill-source-1', stage: 'active'})")
         .unwrap();
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
     let missing = db
         .merge_knowledge_skill_source(&KnowledgeSkillSourceMergeRequest {
             skill_id: "skill-source-1".to_string(),
@@ -6949,7 +7030,10 @@ fn skill_source_merge_reports_missing_endpoint_and_rejects_empty_ids() {
     assert_eq!(missing.created_relationship_count, 0);
     assert_eq!(missing.graph_commit_epoch_before, graph_commit_epoch);
     assert_eq!(missing.graph_commit_epoch_after, graph_commit_epoch);
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch
+    );
 }
 
 #[test]
@@ -7041,7 +7125,7 @@ fn thread_metadata_batch_rejects_empty_thread_id_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Thread {id: 'thread_1', metadata: '{}', updated_at: 1})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .update_knowledge_thread_metadata_batch(&KnowledgeThreadMetadataBatchRequest {
@@ -7054,7 +7138,10 @@ fn thread_metadata_batch_rejects_empty_thread_id_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-empty thread id"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -7241,7 +7328,7 @@ fn thread_message_count_batch_rejects_negative_count_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Thread {id: 'thread_1', message_count: 1})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .update_knowledge_thread_message_count_batch(&KnowledgeThreadMessageCountBatchRequest {
@@ -7255,7 +7342,10 @@ fn thread_message_count_batch_rejects_negative_count_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-negative message count"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -7408,7 +7498,7 @@ fn deletes_threads_for_nowledge_compensation_delete_shape() {
 fn thread_delete_rejects_empty_thread_id_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Thread {id: 'thread_1'})").unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .delete_knowledge_threads(&KnowledgeThreadDeleteBatchRequest {
@@ -7417,7 +7507,10 @@ fn thread_delete_rejects_empty_thread_id_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-empty thread id"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -7468,7 +7561,7 @@ fn deletes_thread_messages_for_nowledge_cleanup_shape() {
         .unwrap();
     db.query("CREATE (:Thread {id: 'thread_2'})-[:CONTAINS]->(:Message {id: 'message_other'})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let output = db
         .delete_knowledge_thread_messages(&KnowledgeThreadMessageDeleteRequest {
@@ -7528,7 +7621,7 @@ fn thread_message_delete_rejects_empty_thread_id_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Thread {id: 'thread_1'})-[:CONTAINS]->(:Message {id: 'message_1'})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .delete_knowledge_thread_messages(&KnowledgeThreadMessageDeleteRequest {
@@ -7537,7 +7630,10 @@ fn thread_message_delete_rejects_empty_thread_id_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-empty thread id"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -7591,7 +7687,7 @@ fn creates_thread_compaction_link_for_nowledge_distill_shape() {
         Value::Int(id) => id.to_string(),
         other => panic!("expected projected id int, got {other:?}"),
     };
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let created = db
         .create_knowledge_thread_compaction_link(&KnowledgeThreadCompactionLinkRequest {
@@ -7675,7 +7771,7 @@ fn thread_compaction_link_rejects_empty_fields_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Thread {id: 'thread_1'})").unwrap();
     db.query("CREATE (:Memory {id: 'memory_1'})").unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let empty_thread = db
         .create_knowledge_thread_compaction_link(&KnowledgeThreadCompactionLinkRequest {
@@ -7711,7 +7807,10 @@ fn thread_compaction_link_rejects_empty_fields_before_wal() {
     assert!(empty_method
         .to_string()
         .contains("non-empty compaction method"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -7766,7 +7865,7 @@ fn deletes_thread_identities_for_nowledge_compensation_and_cascade_shapes() {
         .unwrap();
     db.query("CREATE (:ThreadIdentity {id: 'identity_survivor', thread_node_id: 'survivor_uuid', thread_id: 'logical_survivor'})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let compensation = db
         .delete_knowledge_thread_identities(&KnowledgeThreadIdentityDeleteRequest {
@@ -7838,7 +7937,7 @@ fn thread_identity_delete_rejects_invalid_modes_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:ThreadIdentity {id: 'identity_1'})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let empty_identity = db
         .delete_knowledge_thread_identities(&KnowledgeThreadIdentityDeleteRequest {
@@ -7881,7 +7980,10 @@ fn thread_identity_delete_rejects_invalid_modes_before_wal() {
         })
         .unwrap_err();
     assert!(both_modes.to_string().contains("exactly one delete mode"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -8041,7 +8143,7 @@ fn label_lifecycle_batch_rejects_empty_canonical_name_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Label {id: 'label_1', name: 'Label'})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .update_knowledge_label_lifecycle_batch(&KnowledgeLabelLifecycleBatchRequest {
@@ -8056,7 +8158,10 @@ fn label_lifecycle_batch_rejects_empty_canonical_name_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-empty canonical name"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -8227,12 +8332,12 @@ fn projects_entity_labels_for_nowledge_growth() {
         Some("label_zeta")
     );
 
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     let repeated_projected = db
         .query_entity_label_projected_list_via_cypher(&projected_request)
         .unwrap();
     assert_eq!(repeated_projected, projected);
-    let repeated_stats = db.plan_cache_stats();
+    let repeated_stats = db.plan_cache_stats().unwrap();
     assert_eq!(repeated_stats.entries, stats.entries);
     assert_eq!(repeated_stats.misses, stats.misses);
     assert_eq!(repeated_stats.hits, stats.hits + 3);
@@ -8266,7 +8371,7 @@ fn entity_label_projected_read_rejects_empty_property_names_without_wal() {
         .unwrap();
     db.query("MATCH (m:Memory {id: 'projected_label_wal_memory'}), (l:Label {id: 'projected_label_wal_label'}) CREATE (m)-[:HAS_LABEL]->(l)")
         .unwrap();
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
     let wal_before = read_test_wal(&path).unwrap();
 
     let label_property_error = db
@@ -8298,7 +8403,10 @@ fn entity_label_projected_read_rejects_empty_property_names_without_wal() {
     assert!(relationship_property_error
         .to_string()
         .contains("non-empty property names"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch
+    );
     assert_eq!(read_test_wal(&path).unwrap(), wal_before);
 }
 
@@ -8334,16 +8442,18 @@ fn transfers_label_memory_edges_for_nowledge_label_merge_shape() {
         Value::Int(id) => NodeId(*id as u64),
         other => panic!("expected projected id int, got {other:?}"),
     };
-    db.store
-        .create_relationship(
-            &mut db.catalog,
+    {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_relationship(
+            &mut branch_runtime.catalog,
             idless_memory_node_id,
             source_label_node_id,
             "HAS_LABEL",
             BTreeMap::new(),
         )
-        .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    }
+    .unwrap();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let output = db
         .transfer_knowledge_label_memory_edges(&KnowledgeLabelMemoryTransferRequest {
@@ -8417,7 +8527,7 @@ fn label_memory_transfer_rejects_empty_ids_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Label {id: 'source_label'})").unwrap();
     db.query("CREATE (:Label {id: 'target_label'})").unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let empty_source = db
         .transfer_knowledge_label_memory_edges(&KnowledgeLabelMemoryTransferRequest {
@@ -8440,7 +8550,10 @@ fn label_memory_transfer_rejects_empty_ids_before_wal() {
     assert!(empty_target
         .to_string()
         .contains("non-empty target label id"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -8500,7 +8613,7 @@ fn transfers_memory_label_edges_for_nowledge_memory_label_carry_over_shape() {
         .unwrap();
     db.query("MATCH (m:Memory {id: 'newer'}), (l:Label {id: 'beta'}) CREATE (m)-[:HAS_LABEL {assigned_by: 'existing'}]->(l)")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let output = db
         .transfer_knowledge_memory_label_edges(&KnowledgeMemoryLabelTransferRequest {
@@ -8551,7 +8664,7 @@ fn transfers_memory_label_edges_for_nowledge_memory_label_carry_over_shape() {
         Some(&Value::String("{}".to_string()))
     );
 
-    let epoch_before_space_mismatch = db.store.commit_epoch();
+    let epoch_before_space_mismatch = db.runtime.get().unwrap().store.commit_epoch();
     let mismatch = db
         .transfer_knowledge_memory_label_edges(&KnowledgeMemoryLabelTransferRequest {
             older_memory_id: "older".to_string(),
@@ -8567,7 +8680,10 @@ fn transfers_memory_label_edges_for_nowledge_memory_label_carry_over_shape() {
         mismatch.graph_commit_epoch_after,
         epoch_before_space_mismatch
     );
-    assert_eq!(db.store.commit_epoch(), epoch_before_space_mismatch);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        epoch_before_space_mismatch
+    );
 }
 
 #[test]
@@ -8578,7 +8694,7 @@ fn memory_label_transfer_rejects_empty_inputs_before_wal() {
         .unwrap();
     db.query("CREATE (:Memory {id: 'newer', space_id: 'default'})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
     let wal_before = read_test_wal(&path).unwrap();
 
     let empty_older = db
@@ -8615,7 +8731,10 @@ fn memory_label_transfer_rejects_empty_inputs_before_wal() {
         .unwrap_err();
     assert!(empty_space.to_string().contains("non-empty space id"));
 
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
     assert_eq!(read_test_wal(&path).unwrap(), wal_before);
     std::fs::remove_dir_all(path).unwrap();
 }
@@ -8696,7 +8815,7 @@ fn deletes_memory_labels_for_nowledge_label_cleanup_shapes() {
         Value::Int(id) => id.to_string(),
         other => panic!("expected projected id int, got {other:?}"),
     };
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let exact = db
         .delete_knowledge_memory_labels(&KnowledgeMemoryLabelDeleteRequest {
@@ -8804,7 +8923,7 @@ fn memory_label_delete_rejects_empty_ids_before_wal() {
         "MATCH (m:Memory {id: 'memory_1'}), (l:Label {id: 'label_1'}) CREATE (m)-[:HAS_LABEL]->(l)",
     )
     .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let empty_memory = db
         .delete_knowledge_memory_labels(&KnowledgeMemoryLabelDeleteRequest {
@@ -8821,7 +8940,10 @@ fn memory_label_delete_rejects_empty_ids_before_wal() {
         })
         .unwrap_err();
     assert!(empty_label.to_string().contains("non-empty label id"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -8893,7 +9015,7 @@ fn reads_entity_labels_for_nowledge_has_label_shapes() {
         "MATCH (s:Source {id: 'source_1'}), (l:Label {id: 'gamma'}) CREATE (s)-[:HAS_LABEL]->(l)",
     )
     .unwrap();
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
 
     let memories_request = KnowledgeEntityLabelListRequest {
         entity_label: "Memory".to_string(),
@@ -8909,7 +9031,10 @@ fn reads_entity_labels_for_nowledge_has_label_shapes() {
         .unwrap();
 
     assert_eq!(memories.graph_commit_epoch, graph_commit_epoch);
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch
+    );
     assert_eq!(memories.found_entity_count, 2);
     assert_eq!(memories.missing_entity_count, 1);
     assert_eq!(memories.label_count, 2);
@@ -8943,12 +9068,12 @@ fn reads_entity_labels_for_nowledge_has_label_shapes() {
     assert!(!memories.groups[2].found);
     assert_eq!(memories.groups[2].node_id, None);
 
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     let repeated_memories = db
         .query_entity_labels_via_cypher(&memories_request)
         .unwrap();
     assert_eq!(repeated_memories, memories);
-    let repeated_stats = db.plan_cache_stats();
+    let repeated_stats = db.plan_cache_stats().unwrap();
     assert_eq!(repeated_stats.entries, stats.entries);
     assert_eq!(repeated_stats.misses, stats.misses);
     assert_eq!(repeated_stats.hits, stats.hits + 3);
@@ -8962,7 +9087,10 @@ fn reads_entity_labels_for_nowledge_has_label_shapes() {
         .unwrap();
 
     assert_eq!(sources.graph_commit_epoch, graph_commit_epoch);
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch
+    );
     assert_eq!(sources.found_entity_count, 1);
     assert_eq!(sources.missing_entity_count, 0);
     assert_eq!(sources.label_count, 1);
@@ -9064,7 +9192,7 @@ fn test_thread_compaction_links(db: &Database, thread_id: &str) -> QueryOutput {
 #[test]
 fn relational_insert_returning_reports_provisional_and_committed_outcomes() {
     let mut db = Database::new();
-    let mut schema = db.begin_transaction();
+    let mut schema = db.begin_transaction().unwrap();
     schema
         .query_sql(
             "CREATE TABLE raw_turns (\
@@ -9077,7 +9205,7 @@ fn relational_insert_returning_reports_provisional_and_committed_outcomes() {
         .expect("stage raw turn table");
     schema.commit().expect("commit raw turn table");
 
-    let mut inserted = db.begin_transaction();
+    let mut inserted = db.begin_transaction().unwrap();
     let provisional = inserted
         .query_sql_with_result(
             "INSERT INTO raw_turns (raw_turn_id, org_id, request_id) \
@@ -9103,7 +9231,7 @@ fn relational_insert_returning_reports_provisional_and_committed_outcomes() {
     assert_eq!(committed.mutations[0].affected_rows, 1);
     assert_eq!(committed.output.rows.len(), 1);
 
-    let mut duplicate = db.begin_transaction();
+    let mut duplicate = db.begin_transaction().unwrap();
     let provisional = duplicate
         .query_sql_with_result(
             "INSERT INTO raw_turns (raw_turn_id, org_id, request_id) \
@@ -9123,7 +9251,7 @@ fn relational_insert_returning_reports_provisional_and_committed_outcomes() {
     assert_eq!(committed.mutations[0].conflict_rows, 1);
     assert!(committed.output.rows.is_empty());
 
-    let mut local_duplicate = db.begin_transaction();
+    let mut local_duplicate = db.begin_transaction().unwrap();
     let staged = local_duplicate
         .query_sql_with_result(
             "INSERT INTO raw_turns (raw_turn_id, org_id, request_id) \
@@ -9141,12 +9269,13 @@ fn relational_insert_returning_reports_provisional_and_committed_outcomes() {
     local_duplicate.rollback();
     assert!(db
         .begin_read_transaction()
+        .unwrap()
         .query_sql("SELECT raw_turn_id FROM raw_turns WHERE org_id = 'org-2'")
         .expect("read after rollback")
         .rows
         .is_empty());
 
-    let mut nullable = db.begin_transaction();
+    let mut nullable = db.begin_transaction().unwrap();
     let staged = nullable
         .query_sql_with_result(
             "INSERT INTO raw_turns (raw_turn_id, org_id, request_id) \
@@ -9169,7 +9298,7 @@ fn relational_insert_returning_conflicts_remain_deterministic_after_recovery() {
     let path = unique_test_dir("relational_insert_returning_recovery");
     {
         let mut db = Database::open(&path).expect("open durable database");
-        let mut schema = db.begin_transaction();
+        let mut schema = db.begin_transaction().unwrap();
         schema
             .query_sql(
                 "CREATE TABLE raw_turns (\
@@ -9179,7 +9308,7 @@ fn relational_insert_returning_conflicts_remain_deterministic_after_recovery() {
             )
             .expect("stage raw turn table");
         schema.commit().expect("commit raw turn table");
-        let mut insert = db.begin_transaction();
+        let mut insert = db.begin_transaction().unwrap();
         insert
             .query_sql(
                 "INSERT INTO raw_turns (raw_turn_id, request_id) \
@@ -9192,7 +9321,7 @@ fn relational_insert_returning_conflicts_remain_deterministic_after_recovery() {
     }
     {
         let mut db = Database::open(&path).expect("recover durable database");
-        let mut duplicate = db.begin_transaction();
+        let mut duplicate = db.begin_transaction().unwrap();
         let staged = duplicate
             .query_sql_with_result(
                 "INSERT INTO raw_turns (raw_turn_id, request_id) \
@@ -9234,7 +9363,7 @@ fn relational_insert_returning_conflicts_cover_checkpoint_base_and_live_delta() 
     )
     .expect("insert live delta row");
 
-    let mut duplicate = db.begin_transaction();
+    let mut duplicate = db.begin_transaction().unwrap();
     for (raw_turn_id, request_id) in [
         ("turn-base-duplicate", "request-base"),
         ("turn-delta-duplicate", "request-delta"),
@@ -9274,13 +9403,13 @@ fn relational_insert_returning_result_budget_fails_before_staging() {
         },
         ..DatabaseConfig::default()
     });
-    let mut schema = db.begin_transaction();
+    let mut schema = db.begin_transaction().unwrap();
     schema
         .query_sql("CREATE TABLE messages (id TEXT PRIMARY KEY)")
         .expect("stage messages table");
     schema.commit().expect("commit messages table");
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction().unwrap();
     let error = tx
         .query_sql_with_result(
             "INSERT INTO messages (id) VALUES ('message-1'), ('message-2') RETURNING id",
@@ -9307,7 +9436,7 @@ fn relational_insert_returning_payload_budget_fails_before_staging() {
     db.query_sql("CREATE TABLE messages (id TEXT PRIMARY KEY)")
         .expect("create messages table");
 
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction().unwrap();
     let error = tx
         .query_sql_with_result(
             "INSERT INTO messages (id) VALUES ('message-oversized') RETURNING id",
@@ -9359,7 +9488,7 @@ fn autocommit_insert_returning_exposes_only_inserted_rows() {
 #[test]
 fn idempotent_raw_insert_and_dirty_mark_commit_atomically_on_both_paths() {
     let mut db = Database::new();
-    let mut schema = db.begin_transaction();
+    let mut schema = db.begin_transaction().unwrap();
     schema
         .query_sql(
             "CREATE TABLE raw_turns (\
@@ -9378,7 +9507,7 @@ fn idempotent_raw_insert_and_dirty_mark_commit_atomically_on_both_paths() {
         .expect("stage dirty queue table");
     schema.commit().expect("commit ingestion schema");
 
-    let mut seed = db.begin_transaction();
+    let mut seed = db.begin_transaction().unwrap();
     seed.query_sql(
         "INSERT INTO raw_turns (raw_turn_id, request_id) \
          VALUES ('turn-1', 'request-1') \
@@ -9393,7 +9522,7 @@ fn idempotent_raw_insert_and_dirty_mark_commit_atomically_on_both_paths() {
     .expect("stage initial dirty marker");
     seed.commit().expect("commit initial ingestion");
 
-    let mut duplicate = db.begin_transaction();
+    let mut duplicate = db.begin_transaction().unwrap();
     let raw = duplicate
         .query_sql_with_result(
             "INSERT INTO raw_turns (raw_turn_id, request_id) \
@@ -9418,6 +9547,7 @@ fn idempotent_raw_insert_and_dirty_mark_commit_atomically_on_both_paths() {
     assert_eq!(committed.mutations[1].conflict_rows, 1);
     assert_eq!(
         db.begin_read_transaction()
+            .unwrap()
             .query_sql("SELECT dirty FROM dirty_queue WHERE org_id = 'org-1'")
             .expect("read committed dirty marker")
             .rows[0]
@@ -9435,11 +9565,41 @@ fn unique_test_dir(name: &str) -> std::path::PathBuf {
 }
 
 fn active_wal_path(path: impl AsRef<std::path::Path>) -> std::path::PathBuf {
-    active_generation_path(path.as_ref(), "wal_generation", "wal")
+    let root = path.as_ref();
+    if let Some(directory) = test_main_branch_directory(root) {
+        let head =
+            hawdb_storage::branch_head::read_branch_head(&directory.join("branch.head")).unwrap();
+        return directory.join(hawdb_storage::artifact_files::wal_generation_file(
+            head.active_wal.generation,
+        ));
+    }
+    active_generation_path(root, "wal_generation", "wal")
 }
 
 fn active_checkpoint_path(path: impl AsRef<std::path::Path>) -> std::path::PathBuf {
     active_generation_path(path.as_ref(), "checkpoint_generation", "checkpoint")
+}
+
+fn test_main_branch_directory(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    match hawdb_storage::branch_project::inspect_project_manifest(root).unwrap() {
+        hawdb_storage::branch_project::ProjectManifest::Branch(selector) => Some(
+            root.join("branches")
+                .join(selector.main_branch_id().as_uuid().to_string()),
+        ),
+        _ => None,
+    }
+}
+
+pub(super) fn active_storage_root(root: &std::path::Path) -> std::path::PathBuf {
+    test_main_branch_directory(root)
+        .map_or_else(|| root.to_path_buf(), |branch| branch.join("data"))
+}
+
+fn active_runtime_manifest_path(root: &std::path::Path) -> std::path::PathBuf {
+    test_main_branch_directory(root).map_or_else(
+        || root.join("manifest.hawdb"),
+        |branch| branch.join("runtime/manifest.hawdb"),
+    )
 }
 
 fn read_test_wal(path: impl AsRef<std::path::Path>) -> std::io::Result<String> {
@@ -9467,13 +9627,13 @@ fn active_generation_path(
     manifest_field: &str,
     prefix: &str,
 ) -> std::path::PathBuf {
-    let manifest = std::fs::read_to_string(root.join("manifest.hawdb")).unwrap();
+    let manifest = std::fs::read_to_string(active_runtime_manifest_path(root)).unwrap();
     assert!(manifest.contains("HAWDB_MANIFEST_V1\n"));
     let generation = manifest.lines().find_map(|line| {
         let (field, value) = line.split_once('\t')?;
         (field == manifest_field && value != "none").then_some(value)
     });
-    root.join(format!(
+    active_storage_root(root).join(format!(
         "{prefix}.{}.hawdb",
         generation.expect("active generation must exist")
     ))
@@ -9499,3 +9659,6 @@ fn read_test_durable_text(path: &std::path::Path) -> std::io::Result<String> {
     String::from_utf8(decoded)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
+
+#[cfg(all(unix, feature = "test-support"))]
+mod power_loss;

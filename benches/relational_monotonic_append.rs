@@ -76,8 +76,11 @@ fn benchmark_batch(batch_size: usize) -> serde_json::Value {
     let baseline_p50 = percentile(&baseline_samples, 50);
     let baseline_p95 = percentile(&baseline_samples, 95);
     let baseline_p99 = percentile(&baseline_samples, 99);
-    let candidate_metrics = candidate.storage_residency_report().relational_rows;
-    let baseline_metrics = baseline.storage_residency_report().relational_rows;
+    let candidate_metrics = candidate
+        .storage_residency_report()
+        .unwrap()
+        .relational_rows;
+    let baseline_metrics = baseline.storage_residency_report().unwrap().relational_rows;
 
     if batch_size > 1 {
         assert_eq!(

@@ -142,7 +142,7 @@ fn relational_cross_join_cache_rebinds_parameters_and_replans_current_data() {
     let mut database = cross_join_fixture(3, 2);
     let sql = "SELECT l.lid, r.rid FROM cross_left l CROSS JOIN cross_right r \
                WHERE l.lid >= $1 AND r.rid = $2 ORDER BY l.lid LIMIT $3 OFFSET $4";
-    let before = database.relational_plan_template_cache_stats();
+    let before = database.relational_plan_template_cache_stats().unwrap();
     for (left, right, expected) in [(0, 0, 1), (1, 1, 2), (0, 1, 1)] {
         let output = database
             .query_sql_with_params(
@@ -168,7 +168,10 @@ fn relational_cross_join_cache_rebinds_parameters_and_replans_current_data() {
         .rows
         .is_empty());
     assert_eq!(
-        database.relational_plan_template_cache_stats().hits,
+        database
+            .relational_plan_template_cache_stats()
+            .unwrap()
+            .hits,
         before.hits + 3
     );
     database

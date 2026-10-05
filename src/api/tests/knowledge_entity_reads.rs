@@ -165,7 +165,7 @@ fn knowledge_entity_batch_uses_query_runtime_plan_cache() {
             .and_then(|entity| entity.external_id.as_deref()),
         Some("cache_memory_2")
     );
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.entries, 1);
     assert_eq!(stats.misses, 1);
     assert_eq!(stats.hits, 1);

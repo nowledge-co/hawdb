@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(not(windows))]
 use crate::file_io as fs;
 #[cfg(test)]
 use std::ffi::OsString;
@@ -85,15 +84,22 @@ impl WalSyncGroupState {
 
 /// Atomically publishes a file whose contents have already been synchronized.
 ///
-/// Unix persists the directory entry after rename. Windows uses a write-through
-/// move because flushing a directory handle is not a supported durability
-/// primitive there.
+/// Unix persists the directory entry after rename. Windows retains a counted,
+/// write-capable candidate handle across the standard library's atomic rename
+/// and synchronizes that handle afterward. An open destination reader keeps its
+/// old publication. The parent-directory barrier is also requested on Windows;
+/// its namespace durability remains a separate platform qualification requirement.
 pub fn durable_replace_file(source: &Path, destination: &Path) -> io::Result<()> {
     #[cfg(test)]
     inject_durable_replace_failure(destination)?;
     #[cfg(windows)]
     {
-        durable_replace_file_windows(source, destination)
+        durable_replace_file_windows(source, destination)?;
+        // New readers must see the replacement, while captured immutable
+        // readers retain their original publication identity.
+        fs::unbind_immutable_path(source)?;
+        fs::unbind_immutable_path(destination)?;
+        sync_parent_directory(destination)
     }
     #[cfg(not(windows))]
     {
@@ -190,6 +196,14 @@ pub fn sync_parent_directory(path: &Path) -> io::Result<()> {
 
 /// Persists pending directory entry changes when supported by the platform.
 pub fn sync_directory(directory: &Path) -> io::Result<()> {
+    let context = crate::file_descriptors::context_for_path(directory)?;
+    sync_directory_with_context(directory, &context)
+}
+
+pub(crate) fn sync_directory_with_context(
+    directory: &Path,
+    context: &crate::file_descriptors::FileOpenContext,
+) -> io::Result<()> {
     #[cfg(test)]
     {
         let should_fail = SYNC_DIRECTORY_FAILURE.with(|expected| {
@@ -210,56 +224,95 @@ pub fn sync_directory(directory: &Path) -> io::Result<()> {
     }
     #[cfg(windows)]
     {
-        let _ = directory;
-        Ok(())
+        use std::os::windows::fs::OpenOptionsExt;
+
+        // Opening a directory requires BACKUP_SEMANTICS; FlushFileBuffers also
+        // requires GENERIC_WRITE. A read-only handle or a silent no-op cannot
+        // establish a namespace barrier. Unsupported filesystems and denied
+        // permissions must propagate instead of acknowledging a publication.
+        // API success alone does not qualify Windows namespace persistence.
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        let mut options = fs::OpenOptions::new();
+        options
+            .read(true)
+            .write(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+        let directory = context.open(&options, directory)?;
+        require_directory(&directory)?;
+        directory.sync_all()
     }
     #[cfg(not(windows))]
     {
-        use crate::file_io::File;
-
-        File::open(directory)?.sync_all()
+        let directory = context.open(fs::OpenOptions::new().read(true), directory)?;
+        require_directory(&directory)?;
+        directory.sync_all()
     }
+}
+
+fn require_directory(file: &fs::File) -> io::Result<()> {
+    if file.metadata()?.is_dir() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            "namespace synchronization requires a directory",
+        ))
+    }
+}
+
+/// Persists names from a publication directory through its project root.
+/// Existing directories can be leftovers of an interrupted attempt: existence
+/// alone never replaces these barriers. The project root's own ancestry is
+/// synchronized during writable project admission.
+pub(crate) fn sync_directory_ancestors(directory: &Path) -> io::Result<()> {
+    let context = crate::file_descriptors::context_for_path(directory)?;
+    let root = context.project_root();
+    let stop = (!root.as_os_str().is_empty()).then_some(root);
+    sync_directory_tree_with_context(directory, &context, stop)
+}
+
+/// Explicit context avoids reentering the project registry during bootstrap.
+/// Open one directory at a time, charging even ancestor IO to this project.
+/// With no project boundary, stop at the existing filesystem mount: persistence
+/// of the mount itself is an external platform assumption. Windows requests
+/// actual directory-handle flushes; their namespace semantics remain unqualified.
+pub(crate) fn sync_directory_tree_with_context(
+    directory: &Path,
+    context: &crate::file_descriptors::FileOpenContext,
+    stop: Option<&Path>,
+) -> io::Result<()> {
+    let mut current = context.canonicalize(directory)?;
+    loop {
+        sync_directory_with_context(&current, context)?;
+        if stop.is_some_and(|root| current == root) {
+            break;
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if context.metadata(&current)?.dev() != context.metadata(parent)?.dev() {
+                break;
+            }
+        }
+        current = parent.to_path_buf();
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
 fn durable_replace_file_windows(source: &Path, destination: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-
-    const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
-    const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
-
-    #[link(name = "Kernel32")]
-    unsafe extern "system" {
-        fn MoveFileExW(
-            existing_file_name: *const u16,
-            new_file_name: *const u16,
-            flags: u32,
-        ) -> i32;
-    }
-
-    let source = source
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let destination = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    // SAFETY: both paths are live, NUL-terminated UTF-16 buffers for the call.
-    let moved = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if moved == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    // Rust 1.97.1's Windows rename uses FileRenameInfoEx POSIX replacement when
+    // the ordinary move cannot replace an open destination. Calling our old
+    // MoveFileExW helper directly omitted that behavior. Keep the candidate
+    // handle through rename so the subsequent FlushFileBuffers targets the
+    // exact publication even if another reader opens the destination.
+    // FlushFileBuffers requires write access; no create/truncate is permitted.
+    let candidate = fs::OpenOptions::new().read(true).write(true).open(source)?;
+    fs::rename(source, destination)?;
+    candidate.sync_all()
 }
 
 #[cfg(test)]
@@ -272,6 +325,53 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn directory_sync_rejects_missing_paths_and_regular_files() {
+        let root = unique_test_dir();
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("not-a-directory");
+        write_synced(&file, b"preserved");
+        assert!(sync_directory(&file).is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"preserved");
+        assert_eq!(
+            sync_directory(&root.join("missing")).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        sync_directory(&root).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn directory_sync_charges_and_releases_its_project_handle() {
+        let root = unique_test_dir();
+        let project = crate::file_descriptors::ProjectFileDescriptors::acquire(&root, 1).unwrap();
+        let held = crate::file_io::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(root.join("held"))
+            .unwrap();
+        assert_eq!(project.metrics().open, 1);
+        let before = project.metrics();
+        let error = sync_directory(&root).unwrap_err();
+        assert!(
+            error.get_ref().is_some_and(|error| {
+                error
+                    .downcast_ref::<hawdb_core::error::FileDescriptorError>()
+                    .is_some()
+            }),
+            "unexpected directory sync error: {error:?}"
+        );
+        assert_eq!(project.metrics().open, before.open);
+        assert_eq!(project.metrics().reserved, before.reserved);
+        assert_eq!(project.metrics().high_water, 1);
+        drop(held);
+        sync_directory(&root).unwrap();
+        assert_eq!(project.metrics().open, 0);
+        assert_eq!(project.metrics().reserved, 0);
+        assert_eq!(project.metrics().high_water, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn wal_sync_group_state_owns_bounded_flush_accounting() {
@@ -319,6 +419,28 @@ mod tests {
         assert_eq!(fs::read(&published).unwrap(), b"second");
         assert!(!candidate.exists());
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn directory_flush_failure_preserves_the_installed_publication() {
+        let root = unique_test_dir();
+        fs::create_dir_all(&root).unwrap();
+        let candidate = root.join("candidate.hawdb");
+        let published = root.join("published.hawdb");
+        write_synced(&published, b"old");
+        write_synced(&candidate, b"new");
+
+        let failure = fail_sync_directory_for(&root);
+        let error = durable_replace_file(&candidate, &published).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        // The rename may have committed before a failed namespace barrier.
+        // Retain the exact installed bytes; a missing response is not rollback.
+        assert_eq!(fs::read(&published).unwrap(), b"new");
+        assert!(!candidate.exists());
+        drop(failure);
+        sync_directory(&root).unwrap();
+        assert_eq!(fs::read(&published).unwrap(), b"new");
         fs::remove_dir_all(root).unwrap();
     }
 

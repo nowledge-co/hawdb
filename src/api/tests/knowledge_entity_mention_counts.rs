@@ -65,7 +65,7 @@ fn entity_mention_counts_use_fixed_bounded_page_queries() {
         ("after_name".to_string(), Value::String("Alpha".to_string())),
         ("limit".to_string(), Value::Int(1)),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     db.query("CREATE (:Memory {id: 'late-memory'})").unwrap();
     db.query("MATCH (m:Memory {id: 'late-memory'}), (e:Entity {id: 'entity-alpha'}) CREATE (m)-[:MENTIONS]->(e)")
@@ -139,7 +139,7 @@ fn entity_mention_count_pages_fail_closed_on_row_budget() {
     db.query("CREATE (:Entity {id: 'entity-b', name: 'Beta'})")
         .unwrap();
     let parameters = BTreeMap::from([("limit".to_string(), Value::Int(2))]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     let error = snapshot
         .query_with_params_bounded(ENTITY_MENTION_COUNTS_FIRST_PAGE_QUERY, &parameters, Some(1))

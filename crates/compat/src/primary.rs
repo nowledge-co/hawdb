@@ -38,7 +38,7 @@ pub trait CompatibilityPrimaryEngine {
         parameters: &BTreeMap<String, Value>,
     ) -> Result<String>;
 
-    fn project_graph(&self, rel_type: Option<&str>) -> ProjectedGraph;
+    fn project_graph(&self, rel_type: Option<&str>) -> Result<ProjectedGraph>;
 
     fn session(&mut self) -> Self::Session<'_>;
 }

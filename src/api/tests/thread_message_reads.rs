@@ -56,7 +56,7 @@ fn thread_messages_use_snapshot_pinned_bounded_queries() {
         ),
         ("limit".to_string(), Value::Int(2)),
     ]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     db.query("MATCH (m:Message {id: 'message-a'}) SET m.content = 'changed'")
         .unwrap();
 

@@ -40,7 +40,7 @@ pub(super) fn qualify_multi_statement_transaction(
 
     let inserted_content_message_id = format!("content-message-{message_position:08}");
     let page_parameters = thread_page_parameters(expected_rows);
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
     transaction.query_sql_with_params(
         &message.sql,
         &thread_message_parameters(message_position, payload_bytes, "transaction"),
@@ -115,7 +115,7 @@ pub(super) fn qualify_multi_statement_transaction(
         .query_sql_with_params(&format!("EXPLAIN ANALYZE {}", page.sql), &page_parameters)?;
     let paths = transaction_runtime_paths(&explain)?;
     transaction.commit()?;
-    let committed_epoch = database.commit_epoch();
+    let committed_epoch = database.commit_epoch()?;
 
     let persisted_page = database.query_sql_with_params_options(
         &page.sql,

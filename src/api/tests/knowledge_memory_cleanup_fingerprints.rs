@@ -50,7 +50,7 @@ fn memory_cleanup_fingerprints_use_one_fixed_bounded_query() {
         ),
         ("limit".to_string(), Value::Int(2)),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     db.query("MATCH (m:Memory {id: 'cleanup-fingerprint-a'}) SET m.decay_score_cached = 0.9, m.future_cleanup_field = 'late-a'")
         .unwrap();
@@ -101,7 +101,7 @@ fn memory_cleanup_fingerprints_respect_query_limit() {
         ),
         ("limit".to_string(), Value::Int(1)),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     let output = snapshot
         .query_with_params_bounded(MEMORY_CLEANUP_FINGERPRINT_QUERY, &parameters, Some(1))

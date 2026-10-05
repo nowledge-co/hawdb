@@ -45,7 +45,7 @@ impl Database {
         expected_identity: crate::ProductionQualificationIdentity,
     ) -> Result<StorageResourceProfileReport> {
         evidence_binding.validate_for(&expected_identity)?;
-        let commit_epoch = self.commit_epoch();
+        let commit_epoch = self.commit_epoch()?;
         if evidence_binding.identity.canonical_graph_commit_epoch != commit_epoch {
             return Err(HawDBError::Semantic(format!(
                 "production evidence canonical graph commit epoch {} does not match database epoch {commit_epoch}",
@@ -72,7 +72,7 @@ impl Database {
         task_context: &hawdb_core::RuntimeTaskContext,
     ) -> Result<StorageResourceProfileReport> {
         evidence_binding.validate_for(&expected_identity)?;
-        let commit_epoch = self.commit_epoch();
+        let commit_epoch = self.commit_epoch()?;
         if evidence_binding.identity.canonical_graph_commit_epoch != commit_epoch {
             return Err(HawDBError::Semantic(format!(
                 "production evidence canonical graph commit epoch {} does not match database epoch {commit_epoch}",
@@ -99,10 +99,10 @@ impl Database {
         task_context: Option<&hawdb_core::RuntimeTaskContext>,
     ) -> Result<StorageResourceProfileReport> {
         limits.validate()?;
-        let canonical_graph_commit_epoch = self.commit_epoch();
-        let durable = self.storage_recovery_report().durable;
-        let before = self.storage_residency_report();
-        let mut read = self.begin_read_transaction();
+        let canonical_graph_commit_epoch = self.commit_epoch()?;
+        let durable = self.storage_recovery_report()?.durable;
+        let before = self.storage_residency_report()?;
+        let mut read = self.begin_read_transaction()?;
         let stream_options = QueryStreamOptions {
             max_rows: Some(limits.max_output_rows),
             max_payload_bytes: Some(limits.max_output_payload_bytes),
@@ -123,7 +123,7 @@ impl Database {
             ),
         }?;
         drop(read);
-        let after = self.storage_residency_report();
+        let after = self.storage_residency_report()?;
 
         Ok(StorageResourceProfileReport::from_observation(
             StorageResourceProfileObservation {

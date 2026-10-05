@@ -66,11 +66,11 @@ impl CompatibilityPrimaryEngine for RecordingEngine {
         Ok("ExpectedPlan".to_string())
     }
 
-    fn project_graph(&self, rel_type: Option<&str>) -> ProjectedGraph {
+    fn project_graph(&self, rel_type: Option<&str>) -> Result<ProjectedGraph> {
         self.events
             .borrow_mut()
             .push(format!("project:{rel_type:?}"));
-        ProjectedGraph::empty()
+        Ok(ProjectedGraph::empty())
     }
 
     fn session(&mut self) -> Self::Session<'_> {

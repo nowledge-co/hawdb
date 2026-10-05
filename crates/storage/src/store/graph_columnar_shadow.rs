@@ -140,7 +140,7 @@ pub(super) use hawdb_storage::column_group::shadow::ColumnarShadowState;
 use hawdb_storage::column_group::shadow::DEFAULT_SHADOW_BUFFER_BUDGET_BYTES;
 
 fn shadow_error(error: ColumnGroupError) -> HawDBError {
-    HawDBError::Storage(format!("columnar shadow: {error}"))
+    HawDBError::from_storage_error_with_context(error, "columnar shadow")
 }
 
 #[cfg(test)]
@@ -855,6 +855,8 @@ impl GraphStore {
     /// shadow instead of failing the open — it is rebuildable derived state,
     /// the same policy `docs/STORAGE.md` recovery step 10 applies to
     /// projected-graph artifacts under the derived-projection contract.
+    /// Descriptor exhaustion aborts admission without discarding artifacts;
+    /// the same valid catalog can be mounted after capacity becomes available.
     pub(super) fn mount_columnar_shadow_for_recovery(&mut self) -> Result<()> {
         self.columnar_shadow.enabled = true;
         self.columnar_shadow.all_dirty = true;
@@ -868,14 +870,13 @@ impl GraphStore {
             return Ok(());
         }
         let opened = ColumnGroupManifest::open(&shadow_root)
-            .map_err(|error| error.to_string())
+            .map_err(shadow_error)
             .and_then(|catalog| match catalog {
                 None => Ok(None),
                 Some(catalog) => ShadowKeyDictionary::load(
                     &shadow_root,
                     self.columnar_shadow.metadata_budget_bytes,
                 )
-                .map_err(|error| error.to_string())
                 .map(|_| Some(catalog)),
             });
         match opened {
@@ -889,6 +890,7 @@ impl GraphStore {
                 self.columnar_shadow.catalog = Some(catalog);
                 self.columnar_shadow.recovery.validated = true;
             }
+            Err(error @ HawDBError::FileDescriptors(_)) => return Err(error),
             Err(error) => {
                 if !read_only {
                     // Cleanup failure must not block open: the shadow is
@@ -898,7 +900,7 @@ impl GraphStore {
                     let _ = fs::remove_dir_all(&shadow_root);
                 }
                 self.columnar_shadow.recovery.discarded = true;
-                self.columnar_shadow.recovery.error = Some(error);
+                self.columnar_shadow.recovery.error = Some(error.to_string());
             }
         }
         Ok(())
@@ -1943,6 +1945,98 @@ mod tests {
             .create_node(&mut catalog, "A", properties(&[]))
             .unwrap();
         assert!(store.columnar_shadow.dirty.is_empty());
+    }
+
+    #[test]
+    fn shadow_recovery_budget_rejection_preserves_valid_artifacts_and_retries() {
+        use crate::file_descriptors::ProjectFileDescriptors;
+        use hawdb_core::error::FileDescriptorError;
+
+        let root = unique_shadow_dir("recovery_fd_retry");
+        let project = ProjectFileDescriptors::acquire(&root, 32).unwrap();
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &root,
+            &mut catalog,
+            DurabilityPolicy::SyncOnEveryWrite,
+            WalReplayConfig {
+                max_open_files: 32,
+                ..shadow_replay_config()
+            },
+        )
+        .unwrap();
+        let node = store
+            .create_node(
+                &mut catalog,
+                "Person",
+                properties(&[("name", Value::String("kept".to_string()))]),
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        let shadow_root = root.join(COLUMN_GROUP_SHADOW_DIR);
+        let manifest = ColumnGroupManifest::open(&shadow_root).unwrap().unwrap();
+        let generation = manifest.manifest().generation();
+        let artifacts = std::fs::read_dir(&shadow_root)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                (path.clone(), std::fs::read(path).unwrap())
+            })
+            .collect::<BTreeMap<_, _>>();
+        store.columnar_shadow.catalog = None;
+        store.columnar_shadow.recovery = ColumnarShadowRecoveryStatus::default();
+        let mut held = Vec::new();
+        loop {
+            match fs::File::create(root.join(format!("held-{}", held.len()))) {
+                Ok(file) => held.push(file),
+                Err(error) => {
+                    assert!(matches!(
+                        HawDBError::from(error),
+                        HawDBError::FileDescriptors(FileDescriptorError::BudgetExceeded { .. })
+                    ));
+                    break;
+                }
+            }
+        }
+        assert_eq!(project.metrics().open, 32);
+        let error = store.mount_columnar_shadow_for_recovery().unwrap_err();
+        assert!(
+            matches!(
+                error,
+                HawDBError::FileDescriptors(FileDescriptorError::BudgetExceeded { .. })
+            ),
+            "shadow admission lost its resource cause: {error:?}"
+        );
+        assert!(!store.columnar_shadow_recovery_status().discarded);
+        assert!(store.columnar_shadow_recovery_status().error.is_none());
+        assert_eq!(project.metrics().open, 32);
+        assert_eq!(project.metrics().reserved, 0);
+        drop(held);
+        for (path, bytes) in artifacts {
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+        store.mount_columnar_shadow_for_recovery().unwrap();
+        assert!(store.columnar_shadow_recovery_status().validated);
+        assert_eq!(
+            store
+                .columnar_shadow
+                .catalog
+                .as_ref()
+                .unwrap()
+                .manifest()
+                .generation(),
+            generation
+        );
+        let (nodes, _) = canonical_scan(&store);
+        assert_eq!(
+            nodes[&node].properties["name"],
+            Value::String("kept".to_string())
+        );
+        drop(store);
+        assert_eq!(project.metrics().open, 0);
+        assert_eq!(project.metrics().reserved, 0);
+        drop(project);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

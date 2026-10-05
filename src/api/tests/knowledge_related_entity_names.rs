@@ -58,7 +58,7 @@ fn related_entity_names_use_fixed_memory_and_thread_queries() {
         ("thread_id".to_string(), Value::String("thread".to_string())),
         ("limit".to_string(), Value::Int(1)),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     let memory_names = snapshot
         .query_with_params_bounded(
@@ -127,7 +127,7 @@ fn related_entity_names_respect_query_limit() {
         ),
         ("limit".to_string(), Value::Int(1)),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     let output = snapshot
         .query_with_params_bounded(MEMORY_RELATED_ENTITY_NAMES_QUERY, &parameters, Some(1))

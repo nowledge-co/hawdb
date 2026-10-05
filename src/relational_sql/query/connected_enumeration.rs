@@ -23,7 +23,7 @@ use std::num::NonZeroUsize;
 fn long_inner_chain_with_like_filter_uses_cost_based_order_and_matches_syntax() {
     for count in [13, 15] {
         let (database, sql) = fixture(count, DatabaseConfig::default());
-        let read = database.begin_read_transaction();
+        let read = database.begin_read_transaction().unwrap();
         let parameters = [Value::String("keep%".to_owned())];
         let planned = read
             .query_sql_with_params_options_profiled(
@@ -85,7 +85,7 @@ fn exhausted_connected_join_budget_preserves_reported_syntax_fallback() {
                 ..DatabaseConfig::default()
             },
         );
-        let read = database.begin_read_transaction();
+        let read = database.begin_read_transaction().unwrap();
         let parameters = [Value::String("keep%".to_owned())];
         let planned = read
             .query_sql_with_params_options_profiled(

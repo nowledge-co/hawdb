@@ -201,6 +201,8 @@ pub struct ImmutableObjectStore {
     root: PathBuf,
     max_object_bytes: u64,
     poisoned: bool,
+    synchronized_kinds: BTreeSet<ObjectKind>,
+    namespace_synchronized: bool,
 }
 
 impl ImmutableObjectStore {
@@ -232,6 +234,8 @@ impl ImmutableObjectStore {
             root,
             max_object_bytes,
             poisoned: false,
+            synchronized_kinds: BTreeSet::new(),
+            namespace_synchronized: false,
         })
     }
 
@@ -388,6 +392,10 @@ impl ImmutableObjectStore {
                 && !branch.active_lease
                 && branch.directory.exists()
             {
+                // A reclamation owner can remove namespace paths. Revalidate
+                // kind names before any subsequent publication by this store.
+                self.synchronized_kinds.clear();
+                self.namespace_synchronized = false;
                 fs::remove_dir_all(&branch.directory).map_err(|source| {
                     ImmutableObjectError::Io {
                         operation: "remove deleted branch directory",
@@ -415,14 +423,37 @@ impl ImmutableObjectStore {
         }
         validate_reference(reference, payload, self.max_object_bytes)?;
 
+        if !self.namespace_synchronized {
+            // Opening a reader is not a publication boundary. Establish all
+            // directory names before the first acknowledged publication, and
+            // retry the whole ancestry if a previous barrier was uncertain.
+            map_io(
+                "sync immutable object directory ancestry",
+                crate::durability::sync_directory_ancestors(
+                    &self.root.join(OBJECTS_DIRECTORY).join(STAGING_DIRECTORY),
+                ),
+            )?;
+            self.namespace_synchronized = true;
+        }
         let destination = self.object_path(reference);
         let object_directory = destination
             .parent()
             .expect("object path always has an object-kind parent");
-        map_io(
-            "create immutable object kind directory",
-            fs::create_dir_all(object_directory),
-        )?;
+        if !self.synchronized_kinds.contains(&reference.kind) {
+            map_io(
+                "create immutable object kind directory",
+                fs::create_dir_all(object_directory),
+            )?;
+            map_io(
+                "sync immutable object kind directory name",
+                crate::durability::sync_parent_directory(object_directory),
+            )?;
+            // Only cache a completed name barrier. Known directories are never
+            // recreated here: an unexpectedly missing directory fails closed.
+            // The set has at most the five supported object kinds. Each object's
+            // bytes and final entry still get their own publication barriers.
+            self.synchronized_kinds.insert(reference.kind);
+        }
 
         if destination.exists() {
             return self.validate_existing(reference, payload, &destination);
@@ -485,7 +516,7 @@ impl ImmutableObjectStore {
     }
 
     fn validate_existing(
-        &self,
+        &mut self,
         reference: ObjectReference,
         payload: &[u8],
         path: &Path,
@@ -497,6 +528,12 @@ impl ImmutableObjectStore {
             });
         }
         validate_file(path, reference, payload, self.max_object_bytes)?;
+        // A previous publisher may have installed complete bytes but failed its
+        // final namespace barrier. Acknowledging reuse must close that window.
+        if let Err(source) = sync_publication_directories(path, None) {
+            self.poisoned = true;
+            return Err(ImmutableObjectError::PublicationUncertain { source });
+        }
         Ok(PublishOutcome::Reused)
     }
 }

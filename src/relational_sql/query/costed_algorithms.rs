@@ -92,7 +92,7 @@ fn assert_costed_algorithm(indexed: bool, expected: RelationalOperatorKind, spil
     } else {
         sql
     };
-    let read = database.begin_read_transaction();
+    let read = database.begin_read_transaction().unwrap();
     let planned = read
         .query_sql_with_params_options_profiled(sql, &[], QueryStreamOptions::default())
         .unwrap();
@@ -212,7 +212,7 @@ fn seeded_costed_joins_preserve_nulls_duplicates_and_residual_predicates() {
             }
             for outer in [false, true] {
                 let sql = format!("SELECT a.id AS a_id, b.id AS b_id FROM oracle_a AS a {} JOIN oracle_b AS b ON a.k = b.k AND a.id < b.id ORDER BY a.id, b.id", if outer { "LEFT" } else { "INNER" });
-                let read = database.begin_read_transaction();
+                let read = database.begin_read_transaction().unwrap();
                 let actual = read
                     .query_sql_with_params_options_profiled(
                         &sql,
@@ -293,7 +293,7 @@ fn costed_implementation_budget_falls_back_without_changing_results() {
             ))
             .unwrap();
     }
-    let read = database.begin_read_transaction();
+    let read = database.begin_read_transaction().unwrap();
     let sql = "SELECT a.id AS a_id, b.id AS b_id FROM budget_a AS a JOIN budget_b AS b ON a.k = b.k ORDER BY a.id, b.id";
     let planned = read
         .query_sql_with_params_options_profiled(sql, &[], QueryStreamOptions::default())

@@ -383,8 +383,14 @@ fn run_source_projection_workload_probe(
     name: &str,
 ) -> NowledgeSourceProjectionWorkloadReport {
     let db = graph.database_mut();
-    let source_graph_commit_epoch_before = db.commit_epoch();
-    let mut transaction = db.begin_transaction();
+    let source_graph_commit_epoch_before = match db.commit_epoch() {
+        Ok(value) => value,
+        Err(error) => return source_projection_error_report(name, &error_class(&error)),
+    };
+    let mut transaction = match db.begin_transaction() {
+        Ok(value) => value,
+        Err(error) => return source_projection_error_report(name, &error_class(&error)),
+    };
     for statement in [
         "CREATE (:Source {id: 'workload-source-v1', original_name: 'workload.md', lifecycle_state: 'parsed', space_id: 'default', version: 1})",
         "CREATE (:Source {id: 'workload-source-v2', original_name: 'workload.md', lifecycle_state: 'indexed', space_id: 'default', version: 2})",
@@ -398,7 +404,10 @@ fn run_source_projection_workload_probe(
     if let Err(error) = transaction.commit() {
         return source_projection_error_report(name, &error_class(&error));
     }
-    let source_graph_commit_epoch = db.commit_epoch();
+    let source_graph_commit_epoch = match db.commit_epoch() {
+        Ok(value) => value,
+        Err(error) => return source_projection_error_report(name, &error_class(&error)),
+    };
     let too_small_batch_failed_closed = db
         .build_search_projection_graph_delta_request_after(
             source_graph_commit_epoch_before,
@@ -477,7 +486,10 @@ fn run_graph_rag_workload_probe(
     graph: &NowledgeMemGraph,
     name: &str,
 ) -> NowledgeGraphRagWorkloadReport {
-    let context = graph.graph_rag_schema_context(GraphRagSchemaContextOptions::default());
+    let context = match graph.graph_rag_schema_context(GraphRagSchemaContextOptions::default()) {
+        Ok(context) => context,
+        Err(error) => return graph_rag_error_report(name, None, &error_class(&error)),
+    };
     let draft = GraphRagQueryDraft {
         schema_fingerprint: context.fingerprint,
         pattern: GraphRagQueryPattern::Route {
@@ -502,7 +514,7 @@ fn run_graph_rag_workload_probe(
         Ok(query) => query,
         Err(error) => {
             let _ = error;
-            return graph_rag_error_report(name, &context, "generation");
+            return graph_rag_error_report(name, Some(&context), "generation");
         }
     };
     let parameters = BTreeMap::from([(
@@ -545,26 +557,26 @@ fn run_graph_rag_workload_probe(
             streaming: output.report.streaming,
             error_class: None,
         },
-        Err(error) => graph_rag_error_report(name, &context, &error_class(&error)),
+        Err(error) => graph_rag_error_report(name, Some(&context), &error_class(&error)),
     }
 }
 
 fn graph_rag_error_report(
     name: &str,
-    context: &hawdb_core::GraphRagSchemaContext,
+    context: Option<&hawdb_core::GraphRagSchemaContext>,
     error_class: &str,
 ) -> NowledgeGraphRagWorkloadReport {
     NowledgeGraphRagWorkloadReport {
         name: name.to_string(),
         ready: false,
-        schema_protocol: Some(context.protocol.to_string()),
-        context_epoch: Some(context.computed_at_commit_epoch),
-        schema_fingerprint: Some(context.fingerprint),
-        label_count: context.labels.len(),
-        relationship_type_count: context.relationship_types.len(),
-        property_count: context.properties.len(),
-        route_count: context.routes.len(),
-        common_path_count: context.common_paths.len(),
+        schema_protocol: context.map(|context| context.protocol.to_string()),
+        context_epoch: context.map(|context| context.computed_at_commit_epoch),
+        schema_fingerprint: context.map(|context| context.fingerprint),
+        label_count: context.map_or(0, |context| context.labels.len()),
+        relationship_type_count: context.map_or(0, |context| context.relationship_types.len()),
+        property_count: context.map_or(0, |context| context.properties.len()),
+        route_count: context.map_or(0, |context| context.routes.len()),
+        common_path_count: context.map_or(0, |context| context.common_paths.len()),
         parameter_requirement_count: 0,
         row_count: 0,
         max_rows: None,

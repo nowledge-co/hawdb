@@ -211,7 +211,7 @@ impl RaBitQArtifactBuilder {
 
 #[cfg(feature = "vector-search")]
 fn rabitq_error(error: hawdb_vector_projection::ProjectionError) -> HawDBError {
-    HawDBError::Storage(format!("search RaBitQ projection: {error}"))
+    crate::rabitq_projection::map_projection_error(error, "search RaBitQ projection")
 }
 
 #[cfg(all(test, feature = "vector-search"))]

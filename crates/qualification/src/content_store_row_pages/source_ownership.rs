@@ -44,9 +44,9 @@ pub(super) fn qualify_source_ownership_move(
     corpus: &ContentStoreSqlCorpus,
     chunk_payload_bytes: usize,
 ) -> Result<(Database, ContentStoreSourceOwnershipMoveQualificationReport)> {
-    let missing_owner_epoch_before = database.commit_epoch();
+    let missing_owner_epoch_before = database.commit_epoch()?;
     let missing_owner_count = qualify_missing_source_noop(&mut database, corpus)?;
-    let missing_owner_epoch_after = database.commit_epoch();
+    let missing_owner_epoch_after = database.commit_epoch()?;
     if missing_owner_epoch_after != missing_owner_epoch_before {
         return Err(HawDBError::Execution(format!(
             "content-store missing source ownership probe changed epoch from {missing_owner_epoch_before} to {missing_owner_epoch_after}"
@@ -65,7 +65,7 @@ pub(super) fn qualify_source_ownership_move(
     let update_space = corpus_statement(corpus, "update_source_document_space")?;
     let count = corpus_statement(corpus, "source_chunk_count_by_source")?;
     let page = corpus_statement(corpus, "source_chunks_by_source")?;
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
     transaction.query_with_params(
         "MATCH (s:Source {id: $source_id}) SET s.space_id = $space_id",
         &source_space_parameters(TARGET_SPACE_ID),
@@ -100,7 +100,7 @@ pub(super) fn qualify_source_ownership_move(
     )?;
     require_graph_space(&graph, MOVE_CHUNK_COUNT, TARGET_SPACE_ID, "workspace")?;
     transaction.commit()?;
-    let committed_epoch = database.commit_epoch();
+    let committed_epoch = database.commit_epoch()?;
     if committed_epoch <= seed_commit_epoch {
         return Err(HawDBError::Execution(format!(
             "content-store source ownership epoch {committed_epoch} did not advance beyond seed epoch {seed_commit_epoch}"
@@ -138,7 +138,7 @@ pub(super) fn qualify_source_ownership_move(
 
     database.checkpoint()?;
     let checkpoint_generation = database
-        .relational_index_shadow_checkpoint_report()
+        .relational_index_shadow_checkpoint_report()?
         .ok_or_else(|| {
             HawDBError::Execution(
                 "content-store source ownership checkpoint did not publish relational indexes"
@@ -208,7 +208,7 @@ fn qualify_missing_source_noop(
 ) -> Result<i64> {
     let update_space = corpus_statement(corpus, "update_source_document_space")?;
     let count = corpus_statement(corpus, "source_chunk_count_by_source")?;
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
     transaction.query_with_params(
         "MATCH (s:Source {id: $source_id}) SET s.space_id = $space_id",
         &source_space_parameters_for(MISSING_SOURCE_ID, TARGET_SPACE_ID),

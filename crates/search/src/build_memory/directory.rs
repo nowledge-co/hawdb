@@ -57,15 +57,25 @@ pub(crate) fn scan_bytes(root: &Path) -> Result<usize> {
     )
 }
 
+// Owned stages are flat and usually small. Four paths keep the cleanup charge
+// near its existing scan envelope without changing general GC traversal batches.
+pub(crate) const STAGE_REMOVAL_BATCH_ENTRIES: usize = 4;
+
 pub(crate) fn stage_removal_bytes(root: &Path) -> Result<usize> {
-    // A generated stage is flat. Counted cleanup keeps at most four admitted
-    // child paths and closes its iterator before unlinking the next batch.
-    let paths = mul(
-        4,
-        add(
-            root.as_os_str().as_encoded_bytes().len(),
-            ENTRY_NAME_BYTES + 64,
-        )?,
+    // The admitted walker closes its iterator before deleting each batch. Stage
+    // producers create files directly under the owned root, so only one level
+    // of pending directory paths can exist. Retain all child paths in the batch,
+    // plus the iterator/entry/native-path scratch and overlapping Vec growth.
+    let root_bytes = root.as_os_str().as_encoded_bytes().len();
+    let verbatim = matches!(root.components().next(), Some(Component::Prefix(prefix)) if prefix.kind().is_verbatim());
+    // scan_bytes covers one transient normalization workspace. Each completed
+    // child contributes only its retained capacity, shared with join_bytes.
+    let child_capacity = path::retained_join_bytes(root_bytes, ENTRY_NAME_BYTES, verbatim)?;
+    let paths = mul(STAGE_REMOVAL_BATCH_ENTRIES, child_capacity)?;
+    let tuples = mul(
+        2 * STAGE_REMOVAL_BATCH_ENTRIES,
+        size_of::<(std::path::PathBuf, fs::FileType)>(),
     )?;
-    add(scan_bytes(root)?, paths)
+    let pending = add(root_bytes, 4 * size_of::<std::path::PathBuf>())?;
+    add(scan_bytes(root)?, add(paths, add(tuples, pending)?)?)
 }

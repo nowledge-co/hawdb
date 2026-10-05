@@ -25,12 +25,18 @@ impl Database {
     pub fn graph_rag_schema_context(
         &self,
         options: GraphRagSchemaContextOptions,
-    ) -> GraphRagSchemaContext {
-        build_graph_rag_schema_context(
-            &self.catalog,
-            &self.store.statistics(&self.catalog),
-            options,
-        )
+    ) -> Result<GraphRagSchemaContext> {
+        Ok({
+            build_graph_rag_schema_context(
+                &self.runtime.get()?.catalog,
+                &self
+                    .runtime
+                    .get()?
+                    .store
+                    .statistics(&self.runtime.get()?.catalog),
+                options,
+            )
+        })
     }
 }
 

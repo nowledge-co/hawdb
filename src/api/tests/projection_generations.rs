@@ -449,7 +449,7 @@ fn projection_relational_reads_pin_one_published_generation_for_postgres_sql() {
     assert!(explain_info.contains("row_projection_source_watermark=42"));
     assert!(explain_info.contains("row_projection_version=1"));
 
-    let canonical = database.begin_read_transaction();
+    let canonical = database.begin_read_transaction().unwrap();
     assert!(canonical
         .query_sql("SELECT id FROM communities")
         .expect("query canonical relational table")

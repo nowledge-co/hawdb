@@ -53,7 +53,7 @@ fn reads_augmentation_job_status_with_parameterized_cypher() {
     });
     db.query("CREATE (:AugmentationJob {job_id: 'job_1', job_type: 'pagerank', status: 'running', progress: 42.5, message: 'Working', result: '{}', error_message: '', started_at: 100, completed_at: NULL, created_at: 90})")
         .unwrap();
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     let parameters = BTreeMap::from([("job_id".to_string(), Value::String("job_1".to_string()))]);
 
     let first = read
@@ -113,7 +113,7 @@ fn lists_augmentation_jobs_with_named_count_and_page_queries() {
         .unwrap();
     db.query("CREATE (:AugmentationJob {job_id: 'pending', job_type: 'louvain', status: 'pending', progress: 0.0, message: 'pending', created_at: 3})")
         .unwrap();
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     let count_parameters =
         BTreeMap::from([("status".to_string(), Value::String("running".to_string()))]);
     let count_query = "MATCH (j:AugmentationJob) WHERE j.status = $status RETURN count(j) AS total";
@@ -160,7 +160,7 @@ fn selects_created_at_list_shape_without_dynamic_query_fragments() {
         .unwrap();
     db.query("CREATE (:AugmentationJob {job_id: 'queued', job_type: 'community', status: 'queued', progress: 0.0, message: 'queued', created_at: 30})")
         .unwrap();
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
 
     let filtered_parameters = BTreeMap::from([
         ("status".to_string(), Value::String("done".to_string())),
@@ -203,7 +203,7 @@ fn augmentation_job_read_values_remain_parameters() {
     let mut db = Database::new();
     db.query("CREATE (:AugmentationJob {job_id: 'job_1', status: 'running'})")
         .unwrap();
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     let parameters = BTreeMap::from([(
         "job_id".to_string(),
         Value::String("job_1') MATCH (n) RETURN n //".to_string()),

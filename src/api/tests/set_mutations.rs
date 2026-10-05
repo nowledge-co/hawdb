@@ -218,7 +218,7 @@ fn transaction_set_commits_and_rolls_back() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 1, title: 'Old'})").unwrap();
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("MATCH (m:Memory) WHERE m.id = 1 SET m.title = 'Ignored'")
             .unwrap();
         tx.rollback();
@@ -229,7 +229,7 @@ fn transaction_set_commits_and_rolls_back() {
     assert_eq!(output.rows.len(), 1);
 
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("MATCH (m:Memory) WHERE m.id = 1 SET m.title = 'Committed'")
             .unwrap();
         let output = tx.commit().unwrap();

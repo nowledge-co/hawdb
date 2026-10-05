@@ -321,7 +321,10 @@ fn admitted_large_transaction_completes_under_recurring_small_transactions() {
         drop(db);
         if durable {
             let mut reopened = Database::open(&path).unwrap();
-            assert_eq!(reopened.commit_epoch(), epoch + 3 + small_commits as u64);
+            assert_eq!(
+                reopened.commit_epoch().unwrap(),
+                epoch + 3 + small_commits as u64
+            );
             assert_eq!(reopened.query_sql(query).unwrap().rows, rows);
             drop(reopened);
             std::fs::remove_dir_all(path).unwrap();
@@ -645,7 +648,7 @@ fn admitted_group_failure_preserves_conflicts_and_recovers_only_complete_serial_
             };
             std::fs::write(&wal_path, &full_wal[..end]).unwrap();
             let mut reopened = Database::open(&path).unwrap();
-            assert_eq!(reopened.commit_epoch(), epoch + retained as u64);
+            assert_eq!(reopened.commit_epoch().unwrap(), epoch + retained as u64);
             let rows = reopened.query(query).unwrap().rows;
             assert_eq!(rows.len(), 4);
             assert_eq!(rows[0]["value"], rows[1]["value"]);
@@ -684,6 +687,8 @@ fn admitted_group_failure_preserves_conflicts_and_recovers_only_complete_serial_
             let torn = &full_wal[..start + len / 2];
             std::fs::write(&wal_path, torn).unwrap();
             assert!(Database::open(&path)
+                .unwrap()
+                .commit_epoch()
                 .unwrap_err()
                 .to_string()
                 .contains("strict WAL recovery rejected torn tail"));
@@ -698,14 +703,21 @@ fn admitted_group_failure_preserves_conflicts_and_recovers_only_complete_serial_
             reordered.extend_from_slice(&full_wal[second_start..second_start + second_len]);
             reordered.extend_from_slice(&full_wal[first_start..first_start + first_len]);
             std::fs::write(&wal_path, &reordered).unwrap();
-            let error = Database::open(&path).unwrap_err().to_string();
+            let error = Database::open(&path)
+                .unwrap()
+                .commit_epoch()
+                .unwrap_err()
+                .to_string();
             assert!(error.contains("LSN") || error.contains("lsn"), "{error}");
             assert_eq!(std::fs::read(&wal_path).unwrap(), reordered);
         }
         std::fs::write(&wal_path, &full_wal).unwrap();
         let mut reopened = Database::open(&path).unwrap();
         reopened.query("CREATE (:AfterReopen)").unwrap();
-        assert_eq!(reopened.commit_epoch(), epoch + accepted as u64 + 1);
+        assert_eq!(
+            reopened.commit_epoch().unwrap(),
+            epoch + accepted as u64 + 1
+        );
         drop(reopened);
         std::fs::remove_dir_all(path).unwrap();
     }
@@ -931,7 +943,7 @@ fn admitted_conflict_retry_escalates_before_recurring_hot_writers() {
         drop(db);
         if durable {
             let mut reopened = Database::open(&path).unwrap();
-            assert_eq!(reopened.commit_epoch(), final_epoch);
+            assert_eq!(reopened.commit_epoch().unwrap(), final_epoch);
             assert_eq!(
                 reopened
                     .query_sql("SELECT id, value FROM retry_progress ORDER BY id")

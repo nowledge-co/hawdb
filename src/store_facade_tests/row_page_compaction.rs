@@ -16,7 +16,7 @@ use crate::store_facade_tests::unique_test_dir;
 use crate::{Database, DatabaseConfig, RelationalRowPageCompactionConfig, Value};
 use hawdb_storage::config::{RelationalIndexMode, StorageResidencyMode};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const TABLES: u64 = 16;
 // Database also persists the nonempty hawdb_schema_migrations registry.
@@ -37,16 +37,20 @@ fn open_config(mode: StorageResidencyMode) -> DatabaseConfig {
 fn churn_database(path: &Path, mode: StorageResidencyMode, tables: u64) -> Database {
     let mut db =
         Database::open_with_config(path, open_config(StorageResidencyMode::Materialized)).unwrap();
+    // Publish one complete schema/data seed generation. Per-table DDL
+    // checkpoints would give this physical-layout oracle a different base arena.
+    let mut seed = db.begin_transaction().unwrap();
     for table in 0..tables {
-        db.query_sql(&format!(
+        seed.query_sql(&format!(
             "CREATE TABLE documents_{table} (id BIGINT PRIMARY KEY, revision BIGINT NOT NULL)"
         ))
         .unwrap();
-        db.query_sql(&format!(
+        seed.query_sql(&format!(
             "INSERT INTO documents_{table} (id, revision) VALUES (1, 0)"
         ))
         .unwrap();
     }
+    seed.commit().unwrap();
     db.checkpoint().unwrap();
     drop(db);
     let mut db = Database::open_with_config(path, open_config(mode)).unwrap();
@@ -63,8 +67,32 @@ fn churn_database(path: &Path, mode: StorageResidencyMode, tables: u64) -> Datab
     db
 }
 
+fn branch_directory(path: &Path) -> PathBuf {
+    let hawdb_storage::branch_project::ProjectManifest::Branch(selector) =
+        hawdb_storage::branch_project::inspect_project_manifest(path).unwrap()
+    else {
+        panic!("expected a branch project")
+    };
+    path.join("branches")
+        .join(selector.main_branch_id().as_uuid().to_string())
+}
+
+fn data_directory(path: &Path) -> PathBuf {
+    branch_directory(path).join("data")
+}
+
+fn next_checkpoint_generation(path: &Path) -> u64 {
+    // The private WAL already owns a generation above the last checkpoint.
+    hawdb_storage::branch_head::read_branch_head(&branch_directory(path).join("branch.head"))
+        .unwrap()
+        .active_wal
+        .generation
+        .checked_add(1)
+        .unwrap()
+}
+
 fn physical_page_bytes(path: &Path) -> u64 {
-    std::fs::read_dir(path)
+    std::fs::read_dir(data_directory(path))
         .unwrap()
         .map(|entry| entry.unwrap())
         .filter(|entry| {
@@ -84,15 +112,19 @@ fn row_page_compaction_converges_disk_bytes_and_preserves_pinned_readers() {
     ] {
         let path = unique_test_dir(&format!("row_page_compaction_churn_{mode:?}"));
         let mut db = churn_database(&path, mode, TABLES);
-        let before = db.storage_residency_report().relational_rows;
+        let before = db.storage_residency_report().unwrap().relational_rows;
         assert_eq!(before.root_page_count, LIVE_PAGES);
-        assert_eq!(before.allocated_page_count, TABLES * (TABLES + 1) / 2 + 1);
+        assert_eq!(
+            before.allocated_page_count,
+            TABLES * (TABLES + 1) / 2 + 1,
+            "{before:?}"
+        );
         assert_eq!(before.physical_generation_count, TABLES as usize);
         if mode == StorageResidencyMode::OutOfCore {
             assert!(before.checkpoint_state_metadata_only);
             assert_eq!(before.materialized_row_count, 0);
         }
-        let pinned = db.begin_read_transaction();
+        let pinned = db.begin_read_transaction().unwrap();
         let report = db
             .compact_relational_row_pages(RelationalRowPageCompactionConfig::default())
             .unwrap();
@@ -102,7 +134,7 @@ fn row_page_compaction_converges_disk_bytes_and_preserves_pinned_readers() {
         assert_eq!(report.reused_pages, 1);
         assert_eq!(report.previous_allocated_pages, before.allocated_page_count);
         assert_eq!(report.allocated_pages, LIVE_PAGES);
-        let compacted = db.storage_residency_report().relational_rows;
+        let compacted = db.storage_residency_report().unwrap().relational_rows;
         assert_eq!(compacted.allocated_page_bytes, compacted.live_page_bytes);
         assert!(physical_page_bytes(&path) > compacted.allocated_page_bytes);
         for table in 0..TABLES {
@@ -126,6 +158,7 @@ fn row_page_compaction_converges_disk_bytes_and_preserves_pinned_readers() {
         assert_eq!(
             reopened
                 .storage_residency_report()
+                .unwrap()
                 .relational_rows
                 .allocated_page_count,
             LIVE_PAGES
@@ -158,8 +191,8 @@ fn row_page_compaction_failure_limits_leave_the_generation_retryable() {
     let path = unique_test_dir("row_page_compaction_limits");
     let mode = StorageResidencyMode::OutOfCore;
     let mut db = churn_database(&path, mode, 4);
-    let before = db.storage_residency_report().relational_rows;
-    let generation = before.base_generation.unwrap() + 1;
+    let before = db.storage_residency_report().unwrap().relational_rows;
+    let generation = next_checkpoint_generation(&path);
     for config in [
         RelationalRowPageCompactionConfig {
             rewrite: hawdb_storage::relational::RelationalRowPageRewriteConfig {
@@ -180,6 +213,7 @@ fn row_page_compaction_failure_limits_leave_the_generation_retryable() {
         assert!(error.to_string().contains("limit"), "{error}");
         assert_eq!(
             db.storage_residency_report()
+                .unwrap()
                 .relational_rows
                 .base_generation,
             before.base_generation
@@ -192,7 +226,7 @@ fn row_page_compaction_failure_limits_leave_the_generation_retryable() {
             format!(".checkpoint.{generation}.prepare"),
         ] {
             assert!(
-                !path.join(&artifact).exists(),
+                !data_directory(&path).join(&artifact).exists(),
                 "stranded candidate {artifact}"
             );
         }
@@ -245,10 +279,12 @@ fn row_page_compaction_dirty_and_materialized_limits_release_admission() {
     let generation = engine
         .database_mut()
         .storage_residency_report()
+        .unwrap()
         .relational_rows
         .base_generation
         .unwrap();
-    let epoch = engine.database_mut().commit_epoch();
+    let epoch = engine.database_mut().commit_epoch().unwrap();
+    let candidate_generation = next_checkpoint_generation(&path);
     for (config, expected_error) in [
         (
             RelationalRowPageCompactionConfig {
@@ -284,20 +320,21 @@ fn row_page_compaction_dirty_and_materialized_limits_release_admission() {
         assert_eq!(snapshot.active_cpu_slots, 0);
         assert_eq!(snapshot.active_background_io_slots, 0);
         let db = engine.database_mut();
-        assert_eq!(db.commit_epoch(), epoch);
+        assert_eq!(db.commit_epoch().unwrap(), epoch);
         assert_eq!(
             db.storage_residency_report()
+                .unwrap()
                 .relational_rows
                 .base_generation,
             Some(generation)
         );
-        assert!(!path
-            .join(format!(".checkpoint.{}.prepare", generation + 1))
+        assert!(!data_directory(&path)
+            .join(format!(".checkpoint.{}.prepare", candidate_generation))
             .exists());
-        assert!(!path
+        assert!(!data_directory(&path)
             .join(
                 hawdb_storage::relational::relational_row_page_manifest_generation_file(
-                    generation + 1
+                    candidate_generation
                 )
             )
             .exists());
@@ -306,7 +343,7 @@ fn row_page_compaction_dirty_and_materialized_limits_release_admission() {
         .database_mut()
         .compact_relational_row_pages(Default::default())
         .unwrap();
-    assert_eq!(report.published_generation, generation + 1);
+    assert_eq!(report.published_generation, candidate_generation);
     assert_eq!(report.source_commit_epoch, epoch);
     assert_eq!(report.dirty_pages_written, 2);
     assert_eq!(engine.runtime_governor().snapshot().admissions, 4);
@@ -338,7 +375,9 @@ fn row_page_compaction_checkpoint_failpoints_recover_one_complete_selection() {
         let path = unique_test_dir(&format!("row_page_compaction_failpoint_{stage:?}"));
         let mode = StorageResidencyMode::OutOfCore;
         let mut db = churn_database(&path, mode, 4);
-        let before = db.storage_residency_report().relational_rows;
+        let before = db.storage_residency_report().unwrap().relational_rows;
+        let head_path = branch_directory(&path).join("branch.head");
+        let head_before = std::fs::read(&head_path).unwrap();
         set_checkpoint_failpoint(Some(stage));
         let result = db.compact_relational_row_pages(Default::default());
         set_checkpoint_failpoint(None);
@@ -348,17 +387,12 @@ fn row_page_compaction_checkpoint_failpoints_recover_one_complete_selection() {
             .contains("injected checkpoint failure"));
         drop(db);
         let mut reopened = Database::open_with_config(&path, open_config(mode)).unwrap();
-        let recovered = reopened.storage_residency_report().relational_rows;
-        if stage == CheckpointPublishStage::ManifestPublished {
-            assert_eq!(
-                recovered.base_generation,
-                before.base_generation.map(|generation| generation + 1)
-            );
-            assert_eq!(recovered.allocated_page_count, recovered.root_page_count);
-        } else {
-            assert_eq!(recovered.base_generation, before.base_generation);
-            assert_eq!(recovered.allocated_page_count, before.allocated_page_count);
-        }
+        let recovered = reopened.storage_residency_report().unwrap().relational_rows;
+        // These failpoints stop before branch head publication. A locally
+        // published runtime manifest cannot replace the authoritative head.
+        assert_eq!(std::fs::read(&head_path).unwrap(), head_before);
+        assert_eq!(recovered.base_generation, before.base_generation);
+        assert_eq!(recovered.allocated_page_count, before.allocated_page_count);
         assert_eq!(recovered.visible_commit_epoch, before.visible_commit_epoch);
         reopened.scrub_storage().unwrap();
         for table in 0..4 {
@@ -389,7 +423,7 @@ fn row_page_compaction_admits_before_building_and_shares_shadow_capacity() {
     let mode = StorageResidencyMode::OutOfCore;
     let mut db = churn_database(&path, mode, 4);
     db.query("CREATE (:CompactionShadow {id: 1})").unwrap();
-    let before = db.storage_residency_report().relational_rows;
+    let before = db.storage_residency_report().unwrap().relational_rows;
     drop(db);
     for memory_bytes in [1, 1024 * 1024 * 1024] {
         let config = DatabaseConfig {
@@ -423,6 +457,7 @@ fn row_page_compaction_admits_before_building_and_shares_shadow_capacity() {
                 engine
                     .database_mut()
                     .storage_residency_report()
+                    .unwrap()
                     .relational_rows
                     .base_generation,
                 before.base_generation
@@ -436,6 +471,7 @@ fn row_page_compaction_admits_before_building_and_shares_shadow_capacity() {
                 engine
                     .database_mut()
                     .columnar_shadow_checkpoint_report()
+                    .unwrap()
                     .unwrap()
                     .status,
                 crate::store::ColumnarShadowCheckpointStatus::Published

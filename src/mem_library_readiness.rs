@@ -99,7 +99,7 @@ pub fn run_nowledge_mem_library_readiness_report(
         search_candidate_shadow_evidence,
         ..NowledgeMemReadinessOptions::default()
     };
-    let readiness = store.library_readiness(&options);
+    let readiness = store.library_readiness(&options)?;
     Ok(NowledgeMemLibraryReadinessRunReport {
         readiness,
         open_report,
