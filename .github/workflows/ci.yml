@@ -95,6 +95,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Windows alias probes reserve handles across registered FD domains.
+          # Budget-exhaustion cases must not overlap unrelated reopen cases.
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            export RUST_TEST_THREADS=1
+          fi
           cargo test -p hawdb-search
           cargo test -p hawdb-search --no-default-features
           cargo test -p hawdb-search --no-default-features --features full-text-search
