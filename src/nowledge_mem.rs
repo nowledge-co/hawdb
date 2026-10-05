@@ -145,6 +145,7 @@ pub use hawdb_search::candidate_evidence::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Instant;
 
@@ -2240,6 +2241,10 @@ pub struct NowledgeMemEmbeddedStore {
 pub struct NowledgeMemEmbeddedStoreHandle {
     inner: Arc<RwLock<NowledgeMemEmbeddedStore>>,
     published_read: Arc<Mutex<Option<PublishedCanonicalRead>>>,
+    // One-way: a failed or panicking write guard sets this and leaves the
+    // last-good publication untouched, so readers fail closed instead of
+    // silently serving pre-write state. Mirrors CommitGuard's poison flag.
+    read_publication_failed: Arc<AtomicBool>,
 }
 
 #[derive(Debug)]
@@ -2260,6 +2265,7 @@ impl PublishedCanonicalRead {
 struct EmbeddedStoreWriteGuard<'a> {
     store: RwLockWriteGuard<'a, NowledgeMemEmbeddedStore>,
     published: &'a Mutex<Option<PublishedCanonicalRead>>,
+    read_publication_failed: &'a AtomicBool,
 }
 
 impl std::ops::Deref for EmbeddedStoreWriteGuard<'_> {
@@ -2278,20 +2284,28 @@ impl std::ops::DerefMut for EmbeddedStoreWriteGuard<'_> {
 
 impl Drop for EmbeddedStoreWriteGuard<'_> {
     fn drop(&mut self) {
+        // A panicking writer or a failed capture must never overwrite the
+        // last known-good publication with an empty or stale one. Record the
+        // failure so readers fail closed instead of silently serving
+        // pre-write state; the committed write itself is not undone.
+        if std::thread::panicking() {
+            self.read_publication_failed.store(true, Ordering::Release);
+            return;
+        }
         // Capture before publication and before releasing the writer guard.
         // Refresh even when a checkpoint changes only the physical generation.
-        let next = (!std::thread::panicking())
-            .then(|| PublishedCanonicalRead::capture(&self.store))
-            .transpose()
-            .ok()
-            .flatten();
-        let previous = std::mem::replace(
-            &mut *self
-                .published
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()),
-            next,
-        );
+        let next = match PublishedCanonicalRead::capture(&self.store) {
+            Ok(next) => next,
+            Err(_) => {
+                self.read_publication_failed.store(true, Ordering::Release);
+                return;
+            }
+        };
+        let previous = self
+            .published
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .replace(next);
         // Releasing the last generation pin can acquire the pin registry lock.
         // Keep that destructor outside the publication critical section.
         drop(previous);
@@ -2488,6 +2502,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         Ok(Self {
             inner: Arc::new(RwLock::new(store)),
             published_read: Arc::new(Mutex::new(Some(published_read))),
+            read_publication_failed: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -3403,6 +3418,14 @@ impl NowledgeMemEmbeddedStoreHandle {
     }
 
     fn lock_published_read(&self) -> Result<MutexGuard<'_, Option<PublishedCanonicalRead>>> {
+        // A failed or panicking write guard leaves the last-good value in
+        // place but poisons future reads, since that value no longer proves
+        // it reflects the most recent committed write.
+        if self.read_publication_failed.load(Ordering::Acquire) {
+            return Err(HawDBError::Execution(
+                "nowledge mem embedded store read lock poisoned".to_string(),
+            ));
+        }
         self.published_read.lock().map_err(|_| {
             HawDBError::Execution("embedded snapshot publication lock poisoned".to_string())
         })
@@ -3570,6 +3593,7 @@ impl NowledgeMemEmbeddedStoreHandle {
         Ok(EmbeddedStoreWriteGuard {
             store,
             published: &self.published_read,
+            read_publication_failed: &self.read_publication_failed,
         })
     }
 }
@@ -6254,6 +6278,36 @@ mod tests {
         assert!(final_slow_query.ready);
         assert_eq!(final_slow_query.latest_sequence, Some(1));
         assert_eq!(final_slow_query.record_count, 1);
+    }
+
+    #[test]
+    fn write_guard_panic_poisons_reads_without_discarding_last_good_snapshot() {
+        let db = Database::new_with_config(DatabaseConfig::default());
+        let graph = NowledgeMemGraph::from_database(db, NowledgeMemGraphMode::WritableCutover);
+        let mut store = NowledgeMemEmbeddedStore::new(graph, None);
+        store
+            .query_with_report("CREATE (:Memory {id: 'panic-guard', title: 'Before'})")
+            .unwrap();
+        let handle = NowledgeMemEmbeddedStoreHandle::new(store).unwrap();
+
+        // Baseline: the canonical read path works before anything goes wrong.
+        handle
+            .with_read_transaction(4096, |_transaction| Ok(()))
+            .unwrap();
+
+        let panicking_handle = handle.clone();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = panicking_handle.write_store().unwrap();
+            panic!("simulated write failure inside the guard");
+        }));
+        assert!(panicked.is_err());
+
+        // The last known-good snapshot must survive a panicking writer: it is
+        // not replaced with None, only future reads are poisoned.
+        assert!(handle.published_read.lock().unwrap().is_some());
+        assert!(handle
+            .with_read_transaction(4096, |_transaction| Ok(()))
+            .is_err());
     }
 
     #[test]

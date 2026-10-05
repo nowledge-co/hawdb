@@ -14,6 +14,7 @@
 
 use hawdb_core::schema::Catalog;
 use hawdb_core::value::Value;
+use hawdb_storage::artifact_files::wal_generation_file;
 use hawdb_storage::doctor::*;
 use hawdb_storage::durable_manifest::*;
 use hawdb_storage::ownership::*;
@@ -191,6 +192,77 @@ fn doctor_rejects_invalid_checkpoint_boundary_without_modifying_wal() {
     assert!(error.to_string().contains("checkpoint generation"));
     assert_eq!(fs::read(&wal_path).unwrap(), wal_before);
     fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn branch_headed_wal_doctor_repairs_a_torn_tail_past_the_published_prefix() {
+    // The branch-aware path of WalRepairBoundary::load (branch.head lookup,
+    // catalog/sealed-root validation, active-WAL-prefix identity check) had
+    // no test coverage at all before this: every existing doctor test used
+    // the legacy single-root manifest layout instead.
+    let path = checkpointed_branch_database("branch_torn_tail_safe");
+    let directory = branch_directory(&path);
+    {
+        let mut database = crate::Database::open(&path).unwrap();
+        database
+            .query("CREATE (:Memory {id: 'unpublished'})")
+            .unwrap();
+    }
+    let head =
+        hawdb_storage::branch_head::read_branch_head(&directory.join("branch.head")).unwrap();
+    let published_prefix_len = head.active_wal.byte_length;
+    let wal_path = directory.join(wal_generation_file(head.active_wal.generation));
+    OpenOptions::new()
+        .append(true)
+        .open(&wal_path)
+        .unwrap()
+        .write_all(b"torn-entry")
+        .unwrap();
+
+    let plan =
+        DatabaseDoctor::plan_wal_tail_repair(&directory, WalDoctorOptions::default()).unwrap();
+    assert!(plan.retained_wal_len >= published_prefix_len);
+    assert!(plan.discarded_wal_tail_bytes > 0);
+    DatabaseDoctor::apply_wal_tail_repair(
+        &directory,
+        &plan,
+        plan.acknowledge_potential_data_loss(),
+        WalDoctorOptions::default(),
+    )
+    .unwrap();
+
+    let mut reopened = crate::Database::open(&path).unwrap();
+    assert_eq!(
+        reopened
+            .query("MATCH (m:Memory {id: 'unpublished'}) RETURN m.id AS id")
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+    drop(reopened);
+    fs::remove_dir_all(path).unwrap();
+}
+
+fn checkpointed_branch_database(name: &str) -> PathBuf {
+    let path = unique_test_dir(name);
+    let mut database = crate::Database::open(&path).unwrap();
+    database
+        .query("CREATE (:Memory {id: 'published'})")
+        .unwrap();
+    database.checkpoint().unwrap();
+    drop(database);
+    path
+}
+
+fn branch_directory(path: &Path) -> PathBuf {
+    let hawdb_storage::branch_project::ProjectManifest::Branch(selector) =
+        hawdb_storage::branch_project::inspect_project_manifest(path).unwrap()
+    else {
+        panic!("WAL doctor branch fixture must publish a branch project");
+    };
+    path.join("branches")
+        .join(selector.main_branch_id().as_uuid().to_string())
 }
 
 fn database_with_torn_wal(name: &str) -> (PathBuf, PathBuf) {

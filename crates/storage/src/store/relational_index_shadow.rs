@@ -1194,6 +1194,16 @@ impl GraphStore {
                     base_generation,
                     base_commit_epoch,
                     ..
+                }
+                | RelationalIndexShadowRecoveryStatus::LiveCurrent {
+                    base_generation,
+                    base_commit_epoch,
+                    ..
+                }
+                | RelationalIndexShadowRecoveryStatus::LiveUnavailable {
+                    base_generation,
+                    base_commit_epoch,
+                    ..
                 } => (*base_generation, *base_commit_epoch),
                 _ => return,
             };
@@ -3201,5 +3211,82 @@ mod tests {
                 && probe.candidate_rows == probe.oracle_rows
                 && probe.candidate_digest == probe.oracle_digest
         }));
+    }
+
+    #[test]
+    fn invalidating_a_live_current_index_clears_its_stale_read_view() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "hawdb-store-relational-index-live-invalidate-{}-{nonce}",
+            std::process::id()
+        ));
+        let replay = WalReplayConfig {
+            relational_index_mode: hawdb_storage::config::RelationalIndexMode::Shadow,
+            ..WalReplayConfig::default()
+        };
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            replay,
+        )
+        .expect("open recovery-enabled store");
+        store
+            .commit_relational_transaction(&mut catalog, create_recovery_documents_table("doc-1"))
+            .expect("commit recovery base");
+        store
+            .checkpoint(&catalog)
+            .expect("checkpoint recovery base");
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![RelationalWrite::Insert {
+                        table: "documents".to_string(),
+                        rows: vec![hawdb_storage::relational::RelationalRow::new(vec![
+                            RelationalValue::Text("doc-2".to_string()),
+                            RelationalValue::Text("owner-1".to_string()),
+                        ])],
+                        mode: hawdb_storage::relational::RelationalInsertMode::Error,
+                    }],
+                },
+            )
+            .expect("commit relational write to reach a live-current index");
+
+        // Precondition: the shadow is live-current with a populated read_view,
+        // not one of the recovery-sequence statuses the old match arm covered.
+        assert!(matches!(
+            store.relational_index_shadow_recovery_status(),
+            RelationalIndexShadowRecoveryStatus::LiveCurrent { .. }
+        ));
+        assert!(store.relational_index_shadow.read_view.is_some());
+
+        let next_epoch = store.commit_epoch + 1;
+        store.invalidate_relational_index_recovery(
+            next_epoch,
+            "test: relational snapshot WAL replaces the complete index schema and rows",
+        );
+
+        // A RelationalSnapshot WAL replay is about to replace relational_state
+        // wholesale; the live-current view must not survive it unexamined.
+        assert!(!matches!(
+            store.relational_index_shadow_recovery_status(),
+            RelationalIndexShadowRecoveryStatus::LiveCurrent { .. }
+        ));
+        assert!(store.relational_index_shadow.read_view.is_none());
+        assert!(matches!(
+            store.relational_index_shadow_recovery_status(),
+            RelationalIndexShadowRecoveryStatus::RecoveryUnavailable {
+                recovered_commit_epoch,
+                ..
+            } if *recovered_commit_epoch == next_epoch
+        ));
+
+        drop(store);
+        std::fs::remove_dir_all(path).expect("remove live-invalidate fixture");
     }
 }
