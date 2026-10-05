@@ -1,0 +1,42 @@
+name: Dependabot PR metadata
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, edited, synchronize]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  issue-reference:
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      # Only trusted inline metadata code runs; PR sources are never checked out.
+      - name: Attach the dependency maintenance issue
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { data: pull } = await github.rest.pulls.get({
+              ...context.repo,
+              pull_number: context.payload.pull_request.number,
+            });
+            const repository = `${context.repo.owner}/${context.repo.repo}`;
+            if (pull.user.login !== 'dependabot[bot]' ||
+                pull.head.repo?.full_name !== repository ||
+                pull.base.ref !== 'main') {
+              return;
+            }
+            const body = pull.body ?? '';
+            if (/^Issue Number:[ \t]*(?:ref|close)[ \t]+#\d+\b/m.test(body)) {
+              return;
+            }
+            const issue = 'Issue Number: ref #845';
+            await github.rest.pulls.update({
+              ...context.repo,
+              pull_number: pull.number,
+              body: `${issue}\n\n${body}`,
+            });

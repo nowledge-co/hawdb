@@ -69,6 +69,29 @@ observed impact rather than from the amount of code involved.
    unresolved risks and link any agreed follow-up; do not mark work complete
    merely because one test suite passes.
 
+## Dependency update pull requests
+
+Dependabot checks Cargo, Python, Bazel and GitHub Actions dependencies weekly on
+Monday at 09:00 Asia/Shanghai. Minor and patch updates are grouped by ecosystem;
+major updates remain separate. Each update configuration allows at most five
+open version-update PRs. The independent Python and Cypher experiment Cargo
+workspaces have their own manifests; the root entry covers all workspace crates.
+The consumer-profile fixture has only a local path dependency and needs no
+separate registry update entry.
+
+The metadata workflow adds `Issue Number: ref #845` to same-repository Dependabot
+PRs targeting main, preserving an existing issue reference and the bot's release
+notes. [#845](https://github.com/nowledge-co/hawdb/issues/845) remains open as the
+dependency-maintenance tracker. Replace or supplement that reference with a
+specific issue when an upgrade addresses a separate behavioral problem. Review
+and verification requirements apply to bot PRs too.
+
+Before approving an update, synchronize any dependency declared in both Cargo
+and Bazel, including generated Python hash locks and custom crate-universe locks
+when present. Use the relevant lock-refresh commands rather than editing hashes
+by hand. The pinned Rust toolchain across Cargo, Bazel and CI, and the locally
+maintained `rules_tla` module, require coordinated manual updates.
+
 ## HawDB design boundaries
 
 - Keep `hawdb` as the host-facing embedded facade. Add crates only for a clear
