@@ -10710,7 +10710,10 @@ mod tests {
     #[cfg(feature = "vector-search")]
     fn rabitq_reopen_preserves_stale_valid_generation() {
         let path = unique_test_dir("rabitq_stale_generation");
-        {
+        // Retain this fixture's descriptor domain across index closure. Windows
+        // alias discovery for an unregistered existing root may otherwise probe
+        // another parallel fixture whose descriptor budget is exhausted.
+        let project_files = {
             let mut index = SearchIndex::open(&path).unwrap();
             index
                 .upsert(doc(
@@ -10730,7 +10733,9 @@ mod tests {
                 ))
                 .unwrap();
             index.checkpoint().unwrap();
-        }
+            index._project_files.as_ref().unwrap().clone()
+        };
+        assert_eq!(project_files.metrics().open, 0);
 
         let stale = path.join(rabitq_artifact_file(1));
         let stale_bytes = std::fs::read(&stale).unwrap();
@@ -10754,7 +10759,10 @@ mod tests {
     #[cfg(feature = "vector-search")]
     fn rabitq_reopen_falls_back_to_previous_valid_generation() {
         let path = unique_test_dir("rabitq_generation_fallback");
-        {
+        // Retain this fixture's descriptor domain across index closure. Windows
+        // alias discovery for an unregistered existing root may otherwise probe
+        // another parallel fixture whose descriptor budget is exhausted.
+        let project_files = {
             let mut index = SearchIndex::open(&path).unwrap();
             index
                 .upsert(doc(
@@ -10766,7 +10774,9 @@ mod tests {
                 .unwrap();
             index.checkpoint().unwrap();
             index.checkpoint().unwrap();
-        }
+            index._project_files.as_ref().unwrap().clone()
+        };
+        assert_eq!(project_files.metrics().open, 0);
 
         let latest = path.join(rabitq_artifact_file(2));
         let mut bytes = std::fs::read(&latest).unwrap();
