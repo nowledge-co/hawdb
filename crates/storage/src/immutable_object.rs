@@ -660,19 +660,16 @@ fn reclaim_deleted_directory(directory: &Path) -> Result<bool, ImmutableObjectEr
                 "branch cleanup path is not a directory",
             ));
         }
-        let _lease =
+        let lease =
             DatabaseDirectoryLease::acquire(source).map_err(|error| ImmutableObjectError::Io {
                 operation: "lease deleted branch before cleanup",
                 source: io::Error::other(error),
             })?;
-        if present {
-            // Retire the UUID path while its original lock still excludes
-            // delayed openers. Never unlink a lock inode at an admissible path.
-            map_io(
-                "retire deleted branch directory",
-                fs::rename(directory, &retired),
-            )?;
-        }
+        let _lease = if present {
+            retire_deleted_directory(directory, &retired, lease)?
+        } else {
+            lease
+        };
         // Repeat this barrier on retry: seeing the retired name after a process
         // interruption does not prove the original UUID is durably absent.
         map_io(
@@ -690,6 +687,34 @@ fn reclaim_deleted_directory(directory: &Path) -> Result<bool, ImmutableObjectEr
         crate::durability::sync_parent_directory(directory),
     )?;
     Ok(present || pending)
+}
+
+fn retire_deleted_directory(
+    directory: &Path,
+    retired: &Path,
+    lease: crate::ownership::DatabaseDirectoryLease,
+) -> Result<crate::ownership::DatabaseDirectoryLease, ImmutableObjectError> {
+    // Windows refuses directory renames while any descendant has an open
+    // handle. Close our own lock handle; a racing opener's handle makes the
+    // rename fail atomically, retaining the original directory. Catalog
+    // serialization remains held, and a successful rename removes the only
+    // admissible UUID path before we reacquire cleanup ownership.
+    #[cfg(windows)]
+    drop(lease);
+    // Unix can rename an owned directory, so retain its original lock inode
+    // throughout retirement and cleanup to exclude delayed openers.
+    map_io(
+        "retire deleted branch directory",
+        fs::rename(directory, retired),
+    )?;
+    #[cfg(windows)]
+    let lease = crate::ownership::DatabaseDirectoryLease::acquire(retired).map_err(|error| {
+        ImmutableObjectError::Io {
+            operation: "lease retired branch before cleanup",
+            source: io::Error::other(error),
+        }
+    })?;
+    Ok(lease)
 }
 
 fn validate_reference(
@@ -1099,12 +1124,48 @@ mod tests {
         );
         drop(lease);
 
+        assert!(super::reclaim_deleted_directory(&directory).unwrap());
+        assert!(!directory.exists());
+        fs::create_dir_all(directory.join("data")).unwrap();
+        fs::write(directory.join("data/payload"), b"interrupted retirement").unwrap();
+
         let retired = root.join(".reclaim-deleted");
         fs::rename(&directory, &retired).unwrap();
         assert!(DatabaseDirectoryLease::acquire(&directory).is_err());
         assert!(super::reclaim_deleted_directory(&directory).unwrap());
         assert!(!retired.exists());
         assert!(!super::reclaim_deleted_directory(&directory).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_retirement_requires_all_descendant_handles_to_close() {
+        use crate::ownership::DatabaseDirectoryLease;
+
+        let root = test_root("retirement-open-descendant");
+        let directory = root.join("deleted");
+        let retired = root.join(".reclaim-deleted");
+        fs::create_dir_all(&directory).unwrap();
+        let lease = DatabaseDirectoryLease::acquire(&directory).unwrap();
+        assert!(fs::rename(&directory, &retired).is_err());
+        assert!(directory.exists());
+        assert!(!retired.exists());
+        drop(lease);
+
+        fs::write(directory.join("payload"), b"open descendant").unwrap();
+        let reader = fs::File::open(directory.join("payload")).unwrap();
+        assert!(super::reclaim_deleted_directory(&directory).is_err());
+        assert_eq!(
+            fs::read(directory.join("payload")).unwrap(),
+            b"open descendant"
+        );
+        assert!(!retired.exists());
+        drop(reader);
+
+        assert!(super::reclaim_deleted_directory(&directory).unwrap());
+        assert!(!directory.exists());
+        assert!(!retired.exists());
         fs::remove_dir_all(root).unwrap();
     }
 

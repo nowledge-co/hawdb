@@ -649,8 +649,13 @@ candidate contents and reachable closures are validated before sweeping. Idle
 immutable cache descriptors are retired before unlink; an active cached read
 rejects collection. Project file-descriptor admission covers scan and cleanup.
 
-Deleted UUID directories move to `.reclaim-<uuid>` under their OS lease before
-recursive cleanup. The parent namespace is synchronized before deleting the
+Deleted UUID directories move to `.reclaim-<uuid>` before recursive cleanup.
+Unix retains the original OS lease across that move. Windows refuses directory
+renames with open descendant handles: the collector closes its own handle for
+the atomic rename, then reacquires ownership at the retired path. A racing
+opener makes retirement fail while retaining the original directory. Catalog
+serialization remains held throughout both paths.
+The parent namespace is synchronized before deleting the
 retired contents, so delayed openers cannot acquire a replacement lock at the
 old UUID path. An interrupted retirement or cleanup is retried using the durable
 `Deleted` tombstone; live branches and catalog receipts are never removed.
