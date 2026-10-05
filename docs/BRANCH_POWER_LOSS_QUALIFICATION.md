@@ -111,6 +111,21 @@ post-publication cleanup separately defers both a full-budget scan and an
 unlink blocked by a still-open iterator, then retries without changing the
 published generation.
 
+Checkpoint sidecar publication now reserves its complete temporary IO wave
+before replacing the first cache file: one slot on Unix and two on Windows.
+Each replacement borrows that quota; a concurrent owner can fill all remaining
+project capacity without interrupting the sidecar sequence. Live eight-FD
+regressions verify pre-publication rejection with byte-identical selected and
+staged files, successful same-generation retry, and a competing owner admitted
+after the first replacement. Removing only the reservation reproduces typed FD
+rejection with a new projected sidecar and the old source payload. Same-project
+rename/link operations share one temporary permit; cross-project operations
+admit both domains before mutation, verified at four FDs. These resource cases
+supplement the earlier native IO fault matrix; filesystem/barrier failures can
+still leave a partial derived-cache publication and must be recovered against
+the selected checkpoint/head. They do not establish atomic multi-file cache
+publication or Windows namespace power-loss semantics.
+
 The combined production-path descriptor audit resolves Rust import aliases and
 reviews native ingress and handle/permit lifetimes in the facade, storage,
 search, and embedded vector-projection sources. Low-level opens and clones

@@ -700,3 +700,69 @@ fn writable_admission_retries_root_ancestry_after_a_read_only_domain() {
     assert_eq!(writable.metrics().high_water, 1);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn same_project_rename_and_hard_link_use_one_remaining_slot() {
+    let fixture = Fixture::new(4);
+    let source = fixture.root.join("source");
+    let destination = fixture.root.join("renamed");
+    let linked = fixture.root.join("linked");
+    std::fs::write(&source, b"same-project-publication").unwrap();
+    let held = (0..3)
+        .map(|_| File::open(&source).unwrap())
+        .collect::<Vec<_>>();
+    file_io::rename(&source, &destination).unwrap();
+    file_io::hard_link(&destination, &linked).unwrap();
+    assert!(!source.exists());
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"same-project-publication"
+    );
+    assert_eq!(std::fs::read(&linked).unwrap(), b"same-project-publication");
+    assert_eq!(fixture.project.metrics().open, 3);
+    assert_eq!(fixture.project.metrics().reserved, 0);
+    assert_eq!(fixture.project.metrics().high_water, 4);
+    drop(held);
+    assert_eq!(fixture.project.metrics().open, 0);
+}
+
+#[test]
+fn cross_project_rename_admits_both_domains_before_mutation() {
+    let source_project = Fixture::new(4);
+    let destination_project = Fixture::new(4);
+    let source = source_project.root.join("source");
+    let destination = destination_project.root.join("destination");
+    let sentinel = destination_project.root.join("sentinel");
+    std::fs::write(&source, b"cross-project-publication").unwrap();
+    std::fs::write(&sentinel, b"destination-budget-owner").unwrap();
+    let source_held = (0..3)
+        .map(|_| File::open(&source).unwrap())
+        .collect::<Vec<_>>();
+    let mut destination_held = (0..4)
+        .map(|_| File::open(&sentinel).unwrap())
+        .collect::<Vec<_>>();
+    let error = file_io::rename(&source, &destination).unwrap_err();
+    assert!(matches!(
+        file_descriptor_error(&error),
+        Some(FileDescriptorError::BudgetExceeded { .. })
+    ));
+    assert_eq!(
+        std::fs::read(&source).unwrap(),
+        b"cross-project-publication"
+    );
+    assert!(!destination.exists());
+    assert_eq!(source_project.project.metrics().open, 3);
+    assert_eq!(destination_project.project.metrics().open, 4);
+    drop(destination_held.pop());
+    file_io::rename(&source, &destination).unwrap();
+    assert!(!source.exists());
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"cross-project-publication"
+    );
+    assert_eq!(source_project.project.metrics().high_water, 4);
+    assert_eq!(destination_project.project.metrics().high_water, 4);
+    drop((source_held, destination_held));
+    assert_eq!(source_project.project.metrics().open, 0);
+    assert_eq!(destination_project.project.metrics().open, 0);
+}
