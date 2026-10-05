@@ -436,6 +436,21 @@ fn fused_generation_is_byte_identical_to_three_pass_builds() {
         let count = [0, 1, 9, 128, 129, 300][case % 6];
         let fused_root = test_dir("fused_generation_equivalence");
         let reference_root = test_dir("three_pass_generation_equivalence");
+        // Own both standalone domains before writing their fixtures. Windows
+        // admission of an unknown existing root must conservatively probe
+        // possible alias domains, including another test's exhausted budget.
+        // Explicit owners keep this equivalence test independent while leaving
+        // the separate exhaustion/alias regressions and their limits intact.
+        let _fused_files = hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire(
+            &fused_root,
+            hawdb_storage::file_descriptors::DEFAULT_MAX_OPEN_FILES,
+        )
+        .unwrap();
+        let _reference_files = hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire(
+            &reference_root,
+            hawdb_storage::file_descriptors::DEFAULT_MAX_OPEN_FILES,
+        )
+        .unwrap();
         let options = SearchOutOfCoreGenerationBuildOptions {
             source_graph_commit_epoch: Some(17),
             embedding_manifest: Some(SearchEmbeddingManifest {

@@ -107,8 +107,10 @@ jobs:
       - name: Test RaBitQ projection
         run: cargo test -p hawdb-vector-projection
 
-      - name: Test embedded RaBitQ facade
-        run: cargo test -p hawdb --lib search::rabitq_projection::tests
+      - name: Test RaBitQ search projection
+        shell: bash
+        run: |
+          bash scripts/cargo-test-required.sh --locked -p hawdb-search --lib rabitq_projection::tests
 
       - name: Test vector qualification protocol
         run: cargo test -p hawdb-qualification production_vector
@@ -137,7 +139,9 @@ jobs:
         run: cargo test -p hawdb --features acl --lib row_page_compaction
 
       - name: Test out-of-core search projection I/O
-        run: cargo test -p hawdb --features acl --lib search::out_of_core::tests
+        shell: bash
+        run: |
+          bash scripts/cargo-test-required.sh --locked -p hawdb-search --features acl --lib out_of_core::
 
       - name: Capture Windows storage lifecycle evidence
         if: matrix.os == 'windows-latest'
