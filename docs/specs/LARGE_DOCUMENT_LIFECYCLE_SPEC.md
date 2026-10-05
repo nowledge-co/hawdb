@@ -8,6 +8,10 @@ that the proposed APIs, default changes, or qualification have shipped.
 Normative clauses below describe the proposed target contract. Existing public
 contracts remain in force until their implementation changes are reviewed.
 
+The additive streaming implementation and its retained default guards are
+tracked in the [delivery matrix](../STREAMED_DOCUMENT_LIFECYCLE.md). That matrix
+distinguishes implemented entrypoints from remaining qualification gates.
+
 The recommended target is a document body larger than its admitted operation
 memory, processed without truncation or a change to search semantics. This is
 stronger than admitting a larger owned `SearchDocument`. Source size, minimum

@@ -311,17 +311,18 @@ pub(super) fn analyze<'a>(
 }
 
 pub(super) fn analyze_with_control<'a>(
-    document: &'a SearchDocument,
+    document: &'a impl DocumentSource,
     analyzer: &SearchAnalyzerLexicon,
     pool: &mut SpillRuns,
     pending: &mut PendingPostings,
     control: crate::analyzer_stream::Control<'_>,
 ) -> Result<AnalyzedDocument<'a>> {
     let config = pool.config;
-    admit_document_source(document, config)?;
-    pool.prepare(0, document.id.len())?;
-    let progress = progress_memory(pool, &document.id);
-    let base = document.id.len() as u64 + 64;
+    document.admit_source(config)?;
+    let document_id = document.id();
+    pool.prepare(0, document_id.len())?;
+    let progress = progress_memory(pool, document_id);
+    let base = document_id.len() as u64 + 64;
     let spill_buffer = config
         .build_memory_bytes
         .get()
@@ -332,7 +333,7 @@ pub(super) fn analyze_with_control<'a>(
         pending.flush(pool)?;
     }
     let mut resident = Some(DocumentAnalysis::new_with_memory(
-        &document.id,
+        document_id,
         LexicalProjectionConfig {
             build_memory_bytes: NonZeroU64::new(map_limit).unwrap(),
             ..config
@@ -341,91 +342,109 @@ pub(super) fn analyze_with_control<'a>(
     )?);
     let mut spilled: Option<SpillingAnalysis> = None;
     let mut ordinal = 0u64;
-    for (field, (text, weight)) in document_token_fields(document).enumerate() {
-        let field = u8::try_from(field).expect("at most six analysis fields");
-        let consume = |term: Term, occurrence| {
-            ordinal = ordinal
-                .checked_add(1)
-                .ok_or_else(|| HawDBError::Storage("document token ordinal overflow".into()))?;
-            if term.len() as u64 > config.max_term_bytes.get() {
-                return Err(HawDBError::Storage(format!(
-                    "lexical term uses {} bytes, exceeding {}",
-                    term.len(),
-                    config.max_term_bytes
-                )));
+    let mut consume = |field, weight, term: Term, occurrence| {
+        ordinal = ordinal
+            .checked_add(1)
+            .ok_or_else(|| HawDBError::Storage("document token ordinal overflow".into()))?;
+        if term.len() as u64 > config.max_term_bytes.get() {
+            return Err(HawDBError::Storage(format!(
+                "lexical term uses {} bytes, exceeding {}",
+                term.len(),
+                config.max_term_bytes
+            )));
+        }
+        pool.prepare(term.len(), document_id.len())?;
+        if let Some(analysis) = resident.as_ref() {
+            let new_term = !analysis.frequencies.contains_key(&term);
+            let required = analysis.required_map_bytes(
+                analysis.resident_bytes.saturating_add(if new_term {
+                    (term.len() as u64).saturating_add(32)
+                } else {
+                    0
+                }),
+                analysis
+                    .frequencies
+                    .len()
+                    .saturating_add(usize::from(new_term)),
+            );
+            if required.saturating_add(pending.bytes) > map_limit {
+                pending.flush(pool)?;
             }
-            pool.prepare(term.len(), document.id.len())?;
-            if let Some(analysis) = resident.as_ref() {
-                let new_term = !analysis.frequencies.contains_key(&term);
-                let required = analysis.required_map_bytes(
-                    analysis.resident_bytes.saturating_add(if new_term {
-                        (term.len() as u64).saturating_add(32)
-                    } else {
-                        0
-                    }),
-                    analysis
-                        .frequencies
-                        .len()
-                        .saturating_add(usize::from(new_term)),
-                );
-                if required.saturating_add(pending.bytes) > map_limit {
-                    pending.flush(pool)?;
+            // The existing logical analyzer limit remains unchanged. Under a
+            // finite operation reservation, release tracked map owners early
+            // enough to leave room for the admitted external merge workspace.
+            let physically_full = control.memory.is_some()
+                && spill_buffer.is_some()
+                && control
+                    .task
+                    .and_then(RuntimeTaskContext::memory_reservation)
+                    .is_some_and(|reservation| {
+                        analysis.tracked_map_bytes(
+                            analysis.resident_bytes.saturating_add(if new_term {
+                                term.len() as u64 + 32
+                            } else {
+                                0
+                            }),
+                            analysis.frequencies.len() + usize::from(new_term),
+                        ) > reservation.memory_bytes() / 8
+                    });
+            if required > map_limit || physically_full {
+                let Some(buffer_limit) = spill_buffer else {
+                    return Err(HawDBError::Storage(format!(
+                        "document frequency spill needs at least {} analyzer bytes for progress",
+                        progress.saturating_add(base)
+                    )));
+                };
+                if config.max_merge_fan_in.get() < 2 {
+                    return Err(HawDBError::Storage(
+                        "lexical merge fan-in must be at least two".into(),
+                    ));
                 }
-                if required > map_limit {
-                    let Some(buffer_limit) = spill_buffer else {
-                        return Err(HawDBError::Storage(format!("document frequency spill needs at least {} analyzer bytes for progress", progress.saturating_add(base))));
-                    };
-                    if config.max_merge_fan_in.get() < 2 {
-                        return Err(HawDBError::Storage(
-                            "lexical merge fan-in must be at least two".into(),
-                        ));
-                    }
-                    let analysis = resident.take().expect("resident accumulator");
-                    let mut external = SpillingAnalysis {
-                        records: Vec::new(),
-                        string_bytes: 0,
-                        buffer_limit,
-                        lower_bound: u64::from(analysis.document_len),
-                        runs: DocumentRuns::default(),
-                        records_memory: control
-                            .memory
-                            .map(|memory| memory.retained.reserve(0))
-                            .transpose()?,
-                    };
-                    if !analysis.frequencies.is_empty() {
-                        let prefix = analysis.into_frequencies().map(|(term, entry)| {
-                            Ok(FrequencyRecord {
-                                term,
-                                field: entry.last_field,
-                                summary: PartialFieldFrequency {
-                                    repeated_weight: u64::from(entry.frequency),
-                                    first_event: Some((0, 0)),
-                                },
-                            })
-                        });
-                        let run = write_run(prefix, pool, &mut FileSpillIo)?;
-                        external.runs.insert(run, pool)?;
-                    }
-                    spilled = Some(external);
+                let analysis = resident.take().expect("resident accumulator");
+                let mut external = SpillingAnalysis {
+                    records: Vec::new(),
+                    string_bytes: 0,
+                    buffer_limit,
+                    lower_bound: u64::from(analysis.document_len),
+                    runs: DocumentRuns::default(),
+                    records_memory: control
+                        .memory
+                        .map(|memory| memory.retained.reserve(0))
+                        .transpose()?,
+                };
+                if !analysis.frequencies.is_empty() {
+                    let prefix = analysis.into_frequencies().map(|(term, entry)| {
+                        Ok(FrequencyRecord {
+                            term,
+                            field: entry.last_field,
+                            summary: PartialFieldFrequency {
+                                repeated_weight: u64::from(entry.frequency),
+                                first_event: Some((0, 0)),
+                            },
+                        })
+                    });
+                    let run = write_run(prefix, pool, &mut FileSpillIo)?;
+                    external.runs.insert(run, pool)?;
                 }
+                spilled = Some(external);
             }
-            if let Some(analysis) = resident.as_mut() {
-                analysis.push_term(term, occurrence, field, weight)
-            } else {
-                let mut summary = PartialFieldFrequency::default();
-                summary.push(ordinal, occurrence, weight as u64)?;
-                spilled.as_mut().expect("spilling accumulator").push(
-                    FrequencyRecord {
-                        term,
-                        field,
-                        summary,
-                    },
-                    pool,
-                )
-            }
-        };
-        crate::analyzer_stream::visit_admitted_token_list(text, analyzer, control, consume)?;
-    }
+        }
+        if let Some(analysis) = resident.as_mut() {
+            analysis.push_term(term, occurrence, field, weight)
+        } else {
+            let mut summary = PartialFieldFrequency::default();
+            summary.push(ordinal, occurrence, weight as u64)?;
+            spilled.as_mut().expect("spilling accumulator").push(
+                FrequencyRecord {
+                    term,
+                    field,
+                    summary,
+                },
+                pool,
+            )
+        }
+    };
+    document.visit_tokens(analyzer, control, &mut consume)?;
     if let Some(analysis) = resident {
         return Ok(AnalyzedDocument::Resident(analysis));
     }

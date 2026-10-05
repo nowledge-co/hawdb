@@ -96,6 +96,8 @@ fn write_frame_inner(
 mod write_tests;
 
 mod decoding;
+mod records;
+pub(super) use records::SpoolRecord;
 
 pub(super) fn decode_line_admitted(
     line: &[u8],
@@ -146,6 +148,7 @@ impl SpoolSource<'_> {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn scan_admitted(
         &self,
         task_context: &RuntimeTaskContext,
@@ -230,62 +233,10 @@ impl SpoolSource<'_> {
     }
 }
 
-pub(super) struct StageDirectory {
-    pub(super) path: super::context_memory::OwnedPath,
-    _cleanup: hawdb_executor::QueryMemoryLease,
-}
-
-impl StageDirectory {
-    pub(super) fn create(
-        root: &Path,
-        memory: &BuildMemory,
-        task: &RuntimeTaskContext,
-    ) -> Result<Self> {
-        for _ in 0..64 {
-            checkpoint(task)?;
-            let _name_memory = memory.retained.reserve(3 * 128)?;
-            let sequence = GENERATION_WRITER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let name = format!(
-                ".search-generation.{}.{}.stage",
-                std::process::id(),
-                sequence
-            );
-            if name.capacity() > 128 {
-                return Err(HawDBError::Execution(
-                    "search stage name exceeds preflight capacity".into(),
-                ));
-            }
-            let path =
-                super::context_memory::OwnedPath::join(root, Path::new(&name), memory, task)?;
-            let cleanup = memory
-                .spool
-                .reserve(crate::build_memory::directory::stage_removal_bytes(&path)?)?;
-            let created = super::io::GenerationIo::new(memory, task)
-                .native(&[&path], || fs::create_dir(&path))?;
-            match created {
-                Ok(()) => {
-                    let stage = Self {
-                        path,
-                        _cleanup: cleanup,
-                    };
-                    checkpoint(task)?;
-                    return Ok(stage);
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Err(HawDBError::Storage(
-            "failed to allocate a unique search generation stage directory".to_string(),
-        ))
-    }
-}
-
-impl Drop for StageDirectory {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
+mod stage;
+pub(in crate::out_of_core) use stage::retry_staging_cleanup;
+pub use stage::SearchStagingCleanupReport;
+pub(in crate::out_of_core) use stage::StageDirectory;
 
 #[cfg(test)]
 pub(crate) mod read_evidence {
@@ -346,9 +297,9 @@ pub(crate) mod read_evidence {
         CancelGuard
     }
 
-    pub(super) struct TrackedFile(File);
+    pub(super) struct TrackedFile<R>(R);
 
-    pub(super) fn track(file: File) -> TrackedFile {
+    pub(super) fn track<R: Read>(file: R) -> TrackedFile<R> {
         observe(|state| state.opens += 1);
         TrackedFile(file)
     }
@@ -366,7 +317,7 @@ pub(crate) mod read_evidence {
         observe(|state| std::mem::take(&mut state.max_request))
     }
 
-    impl Read for TrackedFile {
+    impl<R: Read> Read for TrackedFile<R> {
         fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
             observe(|state| state.max_request = state.max_request.max(output.len()));
             let count = self.0.read(output)?;

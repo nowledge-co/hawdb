@@ -15,16 +15,21 @@
 //! Immutable target-specific retractions for incremental search mutations.
 
 use super::{
-    checksum_bytes, SearchOutOfCoreConfig, SearchOutOfCoreManifestBody, SearchOutOfCoreMetrics,
-    SearchOutOfCoreMutationRunManifest, SearchOutOfCoreSegmentReader,
+    SearchOutOfCoreConfig, SearchOutOfCoreManifestBody, SearchOutOfCoreMutationRunManifest,
+    SearchOutOfCoreSegmentReader,
 };
-use crate::bounded_file::read_bounded_file;
 use crate::error::{HawDBError, Result};
+#[cfg(test)]
 use crate::lexical_projection::{DocumentsDigest, LexicalProjectionReader};
-use crate::{SearchAnalyzerLexicon, SearchDocument};
+use crate::SearchAnalyzerLexicon;
+#[cfg(test)]
+use crate::{checksum_bytes, SearchDocument};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::Path;
+
+mod streaming;
+pub(crate) mod terms;
 
 pub(super) const MUTATION_RUN_FORMAT: &str = "HAWDB_SEARCH_MUTATION_RUN_V1";
 const MUTATION_RUN_PREFIX: &str = "search_projection_mutation_run.";
@@ -72,11 +77,10 @@ impl MutationRunBudget {
         Ok(total)
     }
 
-    pub(super) fn admit_encoded_extension(&self, bytes: &[u8], entry_count: usize) -> Result<()> {
-        self.check(add(multiply(bytes.len() as u64, 2)?, 8192)?)?;
-        self.check(add(
-            add(bytes.len() as u64, decode_capacity(bytes)?)?,
-            multiply(entry_count as u64, crate::build_memory::SET_ENTRY_BYTES)?,
+    pub(super) fn admit_entries(&self, entries: &[SearchMutationRunEntry]) -> Result<()> {
+        self.check(streaming::working_bytes(
+            entries.len(),
+            streaming::entries_scalar(entries)?,
         )?)?;
         Ok(())
     }
@@ -91,6 +95,7 @@ impl MutationRunBudget {
 /// manifest preflight, count scalar strings too: unique_terms is Vec<String>.
 /// The capacity formula includes pinned Vec growth/overlap, each array's
 /// minimum capacity, owned string bytes and reusable serde/error scratch.
+#[cfg(test)]
 fn decode_capacity(bytes: &[u8]) -> Result<u64> {
     let mut objects = 0u64;
     let mut arrays = 0u64;
@@ -154,15 +159,17 @@ pub(super) enum SearchMutationOperation {
     Replace,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(deny_unknown_fields)]
 pub(super) struct SearchMutationRetraction {
     pub(super) documents_digest: u64,
     pub(super) lexical_document_len: u64,
-    pub(super) unique_terms: Vec<String>,
+    pub(super) unique_terms: terms::Terms,
 }
 
 impl SearchMutationRetraction {
+    #[cfg(test)]
     pub(super) fn from_document(
         document: &SearchDocument,
         projection: &LexicalProjectionReader,
@@ -175,12 +182,13 @@ impl SearchMutationRetraction {
         Ok(Self {
             documents_digest: digest.finish(),
             lexical_document_len,
-            unique_terms,
+            unique_terms: unique_terms.into(),
         })
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(deny_unknown_fields)]
 pub(super) struct SearchMutationRunEntry {
     pub(super) document_id: String,
@@ -189,7 +197,8 @@ pub(super) struct SearchMutationRunEntry {
     pub(super) retraction: SearchMutationRetraction,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[serde(deny_unknown_fields)]
 pub(super) struct SearchMutationRunBody {
     format: String,
@@ -235,7 +244,11 @@ impl MutationVisibility {
         for run in &self.runs {
             budget.check(run.open_working_bytes)?;
             budget.retain(add(
-                run.body.retained_capacity()?,
+                add(
+                    run.body.retained_capacity()?,
+                    (std::mem::size_of::<terms::TermFile>() + 2 * std::mem::size_of::<usize>())
+                        as u64,
+                )?,
                 multiply(
                     run.entries().len() as u64,
                     crate::build_memory::SET_ENTRY_BYTES,
@@ -311,16 +324,7 @@ impl SearchMutationRunBody {
         )?;
         for entry in &self.entries {
             bytes = add(bytes, entry.document_id.capacity() as u64)?;
-            bytes = add(
-                bytes,
-                multiply(
-                    entry.retraction.unique_terms.capacity() as u64,
-                    std::mem::size_of::<String>(),
-                )?,
-            )?;
-            for term in &entry.retraction.unique_terms {
-                bytes = add(bytes, term.capacity() as u64)?;
-            }
+            bytes = add(bytes, entry.retraction.unique_terms.retained_bytes()?)?;
         }
         Ok(bytes)
     }
@@ -374,17 +378,7 @@ impl SearchMutationRunBody {
                         .to_string(),
                 ));
             }
-            let mut previous_term = None;
-            for term in &entry.retraction.unique_terms {
-                if term.is_empty()
-                    || previous_term.is_some_and(|previous: &String| previous >= term)
-                {
-                    return Err(HawDBError::Storage(
-                        "search mutation-run retraction terms are not strictly ordered".to_string(),
-                    ));
-                }
-                previous_term = Some(term);
-            }
+            entry.retraction.unique_terms.validate()?;
             previous_key = Some(key);
         }
         Ok(())
@@ -404,29 +398,17 @@ impl SearchMutationRun {
                 "search mutation-run artifact exceeds the configured read budget".to_string(),
             ));
         }
-        // The bounded reader may briefly own old and new input allocations.
-        let read_working_bytes = add(multiply(manifest.len, 2)?, 8192)?;
-        budget.check(read_working_bytes)?;
-        let bytes = read_bounded_file(&root.join(&manifest.file), manifest.len)?;
-        if bytes.len() as u64 != manifest.len || checksum_bytes(&bytes) != manifest.checksum {
-            return Err(HawDBError::Storage(
-                "search mutation-run artifact length or checksum mismatch".to_string(),
-            ));
-        }
-        let decoded_capacity = decode_capacity(&bytes)?;
+        budget.check(8192)?;
+        let file = hawdb_storage::file_io::File::open(root.join(&manifest.file))?;
+        let scalar = streaming::preflight(&file, manifest)?;
+        let working_bytes = streaming::working_bytes(manifest.entry_count, scalar)?;
+        budget.check(working_bytes)?;
+        let file = terms::TermFile::new(file, None)?;
+        let envelope = streaming::decode(file, manifest, scalar)?;
         let target_index_bytes = multiply(
             manifest.entry_count as u64,
             crate::build_memory::SET_ENTRY_BYTES,
         )?;
-        let decode_working_bytes = add(
-            add(bytes.capacity() as u64, decoded_capacity)?,
-            target_index_bytes,
-        )?;
-        budget.check(decode_working_bytes)?;
-        let envelope: SearchMutationRunEnvelope =
-            serde_json::from_slice(&bytes).map_err(|error| {
-                HawDBError::Storage(format!("invalid search mutation-run artifact: {error}"))
-            })?;
         if crate::build_control::json::checksum_with_context(&envelope.body, None)?
             != envelope.checksum
         {
@@ -449,16 +431,14 @@ impl SearchMutationRun {
                     .to_string(),
             ));
         }
-        let retained = envelope.body.retained_capacity()?;
-        if retained > decoded_capacity {
-            return Err(HawDBError::Storage(
-                "search mutation-run decode exceeded admitted capacity".into(),
-            ));
-        }
+        let retained = add(
+            envelope.body.retained_capacity()?,
+            (std::mem::size_of::<terms::TermFile>() + 2 * std::mem::size_of::<usize>()) as u64,
+        )?;
         budget.retain(add(retained, target_index_bytes)?)?;
         Ok(Self {
             body: envelope.body,
-            open_working_bytes: read_working_bytes.max(decode_working_bytes),
+            open_working_bytes: working_bytes,
         })
     }
 
@@ -537,14 +517,36 @@ pub(super) fn validate_closure(
 
 /// Verify each retraction against the immutable version it claims to remove.
 /// Checksums and aggregate identity alone cannot prove that a target exists or
-/// that its term/length contribution is exact. Retain only one hydrated version
-/// at a time; a long run must not accumulate the source corpus in memory.
+/// that its term/length contribution is exact. Stage one version at a time and
+/// compare spillable contributions without retaining a complete body or term set.
 pub(super) fn validate_targets(
+    root: &Path,
     segments: &[SearchOutOfCoreSegmentReader],
     runs: &[SearchMutationRun],
     config: &SearchOutOfCoreConfig,
     analyzer: &SearchAnalyzerLexicon,
 ) -> Result<()> {
+    if runs.is_empty() {
+        return Ok(());
+    }
+    let task = hawdb_core::RuntimeTaskContext::default().with_memory_reservation(
+        hawdb_core::RuntimeMemoryReservation::new(config.max_reanalysis_working_bytes.get(), 0),
+    );
+    let memory = crate::build_memory::BuildMemory::new(&task)?;
+    let mut stage = super::generation_writer::StageDirectory::create(root, &memory, &task)?;
+    stage.reserve_disk(
+        config
+            .max_uncompressed_segment_bytes
+            .get()
+            .checked_add(config.max_reanalysis_spill_bytes.get())
+            .ok_or_else(size_overflow)?,
+    );
+    let path = crate::build_memory::path::OwnedPath::join(
+        &stage.path,
+        Path::new("validate-target.body"),
+        &memory,
+        &task,
+    )?;
     for entry in runs.iter().flat_map(SearchMutationRun::entries) {
         let missing = || {
             HawDBError::Storage(
@@ -572,22 +574,47 @@ pub(super) fn validate_targets(
         if !artifact.lexical_projection.probe_document_id(id)?.present {
             return Err(missing());
         }
-        let documents = artifact.read_selected_hydration_segment(
-            config,
+        let file = hawdb_storage::file_io::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&*path)?;
+        let source = super::hydration::source::Source::capture(
+            artifact,
             &artifact.descriptor.segments[position],
-            &BTreeSet::from([entry.document_id.clone()]),
-            config.max_hydrated_bytes.get(),
-            &mut SearchOutOfCoreMetrics::default(),
+            id,
+            file,
+            (
+                config.max_uncompressed_segment_bytes.get(),
+                config.max_document_header_bytes.get(),
+            ),
+            &memory,
+            &task,
         )?;
-        let [document] = documents.as_slice() else {
-            return Err(missing());
-        };
-        let expected = SearchMutationRetraction::from_document(
-            document,
-            &artifact.lexical_projection,
+        let mut terms = entry.retraction.unique_terms.cursor()?;
+        let length = artifact.lexical_projection.source_retraction(
+            &source,
             analyzer,
+            crate::lexical_projection::retraction::RetractionContext {
+                root: &stage.path,
+                memory: &memory,
+                task: &task,
+                needs_chinese: source.needs_chinese,
+            },
+            |term| {
+                if terms.next()?.as_deref() != Some(&term) {
+                    return Err(HawDBError::Storage(
+                        "search mutation-run retraction does not match its target document".into(),
+                    ));
+                }
+                Ok(())
+            },
         )?;
-        if entry.retraction != expected {
+        if terms.next()?.is_some()
+            || length != entry.retraction.lexical_document_len
+            || source.documents_digest()? != entry.retraction.documents_digest
+        {
             return Err(HawDBError::Storage(
                 "search mutation-run retraction does not match its target document".into(),
             ));
@@ -600,6 +627,78 @@ pub(super) fn validate_targets(
 mod tests {
     use super::*;
     use crate::test_allocation as allocation;
+
+    #[test]
+    fn empty_retractions_obey_the_shared_term_file_quota() {
+        let root = crate::out_of_core::tests::test_dir("empty_retraction_quota");
+        std::fs::create_dir_all(&root).unwrap();
+        let memory = crate::build_memory::BuildMemory::new(&Default::default()).unwrap();
+        let file = terms::TermFile::new(
+            hawdb_storage::file_io::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(root.join("terms.json"))
+                .unwrap(),
+            Some(&memory),
+        )
+        .unwrap();
+        assert!(terms::Writer::new(file.clone(), &memory, 1).is_err());
+        assert_eq!(file.file.metadata().unwrap().len(), 0);
+        let empty = terms::Writer::new(file.clone(), &memory, 2)
+            .unwrap()
+            .finish()
+            .unwrap();
+        assert_eq!(empty.len(), 0);
+        empty.validate().unwrap();
+        assert!(terms::Writer::new(file.clone(), &memory, 3).is_err());
+        assert_eq!(file.file.metadata().unwrap().len(), 2);
+        drop(empty);
+        drop(file);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn streamed_terms_preserve_escaped_json_and_detect_late_range_corruption() {
+        let root = crate::out_of_core::tests::test_dir("mutation_json_ranges");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut target = entry("memory:escaped");
+        target.retraction.unique_terms =
+            vec!["graph".to_owned(), "quote\"slash\\\u{96ea}".to_owned()].into();
+        let body = SearchMutationRunBody::new(3, 5, vec![target]).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body.encode().unwrap()).unwrap();
+        let text = serde_json::to_string_pretty(&value)
+            .unwrap()
+            .replace("\"graph\"", "\"gr\\u0061ph\"");
+        let path = root.join(artifact_file(3));
+        std::fs::write(&path, text.as_bytes()).unwrap();
+        let manifest = SearchOutOfCoreMutationRunManifest {
+            generation: 3,
+            file: artifact_file(3),
+            len: text.len() as u64,
+            checksum: checksum_bytes(text.as_bytes()),
+            entry_count: 1,
+            analyzer_digest: 5,
+        };
+        let mut budget = MutationRunBudget::new(64 * 1024, 1, 1).unwrap();
+        let run = SearchMutationRun::open(&root, &manifest, u64::MAX, 5, &mut budget).unwrap();
+        assert_eq!(run.body, body);
+        // Alter a syntactically valid term after open without changing its size.
+        let changed = text.replace("gr\\u0061ph", "gr\\u0061px");
+        assert_ne!(changed, text);
+        std::fs::write(&path, changed).unwrap();
+        let error = run.entries()[0]
+            .retraction
+            .unique_terms
+            .visit(|_| Ok(()))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("range checksum mismatch"),
+            "{error}"
+        );
+        drop(run);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn mutation_decode_preflight_covers_scalar_terms_and_escaped_strings() {
@@ -625,7 +724,7 @@ mod tests {
             assert_eq!(allocation::live(), 0);
         }
         let mut target = entry("memory:long-term");
-        target.retraction.unique_terms = vec!["\"\\\n雪".repeat(16_384)];
+        target.retraction.unique_terms = vec!["\"\\\n雪".repeat(16_384)].into();
         let bytes = SearchMutationRunBody::new(3, 5, vec![target])
             .unwrap()
             .encode()
@@ -667,14 +766,8 @@ mod tests {
                 .unwrap();
             let file = artifact_file(generation);
             std::fs::write(path.join(&file), &bytes).unwrap();
-            phases.push(
-                add(
-                    add(bytes.len() as u64, decode_capacity(&bytes).unwrap()).unwrap(),
-                    crate::build_memory::SET_ENTRY_BYTES as u64,
-                )
-                .unwrap(),
-            );
-            assert!(phases.last().copied().unwrap() > 2 * bytes.len() as u64 + 8192);
+            phases.push(streaming::working_bytes(1, 30).unwrap());
+            assert!(*phases.last().unwrap() < bytes.len() as u64);
             manifests.push(SearchOutOfCoreMutationRunManifest {
                 generation,
                 file,
@@ -693,8 +786,7 @@ mod tests {
         assert!(error.to_string().contains("mutation-run working set"));
         assert_eq!(rejected.retained, base);
         drop(error);
-        // Rejected decode only read the encoded file; its term vector was never
-        // allocated. Counting calls alone would not establish this boundary.
+        // Rejected decoding scanned fixed blocks without retaining the term array.
         assert!(rejected_peak as u64 <= 2 * manifests[0].len + 8192);
         assert_eq!(allocation::live(), 0);
 
@@ -727,7 +819,7 @@ mod tests {
             retraction: SearchMutationRetraction {
                 documents_digest: 11,
                 lexical_document_len: 3,
-                unique_terms: vec!["graph".to_string(), "memory".to_string()],
+                unique_terms: vec!["graph".to_string(), "memory".to_string()].into(),
             },
         }
     }
@@ -778,6 +870,7 @@ mod tests {
         repeated_term
             .retraction
             .unique_terms
+            .owned_mut()
             .push("memory".to_string());
         assert!(SearchMutationRunBody::new(3, 5, vec![repeated_term]).is_err());
     }

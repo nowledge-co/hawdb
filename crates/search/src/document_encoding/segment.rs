@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use super::*;
-use std::borrow::Borrow;
 
 #[derive(Clone, Copy)]
 pub(crate) enum SegmentKind {
@@ -38,7 +37,7 @@ pub(crate) struct SegmentEncoding<'a, T> {
     bytes: usize,
 }
 
-impl<'a, T: Borrow<SearchDocument>> SegmentEncoding<'a, T> {
+impl<'a, T: RecordSource> SegmentEncoding<'a, T> {
     #[cfg(test)]
     pub(crate) fn new(documents: &'a [T], kind: SegmentKind) -> Result<Self> {
         Self::new_with_context(documents, kind, None)
@@ -49,6 +48,21 @@ impl<'a, T: Borrow<SearchDocument>> SegmentEncoding<'a, T> {
         kind: SegmentKind,
         task: Option<&hawdb_core::RuntimeTaskContext>,
     ) -> Result<Self> {
+        if matches!(kind, SegmentKind::Documents) {
+            let bytes = documents.iter().try_fold(
+                "HAWDB_SEARCH_SEGMENT_V1\n".len(),
+                |bytes, document| {
+                    bytes
+                        .checked_add(document.encoded_len(task)?)
+                        .ok_or_else(|| HawDBError::Storage("search segment length overflow".into()))
+                },
+            )?;
+            return Ok(Self {
+                documents,
+                kind,
+                bytes,
+            });
+        }
         let mut length = EncodedLength::default();
         write_segment(
             &mut CheckedSink {
@@ -80,6 +94,13 @@ impl<'a, T: Borrow<SearchDocument>> SegmentEncoding<'a, T> {
     }
 
     pub(crate) fn write_to(&self, writer: &mut impl io::Write) -> io::Result<()> {
+        if matches!(self.kind, SegmentKind::Documents) {
+            writer.write_all(b"HAWDB_SEARCH_SEGMENT_V1\n")?;
+            for document in self.documents {
+                document.write_encoded(writer)?;
+            }
+            return Ok(());
+        }
         IoSink {
             writer,
             error: None,
@@ -89,7 +110,7 @@ impl<'a, T: Borrow<SearchDocument>> SegmentEncoding<'a, T> {
     }
 }
 
-fn write_segment<T: Borrow<SearchDocument>>(
+fn write_segment<T: RecordSource>(
     sink: &mut impl DocumentSink,
     documents: &[T],
     kind: SegmentKind,
@@ -113,12 +134,14 @@ fn write_segment<T: Borrow<SearchDocument>>(
         }
     };
     for document in documents {
-        let document = document.borrow();
+        let document = document.header();
         match kind {
-            SegmentKind::Documents => write_document(sink, document)?,
+            SegmentKind::Documents => {
+                unreachable!("document records use their admitted encoded ranges")
+            }
             SegmentKind::Metadata { .. } => {
                 sink.write_str("meta\t")?;
-                sink.write_hex(&document.id)?;
+                sink.write_hex(document.id)?;
                 sink.write_char('\t')?;
                 if document.embedding.is_some() {
                     write!(sink, "{ordinal}")?;
@@ -126,13 +149,13 @@ fn write_segment<T: Borrow<SearchDocument>>(
                     sink.write_char('-')?;
                 }
                 sink.write_char('\t')?;
-                write_metadata(sink, &document.metadata)?;
+                write_metadata(sink, document.metadata)?;
                 sink.write_char('\n')?;
             }
             SegmentKind::Vectors { .. } => {
-                if let Some(embedding) = document.embedding.as_deref() {
+                if let Some(embedding) = document.embedding {
                     write!(sink, "vector\t{ordinal}\t")?;
-                    sink.write_hex(&document.id)?;
+                    sink.write_hex(document.id)?;
                     sink.write_char('\t')?;
                     write_embedding(sink, Some(embedding))?;
                     sink.write_char('\n')?;

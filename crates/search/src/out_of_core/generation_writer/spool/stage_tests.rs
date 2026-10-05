@@ -98,3 +98,80 @@ fn native_stage_cleanup_unlinks_symlinks_without_following_their_targets() {
     assert_eq!(fs::read(outside.join("retained")).unwrap(), b"outside");
     assert_eq!(memory.ledger.snapshot().used_bytes, 0);
 }
+
+#[test]
+fn descriptor_denial_retains_stage_memory_and_governor_until_explicit_retry() {
+    use crate::SearchGenerationAdmission;
+    use hawdb_qos::IoConcurrencyBudget;
+    use hawdb_qos::{RuntimeGovernor, RuntimeGovernorConfig, RuntimeWorkRequest};
+    use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+
+    let fixture = Fixture::new();
+    let project = ProjectFileDescriptors::acquire_existing(&fixture.0, 4).unwrap();
+    let governor = RuntimeGovernor::detect(
+        RuntimeGovernorConfig {
+            memory_budget_bytes: Some(64 * 1024 * 1024),
+            ..RuntimeGovernorConfig::shared_host()
+        },
+        IoConcurrencyBudget::new(2, 1),
+    );
+    let request = RuntimeWorkRequest::background_maintenance(16 * 1024 * 1024);
+    let admission = SearchGenerationAdmission::acquire(&governor, request).unwrap();
+    let mut writer = admission
+        .create_writer(&fixture.0, Default::default())
+        .unwrap();
+    writer
+        .writer_mut()
+        .push(crate::SearchDocument {
+            id: "a".into(),
+            title: String::new(),
+            content: "retained bytes".into(),
+            embedding: None,
+            metadata: Default::default(),
+        })
+        .unwrap();
+    let (start_tx, start_rx) = std::sync::mpsc::channel();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    stage::evidence::install(fixture.0.clone(), start_tx, ready_rx);
+    let root = fixture.0.clone();
+    let competitor = std::thread::spawn(move || {
+        start_rx.recv().unwrap();
+        let held = (0..4)
+            .map(|index| File::create(root.join(format!("competitor-{index}"))).unwrap())
+            .collect::<Vec<_>>();
+        ready_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+        drop(held);
+    });
+    // Exhaust the real project after the scan closes, immediately before unlink.
+    drop(writer);
+    let report =
+        crate::SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&fixture.0, 0).unwrap();
+    assert_eq!(report.pending_stages, 1);
+    assert!(report.reserved_disk_bytes > 0);
+    assert!(report.retained_memory_bytes > 0);
+    assert!(matches!(
+        report.descriptor_error,
+        Some(hawdb_core::error::FileDescriptorError::BudgetExceeded { .. })
+    ));
+    assert_eq!(
+        governor.snapshot().admitted_memory_bytes,
+        request.memory_bytes
+    );
+    let denied =
+        crate::SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&fixture.0, 1).unwrap();
+    assert_eq!(denied.attempted_stages, 1);
+    assert_eq!(denied.pending_stages, 1);
+    assert_eq!(denied.reserved_disk_bytes, report.reserved_disk_bytes);
+    release_tx.send(()).unwrap();
+    competitor.join().unwrap();
+    let released =
+        crate::SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&fixture.0, 1).unwrap();
+    assert_eq!(released.removed_stages, 1);
+    assert_eq!(released.pending_stages, 0);
+    assert_eq!(released.reserved_disk_bytes, 0);
+    assert_eq!(released.retained_memory_bytes, 0);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+    assert_eq!(project.metrics().open, 0);
+}

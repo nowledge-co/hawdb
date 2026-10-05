@@ -645,3 +645,134 @@ fn governor_admission_covers_complete_generation_and_update_lifetimes() {
         .is_err());
     assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
 }
+
+#[test]
+#[cfg(feature = "full-text-search")]
+fn facade_candidate_output_does_not_require_owned_body_admission() {
+    let directory = Directory::new();
+    let mut writer =
+        SearchOutOfCoreGenerationWriter::create(&directory.0, Default::default()).unwrap();
+    writer
+        .push(SearchDocument {
+            id: "large-result".into(),
+            title: "graph".into(),
+            content: "body ".repeat(1024),
+            embedding: None,
+            metadata: BTreeMap::new(),
+        })
+        .unwrap();
+    writer.finish().unwrap();
+    let reader = SearchOutOfCoreReader::open_with_config(
+        &directory.0,
+        SearchOutOfCoreConfig {
+            max_hydrated_bytes: NonZeroU64::new(1).unwrap(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let options = SearchQueryOptions {
+        limit: 1,
+        offset: 0,
+        rank_window: None,
+        fusion_weights: Default::default(),
+        metadata_filters: BTreeMap::new(),
+        policy_epoch: None,
+    };
+    let output: hawdb::SearchOutOfCoreOutput<hawdb::SearchOutOfCoreCandidate> = reader
+        .search_candidates_with_context(
+            "graph",
+            None,
+            SearchMode::Text,
+            options.clone(),
+            hawdb::SearchOutOfCoreExecutionContext::default(),
+        )
+        .unwrap();
+    let score: &hawdb::SearchScoredCandidate = &output.result.hits[0].scores;
+    assert_eq!(score.id, "large-result");
+    assert_eq!(output.result.total_hits, 1);
+    assert_eq!(output.metrics.hydrated_documents, 0);
+    assert_eq!(output.metrics.hydration_segment_bytes_read, 0);
+    assert!(reader
+        .search_with_options("graph", None, SearchMode::Text, options)
+        .is_err());
+}
+
+#[test]
+fn facade_streamed_mutations_preserve_admission_ordering_and_stale_publication() {
+    let root = Directory::new();
+    let header = |id: &str| hawdb::SearchDocumentHeader {
+        id: id.into(),
+        title: "graph".into(),
+        embedding: None,
+        metadata: BTreeMap::new(),
+    };
+    let body = hawdb::SearchDocumentBody {
+        bytes: 5,
+        expected_checksum: None,
+    };
+    let mut initial = SearchOutOfCoreGenerationWriter::create(&root.0, Default::default()).unwrap();
+    initial
+        .push_reader(header("a"), &b"graph"[..], body)
+        .unwrap();
+    initial.finish().unwrap();
+    let base = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let generation = base.generation();
+    let governor = generation_governor();
+    let request =
+        RuntimeWorkRequest::background_maintenance(32 * 1024 * 1024).with_io_wave_slots(1);
+    let cancellation = RuntimeCancellationToken::new();
+    let admission = SearchGenerationAdmission::acquire(&governor, request).unwrap();
+    let mut cancelled: hawdb::SearchOutOfCoreMutationWriter<'_> = admission
+        .prepare_streamed_update(
+            &base,
+            Default::default(),
+            RuntimeTaskContext::without_deadline(cancellation.clone()),
+        )
+        .unwrap();
+    cancelled
+        .upsert_reader(header("a"), &b"graph"[..], body)
+        .unwrap();
+    assert_eq!(
+        governor.snapshot().admitted_memory_bytes,
+        request.memory_bytes
+    );
+    cancellation.cancel();
+    assert!(cancelled.delete("b").is_err());
+    assert!(cancelled.finish().is_err());
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+    assert_eq!(
+        SearchOutOfCoreReader::open(&root.0).unwrap().generation(),
+        generation
+    );
+
+    let mut unordered =
+        SearchOutOfCoreGenerationWriter::prepare_streamed_delta(&base, Default::default()).unwrap();
+    unordered.delete("b").unwrap();
+    assert!(unordered
+        .upsert_reader(header("a"), &b"graph"[..], body)
+        .is_err());
+    assert!(unordered.finish().is_err());
+    assert_eq!(
+        SearchOutOfCoreReader::open(&root.0).unwrap().generation(),
+        generation
+    );
+
+    let mut winner =
+        SearchOutOfCoreGenerationWriter::prepare_streamed_delta(&base, Default::default()).unwrap();
+    let mut stale =
+        SearchOutOfCoreGenerationWriter::prepare_streamed_delta(&base, Default::default()).unwrap();
+    winner
+        .upsert_reader(header("b"), &b"graph"[..], body)
+        .unwrap();
+    stale.delete("a").unwrap();
+    let (_, published, _) = winner.finish().unwrap();
+    assert!(stale
+        .finish()
+        .unwrap_err()
+        .to_string()
+        .contains("base changed"));
+    let current = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(current.generation(), published.generation);
+    assert_eq!(current.document_count(), 2);
+    assert_eq!(base.document_count(), 1);
+}

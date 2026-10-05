@@ -16,9 +16,9 @@
 
 use super::{hydration, input};
 use crate::build_control::checkpoint;
-use crate::build_memory::{checked_mul, BuildMemory};
-use crate::document_encoding::DocumentEncoding;
-use crate::lexical_projection::{analyzer_digest, DocumentsDigest};
+use crate::build_memory::{reserve_capacity, shared::Shared, BuildMemory};
+use crate::lexical_projection::analyzer_digest;
+use crate::out_of_core::mutation_run::terms;
 use crate::out_of_core::mutation_run::{
     SearchMutationOperation, SearchMutationRetraction, SearchMutationRunEntry,
 };
@@ -32,34 +32,33 @@ pub(in crate::out_of_core::generation_writer) struct Prepared {
     pub(in crate::out_of_core::generation_writer) max_run_bytes: u64,
     pub(in crate::out_of_core::generation_writer) reopen_budget:
         crate::out_of_core::mutation_run::MutationRunBudget,
+    term_file: Shared<terms::TermFile>,
     _memory: QueryMemoryLease,
 }
 
 impl Prepared {
+    pub(in crate::out_of_core::generation_writer) fn disk_reservation(
+        reader: &SearchOutOfCoreReader,
+    ) -> Result<u64> {
+        // One reused old-body file, one bounded term file, and the reanalysis
+        // spill overlap remain owned independently of the new-document spool.
+        reader
+            .config
+            .max_uncompressed_segment_bytes
+            .get()
+            .checked_add(reader.config.max_mutation_run_bytes.get())
+            .and_then(|bytes| bytes.checked_add(reader.config.max_reanalysis_spill_bytes.get()))
+            .ok_or_else(|| HawDBError::Storage("mutation stage disk reservation overflow".into()))
+    }
+
     pub(super) fn prepare(
         reader: &SearchOutOfCoreReader,
         input: &input::Input,
+        stage: &std::path::Path,
         memory: &BuildMemory,
         task: &RuntimeTaskContext,
     ) -> Result<(Self, usize, SearchOutOfCoreMetrics)> {
-        let count = input
-            .upserts
-            .len()
-            .checked_add(input.deletes.len())
-            .ok_or_else(|| HawDBError::Storage("mutation operation count overflows".into()))?;
-        let mut retained = memory.retained.reserve(checked_mul(
-            count,
-            std::mem::size_of::<SearchMutationRunEntry>(),
-        )?)?;
-        let mut entries = Vec::new();
-        entries.try_reserve_exact(count).map_err(|error| {
-            HawDBError::Execution(format!("cannot allocate mutation entries: {error}"))
-        })?;
-        if entries.capacity() > count {
-            return Err(HawDBError::Execution(
-                "mutation entries exceed admission".into(),
-            ));
-        }
+        let mut prepared = Self::new(reader, stage, memory, task, !input.upserts.is_empty())?;
         let mut upserts = input.upserts.iter().peekable();
         let mut deletes = input.deletes.iter().peekable();
         let mut deleted = 0usize;
@@ -81,52 +80,15 @@ impl Prepared {
                 ),
                 (None, None) => break,
             };
-            let evidence = hydration::visit_target(
-                reader,
-                id,
-                memory,
-                task,
-                &mut |target_segment_id, lexical, document| {
-                    let (lexical_document_len, unique_terms) = lexical
-                        .document_retraction_with_context(
-                            &document,
-                            reader.analyzer_lexicon(),
-                            memory,
-                            task,
-                            &mut retained,
-                        )?;
-                    retained.grow(id.len())?;
-                    let document_id = id.to_string();
-                    if document_id.capacity() > id.len() {
-                        return Err(HawDBError::Execution(
-                            "mutation ID exceeds admission".into(),
-                        ));
-                    }
-                    let encoding = DocumentEncoding::new_with_context(&document, Some(task))?;
-                    let mut digest = DocumentsDigest::default();
-                    super::super::spool::write_frame_with_context(
-                        &mut std::io::sink(),
-                        &encoding,
-                        &mut digest,
-                        memory,
-                        task,
-                    )?;
-                    entries.push(SearchMutationRunEntry {
-                        document_id,
-                        target_segment_id,
-                        operation,
-                        retraction: SearchMutationRetraction {
-                            documents_digest: digest.finish(),
-                            lexical_document_len,
-                            unique_terms,
-                        },
-                    });
-                    if operation == SearchMutationOperation::Delete {
-                        deleted += 1;
-                    }
-                    Ok(())
-                },
-            )?;
+            let evidence = prepared.push_target(reader, id, operation, stage, memory, task)?;
+            if operation == SearchMutationOperation::Delete {
+                deleted += evidence.streamed_documents;
+            }
+            metrics.streamed_documents += evidence.streamed_documents;
+            metrics.streamed_body_bytes = metrics
+                .streamed_body_bytes
+                .checked_add(evidence.streamed_body_bytes)
+                .ok_or_else(|| HawDBError::Storage("mutation source bytes overflow".into()))?;
             metrics.segment_range_reads = metrics
                 .segment_range_reads
                 .saturating_add(evidence.segment_range_reads);
@@ -146,26 +108,109 @@ impl Prepared {
                 .hydrated_documents
                 .saturating_add(evidence.hydrated_documents);
         }
+        Ok((prepared, deleted, metrics))
+    }
+
+    pub(in crate::out_of_core::generation_writer) fn new(
+        reader: &SearchOutOfCoreReader,
+        stage: &std::path::Path,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+        has_upserts: bool,
+    ) -> Result<Self> {
         let segments = reader
             .segments
             .len()
-            .checked_add(usize::from(!input.upserts.is_empty()))
+            .checked_add(usize::from(has_upserts))
             .ok_or_else(|| HawDBError::Storage("mutation content count overflows".into()))?;
         let reopen_budget = reader.visibility.publication_budget(
             reader.config.max_mutation_working_bytes.get(),
             segments,
-            !entries.is_empty(),
+            true,
         )?;
-        Ok((
-            Self {
-                entries,
-                analyzer_digest: analyzer_digest(reader.analyzer_lexicon()),
-                max_run_bytes: reader.config.max_mutation_run_bytes.get(),
-                reopen_budget,
-                _memory: retained,
+        let path = crate::build_memory::path::OwnedPath::join(
+            stage,
+            std::path::Path::new("mutation-terms.json"),
+            memory,
+            task,
+        )?;
+        let term_file = terms::TermFile::new(
+            hawdb_storage::file_io::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&*path)?,
+            Some(memory),
+        )?;
+        Ok(Self {
+            entries: Vec::new(),
+            analyzer_digest: analyzer_digest(reader.analyzer_lexicon()),
+            max_run_bytes: reader.config.max_mutation_run_bytes.get(),
+            reopen_budget,
+            term_file,
+            _memory: memory.retained.reserve(0)?,
+        })
+    }
+
+    pub(in crate::out_of_core::generation_writer) fn push_target(
+        &mut self,
+        reader: &SearchOutOfCoreReader,
+        id: &str,
+        operation: SearchMutationOperation,
+        stage: &std::path::Path,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+    ) -> Result<SearchOutOfCoreMetrics> {
+        hydration::visit_target(
+            reader,
+            id,
+            stage,
+            memory,
+            task,
+            &mut |target_segment_id, lexical, document| {
+                let mut term_writer = terms::Writer::new(
+                    self.term_file.clone(),
+                    memory,
+                    reader.config.max_mutation_run_bytes.get(),
+                )?;
+                let lexical_document_len = lexical.source_retraction(
+                    &document,
+                    reader.analyzer_lexicon(),
+                    crate::lexical_projection::retraction::RetractionContext {
+                        root: stage,
+                        memory,
+                        task,
+                        needs_chinese: document.needs_chinese,
+                    },
+                    |term| term_writer.push(&term),
+                )?;
+                let unique_terms = term_writer.finish()?;
+                let count = self
+                    .entries
+                    .len()
+                    .checked_add(1)
+                    .ok_or_else(|| HawDBError::Storage("mutation entries overflow".into()))?;
+                reserve_capacity(&mut self.entries, count, &mut self._memory)?;
+                self._memory.grow(id.len())?;
+                let document_id = id.to_string();
+                if document_id.capacity() > id.len() {
+                    return Err(HawDBError::Execution(
+                        "mutation ID exceeds admission".into(),
+                    ));
+                }
+                let documents_digest = document.documents_digest()?;
+                self.entries.push(SearchMutationRunEntry {
+                    document_id,
+                    target_segment_id,
+                    operation,
+                    retraction: SearchMutationRetraction {
+                        documents_digest,
+                        lexical_document_len,
+                        unique_terms,
+                    },
+                });
+                Ok(())
             },
-            deleted,
-            metrics,
-        ))
+        )
     }
 }

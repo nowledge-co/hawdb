@@ -877,7 +877,9 @@ fn bounded_delta_merge_publishes_without_full_document_residency() {
     .unwrap();
     assert_eq!(update.delta_report().after_document_count, 300);
     assert_eq!(update.delta_report().action, "incremental_mutation_publish");
-    assert!(update.source_read_metrics().peak_segment_document_bytes > 0);
+    assert_eq!(update.source_read_metrics().peak_segment_document_bytes, 0);
+    assert_eq!(update.source_read_metrics().streamed_documents, 1);
+    assert!(update.source_read_metrics().streamed_body_bytes > 0);
     let (_, build, _) = update.finish().unwrap();
     assert_eq!(build.resident_document_count, 0);
     assert_eq!(build.generation, old_reader.generation() + 1);

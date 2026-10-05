@@ -19,8 +19,8 @@ use std::num::NonZeroU64;
 ///
 /// This remains independent from encoded-record, input, analyzer, token,
 /// spill, and query budgets. Raising it admits a larger source only when those
-/// other limits also admit the operation. It is a host-side write policy and
-/// is never inferred from an index artifact.
+/// other limits also admit the operation. It governs writes and old-version
+/// reanalysis during mutation validation, and is never inferred from an artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SearchLexicalSourcePolicy {
     max_document_source_bytes: NonZeroU64,

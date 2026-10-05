@@ -21,6 +21,7 @@ use super::{
     Result, SearchAnalyzerLexicon, SearchDocument, TokenSequence, TITLE_TERM_FREQUENCY_WEIGHT,
 };
 mod control;
+pub(crate) mod reader;
 mod text;
 use crate::build_term::Term;
 pub(crate) use control::Control;
@@ -44,11 +45,15 @@ pub(super) fn document_token_fields(
         (document.content.as_str(), 1),
     ]
     .into_iter()
-    .chain(
-        ["kind", "external_id", "source_id", "space_id"]
-            .into_iter()
-            .filter_map(|key| document.metadata.get(key).map(|value| (value.as_str(), 1))),
-    )
+    .chain(metadata_token_fields(&document.metadata))
+}
+
+pub(crate) fn metadata_token_fields(
+    metadata: &std::collections::BTreeMap<String, String>,
+) -> impl Iterator<Item = (&str, usize)> {
+    ["kind", "external_id", "source_id", "space_id"]
+        .into_iter()
+        .filter_map(|key| metadata.get(key).map(|value| (value.as_str(), 1)))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -158,23 +163,44 @@ fn visit_token_events<'a>(
         identifier += 1;
         #[cfg(test)]
         IDENTIFIER_VISITS.with(|visits| visits.set(visits.get() + 1));
-        let parts = part_slices(raw);
-        if let Some(previous) = previous_part.as_ref()
-            && let Some(first) = parts.clone().next()
-        {
-            let mut phrase = TokenEmitter::new(analyzer, control, |token| {
-                emit(token, TokenScope::Phrase(identifier))
-            });
-            let first = Text::lowercase(first, true, control)?;
-            phrase.analyzed(Text::join(previous.as_str(), "_", first.as_str(), control)?)?;
-        }
-        if let Some(last) = visit_identifier_tokens(raw, parts, analyzer, control, |token| {
-            emit(token, TokenScope::Identifier(identifier))
-        })? {
+        if let Some(last) = visit_raw_identifier(
+            raw,
+            previous_part.as_ref().map(Text::as_str),
+            analyzer,
+            control,
+            |token, phrase| {
+                emit(
+                    token,
+                    if phrase {
+                        TokenScope::Phrase(identifier)
+                    } else {
+                        TokenScope::Identifier(identifier)
+                    },
+                )
+            },
+        )? {
             previous_part = Some(last);
         }
     }
     Ok(())
+}
+
+fn visit_raw_identifier<'a>(
+    raw: &'a str,
+    previous: Option<&str>,
+    analyzer: &'a SearchAnalyzerLexicon,
+    control: Control<'_>,
+    mut emit: impl FnMut(Text<'a>, bool) -> Result<()>,
+) -> Result<Option<Text<'a>>> {
+    let parts = part_slices(raw);
+    if let Some(previous) = previous
+        && let Some(first) = parts.clone().next()
+    {
+        let mut phrase = TokenEmitter::new(analyzer, control, |token| emit(token, true));
+        let first = Text::lowercase(first, true, control)?;
+        phrase.analyzed(Text::join(previous, "_", first.as_str(), control)?)?;
+    }
+    visit_identifier_tokens(raw, parts, analyzer, control, |token| emit(token, false))
 }
 
 pub(super) fn identifier_tokens(raw: &str, analyzer: &SearchAnalyzerLexicon) -> Vec<String> {

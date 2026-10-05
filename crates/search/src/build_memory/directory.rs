@@ -58,14 +58,14 @@ pub(crate) fn scan_bytes(root: &Path) -> Result<usize> {
 }
 
 pub(crate) fn stage_removal_bytes(root: &Path) -> Result<usize> {
-    // Every producer writes regular files directly into the owned stage. Keep
-    // std's handle-relative, symlink-safe removal instead of a path walker.
-    // Unix retains one DIR and entry. Windows retains a 1-KiB DirBuff and its
-    // one-directory handle vector. No generated child directory can add a level.
-    let traversal = if cfg!(windows) {
-        1024 + 4 * size_of::<fs::File>()
-    } else {
-        1024 * 1024 + ENTRY_NAME_BYTES + 256
-    };
-    add(native_path::bytes(root)?, traversal)
+    // A generated stage is flat. Counted cleanup keeps at most four admitted
+    // child paths and closes its iterator before unlinking the next batch.
+    let paths = mul(
+        4,
+        add(
+            root.as_os_str().as_encoded_bytes().len(),
+            ENTRY_NAME_BYTES + 64,
+        )?,
+    )?;
+    add(scan_bytes(root)?, paths)
 }
