@@ -3,11 +3,11 @@ module(
     version = "0.1.0",
 )
 
-bazel_dep(name = "rules_rust", version = "0.67.0")
-bazel_dep(name = "rules_shell", version = "0.6.1")
+bazel_dep(name = "rules_rust", version = "0.74.0")
+bazel_dep(name = "rules_shell", version = "0.8.0")
 bazel_dep(name = "rules_tla", version = "0.2.0")
-bazel_dep(name = "bazel_skylib", version = "1.8.2")
-bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "bazel_skylib", version = "1.9.2")
+bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_python", version = "1.7.0")
 
 # Maintain the rules locally so the authoritative check also retains evidence.
