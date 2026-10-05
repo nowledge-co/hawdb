@@ -213,6 +213,43 @@ stages, verified output stages, mutation runs, and merge overlap all consume
 explicit disk quotas. FD use remains within the project's shared descriptor
 budget, including cleanup and old-reader retention.
 
+The [project descriptor contract](BRANCHING_STORAGE_SPEC.md#file-descriptor-budgets-and-branch-residency)
+governs capture, analysis, encoding, validation, publication, and cleanup. Stage
+ownership pins immutable bytes, not necessarily an open FD for the whole
+pipeline. Idle handles may close while the stage remains protected; reopening
+MUST revalidate the same identity through counted I/O. Active handles and
+directory entries keep their permits until their native resources close.
+
+Stage 1 MUST inventory simultaneous handles and nested temporary acquisitions,
+including durability helpers and directory iterators. Reserve or borrow the
+existing operation quota before a multi-step publication boundary; a helper
+MUST NOT unexpectedly reacquire capacity already reserved for its caller. All
+fallible validation/mapping needed to return a usable artifact belongs before
+publication. A later synchronization failure still means uncertain publication.
+Embedded feature/build configurations MUST select counted I/O; an uncounted
+standalone backend cannot qualify this resource contract.
+
+Project-budget and OS-limit rejection MUST retain their typed resource cause
+through every wrapper. They MUST NOT be reclassified as corruption, poison an
+otherwise valid reader, or authorize discarding valid artifacts. If cleanup is
+denied mid-sequence, close releasable handles and retain the remaining private
+artifacts with explicit cleanup ownership and disk accounting. Preserve the
+primary operation error and expose cleanup denial separately; after a successful
+commit, report cleanup pending without turning the commit into a failure.
+Best-effort `Drop` cannot claim successful deletion: the explicit cleanup path
+MUST report retained work and permit bounded retry after capacity returns. No
+uncounted fallback, implicit budget increase, or busy retry is allowed.
+
+Stage 1 prototypes MUST reproduce real exhaustion at scan, unlink, nested
+publication, and reopen boundaries with a competing owner holding capacity.
+Verify preserved published bytes/pins, typed denial, retained cleanup debt,
+bounded counters, and successful retry after release. Error-constructor-only
+tests do not qualify these paths. Track the related descriptor work in
+[#829](https://github.com/nowledge-co/hawdb/pull/829),
+[#839](https://github.com/nowledge-co/hawdb/pull/839), and
+[#841](https://github.com/nowledge-co/hawdb/pull/841); their coverage is separate
+from this proposed large-document qualification.
+
 Profiles use one shared ceiling rather than one ceiling per worker:
 
 | Profile intent | Physical behavior |
@@ -270,6 +307,16 @@ returns complete `SearchHit` bodies retains its full-output admission contract.
 Preview bounds MUST be part of the request/result contract, with source offsets,
 and MUST NOT be presented as complete content or alter ranking.
 
+For a given lexical, vector, or hybrid query strategy, all result modes MUST
+consume one shared candidate/filter/scoring/top-k implementation and the same
+generation-pinned ordered candidate result. Modes select only the downstream
+metadata, preview, or full-body materializer; they MUST NOT duplicate scoring,
+rerank, drop hits, or refill top-k to satisfy a payload budget. Admission failure
+remains explicit. Tests MUST compare IDs, scores, matching counts, version
+visibility, and tie order across successful modes, including ACL/metadata
+filters and replacements. Full-body admission denial on a large result is a
+separate expected outcome, not a different ranked result.
+
 For streamed full-content reading, the recommended first delivery verifies the
 entire required source segment while writing only the selected body into an
 admitted temporary output. It then returns a sealed reader. Corruption in an
@@ -309,6 +356,34 @@ retry. Process interruption, torn writes, lost unsynchronized writes, and
 reordered persistence are separate qualification cases. Model results MUST state
 their platform assumptions and MUST NOT imply physical power-loss certification.
 
+Formal qualification is required before enabling the new publication lifecycle.
+Stage 1 MUST map these transitions to the
+[existing TLA+ practice](../tla/README.md), reusing or extending
+[search mutation publication](../tla/HawDBSearchMutationPublication.tla) and
+[validated result delivery](../tla/HawDBValidatedResultDelivery.tla) where their
+abstractions fit. The former models durable-closure selection and pinned
+reclamation; the latter models validation before observable delivery. Neither
+currently proves streamed capture, FD denial, deferred cleanup, or ambiguous
+post-rename outcomes for this lifecycle.
+
+Before Stage 2 enables publication, a bounded model and Rust transition mapping
+MUST cover sealing/validation, stale publication, cancellation on both sides of
+the fence, uncertain publication/recovery, reader pins, and cleanup denial/retry
+with retained ownership. Check no partial active closure, no reclamation of
+protected bytes, no premature result exposure, and no release of live resource
+ownership. Negative controls MUST violate each corresponding safety property;
+reachability witnesses MUST exercise both a committed-but-unacknowledged result
+and cleanup that succeeds after resource pressure clears. Stage 3 extends this
+evidence to replacement, deletion, and compaction.
+
+Model receipts MUST identify source/configuration, state bounds, assumptions,
+invariants, and counterexamples. Eventual cleanup requires explicit fairness
+and resource-availability assumptions; indefinite admission denial permits
+retained debt. Atomic file/selector abstractions do not prove torn-write or
+write-reordering behavior: any abstracted persistence boundary requires separate
+fault-injection/refinement evidence under the declared platform assumptions.
+This proposal adds the modeling gate, not a new model or a claim of verification.
+
 ## Diagnostics
 
 Typed reports SHOULD expose the selected path and phase; logical/encoded source
@@ -335,10 +410,11 @@ analyzer/embedding identity, resource policies, and actual selected test counts.
 | Size | 4 MiB minus/equal/plus one, 8/32/128 MiB bodies, encoded-record boundaries, and at least one body larger than the total operation reservation |
 | Shape | Repeated words, high distinct-term count, long identifiers, uninterrupted Chinese, mixed Unicode, aliases, stopwords, metadata, and empty fields |
 | Physical chunks | Every boundary of small multibyte fixtures, randomized short reads, splits within UTF-8/identifiers/phrases, and multiple buffer profiles |
-| Semantics | Complete term/tf/df/length/statistics equality; exact matching counts, BM25 scores, ordering, ties, and hybrid version visibility |
+| Semantics | Complete term/tf/df/length/statistics equality; exact matching counts, BM25 scores, ordering, ties, and hybrid version visibility; shared candidate results across metadata/preview/full-body modes |
 | Lifecycle | Initial import, append, repeated replacement, delete/restore, old reader overlap, checkpoint, compaction, low-memory reopen, and body transfer |
-| Resources | Exact/one-short admission, concurrent operations sharing one governor, slow consumers, native allocation bounds, disk/FD denial and retry |
+| Resources | Exact/one-short admission, concurrent operations sharing one governor, slow consumers, native allocation bounds, disk/FD denial and retry, and retained cleanup debt at actual mid-sequence exhaustion |
 | Failure | Short/excess/invalid input, source mismatch, partial I/O, corruption including late tails, cancellation, deadlines, unwind, and interrupted publication |
+| Formal protocol | Bounded lifecycle model, Rust transition mapping, negative controls, and reachability witnesses for ambiguous publication and deferred cleanup; stated persistence/fairness assumptions |
 
 The 8/32/128 MiB points are qualification cases, not new product ceilings.
 Separate admitted continuous-CJK cases from intentional minimum-unit rejection.
@@ -369,9 +445,9 @@ synthetic large-document fixtures do not replace it or production Mem readiness.
 
 | Stage | Entry condition and bounded scope | Exit condition |
 | --- | --- | --- |
-| 1. Contracts and proof | Review source/result ownership, analyzer minimum units, existing count limits, and format feasibility | Minimal streaming capture/analyzer/read prototypes demonstrate bounded ownership and exact chunk semantics; no default changes |
-| 2. Build and read | Approved additive interfaces and existing shared ledger | Public initial-build and verified-body paths process a body larger than their reservation, including corruption/cancellation/cleanup |
-| 3. Mutable lifecycle | Stage 2 plus existing target-bound mutation protocol | Replace/delete/reopen/checkpoint/compaction and the supported `SearchIndex` paths pass the same memory and semantic gates |
+| 1. Contracts and proof | Review source/result ownership, analyzer minimum units, existing count limits, format feasibility, and formal-model scope | Minimal streaming capture/analyzer/read prototypes demonstrate bounded ownership and exact chunk semantics; descriptor exhaustion/cleanup proof, shared scoring boundary, and lifecycle transition mapping are recorded; no default changes |
+| 2. Build and read | Approved additive interfaces, existing shared ledger, and checked publication/result-delivery model before enabling publication | Public initial-build and verified-body paths process a body larger than their reservation, including corruption/cancellation/cleanup and result-mode equivalence |
+| 3. Mutable lifecycle | Stage 2 plus existing target-bound mutation protocol and extended model/refinement evidence | Replace/delete/reopen/checkpoint/compaction and the supported `SearchIndex` paths pass the same memory and semantic gates |
 | 4. Profiles and default transition | Complete supported-path evidence and host/resource measurements | Review finite input policies, token limits, and reader defaults together; remove the 4 MiB-only rejection only on qualified paths |
 
 Each implementation slice targets `main` directly and references #392. Completed
