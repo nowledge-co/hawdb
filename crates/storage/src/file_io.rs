@@ -442,6 +442,23 @@ fn temporary<T>(path: &Path, operation: impl FnOnce() -> io::Result<T>) -> io::R
     operation().map_err(|error| context.map_open_error(error))
 }
 
+fn two_paths<T>(
+    source: &Path,
+    destination: &Path,
+    operation: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    let source_context = context_for_path(source)?;
+    let destination_context = context_for_path(destination)?;
+    let _source_permit = source_context.acquire(DescriptorKind::Transient)?;
+    if Arc::ptr_eq(&source_context.state, &destination_context.state) {
+        // One filesystem operation in one project is one temporary admission.
+        operation().map_err(|error| source_context.map_open_error(error))
+    } else {
+        let _destination_permit = destination_context.acquire(DescriptorKind::Transient)?;
+        operation().map_err(|error| destination_context.map_open_error(error))
+    }
+}
+
 pub fn metadata(path: impl AsRef<Path>) -> io::Result<Metadata> {
     temporary(path.as_ref(), || std::fs::metadata(path.as_ref()))
 }
@@ -471,17 +488,13 @@ pub fn remove_dir(path: impl AsRef<Path>) -> io::Result<()> {
     temporary(path.as_ref(), || std::fs::remove_dir(path.as_ref()))
 }
 pub fn rename(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Result<()> {
-    temporary(source.as_ref(), || {
-        temporary(destination.as_ref(), || {
-            std::fs::rename(source.as_ref(), destination.as_ref())
-        })
+    two_paths(source.as_ref(), destination.as_ref(), || {
+        std::fs::rename(source.as_ref(), destination.as_ref())
     })
 }
 pub fn hard_link(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Result<()> {
-    temporary(source.as_ref(), || {
-        temporary(destination.as_ref(), || {
-            std::fs::hard_link(source.as_ref(), destination.as_ref())
-        })
+    two_paths(source.as_ref(), destination.as_ref(), || {
+        std::fs::hard_link(source.as_ref(), destination.as_ref())
     })
 }
 

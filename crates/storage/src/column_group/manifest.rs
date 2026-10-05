@@ -1055,11 +1055,11 @@ fn publish_bytes(path: &Path, bytes: &[u8]) -> Result<(), ColumnGroupError> {
     result
 }
 
-/// Windows denies replacing a destination while a concurrent reader holds it
-/// open; readers hold metadata files only for one bounded read, so a bounded
-/// retry converts that transient sharing violation into the same
-/// atomic-replace outcome POSIX rename provides. Elsewhere the first attempt
-/// is the only attempt.
+/// Retry genuine Windows sharing/access obstructions for bounded readers.
+/// The pinned rename path already preserves readers that permit replacement.
+/// Descriptor-budget rejection is returned immediately for caller-controlled
+/// retry; waiting here must not hide admission pressure or bypass the cap.
+/// Elsewhere the first attempt is the only attempt.
 fn replace_published_file(candidate: &Path, path: &Path) -> Result<(), ColumnGroupError> {
     let mut attempt = 0;
     loop {
