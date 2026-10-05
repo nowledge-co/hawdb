@@ -49,10 +49,10 @@ fn projected_graph_queries_preserve_residency_reopen_and_read_only_wal_boundarie
             {
                 let mut db = Database::open_with_config(&path, config.clone()).unwrap();
                 assert_eq!(
-                    db.storage_residency_report().out_of_core,
+                    db.storage_residency_report().unwrap().out_of_core,
                     mode == StorageResidencyMode::OutOfCore
                 );
-                let epoch = db.commit_epoch();
+                let epoch = db.commit_epoch().unwrap();
                 let results: Vec<Vec<BTreeMap<String, Value>>> = [
                     "CALL page_rank('selected', dampingFactor := 0.5, maxIterations := 3) RETURN node, pagerank_score",
                     "CALL louvain('selected', maxIterations := 3, maxLevels := 1) RETURN node, level, louvain_id",
@@ -76,9 +76,9 @@ fn projected_graph_queries_preserve_residency_reopen_and_read_only_wal_boundarie
                 } else {
                     reference = Some(results);
                 }
-                assert_eq!(db.commit_epoch(), epoch);
+                assert_eq!(db.commit_epoch().unwrap(), epoch);
                 assert_eq!(
-                    db.storage_residency_report().out_of_core,
+                    db.storage_residency_report().unwrap().out_of_core,
                     mode == StorageResidencyMode::OutOfCore
                 );
             }

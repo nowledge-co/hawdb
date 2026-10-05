@@ -56,7 +56,7 @@ fn memory_evolves_latest_uses_one_fixed_bounded_query() {
         ),
         ("limit".to_string(), Value::Int(2)),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     db.query("CREATE (:Memory {id: 'new-c', is_latest: true})")
         .unwrap();
@@ -110,7 +110,7 @@ fn memory_evolves_latest_respects_query_limit() {
         ),
         ("limit".to_string(), Value::Int(1)),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     let output = snapshot
         .query_with_params_bounded(MEMORY_EVOLVES_LATEST_QUERY, &parameters, Some(1))

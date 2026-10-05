@@ -41,7 +41,7 @@ fn reads_community_entity_visibility_for_wiki_anchor_shapes() {
         .unwrap();
     db.query("MATCH (s:Source {id: 'source_alpha'}), (e:Entity {id: 'entity_alpha'}) CREATE (s)-[:MENTIONS]->(e)")
         .unwrap();
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
 
     let visibility = db
         .query_community_entity_visibility_via_cypher(&KnowledgeCommunityEntityVisibilityRequest {
@@ -51,7 +51,10 @@ fn reads_community_entity_visibility_for_wiki_anchor_shapes() {
         .unwrap();
 
     assert_eq!(visibility.graph_commit_epoch, graph_commit_epoch);
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch
+    );
     assert_eq!(visibility.matched_entity_count, 3);
     assert_eq!(visibility.matched_row_count, 4);
     assert_eq!(visibility.returned_count, 4);
@@ -102,7 +105,7 @@ fn reads_community_entity_visibility_for_wiki_anchor_shapes() {
         })
         .unwrap();
     assert_eq!(cached_visibility, visibility);
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.misses, 2);
     assert_eq!(stats.hits, 2);
 }

@@ -48,6 +48,8 @@ pub struct WalTailRepairPlan {
     pub wal_generation: u64,
     pub wal_replay_start_lsn: u64,
     pub next_lsn_after_repair: u64,
+    /// Identity of the authoritative legacy manifest or exact branch head.
+    /// A disposable branch runtime manifest never authorizes WAL repair.
     pub manifest_len: u64,
     pub manifest_crc32c: u64,
     pub manifest_sha256: String,

@@ -28,13 +28,14 @@ pub(super) struct PublishedConcurrentRead {
 }
 
 impl PublishedConcurrentRead {
-    pub(super) fn capture(database: &Database) -> Self {
-        Self {
-            snapshot: database.read_snapshot_without_observations(),
+    pub(super) fn capture(database: &Database) -> Result<Self> {
+        let runtime = database.runtime.get()?;
+        Ok(Self {
+            snapshot: database.read_snapshot_without_observations()?,
             recorder: database.statement_recorder(),
             system_variables: database.system_variables.clone(),
-            plan_cache: Arc::clone(&database.plan_cache),
-        }
+            plan_cache: Arc::clone(&runtime.plan_cache),
+        })
     }
 
     pub(super) fn begin_read_transaction(&self) -> Result<DatabaseReadTransaction> {
@@ -209,11 +210,11 @@ mod tests {
             let writer_db = db.clone();
             let writer = std::thread::spawn(move || {
                 writer_db.inner.commits.execute_grouped(move |database| {
-                    let mut tx = database.begin_transaction();
+                    let mut tx = database.begin_transaction()?;
                     tx.query("CREATE (:Memory {id: 2})")?;
                     tx.query_sql("INSERT INTO records (id) VALUES (2)")?;
                     let result = tx.commit()?;
-                    assert!(database.store.wal_sync_group_active());
+                    assert!(database.runtime.get()?.store.wal_sync_group_active());
                     staged.send(()).unwrap();
                     release_events
                         .recv_timeout(Duration::from_secs(30))
@@ -268,7 +269,10 @@ mod tests {
             drop(old_publication);
             drop(db);
             let reopened = Database::open(&path).unwrap();
-            assert_eq!(count(&mut reopened.begin_read_transaction()), (2, 2));
+            assert_eq!(
+                count(&mut reopened.begin_read_transaction().unwrap()),
+                (2, 2)
+            );
             drop(reopened);
             std::fs::remove_dir_all(path).unwrap();
         }
@@ -295,7 +299,13 @@ mod tests {
         {
             let mut database = db.inner.commits.lock().unwrap();
             database.finish_wal_sync_group().unwrap();
-            assert!(database.store.ensure_usable().is_ok());
+            assert!(database
+                .runtime
+                .get()
+                .unwrap()
+                .store
+                .ensure_usable()
+                .is_ok());
         }
         // A later healthy guard cannot reopen an invalidated serving boundary.
         assert!(db.begin_read_transaction().is_err());
@@ -341,6 +351,8 @@ mod tests {
             checkpointed.physical_generation(),
             before.physical_generation()
         );
+        let pinned_generation = checkpointed.physical_generation().unwrap().0;
+        let data = crate::api::tests::active_storage_root(&path);
         let mut old = db.begin_read_transaction().unwrap();
         assert_eq!(old.published_read_view(), checkpointed);
         for id in 2..=3 {
@@ -351,13 +363,20 @@ mod tests {
         }
         assert_eq!(count(&mut old), (1, 1));
         assert_eq!(count(&mut db.begin_read_transaction().unwrap()), (3, 3));
-        assert!(path.join("canonical.1.hawdb").exists());
+        assert!(data
+            .join(format!("canonical.{pinned_generation}.hawdb"))
+            .exists());
         drop(old);
         db.checkpoint().unwrap();
-        assert!(!path.join("canonical.1.hawdb").exists());
+        assert!(!data
+            .join(format!("canonical.{pinned_generation}.hawdb"))
+            .exists());
         drop(db);
         let reopened = Database::open_with_config(&path, config).unwrap();
-        assert_eq!(count(&mut reopened.begin_read_transaction()), (3, 3));
+        assert_eq!(
+            count(&mut reopened.begin_read_transaction().unwrap()),
+            (3, 3)
+        );
         drop(reopened);
         std::fs::remove_dir_all(path).unwrap();
     }

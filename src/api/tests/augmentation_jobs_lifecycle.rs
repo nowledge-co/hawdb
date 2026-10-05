@@ -167,7 +167,7 @@ fn augmentation_job_progress_rejects_invalid_percentage_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:AugmentationJob {job_id: 'running_job', status: 'running'})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .update_knowledge_augmentation_jobs_batch(&KnowledgeAugmentationJobLifecycleBatchRequest {
@@ -182,7 +182,10 @@ fn augmentation_job_progress_rejects_invalid_percentage_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("finite percentage"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]

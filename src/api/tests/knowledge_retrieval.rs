@@ -23,26 +23,29 @@ fn retrieves_knowledge_through_database_facade() {
             "CREATE (:Memory {id: 'mem_2', title: 'Graph retrieval', content: 'Search result diagnostics'})",
         )
         .unwrap();
-    let extra_entity = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    let extra_entity = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Entity",
             BTreeMap::from([
                 ("id".to_string(), Value::String("entity_2".to_string())),
                 ("name".to_string(), Value::String("Graph".to_string())),
             ]),
         )
-        .unwrap();
-    db.store
-        .create_relationship(
-            &mut db.catalog,
+    }
+    .unwrap();
+    {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_relationship(
+            &mut branch_runtime.catalog,
             NodeId(0),
             extra_entity,
             "MENTIONS",
             BTreeMap::new(),
         )
-        .unwrap();
+    }
+    .unwrap();
 
     let mut search_index = SearchIndex::in_memory();
     let rebuild = db

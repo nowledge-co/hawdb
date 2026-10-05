@@ -20,7 +20,7 @@
 //! output. Both paths use the same snapshot reader, cache, fields, row order,
 //! and checksums.
 
-use hawdb::{Database, DatabaseConfig, Value};
+use hawdb::{BranchSelector, Database, DatabaseConfig, Value};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_storage::{
     cache::{SegmentCache, StoreId},
@@ -583,6 +583,8 @@ fn add_allocated_bytes(bytes: usize) {
 
 struct Fixture {
     directory: PathBuf,
+    artifact_directory: PathBuf,
+    generation: u64,
     reader: RelationalRowPageSnapshotReader,
 }
 
@@ -596,13 +598,18 @@ impl Fixture {
                 .unwrap_or_default()
                 .as_nanos()
         ));
-        seed_database(&directory);
-        let (reader, _) = open_reader(&directory, StoreId(990));
-        Self { directory, reader }
+        let (artifact_directory, generation) = seed_database(&directory);
+        let (reader, _) = open_reader(&artifact_directory, generation, StoreId(990));
+        Self {
+            directory,
+            artifact_directory,
+            generation,
+            reader,
+        }
     }
 
     fn fresh_reader(&self) -> (RelationalRowPageSnapshotReader, Arc<SegmentCache>) {
-        open_reader(&self.directory, StoreId(991))
+        open_reader(&self.artifact_directory, self.generation, StoreId(991))
     }
 
     fn remove(self) {
@@ -614,12 +621,13 @@ impl Fixture {
 
 fn open_reader(
     directory: &Path,
+    generation: u64,
     store_id: StoreId,
 ) -> (RelationalRowPageSnapshotReader, Arc<SegmentCache>) {
     let row_root = Arc::new(
         RelationalRowPageRootReader::open_generation(
             directory,
-            1,
+            generation,
             RelationalRowPagePublicationConfig::default(),
         )
         .expect("open benchmark row root"),
@@ -627,7 +635,7 @@ fn open_reader(
     let overflow_root = Arc::new(
         RelationalOverflowRootReader::open_generation(
             directory,
-            1,
+            generation,
             RelationalOverflowPublicationConfig::default(),
         )
         .expect("open benchmark overflow root"),
@@ -645,7 +653,7 @@ fn open_reader(
     (reader, cache)
 }
 
-fn seed_database(directory: &Path) {
+fn seed_database(directory: &Path) -> (PathBuf, u64) {
     let mut database = Database::open_with_config(directory, DatabaseConfig::default())
         .expect("open lending benchmark database");
     database
@@ -655,7 +663,7 @@ fn seed_database(directory: &Path) {
         .expect("create lending benchmark table");
     for transaction_start in (0..ROWS).step_by(INSERT_TRANSACTION_ROWS) {
         let transaction_end = (transaction_start + INSERT_TRANSACTION_ROWS).min(ROWS);
-        let mut transaction = database.begin_transaction();
+        let mut transaction = database.begin_transaction().unwrap();
         for start in (transaction_start..transaction_end).step_by(INSERT_BATCH_ROWS) {
             let end = (start + INSERT_BATCH_ROWS).min(transaction_end);
             let mut statement =
@@ -694,6 +702,24 @@ fn seed_database(directory: &Path) {
     let rendered = format!("{:?}", explain.rows);
     assert!(rendered.contains("row_borrowed_rows="));
     assert!(rendered.contains("row_owned_rows=0"));
+    let generation = database
+        .storage_residency_report()
+        .expect("benchmark residency")
+        .relational_rows
+        .base_generation
+        .expect("checkpointed benchmark row root");
+    let main = database
+        .describe_branch(BranchSelector::Name("main".into()))
+        .expect("benchmark main branch");
+    // Setup stays on main. Read its actual physical generation; project-root
+    // generation 1 is bootstrap state and does not contain the seeded table.
+    (
+        directory
+            .join("branches")
+            .join(main.id.to_string())
+            .join("data"),
+        generation,
+    )
 }
 
 fn row_id(ordinal: usize) -> String {

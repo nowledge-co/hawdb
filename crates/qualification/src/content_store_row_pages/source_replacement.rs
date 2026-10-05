@@ -196,7 +196,7 @@ fn replace_checkpoint_and_reopen(
 
     database.checkpoint()?;
     let checkpoint_generation = database
-        .relational_index_shadow_checkpoint_report()
+        .relational_index_shadow_checkpoint_report()?
         .ok_or_else(|| {
             HawDBError::Execution(format!(
                 "content-store {phase} replacement checkpoint did not publish relational indexes"
@@ -246,7 +246,7 @@ fn replace_checkpoint_and_reopen(
 }
 
 fn require_empty_replacement_tombstone(database: &Database, committed_epoch: u64) -> Result<()> {
-    let transaction = database.begin_read_transaction();
+    let transaction = database.begin_read_transaction()?;
     let profiled = transaction.query_sql_with_params_options_profiled(
         "SELECT chunk_id, text FROM content_chunks WHERE chunk_id = $1",
         &[Value::String("chunk-00000000".to_string())],
@@ -290,7 +290,7 @@ fn replace_source_chunks(
     let update_summary = corpus_statement(corpus, "update_content_document_summary")?;
     let page = corpus_statement(corpus, "source_chunks_by_source")?;
 
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
     transaction.query_with_params(
         "MATCH (s:Source {id: $source_id}) SET s.chunk_count = $chunk_count, s.space_id = $space_id",
         &source_graph_parameters(replacement_chunk_count),
@@ -373,7 +373,7 @@ fn replace_source_chunks(
     transaction.commit()?;
 
     Ok(ReplacementMutation {
-        committed_epoch: database.commit_epoch(),
+        committed_epoch: database.commit_epoch()?,
         summary_item_count,
         summary_size_bytes,
         duplicate_order_rejected,

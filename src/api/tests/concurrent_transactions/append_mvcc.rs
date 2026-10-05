@@ -115,7 +115,7 @@ fn append_mvcc_table_identity_preserves_disjoint_commits_conflicts_checkpoint_an
             assert_eq!(db.commit_epoch().unwrap(), epoch + 2);
             drop(db);
             let mut reopened = Database::open(&path).unwrap();
-            assert_eq!(reopened.commit_epoch(), epoch + 2);
+            assert_eq!(reopened.commit_epoch().unwrap(), epoch + 2);
             for (table, partition, value, expected_sequence) in [
                 ("events_a", "first", "first-value", 1),
                 (

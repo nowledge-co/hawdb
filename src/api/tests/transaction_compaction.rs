@@ -38,11 +38,11 @@ fn mixed_transaction_compaction_preserves_one_batch_or_rollback_across_reopen() 
             {
                 let mut db = Database::open_with_config(&path, config.clone()).unwrap();
                 assert_eq!(
-                    db.storage_residency_report().out_of_core,
+                    db.storage_residency_report().unwrap().out_of_core,
                     mode == StorageResidencyMode::OutOfCore
                 );
-                epoch = db.commit_epoch();
-                let mut tx = db.begin_transaction();
+                epoch = db.commit_epoch().unwrap();
+                let mut tx = db.begin_transaction().unwrap();
                 for statement in [
                     "MATCH (m:Memory {id: 1}) SET m.value = 11",
                     "CREATE (:Memory {id: 3, value: 1})",
@@ -69,7 +69,7 @@ fn mixed_transaction_compaction_preserves_one_batch_or_rollback_across_reopen() 
                 } else {
                     tx.rollback();
                 }
-                assert_eq!(db.commit_epoch(), epoch + u64::from(commit));
+                assert_eq!(db.commit_epoch().unwrap(), epoch + u64::from(commit));
                 assert_graph(&mut db, commit);
             }
             let wal_after = read_test_wal(&path).unwrap();
@@ -96,10 +96,10 @@ fn mixed_transaction_compaction_preserves_one_batch_or_rollback_across_reopen() 
             {
                 let mut reopened = Database::open_with_config(&path, config).unwrap();
                 assert_eq!(
-                    reopened.storage_residency_report().out_of_core,
+                    reopened.storage_residency_report().unwrap().out_of_core,
                     mode == StorageResidencyMode::OutOfCore
                 );
-                assert_eq!(reopened.commit_epoch(), epoch + u64::from(commit));
+                assert_eq!(reopened.commit_epoch().unwrap(), epoch + u64::from(commit));
                 assert_graph(&mut reopened, commit);
             }
             std::fs::remove_dir_all(path).unwrap();

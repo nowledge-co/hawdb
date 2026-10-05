@@ -317,15 +317,17 @@ pub fn run_production_content_store_storage_qualification(
             config.database_config.clone(),
         )?;
         database.set_runtime_governor(governor.clone());
+        // Ordinary opening is metadata-only. Include deferred data recovery in
+        // the measured readiness boundary before comparing internal timings.
+        let recovery = database.storage_recovery_report()?;
         let open_latency_micros = elapsed_micros(open_started);
         let process_after_open = ProcessMemorySnapshot::capture()?;
-        let recovery = database.storage_recovery_report();
         let open_timings = ContentStoreOpenTimingEvidence::from(recovery.open_timings);
         if !open_timings.consistent || open_timings.total_open_micros > open_latency_micros {
             blocker_codes.push("content_store_open_timing_invalid".to_string());
         }
-        let open_residency = database.storage_residency_report();
-        let observed = residency_evidence(database.commit_epoch(), &open_residency);
+        let open_residency = database.storage_residency_report()?;
+        let observed = residency_evidence(database.commit_epoch()?, &open_residency);
         let payload_cache = open_cache_evidence(&open_residency, config.open_payload_cache_limits);
         if !payload_cache.within_limits {
             blocker_codes.push("content_store_open_payload_cache_unbounded".to_string());
@@ -440,8 +442,8 @@ pub fn run_production_content_store_storage_qualification(
             blocker_codes.push("content_store_warm_cache_hit_not_observed".to_string());
         }
         let after = residency_evidence(
-            database.commit_epoch(),
-            &database.storage_residency_report(),
+            database.commit_epoch()?,
+            &database.storage_residency_report()?,
         );
         if !same_storage_identity(&observed, &after) {
             blocker_codes.push("content_store_storage_identity_changed_during_reads".to_string());
@@ -1163,7 +1165,7 @@ mod tests {
                 }
             })
             .collect();
-        let commit_epoch = database.commit_epoch();
+        let commit_epoch = database.commit_epoch().unwrap();
         drop(database);
 
         let identity = ProductionQualificationIdentity {

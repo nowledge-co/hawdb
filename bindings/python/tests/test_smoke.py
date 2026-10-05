@@ -94,3 +94,63 @@ def test_context_manager_closes(tmp_path):
 def test_open_rejects_missing_parent(tmp_path):
     with pytest.raises(exceptions.Error):
         hawdb.open(tmp_path / "missing" / "deep" / "db")
+
+
+def test_deferred_admission_keeps_metadata_and_retries_after_busy_writer(tmp_path):
+    path = tmp_path / "deferred"
+    writer = hawdb.open(path)
+    writer.execute("CREATE (:Memory {id: 'retained'})")
+    reader = hawdb.open(path)
+    catalog = reader.execute_sql("SHOW BRANCHES LIMIT 1").fetchall()
+    try:
+        with pytest.raises(exceptions.BranchError):
+            reader.execute("MATCH (m:Memory) RETURN m.id AS id")
+        assert reader.execute_sql("SHOW BRANCHES LIMIT 1").fetchall() == catalog
+        # CURRENT includes the live commit epoch, so it must report failed
+        # admission rather than inventing an epoch from the catalog birth row.
+        with pytest.raises(exceptions.BranchError):
+            reader.execute_sql("SHOW CURRENT BRANCH")
+        writer.close()
+        assert reader.execute("MATCH (m:Memory) RETURN m.id AS id").fetchall() == [
+            {"id": "retained"}
+        ]
+    finally:
+        reader.close()
+        writer.close()
+
+
+def test_sql_nested_branch_schema_data_and_reopen(tmp_path):
+    path = tmp_path / "branches"
+    create = "CREATE BRANCH NAME $1 FROM ID $2 AT REVISION $3 REQUEST KEY $4"
+    with hawdb.open(path) as db:
+        db.execute_sql("CREATE TABLE records (id BIGINT PRIMARY KEY, value TEXT)")
+        db.execute_sql("INSERT INTO records (id, value) VALUES (1, 'main')")
+        main = db.execute_sql("SHOW CURRENT BRANCH").fetchone()
+        request = ["child", main["branch_id"], main["commit_epoch"], "python-child"]
+        child = db.execute_sql(create, request).fetchall()
+        assert db.execute_sql(create, request).fetchall() == child
+        db.execute_sql("USE BRANCH child")
+        db.execute_sql("ALTER TABLE records ADD COLUMN tag TEXT")
+        db.execute_sql(
+            "INSERT INTO records (id, value, tag) VALUES (2, 'child', 'private')"
+        )
+        current = db.execute_sql("SHOW CURRENT BRANCH").fetchone()
+        db.execute_sql(
+            create,
+            ["grandchild", current["branch_id"], current["commit_epoch"], "python-nested"],
+        )
+        db.execute_sql("USE BRANCH main")
+        assert db.execute_sql("SELECT id, value FROM records ORDER BY id").fetchall() == [
+            {"id": 1, "value": "main"}
+        ]
+        with pytest.raises(exceptions.Error):
+            db.execute_sql("SELECT tag FROM records")
+
+    with hawdb.open(path) as reopened:
+        reopened.execute_sql("USE BRANCH grandchild")
+        assert reopened.execute_sql(
+            "SELECT id, value, tag FROM records ORDER BY id"
+        ).fetchall() == [
+            {"id": 1, "value": "main", "tag": None},
+            {"id": 2, "value": "child", "tag": "private"},
+        ]

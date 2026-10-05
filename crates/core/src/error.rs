@@ -143,6 +143,19 @@ impl HawDBError {
         }
     }
 
+    /// `from_storage_error`, prefixing a generic `Storage` message with
+    /// `context` and leaving a preserved typed cause (e.g. `FileDescriptors`)
+    /// unprefixed and unchanged.
+    pub fn from_storage_error_with_context(
+        error: impl std::error::Error + 'static,
+        context: &str,
+    ) -> Self {
+        match Self::from_storage_error(error) {
+            Self::Storage(message) => Self::Storage(format!("{context}: {message}")),
+            error => error,
+        }
+    }
+
     pub const fn is_retryable_transaction_conflict(&self) -> bool {
         matches!(self, Self::TransactionConflict { .. })
     }

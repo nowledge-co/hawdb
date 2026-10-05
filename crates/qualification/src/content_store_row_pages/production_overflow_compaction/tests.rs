@@ -162,7 +162,7 @@ fn qualification_proves_exact_rewrite_physical_reclaim_and_reopen() {
         )
         .unwrap();
     let expected_output_sha256 = rows_sha256(&output.rows);
-    let commit_epoch = database.commit_epoch();
+    let commit_epoch = database.commit_epoch().unwrap();
     drop(database);
 
     let identity = ProductionQualificationIdentity {

@@ -157,7 +157,7 @@ fn fixture(path: &Path, mode: StorageResidencyMode) -> u64 {
     }
     db.checkpoint().unwrap();
     // Acknowledged mixed-domain data remains in WAL before the child starts.
-    let mut tx = db.begin_transaction();
+    let mut tx = db.begin_transaction().unwrap();
     tx.query("MATCH (m:CrashCounter) WHERE m.id = 0 SET m.value = 77")
         .unwrap();
     tx.query_sql("INSERT INTO records (id, payload) VALUES (0, 'baseline')")
@@ -169,11 +169,11 @@ fn fixture(path: &Path, mode: StorageResidencyMode) -> u64 {
         .unwrap();
     }
     tx.commit().unwrap();
-    db.commit_epoch()
+    db.commit_epoch().unwrap()
 }
 
 fn recovered_prefix(db: &mut Database, baseline: u64, maximum: u64) -> u64 {
-    let count = db.commit_epoch().checked_sub(baseline).unwrap();
+    let count = db.commit_epoch().unwrap().checked_sub(baseline).unwrap();
     assert!(
         count <= maximum,
         "replayed an unappended or rejected transaction"
@@ -245,7 +245,7 @@ fn recovered_prefix(db: &mut Database, baseline: u64, maximum: u64) -> u64 {
         assert_eq!(rows, expected);
     }
     assert_eq!(
-        db.storage_recovery_report().recovered_commit_epoch,
+        db.storage_recovery_report().unwrap().recovered_commit_epoch,
         baseline + count
     );
     count
@@ -352,7 +352,7 @@ fn subprocess_concurrent_crash_recovers_mixed_transactions_as_serial_prefixes() 
                 assert_eq!(std::fs::read(wal_path).unwrap(), wal);
                 drop(db);
                 let mut reopened = Database::open_with_config(&path, config(mode)).unwrap();
-                assert_eq!(reopened.commit_epoch(), baseline + count + 1);
+                assert_eq!(reopened.commit_epoch().unwrap(), baseline + count + 1);
                 assert_eq!(
                     reopened
                         .query("MATCH (m:CrashCounter) WHERE m.id = 0 RETURN m.value AS value")

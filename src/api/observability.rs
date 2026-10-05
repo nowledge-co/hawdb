@@ -266,7 +266,9 @@ impl Database {
         parameters: &[Value],
         options: QueryStreamOptions,
     ) -> Result<QueryOutput> {
-        self.store.ensure_usable()?;
+        if let Some(runtime) = self.runtime.peek() {
+            runtime.store.ensure_usable()?;
+        }
         let started = hawdb_core::time::Instant::now();
         let max_rows =
             super::restrictive_query_limit(self.config.max_read_result_rows, options.max_rows);
@@ -274,7 +276,27 @@ impl Database {
             self.config.max_read_result_payload_bytes,
             options.max_payload_bytes,
         );
-        let prepared = self.relational_plan_template_cache.prepare(sql_text)?;
+        // Lifecycle/catalog statements need only project metadata. Parse them
+        // before touching the selected runtime's data or plan caches.
+        if let SqlStatement::Branch(statement) = crate::sql::parse_postgres_sql(sql_text)? {
+            let result =
+                self.execute_branch_sql(&statement, parameters, max_rows, max_payload_bytes);
+            self.record_statement_execution(
+                "sql",
+                sql_text,
+                "branch",
+                started,
+                result.as_ref(),
+                StatementExecutionContext::default(),
+            );
+            return result;
+        }
+        self.runtime.get()?.store.ensure_usable()?;
+        let prepared = self
+            .runtime
+            .get()?
+            .relational_plan_template_cache
+            .prepare(sql_text)?;
         self.query_sql_with_prepared_params_inner(
             sql_text,
             parameters,
@@ -291,7 +313,9 @@ impl Database {
         parameters: &[Value],
         prepared: crate::relational_sql::PreparedRelationalSql,
     ) -> Result<QueryOutput> {
-        self.store.ensure_usable()?;
+        if let Some(runtime) = self.runtime.peek() {
+            runtime.store.ensure_usable()?;
+        }
         let started = hawdb_core::time::Instant::now();
         self.query_sql_with_prepared_params_inner(
             sql_text,
@@ -317,6 +341,7 @@ impl Database {
             if let SqlStatement::Branch(statement) = prepared.statement() {
                 return self.execute_branch_sql(statement, parameters, max_rows, max_payload_bytes);
             }
+            self.runtime.get()?.store.ensure_usable()?;
             super::reject_locking_select_without_manager(prepared.statement(), false)?;
             if hawdb_relational::system_schema::statement_writes_system_schema_registry(
                 prepared.statement(),
@@ -331,34 +356,37 @@ impl Database {
                 crate::sql::SqlStatement::Select(select)
                     if system_sql::is_virtual_catalog_select(select)
             ) {
-                let plan_cache_stats = self.plan_cache.borrow().stats();
+                let plan_cache_stats = self.runtime.get()?.plan_cache.borrow().stats();
                 let slow_queries = self.slow_query_log.borrow().snapshot();
                 let statement_summaries = self.statement_summary.borrow().snapshot();
-                return system_sql::query_sql_with_params(
-                    sql_text,
-                    parameters,
-                    max_rows,
-                    max_payload_bytes,
-                    &system_sql::SystemSqlContext {
-                        catalog: &self.catalog,
-                        store: &self.store,
-                        relational_state: self.store.relational_state(),
-                        append_state: self.store.append_state(),
-                        runtime: super::system_runtime_snapshot(&self.config),
-                        plan_cache_stats: &plan_cache_stats,
-                        slow_queries: &slow_queries,
-                        statement_summaries: &statement_summaries,
-                    },
-                );
+                return {
+                    let branch_runtime = self.runtime.get_mut()?;
+                    system_sql::query_sql_with_params(
+                        sql_text,
+                        parameters,
+                        max_rows,
+                        max_payload_bytes,
+                        &system_sql::SystemSqlContext {
+                            catalog: &branch_runtime.catalog,
+                            store: &branch_runtime.store,
+                            relational_state: branch_runtime.store.relational_state(),
+                            append_state: branch_runtime.store.append_state(),
+                            runtime: super::system_runtime_snapshot(&self.config),
+                            plan_cache_stats: &plan_cache_stats,
+                            slow_queries: &slow_queries,
+                            statement_summaries: &statement_summaries,
+                        },
+                    )
+                };
             }
 
             if let Some(plan) = compile_prepared_append_select_sql(
                 &prepared.template,
                 parameters,
-                self.store.append_state(),
+                self.runtime.get()?.store.append_state(),
                 max_rows.unwrap_or(usize::MAX),
             )? {
-                let output = self.store.read_append_partition_bounded(
+                let output = self.runtime.get()?.store.read_append_partition_bounded(
                     &plan.table,
                     &plan.partition,
                     plan.after.as_ref(),
@@ -372,12 +400,14 @@ impl Database {
             if let Some(plan) = compile_prepared_append_explain_sql(
                 &prepared.template,
                 parameters,
-                self.store.append_state(),
+                self.runtime.get()?.store.append_state(),
                 max_rows.unwrap_or(usize::MAX),
             )? {
                 let report = if plan.analyze {
                     Some(
-                        self.store
+                        self.runtime
+                            .get()?
+                            .store
                             .read_append_partition_bounded(
                                 &plan.select.table,
                                 &plan.select.partition,
@@ -403,11 +433,19 @@ impl Database {
                     crate::relational_sql::execute_prepared_relational_query_with_resources(
                         prepared,
                         parameters,
-                        self.store.relational_state(),
-                        crate::relational_sql::RelationalQueryReadModes::new(
-                            super::relational_index_read_mode(&self.config, &self.store),
-                            crate::relational_sql::RelationalRowReadMode::Store(&self.store),
-                        ),
+                        self.runtime.get()?.store.relational_state(),
+                        {
+                            let branch_runtime = self.runtime.get()?;
+                            crate::relational_sql::RelationalQueryReadModes::new(
+                                super::relational_index_read_mode(
+                                    &self.config,
+                                    &branch_runtime.store,
+                                ),
+                                crate::relational_sql::RelationalRowReadMode::Store(
+                                    &branch_runtime.store,
+                                ),
+                            )
+                        },
                         super::relational_query_resource_context(
                             &self.config,
                             max_rows,
@@ -415,17 +453,24 @@ impl Database {
                             None,
                         ),
                     );
-                self.store.poison_on_storage_error(&query_result);
+                self.runtime
+                    .get()?
+                    .store
+                    .poison_on_storage_error(&query_result);
                 let output = query_result?;
                 return Ok(QueryOutput { rows: output.rows });
             }
 
             self.ensure_writable()?;
-            if let Some(transaction) =
-                compile_append_statement_sql(sql_text, parameters, self.store.append_state())?
-            {
+            if let Some(transaction) = compile_append_statement_sql(
+                sql_text,
+                parameters,
+                self.runtime.get()?.store.append_state(),
+            )? {
                 if let crate::sql::SqlStatement::CreateTable(create) = prepared.statement()
                     && self
+                        .runtime
+                        .get()?
                         .store
                         .relational_state()
                         .table_schema(&create.table.name)
@@ -436,20 +481,28 @@ impl Database {
                         create.table.name
                     )));
                 }
-                let summary = self.store.commit_kernel_write_batch(
-                    &mut self.catalog,
-                    crate::store::KernelWriteBatch {
-                        append: transaction,
-                        ..crate::store::KernelWriteBatch::default()
-                    },
-                    self.config.mutation_limits,
-                )?;
+                let summary = {
+                    let branch_runtime = self.runtime.get_mut()?;
+                    branch_runtime.store.commit_kernel_write_batch(
+                        &mut branch_runtime.catalog,
+                        crate::store::KernelWriteBatch {
+                            append: transaction,
+                            ..crate::store::KernelWriteBatch::default()
+                        },
+                        self.config.mutation_limits,
+                    )
+                }?;
                 return Ok(QueryOutput {
                     rows: summary.rows.into(),
                 });
             }
             if let crate::sql::SqlStatement::CreateTable(create) = prepared.statement()
-                && self.store.append_table_schema(&create.table.name).is_some()
+                && self
+                    .runtime
+                    .get()?
+                    .store
+                    .append_table_schema(&create.table.name)
+                    .is_some()
             {
                 return Err(HawDBError::Semantic(format!(
                     "table {} already exists as a strict append table",
@@ -459,11 +512,15 @@ impl Database {
             let compiled = compile_relational_statement_sql_with_result(
                 sql_text,
                 parameters,
-                self.store.relational_state(),
+                self.runtime.get()?.store.relational_state(),
             )?;
-            let summary = self
-                .store
-                .commit_relational_transaction(&mut self.catalog, compiled.transaction)?;
+            let summary = {
+                let branch_runtime = self.runtime.get_mut()?;
+                branch_runtime.store.commit_relational_transaction(
+                    &mut branch_runtime.catalog,
+                    compiled.transaction,
+                )
+            }?;
             self.complete_required_relational_row_checkpoint("SQL commit")?;
             if summary.relational_mutation_outcomes.len() > 1 {
                 return Err(HawDBError::StorageIntegrity(
@@ -477,7 +534,7 @@ impl Database {
                     super::project_relational_mutation_outcome(
                         outcome,
                         compiled.returning.as_ref(),
-                        self.store.relational_state(),
+                        self.runtime.get()?.store.relational_state(),
                         self.config.mutation_limits,
                         false,
                     )
@@ -535,7 +592,15 @@ impl Database {
         options: &SlowQueryLogExportOptions,
     ) -> Result<()> {
         let jsonl = self.slow_query_log_jsonl_with_options(options)?;
-        let mut file = std::fs::File::create(path)?;
+        let mut options = hawdb_storage::file_io::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        // Export is engine IO even outside the project directory. Use the
+        // source domain without admitting a deferred data runtime, and reserve
+        // capacity before opening or truncating the destination.
+        let mut file = match self.runtime.file_descriptor_context() {
+            Some(context) => context.open(&options, path.as_ref())?,
+            None => options.open(path)?,
+        };
         file.write_all(jsonl.as_bytes())?;
         Ok(())
     }
@@ -603,9 +668,14 @@ impl Database {
             }
             _ => {
                 let catalog_path = self.branch_catalog_path().ok();
+                let current = if matches!(statement, BranchSqlStatement::ShowCurrentBranch) {
+                    self.current_branch()?
+                } else {
+                    None
+                };
                 return execute_branch_sql_at_path(
                     catalog_path.as_deref(),
-                    self.current_branch().as_ref(),
+                    current.as_ref(),
                     "mutable database",
                     statement,
                     parameters,

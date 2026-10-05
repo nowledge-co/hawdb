@@ -344,7 +344,7 @@ fn knowledge_relationship_update_rejects_invalid_identifiers() {
     assert!(error
         .to_string()
         .contains("relationship property identifier"));
-    assert_eq!(db.store.commit_epoch(), 1);
+    assert_eq!(db.runtime.get().unwrap().store.commit_epoch(), 1);
 }
 
 #[test]
@@ -370,7 +370,7 @@ fn knowledge_relationship_update_rejects_empty_assignments() {
         .unwrap_err();
 
     assert!(error.to_string().contains("at least one assignment"));
-    assert_eq!(db.store.commit_epoch(), 1);
+    assert_eq!(db.runtime.get().unwrap().store.commit_epoch(), 1);
 }
 
 #[test]

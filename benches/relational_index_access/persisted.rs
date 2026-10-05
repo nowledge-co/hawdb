@@ -166,7 +166,7 @@ fn measure_path(
     )
     .expect("reopen persisted access fixture");
     let open_nanos = started.elapsed().as_nanos();
-    let read = database.begin_read_transaction();
+    let read = database.begin_read_transaction().unwrap();
     let (column, parameter) = shape.predicate(indexed);
     let sql = format!("SELECT id, body FROM access_rows WHERE {column} = $1");
     let operator = if !indexed {

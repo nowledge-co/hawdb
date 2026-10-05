@@ -326,8 +326,9 @@ pub fn run_mixed_soak(config: &MixedSoakConfig) -> Result<MixedSoakReport, Mixed
     let database = HawDBTokioEmbedded::open_owned(options).map_err(error)?;
     let start_process = ProcessMemorySnapshot::capture().map_err(error)?;
     let runtime_before = database.runtime_snapshot();
-    let storage_before =
-        database.with_embedded(|embedded| embedded.database().storage_residency_report());
+    let storage_before = database
+        .with_embedded(|embedded| embedded.database().storage_residency_report())
+        .map_err(error)?;
 
     let runtime = database.runtime().clone();
     let workload_database = database.clone();
@@ -345,6 +346,8 @@ pub fn run_mixed_soak(config: &MixedSoakConfig) -> Result<MixedSoakReport, Mixed
             embedded.database().commit_epoch(),
         )
     });
+    let storage_after = storage_after.map_err(error)?;
+    let final_epoch = final_epoch.map_err(error)?;
     let foreground = aggregate_execution(&outcomes.foreground_durations, &outcomes.foreground);
     let background = aggregate_execution(&outcomes.background_durations, &outcomes.background);
     let runtime = runtime_report(runtime_before, runtime_after);
@@ -673,8 +676,11 @@ fn prepare_fixture(
         fingerprint.update(payload.as_bytes());
     }
     embedded.database_mut().checkpoint().map_err(error)?;
-    let report = embedded.database().storage_residency_report();
-    let epoch = embedded.database().commit_epoch();
+    let report = embedded
+        .database()
+        .storage_residency_report()
+        .map_err(error)?;
+    let epoch = embedded.database().commit_epoch().map_err(error)?;
     Ok((report, epoch, fingerprint.finish()))
 }
 

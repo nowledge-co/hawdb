@@ -23,15 +23,12 @@ use hawdb::{
     Database, HawDBError, ProcessMemoryProfile, ProcessMemorySnapshot, QueryStreamOptions, Result,
     RuntimeMemorySnapshot, Value,
 };
-use std::collections::BTreeMap;
-use std::path::Path;
 use std::time::Instant;
 
 pub(super) struct ContentStoreResourceProbeConfig<'a> {
     pub(super) profile_kind: ContentStoreResourceProfileKind,
     pub(super) configured_available_memory_bytes: u64,
     pub(super) read_samples: usize,
-    pub(super) database_path: &'a Path,
     pub(super) database_config: &'a hawdb::DatabaseConfig,
     pub(super) message_position: usize,
     pub(super) message_payload_bytes: usize,
@@ -84,8 +81,8 @@ pub(super) fn qualify_content_store_resources(
         output_payload_bytes = output.payload_bytes();
     }
 
-    let files_before = regular_file_bytes_by_name(config.database_path)?;
-    let wal_before = database.storage_pressure_snapshot().wal_bytes;
+    let files_before = database.storage_artifact_file_sizes()?;
+    let wal_before = database.storage_pressure_snapshot()?.wal_bytes;
     let message = corpus_statement(corpus, "upsert_thread_message")?;
     let mutation_parameters = thread_message_parameters(
         config.message_position,
@@ -96,7 +93,7 @@ pub(super) fn qualify_content_store_resources(
     let mutation_started = Instant::now();
     database.query_sql_with_params(&message.sql, &mutation_parameters)?;
     let mutation_latency_micros = elapsed_micros(mutation_started);
-    let wal_after = database.storage_pressure_snapshot().wal_bytes;
+    let wal_after = database.storage_pressure_snapshot()?.wal_bytes;
     let wal_append_bytes = wal_after.checked_sub(wal_before).ok_or_else(|| {
         HawDBError::Execution(format!(
             "content-store resource probe observed WAL bytes decrease from {wal_before} to {wal_after} before checkpoint"
@@ -111,7 +108,7 @@ pub(super) fn qualify_content_store_resources(
     let checkpoint_started = Instant::now();
     database.checkpoint()?;
     let checkpoint_latency_micros = elapsed_micros(checkpoint_started);
-    let files_after = regular_file_bytes_by_name(config.database_path)?;
+    let files_after = database.storage_artifact_file_sizes()?;
     let new_generation_artifact_bytes = files_after
         .iter()
         .filter(|(name, _)| !files_before.contains_key(*name))
@@ -197,23 +194,6 @@ fn value_payload_bytes(value: &Value) -> u64 {
                 .saturating_add(value_payload_bytes(value))
         }),
     }
-}
-
-pub(super) fn regular_file_bytes_by_name(path: &Path) -> Result<BTreeMap<String, u64>> {
-    let mut files = BTreeMap::new();
-    for entry in std::fs::read_dir(path)? {
-        let entry = entry?;
-        let metadata = entry.metadata()?;
-        if metadata.is_file() {
-            let name = entry.file_name().into_string().map_err(|_| {
-                HawDBError::Execution(
-                    "content-store resource probe found a non-UTF-8 artifact name".to_string(),
-                )
-            })?;
-            files.insert(name, metadata.len());
-        }
-    }
-    Ok(files)
 }
 
 pub(super) fn process_evidence(

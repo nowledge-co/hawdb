@@ -50,7 +50,7 @@ fn writes_parameters_traversal_and_error_recovery_share_one_database() {
         Some(&Value::String("Browser".into()))
     );
 
-    let mut transaction = db.begin_transaction();
+    let mut transaction = db.begin_transaction().unwrap();
     transaction.query("CREATE (:Memory {id: 99})").unwrap();
     transaction.rollback();
     assert!(db
@@ -58,7 +58,7 @@ fn writes_parameters_traversal_and_error_recovery_share_one_database() {
         .unwrap()
         .rows
         .is_empty());
-    let mut transaction = db.begin_transaction();
+    let mut transaction = db.begin_transaction().unwrap();
     transaction.query("CREATE (:Memory {id: 100})").unwrap();
     transaction.commit().unwrap();
     assert_eq!(

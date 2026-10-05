@@ -61,7 +61,7 @@ fn context_memory_title_preview_uses_one_fixed_bounded_query() {
     db.query("CREATE (:Memory {id: 'other', unit_type: 'other', is_latest: true, is_crystal: false, created_at: 5000})")
         .unwrap();
     let parameters = context_preview_parameters(2);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     db.query("CREATE (:Memory {id: 'late', unit_type: 'context-preview', is_latest: true, is_crystal: false, created_at: 6000})")
         .unwrap();
@@ -99,7 +99,7 @@ fn context_memory_label_preview_uses_distinct_fixed_query_shape() {
     )
     .unwrap();
     let parameters = context_preview_parameters(1);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     let output = snapshot
         .query_with_params_bounded(CONTEXT_MEMORY_LABEL_PREVIEW_QUERY, &parameters, Some(1))

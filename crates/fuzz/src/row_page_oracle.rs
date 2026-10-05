@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use hawdb::{
-    Database, DatabaseConfig, DatabaseReadTransaction, QueryOutput, RelationalIndexMode,
-    RelationalRowPageCompactionConfig, StorageResidencyMode, Value,
+    BranchSelector, Database, DatabaseConfig, DatabaseReadTransaction, QueryOutput,
+    RelationalIndexMode, RelationalRowPageCompactionConfig, StorageResidencyMode, Value,
 };
 use serde_json::{json, Value as JsonValue};
 use std::collections::BTreeMap;
@@ -81,11 +81,13 @@ fn run_case(path: &Path, seed: u64) -> Result<JsonValue, Box<dyn Error>> {
         ..Default::default()
     };
     let mut db = Database::open_with_config(path, config.clone())?;
+    let main = db.describe_branch(BranchSelector::Name("main".into()))?;
+    let data_directory = path.join("branches").join(main.id.to_string()).join("data");
     let mut state = seed.wrapping_add(1);
     let mut relocated_pages = 0;
     let mut mutation_counts = [0usize; 3];
     for cycle in 0..2 {
-        let pinned = db.begin_read_transaction();
+        let pinned = db.begin_read_transaction()?;
         let pinned_model = model.clone();
         // A shrinking hot set guarantees sparse generations, independently of
         // the later random row mutations and inline/overflow choices.
@@ -138,7 +140,7 @@ fn run_case(path: &Path, seed: u64) -> Result<JsonValue, Box<dyn Error>> {
                 verify_pinned(&pinned, &pinned_model)?;
             }
         }
-        let before = db.storage_residency_report().relational_rows;
+        let before = db.storage_residency_report()?.relational_rows;
         let mut bounded = RelationalRowPageCompactionConfig::default();
         bounded.rewrite.max_live_ratio_percent = 100;
         bounded.rewrite.max_rewrite_bytes = NonZeroU64::new(1).unwrap();
@@ -146,7 +148,7 @@ fn run_case(path: &Path, seed: u64) -> Result<JsonValue, Box<dyn Error>> {
             return Err("rewrite byte limit unexpectedly succeeded".into());
         }
         if db
-            .storage_residency_report()
+            .storage_residency_report()?
             .relational_rows
             .base_generation
             != before.base_generation
@@ -164,9 +166,10 @@ fn run_case(path: &Path, seed: u64) -> Result<JsonValue, Box<dyn Error>> {
         db.scrub_storage()?;
         drop(pinned);
         db.checkpoint()?;
-        let allocation = db.storage_residency_report().relational_rows;
-        let physical_bytes =
-            fs::read_dir(path)?.try_fold(0u64, |bytes, entry| -> std::io::Result<u64> {
+        let allocation = db.storage_residency_report()?.relational_rows;
+        let physical_bytes = fs::read_dir(&data_directory)?.try_fold(
+            0u64,
+            |bytes, entry| -> std::io::Result<u64> {
                 let entry = entry?;
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
@@ -177,7 +180,8 @@ fn run_case(path: &Path, seed: u64) -> Result<JsonValue, Box<dyn Error>> {
                     } else {
                         0
                     })
-            })?;
+            },
+        )?;
         if physical_bytes != allocation.live_page_bytes {
             return Err(format!(
                 "reclaimed {physical_bytes} bytes, live {}",

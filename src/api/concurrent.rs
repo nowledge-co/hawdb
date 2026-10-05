@@ -258,13 +258,13 @@ impl ConcurrentDatabase {
     /// Returns the generation-pinned storage residency view without scanning
     /// candidate artifacts or materializing rows.
     pub fn storage_residency_report(&self) -> Result<crate::store::StorageResidencyReport> {
-        Ok(self.inner.commits.lock()?.storage_residency_report())
+        self.inner.commits.lock()?.storage_residency_report()
     }
 
     /// Returns the recovery boundary observed by the currently published
     /// database handle.
     pub fn storage_recovery_report(&self) -> Result<StorageRecoveryReport> {
-        Ok(self.inner.commits.lock()?.storage_recovery_report())
+        self.inner.commits.lock()?.storage_recovery_report()
     }
 
     /// Pins the last completed publication while a writer or group sync is active.
@@ -283,7 +283,13 @@ impl ConcurrentDatabase {
         let source = self.inner.commits.lock()?.checkpoint_source()?;
         let prepared = source.prepare()?;
         let Some(prepared) = prepared else {
-            self.inner.commits.lock()?.store.reclaim_version_history();
+            self.inner
+                .commits
+                .lock()?
+                .runtime
+                .get_mut()?
+                .store
+                .reclaim_version_history();
             return Ok(());
         };
         self.inner
@@ -298,14 +304,14 @@ impl ConcurrentDatabase {
     ) -> Result<ConcurrentDatabaseTransaction> {
         let transaction_id = self.inner.transaction_ids.allocate()?;
         let database = self.inner.commits.lock()?;
-        let base_commit_epoch = database.commit_epoch();
+        let base_commit_epoch = database.commit_epoch()?;
         Ok(ConcurrentDatabaseTransaction {
             inner: Arc::clone(&self.inner),
             transaction_id,
             base_commit_epoch,
             options,
-            runtime: DatabaseTransactionRuntime::from_database(&database),
-            state: DatabaseTransactionState::from_database(&database),
+            runtime: DatabaseTransactionRuntime::from_database(&database)?,
+            state: DatabaseTransactionState::from_database(&database)?,
             successful_statements: 0,
             abort_reason: None,
             finished: false,
@@ -412,20 +418,25 @@ impl ConcurrentDatabase {
         parameters: &[Value],
     ) -> Result<QueryOutput> {
         let started = Instant::now();
-        let view = self.inner.commits.read_view()?;
-        let prepared = view
-            .snapshot
-            .0
-            .relational_plan_template_cache
-            .prepare(sql_text)?;
-        if let SqlStatement::Branch(crate::sql::BranchSqlStatement::UseBranch(_)) =
-            prepared.statement()
-        {
-            return Err(HawDBError::BranchCommandUnsupported {
-                command: "USE BRANCH",
-                context: "shared concurrent runtime",
+        let prepared = self.inner.commits.prepare_sql(sql_text)?;
+        if let SqlStatement::Branch(statement) = prepared.statement() {
+            if matches!(statement, crate::sql::BranchSqlStatement::UseBranch(_)) {
+                return Err(HawDBError::BranchCommandUnsupported {
+                    command: "USE BRANCH",
+                    context: "shared concurrent runtime",
+                });
+            }
+            // Catalog statements have no schema/data dependency. Keep them
+            // usable while the default branch is busy or requires repair.
+            #[cfg(test)]
+            if !statement.changes_context_or_catalog() {
+                self.wait_after_autocommit_read_snapshot()?;
+            }
+            return self.with_autocommit_exclusive(|database| {
+                database.query_sql_with_prepared_params(sql_text, parameters, prepared)
             });
         }
+        let view = self.inner.commits.read_view()?;
         if !sql_statement_uses_snapshot(prepared.statement()) {
             drop(view);
             return self.with_autocommit_exclusive(move |database| {
@@ -777,12 +788,12 @@ impl ConcurrentDatabaseTransaction {
                 return Err(error);
             }
         };
-        let current_epoch = database.commit_epoch();
+        let current_epoch = database.commit_epoch()?;
         if current_epoch != self.base_commit_epoch && !requests_already_covered {
             if self.successful_statements == 0 {
                 self.base_commit_epoch = current_epoch;
-                self.runtime = DatabaseTransactionRuntime::from_database(&database);
-                self.state = DatabaseTransactionState::from_database(&database);
+                self.runtime = DatabaseTransactionRuntime::from_database(&database)?;
+                self.state = DatabaseTransactionState::from_database(&database)?;
             } else {
                 let error = HawDBError::Execution(format!(
                     "pessimistic transaction {} cannot acquire a new lock after its snapshot changed from commit epoch {} to {}; retry the transaction",
@@ -830,7 +841,7 @@ impl ConcurrentDatabaseTransaction {
                 return Err(error);
             }
         };
-        let current_epoch = database.commit_epoch();
+        let current_epoch = database.commit_epoch()?;
         if current_epoch != self.base_commit_epoch && !requests_already_covered {
             // The requests were derived by executing the statement against the
             // pinned snapshot. Refreshing here could change the matched graph
@@ -1778,7 +1789,7 @@ mod tests {
                 }],
             })
             .expect("create append table");
-        let before = database.commit_epoch();
+        let before = database.commit_epoch().unwrap();
         let database = ConcurrentDatabase::new(database);
 
         database

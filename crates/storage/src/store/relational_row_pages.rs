@@ -299,7 +299,7 @@ impl GraphStore {
         }
         let checkpoint_generation = durable.checkpoint_epoch;
         let checkpoint_commit_epoch = durable.checkpoint_commit_epoch;
-        let read_only = durable.read_only;
+        let read_only = !durable.recovery_artifact_writes_allowed;
         let root = durable.root_path().to_path_buf();
         let delta_config = self.relational_row_pages.delta_config;
         let overflow_root = Arc::new(durable.open_bound_relational_overflow()?);
@@ -734,11 +734,12 @@ impl GraphStore {
         recovered_commit_epoch: u64,
         reason: impl Into<String>,
     ) {
-        if self.relational_row_pages.recovery_builder.is_some() {
-            self.mark_relational_row_page_recovery_unavailable(
-                recovered_commit_epoch,
-                reason.into(),
-            );
+        if self.relational_row_pages.recovery_builder.is_some()
+            || self.relational_row_pages.read_view.is_some()
+        {
+            // Whole-snapshot WAL replaces both schema and rows. A live read
+            // view cannot advance with an empty delta over the old tables.
+            self.mark_relational_row_page_unavailable(recovered_commit_epoch, true, reason.into());
         }
     }
 

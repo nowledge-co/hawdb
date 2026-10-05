@@ -83,7 +83,7 @@ fn community_cleanup_without_candidates_does_not_write_wal() {
     let wal_before = read_test_wal(&path).unwrap();
     {
         let mut db = Database::open(&path).unwrap();
-        let graph_commit_epoch_before = db.store.commit_epoch();
+        let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
         let output = db
             .delete_knowledge_communities(&KnowledgeCommunityCleanupRequest { detach: true })
             .unwrap();

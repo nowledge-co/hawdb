@@ -492,8 +492,8 @@ impl HawDBTokioEmbedded {
                 let embedded = lock_embedded(&embedded);
                 let database = embedded.database();
                 (
-                    database.runtime_planning_snapshot(),
-                    database.begin_read_transaction(),
+                    database.runtime_planning_snapshot()?,
+                    database.begin_read_transaction()?,
                 )
             };
             let prepared = input.prepare_for_execution(&planning, &admission, &task_context)?;
@@ -569,7 +569,7 @@ impl HawDBTokioEmbedded {
                 move |context| {
                     let planning = lock_embedded(&embedded)
                         .database()
-                        .runtime_planning_snapshot();
+                        .runtime_planning_snapshot()?;
                     // Only this fixed-size descriptor may outlive the planning permit.
                     // Parsed and optimized state is dropped before the operation returns.
                     context.checkpoint().map_err(|reason| {
@@ -612,11 +612,11 @@ impl HawDBTokioEmbedded {
                         for _ in 0..MAX_MUTATION_PLANNING_ATTEMPTS {
                             let planning = lock_embedded(&embedded)
                                 .database()
-                                .runtime_planning_snapshot();
+                                .runtime_planning_snapshot()?;
                             let prepared =
                                 input.prepare_for_execution(&planning, &admission, task_context)?;
                             let mut embedded = lock_embedded(&embedded);
-                            if planning.is_current_for(embedded.database(), &prepared) {
+                            if planning.is_current_for(embedded.database(), &prepared)? {
                                 return embedded.database_mut().query_prepared_with_params_context(
                                     prepared,
                                     &input.parameters,
@@ -646,8 +646,8 @@ impl HawDBTokioEmbedded {
                             let embedded = lock_embedded(&embedded);
                             let database = embedded.database();
                             (
-                                database.runtime_planning_snapshot(),
-                                database.begin_read_transaction(),
+                                database.runtime_planning_snapshot()?,
+                                database.begin_read_transaction()?,
                             )
                         };
                         let prepared =

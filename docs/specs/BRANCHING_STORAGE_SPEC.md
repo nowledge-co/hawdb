@@ -1,17 +1,21 @@
 # Durable copy-on-write branching
 
 Status: active P0 implementation contract for [#774](https://github.com/nowledge-co/hawdb/issues/774).
-This specification defines planned behavior; it does not claim that branching is
-available. Earlier lifecycle-model results do not qualify the revised contract.
-Implementation and release qualification remain separate gates.
+This specification states the required behavior. Implemented lifecycle and
+project-opening paths have the bounded evidence recorded in
+[branch power-loss qualification](../BRANCH_POWER_LOSS_QUALIFICATION.md) and the
+[current lifecycle model](../tla/BRANCH_LIFECYCLE_PROOF.md). Those checks do not
+establish physical-device or Windows namespace persistence. Implementation and
+release qualification remain separate gates.
 
 ## Configurable durability decision (2026-09-29)
 
 Power-loss-safe transaction commits are the default (`SyncOnEveryWrite`). Hosts
 may explicitly select `SyncOnCheckpoint` for branch-local DDL/DML through typed
 Rust configuration. Branch metadata publication remains synchronously durable
-in both modes. Existing implementation and historical model evidence still
-require qualification; this document does not claim they pass.
+in both modes. The implementation evidence records successful POSIX fault-image
+recovery under stated synchronization assumptions. Platform and physical-device
+qualification gaps remain explicit.
 
 - After `create_branch()` returns success, the same branch UUID and name MUST
   survive power loss and restart. Branches persist until explicitly deleted;
@@ -79,7 +83,8 @@ implementation seams at this specification's introduction are:
 - `crates/storage/src/durability.rs`: synced file replacement uses rename plus
   parent-directory sync on Unix. Windows uses the pinned Rust atomic
   replacement path followed by flush of a counted write-capable publication
-  handle; ancestor-directory persistence remains unqualified.
+  handle and a counted directory-handle flush request. Directory and ancestor
+  flush failures propagate; Windows namespace persistence remains unqualified.
 
 Single-directory generation arithmetic MUST NOT authorize deletion of shared
 branch objects. Branch-aware storage stays unavailable until all paths that can
@@ -350,23 +355,37 @@ current revision before a nested fork. An unselected source is sealed from its
 head, immutable manifest, and complete private WAL under its UUID lease without
 materializing its dataset. A busy source fails without retargeting the caller.
 
-The ordinary opener still uses the legacy single-root path, and bootstrap,
-metadata-only project open, deferred default `main` admission, and automatic
-default-main selection on reopen remain #780 work. Background jobs currently
-prevent switching while Pending/Running/Failed so retryable work cannot be
-discarded. Completed outcomes and the job ID allocator stay with the host handle,
-so switching does not reuse old IDs. Independent job-owned branch pins are still
-required. Finite FD admission and complete
-power-loss qualification remain #819/#820 work. These implementation limits do
-not weaken the required project-opening, resource, or job-ownership contracts
-above and below.
-The storage-owned project selector codec and metadata admission seam now validate
-project/main identity without retaining branch descriptors or taking a writer
-lease. Main initialization reserves those UUIDs durably before catalog/head
-publication, reuses an existing development catalog's identity, and rejects
-conflicting or damaged bootstrap evidence. The facade's default opener has not
-yet switched to this seam; identity reservation does not publish the selector
-or prove that the complete default project-opening workflow is implemented.
+The ordinary opener recognizes published projects before opening a data store.
+It validates selector/catalog/main identity and retains only the finite project
+FD domain and deferred admission configuration. The first data query, snapshot,
+transaction, or data-state accessor recovers and validates main as one runtime
+bundle. Admission failures are returned as typed errors and remain retryable;
+there is no empty-store placeholder or cached failed admission. Catalog-only SQL
+and explicit selection of another branch do not implicitly admit main. A shared
+concurrent runtime rejects USE before data admission.
+
+Writable first open reserves project/main UUIDs, checkpoints the authoritative
+legacy state, publishes its immutable closure/private WAL/head/catalog, then
+publishes the project selector last under the legacy directory, main UUID, and
+catalog ownership boundaries. The old writer is invalidated before uncertain
+selector publication and released before returning the deferred project handle.
+An existing initial main must cover the exact legacy checkpoint and have an
+empty private WAL; stale or divergent development histories fail closed and are
+retained. Read-only legacy opens do not perform adoption. A published project's
+read-only open follows metadata admission and defers main recovery.
+
+Background jobs currently prevent switching while Pending/Running/Failed so
+retryable work cannot be discarded. Completed outcomes and the job ID allocator
+stay with the host handle; independent job-owned branch pins remain required.
+Complete engine FD qualification and deterministic power-loss qualification
+remain #819/#820 work. The default-open integration does not itself prove those
+contracts or all bootstrap publication-failure boundaries.
+
+Data-dependent Rust accessors, transaction creation, and snapshot creation now
+return Result because deferred admission can fail with busy, resource, recovery,
+or corruption errors. They never report a fabricated epoch/schema/empty view.
+Project metrics and runtime control setters do not trigger data admission.
+
 The SQL fixtures use default residency/index settings; existing authoritative
 index restrictions on live schema-changing transactions and DDL WAL admission
 remain fail-closed. Enabling branch selection does not bypass those restrictions.
@@ -419,10 +438,48 @@ generations and verified private suffix in one recovery pass, starting from
 the exact checkpoint LSN boundary. It rechecks the catalog
 after recovery before exposing the runtime. The legacy
 `open_from_branch_head` helper still copies a source directory and remains
-recovery-qualification-only. SQL session selection remains separate work;
-branch-local checkpoint/seal publication is described below. An automatic
-repair request for a private
-WAL currently fails closed until it has branch-aware repair publication.
+recovery-qualification-only. SQL session selection and branch-local
+checkpoint/seal publication use the admitted runtime described above.
+
+Strict recovery rejects incomplete private transactions. Explicitly configured
+`AutoRepairTornTail` can repair only an incomplete final private WAL record after
+recovery validates the immutable root and its sealed intervals. Immutable WAL
+intervals always use strict replay. Repair plans bind the exact branch head,
+UUID, active WAL generation/start, original file, and retained prefix. The plan's
+existing `manifest_*` identity fields bind the authoritative branch head rather
+than its disposable runtime manifest. The owning UUID lease remains held while
+the full damaged WAL is quarantined, a pending audit is synchronized, the tail
+is truncated and synchronized, and the applied audit is published. An interrupted
+repair resumes from matching evidence; strict recovery rejects pending audits.
+The published WAL prefix and immutable history cannot be truncated. Read-only
+admission never repairs, cleans abandoned checkpoint preparations, or creates a
+writable projection catalog. Project-level doctor operations target main;
+an exact UUID directory targets that branch. This tail-repair coverage does not
+replace the required lost-write/reordering power-loss qualification.
+
+Derived-artifact doctor plans use the same project descriptor domain and UUID
+lease as branch admission. They bind the catalog revision, exact published
+head, immutable manifest and complete private WAL. Canonical/schema/data
+dependencies and sealed WAL remain strictly validated; only the explicitly
+declared adjacency and property-projection artifact families may be unavailable
+during repair inspection. Planning cannot acknowledge a partial transaction.
+Before rebuilding, synchronize the original head/root/manifest/private WAL and
+the damaged derived-object bytes into the UUID's persistent doctor quarantine,
+then publish a pending audit. Rebuild through an ordinary branch checkpoint
+using a new physical generation. Synchronize the exact target-head identity
+into that audit before switching the head. Retain the owning lease through
+publication validation and applied-audit completion.
+
+A local runtime manifest does not prove branch publication. If the source head
+remains selected, an interrupted repair archives its unpublished target files
+and rebuilds from the validated source; if the exact recorded target head is
+already selected and healthy, it finalizes the audit without advancing the head
+again. Pending or mismatched evidence blocks normal admission. Repair never
+overwrites a shared immutable object, including an existing corrupt hash path;
+such a collision still fails closed. Unopened sibling branches require no
+additional repair leases or data descriptors. A damaged sibling's older root
+remains unchanged and can be repaired explicitly through its UUID directory.
+These interruption checks do not qualify physical lost writes or reordering.
 
 Any ready branch can be a source, including one with committed DDL and DML.
 Capture schema and data at one committed source revision. A source revision
@@ -494,17 +551,18 @@ must distinguish maintenance failure from a definitely aborted transaction.
 
 ### Current implementation gaps
 
-The SQL lifecycle facade now selects explicitly initialized branches, executes
-branch-local DDL/DML, and forks an advanced child at its exact committed epoch.
-This is not yet the complete project-opening workflow above. The storage admission
-kernel directly recovers a ready target from its immutable root and
+The SQL lifecycle facade selects durable branches, executes branch-local DDL/DML,
+and forks an advanced child at its exact committed epoch. The ordinary opener now
+admits project metadata and defers main recovery as described above; interruption
+and power-loss qualification of that workflow remains incomplete. The storage
+admission kernel directly recovers a ready target from its immutable root and
 append-only private WAL without copying its parent directory. Its admitted
 `GraphStore` now routes ordinary commits to the private WAL, publishes a new
 head at checkpoint/seal boundaries, and can fork an advanced child from its
 exact sealed revision. Required work includes:
 
-- connecting metadata-only project admission to the ordinary opener, deferred
-  default-main admission, and authoritative bootstrap/reopen;
+- qualification of default metadata admission, deferred main recovery, and all
+  bootstrap interruption/publication-failure boundaries;
 - independent ownership for background jobs across session switches;
 - qualification of supported residency/index configurations, including existing
   authoritative-index restrictions on live DDL and schema-WAL replay;
@@ -701,7 +759,13 @@ The publication argument is an induction over the operation's checked stages:
    bytes and reference; it never replaces that path. Consequently, every
    successful destination names exactly one validated immutable payload, even
    when two publishers race.
-4. The object and staging directory entries are synchronized before success is
+4. Required ancestor names through the project root are synchronized before the
+   first dependent publication; writable project admission establishes the root's
+   own ancestry. Existence after an interrupted attempt is not a completed
+   barrier. Object reuse repeats its final name barrier before acknowledgment.
+   See [namespace qualification](../BRANCH_NAMESPACE_DURABILITY.md) for evidence
+   and the unqualified semantics of Windows directory-handle flushes.
+   The object and staging directory entries are synchronized before success is
    reported. An error after exclusive installation is publication-uncertain and
    poisons that in-memory publisher; reopening creates a fresh publisher which
    revalidates the existing object. Thus an uncertain result cannot be retried
@@ -1129,14 +1193,27 @@ Descriptor errors bypass corruption/rebuild fallback in
 the snapshot/segment admission paths. Ordinary unbound files do not allocate an
 immutable cache, and absolute-path domain lookup borrows the existing path.
 
-#819 remains open. Complete qualification must still audit filesystem operations
-outside the routed storage/projection operations, relative-path lookup scratch,
-cold existing-root alias resolution on Windows,
-data-dependent retained recovery/checkpoint handles, validation-read IO budgets,
-and resource failures at every acquisition/publication boundary. The legacy
-single-root opener, independent job pins, and the complete power-loss matrix
-also remain separate implementation obligations; the current accounting tests
-do not prove those requirements.
+Slow-query JSONL export also uses its source project's descriptor domain,
+including when the destination is outside that project. A deferred project
+handle can export its in-memory log without admitting the selected data runtime.
+Descriptor admission precedes destination creation or truncation, so exhaustion
+preserves an existing export without leaking descriptors or reservations.
+
+The combined P0 delivery includes the facade staging paths here, derived-artifact
+and search-cleanup admission in #839, and derived-recovery/pruned-range resource
+error preservation in #841. Its finite source audit reviews native ingress and
+handle/permit lifetimes alongside small-budget recovery, checkpoint, GC and
+selection regressions. The runtime power-loss matrix covers interrupted legacy
+adoption and default admission, lost/torn/reordered WAL, catalog/head/checkpoint
+publication and GC. See [the qualification record](../BRANCH_POWER_LOSS_QUALIFICATION.md)
+for executed cases, platform assumptions and limits; each companion PR targets
+`main` directly, and this paragraph does not imply those changes have merged.
+
+#819/#820 remain open for broader qualification, including native-library/host
+resources outside the engine domain, additional Windows alias and namespace
+fault schedules, physical-device evidence, independent job pins and finer
+concurrent GC. The source audit and current small-budget tests do not prove all
+possible native allocations or qualify every filesystem/platform.
 
 ## Sealing and create protocol
 
@@ -1393,15 +1470,16 @@ in the inventory/root snapshot before invoking this primitive.
 
 ## Model and implementation qualification
 
-The [previous model report](../tla/BRANCH_LIFECYCLE_PROOF.md) is superseded as
-qualification evidence for this contract. A revised model must cover persistent
-branches without expiry, multi-level forks, atomic schema/data publication,
-open-lock loss without branch loss, explicit deletion, and GC reachability.
-Model changes require rerunning positive invariants, negative controls, and
-reachability witnesses. Abstract atomic publication does not establish torn-write,
-write-reordering, OS-locking, or filesystem durability behavior; those require
-implementation-level power-loss fault injection. No revised-model result is
-claimed here.
+The [lifecycle model report](../tla/BRANCH_LIFECYCLE_PROOF.md) now describes
+persistent branches without expiry, multi-level forks, atomic schema/data
+publication, open-lock loss without branch loss, explicit deletion, and GC
+reachability. Model changes require positive invariants, negative controls and
+reachability witnesses. The current runtime corrections do not change that
+abstract protocol. Their [implementation qualification](../BRANCH_POWER_LOSS_QUALIFICATION.md)
+uses actual IO-driven lost/torn/reordered images and ordinary project recovery;
+it is neither a Rust-to-TLA refinement proof nor physical-device certification.
+Namespace and synchronization assumptions, executed coverage and remaining
+Windows/job/concurrent-GC gaps are recorded separately.
 
 Implementation delivery is specification -> catalog (#777) and immutable
 objects (#779) -> isolated branch opening (#780) -> lifecycle facade (#775)

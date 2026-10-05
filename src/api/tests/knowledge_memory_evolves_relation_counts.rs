@@ -64,7 +64,7 @@ fn memory_evolves_relation_counts_use_one_fixed_bounded_query() {
         ),
         ("limit".to_string(), Value::Int(2)),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     db.query("MATCH (m:Memory {id: 'decay-source-b'}), (n:Memory {id: 'decay-target-enrich'}) CREATE (m)-[:EVOLVES {content_relation: 'enriches'}]->(n)")
         .unwrap();
@@ -116,7 +116,7 @@ fn memory_evolves_relation_counts_respect_query_limit() {
         ),
         ("limit".to_string(), Value::Int(1)),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     let output = snapshot
         .query_with_params_bounded(MEMORY_EVOLVES_RELATION_COUNT_QUERY, &parameters, Some(1))

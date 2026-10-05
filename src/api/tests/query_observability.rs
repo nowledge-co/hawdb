@@ -957,7 +957,7 @@ fn read_transaction_cypher_explain_analyze_uses_snapshot() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'mem-read-explain-1', kind: 'note'})")
         .unwrap();
-    let mut read_tx = db.begin_read_transaction();
+    let mut read_tx = db.begin_read_transaction().unwrap();
     db.query("CREATE (:Memory {id: 'mem-read-explain-2', kind: 'note'})")
         .unwrap();
 
@@ -1021,7 +1021,7 @@ fn plan_cache_reuses_parameterized_physical_plan_template() {
         first.trace.selected_plan_fingerprint,
         second.trace.selected_plan_fingerprint
     );
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.entries, 1);
     assert_eq!(stats.hits, 1);
     assert_eq!(stats.misses, 1);
@@ -1130,7 +1130,7 @@ fn plan_cache_reuses_keyword_case_and_whitespace_variants() {
 
     assert_eq!(first.plan_cache_lookup, PlanCacheLookup::Miss);
     assert_eq!(second.plan_cache_lookup, PlanCacheLookup::Hit);
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.entries, 1);
     assert_eq!(stats.hits, 1);
     assert_eq!(stats.misses, 1);
@@ -1162,7 +1162,7 @@ fn plan_cache_keeps_inline_literal_values_distinct() {
         second.rows[0].get("title"),
         Some(&Value::String("Second".to_string()))
     );
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.entries, 2);
     assert_eq!(stats.hits, 0);
     assert_eq!(stats.misses, 2);
@@ -1226,7 +1226,7 @@ fn plan_cache_rebinds_equality_parameters_without_reoptimizing() {
         second.rows[0].get("title"),
         Some(&Value::String("Second".to_string()))
     );
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.misses, 1);
     assert_eq!(stats.hits, 1);
     assert_eq!(stats.entries, 1);
@@ -1268,7 +1268,7 @@ fn plan_cache_rebinds_in_list_parameters_with_the_same_shape() {
         second.rows[0].get("title"),
         Some(&Value::String("Second".to_string()))
     );
-    assert_eq!(db.plan_cache_stats().hits, 1);
+    assert_eq!(db.plan_cache_stats().unwrap().hits, 1);
 }
 
 #[test]
@@ -1381,7 +1381,7 @@ fn pagination_parameters_keep_distinct_plan_variants() {
 
     assert_eq!(first.plan_cache_lookup, PlanCacheLookup::Miss);
     assert_eq!(second.plan_cache_lookup, PlanCacheLookup::Miss);
-    assert_eq!(db.plan_cache_stats().entries, 2);
+    assert_eq!(db.plan_cache_stats().unwrap().entries, 2);
 }
 
 #[test]
@@ -1475,14 +1475,14 @@ fn sql_system_table_queries_do_not_use_plan_cache() {
 
     db.explain_query(query).unwrap();
     db.explain_query(query).unwrap();
-    let before = db.plan_cache_stats();
+    let before = db.plan_cache_stats().unwrap();
 
     db.query_sql("SELECT * FROM system.plan_cache").unwrap();
     db.query_sql("SELECT * FROM system.slow_queries").unwrap();
     db.query_sql("SELECT * FROM system.statement_summary")
         .unwrap();
 
-    let after = db.plan_cache_stats();
+    let after = db.plan_cache_stats().unwrap();
     assert_eq!(after, before);
 }
 
@@ -1663,7 +1663,7 @@ fn read_transaction_sql_reads_slow_query_snapshot() {
 
     db.query("CREATE (:Memory {id: 'before-read-tx', title: 'Before'})")
         .unwrap();
-    let read_tx = db.begin_read_transaction();
+    let read_tx = db.begin_read_transaction().unwrap();
     db.query("CREATE (:Memory {id: 'after-read-tx', title: 'After'})")
         .unwrap();
 
@@ -1801,7 +1801,7 @@ fn plan_cache_misses_after_graph_commit_epoch_changes() {
         .iter()
         .any(|decision| decision
             == "plan cache miss: optimized parameterized physical plan template"));
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.hits, 1);
     assert_eq!(stats.misses, 2);
     assert_eq!(stats.admissions, 2);
@@ -1854,7 +1854,7 @@ fn plan_cache_misses_after_index_descriptor_changes() {
         .selected_plan
         .contains("IndexNodeRangeSeek"));
     assert!(!after_index.trace.selected_plan.contains("SeqNodeScan"));
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.hits, 1);
     assert_eq!(stats.misses, 2);
     assert_eq!(stats.admissions, 2);
@@ -1894,7 +1894,7 @@ fn plan_cache_evicts_least_frequently_used_plan() {
         .iter()
         .any(|decision| decision
             == "plan cache miss: optimized parameterized physical plan template"));
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.entries, 2);
     assert_eq!(stats.hits, 2);
     assert_eq!(stats.misses, 4);
@@ -1930,7 +1930,7 @@ fn plan_cache_can_be_disabled_with_zero_capacity() {
         .iter()
         .any(|decision| decision
             == "plan cache miss: optimized parameterized physical plan template"));
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.max_entries, Some(0));
     assert_eq!(stats.entries, 0);
     assert_eq!(stats.hits, 0);
@@ -1962,7 +1962,7 @@ fn plan_cache_records_bypassed_mutation_explain_separately() {
         .decisions
         .iter()
         .any(|decision| decision == "plan cache bypass: statement_not_cacheable"));
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.entries, 0);
     assert_eq!(stats.hits, 0);
     assert_eq!(stats.misses, 0);
@@ -2191,7 +2191,7 @@ fn pipeline_plan_cache_bypasses_vector_procedure() {
             PlanCacheLookup::Bypass(PlanCacheBypassReason::StatementNotCacheable)
         );
     }
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.entries, 0);
     assert_eq!(stats.misses, 0);
     assert_eq!(stats.hits, 0);
@@ -2221,5 +2221,5 @@ fn pipeline_plan_cache_reuses_reads_with_fresh_parameters() {
             vec![BTreeMap::from([("id".to_string(), Value::Int(id))])]
         );
     }
-    assert_eq!(db.plan_cache_stats().entries, 2);
+    assert_eq!(db.plan_cache_stats().unwrap().entries, 2);
 }

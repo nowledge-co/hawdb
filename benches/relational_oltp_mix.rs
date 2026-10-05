@@ -109,7 +109,7 @@ fn main() {
             let order = MESSAGES_PER_THREAD + inserted;
             inserted += 1;
             let start = Instant::now();
-            let mut transaction = db.begin_transaction();
+            let mut transaction = db.begin_transaction().unwrap();
             transaction
                 .query_sql_with_params(
                     "INSERT INTO thread_messages (content_message_id, message_id, \
@@ -123,7 +123,7 @@ fn main() {
             inserts.push(start.elapsed().as_nanos() as u64);
         } else {
             let start = Instant::now();
-            let mut transaction = db.begin_transaction();
+            let mut transaction = db.begin_transaction().unwrap();
             transaction
                 .query_sql_with_params(
                     "UPDATE thread_messages SET content = $2, updated_at = $3 \
@@ -223,7 +223,7 @@ fn benchmark_thread_read_suite(db: &Database) -> serde_json::Value {
     let mut page_plan = None;
 
     for sample in 0..BUSINESS_READ_SAMPLES {
-        let read = db.begin_read_transaction();
+        let read = db.begin_read_transaction().unwrap();
 
         let started = Instant::now();
         let lookup = read
@@ -391,7 +391,7 @@ fn profile_json(profile: &RelationalSqlReadProfile) -> serde_json::Value {
 
 fn load(db: &mut Database) {
     for thread in 0..THREADS {
-        let mut transaction = db.begin_transaction();
+        let mut transaction = db.begin_transaction().unwrap();
         transaction
             .query_sql_with_params(
                 "INSERT INTO content_documents (content_doc_id, owner_kind, owner_id, \
@@ -409,7 +409,7 @@ fn load(db: &mut Database) {
     }
     let total = THREADS * MESSAGES_PER_THREAD;
     for batch in (0..total).step_by(LOAD_BATCH) {
-        let mut transaction = db.begin_transaction();
+        let mut transaction = db.begin_transaction().unwrap();
         for index in batch..(batch + LOAD_BATCH).min(total) {
             let thread = index % THREADS;
             let order = index / THREADS;

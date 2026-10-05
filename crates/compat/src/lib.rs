@@ -1091,7 +1091,7 @@ fn run_projected_graph_check(
     fixture: &CompatibilityFixture,
     check: &ProjectedGraphFixtureCheck,
 ) -> Result<ProjectedGraphShadowOutput> {
-    let graph = db.project_graph(check.rel_type.as_deref());
+    let graph = db.project_graph(check.rel_type.as_deref())?;
     let output = projected_graph_shadow_output(&graph, check);
     assert_projected_graph_matches_fixture(fixture, check, &output)?;
     Ok(output)

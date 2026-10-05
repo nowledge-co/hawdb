@@ -60,12 +60,13 @@ fn retrieval_facades_return_capability_errors_before_pipeline_admission() {
         ..DatabaseConfig::default()
     });
     let index = disabled_index();
-    let epoch = db.commit_epoch();
+    let epoch = db.commit_epoch().unwrap();
     for mode in [SearchMode::Text, SearchMode::Vector, SearchMode::Hybrid] {
         let request = request(mode);
         unavailable(db.retrieve_knowledge(&index, &request), mode);
         unavailable(
             db.begin_read_transaction()
+                .unwrap()
                 .retrieve_knowledge(&index, &request),
             mode,
         );
@@ -74,7 +75,7 @@ fn retrieval_facades_return_capability_errors_before_pipeline_admission() {
             mode,
         );
     }
-    assert_eq!(db.commit_epoch(), epoch);
+    assert_eq!(db.commit_epoch().unwrap(), epoch);
 }
 
 #[test]
@@ -129,7 +130,7 @@ fn embedded_store_and_handle_propagate_errors_and_release_admission() {
         unavailable(store.retrieve_knowledge(&request(mode)), mode);
         unavailable(store.retrieve_knowledge_with_report(&request(mode)), mode);
     }
-    let handle = NowledgeMemEmbeddedStoreHandle::new(store);
+    let handle = NowledgeMemEmbeddedStoreHandle::new(store).unwrap();
     for mode in [SearchMode::Text, SearchMode::Vector, SearchMode::Hybrid] {
         let mut candidate = NowledgeMemSearchCandidateRequest::text("graph", 5);
         candidate.mode = mode;
@@ -188,6 +189,7 @@ fn retrieval_facades_propagate_pipeline_errors_after_successful_search() {
     );
     assert_eq!(
         db.begin_read_transaction()
+            .unwrap()
             .retrieve_knowledge(&index, &request)
             .unwrap_err(),
         expected
@@ -215,6 +217,7 @@ fn enabled_facades_preserve_complete_results_and_reports() {
         assert_eq!(db.retrieve_knowledge(&index, &request).unwrap(), expected);
         assert_eq!(
             db.begin_read_transaction()
+                .unwrap()
                 .retrieve_knowledge(&index, &request)
                 .unwrap(),
             expected

@@ -131,9 +131,9 @@ use crate::file_io as fs;
 pub use backup::restore_storage_backup;
 use backup::{remove_source_scan_artifacts, validate_backup_files};
 pub use derived_repair::{
-    DerivedArtifactHealth, DerivedArtifactHealthReport, DerivedArtifactHealthState,
-    DerivedArtifactKind, DerivedArtifactRebuildOptions, DerivedArtifactRepairPlan,
-    DerivedArtifactRepairReport, DERIVED_ARTIFACT_REPAIR_PROTOCOL,
+    DerivedArtifactBranchSource, DerivedArtifactHealth, DerivedArtifactHealthReport,
+    DerivedArtifactHealthState, DerivedArtifactKind, DerivedArtifactRebuildOptions,
+    DerivedArtifactRepairPlan, DerivedArtifactRepairReport, DERIVED_ARTIFACT_REPAIR_PROTOCOL,
 };
 pub use doctor::{
     DatabaseDoctor, WalDoctorOptions, WalRepairAcknowledgement, WalTailRepairPlan,
@@ -387,6 +387,7 @@ pub enum CheckpointPublishStage {
     CheckpointPersisted,
     WalPrepared,
     ManifestPublished,
+    BranchHeadPublished,
 }
 
 #[doc(hidden)]
@@ -437,6 +438,9 @@ fn checkpoint_publish_failpoint(stage: CheckpointPublishStage) -> Result<()> {
             process_crash_failpoint("after_manifest_publication");
         }
         CheckpointPublishStage::WalPrepared => {}
+        CheckpointPublishStage::BranchHeadPublished => {
+            process_crash_failpoint("after_branch_head_publication");
+        }
     }
     #[cfg(any(test, feature = "test-support"))]
     if CHECKPOINT_FAILPOINT.with(|failpoint| failpoint.get()) == Some(stage) {
@@ -1807,15 +1811,53 @@ impl GraphStore {
 
     fn open_for_derived_repair(
         path: &Path,
-        replay_config: WalReplayConfig,
-    ) -> Result<(Self, Catalog, Catalog)> {
+        mut replay_config: WalReplayConfig,
+    ) -> Result<(Self, Catalog)> {
         if replay_config.recovery_mode != RecoveryMode::Strict {
             return Err(HawDBError::Storage(
                 "derived repair requires strict WAL replay".to_string(),
             ));
         }
-        let _project_files =
-            crate::file_descriptors::ProjectFileDescriptors::acquire_component(path, false)?;
+        let directory = doctor::repair_directory(path)?;
+        let path = directory.as_path();
+        let project_files = doctor::repair_file_descriptors(path)?;
+        replay_config.max_open_files = project_files.metrics().limit;
+        if path
+            .parent()
+            .is_some_and(|parent| parent.file_name().is_some_and(|name| name == "branches"))
+        {
+            let id = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| HawDBError::StorageIntegrity("repair branch has no UUID".into()))?;
+            let branch_id = crate::branch_catalog::BranchId::parse(id)
+                .map_err(HawDBError::from_storage_error)?;
+            let catalog_path = path.parent().unwrap().join("catalog.hawdb");
+            let catalog = crate::branch_catalog::read_catalog(&catalog_path)?;
+            let record = catalog
+                .branches
+                .iter()
+                .find(|record| record.id == branch_id)
+                .ok_or_else(|| {
+                    HawDBError::StorageIntegrity("repair branch is absent from its catalog".into())
+                })?;
+            let head_path = path.join("branch.head");
+            let objects = path.parent().unwrap().join("objects");
+            return Self::admit_branch_for_derived_repair(BranchAdmissionRequest {
+                catalog_path: &catalog_path,
+                branch_id,
+                expected_metadata_revision: record.metadata_revision,
+                head_path: &head_path,
+                immutable_store_root: &objects,
+                durability: DurabilityPolicy::default(),
+                replay_config,
+            })
+            .map(|admitted| admitted.into_parts())
+            .map_err(|error| match error {
+                BranchAdmissionError::Recovery(error) => error,
+                error => HawDBError::from_storage_error(error),
+            });
+        }
         let total_open_started = std::time::Instant::now();
         let durable_manifest_open_started = std::time::Instant::now();
         let durable = DurableStore::open_for_derived_repair(
@@ -1829,7 +1871,7 @@ impl GraphStore {
         )?;
         let durable_manifest_open_micros = elapsed_micros(durable_manifest_open_started);
         let mut recovered_catalog = Catalog::default();
-        let (mut store, checkpoint_catalog) = Self::finish_open(
+        let (mut store, _) = Self::finish_open(
             durable,
             &mut recovered_catalog,
             replay_config,
@@ -1837,7 +1879,7 @@ impl GraphStore {
         )?;
         store.storage_recovery_report.open_timings.total_open_micros =
             elapsed_micros(total_open_started);
-        Ok((store, recovered_catalog, checkpoint_catalog))
+        Ok((store, recovered_catalog))
     }
 
     fn enable_derived_repair_writes(&mut self) -> Result<()> {
@@ -3286,7 +3328,7 @@ mod tests {
         let domain =
             crate::file_descriptors::ProjectFileDescriptors::acquire_existing(&path, 64).unwrap();
         drop(store);
-        let (repaired, _, _) =
+        let (repaired, _) =
             GraphStore::open_for_derived_repair(&path, WalReplayConfig::default()).unwrap();
         assert_eq!(repaired.file_descriptor_metrics().unwrap().limit, 64);
         assert!(matches!(
@@ -8711,7 +8753,10 @@ mod tests {
 
         let mut catalog = Catalog::default();
         let error = GraphStore::open(&path, &mut catalog).unwrap_err();
-        assert!(error.to_string().contains("missing the V1 format header"));
+        assert!(
+            error.to_string().contains("missing the V1 format header"),
+            "{error}"
+        );
         std::fs::remove_dir_all(path).unwrap();
     }
 

@@ -24,7 +24,7 @@ fn system_sql_exposes_pinned_catalog_snapshot() {
     db.query("CREATE INDEX ON :Memory(id)").unwrap();
     db.query("CREATE CONSTRAINT ON :Memory(id) ASSERT UNIQUE")
         .unwrap();
-    let read_tx = db.begin_read_transaction();
+    let read_tx = db.begin_read_transaction().unwrap();
 
     db.query("CREATE NODE LABEL Source").unwrap();
     db.query("CREATE NODE TABLE Source").unwrap();
@@ -108,7 +108,7 @@ fn schema_ddl_creates_catalog_tokens_idempotently() {
         first.rows[0].get("table_id"),
         second.rows[0].get("table_id")
     );
-    let tables = db.table_descriptors();
+    let tables = db.table_descriptors().unwrap();
     assert!(tables.iter().any(|table| {
         table.name == "Memory"
             && table.kind == TableKind::Node
@@ -134,7 +134,7 @@ fn schema_ddl_creates_catalog_tokens_idempotently() {
     );
     db.query("CREATE PROPERTY ON RELATIONSHIP TABLE MENTIONS(weight) TYPE INT")
         .unwrap();
-    let properties = db.property_descriptors();
+    let properties = db.property_descriptors().unwrap();
     assert!(properties.iter().any(|property| {
         property.name == "id" && property.value_type == PropertyType::Int && !property.nullable
     }));
@@ -152,6 +152,7 @@ fn schema_ddl_creates_catalog_tokens_idempotently() {
     );
     assert!(db
         .property_indexes()
+        .unwrap()
         .iter()
         .any(|index| index.property == "id"));
 
@@ -169,6 +170,7 @@ fn schema_ddl_creates_catalog_tokens_idempotently() {
     );
     assert!(db
         .composite_property_indexes()
+        .unwrap()
         .iter()
         .any(|index| index.properties == ["kind", "source_id"]));
 
@@ -180,7 +182,7 @@ fn schema_ddl_creates_catalog_tokens_idempotently() {
         first.rows[0].get("index_id"),
         second.rows[0].get("index_id")
     );
-    assert!(db.property_indexes().iter().any(|index| {
+    assert!(db.property_indexes().unwrap().iter().any(|index| {
         index.property == "title" && index.kind == crate::schema::IndexKind::FullText
     }));
 
@@ -198,6 +200,7 @@ fn schema_ddl_creates_catalog_tokens_idempotently() {
     );
     assert!(db
         .unique_constraints()
+        .unwrap()
         .iter()
         .any(|constraint| constraint.property == "id"));
 }
@@ -257,7 +260,7 @@ fn schema_ddl_replays_from_wal_without_data_rows() {
             .query("CREATE PROPERTY ON NODE TABLE Memory(id) TYPE INT NOT NULL")
             .unwrap();
         assert_eq!(property.rows[0].get("created"), Some(&Value::Bool(false)));
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "body" && property.value_type == PropertyType::Text
         }));
         let property = db
@@ -346,7 +349,7 @@ fn schema_ddl_survives_checkpoint_without_wal() {
             .query("CREATE PROPERTY ON NODE TABLE Memory(id) TYPE INT NOT NULL")
             .unwrap();
         assert_eq!(property.rows[0].get("created"), Some(&Value::Bool(false)));
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "body" && property.value_type == PropertyType::Text
         }));
         let property = db
@@ -413,10 +416,10 @@ fn schema_state_transitions_are_idempotent_and_persisted() {
 
     {
         let mut db = Database::open(&path).unwrap();
-        assert!(db.table_descriptors().iter().any(|table| {
+        assert!(db.table_descriptors().unwrap().iter().any(|table| {
             table.name == "Memory" && table.state == SchemaObjectState::WriteOnly
         }));
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "id" && property.state == SchemaObjectState::Backfill
         }));
         db.checkpoint().unwrap();
@@ -429,10 +432,10 @@ fn schema_state_transitions_are_idempotent_and_persisted() {
 
     {
         let db = Database::open(&path).unwrap();
-        assert!(db.table_descriptors().iter().any(|table| {
+        assert!(db.table_descriptors().unwrap().iter().any(|table| {
             table.name == "Memory" && table.state == SchemaObjectState::WriteOnly
         }));
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "id" && property.state == SchemaObjectState::Backfill
         }));
     }
@@ -455,7 +458,7 @@ fn non_public_property_schema_is_not_validated_until_public() {
             .query("ALTER PROPERTY ON NODE TABLE Memory(id) SET STATE PUBLIC")
             .unwrap_err();
         assert!(error.to_string().contains("property schema violation"));
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "id" && property.state == SchemaObjectState::Backfill
         }));
     }
@@ -465,7 +468,7 @@ fn non_public_property_schema_is_not_validated_until_public() {
     assert!(!wal.contains("public"));
     {
         let db = Database::open(&path).unwrap();
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "id" && property.state == SchemaObjectState::Backfill
         }));
     }
@@ -504,18 +507,19 @@ fn schema_maintenance_advances_backfill_and_validation_in_batch_wal() {
             output.rows[0].get("to_state"),
             Some(&Value::String("public".to_string()))
         );
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "id" && property.state == SchemaObjectState::Public
         }));
     }
 
     let wal = read_test_wal(&path).unwrap();
-    assert_eq!(wal.matches("\tbatch\t").count(), 6);
+    // Engine bootstrap is already checkpointed; count the private user WAL.
+    assert_eq!(wal.matches("\tbatch\t").count(), 5);
     assert!(wal.contains("alter_property_state,node,4d656d6f7279,6964,validating"));
     assert!(wal.contains("alter_property_state,node,4d656d6f7279,6964,public"));
     {
         let db = Database::open(&path).unwrap();
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "id" && property.state == SchemaObjectState::Public
         }));
     }
@@ -541,7 +545,7 @@ fn schema_maintenance_rejects_invalid_validation_before_wal() {
         assert!(error.to_string().contains("property schema violation"));
         let after = read_test_wal(&path).unwrap();
         assert_eq!(after, before);
-        assert!(db.table_descriptors().iter().any(|table| {
+        assert!(db.table_descriptors().unwrap().iter().any(|table| {
             table.name == "Memory" && table.state == SchemaObjectState::Validating
         }));
     }
@@ -562,7 +566,7 @@ fn schema_maintenance_plan_reports_pending_property_work_without_wal_write() {
             .unwrap();
         let before = read_test_wal(&path).unwrap();
 
-        let plan = db.plan_schema_maintenance();
+        let plan = db.plan_schema_maintenance().unwrap();
 
         assert_eq!(plan.rows.len(), 1);
         assert_eq!(
@@ -583,7 +587,7 @@ fn schema_maintenance_plan_reports_pending_property_work_without_wal_write() {
         );
         let after = read_test_wal(&path).unwrap();
         assert_eq!(after, before);
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "id" && property.state == SchemaObjectState::Backfill
         }));
     }
@@ -605,7 +609,7 @@ fn schema_maintenance_plan_estimates_relationship_table_validation_work() {
         db.query("ALTER RELATIONSHIP TABLE MENTIONS SET STATE VALIDATING")
             .unwrap();
 
-        let plan = db.plan_schema_maintenance();
+        let plan = db.plan_schema_maintenance().unwrap();
 
         assert_eq!(plan.rows.len(), 1);
         assert_eq!(
@@ -647,7 +651,7 @@ fn bounded_schema_maintenance_skips_work_that_exceeds_budget_without_wal_write()
         assert!(output.rows.is_empty());
         let after = read_test_wal(&path).unwrap();
         assert_eq!(after, before);
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "id" && property.state == SchemaObjectState::Backfill
         }));
     }
@@ -678,10 +682,10 @@ fn bounded_schema_maintenance_advances_descriptor_batches_incrementally() {
             first.rows[0].get("object"),
             Some(&Value::String("Memory.id".to_string()))
         );
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "id" && property.state == SchemaObjectState::Validating
         }));
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "title" && property.state == SchemaObjectState::Backfill
         }));
 
@@ -696,10 +700,10 @@ fn bounded_schema_maintenance_advances_descriptor_batches_incrementally() {
             second.rows[0].get("to_state"),
             Some(&Value::String("public".to_string()))
         );
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "id" && property.state == SchemaObjectState::Public
         }));
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "title" && property.state == SchemaObjectState::Backfill
         }));
 
@@ -710,7 +714,7 @@ fn bounded_schema_maintenance_advances_descriptor_batches_incrementally() {
             third.rows[0].get("object"),
             Some(&Value::String("Memory.title".to_string()))
         );
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "title" && property.state == SchemaObjectState::Validating
         }));
     }
@@ -723,6 +727,7 @@ fn schema_maintenance_background_work_plan_is_absent_without_pending_work() {
 
     assert!(db
         .schema_maintenance_background_work_plan(BackgroundWorkHint::default())
+        .unwrap()
         .is_none());
 }
 
@@ -745,6 +750,7 @@ fn schema_maintenance_background_work_plan_uses_pending_estimate_for_ranking() {
                 query_probability_per_million: 250_000,
                 ..BackgroundWorkHint::default()
             })
+            .unwrap()
             .unwrap();
 
         assert_eq!(plan.request.class, crate::WorkClass::Mutation);
@@ -787,7 +793,7 @@ fn background_schema_maintenance_defers_without_mutating_schema() {
         assert!(error.to_string().contains("deferred"));
         let after = read_test_wal(&path).unwrap();
         assert_eq!(after, before);
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "id" && property.state == SchemaObjectState::Backfill
         }));
 
@@ -826,7 +832,7 @@ fn planned_background_schema_maintenance_uses_pending_work_estimate() {
         assert!(error.to_string().contains("estimated operations 2"));
         let after = read_test_wal(&path).unwrap();
         assert_eq!(after, before);
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "id" && property.state == SchemaObjectState::Backfill
         }));
     }
@@ -863,10 +869,10 @@ fn bounded_background_schema_maintenance_limits_actual_execution() {
             output.rows[0].get("object"),
             Some(&Value::String("Memory.id".to_string()))
         );
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "id" && property.state == SchemaObjectState::Validating
         }));
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "title" && property.state == SchemaObjectState::Backfill
         }));
     }
@@ -899,7 +905,7 @@ fn bounded_background_schema_maintenance_admits_actual_work_not_caller_cap() {
             output.rows[0].get("object"),
             Some(&Value::String("Memory.id".to_string()))
         );
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "id" && property.state == SchemaObjectState::Validating
         }));
     }
@@ -983,7 +989,7 @@ fn bounded_scheduled_background_schema_maintenance_admits_actual_work_not_caller
             output.rows[0].get("object"),
             Some(&Value::String("Memory.id".to_string()))
         );
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "id" && property.state == SchemaObjectState::Validating
         }));
         assert_eq!(scheduler.state().running_background_operations, 0);
@@ -1032,10 +1038,10 @@ fn bounded_scheduled_background_schema_maintenance_limits_execution_and_releases
             output.rows[0].get("object"),
             Some(&Value::String("Memory.id".to_string()))
         );
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "id" && property.state == SchemaObjectState::Validating
         }));
-        assert!(db.property_descriptors().iter().any(|property| {
+        assert!(db.property_descriptors().unwrap().iter().any(|property| {
             property.name == "title" && property.state == SchemaObjectState::Backfill
         }));
         assert_eq!(scheduler.state().running_background_operations, 0);
@@ -1144,6 +1150,7 @@ fn schema_maintenance_gc_removes_descriptors_and_persists() {
         );
         assert!(db
             .property_descriptors()
+            .unwrap()
             .iter()
             .all(|property| property.name != "id"));
     }
@@ -1154,6 +1161,7 @@ fn schema_maintenance_gc_removes_descriptors_and_persists() {
         let mut db = Database::open(&path).unwrap();
         assert!(db
             .property_descriptors()
+            .unwrap()
             .iter()
             .all(|property| property.name != "id"));
         db.query("ALTER NODE TABLE Memory SET STATE GC").unwrap();
@@ -1168,6 +1176,7 @@ fn schema_maintenance_gc_removes_descriptors_and_persists() {
         let db = Database::open(&path).unwrap();
         assert!(db
             .table_descriptors()
+            .unwrap()
             .iter()
             .all(|table| table.name != "Memory"));
     }
@@ -1178,7 +1187,7 @@ fn schema_maintenance_gc_removes_descriptors_and_persists() {
 fn schema_ddl_transaction_commits_and_rolls_back() {
     let mut db = Database::new();
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("CREATE NODE LABEL RolledBack").unwrap();
         tx.rollback();
     }
@@ -1186,7 +1195,7 @@ fn schema_ddl_transaction_commits_and_rolls_back() {
     assert_eq!(output.rows[0].get("created"), Some(&Value::Bool(true)));
 
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("CREATE NODE TABLE RolledBack").unwrap();
         tx.rollback();
     }
@@ -1194,7 +1203,7 @@ fn schema_ddl_transaction_commits_and_rolls_back() {
     assert_eq!(output.rows[0].get("created"), Some(&Value::Bool(true)));
 
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("CREATE INDEX ON :RolledBack(id)").unwrap();
         tx.rollback();
     }
@@ -1202,7 +1211,7 @@ fn schema_ddl_transaction_commits_and_rolls_back() {
     assert_eq!(output.rows[0].get("created"), Some(&Value::Bool(true)));
 
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("CREATE INDEX ON :RolledBack(kind, source_id)")
             .unwrap();
         tx.rollback();
@@ -1213,7 +1222,7 @@ fn schema_ddl_transaction_commits_and_rolls_back() {
     assert_eq!(output.rows[0].get("created"), Some(&Value::Bool(true)));
 
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("CREATE FULLTEXT INDEX ON :RolledBack(title)")
             .unwrap();
         tx.rollback();
@@ -1224,7 +1233,7 @@ fn schema_ddl_transaction_commits_and_rolls_back() {
     assert_eq!(output.rows[0].get("created"), Some(&Value::Bool(true)));
 
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("CREATE PROPERTY ON NODE TABLE RolledBack(id) TYPE INT NOT NULL")
             .unwrap();
         tx.rollback();
@@ -1235,7 +1244,7 @@ fn schema_ddl_transaction_commits_and_rolls_back() {
     assert_eq!(output.rows[0].get("created"), Some(&Value::Bool(true)));
 
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("CREATE CONSTRAINT ON :RolledBack(id) ASSERT UNIQUE")
             .unwrap();
         tx.rollback();
@@ -1246,7 +1255,7 @@ fn schema_ddl_transaction_commits_and_rolls_back() {
     assert_eq!(output.rows[0].get("created"), Some(&Value::Bool(true)));
 
     {
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("CREATE RELATIONSHIP TYPE COMMITTED").unwrap();
         tx.query("CREATE NODE TABLE Committed").unwrap();
         tx.query("CREATE RELATIONSHIP TABLE COMMITTED").unwrap();
@@ -1787,7 +1796,7 @@ fn bounded_property_index_projection_rebuild_skips_descriptors_over_budget_witho
         db.query("CREATE FULLTEXT INDEX ON :Memory(title)").unwrap();
         let before = read_test_wal(&path).unwrap();
 
-        let output = db.rebuild_bounded_property_index_projections(2);
+        let output = db.rebuild_bounded_property_index_projections(2).unwrap();
 
         assert!(output.rows.is_empty());
         let after = read_test_wal(&path).unwrap();
@@ -1809,7 +1818,7 @@ fn bounded_property_index_projection_rebuild_reports_descriptor_batches() {
         .unwrap();
     db.query("CREATE FULLTEXT INDEX ON :Memory(title)").unwrap();
 
-    let first = db.rebuild_bounded_property_index_projections(3);
+    let first = db.rebuild_bounded_property_index_projections(3).unwrap();
 
     assert_eq!(first.rows.len(), 1);
     assert_eq!(
@@ -1833,7 +1842,7 @@ fn bounded_property_index_projection_rebuild_reports_descriptor_batches() {
     );
     assert_eq!(first.rows[0].get("indexed_entries"), Some(&Value::Int(3)));
 
-    let second = db.rebuild_bounded_property_index_projections(6);
+    let second = db.rebuild_bounded_property_index_projections(6).unwrap();
 
     assert_eq!(second.rows.len(), 2);
     assert_eq!(
@@ -1860,6 +1869,7 @@ fn property_index_projection_background_work_plan_is_absent_without_descriptors(
 
     assert!(db
         .property_index_projection_background_work_plan(BackgroundWorkHint::default())
+        .unwrap()
         .is_none());
 }
 
@@ -1882,6 +1892,7 @@ fn property_index_projection_background_work_plan_uses_projection_lane() {
             query_probability_per_million: 100_000,
             ..BackgroundWorkHint::default()
         })
+        .unwrap()
         .unwrap();
 
     assert_eq!(plan.request.class, crate::WorkClass::Projection);
@@ -2197,7 +2208,7 @@ fn property_histograms_are_bounded_deterministic_samples() {
             .unwrap();
     }
 
-    let statistics = db.statistics();
+    let statistics = db.statistics().unwrap();
     assert_eq!(statistics.computed_at_commit_epoch, 200);
     assert_eq!(statistics.histogram_sample_limit, 512);
     let ((_, property), distinct_count) = statistics
@@ -2238,7 +2249,7 @@ fn property_histograms_are_bounded_deterministic_samples() {
 
     db.query("CREATE (:Memory {exact_score: 1})").unwrap();
     db.query("CREATE (:Memory {exact_score: 2})").unwrap();
-    let statistics = db.statistics();
+    let statistics = db.statistics().unwrap();
     let sampled = statistics
         .sampled_property_histograms
         .iter()
@@ -2290,7 +2301,7 @@ fn optimizer_statistics_exclude_text_large_and_mixed_property_groups() {
     )
     .unwrap();
 
-    let statistics = db.statistics();
+    let statistics = db.statistics().unwrap();
     let node_properties = statistics
         .property_distinct_counts
         .keys()
@@ -2351,6 +2362,7 @@ fn range_index_descriptor_persists_through_wal_and_checkpoint() {
         let mut db = Database::open(&path).unwrap();
         assert!(db
             .property_indexes()
+            .unwrap()
             .iter()
             .any(|index| { index.property == "created_at" && index.kind == IndexKind::Range }));
         db.checkpoint().unwrap();
@@ -2364,6 +2376,7 @@ fn range_index_descriptor_persists_through_wal_and_checkpoint() {
         let db = Database::open(&path).unwrap();
         assert!(db
             .property_indexes()
+            .unwrap()
             .iter()
             .any(|index| { index.property == "created_at" && index.kind == IndexKind::Range }));
     }
@@ -2403,6 +2416,7 @@ fn unique_constraint_rejects_duplicate_create_and_set_before_wal() {
         let db = Database::open(&path).unwrap();
         assert!(db
             .unique_constraints()
+            .unwrap()
             .iter()
             .any(|constraint| constraint.property == "id"));
     }
@@ -2420,7 +2434,7 @@ fn unique_constraint_rejects_existing_duplicate_data() {
         .query("CREATE CONSTRAINT ON :Memory(id) ASSERT UNIQUE")
         .unwrap_err();
     assert!(error.to_string().contains("unique constraint violation"));
-    assert!(db.unique_constraints().is_empty());
+    assert!(db.unique_constraints().unwrap().is_empty());
 }
 
 #[test]
@@ -2456,6 +2470,7 @@ fn node_property_exists_constraint_rejects_missing_and_null_writes_before_wal() 
         let db = Database::open(&path).unwrap();
         assert!(db
             .node_property_exists_constraints()
+            .unwrap()
             .iter()
             .any(|constraint| {
                 constraint.property == "id" && constraint.kind == ConstraintKind::NodePropertyExists
@@ -2476,7 +2491,7 @@ fn node_property_exists_constraint_rejects_existing_bad_data() {
     assert!(error
         .to_string()
         .contains("node property exists constraint violation"));
-    assert!(db.node_property_exists_constraints().is_empty());
+    assert!(db.node_property_exists_constraints().unwrap().is_empty());
 }
 
 #[test]
@@ -2507,6 +2522,7 @@ fn relationship_property_exists_constraint_rejects_missing_and_null_writes_befor
         let db = Database::open(&path).unwrap();
         assert!(db
             .relationship_property_exists_constraints()
+            .unwrap()
             .iter()
             .any(|constraint| {
                 constraint.property == "weight"
@@ -2531,7 +2547,10 @@ fn relationship_property_exists_constraint_rejects_existing_bad_data() {
     assert!(error
         .to_string()
         .contains("relationship property exists constraint violation"));
-    assert!(db.relationship_property_exists_constraints().is_empty());
+    assert!(db
+        .relationship_property_exists_constraints()
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -2560,6 +2579,7 @@ fn relationship_unique_constraint_rejects_duplicate_writes_before_wal() {
         let db = Database::open(&path).unwrap();
         assert!(db
             .relationship_unique_constraints()
+            .unwrap()
             .iter()
             .any(|constraint| {
                 constraint.property == "id"
@@ -2584,7 +2604,7 @@ fn relationship_unique_constraint_rejects_existing_duplicate_data() {
     assert!(error
         .to_string()
         .contains("relationship unique constraint violation"));
-    assert!(db.relationship_unique_constraints().is_empty());
+    assert!(db.relationship_unique_constraints().unwrap().is_empty());
 }
 
 #[test]
@@ -2635,7 +2655,7 @@ fn property_schema_rejects_existing_invalid_data() {
         .query("CREATE PROPERTY ON NODE TABLE Memory(id) TYPE INT NOT NULL")
         .unwrap_err();
     assert!(error.to_string().contains("property schema violation"));
-    assert!(db.property_descriptors().is_empty());
+    assert!(db.property_descriptors().unwrap().is_empty());
 }
 
 #[test]
@@ -2644,13 +2664,13 @@ fn failed_transaction_does_not_publish_property_schema_or_wal() {
     {
         let mut db = Database::open(&path).unwrap();
         let before = read_test_wal(&path).unwrap_or_default();
-        let mut tx = db.begin_transaction();
+        let mut tx = db.begin_transaction().unwrap();
         tx.query("CREATE PROPERTY ON NODE TABLE Memory(id) TYPE INT NOT NULL")
             .unwrap();
         let error = tx.query("CREATE (:Memory {id: 'bad'})").unwrap_err();
         assert!(error.to_string().contains("property schema violation"));
         tx.rollback();
-        assert!(db.property_descriptors().is_empty());
+        assert!(db.property_descriptors().unwrap().is_empty());
         let after = read_test_wal(&path).unwrap_or_default();
         assert_eq!(before, after);
     }

@@ -42,16 +42,18 @@ fn knowledge_retrieval_hydrates_canonical_output_after_top_k() {
     let mut db = Database::new_with_config(config);
     let payload = format!("pipeline needle {}", "x".repeat(20 * 1024));
     for id in ["memory-a", "memory-b"] {
-        db.store
-            .create_node(
-                &mut db.catalog,
+        {
+            let branch_runtime = db.runtime.get_mut().unwrap();
+            branch_runtime.store.create_node(
+                &mut branch_runtime.catalog,
                 "Memory",
                 BTreeMap::from([
                     ("id".to_string(), Value::String(id.to_string())),
                     ("content".to_string(), Value::String(payload.clone())),
                 ]),
             )
-            .unwrap();
+        }
+        .unwrap();
     }
     let mut search_index = SearchIndex::in_memory();
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
@@ -109,9 +111,10 @@ fn knowledge_retrieval_result_payload_budget_fails_closed() {
         max_read_result_payload_bytes: Some(1024),
         ..DatabaseConfig::default()
     });
-    db.store
-        .create_node(
-            &mut db.catalog,
+    {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Memory",
             BTreeMap::from([
                 ("id".to_string(), Value::String("memory-a".to_string())),
@@ -121,7 +124,8 @@ fn knowledge_retrieval_result_payload_budget_fails_closed() {
                 ),
             ]),
         )
-        .unwrap();
+    }
+    .unwrap();
     let mut search_index = SearchIndex::in_memory();
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())
         .unwrap();
@@ -138,10 +142,10 @@ fn knowledge_retrieval_result_payload_budget_fails_closed() {
 #[test]
 fn knowledge_retrieval_graph_expansion_preserves_space_scope() {
     let mut db = Database::new();
-    let memory = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    let memory = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Memory",
             BTreeMap::from([
                 ("id".to_string(), Value::String("memory-a".to_string())),
@@ -152,33 +156,44 @@ fn knowledge_retrieval_graph_expansion_preserves_space_scope() {
                 ("space_id".to_string(), Value::String("space-a".to_string())),
             ]),
         )
-        .unwrap();
-    let allowed = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    }
+    .unwrap();
+    let allowed = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Entity",
             BTreeMap::from([
                 ("id".to_string(), Value::String("allowed".to_string())),
                 ("space_id".to_string(), Value::String("space-a".to_string())),
             ]),
         )
-        .unwrap();
-    let denied = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    }
+    .unwrap();
+    let denied = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Entity",
             BTreeMap::from([
                 ("id".to_string(), Value::String("denied".to_string())),
                 ("space_id".to_string(), Value::String("space-b".to_string())),
             ]),
         )
-        .unwrap();
+    }
+    .unwrap();
     for target in [allowed, denied] {
-        db.store
-            .create_relationship(&mut db.catalog, memory, target, "MENTIONS", BTreeMap::new())
-            .unwrap();
+        {
+            let branch_runtime = db.runtime.get_mut().unwrap();
+            branch_runtime.store.create_relationship(
+                &mut branch_runtime.catalog,
+                memory,
+                target,
+                "MENTIONS",
+                BTreeMap::new(),
+            )
+        }
+        .unwrap();
     }
     let mut search_index = SearchIndex::in_memory();
     db.rebuild_search_projection(&mut search_index, SearchRebuildOptions::default())

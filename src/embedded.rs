@@ -385,7 +385,7 @@ impl HawDBEmbedded {
             let max_payload_bytes = usize::try_from(request.result_bytes).unwrap_or(usize::MAX);
             let mut rows = Vec::new();
             self.database
-                .begin_read_transaction()
+                .begin_read_transaction()?
                 .query_with_params_streaming_context(
                     cypher_text,
                     parameters,
@@ -617,7 +617,9 @@ mod tests {
         )
         .unwrap();
 
-        let readiness = store.library_readiness(&NowledgeMemReadinessOptions::default());
+        let readiness = store
+            .library_readiness(&NowledgeMemReadinessOptions::default())
+            .unwrap();
 
         assert_eq!(open_report.mode, NowledgeMemGraphMode::WritableCutover);
         assert!(open_report.graph_configured);

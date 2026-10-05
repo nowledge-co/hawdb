@@ -27,12 +27,193 @@ pub use hawdb_storage::{
     ownership::DatabaseDirectoryLease,
 };
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 const DOCTOR_DIRECTORY: &str = "doctor";
 const DOCTOR_QUARANTINE_DIRECTORY: &str = "quarantine";
 const MAX_DOCTOR_AUDIT_BYTES: u64 = 1024 * 1024;
+
+/// A repair is bound to the authoritative selector, rather than the disposable
+/// branch runtime manifest. The existing plan's manifest identity fields bind
+/// the legacy manifest or, for a branch, the exact branch head bytes.
+struct WalRepairBoundary {
+    selector_path: PathBuf,
+    wal_generation: u64,
+    wal_replay_start_lsn: u64,
+    published_prefix_len: u64,
+}
+
+/// Missing selectors still belong to their project's branch namespace. Never
+/// classify them as legacy stores or give them an independent FD domain.
+fn is_branch_directory(path: &Path) -> Result<bool> {
+    if fs::try_exists(path.join("branch.head"))? {
+        return Ok(true);
+    }
+    let Some(parent) = path
+        .parent()
+        .filter(|parent| parent.file_name().is_some_and(|name| name == "branches"))
+    else {
+        return Ok(false);
+    };
+    Ok(fs::try_exists(parent.join("catalog.hawdb"))?)
+}
+
+impl WalRepairBoundary {
+    fn load(path: &Path, max_wal_bytes: Option<u64>) -> Result<Self> {
+        let head_path = path.join("branch.head");
+        if !is_branch_directory(path)? {
+            let manifest_path = path.join(MANIFEST_FILE);
+            let manifest = DurableManifest::load(&manifest_path)?;
+            manifest.validate()?;
+            validate_checkpoint_boundary(path, manifest)?;
+            return Ok(Self {
+                selector_path: manifest_path,
+                wal_generation: manifest.wal_generation,
+                wal_replay_start_lsn: manifest.wal_replay_start_lsn,
+                published_prefix_len: 0,
+            });
+        }
+        let head =
+            crate::branch_head::read_branch_head(&head_path).map_err(|error| match error {
+                crate::branch_head::BranchHeadError::Io { source, .. }
+                    if source.kind() == io::ErrorKind::NotFound =>
+                {
+                    HawDBError::StorageIntegrity(
+                        "WAL repair branch head is missing; retain its recovery evidence".into(),
+                    )
+                }
+                error => HawDBError::from_storage_error(error),
+            })?;
+        let branch_id =
+            crate::branch_catalog::BranchId::new(hawdb_core::Uuid::from_bytes(head.branch_id))
+                .map_err(HawDBError::from_storage_error)?;
+        if path.file_name().and_then(|name| name.to_str())
+            != Some(branch_id.as_uuid().to_string().as_str())
+        {
+            return Err(HawDBError::StorageIntegrity(
+                "WAL repair branch directory differs from its UUID".into(),
+            ));
+        }
+        let metadata_directory = path.parent().ok_or_else(|| {
+            HawDBError::StorageIntegrity("WAL repair branch has no project directory".into())
+        })?;
+        let catalog_path = metadata_directory.join("catalog.hawdb");
+        let catalog = crate::branch_catalog::read_catalog(&catalog_path)
+            .map_err(HawDBError::from_storage_error)?;
+        let revision = catalog
+            .branches
+            .iter()
+            .find(|record| record.id == branch_id)
+            .ok_or_else(|| {
+                HawDBError::StorageIntegrity("WAL repair branch is absent from its catalog".into())
+            })?
+            .metadata_revision;
+        let record = super::immutable_root::ready_branch_record(&catalog_path, branch_id, revision)
+            .map_err(HawDBError::from_storage_error)?;
+        let objects =
+            crate::immutable_object::ImmutableObjectStore::open(metadata_directory.join("objects"))
+                .map_err(HawDBError::from_storage_error)?;
+        let root = crate::sealed_root::SealedRoot::decode(
+            &objects
+                .read(head.sealed_root)
+                .map_err(HawDBError::from_storage_error)?,
+        )
+        .map_err(HawDBError::from_storage_error)?;
+        super::immutable_root::validate_admission_binding(
+            &record,
+            &head,
+            &root,
+            root.object_reference()
+                .map_err(HawDBError::from_storage_error)?,
+        )
+        .map_err(HawDBError::from_storage_error)?;
+        let manifest_bytes = objects
+            .read(root.durable_manifest)
+            .map_err(HawDBError::from_storage_error)?;
+        let manifest_text = std::str::from_utf8(&manifest_bytes).map_err(|_| {
+            HawDBError::StorageIntegrity("WAL repair sealed manifest is not UTF-8".into())
+        })?;
+        let manifest = DurableManifest::decode(manifest_text)?;
+        manifest.validate()?;
+        if manifest.checkpoint_commit_epoch != root.checkpoint_epoch
+            || manifest.wal_replay_start_lsn != root.wal_replay_start_lsn
+        {
+            return Err(HawDBError::StorageIntegrity(
+                "WAL repair root differs from its checkpoint boundary".into(),
+            ));
+        }
+        // Retain the entire immutable recovery closure. No repair may discard
+        // or substitute a sealed generation or proceed from damaged evidence.
+        for reference in root
+            .checkpoint_references
+            .iter()
+            .copied()
+            .chain(root.sealed_wals.iter().map(|interval| interval.object))
+        {
+            objects
+                .read(reference)
+                .map_err(HawDBError::from_storage_error)?;
+        }
+        let wal_path = path.join(crate::artifact_files::wal_generation_file(
+            head.active_wal.generation,
+        ));
+        crate::branch_head::validate_active_wal_prefix_from_file(
+            &wal_path,
+            head.active_wal,
+            max_wal_bytes.unwrap_or(u64::MAX),
+        )
+        .map_err(HawDBError::from_storage_error)?;
+        Ok(Self {
+            selector_path: head_path,
+            wal_generation: head.active_wal.generation,
+            wal_replay_start_lsn: head.active_wal.replay_start_lsn,
+            published_prefix_len: head.active_wal.byte_length,
+        })
+    }
+
+    fn wal_path(&self, directory: &Path) -> PathBuf {
+        directory.join(crate::artifact_files::wal_generation_file(
+            self.wal_generation,
+        ))
+    }
+}
+
+pub(super) fn repair_directory(path: &Path) -> Result<PathBuf> {
+    // A project-level doctor operation repairs its default main. A caller may
+    // also provide an exact UUID directory; both paths acquire the UUID lease.
+    if is_branch_directory(path)? {
+        return Ok(path.to_path_buf());
+    }
+    match crate::branch_project::inspect_project_manifest(path)? {
+        crate::branch_project::ProjectManifest::Branch(selector) => Ok(path
+            .join("branches")
+            .join(selector.main_branch_id().as_uuid().to_string())),
+        _ => Ok(path.to_path_buf()),
+    }
+}
+
+pub(super) fn repair_file_descriptors(
+    path: &Path,
+) -> Result<crate::file_descriptors::ProjectFileDescriptors> {
+    // A missing head is corrupt publication evidence, not a reason to create
+    // an independent descriptor domain below the containing project's limit.
+    let project = if is_branch_directory(path)? {
+        path.parent().and_then(Path::parent).ok_or_else(|| {
+            HawDBError::StorageIntegrity("WAL repair branch has no project root".into())
+        })?
+    } else {
+        path
+    };
+    let project = fs::canonicalize(project)?;
+    match crate::file_descriptors::ProjectFileDescriptors::containing(&project)? {
+        Some(files) => Ok(files),
+        None => crate::file_descriptors::ProjectFileDescriptors::acquire_existing(
+            &project,
+            crate::file_descriptors::DEFAULT_MAX_OPEN_FILES,
+        ),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[doc(hidden)]
@@ -59,9 +240,11 @@ impl DatabaseDoctor {
     ) -> Result<WalTailRepairPlan> {
         let path = path.as_ref();
         validate_existing_database_directory(path)?;
+        let _files = repair_file_descriptors(path)?;
+        let directory = repair_directory(path)?;
         let _lease =
-            DatabaseDirectoryLease::acquire(path).map_err(HawDBError::from_storage_error)?;
-        inspect_wal_tail_locked(path, options)
+            DatabaseDirectoryLease::acquire(&directory).map_err(HawDBError::from_storage_error)?;
+        inspect_wal_tail_locked(&directory, options)
     }
 
     pub fn apply_wal_tail_repair(
@@ -73,9 +256,11 @@ impl DatabaseDoctor {
         validate_acknowledgement(plan, &acknowledgement)?;
         let path = path.as_ref();
         validate_existing_database_directory(path)?;
+        let _files = repair_file_descriptors(path)?;
+        let directory = repair_directory(path)?;
         let _lease =
-            DatabaseDirectoryLease::acquire(path).map_err(HawDBError::from_storage_error)?;
-        apply_wal_tail_repair_locked(path, plan, options)
+            DatabaseDirectoryLease::acquire(&directory).map_err(HawDBError::from_storage_error)?;
+        apply_wal_tail_repair_locked(&directory, plan, options)
     }
 }
 
@@ -176,16 +361,13 @@ fn validate_acknowledgement(
 }
 
 fn inspect_wal_tail_locked(path: &Path, options: WalDoctorOptions) -> Result<WalTailRepairPlan> {
-    let manifest_path = path.join(MANIFEST_FILE);
-    let manifest = DurableManifest::load(&manifest_path)?;
-    manifest.validate()?;
-    validate_checkpoint_boundary(path, manifest)?;
-    let wal_path = manifest.wal_path(path);
+    let boundary = WalRepairBoundary::load(path, options.max_wal_bytes)?;
+    let wal_path = boundary.wal_path(path);
     let wal_len = fs::metadata(&wal_path)
         .map_err(|error| {
             HawDBError::Storage(format!(
                 "failed to inspect WAL generation {}: {error}",
-                manifest.wal_generation
+                boundary.wal_generation
             ))
         })?
         .len();
@@ -201,7 +383,7 @@ fn inspect_wal_tail_locked(path: &Path, options: WalDoctorOptions) -> Result<Wal
         WalOpenOutcome::MissingHeader => {
             return Err(HawDBError::Storage(format!(
                 "WAL generation {} is missing its header",
-                manifest.wal_generation
+                boundary.wal_generation
             )));
         }
         WalOpenOutcome::HeaderTorn { .. } => {
@@ -215,28 +397,33 @@ fn inspect_wal_tail_locked(path: &Path, options: WalDoctorOptions) -> Result<Wal
             )));
         }
     };
-    if cursor.generation() != manifest.wal_generation
-        || cursor.start_lsn() != manifest.wal_replay_start_lsn
+    if cursor.generation() != boundary.wal_generation
+        || cursor.start_lsn() != boundary.wal_replay_start_lsn
     {
         return Err(HawDBError::Storage(format!(
             "WAL header generation/start ({}, {}) does not match manifest ({}, {})",
             cursor.generation(),
             cursor.start_lsn(),
-            manifest.wal_generation,
-            manifest.wal_replay_start_lsn
+            boundary.wal_generation,
+            boundary.wal_replay_start_lsn
         )));
     }
-    let mut expected_lsn = manifest.wal_replay_start_lsn;
+    let mut expected_lsn = boundary.wal_replay_start_lsn;
     loop {
         let (entry, record_start) = match cursor.next()? {
             WalCursorEvent::Eof => break,
             WalCursorEvent::TornTail {
                 valid_prefix_len, ..
             } => {
+                if valid_prefix_len < boundary.published_prefix_len {
+                    return Err(HawDBError::StorageIntegrity(
+                        "WAL repair would discard a published branch prefix".into(),
+                    ));
+                }
                 let plan = build_plan(
-                    &manifest_path,
+                    &boundary.selector_path,
                     &wal_path,
-                    manifest,
+                    &boundary,
                     expected_lsn,
                     valid_prefix_len,
                     wal_len,
@@ -295,7 +482,7 @@ fn inspect_wal_tail_locked(path: &Path, options: WalDoctorOptions) -> Result<Wal
 fn build_plan(
     manifest_path: &Path,
     wal_path: &Path,
-    manifest: DurableManifest,
+    boundary: &WalRepairBoundary,
     next_lsn_after_repair: u64,
     retained_wal_len: u64,
     original_wal_len: u64,
@@ -312,8 +499,8 @@ fn build_plan(
     let mut plan = WalTailRepairPlan {
         protocol: WAL_DOCTOR_REPAIR_PROTOCOL.to_string(),
         plan_id: String::new(),
-        wal_generation: manifest.wal_generation,
-        wal_replay_start_lsn: manifest.wal_replay_start_lsn,
+        wal_generation: boundary.wal_generation,
+        wal_replay_start_lsn: boundary.wal_replay_start_lsn,
         next_lsn_after_repair,
         manifest_len,
         manifest_crc32c,
@@ -372,14 +559,16 @@ fn apply_wal_tail_repair_locked(
         ));
     }
 
-    let manifest = DurableManifest::load(&path.join(MANIFEST_FILE))?;
-    manifest.validate()?;
-    if manifest.wal_generation != requested_plan.wal_generation {
+    let boundary = WalRepairBoundary::load(path, options.max_wal_bytes)?;
+    if boundary.wal_generation != requested_plan.wal_generation
+        || boundary.wal_replay_start_lsn != requested_plan.wal_replay_start_lsn
+    {
         return Err(HawDBError::Storage(
             "WAL generation changed after the doctor repair plan was created".to_string(),
         ));
     }
-    let wal_path = manifest.wal_path(path);
+    let wal_path = boundary.wal_path(path);
+    validate_manifest_identity(path, requested_plan)?;
     let pending = load_matching_pending_record(path, &requested_plan.plan_id)?;
     let current = file_checksum(&wal_path)?;
     let original_matches = file_identity_matches(
@@ -539,7 +728,8 @@ fn finalize_repair(
 }
 
 fn validate_manifest_identity(path: &Path, plan: &WalTailRepairPlan) -> Result<()> {
-    let identity = file_checksum(&path.join(MANIFEST_FILE))?;
+    let boundary = WalRepairBoundary::load(path, None)?;
+    let identity = file_checksum(&boundary.selector_path)?;
     if file_identity_matches(
         identity,
         plan.manifest_len,
@@ -584,8 +774,8 @@ fn validate_pending_truncated_wal(path: &Path, record: &WalRepairAuditRecord) ->
         ));
     }
     validate_manifest_identity(path, &record.plan)?;
-    let manifest = DurableManifest::load(&path.join(MANIFEST_FILE))?;
-    let identity = file_checksum(&manifest.wal_path(path))?;
+    let boundary = WalRepairBoundary::load(path, None)?;
+    let identity = file_checksum(&boundary.wal_path(path))?;
     if !file_identity_matches(
         identity,
         record.plan.retained_wal_len,

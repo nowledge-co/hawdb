@@ -108,7 +108,7 @@ fn knowledge_property_batch_update_rejects_invalid_identifiers() {
         .unwrap_err();
 
     assert!(error.to_string().contains("property identifier"));
-    assert_eq!(db.store.commit_epoch(), 1);
+    assert_eq!(db.runtime.get().unwrap().store.commit_epoch(), 1);
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn knowledge_property_batch_update_rejects_empty_assignment_rows() {
         .unwrap_err();
 
     assert!(error.to_string().contains("at least one assignment"));
-    assert_eq!(db.store.commit_epoch(), 1);
+    assert_eq!(db.runtime.get().unwrap().store.commit_epoch(), 1);
 }
 
 #[test]
@@ -235,7 +235,8 @@ fn typed_knowledge_property_batch_update_persists_as_one_wal_batch_and_replays()
     }
     let wal = read_test_wal(&path).unwrap();
     assert!(wal.contains("set_node_property"));
-    assert_eq!(wal.matches("\tbatch\t").count(), 2);
+    // Engine bootstrap is already checkpointed; count the private user WAL.
+    assert_eq!(wal.matches("\tbatch\t").count(), 1);
     {
         let db = Database::open(&path).unwrap();
         let output = db

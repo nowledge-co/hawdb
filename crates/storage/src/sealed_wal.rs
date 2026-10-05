@@ -484,6 +484,9 @@ mod tests {
         let next_path = directory.join("next.wal");
         fs::write(&old_path, wal_bytes(4, 10, &[10, 11])).unwrap();
         let mut objects = ImmutableObjectStore::open(&directory).unwrap();
+        // Finish first-publication ancestry before failing the later successor
+        // barrier. On Linux that ancestry includes this same directory.
+        seal_wal_file(&old_path, 4, 10, 1 << 20, &mut objects).unwrap();
         {
             let _guard = fail_sync_directory_for(&directory);
             assert!(matches!(

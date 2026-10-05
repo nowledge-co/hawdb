@@ -58,7 +58,7 @@ fn memory_crystal_synthesis_counts_use_one_fixed_bounded_query() {
         ),
         ("limit".to_string(), Value::Int(2)),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     db.query("MATCH (c:Memory {id: 'decay-crystal-b'}), (m:Memory {id: 'decay-base-b'}) CREATE (c)-[:SYNTHESIZED_FROM]->(m)")
         .unwrap();
@@ -107,7 +107,7 @@ fn memory_crystal_synthesis_counts_respect_query_limit() {
         ),
         ("limit".to_string(), Value::Int(1)),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     let output = snapshot
         .query_with_params_bounded(MEMORY_CRYSTAL_SYNTHESIS_COUNT_QUERY, &parameters, Some(1))

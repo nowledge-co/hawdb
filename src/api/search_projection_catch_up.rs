@@ -141,7 +141,7 @@ impl Database {
                     return Ok(None);
                 };
                 let operation_count = batch.operation_count();
-                let mut snapshot = database.begin_read_transaction();
+                let mut snapshot = database.begin_read_transaction()?;
                 let hydrated = batch_hydrator(&mut snapshot, &batch)?;
                 batch.graph_delta_mut().max_operations = Some(max_projection_operations_per_batch);
                 database.apply_search_projection_change_batch(search_index, batch, hydrated)?;
@@ -162,7 +162,7 @@ impl Database {
     {
         run_search_projection_catch_up(
             search_index,
-            self.store.commit_epoch(),
+            self.runtime.get()?.store.commit_epoch(),
             max_operations_per_batch,
             max_batches,
             |search_index, max_operations| apply_next_batch(self, search_index, max_operations),
@@ -179,7 +179,7 @@ impl Database {
         let scheduler = self.local_qos_scheduler_for_work();
         run_scheduled_search_projection_catch_up(
             search_index,
-            self.store.commit_epoch(),
+            self.runtime.get()?.store.commit_epoch(),
             &scheduler,
             max_operations_per_batch,
             max_batches,

@@ -70,7 +70,7 @@ fn label_usage_reads_use_fixed_bounded_queries() {
     let single_parameters =
         BTreeMap::from([("label_id".to_string(), Value::String("alpha".to_string()))]);
     let list_parameters = BTreeMap::from([("limit".to_string(), Value::Int(3))]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     db.query("CREATE (:Memory {id: 'late-memory'})").unwrap();
     db.query("MATCH (m:Memory {id: 'late-memory'}), (l:Label {id: 'alpha'}) CREATE (m)-[:HAS_LABEL]->(l)")
@@ -125,7 +125,7 @@ fn label_usage_returns_no_row_for_missing_label() {
     let db = Database::new();
     let parameters =
         BTreeMap::from([("label_id".to_string(), Value::String("missing".to_string()))]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     let output = snapshot
         .query_with_params_bounded(LABEL_USAGE_QUERY, &parameters, Some(1))

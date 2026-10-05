@@ -67,7 +67,7 @@ pub(super) fn qualify_thread_message_reconcile(
     let (seed_commit_epoch, seed_checkpoint_generation) =
         seed_reconcile_thread(&mut database, corpus)?;
     let existing = read_message_occurrence_ids(&mut database, corpus, INITIAL_MESSAGE_COUNT)?;
-    let epoch_before_invalid_mappings = database.commit_epoch();
+    let epoch_before_invalid_mappings = database.commit_epoch()?;
     require_invalid_mapping(
         &existing,
         &[Some(CONTENT_MESSAGE_A_ID), Some(CONTENT_MESSAGE_A_ID)],
@@ -79,7 +79,7 @@ pub(super) fn qualify_thread_message_reconcile(
     )?;
     let desired_mapping = [Some(CONTENT_MESSAGE_B_ID), None, Some(CONTENT_MESSAGE_A_ID)];
     validate_preserve_mapping(&existing, &desired_mapping)?;
-    if database.commit_epoch() != epoch_before_invalid_mappings {
+    if database.commit_epoch()? != epoch_before_invalid_mappings {
         return Err(HawDBError::Execution(
             "content-store invalid reconciliation mapping advanced the commit epoch".to_string(),
         ));
@@ -96,7 +96,7 @@ pub(super) fn qualify_thread_message_reconcile(
     let page = corpus_statement(corpus, "thread_messages_page")?;
     let page_parameters = thread_page_parameters(THREAD_STORAGE_ID, FINAL_MESSAGE_COUNT);
 
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
     transaction.query_with_params(
         "MATCH (t:Thread {id: $thread_id}) SET t.updated_at = $updated_at",
         &graph_reconcile_parameters(),
@@ -180,7 +180,7 @@ pub(super) fn qualify_thread_message_reconcile(
     require_graph_state(&workspace_graph)?;
     transaction.commit()?;
 
-    let committed_epoch = database.commit_epoch();
+    let committed_epoch = database.commit_epoch()?;
     if committed_epoch != seed_commit_epoch.saturating_add(1) {
         return Err(HawDBError::Execution(format!(
             "content-store thread reconcile published epoch {committed_epoch}, expected {}",
@@ -218,7 +218,7 @@ pub(super) fn qualify_thread_message_reconcile(
 
     database.checkpoint()?;
     let checkpoint_generation = database
-        .relational_index_shadow_checkpoint_report()
+        .relational_index_shadow_checkpoint_report()?
         .ok_or_else(|| {
             HawDBError::Execution(
                 "content-store thread reconcile checkpoint published no relational generation"
@@ -310,7 +310,7 @@ fn seed_reconcile_thread(
     let anchor = corpus_statement(corpus, "upsert_memory_message_anchor")?;
     let summary = corpus_statement(corpus, "thread_document_payload_summary")?;
     let update_summary = corpus_statement(corpus, "update_content_document_summary")?;
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
     transaction.query_with_params(
         "CREATE (:Thread {id: $thread_id, space_id: $space_id, updated_at: $updated_at})",
         &graph_seed_parameters(),
@@ -371,10 +371,10 @@ fn seed_reconcile_thread(
         ],
     )?;
     transaction.commit()?;
-    let seed_commit_epoch = database.commit_epoch();
+    let seed_commit_epoch = database.commit_epoch()?;
     database.checkpoint()?;
     let seed_checkpoint_generation = database
-        .relational_index_shadow_checkpoint_report()
+        .relational_index_shadow_checkpoint_report()?
         .ok_or_else(|| {
             HawDBError::Execution(
                 "content-store reconcile seed checkpoint published no relational generation"

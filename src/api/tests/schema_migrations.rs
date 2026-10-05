@@ -83,7 +83,7 @@ fn applies_schema_migration_log_batch_idempotently() {
     );
     assert_eq!(rows.rows[2].get("applied_at"), Some(&Value::Int(103)));
 
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     let count = read
         .query_with_params_bounded(SCHEMA_MIGRATION_COUNT_QUERY, &BTreeMap::new(), Some(1))
         .unwrap();
@@ -91,7 +91,10 @@ fn applies_schema_migration_log_batch_idempotently() {
     let applied = read
         .query_with_params_bounded(SCHEMA_MIGRATION_ALL_QUERY, &BTreeMap::new(), Some(3))
         .unwrap();
-    assert_eq!(read.commit_epoch(), db.store.commit_epoch());
+    assert_eq!(
+        read.commit_epoch(),
+        db.runtime.get().unwrap().store.commit_epoch()
+    );
     assert_eq!(applied.rows.len(), 3);
     assert_eq!(
         applied
@@ -133,7 +136,7 @@ fn applies_schema_migration_log_batch_idempotently() {
 #[test]
 fn schema_migration_apply_rejects_empty_id_before_wal() {
     let mut db = Database::new();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .apply_knowledge_schema_migrations_batch(&KnowledgeSchemaMigrationApplyBatchRequest {
@@ -145,7 +148,10 @@ fn schema_migration_apply_rejects_empty_id_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("non-empty migration id"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]

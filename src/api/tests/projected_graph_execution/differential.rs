@@ -127,7 +127,7 @@ impl Fixture {
         )
         .unwrap();
         assert_eq!(
-            db.storage_residency_report().out_of_core,
+            db.storage_residency_report().unwrap().out_of_core,
             self.mode == StorageResidencyMode::OutOfCore
         );
         self.db = Some(db);
@@ -178,7 +178,7 @@ impl Fixture {
     }
 
     fn records(&self) -> Vec<RelRecord> {
-        let catalog = &self.db.as_ref().unwrap().catalog;
+        let catalog = &self.db.as_ref().unwrap().runtime.get().unwrap().catalog;
         self.edges
             .iter()
             .map(|(&id, edge)| RelRecord {
@@ -228,8 +228,8 @@ impl Fixture {
         let db = self.db.as_ref().unwrap();
         for rel_type in [
             None,
-            db.catalog.rel_type_id("LINK"),
-            db.catalog.rel_type_id("OTHER"),
+            db.runtime.get().unwrap().catalog.rel_type_id("LINK"),
+            db.runtime.get().unwrap().catalog.rel_type_id("OTHER"),
             Some(RelTypeId(u32::MAX)),
         ] {
             let selected: Vec<_> = expected
@@ -238,18 +238,21 @@ impl Fixture {
                 .cloned()
                 .collect();
             let mut actual = Vec::new();
-            let control =
-                GraphExecutionRead::visit_relationships_owned(&db.store, rel_type, &mut |record| {
+            let control = GraphExecutionRead::visit_relationships_owned(
+                &db.runtime.get().unwrap().store,
+                rel_type,
+                &mut |record| {
                     actual.push(record);
                     Ok(ScanControl::Continue)
-                })
-                .unwrap();
+                },
+            )
+            .unwrap();
             assert_eq!(control, ScanControl::Continue, "{receipt}");
             assert_eq!(actual, selected, "{receipt}");
             for fail in [false, true] {
                 let mut prefix = Vec::new();
                 let result = GraphExecutionRead::visit_relationships_owned(
-                    &db.store,
+                    &db.runtime.get().unwrap().store,
                     rel_type,
                     &mut |record| {
                         prefix.push(record);
@@ -326,7 +329,7 @@ impl Fixture {
         assert_eq!(frontier(&self.path), before, "{receipt}");
         let out_of_core = self.mode == StorageResidencyMode::OutOfCore;
         assert_eq!(
-            self.db().storage_residency_report().out_of_core,
+            self.db().storage_residency_report().unwrap().out_of_core,
             out_of_core
         );
     }
@@ -359,24 +362,45 @@ fn names(names: &[&str]) -> String {
 }
 
 fn frontier(path: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
-    let result: BTreeMap<_, _> = std::fs::read_dir(path)
-        .unwrap()
-        .map(|entry| entry.unwrap())
-        .filter(|entry| {
-            entry.file_name() == "manifest.hawdb"
-                || entry.file_name().to_string_lossy().starts_with("wal.")
-        })
-        .map(|entry| {
+    let hawdb_storage::branch_project::ProjectManifest::Branch(selector) =
+        hawdb_storage::branch_project::inspect_project_manifest(path).unwrap()
+    else {
+        panic!("projection fixture must use the durable main branch")
+    };
+    let branch = path
+        .join("branches")
+        .join(selector.main_branch_id().as_uuid().to_string());
+    let head = hawdb_storage::branch_head::read_branch_head(&branch.join("branch.head")).unwrap();
+    // Queries must preserve the actual branch publication and private WAL.
+    // Legacy bootstrap files left at the project root are no longer its frontier.
+    let mut files = vec![
+        path.join("manifest.hawdb"),
+        path.join("branches/catalog.hawdb"),
+        branch.join("branch.head"),
+    ];
+    files.extend(
+        std::fs::read_dir(&branch)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("wal."))
+            .map(|entry| entry.path()),
+    );
+    let result: BTreeMap<_, _> = files
+        .into_iter()
+        .map(|file| {
             (
-                PathBuf::from(entry.file_name()),
-                std::fs::read(entry.path()).unwrap(),
+                file.strip_prefix(path).unwrap().to_path_buf(),
+                std::fs::read(&file).unwrap(),
             )
         })
         .collect();
     assert!(result.contains_key(Path::new("manifest.hawdb")));
+    let active_wal = branch.join(hawdb_storage::artifact_files::wal_generation_file(
+        head.active_wal.generation,
+    ));
     assert!(
-        result.len() >= 2,
-        "frontier must include an actual WAL generation"
+        result.contains_key(active_wal.strip_prefix(path).unwrap()),
+        "frontier must include the selected branch's actual WAL generation"
     );
     result
 }
@@ -433,9 +457,11 @@ fn next_random(state: &mut u64) -> u64 {
     value ^ (value >> 31)
 }
 
-fn campaign(seeds: u64) {
+fn campaign(seeds: std::ops::Range<u64>) {
+    let first_seed = seeds.start;
+    let seed_count = seeds.end - seeds.start;
     let mut checks = 0;
-    for seed in 0..seeds {
+    for seed in seeds {
         for mode in [
             StorageResidencyMode::Materialized,
             StorageResidencyMode::OutOfCore,
@@ -505,18 +531,35 @@ fn campaign(seeds: u64) {
             }
         }
     }
-    eprintln!("graph-projection-residency-v1 seeds={seeds} state_checks={checks}");
+    eprintln!(
+        "graph-projection-residency-v1 first_seed={first_seed} seeds={seed_count} state_checks={checks}"
+    );
 }
 
 #[test]
 fn projected_graph_residency_differential_smoke() {
-    campaign(2);
+    campaign(0..2);
 }
 
 #[test]
 #[ignore = "explicit local graph projection residency campaign"]
 fn projected_graph_residency_differential_campaign() {
-    campaign(32);
+    campaign(0..32);
+}
+
+// Keep the complete campaign above available for direct Cargo replay. Bazel
+// executes both halves separately so every seed retains its full state machine
+// without placing all 32 durable fixtures under one test-process timeout.
+#[test]
+#[ignore = "explicit local graph projection residency campaign, seeds 0..16"]
+fn projected_graph_residency_differential_campaign_first_half() {
+    campaign(0..16);
+}
+
+#[test]
+#[ignore = "explicit local graph projection residency campaign, seeds 16..32"]
+fn projected_graph_residency_differential_campaign_second_half() {
+    campaign(16..32);
 }
 
 #[test]
@@ -582,17 +625,23 @@ fn projected_graph_relationship_corruption_fails_without_partial_results() {
         let generation = fixture
             .db()
             .storage_residency_report()
+            .unwrap()
             .canonical_generation
             .unwrap();
-        let canonical = fixture.path.join(format!("canonical.{generation}.hawdb"));
+        let canonical = super::super::active_storage_root(&fixture.path)
+            .join(format!("canonical.{generation}.hawdb"));
         let mut bytes = std::fs::read(&canonical).unwrap();
         *bytes.last_mut().unwrap() ^= 0xff;
         std::fs::write(canonical, bytes).unwrap();
         let mut nodes = 0;
-        GraphExecutionRead::visit_nodes_owned(&fixture.db().store, None, &mut |_| {
-            nodes += 1;
-            Ok(ScanControl::Continue)
-        })
+        GraphExecutionRead::visit_nodes_owned(
+            &fixture.db().runtime.get().unwrap().store,
+            None,
+            &mut |_| {
+                nodes += 1;
+                Ok(ScanControl::Continue)
+            },
+        )
         .unwrap();
         assert_eq!(nodes, NODE_COUNT);
         let error = fixture
@@ -607,6 +656,7 @@ fn projected_graph_relationship_corruption_fails_without_partial_results() {
             fixture
                 .db()
                 .storage_residency_report()
+                .unwrap()
                 .segment_cache_digest_mismatch_count,
             1
         );

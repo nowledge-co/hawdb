@@ -24,7 +24,7 @@ fn disabled_query_capabilities_fail_before_planning_or_catalog_mutation() {
             .with(RuntimeCapability::GraphAnalytics, false),
         ..DatabaseConfig::default()
     });
-    let plan_cache_before = db.plan_cache_stats();
+    let plan_cache_before = db.plan_cache_stats().unwrap();
 
     assert_capability_error(
         db.query("CREATE FULLTEXT INDEX ON :Memory(title)")
@@ -42,8 +42,8 @@ fn disabled_query_capabilities_fail_before_planning_or_catalog_mutation() {
         RuntimeCapability::GraphAnalytics,
     );
 
-    assert_eq!(db.plan_cache_stats(), plan_cache_before);
-    assert!(db.property_indexes().is_empty());
+    assert_eq!(db.plan_cache_stats().unwrap(), plan_cache_before);
+    assert!(db.property_indexes().unwrap().is_empty());
 }
 
 #[test]
@@ -135,7 +135,7 @@ fn cypher_access_control_is_disabled_by_default_and_fails_before_plan_cache() {
             .with(RuntimeCapability::AccessControl, false),
         ..DatabaseConfig::default()
     });
-    let before = db.plan_cache_stats();
+    let before = db.plan_cache_stats().unwrap();
 
     let error = db
         .explain_query_with_params_access_control(
@@ -146,7 +146,7 @@ fn cypher_access_control_is_disabled_by_default_and_fails_before_plan_cache() {
         .unwrap_err();
 
     assert_capability_error(error, RuntimeCapability::AccessControl);
-    assert_eq!(db.plan_cache_stats(), before);
+    assert_eq!(db.plan_cache_stats().unwrap(), before);
 }
 
 #[test]
@@ -157,7 +157,7 @@ fn cypher_access_control_rejects_zero_policy_epoch_before_plan_cache() {
             .with(RuntimeCapability::AccessControl, true),
         ..DatabaseConfig::default()
     });
-    let before = db.plan_cache_stats();
+    let before = db.plan_cache_stats().unwrap();
 
     let error = db
         .explain_query_with_params_access_control(
@@ -174,7 +174,7 @@ fn cypher_access_control_rejects_zero_policy_epoch_before_plan_cache() {
     } else {
         assert_capability_error(error, RuntimeCapability::AccessControl);
     }
-    assert_eq!(db.plan_cache_stats(), before);
+    assert_eq!(db.plan_cache_stats().unwrap(), before);
 }
 
 #[cfg(feature = "acl")]
@@ -219,7 +219,7 @@ fn cypher_access_control_policy_epoch_isolates_plan_cache_entries() {
         .decisions
         .iter()
         .any(|decision| decision == "access control policy epoch 7 bound to plan cache key"));
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.entries, 2);
     assert_eq!(stats.misses, 2);
     assert_eq!(stats.hits, 1);
@@ -276,7 +276,7 @@ fn cypher_access_control_rebinds_scope_values_on_plan_cache_hit() {
         team_b.output.rows[0].get("id"),
         Some(&Value::String("team-b".to_string()))
     );
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.entries, 1);
     assert_eq!(stats.misses, 1);
     assert_eq!(stats.hits, 1);
@@ -319,7 +319,7 @@ fn cypher_access_control_visibility_shape_isolates_plan_cache_entries() {
         by_class.output.rows[0].get("id"),
         Some(&Value::String("team-b".to_string()))
     );
-    assert_eq!(db.plan_cache_stats().entries, 2);
+    assert_eq!(db.plan_cache_stats().unwrap().entries, 2);
 }
 
 #[cfg(feature = "acl")]

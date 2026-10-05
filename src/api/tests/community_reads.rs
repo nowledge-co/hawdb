@@ -29,7 +29,7 @@ fn reads_communities_for_nowledge_summary_list_shapes() {
         .unwrap();
     db.query("CREATE (:Community {id: 'community_negative', community_id: -1, name: 'Negative', ai_summary: 'negative summary', member_count: 100})")
         .unwrap();
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
 
     let summary_only = db
         .query_communities_via_cypher(&KnowledgeCommunityListRequest {
@@ -74,7 +74,7 @@ fn reads_communities_for_nowledge_summary_list_shapes() {
     assert_eq!(presence_ranked.rows[2].id.as_deref(), Some("community_b"));
     assert!(!presence_ranked.rows[2].has_summary);
 
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     let repeated_presence_ranked = db
         .query_communities_via_cypher(&KnowledgeCommunityListRequest {
             require_summary: false,
@@ -84,7 +84,7 @@ fn reads_communities_for_nowledge_summary_list_shapes() {
         })
         .unwrap();
     assert_eq!(repeated_presence_ranked, presence_ranked);
-    let repeated_stats = db.plan_cache_stats();
+    let repeated_stats = db.plan_cache_stats().unwrap();
     assert_eq!(repeated_stats.entries, stats.entries);
     assert_eq!(repeated_stats.misses, stats.misses);
     assert_eq!(repeated_stats.hits, stats.hits + 1);
@@ -103,7 +103,10 @@ fn community_list_read_returns_empty_without_community_label() {
         })
         .unwrap();
 
-    assert_eq!(output.graph_commit_epoch, db.store.commit_epoch());
+    assert_eq!(
+        output.graph_commit_epoch,
+        db.runtime.get().unwrap().store.commit_epoch()
+    );
     assert_eq!(output.matched_count, 0);
     assert_eq!(output.returned_count, 0);
     assert!(output.rows.is_empty());
@@ -120,7 +123,7 @@ fn reads_community_detail_for_wiki_and_mcp_shapes() {
         .unwrap();
     db.query("CREATE (:Community {id: 'community_b', community_id: 8, name: 'Beta', description: 'beta description', ai_summary: '', member_count: 3})")
         .unwrap();
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
 
     let community_id_request = KnowledgeCommunityRequest {
         key: KnowledgeCommunityLookupKey::CommunityId(7),
@@ -146,12 +149,12 @@ fn reads_community_detail_for_wiki_and_mcp_shapes() {
     assert_eq!(row.updated_at, Some(Value::Int(10)));
     assert!(row.has_summary);
 
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     let repeated_by_community_id = db
         .query_community_via_cypher(&community_id_request)
         .unwrap();
     assert_eq!(repeated_by_community_id, by_community_id);
-    let repeated_stats = db.plan_cache_stats();
+    let repeated_stats = db.plan_cache_stats().unwrap();
     assert_eq!(repeated_stats.entries, stats.entries);
     assert_eq!(repeated_stats.misses, stats.misses);
     assert_eq!(repeated_stats.hits, stats.hits + 1);

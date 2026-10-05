@@ -82,7 +82,7 @@ fn entity_delete_guard_uses_fixed_queries_on_one_snapshot() {
             Value::String("excluded-memory".to_string()),
         ),
     ]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     db.query("CREATE (:Memory {id: 'late-memory'})").unwrap();
     db.query("MATCH (m:Memory {id: 'late-memory'}), (e:Entity {id: 'entity'}) CREATE (m)-[:MENTIONS]->(e)")
@@ -138,7 +138,7 @@ fn entity_delete_guard_stops_after_missing_entity() {
         "entity_id".to_string(),
         Value::String("missing".to_string()),
     )]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     let entity = snapshot
         .query_with_params_bounded(ENTITY_DELETE_GUARD_ENTITY_QUERY, &parameters, Some(1))

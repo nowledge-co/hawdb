@@ -36,7 +36,7 @@ fn memory_decay_detail_uses_one_fixed_bounded_query() {
         "memory_id".to_string(),
         Value::String("scheduler-memory-decay-detail".to_string()),
     )]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     db.query("MATCH (m:Memory {id: 'scheduler-memory-decay-detail'}) SET m.decay_score_cached = 0.9, m.future_decay_field = 'late'")
         .unwrap();
@@ -75,7 +75,7 @@ fn memory_decay_detail_missing_id_returns_no_rows() {
         "memory_id".to_string(),
         Value::String("missing".to_string()),
     )]);
-    let mut snapshot = db.begin_read_transaction();
+    let mut snapshot = db.begin_read_transaction().unwrap();
 
     let output = snapshot
         .query_with_params_bounded(MEMORY_DECAY_DETAIL_QUERY, &parameters, Some(1))

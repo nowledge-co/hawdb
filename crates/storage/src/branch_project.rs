@@ -22,10 +22,10 @@
 //! catalog format is `2`, and checksum is decimal CRC32C of the first four lines.
 //! Unknown, duplicate, reordered, noncanonical, or incomplete fields fail closed.
 //!
-//! This storage seam does not yet replace the facade's ordinary opener. Final
-//! bootstrap must publish the selector only after the complete main closure,
-//! private WAL, head, and catalog are durable. No selector publisher is exposed
-//! here: reserving an identity alone is not evidence of completed bootstrap.
+//! The facade opens a published project through metadata admission and defers
+//! main recovery until data access. The lease-owning storage kernel publishes
+//! the selector only after validating the durable main closure, private WAL,
+//! head, and catalog. Reserving identity alone never makes a project ready.
 
 use crate::branch_catalog::{self, BranchId, BranchRecord, BranchState, CatalogMetadataLease};
 use crate::durability;
@@ -313,11 +313,27 @@ fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {
     Ok(encoded)
 }
 
+/// Called only by the lease-owning store after validating the durable main.
+pub(crate) fn publish_validated_selector(
+    files: &ProjectFileDescriptors,
+    selector: ProjectSelector,
+) -> Result<()> {
+    publish_identity_file(&files.root().join(MANIFEST_FILE), selector, PROJECT_HEADER)
+}
+
 fn publish_bootstrap_intent(path: &Path, selector: ProjectSelector) -> Result<()> {
+    publish_identity_file(path, selector, BOOTSTRAP_HEADER)
+}
+
+fn publish_identity_file(path: &Path, selector: ProjectSelector, header: &str) -> Result<()> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| integrity("identity has no filename"))?
+        .to_string_lossy();
     let (candidate, mut file) = loop {
         let sequence = CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let candidate = path.with_file_name(format!(
-            ".{BOOTSTRAP_FILE}.candidate-{}-{sequence}",
+            ".{name}.candidate-{}-{sequence}",
             std::process::id(),
         ));
         match OpenOptions::new()
@@ -333,7 +349,7 @@ fn publish_bootstrap_intent(path: &Path, selector: ProjectSelector) -> Result<()
         }
     };
     {
-        file.write_all(&selector.encode_with_header(BOOTSTRAP_HEADER))?;
+        file.write_all(&selector.encode_with_header(header))?;
         file.sync_all()?;
     }
     drop(file);

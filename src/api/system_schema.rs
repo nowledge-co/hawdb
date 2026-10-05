@@ -61,15 +61,19 @@ impl Database {
         registry: &SystemSchemaRegistry,
     ) -> Result<SystemSchemaUpgradeReport> {
         validate_system_schema_registry(registry)?;
-        let commit_epoch_before = self.commit_epoch();
+        let commit_epoch_before = self.commit_epoch()?;
         let registry_table_present = self
+            .runtime
+            .get()?
             .store
             .relational_state()
             .table_schema(ENGINE_SYSTEM_SCHEMA_REGISTRY_TABLE)
             .is_some();
 
         if registry_table_present {
-            validate_engine_system_schema_registry_table(self.store.relational_state())?;
+            validate_engine_system_schema_registry_table(
+                self.runtime.get()?.store.relational_state(),
+            )?;
         } else if registry.owner() != ENGINE_SYSTEM_SCHEMA_OWNER {
             return Err(HawDBError::Storage(
                 "system schema registry table is missing after engine bootstrap".to_string(),
@@ -78,9 +82,15 @@ impl Database {
 
         let applied = if registry_table_present {
             let max_rows = registry.migrations().len().saturating_add(1);
-            if self.store.relational_state().materialized_rows_resident() {
+            if self
+                .runtime
+                .get()?
+                .store
+                .relational_state()
+                .materialized_rows_resident()
+            {
                 read_applied_system_schema_migrations(
-                    self.store.relational_state(),
+                    self.runtime.get()?.store.relational_state(),
                     registry.owner(),
                     max_rows,
                 )?
@@ -119,7 +129,7 @@ impl Database {
             )));
         }
 
-        let mut transaction = self.begin_transaction();
+        let mut transaction = self.begin_transaction()?;
         let mut applied_versions = Vec::with_capacity(pending.len());
         for migration in pending {
             for statement in migration.statements() {
@@ -156,7 +166,7 @@ impl Database {
             current_version: registry.current_version(),
             applied_versions,
             commit_epoch_before,
-            commit_epoch_after: self.commit_epoch(),
+            commit_epoch_after: self.commit_epoch()?,
         })
     }
 
@@ -182,7 +192,7 @@ impl Database {
     }
 
     pub(super) fn has_only_engine_system_schema_bootstrap(&self) -> Result<bool> {
-        is_engine_system_schema_bootstrap(self.store.relational_state())
+        is_engine_system_schema_bootstrap(self.runtime.get()?.store.relational_state())
     }
 
     pub(super) fn validate_hawdb_lightning_system_schema(state: &RelationalState) -> Result<()> {
@@ -190,7 +200,7 @@ impl Database {
     }
 
     pub(super) fn hawdb_lightning_relational_state(&self) -> Result<RelationalState> {
-        state_with_engine_system_schema(self.store.relational_state())
+        state_with_engine_system_schema(self.runtime.get()?.store.relational_state())
     }
 }
 

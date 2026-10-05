@@ -103,12 +103,12 @@ pub(super) fn qualify_thread_tail_delete(
             .map_err(|error| tail_delete_phase_error("seed", error))?;
     let state_before_rollback = tail_state_digests(&mut database, corpus, INITIAL_MESSAGE_COUNT)
         .map_err(|error| tail_delete_phase_error("pre-rollback state read", error))?;
-    let epoch_before_rollback = database.commit_epoch();
+    let epoch_before_rollback = database.commit_epoch()?;
     exercise_rolled_back_tail_delete(&mut database, corpus)
         .map_err(|error| tail_delete_phase_error("rollback exercise", error))?;
     let state_after_rollback = tail_state_digests(&mut database, corpus, INITIAL_MESSAGE_COUNT)
         .map_err(|error| tail_delete_phase_error("post-rollback state read", error))?;
-    if database.commit_epoch() != epoch_before_rollback
+    if database.commit_epoch()? != epoch_before_rollback
         || state_after_rollback != state_before_rollback
     {
         return Err(HawDBError::Execution(
@@ -116,19 +116,19 @@ pub(super) fn qualify_thread_tail_delete(
         ));
     }
 
-    let epoch_before_negative_start = database.commit_epoch();
+    let epoch_before_negative_start = database.commit_epoch()?;
     let negative_start = query_tail_candidates(&mut database, corpus, -1)?;
     require_tail_candidates(&negative_start, 0)?;
-    if database.commit_epoch() != epoch_before_negative_start {
+    if database.commit_epoch()? != epoch_before_negative_start {
         return Err(HawDBError::Execution(
             "content-store negative tail start changed the commit epoch".to_string(),
         ));
     }
 
-    let epoch_before_empty_tail = database.commit_epoch();
+    let epoch_before_empty_tail = database.commit_epoch()?;
     let empty_tail =
         query_tail_candidates(&mut database, corpus, INITIAL_MESSAGE_COUNT as i64 + 1)?;
-    if !empty_tail.rows.is_empty() || database.commit_epoch() != epoch_before_empty_tail {
+    if !empty_tail.rows.is_empty() || database.commit_epoch()? != epoch_before_empty_tail {
         return Err(HawDBError::Execution(
             "content-store empty tail delete changed canonical state or commit epoch".to_string(),
         ));
@@ -146,7 +146,7 @@ pub(super) fn qualify_thread_tail_delete(
         message_point_statement("thread_tail_deleted_message_point", "thread_tail_delete");
     let page_parameters = thread_page_parameters(THREAD_STORAGE_ID, RETAINED_MESSAGE_COUNT);
 
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
     let deleted_candidates = transaction.query_sql_with_params(
         &candidates.sql,
         &[
@@ -227,7 +227,7 @@ pub(super) fn qualify_thread_tail_delete(
         .commit()
         .map_err(|error| tail_delete_phase_error("commit publication", error))?;
 
-    let committed_epoch = database.commit_epoch();
+    let committed_epoch = database.commit_epoch()?;
     if committed_epoch != seed_commit_epoch.saturating_add(1) {
         return Err(HawDBError::Execution(format!(
             "content-store tail delete published epoch {committed_epoch}, expected {}",
@@ -281,7 +281,7 @@ pub(super) fn qualify_thread_tail_delete(
 
     database.checkpoint()?;
     let checkpoint_generation = database
-        .relational_index_shadow_checkpoint_report()
+        .relational_index_shadow_checkpoint_report()?
         .ok_or_else(|| {
             HawDBError::Execution(
                 "content-store tail delete checkpoint published no relational generation"
@@ -378,7 +378,7 @@ fn seed_tail_delete_thread(
     let anchor = corpus_statement(corpus, "upsert_memory_message_anchor")?;
     let summary = corpus_statement(corpus, "thread_document_payload_summary")?;
     let update_summary = corpus_statement(corpus, "update_content_document_summary")?;
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
     transaction.query_with_params(
         "CREATE (:Thread {id: $thread_id, space_id: $space_id, message_count: $message_count, updated_at: $updated_at})",
         &graph_seed_parameters(),
@@ -444,10 +444,10 @@ fn seed_tail_delete_thread(
         ],
     )?;
     transaction.commit()?;
-    let seed_commit_epoch = database.commit_epoch();
+    let seed_commit_epoch = database.commit_epoch()?;
     database.checkpoint()?;
     let seed_checkpoint_generation = database
-        .relational_index_shadow_checkpoint_report()
+        .relational_index_shadow_checkpoint_report()?
         .ok_or_else(|| {
             HawDBError::Execution(
                 "content-store tail delete seed checkpoint published no relational generation"
@@ -465,7 +465,7 @@ fn exercise_rolled_back_tail_delete(
     let delete_anchors = corpus_statement(corpus, "delete_thread_tail_anchors")?;
     let delete_messages = corpus_statement(corpus, "delete_thread_tail_messages")?;
     let page = corpus_statement(corpus, "thread_messages_page")?;
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
     transaction.query_with_params(
         "MATCH (t:Thread {id: $thread_id}) SET t.message_count = $message_count, t.updated_at = $updated_at",
         &graph_delete_parameters(),

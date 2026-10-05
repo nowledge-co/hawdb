@@ -182,46 +182,52 @@ fn retrieves_knowledge_neighbors_without_search_projection() {
         "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS]->(:Entity {id: 'mid', name: 'Mid'})",
     )
     .unwrap();
-    let leaf = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    let leaf = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Entity",
             BTreeMap::from([
                 ("id".to_string(), Value::String("leaf".to_string())),
                 ("name".to_string(), Value::String("Leaf".to_string())),
             ]),
         )
-        .unwrap();
-    let mention = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    }
+    .unwrap();
+    let mention = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Entity",
             BTreeMap::from([
                 ("id".to_string(), Value::String("mention".to_string())),
                 ("name".to_string(), Value::String("Mention".to_string())),
             ]),
         )
-        .unwrap();
-    db.store
-        .create_relationship(
-            &mut db.catalog,
+    }
+    .unwrap();
+    {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_relationship(
+            &mut branch_runtime.catalog,
             NodeId(1),
             leaf,
             "LINKS",
             BTreeMap::from([("weight".to_string(), Value::Int(2))]),
         )
-        .unwrap();
-    db.store
-        .create_relationship(
-            &mut db.catalog,
+    }
+    .unwrap();
+    {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_relationship(
+            &mut branch_runtime.catalog,
             mention,
             NodeId(0),
             "MENTIONS",
             BTreeMap::new(),
         )
-        .unwrap();
+    }
+    .unwrap();
 
     let outgoing = db
         .query_neighbors_via_cypher(&KnowledgeNeighborsRequest {
@@ -363,12 +369,12 @@ fn scoped_knowledge_neighbors_filters_seed_by_metadata() {
         Some("default")
     );
 
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     let repeated_scoped = db
         .query_scoped_neighbors_via_cypher(&scoped_request)
         .unwrap();
     assert_eq!(repeated_scoped, scoped);
-    let repeated_stats = db.plan_cache_stats();
+    let repeated_stats = db.plan_cache_stats().unwrap();
     assert_eq!(repeated_stats.entries, stats.entries);
     assert_eq!(repeated_stats.misses, stats.misses);
     assert!(repeated_stats.hits > stats.hits);
@@ -424,7 +430,7 @@ fn reads_induced_edges_for_nowledge_overview_and_subgraph_shapes() {
         .unwrap();
     db.query("MATCH (m:Memory {id: 'memory_1'}), (s:Source {id: 'source_outside'}) CREATE (m)-[:SOURCED_FROM]->(s)")
         .unwrap();
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
 
     let output = db
         .query_induced_edges_via_cypher(&KnowledgeInducedEdgeListRequest {
@@ -439,7 +445,10 @@ fn reads_induced_edges_for_nowledge_overview_and_subgraph_shapes() {
         .unwrap();
 
     assert_eq!(output.graph_commit_epoch, graph_commit_epoch);
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch
+    );
     assert_eq!(output.matched_node_count, 3);
     assert_eq!(output.missing_external_ids, vec!["missing".to_string()]);
     assert_eq!(output.matched_count, 3);
@@ -469,10 +478,10 @@ fn reads_induced_edges_for_nowledge_overview_and_subgraph_shapes() {
     assert_eq!(limited.matched_count, 3);
     assert_eq!(limited.returned_count, 2);
 
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     let repeated_limited = db.query_induced_edges_via_cypher(&limited_request).unwrap();
     assert_eq!(repeated_limited, limited);
-    let repeated_stats = db.plan_cache_stats();
+    let repeated_stats = db.plan_cache_stats().unwrap();
     assert_eq!(repeated_stats.entries, stats.entries);
     assert_eq!(repeated_stats.misses, stats.misses);
     assert!(repeated_stats.hits > stats.hits);
@@ -540,10 +549,10 @@ fn retrieves_knowledge_relationships_grouped_by_seed() {
         Some(&Value::Int(3))
     );
 
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     let repeated_output = db.query_relationships_via_cypher(&request).unwrap();
     assert_eq!(repeated_output, output);
-    let repeated_stats = db.plan_cache_stats();
+    let repeated_stats = db.plan_cache_stats().unwrap();
     assert_eq!(repeated_stats.entries, stats.entries);
     assert_eq!(repeated_stats.misses, stats.misses);
     assert!(repeated_stats.hits > stats.hits);
@@ -599,10 +608,10 @@ fn scoped_knowledge_relationships_report_filtered_seeds() {
     assert!(output.groups[1].filtered_out);
     assert!(output.groups[1].relationships.is_empty());
 
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     let repeated_output = db.query_scoped_relationships_via_cypher(&request).unwrap();
     assert_eq!(repeated_output, output);
-    let repeated_stats = db.plan_cache_stats();
+    let repeated_stats = db.plan_cache_stats().unwrap();
     assert_eq!(repeated_stats.entries, stats.entries);
     assert_eq!(repeated_stats.misses, stats.misses);
     assert!(repeated_stats.hits > stats.hits);
@@ -617,20 +626,29 @@ fn knowledge_neighbors_reports_limit_and_missing_seed() {
     });
     db.query("CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS]->(:Entity {id: 'left', name: 'Left'})")
             .unwrap();
-    let right = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    let right = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Entity",
             BTreeMap::from([
                 ("id".to_string(), Value::String("right".to_string())),
                 ("name".to_string(), Value::String("Right".to_string())),
             ]),
         )
-        .unwrap();
-    db.store
-        .create_relationship(&mut db.catalog, NodeId(0), right, "LINKS", BTreeMap::new())
-        .unwrap();
+    }
+    .unwrap();
+    {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_relationship(
+            &mut branch_runtime.catalog,
+            NodeId(0),
+            right,
+            "LINKS",
+            BTreeMap::new(),
+        )
+    }
+    .unwrap();
 
     let limited_request = KnowledgeNeighborsRequest {
         label: "Memory".to_string(),
@@ -661,10 +679,10 @@ fn knowledge_neighbors_reports_limit_and_missing_seed() {
     );
     assert_eq!(limited.diagnostics.fanout_reasons, limited.fanout_reasons);
 
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     let repeated_limited = db.query_neighbors_via_cypher(&limited_request).unwrap();
     assert_eq!(repeated_limited, limited);
-    let repeated_stats = db.plan_cache_stats();
+    let repeated_stats = db.plan_cache_stats().unwrap();
     assert_eq!(repeated_stats.entries, stats.entries);
     assert_eq!(repeated_stats.misses, stats.misses);
     assert!(repeated_stats.hits > stats.hits);
@@ -724,20 +742,29 @@ fn typed_knowledge_navigation_reports_dense_adjacency_groups() {
     db.query("CREATE (:Memory {id: 'root', title: 'Root'})")
         .unwrap();
     for index in 0..DENSE_ADJACENCY_DEGREE_THRESHOLD {
-        let target = db
-            .store
-            .create_node(
-                &mut db.catalog,
+        let target = {
+            let branch_runtime = db.runtime.get_mut().unwrap();
+            branch_runtime.store.create_node(
+                &mut branch_runtime.catalog,
                 "Entity",
                 BTreeMap::from([
                     ("id".to_string(), Value::String(format!("entity-{index}"))),
                     ("name".to_string(), Value::String(format!("Entity {index}"))),
                 ]),
             )
-            .unwrap();
-        db.store
-            .create_relationship(&mut db.catalog, NodeId(0), target, "LINKS", BTreeMap::new())
-            .unwrap();
+        }
+        .unwrap();
+        {
+            let branch_runtime = db.runtime.get_mut().unwrap();
+            branch_runtime.store.create_relationship(
+                &mut branch_runtime.catalog,
+                NodeId(0),
+                target,
+                "LINKS",
+                BTreeMap::new(),
+            )
+        }
+        .unwrap();
     }
 
     let neighbors = db
@@ -841,26 +868,29 @@ fn retrieves_bounded_knowledge_paths_without_search_projection() {
         "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS {weight: 1}]->(:Entity {id: 'mid', name: 'Mid'})",
     )
     .unwrap();
-    let leaf = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    let leaf = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Entity",
             BTreeMap::from([
                 ("id".to_string(), Value::String("leaf".to_string())),
                 ("name".to_string(), Value::String("Leaf".to_string())),
             ]),
         )
-        .unwrap();
-    db.store
-        .create_relationship(
-            &mut db.catalog,
+    }
+    .unwrap();
+    {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_relationship(
+            &mut branch_runtime.catalog,
             NodeId(1),
             leaf,
             "LINKS",
             BTreeMap::from([("weight".to_string(), Value::Int(2))]),
         )
-        .unwrap();
+    }
+    .unwrap();
 
     let output = db
         .query_paths_via_cypher(&KnowledgePathRequest {
@@ -983,10 +1013,10 @@ fn scoped_knowledge_paths_filter_source_and_target_by_metadata() {
         Some("default")
     );
 
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     let repeated_scoped = db.query_scoped_paths_via_cypher(&scoped_request).unwrap();
     assert_eq!(repeated_scoped, scoped);
-    let repeated_stats = db.plan_cache_stats();
+    let repeated_stats = db.plan_cache_stats().unwrap();
     assert_eq!(repeated_stats.entries, stats.entries);
     assert_eq!(repeated_stats.misses, stats.misses);
     assert!(repeated_stats.hits > stats.hits);
@@ -1044,29 +1074,40 @@ fn knowledge_paths_respects_direction_type_limit_and_missing_endpoint() {
     });
     db.query("CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS]->(:Entity {id: 'left', name: 'Left'})")
             .unwrap();
-    let right = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    let right = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Entity",
             BTreeMap::from([
                 ("id".to_string(), Value::String("right".to_string())),
                 ("name".to_string(), Value::String("Right".to_string())),
             ]),
         )
-        .unwrap();
-    db.store
-        .create_relationship(&mut db.catalog, NodeId(0), right, "LINKS", BTreeMap::new())
-        .unwrap();
-    db.store
-        .create_relationship(
-            &mut db.catalog,
+    }
+    .unwrap();
+    {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_relationship(
+            &mut branch_runtime.catalog,
+            NodeId(0),
+            right,
+            "LINKS",
+            BTreeMap::new(),
+        )
+    }
+    .unwrap();
+    {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_relationship(
+            &mut branch_runtime.catalog,
             NodeId(0),
             right,
             "MENTIONS",
             BTreeMap::new(),
         )
-        .unwrap();
+    }
+    .unwrap();
 
     let wrong_direction = db
         .query_paths_via_cypher(&KnowledgePathRequest {
@@ -1139,10 +1180,10 @@ fn knowledge_paths_respects_direction_type_limit_and_missing_endpoint() {
     );
     assert_eq!(limited.diagnostics.fanout_reasons, limited.fanout_reasons);
 
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     let repeated_limited = db.query_paths_via_cypher(&limited_request).unwrap();
     assert_eq!(repeated_limited, limited);
-    let repeated_stats = db.plan_cache_stats();
+    let repeated_stats = db.plan_cache_stats().unwrap();
     assert_eq!(repeated_stats.entries, stats.entries);
     assert_eq!(repeated_stats.misses, stats.misses);
     assert!(repeated_stats.hits > stats.hits);
@@ -1265,40 +1306,52 @@ fn retrieves_bounded_knowledge_subgraph_without_search_projection() {
         "CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS]->(:Entity {id: 'mid', name: 'Mid'})",
     )
     .unwrap();
-    let leaf = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    let leaf = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Entity",
             BTreeMap::from([
                 ("id".to_string(), Value::String("leaf".to_string())),
                 ("name".to_string(), Value::String("Leaf".to_string())),
             ]),
         )
-        .unwrap();
-    let mention = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    }
+    .unwrap();
+    let mention = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Entity",
             BTreeMap::from([
                 ("id".to_string(), Value::String("mention".to_string())),
                 ("name".to_string(), Value::String("Mention".to_string())),
             ]),
         )
-        .unwrap();
-    db.store
-        .create_relationship(&mut db.catalog, NodeId(1), leaf, "LINKS", BTreeMap::new())
-        .unwrap();
-    db.store
-        .create_relationship(
-            &mut db.catalog,
+    }
+    .unwrap();
+    {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_relationship(
+            &mut branch_runtime.catalog,
+            NodeId(1),
+            leaf,
+            "LINKS",
+            BTreeMap::new(),
+        )
+    }
+    .unwrap();
+    {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_relationship(
+            &mut branch_runtime.catalog,
             NodeId(0),
             mention,
             "MENTIONS",
             BTreeMap::new(),
         )
-        .unwrap();
+    }
+    .unwrap();
 
     let output = db
         .query_subgraph_via_cypher(&KnowledgeSubgraphRequest {
@@ -1404,12 +1457,12 @@ fn scoped_knowledge_subgraph_filters_seed_by_metadata() {
         Some("thread_1")
     );
 
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     let repeated_scoped = db
         .query_scoped_subgraph_via_cypher(&scoped_request)
         .unwrap();
     assert_eq!(repeated_scoped, scoped);
-    let repeated_stats = db.plan_cache_stats();
+    let repeated_stats = db.plan_cache_stats().unwrap();
     assert_eq!(repeated_stats.entries, stats.entries);
     assert_eq!(repeated_stats.misses, stats.misses);
     assert!(repeated_stats.hits > stats.hits);
@@ -1458,20 +1511,29 @@ fn knowledge_subgraph_reports_limits_and_missing_seed() {
     });
     db.query("CREATE (:Memory {id: 'root', title: 'Root'})-[:LINKS]->(:Entity {id: 'left', name: 'Left'})")
             .unwrap();
-    let right = db
-        .store
-        .create_node(
-            &mut db.catalog,
+    let right = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_node(
+            &mut branch_runtime.catalog,
             "Entity",
             BTreeMap::from([
                 ("id".to_string(), Value::String("right".to_string())),
                 ("name".to_string(), Value::String("Right".to_string())),
             ]),
         )
-        .unwrap();
-    db.store
-        .create_relationship(&mut db.catalog, NodeId(0), right, "LINKS", BTreeMap::new())
-        .unwrap();
+    }
+    .unwrap();
+    {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime.store.create_relationship(
+            &mut branch_runtime.catalog,
+            NodeId(0),
+            right,
+            "LINKS",
+            BTreeMap::new(),
+        )
+    }
+    .unwrap();
 
     let node_limited = db
         .query_subgraph_via_cypher(&KnowledgeSubgraphRequest {
@@ -1538,12 +1600,12 @@ fn knowledge_subgraph_reports_limits_and_missing_seed() {
         relationship_limited.fanout_reasons
     );
 
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     let repeated_relationship_limited = db
         .query_subgraph_via_cypher(&relationship_limited_request)
         .unwrap();
     assert_eq!(repeated_relationship_limited, relationship_limited);
-    let repeated_stats = db.plan_cache_stats();
+    let repeated_stats = db.plan_cache_stats().unwrap();
     assert_eq!(repeated_stats.entries, stats.entries);
     assert_eq!(repeated_stats.misses, stats.misses);
     assert!(repeated_stats.hits > stats.hits);

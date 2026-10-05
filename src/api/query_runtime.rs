@@ -55,17 +55,20 @@ impl RuntimePlanningSnapshot {
         &self,
         database: &Database,
         prepared: &PreparedRuntimeQuery,
-    ) -> bool {
-        self.branch_id == database.current_branch().map(|current| current.info.id)
-            && self.published_read_view == database.store.published_read_view()
-            && self.config == database.config
-            && self.system_variables == database.system_variables
-            && prepared
-                .optimizer_environment
-                .as_ref()
-                .is_none_or(|environment| {
-                    environment.is_execution_compatible(&database.catalog, &database.store)
-                })
+    ) -> Result<bool> {
+        let runtime = database.runtime.get()?;
+        Ok(
+            self.branch_id == database.current_branch()?.map(|current| current.info.id)
+                && self.published_read_view == runtime.store.published_read_view()
+                && self.config == database.config
+                && self.system_variables == database.system_variables
+                && prepared
+                    .optimizer_environment
+                    .as_ref()
+                    .is_none_or(|environment| {
+                        environment.is_execution_compatible(&runtime.catalog, &runtime.store)
+                    }),
+        )
     }
 
     pub(crate) fn prepare(
@@ -164,7 +167,7 @@ impl PreparedRuntimeQuery {
 
 impl Database {
     fn validate_prepared_branch(&self, prepared: &PreparedRuntimeQuery) -> Result<()> {
-        if prepared.branch_id != self.current_branch().map(|current| current.info.id) {
+        if prepared.branch_id != self.current_branch()?.map(|current| current.info.id) {
             return Err(HawDBError::Semantic(
                 "prepared statement belongs to a different branch".into(),
             ));
@@ -173,34 +176,38 @@ impl Database {
     }
 
     #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
-    pub(crate) fn runtime_planning_snapshot(&self) -> RuntimePlanningSnapshot {
-        let (published_read_view, pin) = self.pin_read_view();
-        RuntimePlanningSnapshot {
-            branch_id: self.current_branch().map(|current| current.info.id),
-            catalog: self.catalog.clone(),
-            store: self.store.snapshot_for_read(),
-            // Store snapshots omit the writable durable handle and its checkpoint
-            // metadata. Freshness must compare the original pinned publication.
-            published_read_view,
-            optimizer: self.optimizer.clone(),
-            config: self.config.clone(),
-            system_variables: self.system_variables.clone(),
-            // Templates and their generation counter must have the same ownership.
-            plan_cache: Arc::clone(&self.plan_cache),
-            planning_cache: Arc::clone(&self.optimizer_planning_cache),
-            _pin: pin,
-        }
+    pub(crate) fn runtime_planning_snapshot(&self) -> Result<RuntimePlanningSnapshot> {
+        Ok({
+            let (published_read_view, pin) = self.pin_read_view()?;
+            RuntimePlanningSnapshot {
+                branch_id: self.current_branch()?.map(|current| current.info.id),
+                catalog: self.runtime.get()?.catalog.clone(),
+                store: self.runtime.get()?.store.snapshot_for_read(),
+                // Store snapshots omit the writable durable handle and its checkpoint
+                // metadata. Freshness must compare the original pinned publication.
+                published_read_view,
+                optimizer: self.runtime.get()?.optimizer.clone(),
+                config: self.config.clone(),
+                system_variables: self.system_variables.clone(),
+                // Templates and their generation counter must have the same ownership.
+                plan_cache: Arc::clone(&self.runtime.get()?.plan_cache),
+                planning_cache: Arc::clone(&self.runtime.get()?.optimizer_planning_cache),
+                _pin: pin,
+            }
+        })
     }
 
-    fn runtime_planning_context(&self) -> RuntimePlanningContext<'_> {
-        RuntimePlanningContext {
-            branch_id: self.current_branch().map(|current| current.info.id),
-            catalog: &self.catalog,
-            store: &self.store,
-            optimizer: &self.optimizer,
-            config: &self.config,
-            system_variables: &self.system_variables,
-        }
+    fn runtime_planning_context(&self) -> Result<RuntimePlanningContext<'_>> {
+        Ok({
+            RuntimePlanningContext {
+                branch_id: self.current_branch()?.map(|current| current.info.id),
+                catalog: &self.runtime.get()?.catalog,
+                store: &self.runtime.get()?.store,
+                optimizer: &self.runtime.get()?.optimizer,
+                config: &self.config,
+                system_variables: &self.system_variables,
+            }
+        })
     }
 
     pub fn query_work_request(&self) -> WorkRequest {
@@ -219,8 +226,14 @@ impl Database {
         parameters: &BTreeMap<String, Value>,
     ) -> Result<RuntimeAdmissionPlan> {
         let plan_cache = SharedState::new(PlanCache::new(self.config.max_plan_cache_entries));
-        let planning_cache = SharedState::new(self.optimizer_planning_cache.borrow().clone());
-        self.runtime_planning_context()
+        let planning_cache = SharedState::new(
+            self.runtime
+                .get()?
+                .optimizer_planning_cache
+                .borrow()
+                .clone(),
+        );
+        self.runtime_planning_context()?
             .prepare(
                 cypher_text.to_string(),
                 parameters,
@@ -236,11 +249,11 @@ impl Database {
         cypher_text: String,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<PreparedRuntimeQuery> {
-        self.runtime_planning_context().prepare(
+        self.runtime_planning_context()?.prepare(
             cypher_text,
             parameters,
-            &self.plan_cache,
-            &self.optimizer_planning_cache,
+            &self.runtime.get()?.plan_cache,
+            &self.runtime.get()?.optimizer_planning_cache,
         )
     }
 }
@@ -449,7 +462,8 @@ impl Database {
         parameters: &BTreeMap<String, Value>,
     ) -> Result<QueryOutput> {
         self.validate_prepared_branch(&prepared)?;
-        let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
+        let runtime = self.runtime.get()?;
+        let (cypher_text, prepared) = prepared.into_execution(&runtime.catalog, &runtime.store);
         let mut external = executor::NoExternalReadOperator;
         self.query_with_params_trace_and_external_prepared(
             &cypher_text,
@@ -497,7 +511,8 @@ impl Database {
         task_context: &hawdb_core::RuntimeTaskContext,
     ) -> Result<QueryOutput> {
         self.validate_prepared_branch(&prepared)?;
-        let (cypher_text, prepared) = prepared.into_execution(&self.catalog, &self.store);
+        let runtime = self.runtime.get()?;
+        let (cypher_text, prepared) = prepared.into_execution(&runtime.catalog, &runtime.store);
         let mut external = executor::NoExternalReadOperator;
         self.query_with_params_trace_and_external_prepared(
             &cypher_text,
@@ -557,7 +572,7 @@ impl Database {
         access_control: Option<QueryAccessControlContext>,
         task_context: Option<&hawdb_core::RuntimeTaskContext>,
     ) -> Result<(QueryOutput, QueryExecutionTrace)> {
-        self.store.ensure_usable()?;
+        self.runtime.get()?.store.ensure_usable()?;
         self.query_with_params_trace_and_external_prepared(
             cypher_text,
             parse_runtime_execution(cypher_text)?,
@@ -585,7 +600,7 @@ impl Database {
             task_context,
         } = options;
         let execution_started = hawdb_core::time::Instant::now();
-        self.store.ensure_usable()?;
+        self.runtime.get()?.store.ensure_usable()?;
         query_runtime_checkpoint(task_context)?;
         let PreparedRuntimeExecution {
             statement,
@@ -607,7 +622,10 @@ impl Database {
                     task_context,
                 )
                 .map(|output| (output, QueryExecutionTrace::uncached(statement)));
-            self.store.poison_on_storage_error(&query_result);
+            self.runtime
+                .get()?
+                .store
+                .poison_on_storage_error(&query_result);
             let statement_result = match &query_result {
                 Ok((output, _)) => Ok(output),
                 Err(error) => Err(error),
@@ -664,13 +682,16 @@ impl Database {
             let (rows, execution_profile) = if is_mutation {
                 query_runtime_checkpoint(task_context)?;
                 (
-                    executor::execute_mutation_with_limits(
-                        &optimized.physical_plan,
-                        &mut self.catalog,
-                        &mut self.store,
-                        self.config.mutation_limits,
-                        task_context,
-                    )?
+                    {
+                        let branch_runtime = self.runtime.get_mut()?;
+                        executor::execute_mutation_with_limits(
+                            &optimized.physical_plan,
+                            &mut branch_runtime.catalog,
+                            &mut branch_runtime.store,
+                            self.config.mutation_limits,
+                            task_context,
+                        )
+                    }?
                     .into(),
                     None,
                 )
@@ -686,7 +707,14 @@ impl Database {
                         self.config.max_read_result_payload_bytes,
                     )
                     .with_optional_task_context(task_context),
-                    executor::ExecutionResources::new(&mut self.catalog, &mut self.store, external),
+                    {
+                        let branch_runtime = self.runtime.get_mut()?;
+                        executor::ExecutionResources::new(
+                            &mut branch_runtime.catalog,
+                            &mut branch_runtime.store,
+                            external,
+                        )
+                    },
                 )?;
                 (profiled.rows, Some(profiled.profile))
             };
@@ -703,7 +731,10 @@ impl Database {
                 },
             ))
         })();
-        self.store.poison_on_storage_error(&query_result);
+        self.runtime
+            .get()?
+            .store
+            .poison_on_storage_error(&query_result);
         let statement_result = match &query_result {
             Ok((output, _)) => Ok(output),
             Err(error) => Err(error),
@@ -763,7 +794,14 @@ impl Database {
                     self.config.max_read_result_payload_bytes,
                 )
                 .with_optional_task_context(task_context),
-                executor::ExecutionResources::new(&mut self.catalog, &mut self.store, external),
+                {
+                    let branch_runtime = self.runtime.get_mut()?;
+                    executor::ExecutionResources::new(
+                        &mut branch_runtime.catalog,
+                        &mut branch_runtime.store,
+                        external,
+                    )
+                },
             )?;
             return Ok(QueryOutput {
                 rows: vec![explain_analyze_output_row(
@@ -805,7 +843,7 @@ mod tests {
     #[test]
     fn planning_cache_invalidation_does_not_reuse_an_in_flight_generation() {
         let db = Database::new();
-        let planning = db.runtime_planning_snapshot();
+        let planning = db.runtime_planning_snapshot().unwrap();
         let parameters = BTreeMap::new();
         let before = planning
             .prepare(
@@ -813,7 +851,12 @@ mod tests {
                 &parameters,
             )
             .unwrap();
-        db.optimizer_planning_cache.borrow_mut().invalidate();
+        db.runtime
+            .get()
+            .unwrap()
+            .optimizer_planning_cache
+            .borrow_mut()
+            .invalidate();
         let after = planning
             .prepare(
                 "MATCH (m:Memory) RETURN m.id AS id".to_string(),
@@ -832,20 +875,20 @@ mod tests {
         let mut db = Database::new();
         let query = "CREATE (:Memory {id: 'new'})";
         let parameters = BTreeMap::new();
-        let old = db.runtime_planning_snapshot();
+        let old = db.runtime_planning_snapshot().unwrap();
         let prepared = old.prepare(query.to_string(), &parameters).unwrap();
-        assert!(old.is_current_for(&db, &prepared));
+        assert!(old.is_current_for(&db, &prepared).unwrap());
         db.query("CREATE (:Memory {id: 'other'})").unwrap();
-        assert!(!old.is_current_for(&db, &prepared));
-        let current = db.runtime_planning_snapshot();
+        assert!(!old.is_current_for(&db, &prepared).unwrap());
+        let current = db.runtime_planning_snapshot().unwrap();
         let prepared = current.prepare(query.to_string(), &parameters).unwrap();
-        assert!(current.is_current_for(&db, &prepared));
+        assert!(current.is_current_for(&db, &prepared).unwrap());
         db.config.max_read_result_rows = Some(1);
-        assert!(!current.is_current_for(&db, &prepared));
-        let current = db.runtime_planning_snapshot();
-        assert!(current.is_current_for(&db, &prepared));
+        assert!(!current.is_current_for(&db, &prepared).unwrap());
+        let current = db.runtime_planning_snapshot().unwrap();
+        assert!(current.is_current_for(&db, &prepared).unwrap());
         db.system_variables.estimated_operations += 1;
-        assert!(!current.is_current_for(&db, &prepared));
+        assert!(!current.is_current_for(&db, &prepared).unwrap());
     }
 
     #[test]
@@ -872,29 +915,32 @@ mod tests {
             let query = "CREATE (:Memory {id: 'planned'})";
             let mut db = Database::open_with_config(&path, config.clone()).unwrap();
             db.query("CREATE (:Memory {id: 'existing'})").unwrap();
-            let before = db.runtime_planning_snapshot();
+            let before = db.runtime_planning_snapshot().unwrap();
             let prepared = before.prepare(query.to_string(), &parameters).unwrap();
-            assert!(before.is_current_for(&db, &prepared));
-            let epoch = db.store.commit_epoch();
+            assert!(before.is_current_for(&db, &prepared).unwrap());
+            let epoch = db.runtime.get().unwrap().store.commit_epoch();
             db.checkpoint().unwrap();
-            assert_eq!(db.store.commit_epoch(), epoch);
-            assert!(!before.is_current_for(&db, &prepared));
+            assert_eq!(db.runtime.get().unwrap().store.commit_epoch(), epoch);
+            assert!(!before.is_current_for(&db, &prepared).unwrap());
             drop(before);
 
-            let checkpointed = db.runtime_planning_snapshot();
+            let checkpointed = db.runtime_planning_snapshot().unwrap();
             let prepared = checkpointed
                 .prepare(query.to_string(), &parameters)
                 .unwrap();
-            assert!(checkpointed.is_current_for(&db, &prepared), "{mode:?}");
+            assert!(
+                checkpointed.is_current_for(&db, &prepared).unwrap(),
+                "{mode:?}"
+            );
             drop(checkpointed);
             drop(db);
 
             let mut db = Database::open_with_config(&path, config).unwrap();
-            let reopened = db.runtime_planning_snapshot();
+            let reopened = db.runtime_planning_snapshot().unwrap();
             let prepared = reopened.prepare(query.to_string(), &parameters).unwrap();
-            assert!(reopened.is_current_for(&db, &prepared), "{mode:?}");
+            assert!(reopened.is_current_for(&db, &prepared).unwrap(), "{mode:?}");
             db.query("CREATE (:Memory {id: 'concurrent'})").unwrap();
-            assert!(!reopened.is_current_for(&db, &prepared));
+            assert!(!reopened.is_current_for(&db, &prepared).unwrap());
             drop(reopened);
             drop(db);
             std::fs::remove_dir_all(&path).unwrap();
@@ -910,6 +956,7 @@ mod tests {
             BTreeMap::from([("id".to_string(), Value::String("existing".to_string()))]);
         let first = db
             .runtime_planning_snapshot()
+            .unwrap()
             .prepare(query.to_string(), &parameters)
             .unwrap();
         assert_eq!(
@@ -918,6 +965,7 @@ mod tests {
         );
         let second = db
             .runtime_planning_snapshot()
+            .unwrap()
             .prepare(query.to_string(), &parameters)
             .unwrap();
         assert_eq!(
@@ -940,7 +988,7 @@ mod tests {
         let mut db = Database::new();
         db.query("CREATE (:Memory {id: 'existing'})").unwrap();
         let db = Mutex::new(db);
-        let planning = db.lock().unwrap().runtime_planning_snapshot();
+        let planning = db.lock().unwrap().runtime_planning_snapshot().unwrap();
         let guard = db.lock().unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
@@ -963,11 +1011,31 @@ mod tests {
     fn planning_snapshots_keep_schema_keys_separate_and_release_reader_pins() {
         let mut db = Database::new();
         db.query("CREATE (:Memory {id: 'existing'})").unwrap();
-        let old = db.runtime_planning_snapshot();
-        assert_eq!(db.reader_pins.lock().unwrap().active_views.len(), 1);
+        let old = db.runtime_planning_snapshot().unwrap();
+        assert_eq!(
+            db.runtime
+                .get()
+                .unwrap()
+                .reader_pins
+                .lock()
+                .unwrap()
+                .active_views
+                .len(),
+            1
+        );
         db.query("CREATE (:NewLabel {id: 'new'})").unwrap();
-        let new = db.runtime_planning_snapshot();
-        assert_eq!(db.reader_pins.lock().unwrap().active_views.len(), 2);
+        let new = db.runtime_planning_snapshot().unwrap();
+        assert_eq!(
+            db.runtime
+                .get()
+                .unwrap()
+                .reader_pins
+                .lock()
+                .unwrap()
+                .active_views
+                .len(),
+            2
+        );
         assert!(old.catalog.label_id("NewLabel").is_none());
         assert!(new.catalog.label_id("NewLabel").is_some());
         let query = "MATCH (m:Memory) RETURN m.id AS id";
@@ -1018,9 +1086,27 @@ mod tests {
             PlanCacheLookup::Hit
         );
         drop(old);
-        assert_eq!(db.reader_pins.lock().unwrap().active_views.len(), 1);
+        assert_eq!(
+            db.runtime
+                .get()
+                .unwrap()
+                .reader_pins
+                .lock()
+                .unwrap()
+                .active_views
+                .len(),
+            1
+        );
         drop(new);
-        assert!(db.reader_pins.lock().unwrap().active_views.is_empty());
+        assert!(db
+            .runtime
+            .get()
+            .unwrap()
+            .reader_pins
+            .lock()
+            .unwrap()
+            .active_views
+            .is_empty());
     }
 
     #[test]
@@ -1034,15 +1120,20 @@ mod tests {
         let (_, reusable) = db
             .prepare_runtime_query(query.to_string(), &parameters)
             .unwrap()
-            .into_execution(&db.catalog, &db.store);
+            .into_execution(
+                &db.runtime.get().unwrap().catalog,
+                &db.runtime.get().unwrap().store,
+            );
         assert!(reusable.optimized.is_some());
 
         let reusable_after_data_change = db
             .prepare_runtime_query(query.to_string(), &parameters)
             .unwrap();
         db.query("CREATE (:Memory {id: 'newer'})").unwrap();
-        let (_, reusable_after_data_change) =
-            reusable_after_data_change.into_execution(&db.catalog, &db.store);
+        let (_, reusable_after_data_change) = reusable_after_data_change.into_execution(
+            &db.runtime.get().unwrap().catalog,
+            &db.runtime.get().unwrap().store,
+        );
         assert!(reusable_after_data_change.optimized.is_some());
     }
 
@@ -1087,7 +1178,7 @@ mod tests {
         let prepared = db
             .prepare_runtime_query(query.to_string(), &parameters)
             .unwrap();
-        let mut read = db.begin_read_transaction();
+        let mut read = db.begin_read_transaction().unwrap();
 
         let output = read
             .query_prepared_with_params_context(

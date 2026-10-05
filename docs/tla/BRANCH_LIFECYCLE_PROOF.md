@@ -3,10 +3,10 @@
 The normative contract is
 [`BRANCHING_STORAGE_SPEC.md`](../specs/BRANCHING_STORAGE_SPEC.md), tracked by
 [#774](https://github.com/nowledge-co/hawdb/issues/774). This is an executable
-design model for planned P0 storage. It does not claim that runtime branch
-selection or a Rust-to-TLA refinement proof exists. The storage layer has a
-direct head-admission kernel and branch-local checkpoint/seal publication, but
-SQL session selection remains separate implementation work.
+design model for the P0 storage contract. The implementation has direct
+head admission, branch-local checkpoint/seal publication, and SQL session
+selection. The links below describe those implementation boundaries; they do
+not establish a Rust-to-TLA refinement proof or physical power-loss qualification.
 
 ## State and abstraction
 
@@ -63,16 +63,43 @@ head. Direct admission preserves mutable WAL dependencies outside disposable
 runtime materialization and finalizes relational recovery only after replaying
 all sealed generations and the private suffix.
 
+`Database::open` admits a published project's selector and catalog before
+loading its default branch's data. The first data operation reserves target
+resources, recovers the exact ready UUID/revision under its lease, completes
+required schema/row readiness, and then publishes the runtime. Checkpoint
+artifacts are mounted as verified hard-link aliases; mount validation uses
+transient handles without populating the immutable-handle cache. A mutable open
+detaches an alias before changing shared bytes. Admission does not copy the
+source container or the checkpoint dataset; hard-link installation requires
+the project runtime and object store to reside on the same filesystem.
+
+SQL `CREATE BRANCH`, `DROP BRANCH`, and `USE BRANCH` use the storage lifecycle
+contracts. `USE` validates a candidate before replacing the selected store,
+schema, identity, optimizer, planning caches, reader pins, and projection
+consumers together. It rejects explicit transaction and shared-session
+selection. Failed admission leaves the source runtime available.
+
+The project descriptor domain has a finite default limit of 256, configurable
+through `DatabaseConfig::max_open_files`. Ownership locks, mutable WAL handles,
+cached immutable handles, and temporary recovery/publication operations share
+that domain. Target capacity is reserved before recovery; unopened logical
+artifact aliases retain no native handle. This bounds one project's charged
+descriptors, not all host libraries or independent projects in the process;
+an OS-level descriptor rejection remains possible and is reported explicitly.
+
 Catalog-backed GC serializes metadata through sweep and conservatively defers
 all reclamation while any branch lease remains active. The admitted store and
 read snapshots retain that lease, protecting unpublished candidate closures
 and older reader roots. The returned report exposes this deferral.
 
-These are source-level links to the catalog, admission, and publication state
-machines, not a full Rust-to-TLA refinement. SQL `USE BRANCH`, session cache/plan
-isolation, project FD accounting (#819), and deterministic power-loss runtime
-qualification (#820) remain separate implementation work; #778 still owns
-fine-grained physical cleanup and pin-aware reclamation.
+These are source-level links to the catalog, admission, publication, and session
+state machines, not a full Rust-to-TLA refinement. Runtime isolation and
+descriptor tests are separate implementation evidence; the model does not
+prove the Rust resource budget (#819). Deterministic physical power-loss runtime
+qualification (#820) remains required; #778 still owns fine-grained physical
+cleanup and pin-aware reclamation. Process-kill/reopen tests and successful
+model checking do not substitute for torn-write, write-reordering, and lost
+unsynchronized-write qualification.
 
 `s.candidate` is an unpublished root and `s.armed` records a candidate whose
 complete closure is already durable. `StageCandidateClosure` models an
@@ -82,6 +109,20 @@ marked before it is armed by a later publication must still be retained at
 sweep time. `Protected` includes ready/deleting heads, recovery heads, creating
 bases, leases, and publication candidates. Parent deletion may proceed while a
 descendant survives because the descendant has its own immutable root.
+
+## Implementation fault evidence
+
+The [branch power-loss matrix](../BRANCH_POWER_LOSS_QUALIFICATION.md) captures
+actual production IO and recovers isolated crash images through ordinary
+project opening. It distinguishes inode bytes from parent-directory names,
+including namespace retry and uncertain pending-create recovery. Its named
+bootstrap, WAL/seal, head/checkpoint, catalog, admission and GC cuts support the
+abstract complete-closure obligations below; they do not establish a refinement
+proof or exhaustive physical interleaving coverage. The model and its finite
+configuration are unchanged by those implementation corrections, so previous
+positive/mutant/witness results remain results for that exact abstraction.
+Windows ancestor-directory persistence and physical-device behavior remain
+explicit qualification gaps.
 
 ## Safety argument
 

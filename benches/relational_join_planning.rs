@@ -44,7 +44,7 @@ fn main() {
         ..DatabaseConfig::default()
     });
     seed_tables(&mut database);
-    let read = database.begin_read_transaction();
+    let read = database.begin_read_transaction().unwrap();
     let results = (MIN_TABLES..=MAX_TABLES)
         .map(|table_count| measure(&read, table_count))
         .collect::<Vec<_>>();

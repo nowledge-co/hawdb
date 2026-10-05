@@ -396,7 +396,7 @@ fn read_transaction_streaming_options_cannot_relax_database_payload_cap() {
     db.query("CREATE (:Memory {id: 1, title: 'payload exceeds the configured budget'})")
         .unwrap();
 
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     let mut delivered_rows = 0usize;
     let error = read
         .query_streaming(
@@ -447,7 +447,7 @@ fn read_transaction_inherits_database_result_row_cap() {
     db.query("CREATE (:Memory {id: 1, title: 'One'})").unwrap();
     db.query("CREATE (:Memory {id: 2, title: 'Two'})").unwrap();
 
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     let error = read
         .query("MATCH (m:Memory) RETURN m.title AS title ORDER BY title ASC")
         .unwrap_err();
@@ -487,7 +487,7 @@ fn read_only_rejected_mutations_do_not_populate_plan_cache() {
         .unwrap_err();
     assert!(error.to_string().contains("read-only mode"));
 
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.entries, 0);
     assert_eq!(stats.hits, 0);
     assert_eq!(stats.misses, 0);
@@ -610,7 +610,7 @@ fn read_transaction_streams_rows_with_row_and_payload_budgets() {
             .unwrap();
     }
 
-    let mut tx = db.begin_read_transaction();
+    let mut tx = db.begin_read_transaction().unwrap();
     let mut titles = Vec::new();
     let report = tx
         .query_streaming(
@@ -637,7 +637,7 @@ fn read_transaction_streams_rows_with_row_and_payload_budgets() {
         ]
     );
 
-    let mut tx = db.begin_read_transaction();
+    let mut tx = db.begin_read_transaction().unwrap();
     let mut delivered_rows = 0usize;
     let error = tx
         .query_streaming(
@@ -657,7 +657,7 @@ fn read_transaction_streams_rows_with_row_and_payload_budgets() {
         .to_string()
         .contains("exceeding max_read_result_rows 1"));
 
-    let mut tx = db.begin_read_transaction();
+    let mut tx = db.begin_read_transaction().unwrap();
     let first_row_payload_bytes = crate::executor::map_payload_bytes(&BTreeMap::from([(
         "title".to_string(),
         Value::String("alpha".to_string()),
@@ -706,7 +706,7 @@ fn executor_owned_result_delivery_preserves_read_transaction_boundaries() {
     // Three column names plus their UTF-8 string payloads, independently counted.
     let total_payload = 3 * "title".len() + "alpha".len() + "beta".len() + "gamma".len();
 
-    let mut tx = db.begin_read_transaction();
+    let mut tx = db.begin_read_transaction().unwrap();
     let retained = tx
         .query_with_params_bounded_profile(QUERY, &parameters, Some(3))
         .unwrap();
@@ -826,7 +826,7 @@ fn read_transaction_exposes_borrowed_rows_to_immediate_consumers() {
     db.query("CREATE (:Memory {id: 7, title: 'borrowed payload'})")
         .unwrap();
 
-    let mut tx = db.begin_read_transaction();
+    let mut tx = db.begin_read_transaction().unwrap();
     let mut observed = Vec::new();
     let report = tx
         .query_with_params_streaming_ref(

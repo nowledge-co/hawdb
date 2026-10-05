@@ -24,6 +24,7 @@ fn background_maintenance_candidates_are_empty_without_pending_work() {
             Some(&search_index),
             BackgroundMaintenanceOptions::default(),
         )
+        .unwrap()
         .is_empty());
     assert!(db
         .rank_background_maintenance(
@@ -32,13 +33,16 @@ fn background_maintenance_candidates_are_empty_without_pending_work() {
             &LocalQosState::default(),
             BackgroundMaintenanceOptions::default(),
         )
+        .unwrap()
         .is_empty());
-    let summary = db.background_maintenance_summary(
-        Some(&search_index),
-        &LocalQosPolicy::default(),
-        &LocalQosState::default(),
-        BackgroundMaintenanceOptions::default(),
-    );
+    let summary = db
+        .background_maintenance_summary(
+            Some(&search_index),
+            &LocalQosPolicy::default(),
+            &LocalQosState::default(),
+            BackgroundMaintenanceOptions::default(),
+        )
+        .unwrap();
     assert_eq!(summary.total_candidates, 0);
     assert_eq!(summary.admitted_count, 0);
     assert_eq!(summary.deferred_count, 0);
@@ -49,50 +53,70 @@ fn background_maintenance_candidates_are_empty_without_pending_work() {
 #[test]
 fn adjacency_consolidation_is_bounded_and_background_admitted() {
     let mut db = Database::new();
-    let source = db
-        .store
-        .create_node(&mut db.catalog, "Source", BTreeMap::new())
-        .unwrap();
+    let source = {
+        let branch_runtime = db.runtime.get_mut().unwrap();
+        branch_runtime
+            .store
+            .create_node(&mut branch_runtime.catalog, "Source", BTreeMap::new())
+    }
+    .unwrap();
     let base_degree = crate::store::DENSE_ADJACENCY_DEGREE_THRESHOLD;
     let delta_count = hawdb_storage::adjacency::ADJACENCY_DELTA_CONSOLIDATION_ENTRIES;
     let targets = (0..base_degree + delta_count)
         .map(|_| {
-            db.store
-                .create_node(&mut db.catalog, "Target", BTreeMap::new())
-                .unwrap()
+            {
+                let branch_runtime = db.runtime.get_mut().unwrap();
+                branch_runtime.store.create_node(
+                    &mut branch_runtime.catalog,
+                    "Target",
+                    BTreeMap::new(),
+                )
+            }
+            .unwrap()
         })
         .collect::<Vec<_>>();
     for target in targets.iter().take(base_degree) {
-        db.store
-            .create_relationship(
-                &mut db.catalog,
+        {
+            let branch_runtime = db.runtime.get_mut().unwrap();
+            branch_runtime.store.create_relationship(
+                &mut branch_runtime.catalog,
                 source,
                 *target,
                 "LINKS_TO",
                 BTreeMap::new(),
             )
-            .unwrap();
+        }
+        .unwrap();
     }
-    let rel_type = db.catalog.rel_type_id("LINKS_TO").unwrap();
-    let snapshot = db.store.snapshot();
+    let rel_type = db
+        .runtime
+        .get()
+        .unwrap()
+        .catalog
+        .rel_type_id("LINKS_TO")
+        .unwrap();
+    let snapshot = db.runtime.get().unwrap().store.snapshot();
     for target in targets.iter().skip(base_degree) {
-        db.store
-            .create_relationship(
-                &mut db.catalog,
+        {
+            let branch_runtime = db.runtime.get_mut().unwrap();
+            branch_runtime.store.create_relationship(
+                &mut branch_runtime.catalog,
                 source,
                 *target,
                 "LINKS_TO",
                 BTreeMap::new(),
             )
-            .unwrap();
+        }
+        .unwrap();
     }
 
-    let plan = db.adjacency_consolidation_plan();
+    let plan = db.adjacency_consolidation_plan().unwrap();
     let background_plan = db
         .adjacency_consolidation_background_work_plan(
             plan.estimated_entries,
             BackgroundWorkHint::default(),
         )
+        .unwrap()
         .unwrap();
     assert_eq!(
         background_plan.request,
@@ -113,7 +137,7 @@ fn adjacency_consolidation_is_bounded_and_background_admitted() {
     assert!(error
         .to_string()
         .contains("background adjacency consolidation deferred"));
-    assert_eq!(db.adjacency_consolidation_plan(), plan);
+    assert_eq!(db.adjacency_consolidation_plan().unwrap(), plan);
 
     let report = db
         .consolidate_bounded_background_adjacency_deltas(
@@ -128,7 +152,12 @@ fn adjacency_consolidation_is_bounded_and_background_admitted() {
         crate::store::AdjacencyConsolidationPlan::default()
     );
     assert_eq!(
-        db.store.outgoing_relationships(source, rel_type).count(),
+        db.runtime
+            .get()
+            .unwrap()
+            .store
+            .outgoing_relationships(source, rel_type)
+            .count(),
         base_degree + delta_count
     );
     assert_eq!(
@@ -201,7 +230,7 @@ fn stale_optimizer_statistics_are_caller_owned_background_work() {
         db.query("CREATE NODE TABLE Memory").unwrap();
         db.query("CREATE PROPERTY ON NODE TABLE Memory(kind) TYPE TEXT")
             .unwrap();
-        let mut transaction = db.begin_transaction();
+        let mut transaction = db.begin_transaction().unwrap();
         for id in 0..10 {
             transaction
                 .query_with_params(
@@ -220,11 +249,16 @@ fn stale_optimizer_statistics_are_caller_owned_background_work() {
         db.checkpoint().unwrap();
 
         db.query("CREATE INDEX ON :Memory(kind)").unwrap();
-        let index_id = db.property_indexes()[0].id;
-        assert!(!db.statistics().index_samples.contains_key(&index_id));
+        let index_id = db.property_indexes().unwrap()[0].id;
+        assert!(!db
+            .statistics()
+            .unwrap()
+            .index_samples
+            .contains_key(&index_id));
 
         let plan = db
             .optimizer_statistics_refresh_background_work_plan(BackgroundWorkHint::default())
+            .unwrap()
             .unwrap();
         assert_eq!(
             plan.request,
@@ -244,7 +278,9 @@ fn stale_optimizer_statistics_are_caller_owned_background_work() {
             include_external_content_artifact_jobs: false,
             ..BackgroundMaintenanceOptions::default()
         };
-        let candidates = db.background_maintenance_candidates(None, candidate_options.clone());
+        let candidates = db
+            .background_maintenance_candidates(None, candidate_options.clone())
+            .unwrap();
         assert_eq!(candidates.len(), 1);
         assert_eq!(
             candidates[0].kind,
@@ -253,9 +289,10 @@ fn stale_optimizer_statistics_are_caller_owned_background_work() {
         candidate_options.include_optimizer_statistics_refresh = false;
         assert!(db
             .background_maintenance_candidates(None, candidate_options)
+            .unwrap()
             .is_empty());
 
-        let generation = db.storage_residency_report().canonical_generation;
+        let generation = db.storage_residency_report().unwrap().canonical_generation;
         let options = crate::OptimizerStatisticsRefreshOptions {
             memory_budget_bytes: 4096,
             max_spill_bytes: 1024 * 1024,
@@ -280,9 +317,13 @@ fn stale_optimizer_statistics_are_caller_owned_background_work() {
         assert!(error
             .to_string()
             .contains("background optimizer statistics refresh deferred"));
-        assert!(!db.statistics().index_samples.contains_key(&index_id));
+        assert!(!db
+            .statistics()
+            .unwrap()
+            .index_samples
+            .contains_key(&index_id));
         assert_eq!(
-            db.storage_residency_report().canonical_generation,
+            db.storage_residency_report().unwrap().canonical_generation,
             generation
         );
 
@@ -299,9 +340,13 @@ fn stale_optimizer_statistics_are_caller_owned_background_work() {
             .unwrap_err();
         assert!(error.to_string().contains("max_input_records 1"));
         assert_eq!(scheduler.state().running_background_operations, 0);
-        assert!(!db.statistics().index_samples.contains_key(&index_id));
+        assert!(!db
+            .statistics()
+            .unwrap()
+            .index_samples
+            .contains_key(&index_id));
         assert_eq!(
-            db.storage_residency_report().canonical_generation,
+            db.storage_residency_report().unwrap().canonical_generation,
             generation
         );
         assert_eq!(std::fs::read_dir(&spill_root).unwrap().count(), 0);
@@ -322,11 +367,12 @@ fn stale_optimizer_statistics_are_caller_owned_background_work() {
             0
         );
         assert_eq!(
-            db.statistics().index_samples.get(&index_id),
+            db.statistics().unwrap().index_samples.get(&index_id),
             Some(&crate::schema::IndexStatisticsSample::exact(10, 2))
         );
         assert!(db
             .optimizer_statistics_refresh_background_work_plan(BackgroundWorkHint::default())
+            .unwrap()
             .is_none());
 
         db.query("MATCH (m:Memory) WHERE m.id = 0 SET m.kind = 'archive'")
@@ -335,12 +381,14 @@ fn stale_optimizer_statistics_are_caller_owned_background_work() {
             .unwrap();
         assert!(db
             .statistics()
+            .unwrap()
             .index_samples
             .get(&index_id)
             .unwrap()
             .is_stale());
         let stale_plan = db
             .optimizer_statistics_refresh_background_work_plan(BackgroundWorkHint::default())
+            .unwrap()
             .unwrap();
         assert_eq!(stale_plan.hint.recent_delta_operations, 2);
         let report = db
@@ -353,11 +401,12 @@ fn stale_optimizer_statistics_are_caller_owned_background_work() {
         assert!(report.checkpoint_persisted);
         assert_eq!(scheduler.state().running_background_operations, 0);
         assert_eq!(
-            db.statistics().index_samples.get(&index_id),
+            db.statistics().unwrap().index_samples.get(&index_id),
             Some(&crate::schema::IndexStatisticsSample::exact(10, 4))
         );
         assert!(db
             .optimizer_statistics_refresh_background_work_plan(BackgroundWorkHint::default())
+            .unwrap()
             .is_none());
         assert_eq!(std::fs::read_dir(&spill_root).unwrap().count(), 0);
         index_id
@@ -365,7 +414,7 @@ fn stale_optimizer_statistics_are_caller_owned_background_work() {
 
     let db = Database::open_with_config(&path, config).unwrap();
     assert_eq!(
-        db.statistics().index_samples.get(&index_id),
+        db.statistics().unwrap().index_samples.get(&index_id),
         Some(&crate::schema::IndexStatisticsSample::exact(10, 4))
     );
     drop(db);
@@ -388,13 +437,14 @@ fn incomplete_and_non_index_dirty_statistics_schedule_refresh() {
     .unwrap();
     db.checkpoint().unwrap();
 
-    let statistics = db.statistics();
+    let statistics = db.statistics().unwrap();
     assert_eq!(
-        statistics.advanced_statistics_freshness(db.store.commit_epoch()),
+        statistics.advanced_statistics_freshness(db.runtime.get().unwrap().store.commit_epoch()),
         crate::AdvancedStatisticsFreshness::Unavailable
     );
     assert!(db
         .optimizer_statistics_refresh_background_work_plan(BackgroundWorkHint::default())
+        .unwrap()
         .is_some());
 
     let options = crate::OptimizerStatisticsRefreshOptions {
@@ -409,22 +459,26 @@ fn incomplete_and_non_index_dirty_statistics_schedule_refresh() {
     db.refresh_optimizer_statistics_external(&options).unwrap();
     assert_eq!(
         db.statistics()
-            .advanced_statistics_freshness(db.store.commit_epoch()),
+            .unwrap()
+            .advanced_statistics_freshness(db.runtime.get().unwrap().store.commit_epoch()),
         crate::AdvancedStatisticsFreshness::Fresh
     );
     assert!(db
         .optimizer_statistics_refresh_background_work_plan(BackgroundWorkHint::default())
+        .unwrap()
         .is_none());
 
     db.query("MATCH (m:Memory) WHERE m.id = 1 SET m.note = 'updated'")
         .unwrap();
     assert_eq!(
         db.statistics()
-            .advanced_statistics_freshness(db.store.commit_epoch()),
+            .unwrap()
+            .advanced_statistics_freshness(db.runtime.get().unwrap().store.commit_epoch()),
         crate::AdvancedStatisticsFreshness::Stale
     );
     let node_property_plan = db
         .optimizer_statistics_refresh_background_work_plan(BackgroundWorkHint::default())
+        .unwrap()
         .unwrap();
     assert_eq!(node_property_plan.hint.recent_delta_operations, 1);
 
@@ -433,6 +487,7 @@ fn incomplete_and_non_index_dirty_statistics_schedule_refresh() {
         .unwrap();
     let relationship_property_plan = db
         .optimizer_statistics_refresh_background_work_plan(BackgroundWorkHint::default())
+        .unwrap()
         .unwrap();
     assert_eq!(relationship_property_plan.hint.recent_delta_operations, 1);
 
@@ -449,20 +504,22 @@ fn background_maintenance_skips_over_limit_search_projection_graph_delta() {
     db.query("CREATE FULLTEXT INDEX ON :Memory(title)").unwrap();
     let search_index = SearchIndex::in_memory();
 
-    let candidates = db.background_maintenance_candidates(
-        Some(&search_index),
-        BackgroundMaintenanceOptions {
-            search_projection_graph_delta: Some(SearchProjectionGraphDeltaRequest {
-                upsert_node_ids: vec![0, 1],
-                delete_document_ids: vec!["memory:old".to_string()],
-                max_operations: Some(2),
-                ..SearchProjectionGraphDeltaRequest::default()
-            }),
-            include_schema_maintenance: false,
-            include_external_content_artifact_jobs: false,
-            ..BackgroundMaintenanceOptions::default()
-        },
-    );
+    let candidates = db
+        .background_maintenance_candidates(
+            Some(&search_index),
+            BackgroundMaintenanceOptions {
+                search_projection_graph_delta: Some(SearchProjectionGraphDeltaRequest {
+                    upsert_node_ids: vec![0, 1],
+                    delete_document_ids: vec!["memory:old".to_string()],
+                    max_operations: Some(2),
+                    ..SearchProjectionGraphDeltaRequest::default()
+                }),
+                include_schema_maintenance: false,
+                include_external_content_artifact_jobs: false,
+                ..BackgroundMaintenanceOptions::default()
+            },
+        )
+        .unwrap();
     let names = candidates
         .iter()
         .map(|candidate| candidate.name.as_str())
@@ -481,18 +538,20 @@ fn background_maintenance_includes_stale_search_projection_graph_delta() {
         .unwrap();
     let search_index = SearchIndex::in_memory();
 
-    let candidates = db.background_maintenance_candidates(
-        Some(&search_index),
-        BackgroundMaintenanceOptions {
-            include_schema_maintenance: false,
-            include_property_index_projection: false,
-            include_search_projection_rebuild: false,
-            include_search_projection_metadata_repair: false,
-            include_hawdb_lightning_bootstrap_export: false,
-            include_external_content_artifact_jobs: false,
-            ..BackgroundMaintenanceOptions::default()
-        },
-    );
+    let candidates = db
+        .background_maintenance_candidates(
+            Some(&search_index),
+            BackgroundMaintenanceOptions {
+                include_schema_maintenance: false,
+                include_property_index_projection: false,
+                include_search_projection_rebuild: false,
+                include_search_projection_metadata_repair: false,
+                include_hawdb_lightning_bootstrap_export: false,
+                include_external_content_artifact_jobs: false,
+                ..BackgroundMaintenanceOptions::default()
+            },
+        )
+        .unwrap();
 
     assert_eq!(candidates.len(), 1);
     assert_eq!(
@@ -504,7 +563,7 @@ fn background_maintenance_includes_stale_search_projection_graph_delta() {
     assert_eq!(candidates[0].plan.request.estimated_operations, 1);
     assert_eq!(
         candidates[0].plan.hint.source_graph_commit_lag,
-        db.store.commit_epoch()
+        db.runtime.get().unwrap().store.commit_epoch()
     );
     assert_eq!(candidates[0].plan.hint.recent_delta_operations, 1);
     assert_eq!(
@@ -513,24 +572,28 @@ fn background_maintenance_includes_stale_search_projection_graph_delta() {
             upsert_node_ids: vec![0],
             delete_document_ids: Vec::new(),
             max_operations: None,
-            complete_through_graph_commit_epoch: Some(db.store.commit_epoch()),
+            complete_through_graph_commit_epoch: Some(
+                db.runtime.get().unwrap().store.commit_epoch()
+            ),
         })
     );
 
-    let ranked = db.rank_background_maintenance(
-        Some(&search_index),
-        &LocalQosPolicy::default(),
-        &LocalQosState::default(),
-        BackgroundMaintenanceOptions {
-            include_schema_maintenance: false,
-            include_property_index_projection: false,
-            include_search_projection_rebuild: false,
-            include_search_projection_metadata_repair: false,
-            include_hawdb_lightning_bootstrap_export: false,
-            include_external_content_artifact_jobs: false,
-            ..BackgroundMaintenanceOptions::default()
-        },
-    );
+    let ranked = db
+        .rank_background_maintenance(
+            Some(&search_index),
+            &LocalQosPolicy::default(),
+            &LocalQosState::default(),
+            BackgroundMaintenanceOptions {
+                include_schema_maintenance: false,
+                include_property_index_projection: false,
+                include_search_projection_rebuild: false,
+                include_search_projection_metadata_repair: false,
+                include_hawdb_lightning_bootstrap_export: false,
+                include_external_content_artifact_jobs: false,
+                ..BackgroundMaintenanceOptions::default()
+            },
+        )
+        .unwrap();
 
     assert_eq!(ranked.len(), 1);
     assert_eq!(
@@ -543,7 +606,9 @@ fn background_maintenance_includes_stale_search_projection_graph_delta() {
             upsert_node_ids: vec![0],
             delete_document_ids: Vec::new(),
             max_operations: None,
-            complete_through_graph_commit_epoch: Some(db.store.commit_epoch()),
+            complete_through_graph_commit_epoch: Some(
+                db.runtime.get().unwrap().store.commit_epoch()
+            ),
         })
     );
     assert!(ranked[0]
@@ -564,19 +629,21 @@ fn background_maintenance_can_disable_stale_search_projection_graph_delta() {
         .unwrap();
     let search_index = SearchIndex::in_memory();
 
-    let candidates = db.background_maintenance_candidates(
-        Some(&search_index),
-        BackgroundMaintenanceOptions {
-            include_schema_maintenance: false,
-            include_property_index_projection: false,
-            include_search_projection_graph_delta_freshness: false,
-            include_search_projection_rebuild: false,
-            include_search_projection_metadata_repair: false,
-            include_hawdb_lightning_bootstrap_export: false,
-            include_external_content_artifact_jobs: false,
-            ..BackgroundMaintenanceOptions::default()
-        },
-    );
+    let candidates = db
+        .background_maintenance_candidates(
+            Some(&search_index),
+            BackgroundMaintenanceOptions {
+                include_schema_maintenance: false,
+                include_property_index_projection: false,
+                include_search_projection_graph_delta_freshness: false,
+                include_search_projection_rebuild: false,
+                include_search_projection_metadata_repair: false,
+                include_hawdb_lightning_bootstrap_export: false,
+                include_external_content_artifact_jobs: false,
+                ..BackgroundMaintenanceOptions::default()
+            },
+        )
+        .unwrap();
 
     assert!(candidates.is_empty());
 }
@@ -607,7 +674,9 @@ fn background_maintenance_ranks_mixed_nowledge_background_work() {
         external_content_artifact_estimated_operations: 1,
         ..BackgroundMaintenanceOptions::default()
     };
-    let candidates = db.background_maintenance_candidates(Some(&search_index), options.clone());
+    let candidates = db
+        .background_maintenance_candidates(Some(&search_index), options.clone())
+        .unwrap();
     let names = candidates
         .iter()
         .map(|candidate| candidate.name.as_str())
@@ -653,7 +722,9 @@ fn background_maintenance_ranks_mixed_nowledge_background_work() {
         running_background_operations: 4,
         ..LocalQosState::default()
     };
-    let ranked = db.rank_background_maintenance(Some(&search_index), &policy, &state, options);
+    let ranked = db
+        .rank_background_maintenance(Some(&search_index), &policy, &state, options)
+        .unwrap();
 
     assert_eq!(ranked[0].name, "search_projection_graph_delta");
     assert_eq!(
@@ -716,7 +787,7 @@ fn background_maintenance_summary_exposes_qos_counts_and_stable_codes() {
         upsert_node_ids: vec![0],
         delete_document_ids: vec!["memory:old".to_string()],
         max_operations: Some(4),
-        complete_through_graph_commit_epoch: Some(db.store.commit_epoch()),
+        complete_through_graph_commit_epoch: Some(db.runtime.get().unwrap().store.commit_epoch()),
     };
     let mut class_limits = [None; crate::WORK_CLASS_COUNT];
     class_limits[WorkClass::Projection.as_index()] = Some(2);
@@ -724,29 +795,31 @@ fn background_maintenance_summary_exposes_qos_counts_and_stable_codes() {
         max_background_operations_by_class: class_limits,
         ..LocalQosPolicy::default()
     };
-    let summary = db.background_maintenance_summary(
-        Some(&search_index),
-        &policy,
-        &LocalQosState::default(),
-        BackgroundMaintenanceOptions {
-            hint: BackgroundWorkHint {
-                active_topic: true,
-                query_probability_per_million: 250_000,
-                staleness_millis: 750,
-                staleness_ttl_millis: Some(1_000),
-                freshness_slo_millis: Some(500),
-                tenant_budget_remaining_operations: Some(8),
-                ..BackgroundWorkHint::default()
+    let summary = db
+        .background_maintenance_summary(
+            Some(&search_index),
+            &policy,
+            &LocalQosState::default(),
+            BackgroundMaintenanceOptions {
+                hint: BackgroundWorkHint {
+                    active_topic: true,
+                    query_probability_per_million: 250_000,
+                    staleness_millis: 750,
+                    staleness_ttl_millis: Some(1_000),
+                    freshness_slo_millis: Some(500),
+                    tenant_budget_remaining_operations: Some(8),
+                    ..BackgroundWorkHint::default()
+                },
+                search_projection_graph_delta: Some(search_delta_request),
+                include_schema_maintenance: false,
+                include_property_index_projection: false,
+                include_search_projection_metadata_repair: false,
+                include_hawdb_lightning_bootstrap_export: false,
+                include_external_content_artifact_jobs: false,
+                ..BackgroundMaintenanceOptions::default()
             },
-            search_projection_graph_delta: Some(search_delta_request),
-            include_schema_maintenance: false,
-            include_property_index_projection: false,
-            include_search_projection_metadata_repair: false,
-            include_hawdb_lightning_bootstrap_export: false,
-            include_external_content_artifact_jobs: false,
-            ..BackgroundMaintenanceOptions::default()
-        },
-    );
+        )
+        .unwrap();
 
     assert_eq!(summary.total_candidates, 2);
     assert_eq!(summary.admitted_count, 1);
@@ -765,7 +838,7 @@ fn background_maintenance_summary_exposes_qos_counts_and_stable_codes() {
     assert_eq!(summary.admitted_search_projection_graph_delta_operations, 2);
     assert_eq!(
         summary.max_search_projection_graph_delta_complete_through_graph_commit_epoch,
-        Some(db.store.commit_epoch())
+        Some(db.runtime.get().unwrap().store.commit_epoch())
     );
     assert_eq!(
         summary.top_admitted_kind,
@@ -788,7 +861,7 @@ fn background_maintenance_summary_exposes_qos_counts_and_stable_codes() {
     assert_eq!(admitted.hint_recent_delta_operations, 2);
     assert_eq!(
         admitted.hint_source_graph_commit_lag,
-        db.store.commit_epoch()
+        db.runtime.get().unwrap().store.commit_epoch()
     );
     assert_eq!(admitted.hint_query_probability_per_million, 250_000);
     assert_eq!(admitted.hint_staleness_millis, 750);
@@ -810,7 +883,7 @@ fn background_maintenance_summary_exposes_qos_counts_and_stable_codes() {
     );
     assert_eq!(
         admitted.search_projection_graph_delta_complete_through_graph_commit_epoch,
-        Some(db.store.commit_epoch())
+        Some(db.runtime.get().unwrap().store.commit_epoch())
     );
     assert_eq!(
         admitted.search_projection_graph_delta_max_operations,
@@ -856,17 +929,19 @@ fn background_maintenance_includes_hawdb_lightning_bootstrap_import_work() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})-[:LINKS]->(:Entity {id: 'mid'})")
         .unwrap();
-    let candidates = db.background_maintenance_candidates(
-        None,
-        BackgroundMaintenanceOptions {
-            include_schema_maintenance: false,
-            include_property_index_projection: false,
-            include_search_projection_rebuild: false,
-            include_search_projection_metadata_repair: false,
-            include_external_content_artifact_jobs: false,
-            ..BackgroundMaintenanceOptions::default()
-        },
-    );
+    let candidates = db
+        .background_maintenance_candidates(
+            None,
+            BackgroundMaintenanceOptions {
+                include_schema_maintenance: false,
+                include_property_index_projection: false,
+                include_search_projection_rebuild: false,
+                include_search_projection_metadata_repair: false,
+                include_external_content_artifact_jobs: false,
+                ..BackgroundMaintenanceOptions::default()
+            },
+        )
+        .unwrap();
 
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].name, "hawdb_lightning_bootstrap_export");
@@ -878,18 +953,20 @@ fn background_maintenance_includes_hawdb_lightning_bootstrap_import_work() {
 fn background_maintenance_can_disable_hawdb_lightning_bootstrap_candidate() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'root'})").unwrap();
-    let candidates = db.background_maintenance_candidates(
-        None,
-        BackgroundMaintenanceOptions {
-            include_schema_maintenance: false,
-            include_property_index_projection: false,
-            include_search_projection_rebuild: false,
-            include_search_projection_metadata_repair: false,
-            include_hawdb_lightning_bootstrap_export: false,
-            include_external_content_artifact_jobs: false,
-            ..BackgroundMaintenanceOptions::default()
-        },
-    );
+    let candidates = db
+        .background_maintenance_candidates(
+            None,
+            BackgroundMaintenanceOptions {
+                include_schema_maintenance: false,
+                include_property_index_projection: false,
+                include_search_projection_rebuild: false,
+                include_search_projection_metadata_repair: false,
+                include_hawdb_lightning_bootstrap_export: false,
+                include_external_content_artifact_jobs: false,
+                ..BackgroundMaintenanceOptions::default()
+            },
+        )
+        .unwrap();
 
     assert!(candidates.is_empty());
 }
@@ -905,19 +982,21 @@ fn background_maintenance_ranks_hawdb_lightning_against_import_lane_budget() {
         max_background_operations_by_class: class_limits,
         ..LocalQosPolicy::default()
     };
-    let ranked = db.rank_background_maintenance(
-        None,
-        &policy,
-        &LocalQosState::default(),
-        BackgroundMaintenanceOptions {
-            include_schema_maintenance: false,
-            include_property_index_projection: false,
-            include_search_projection_rebuild: false,
-            include_search_projection_metadata_repair: false,
-            include_external_content_artifact_jobs: false,
-            ..BackgroundMaintenanceOptions::default()
-        },
-    );
+    let ranked = db
+        .rank_background_maintenance(
+            None,
+            &policy,
+            &LocalQosState::default(),
+            BackgroundMaintenanceOptions {
+                include_schema_maintenance: false,
+                include_property_index_projection: false,
+                include_search_projection_rebuild: false,
+                include_search_projection_metadata_repair: false,
+                include_external_content_artifact_jobs: false,
+                ..BackgroundMaintenanceOptions::default()
+            },
+        )
+        .unwrap();
 
     assert_eq!(ranked.len(), 1);
     assert_eq!(ranked[0].name, "hawdb_lightning_bootstrap_export");

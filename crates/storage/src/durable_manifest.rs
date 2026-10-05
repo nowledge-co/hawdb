@@ -19,7 +19,7 @@ use crate::artifact_files::{
     checkpoint_generation_file, property_projection_manifest_generation_file,
     property_spill_manifest_generation_file, wal_generation_file,
 };
-use crate::checkpoint_closure::CheckpointArtifactInput;
+use crate::checkpoint_closure::{read_closure_artifact, CheckpointArtifactInput};
 use crate::file_io::{self as fs, File};
 use crate::text::parse_u64;
 use crate::{
@@ -431,12 +431,7 @@ impl DurableManifest {
                     path.display()
                 )));
             };
-            let bytes = fs::read(&path).map_err(|error| {
-                HawDBError::Storage(format!(
-                    "read manifest-bound artifact {}: {error}",
-                    path.display()
-                ))
-            })?;
+            let bytes = read_closure_artifact(&path, "read manifest-bound artifact")?;
             if bytes.len() as u64 != byte_length {
                 return Err(HawDBError::Storage(format!(
                     "manifest-bound artifact {} length differs from its binding",

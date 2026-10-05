@@ -117,11 +117,11 @@ pub(super) fn qualify_thread_delete(
         "qualified-delete-missing-alias",
     )?;
 
-    let epoch_before_rollback = database.commit_epoch();
-    let mut transaction = database.begin_transaction();
+    let epoch_before_rollback = database.commit_epoch()?;
+    let mut transaction = database.begin_transaction()?;
     stage_thread_delete(&mut transaction, corpus)?;
     transaction.rollback();
-    if database.commit_epoch() != epoch_before_rollback
+    if database.commit_epoch()? != epoch_before_rollback
         || target_state_sha256(&mut database)? != target_state_before
         || unrelated_state_sha256(&mut database)? != unrelated_state_sha256_before
     {
@@ -130,12 +130,12 @@ pub(super) fn qualify_thread_delete(
         ));
     }
 
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
     let deleted = stage_thread_delete(&mut transaction, corpus)?;
     transaction
         .commit()
         .map_err(|error| delete_phase_error("commit publication", error))?;
-    let committed_epoch = database.commit_epoch();
+    let committed_epoch = database.commit_epoch()?;
     if committed_epoch != seed_commit_epoch.saturating_add(1) {
         return Err(HawDBError::Execution(format!(
             "content-store whole-thread delete published epoch {committed_epoch}, expected {}",
@@ -178,7 +178,7 @@ pub(super) fn qualify_thread_delete(
 
     database.checkpoint()?;
     let checkpoint_generation = database
-        .relational_index_shadow_checkpoint_report()
+        .relational_index_shadow_checkpoint_report()?
         .ok_or_else(|| {
             HawDBError::Execution(
                 "content-store whole-thread delete checkpoint published no relational generation"
@@ -208,7 +208,7 @@ pub(super) fn qualify_thread_delete(
     let reopened_count_output = live_count_read_output(&mut database, count_statement)?;
     require_count(&reopened_count_output, 0)?;
     let reopened_count_sha256 = rows_sha256(&reopened_count_output.rows);
-    if reopened_count_sha256 != live_count_sha256 || database.commit_epoch() != committed_epoch {
+    if reopened_count_sha256 != live_count_sha256 || database.commit_epoch()? != committed_epoch {
         return Err(HawDBError::Execution(
             "content-store whole-thread delete changed across checkpoint/reopen".to_string(),
         ));
@@ -263,7 +263,7 @@ fn seed_thread_delete(
     let document = corpus_statement(corpus, "upsert_content_document")?;
     let message = corpus_statement(corpus, "upsert_thread_message")?;
     let anchor = corpus_statement(corpus, "upsert_memory_message_anchor")?;
-    let mut transaction = database.begin_transaction();
+    let mut transaction = database.begin_transaction()?;
 
     seed_graph_thread(
         &mut transaction,
@@ -337,10 +337,10 @@ fn seed_thread_delete(
         update_document_summary(&mut transaction, corpus, content_document_id)?;
     }
     transaction.commit()?;
-    let seed_commit_epoch = database.commit_epoch();
+    let seed_commit_epoch = database.commit_epoch()?;
     database.checkpoint()?;
     let seed_checkpoint_generation = database
-        .relational_index_shadow_checkpoint_report()
+        .relational_index_shadow_checkpoint_report()?
         .ok_or_else(|| {
             HawDBError::Execution(
                 "content-store whole-thread delete seed published no relational generation"
@@ -576,7 +576,7 @@ fn exercise_noop_delete(
     public_thread_id: &str,
     input_thread_id: &str,
 ) -> Result<()> {
-    let epoch_before = database.commit_epoch();
+    let epoch_before = database.commit_epoch()?;
     let owned = corpus_statement(corpus, "thread_owned_document_ids")?;
     let message_documents = corpus_statement(corpus, "thread_message_document_ids")?;
     let owned_output = database
@@ -623,10 +623,10 @@ fn exercise_noop_delete(
             "content-store no-op whole-thread delete discovered graph state for {thread_id}"
         )));
     }
-    if database.commit_epoch() != epoch_before {
+    if database.commit_epoch()? != epoch_before {
         return Err(HawDBError::Execution(format!(
             "content-store no-op whole-thread preflight advanced epoch from {epoch_before} to {}",
-            database.commit_epoch()
+            database.commit_epoch()?
         )));
     }
     Ok(())

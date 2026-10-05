@@ -51,7 +51,7 @@ fn reads_community_memories_for_wiki_ranking_shapes() {
         .unwrap();
     db.query("MATCH (m:Memory {id: 'memory_alpha'}), (e:Entity {id: 'entity_other'}) CREATE (m)-[:MENTIONS]->(e)")
         .unwrap();
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
 
     let mentioned = db
         .query_community_memories_via_cypher(&KnowledgeCommunityMemoryListRequest {
@@ -65,7 +65,10 @@ fn reads_community_memories_for_wiki_ranking_shapes() {
         .unwrap();
 
     assert_eq!(mentioned.graph_commit_epoch, graph_commit_epoch);
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch
+    );
     assert_eq!(mentioned.matched_row_count, 3);
     assert_eq!(mentioned.returned_count, 3);
     assert_eq!(
@@ -171,7 +174,7 @@ fn reads_community_memories_for_unit_type_filter_shape() {
         .unwrap();
     db.query("MATCH (m:Memory {id: 'type_memory_note'}), (e:Entity {id: 'type_entity_b'}) CREATE (m)-[:MENTIONS]->(e)")
         .unwrap();
-    let graph_commit_epoch = db.store.commit_epoch();
+    let graph_commit_epoch = db.runtime.get().unwrap().store.commit_epoch();
 
     let output = db
         .query_community_memories_via_cypher(&KnowledgeCommunityMemoryListRequest {
@@ -185,7 +188,10 @@ fn reads_community_memories_for_unit_type_filter_shape() {
         .unwrap();
 
     assert_eq!(output.graph_commit_epoch, graph_commit_epoch);
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch
+    );
     assert_eq!(output.matched_row_count, 2);
     assert_eq!(output.returned_count, 2);
     assert_eq!(
@@ -297,7 +303,7 @@ fn community_memory_reads_use_query_runtime_plan_cache() {
             )
         ]
     );
-    let stats = db.plan_cache_stats();
+    let stats = db.plan_cache_stats().unwrap();
     assert_eq!(stats.entries, 2);
     assert_eq!(stats.misses, 2);
     assert_eq!(stats.hits, 2);

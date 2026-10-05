@@ -198,6 +198,55 @@ fn overflow_compaction_top_level_ready_cannot_hide_raw_budget_drift() {
 }
 
 #[test]
+fn overflow_compaction_cleanup_allows_wal_gaps_and_rejects_identity_drift() {
+    let expected = identity("linux", "x86_64");
+    let evaluate = |artifact| {
+        evaluate_production_release_qualification_bundle(
+            ProductionReleaseQualificationArtifacts {
+                content_store_512_mib_overflow_compaction: Some(artifact),
+                ..Default::default()
+            },
+            expected.clone(),
+            ProductionReleaseQualificationPolicy::default(),
+        )
+        .content_store_512_mib_overflow_compaction
+    };
+    let with_cleanup_generation = |generation: u64| {
+        let mut artifact = content_store_overflow_compaction(&expected, true);
+        for phase in ["final_residency", "reopened_residency"] {
+            for field in ["row_base_generation", "index_base_generation"] {
+                artifact[phase][field] = serde_json::json!(generation);
+            }
+        }
+        artifact["scrub"]["generation"] = serde_json::json!(generation);
+        artifact["reopened_reads"][0]["read"]["execution"]["base_generation"] =
+            serde_json::json!(generation);
+        artifact
+    };
+    for generation in [9, 11] {
+        let report = evaluate(with_cleanup_generation(generation));
+        assert!(report.ready, "{:?}", report.blocker_codes);
+    }
+    for generation in [7, 8] {
+        let report = evaluate(with_cleanup_generation(generation));
+        assert!(!report.ready);
+        assert!(report
+            .blocker_codes
+            .contains(&"overflow_compaction_published_identity_mismatch".to_string()));
+    }
+    for pointer in [
+        "/reopened_residency/row_base_generation",
+        "/final_residency/index_base_generation",
+        "/scrub/generation",
+    ] {
+        let mut artifact = with_cleanup_generation(11);
+        *artifact.pointer_mut(pointer).unwrap() = serde_json::json!(12);
+        let report = evaluate(artifact);
+        assert!(!report.ready, "identity drift accepted at {pointer}");
+    }
+}
+
+#[test]
 fn overflow_compaction_profiles_cannot_substitute_for_each_other() {
     let expected = identity("linux", "x86_64");
     let report = evaluate_production_release_qualification_bundle(

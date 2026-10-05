@@ -80,7 +80,7 @@ fn thread_page_and_source_reads_use_fixed_bounded_queries() {
         ("limit".to_string(), Value::Int(2)),
     ]);
     let source_parameters = BTreeMap::from([("limit".to_string(), Value::Int(2))]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
 
     let first = read
         .query_with_params_bounded(THREAD_PAGE_QUERY, &page_parameters, Some(2))
@@ -117,7 +117,7 @@ fn thread_detail_and_source_lookup_are_bounded_and_snapshot_pinned() {
         ("key".to_string(), Value::String("alpha".to_string())),
         ("source".to_string(), Value::String("codex".to_string())),
     ]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     db.query("MATCH (t:Thread {id: 'alpha-thread'}) SET t.title = 'Changed'")
         .unwrap();
 
@@ -187,7 +187,7 @@ fn thread_identity_and_sync_reads_use_exact_bounded_queries() {
     )]);
     let sync_parameters =
         BTreeMap::from([("id".to_string(), Value::String("thread-a".to_string()))]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
 
     let identity = read
         .query_with_params_bounded(THREAD_IDENTITY_QUERY, &identity_parameters, Some(1))

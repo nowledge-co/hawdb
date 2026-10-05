@@ -89,6 +89,7 @@ fn app_read_handle() -> NowledgeMemEmbeddedStoreHandle {
     }
     let projection = NowledgeMemSearchProjection::from_index(index);
     NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, Some(projection)))
+        .unwrap()
 }
 
 #[test]
@@ -704,7 +705,7 @@ fn durable_snapshot_handle(root: &SnapshotTestRoot) -> NowledgeMemEmbeddedStoreH
         NowledgeMemGraphMode::WritableCutover,
         snapshot_governor(),
     );
-    NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, None))
+    NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, None)).unwrap()
 }
 
 #[test]
@@ -715,12 +716,24 @@ fn user_keeps_shared_snapshot_pins_across_same_epoch_checkpoints_until_last_fork
     let (permit_a, mut first) = handle.canonical_read_transaction(4096, None).unwrap();
     let (permit_b, mut second) = handle.canonical_read_transaction(4096, None).unwrap();
     let old_view = first.published_read_view();
+    let old_generation = old_view.physical_generation().unwrap().0;
+    let hawdb_storage::branch_project::ProjectManifest::Branch(selector) =
+        hawdb_storage::branch_project::inspect_project_manifest(&root.0).unwrap()
+    else {
+        panic!("expected a branch project")
+    };
+    let data = root
+        .0
+        .join("branches")
+        .join(selector.main_branch_id().as_uuid().to_string())
+        .join("data");
     assert_eq!(second.published_read_view(), old_view);
     // When checkpoint changes only the physical generation, new acquisition refreshes its pin.
     handle.checkpoint().unwrap();
     let new_view = handle
         .with_read_transaction(4096, |tx| Ok(tx.published_read_view()))
         .unwrap();
+    let first_new_generation = new_view.physical_generation().unwrap().0;
     assert_eq!(
         new_view.visible_commit_epoch(),
         old_view.visible_commit_epoch()
@@ -732,8 +745,12 @@ fn user_keeps_shared_snapshot_pins_across_same_epoch_checkpoints_until_last_fork
     for _ in 0..3 {
         handle.checkpoint().unwrap();
     }
-    assert!(root.0.join("canonical.1.hawdb").exists());
-    assert!(!root.0.join("canonical.2.hawdb").exists());
+    assert!(data
+        .join(format!("canonical.{old_generation}.hawdb"))
+        .exists());
+    assert!(!data
+        .join(format!("canonical.{first_new_generation}.hawdb"))
+        .exists());
     assert_eq!(
         first
             .query("MATCH (r:Record) RETURN r.id AS id")
@@ -745,7 +762,9 @@ fn user_keeps_shared_snapshot_pins_across_same_epoch_checkpoints_until_last_fork
     drop(first);
     drop(permit_a);
     handle.checkpoint().unwrap();
-    assert!(root.0.join("canonical.1.hawdb").exists());
+    assert!(data
+        .join(format!("canonical.{old_generation}.hawdb"))
+        .exists());
     assert_eq!(
         second
             .query("MATCH (r:Record) RETURN r.id AS id")
@@ -758,8 +777,94 @@ fn user_keeps_shared_snapshot_pins_across_same_epoch_checkpoints_until_last_fork
     drop(second);
     drop(permit_b);
     handle.checkpoint().unwrap();
-    assert!(!root.0.join("canonical.1.hawdb").exists());
-    assert!(!root.0.join("checkpoint.1.hawdb").exists());
+    assert!(!data
+        .join(format!("canonical.{old_generation}.hawdb"))
+        .exists());
+    assert!(!data
+        .join(format!("checkpoint.{old_generation}.hawdb"))
+        .exists());
+}
+
+#[test]
+fn failed_snapshot_publication_retains_the_last_generation_and_requires_reopen() {
+    let root = SnapshotTestRoot::new();
+    let handle = durable_snapshot_handle(&root);
+    let clone = handle.clone();
+    let (permit, mut reader) = handle.canonical_read_transaction(4096, None).unwrap();
+    let before = reader.published_read_view();
+    let committed = {
+        let mut store = handle.write_store().unwrap();
+        let database = store.graph_mut().database_mut();
+        database
+            .query("CREATE (:Record {id: 'new-commit'})")
+            .unwrap();
+        assert!(database.commit_epoch().unwrap() > before.visible_commit_epoch());
+        // A real deferred handle cannot admit while the committed database
+        // still owns main's writer lease. Capture must surface that failure.
+        let pending = Database::open_with_config(&root.0, database.config().clone()).unwrap();
+        let committed = std::mem::replace(database, pending);
+        assert!(matches!(
+            database.read_snapshot(),
+            Err(crate::HawDBError::BranchBusy { .. })
+        ));
+        committed
+    };
+    // Publication failure must neither drop the previous pin nor expose its
+    // stale contents as the newly committed current view.
+    assert_eq!(
+        handle
+            .published_read
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .begin_read_transaction(&hawdb_core::RuntimeTaskContext::default())
+            .unwrap()
+            .published_read_view(),
+        before
+    );
+    assert_eq!(
+        reader
+            .query("MATCH (r:Record) RETURN r.id")
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+    assert!(matches!(
+        handle.finish_canonical_read(Ok(())),
+        Err(crate::HawDBError::Execution(reason)) if reason.contains("poisoned")
+    ));
+    for handle in [&handle, &clone] {
+        assert!(matches!(
+            handle.with_read_transaction(4096, |_| Ok(())),
+            Err(crate::HawDBError::Execution(reason)) if reason.contains("poisoned")
+        ));
+    }
+    // Restoring an admissible writer does not silently clear lost-publication
+    // evidence. A fresh handle recovers the successful transaction instead.
+    {
+        let mut store = handle.write_store().unwrap();
+        *store.graph_mut().database_mut() = committed;
+    }
+    assert!(matches!(
+        handle.with_read_transaction(4096, |_| Ok(())),
+        Err(crate::HawDBError::Execution(reason)) if reason.contains("poisoned")
+    ));
+    drop(reader);
+    drop(permit);
+    drop(clone);
+    drop(handle);
+    let mut reopened = Database::open(&root.0).unwrap();
+    assert_eq!(
+        reopened
+            .query("MATCH (r:Record) RETURN r.id")
+            .unwrap()
+            .rows
+            .len(),
+        2
+    );
 }
 
 #[test]
@@ -794,7 +899,11 @@ fn assert_late_snapshot_rejected(bounded: bool, failure: impl FnOnce() + Send + 
             return;
         }
         let mut store = writer_handle.write_store().unwrap();
-        let mut transaction = store.graph_mut().database_mut().begin_transaction();
+        let mut transaction = store
+            .graph_mut()
+            .database_mut()
+            .begin_transaction()
+            .unwrap();
         transaction.query("CREATE (:Record {id: 'new-a'})").unwrap();
         transaction.query("CREATE (:Record {id: 'new-b'})").unwrap();
         failure();

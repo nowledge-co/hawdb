@@ -135,7 +135,7 @@ fn pagerank_score_batch_rejects_invalid_score_before_wal() {
     let mut db = Database::new();
     db.query("CREATE (:Memory {id: 'memory_rank_1', title: 'Rank One'})")
         .unwrap();
-    let graph_commit_epoch_before = db.store.commit_epoch();
+    let graph_commit_epoch_before = db.runtime.get().unwrap().store.commit_epoch();
 
     let error = db
         .update_knowledge_pagerank_scores_batch(&KnowledgePageRankScoreBatchRequest {
@@ -148,7 +148,10 @@ fn pagerank_score_batch_rejects_invalid_score_before_wal() {
         .unwrap_err();
 
     assert!(error.to_string().contains("finite non-negative score"));
-    assert_eq!(db.store.commit_epoch(), graph_commit_epoch_before);
+    assert_eq!(
+        db.runtime.get().unwrap().store.commit_epoch(),
+        graph_commit_epoch_before
+    );
 }
 
 #[test]
@@ -287,7 +290,7 @@ fn pagerank_plan_reads_use_parameterized_queries_on_one_snapshot() {
     db.query("MATCH (a:Memory {id: 'm2'}), (b:Memory {id: 'm1'}) CREATE (a)-[:MEMORY_RELATES_TO {status: 'inactive', created_at: 190}]->(b)")
         .unwrap();
 
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     let snapshot_epoch = read.commit_epoch();
     db.query("CREATE (:Memory {id: 'after-snapshot', created_at: 200})")
         .unwrap();
@@ -297,7 +300,7 @@ fn pagerank_plan_reads_use_parameterized_queries_on_one_snapshot() {
         vec![2, 2, 1, 2, 1, 1, 1, 1, 1, 1]
     );
     assert_eq!(read.commit_epoch(), snapshot_epoch);
-    assert!(db.commit_epoch() > snapshot_epoch);
+    assert!(db.commit_epoch().unwrap() > snapshot_epoch);
 }
 
 #[test]
@@ -321,7 +324,7 @@ fn pagerank_plan_queries_use_query_runtime_plan_cache() {
         .unwrap();
     db.query("MATCH (a:Memory {id: 'pagerank-cache-memory-one'}), (b:Memory {id: 'pagerank-cache-memory-two'}) CREATE (a)-[:MEMORY_RELATES_TO {status: 'active', created_at: 70}]->(b)")
         .unwrap();
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     let first = pagerank_counts(&mut read, 25);
     let second = pagerank_counts(&mut read, 25);
     assert_eq!(first, second);
@@ -342,8 +345,8 @@ fn pagerank_lookup_business_logic_uses_parameterized_queries() {
     db.query("CREATE (:Memory {id: 'm2'})").unwrap();
     db.query("CREATE (:Entity {id: 'e1', name: 'Central Entity'})")
         .unwrap();
-    let graph_commit_epoch = db.commit_epoch();
-    let mut read = db.begin_read_transaction();
+    let graph_commit_epoch = db.commit_epoch().unwrap();
+    let mut read = db.begin_read_transaction().unwrap();
     let membership_parameters = BTreeMap::from([(
         "external_ids".to_string(),
         Value::List(vec![
@@ -437,7 +440,7 @@ fn pagerank_lookup_queries_use_query_runtime_plan_cache() {
         "entity_id".to_string(),
         Value::String("pagerank-cache-entity".to_string()),
     )]);
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     for _ in 0..2 {
         read.query_with_params_bounded(
             PAGERANK_ENTITY_MEMBERSHIP_QUERY,
@@ -465,7 +468,7 @@ fn pagerank_read_queries_keep_user_values_in_parameters() {
     let mut db = Database::new();
     db.query("CREATE (:Entity {id: 'e1', name: 'Safe'})")
         .unwrap();
-    let mut read = db.begin_read_transaction();
+    let mut read = db.begin_read_transaction().unwrap();
     let parameters = BTreeMap::from([(
         "external_ids".to_string(),
         Value::List(vec![Value::String(

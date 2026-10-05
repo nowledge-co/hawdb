@@ -735,14 +735,22 @@ impl Database {
     pub fn rebuild_derived_artifacts(&mut self) -> Result<QueryOutput> {
         self.ensure_writable()?;
         let before = self
+            .runtime
+            .get()?
             .store
             .projected_graph_statuses()
             .into_iter()
             .map(|status| (status.name.clone(), status))
             .collect::<BTreeMap<_, _>>();
-        self.store
-            .rebuild_projected_graph_artifacts(&self.catalog)?;
+        {
+            let branch_runtime = self.runtime.get_mut()?;
+            branch_runtime
+                .store
+                .rebuild_projected_graph_artifacts(&branch_runtime.catalog)
+        }?;
         let rows = self
+            .runtime
+            .get()?
             .store
             .projected_graph_statuses()
             .into_iter()
@@ -822,6 +830,8 @@ impl Database {
 
         if name != "*"
             && !self
+                .runtime
+                .get()?
                 .store
                 .projected_graph_statuses()
                 .iter()

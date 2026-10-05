@@ -81,7 +81,7 @@ const GRACE_CASE: JoinCase = JoinCase {
 fn main() {
     let mut regular_database = Database::new();
     seed_regular_fixture(&mut regular_database);
-    let regular_read = regular_database.begin_read_transaction();
+    let regular_read = regular_database.begin_read_transaction().unwrap();
     let mut results = REGULAR_CASES
         .into_iter()
         .map(|case| measure(&regular_read, case))
@@ -94,7 +94,7 @@ fn main() {
         ..DatabaseConfig::default()
     });
     seed_grace_fixture(&mut grace_database);
-    let grace_read = grace_database.begin_read_transaction();
+    let grace_read = grace_database.begin_read_transaction().unwrap();
     results.push(measure(&grace_read, GRACE_CASE));
 
     println!(

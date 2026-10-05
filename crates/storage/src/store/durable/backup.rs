@@ -16,7 +16,7 @@
 
 use super::DurableStore;
 use crate::checkpoint_closure::{
-    CheckpointArtifactFamily, CheckpointArtifactInput, CheckpointClosurePlan,
+    read_closure_artifact, CheckpointArtifactFamily, CheckpointArtifactInput, CheckpointClosurePlan,
 };
 use crate::durable_manifest::DurableManifest;
 use crate::error::{HawDBError, Result};
@@ -36,9 +36,10 @@ use hawdb_storage::{
         append_generation_manifest_file, append_segment_file, AppendGenerationReader,
         AppendPublicationConfig,
     },
-    backup::StorageBackupReport,
+    backup::{BackupFileEntry, StorageBackupReport},
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 impl DurableStore {
@@ -52,12 +53,7 @@ impl DurableStore {
             HawDBError::Storage("checkpoint closure requires a checkpoint generation".into())
         })?;
         let input = |path: PathBuf| -> Result<CheckpointArtifactInput> {
-            let bytes = fs::read(&path).map_err(|error| {
-                HawDBError::Storage(format!(
-                    "read checkpoint closure artifact {}: {error}",
-                    path.display()
-                ))
-            })?;
+            let bytes = read_closure_artifact(&path, "read checkpoint closure artifact")?;
             Ok(CheckpointArtifactInput {
                 path,
                 reference: ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, &bytes),
@@ -74,12 +70,10 @@ impl DurableStore {
                 let relational_checkpoint = self
                     .root_path
                     .join(relational_checkpoint_generation_file(generation));
-                let bytes = fs::read(&relational_checkpoint).map_err(|error| {
-                    HawDBError::Storage(format!(
-                        "read relational checkpoint closure artifact {}: {error}",
-                        relational_checkpoint.display()
-                    ))
-                })?;
+                let bytes = read_closure_artifact(
+                    &relational_checkpoint,
+                    "read relational checkpoint closure artifact",
+                )?;
                 if bytes.len() as u64 != encoded_len
                     || u64::from(hawdb_integrity::crc32c(&bytes).get()) != encoded_checksum
                     || hawdb_integrity::sha256(&bytes) != encoded_sha256
@@ -303,8 +297,10 @@ impl DurableStore {
                     checkpoint_generation_file(generation),
                     self.checkpoint_path.clone(),
                 ),
-                (wal_generation_file(generation), self.wal_path.clone()),
             ]);
+            if self.branch_runtime.is_none() {
+                sources.insert(wal_generation_file(generation), self.wal_path.clone());
+            }
             let relational_checkpoint_name = relational_checkpoint_generation_file(generation);
             let relational_checkpoint_path = self.root_path.join(&relational_checkpoint_name);
             if self.relational_checkpoint_encoded_len.is_some() {
@@ -510,6 +506,9 @@ impl DurableStore {
             for (name, source) in sources {
                 files.push(copy_backup_file(&source, &destination.join(&name), &name)?);
             }
+            if self.branch_runtime.is_some() {
+                files.push(self.write_checkpoint_backup_wal(destination)?);
+            }
             files.sort_by(|left, right| left.name.cmp(&right.name));
             validate_backup_files(destination, &files, generation)?;
             let backup_manifest = BackupManifest::write(
@@ -537,5 +536,48 @@ impl DurableStore {
             let _ = fs::remove_dir_all(destination);
         }
         result
+    }
+
+    fn write_checkpoint_backup_wal(&self, destination: &Path) -> Result<BackupFileEntry> {
+        let current_header = crate::wal::frame::encode_binary_wal_header(
+            self.wal_generation,
+            self.wal_replay_start_lsn,
+        );
+        let mut current_bytes = Vec::with_capacity(current_header.len());
+        fs::File::open(&self.wal_path)?
+            .take(current_header.len() as u64 + 1)
+            .read_to_end(&mut current_bytes)?;
+        if self.wal_commit_epoch != self.checkpoint_commit_epoch
+            || self.next_lsn != self.wal_replay_start_lsn
+            || current_bytes != current_header
+        {
+            return Err(HawDBError::StorageIntegrity(
+                "branch backup requires a checkpoint-covered empty private WAL".into(),
+            ));
+        }
+        // Branch checkpoint publication installs a private successor WAL. A
+        // standalone backup uses the checkpoint manifest's own generation;
+        // copying the successor's header under that name breaks legacy reopen.
+        let manifest = DurableManifest::load(&self.manifest_path)?;
+        let bytes = crate::wal::frame::encode_binary_wal_header(
+            manifest.wal_generation,
+            manifest.wal_replay_start_lsn,
+        );
+        let name = wal_generation_file(manifest.wal_generation);
+        let path = destination.join(&name);
+        let mut wal = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)?;
+        wal.write_all(&bytes)?;
+        wal.sync_all()?;
+        drop(wal);
+        let (encoded_len, encoded_checksum, sha256) = crate::backup::file_checksum(&path)?;
+        Ok(BackupFileEntry {
+            name,
+            encoded_len,
+            encoded_checksum,
+            sha256,
+        })
     }
 }
