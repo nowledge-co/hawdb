@@ -267,6 +267,10 @@ impl ConcurrentDatabase {
         self.inner.commits.lock()?.storage_recovery_report()
     }
 
+    pub fn automatic_checkpoint_report(&self) -> Result<Option<super::AutomaticCheckpointReport>> {
+        self.inner.commits.lock()?.automatic_checkpoint_report()
+    }
+
     /// Pins the last completed publication while a writer or group sync is active.
     pub fn begin_read_transaction(&self) -> Result<DatabaseReadTransaction> {
         let view = self.inner.commits.read_view()?;

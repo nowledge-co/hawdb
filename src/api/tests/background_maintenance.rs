@@ -54,7 +54,8 @@ fn background_maintenance_candidates_are_empty_without_pending_work() {
 fn adjacency_consolidation_is_bounded_and_background_admitted() {
     let mut db = Database::new();
     let source = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime
             .store
             .create_node(&mut branch_runtime.catalog, "Source", BTreeMap::new())
@@ -65,7 +66,8 @@ fn adjacency_consolidation_is_bounded_and_background_admitted() {
     let targets = (0..base_degree + delta_count)
         .map(|_| {
             {
-                let branch_runtime = db.runtime.get_mut().unwrap();
+                let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+                let branch_runtime = &mut *branch_runtime_access;
                 branch_runtime.store.create_node(
                     &mut branch_runtime.catalog,
                     "Target",
@@ -77,7 +79,8 @@ fn adjacency_consolidation_is_bounded_and_background_admitted() {
         .collect::<Vec<_>>();
     for target in targets.iter().take(base_degree) {
         {
-            let branch_runtime = db.runtime.get_mut().unwrap();
+            let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+            let branch_runtime = &mut *branch_runtime_access;
             branch_runtime.store.create_relationship(
                 &mut branch_runtime.catalog,
                 source,
@@ -98,7 +101,8 @@ fn adjacency_consolidation_is_bounded_and_background_admitted() {
     let snapshot = db.runtime.get().unwrap().store.snapshot();
     for target in targets.iter().skip(base_degree) {
         {
-            let branch_runtime = db.runtime.get_mut().unwrap();
+            let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+            let branch_runtime = &mut *branch_runtime_access;
             branch_runtime.store.create_relationship(
                 &mut branch_runtime.catalog,
                 source,

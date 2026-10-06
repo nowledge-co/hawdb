@@ -97,6 +97,12 @@ mod durable;
 mod graph_apply;
 #[path = "store/graph_checkpoint.rs"]
 mod graph_checkpoint;
+#[path = "store/graph_checkpoint_candidate.rs"]
+mod graph_checkpoint_candidate;
+#[doc(hidden)]
+pub use graph_checkpoint_candidate::{
+    CheckpointCandidate, CheckpointDebtSnapshot, CheckpointSourceIdentity,
+};
 #[path = "store/graph_columnar_shadow.rs"]
 mod graph_columnar_shadow;
 #[path = "store/graph_commit.rs"]
@@ -139,13 +145,13 @@ pub use doctor::{
     DatabaseDoctor, WalDoctorOptions, WalRepairAcknowledgement, WalTailRepairPlan,
     WalTailRepairReason, WalTailRepairReport, WAL_DOCTOR_REPAIR_PROTOCOL,
 };
-#[doc(hidden)]
-pub use durable::PreparedCheckpoint;
 use durable::{
     load_published_canonical_adjacency, load_published_property_projection, CheckpointImage,
     CheckpointManifestArtifacts, DerivedArtifactBuildConfig, DurableManifest, DurableOpenMode,
     DurableStore, GraphManifestOpenBudget,
 };
+#[doc(hidden)]
+pub use durable::{CheckpointWalTail, PreparedCheckpoint};
 pub use graph_columnar_shadow::ColumnarShadowAdmission;
 use graph_columnar_shadow::ColumnarShadowState;
 use hawdb_storage::artifact_files::{
@@ -785,6 +791,9 @@ pub struct GraphStore {
     next_node_id: u64,
     next_rel_id: u64,
     commit_epoch: u64,
+    // A maintenance capture's monotonic floor for any post-snapshot debt.
+    // Live writers normally have no capture clock; handoff restores that fact.
+    checkpoint_capture_started: Option<std::time::Instant>,
     version_index: hawdb_storage::version::VersionIndex,
     version_snapshot_pins: hawdb_storage::version::VersionSnapshotPins,
     version_snapshot_pin: Option<hawdb_storage::version::VersionSnapshotPin>,
@@ -1712,6 +1721,7 @@ impl GraphStore {
             next_node_id: 0,
             next_rel_id: 0,
             commit_epoch: 0,
+            checkpoint_capture_started: None,
             version_index: hawdb_storage::version::VersionIndex::default(),
             version_snapshot_pins: Default::default(),
             version_snapshot_pin: None,
@@ -2175,6 +2185,7 @@ impl GraphStore {
             next_node_id: self.next_node_id,
             next_rel_id: self.next_rel_id,
             commit_epoch: self.commit_epoch,
+            checkpoint_capture_started: self.checkpoint_capture_started,
             version_index: self.version_index.clone(),
             version_snapshot_pins: self.version_snapshot_pins.clone(),
             version_snapshot_pin: Some(self.version_snapshot_pins.pin(pin_epoch)),
@@ -8361,6 +8372,659 @@ mod tests {
         let memory = recovered_catalog.label_id("Memory").unwrap();
         assert_eq!(recovered.scan_nodes(Some(memory)).count(), 2);
         drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_wal_tail_preserves_every_post_snapshot_transaction() {
+        use super::{wal_generation_file, WalCursorEvent, WalOpenOutcome, WalRecordCursor};
+
+        let path = unique_test_dir("checkpoint_wal_tail");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+            .unwrap();
+        let source = store.checkpoint_source();
+        let prepared = source.prepare_checkpoint(&catalog).unwrap().unwrap();
+        let authoritative = store.durable.as_ref().unwrap().wal_path.clone();
+        for id in 2..=5 {
+            store
+                .create_node(
+                    &mut catalog,
+                    "Memory",
+                    properties([
+                        ("id", Value::Int(id)),
+                        ("body", Value::String("x".repeat(48 * 1024))),
+                    ]),
+                )
+                .unwrap();
+        }
+        let captured = store.checkpoint_source();
+        let before = std::fs::read(&authoritative).unwrap();
+        let receipt = captured.prepare_checkpoint_wal_tail(&prepared).unwrap();
+        assert_eq!(receipt.entries, 4);
+        assert_eq!(receipt.captured_commit_epoch, 5);
+        assert_eq!(std::fs::read(&authoritative).unwrap(), before);
+        assert_eq!(store.durable.as_ref().unwrap().checkpoint_epoch, 0);
+        let manifest = store
+            .durable
+            .as_ref()
+            .unwrap()
+            .checkpoint_manifest(
+                prepared.generation,
+                prepared.manifest_artifacts,
+                prepared.source_commit_epoch,
+                None,
+                prepared.source_scan_publication,
+                super::durable::CheckpointReplayBoundary {
+                    start_lsn: prepared.source_next_lsn,
+                    next_lsn: receipt.captured_next_lsn,
+                    commit_epoch: receipt.captured_commit_epoch,
+                },
+            )
+            .unwrap();
+        assert_eq!(manifest.checkpoint_commit_epoch, 1);
+        assert_eq!(manifest.wal_replay_start_lsn, 2);
+        assert_eq!(manifest.next_lsn, 6);
+        let candidate = path.join(wal_generation_file(prepared.generation));
+        let WalOpenOutcome::Cursor(mut cursor) = WalRecordCursor::open(&candidate, None).unwrap()
+        else {
+            panic!("candidate suffix has no valid header");
+        };
+        assert_eq!(cursor.generation(), prepared.generation);
+        assert_eq!(cursor.start_lsn(), prepared.source_next_lsn);
+        for lsn in prepared.source_next_lsn..receipt.captured_next_lsn {
+            let WalCursorEvent::Entry { entry, .. } = cursor.next().unwrap() else {
+                panic!("candidate lost a complete transaction");
+            };
+            assert_eq!(entry.lsn, lsn);
+        }
+        assert!(matches!(cursor.next().unwrap(), WalCursorEvent::Eof));
+        drop(cursor);
+        // Exercise the real v1 reopen path for checkpoint S plus its suffix
+        // to C. Production publication still requires candidate rebasing and
+        // writer revalidation; this controlled fixture ends all writes here.
+        store
+            .durable
+            .as_ref()
+            .unwrap()
+            .publish_checkpoint_sidecars(
+                &prepared.staging_path,
+                prepared.publish_projected_graph_artifacts,
+                prepared.source_scan_publication,
+            )
+            .unwrap();
+        manifest.write(&path.join(super::MANIFEST_FILE)).unwrap();
+        drop(captured);
+        drop(prepared);
+        drop(source);
+        drop(store);
+        let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(recovered.commit_epoch(), 5);
+        assert_eq!(
+            recovered.storage_recovery_report().checkpoint_commit_epoch,
+            Some(1)
+        );
+        assert_eq!(recovered.scan_nodes(None).count(), 5);
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_candidate_advances_across_captured_suffixes_without_rebuilding() {
+        for residency in [
+            StorageResidencyMode::Auto,
+            StorageResidencyMode::Materialized,
+            StorageResidencyMode::OutOfCore,
+        ] {
+            let path = unique_test_dir("checkpoint_candidate_progress");
+            let mut catalog = Catalog::default();
+            let mut store = GraphStore::open_with_durability_and_replay_config(
+                &path,
+                &mut catalog,
+                DurabilityPolicy::default(),
+                WalReplayConfig {
+                    residency_mode: residency,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            for id in 1..=3 {
+                store
+                    .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                    .unwrap();
+            }
+            let reader = store.snapshot();
+            let source = store.checkpoint_source();
+            let mut candidate = source
+                .prepare_checkpoint_candidate(&catalog)
+                .unwrap()
+                .unwrap();
+            drop(source);
+            let before = std::fs::read(path.join(super::MANIFEST_FILE)).unwrap();
+            for id in 4..=5 {
+                store
+                    .create_node(
+                        &mut catalog,
+                        "Memory",
+                        properties([
+                            ("id", Value::Int(id)),
+                            ("body", Value::String("x".repeat(48 * 1024))),
+                        ]),
+                    )
+                    .unwrap();
+            }
+            // Stale publication preserves this candidate for incremental retry.
+            assert!(store
+                .publish_checkpoint_candidate(&mut candidate, Some(3), &Default::default())
+                .is_err());
+            assert_eq!(
+                std::fs::read(path.join(super::MANIFEST_FILE)).unwrap(),
+                before
+            );
+            let captured = store.checkpoint_source();
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(6))]))
+                .unwrap();
+            let receipt = candidate.catch_up(&captured).unwrap();
+            assert_eq!(receipt.entries, 2);
+            assert_eq!(candidate.commit_epoch(), 5);
+            drop(captured);
+            assert!(store
+                .publish_checkpoint_candidate(&mut candidate, Some(3), &Default::default())
+                .is_err());
+            for id in 7..=9 {
+                store
+                    .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                    .unwrap();
+                let captured = store.checkpoint_source();
+                let receipt = candidate.catch_up(&captured).unwrap();
+                assert_eq!(receipt.entries, id as u64 - 3);
+                assert_eq!(candidate.commit_epoch(), id as u64);
+            }
+            let last_key = hawdb_storage::version::VersionKey::Database;
+            let last_stamp = store.version_index.stamp(&last_key);
+            assert!(last_stamp.is_some());
+            catalog = store
+                .publish_checkpoint_candidate(&mut candidate, Some(3), &Default::default())
+                .unwrap();
+            assert_eq!(store.commit_epoch(), 9);
+            assert_eq!(store.version_index.stamp(&last_key), last_stamp);
+            assert_eq!(
+                store
+                    .node_records_owned()
+                    .collect::<crate::error::Result<Vec<_>>>()
+                    .unwrap()
+                    .len(),
+                9
+            );
+            assert_eq!(
+                reader
+                    .node_records_owned()
+                    .collect::<crate::error::Result<Vec<_>>>()
+                    .unwrap()
+                    .len(),
+                3
+            );
+            for id in 0..9 {
+                assert_eq!(
+                    store
+                        .node_owned(NodeId(id))
+                        .unwrap()
+                        .unwrap()
+                        .properties
+                        .get("id"),
+                    Some(&Value::Int(id as i64 + 1))
+                );
+            }
+            assert_eq!(reader.commit_epoch(), 3);
+            reader.ensure_usable().unwrap();
+            assert_eq!(
+                store
+                    .storage_reclamation_watermark(Some(3))
+                    .checkpoint_commit_epoch,
+                Some(3)
+            );
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(10))]))
+                .unwrap();
+            drop(candidate);
+            drop(reader);
+            drop(store);
+            let recovered = GraphStore::open_with_durability_and_replay_config(
+                &path,
+                &mut catalog,
+                DurabilityPolicy::default(),
+                WalReplayConfig {
+                    residency_mode: residency,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(recovered.commit_epoch(), 10);
+            assert_eq!(
+                recovered
+                    .node_records_owned()
+                    .collect::<crate::error::Result<Vec<_>>>()
+                    .unwrap()
+                    .len(),
+                10
+            );
+            drop(recovered);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn checkpoint_candidate_rejects_lost_private_tail_and_cleans_owned_artifacts() {
+        let path = unique_test_dir("checkpoint_candidate_lost_tail");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+            .unwrap();
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(2))]))
+            .unwrap();
+        let captured = store.checkpoint_source();
+        candidate.catch_up(&captured).unwrap();
+        drop(captured);
+        let old_manifest = std::fs::read(path.join(super::MANIFEST_FILE)).unwrap();
+        let old_wal = store.durable.as_ref().unwrap().wal_path.clone();
+        let old_bytes = std::fs::read(&old_wal).unwrap();
+        let generation = store
+            .durable
+            .as_ref()
+            .unwrap()
+            .next_checkpoint_generation()
+            .unwrap();
+        let candidate_path = path.join(super::wal_generation_file(generation));
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&candidate_path)
+            .unwrap()
+            .set_len(super::WAL_BINARY_FILE_HEADER_BYTES as u64)
+            .unwrap();
+        assert!(matches!(
+            store.publish_checkpoint_candidate(&mut candidate, None, &Default::default()),
+            Err(HawDBError::StorageIntegrity(_))
+        ));
+        store.ensure_usable().unwrap();
+        assert_eq!(
+            std::fs::read(path.join(super::MANIFEST_FILE)).unwrap(),
+            old_manifest
+        );
+        assert_eq!(std::fs::read(&old_wal).unwrap(), old_bytes);
+        drop(candidate);
+        assert!(!candidate_path.exists());
+        assert!(!path
+            .join(super::checkpoint_generation_file(generation))
+            .exists());
+        drop(store);
+        let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(recovered.node_count_for_label(None), 2);
+        assert_eq!(recovered.commit_epoch(), 2);
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_candidate_uncertain_manifest_retains_complete_recovery_evidence() {
+        let path = unique_test_dir("checkpoint_candidate_uncertain_manifest");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+            .unwrap();
+        let reader = store.snapshot();
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(2))]))
+            .unwrap();
+        let captured = store.checkpoint_source();
+        candidate.catch_up(&captured).unwrap();
+        drop(captured);
+        let generation = store
+            .durable
+            .as_ref()
+            .unwrap()
+            .next_checkpoint_generation()
+            .unwrap();
+        super::set_checkpoint_failpoint(Some(super::CheckpointPublishStage::ManifestPublished));
+        let publication =
+            store.publish_checkpoint_candidate(&mut candidate, Some(1), &Default::default());
+        super::set_checkpoint_failpoint(None);
+        assert!(matches!(publication, Err(HawDBError::StorageIntegrity(_))));
+        assert!(store.ensure_usable().is_err());
+        assert!(reader.ensure_usable().is_err());
+        drop(candidate);
+        assert!(path.join(super::wal_generation_file(generation)).exists());
+        assert!(path
+            .join(super::checkpoint_generation_file(generation))
+            .exists());
+        drop(reader);
+        drop(store);
+        let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(recovered.commit_epoch(), 2);
+        assert_eq!(recovered.node_count_for_label(None), 2);
+        assert_eq!(
+            recovered.storage_recovery_report().checkpoint_commit_epoch,
+            Some(1)
+        );
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn selected_checkpoint_handoff_preserves_live_ownership_and_releases_snapshot_floor() {
+        for durability in [
+            DurabilityPolicy::SyncOnEveryWrite,
+            DurabilityPolicy::SyncOnCheckpoint,
+        ] {
+            let path = unique_test_dir("selected_checkpoint_handoff");
+            let mut catalog = Catalog::default();
+            let mut store =
+                GraphStore::open_with_durability(&path, &mut catalog, durability).unwrap();
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+                .unwrap();
+            let reader = store.snapshot();
+            let base = store.checkpoint_source();
+            let mut candidate = base
+                .prepare_checkpoint_candidate(&catalog)
+                .unwrap()
+                .unwrap();
+            drop(base);
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(2))]))
+                .unwrap();
+            let expected = store.checkpoint_source_identity().unwrap();
+            let mut worker = store.checkpoint_source();
+            candidate.catch_up(&worker).unwrap();
+            assert!(worker
+                .publish_checkpoint_candidate_deferred_reclamation(&mut candidate, Some(1))
+                .unwrap_err()
+                .to_string()
+                .contains("finalized before publication"));
+            assert_eq!(worker.durable.as_ref().unwrap().checkpoint_epoch, 0);
+            candidate.finish_catch_up().unwrap();
+            candidate.finish_catch_up().unwrap();
+            assert!(candidate
+                .catch_up(&worker)
+                .unwrap_err()
+                .to_string()
+                .contains("finalized"));
+            worker
+                .publish_checkpoint_candidate_deferred_reclamation(&mut candidate, Some(1))
+                .unwrap();
+            candidate
+                .reclaim_published_generations(&mut worker, &Default::default())
+                .unwrap();
+            assert!(worker.version_snapshot_pin.is_some());
+            assert!(store.version_snapshot_pin.is_none());
+            let retired = store.adopt_selected_checkpoint(worker, expected).unwrap();
+            assert!(store.version_snapshot_pin.is_none());
+            assert_eq!(store.commit_epoch(), 2);
+            assert_eq!(store.node_count_for_label(None), 2);
+            assert_eq!(reader.commit_epoch(), 1);
+            assert_eq!(reader.node_count_for_label(None), 1);
+            assert!(store
+                .version_index
+                .shares_storage_with(&retired.version_index));
+            drop(retired);
+            drop(candidate);
+            drop(reader);
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(3))]))
+                .unwrap();
+            store.reclaim_version_history();
+            // The worker's capture at epoch 2 must not become a permanent live
+            // writer pin. No snapshots remain, so every old stamp can retire.
+            assert_eq!(store.version_snapshot_pins.oldest_epoch(), None);
+            assert_eq!(store.version_index.retained_history_bytes(), 0);
+            assert_eq!(store.version_index.len(), 0);
+            drop(store);
+            let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+            assert_eq!(recovered.commit_epoch(), 3);
+            assert_eq!(recovered.node_count_for_label(None), 3);
+            drop(recovered);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn selected_checkpoint_handoff_rejects_an_equal_epoch_from_another_store() {
+        let left_path = unique_test_dir("selected_checkpoint_identity_left");
+        let right_path = unique_test_dir("selected_checkpoint_identity_right");
+        let mut left_catalog = Catalog::default();
+        let mut right_catalog = Catalog::default();
+        let mut left = GraphStore::open(&left_path, &mut left_catalog).unwrap();
+        let mut right = GraphStore::open(&right_path, &mut right_catalog).unwrap();
+        left.create_node(
+            &mut left_catalog,
+            "Memory",
+            properties([("id", Value::Int(1))]),
+        )
+        .unwrap();
+        right
+            .create_node(
+                &mut right_catalog,
+                "Memory",
+                properties([("id", Value::Int(2))]),
+            )
+            .unwrap();
+        let reader = left.snapshot();
+        let expected = left.checkpoint_source_identity().unwrap();
+        right.checkpoint(&right_catalog).unwrap();
+        let error = left.adopt_selected_checkpoint(right, expected).unwrap_err();
+        assert!(matches!(error, HawDBError::StorageIntegrity(_)));
+        assert!(left.ensure_usable().is_err());
+        assert!(reader.ensure_usable().is_err());
+        drop(reader);
+        drop(left);
+        let recovered = GraphStore::open(&left_path, &mut left_catalog).unwrap();
+        let id = left_catalog.label_id("Memory").unwrap();
+        let row = recovered.scan_nodes(Some(id)).next().unwrap();
+        assert_eq!(row.properties.get("id"), Some(&Value::Int(1)));
+        assert_eq!(recovered.commit_epoch(), 1);
+        drop(recovered);
+        std::fs::remove_dir_all(left_path).unwrap();
+        std::fs::remove_dir_all(right_path).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_candidate_rejects_lost_authoritative_tail_and_poisons_live_owners() {
+        let path = unique_test_dir("checkpoint_candidate_source_tail_loss");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+            .unwrap();
+        let base = store.checkpoint_source();
+        let mut candidate = base
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        drop(base);
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(2))]))
+            .unwrap();
+        let reader = store.snapshot();
+        let source = store.checkpoint_source();
+        let wal_path = store.durable.as_ref().unwrap().wal_path.clone();
+        let complete_wal = std::fs::read(&wal_path).unwrap();
+        let manifest_path = store
+            .durable
+            .as_ref()
+            .unwrap()
+            .manifest_path()
+            .to_path_buf();
+        let manifest = std::fs::read(&manifest_path).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&wal_path)
+            .unwrap()
+            .set_len(complete_wal.len() as u64 - 1)
+            .unwrap();
+        let error = candidate.catch_up(&source).unwrap_err();
+        assert!(matches!(error, HawDBError::StorageIntegrity(_)));
+        assert!(store.ensure_usable().is_err());
+        assert!(reader.ensure_usable().is_err());
+        assert!(source.ensure_usable().is_err());
+        assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
+        assert_eq!(store.durable.as_ref().unwrap().checkpoint_epoch, 0);
+        drop(candidate);
+        drop(source);
+        drop(reader);
+        drop(store);
+        // Restore only this fixture's known complete bytes, then use ordinary
+        // recovery. Live handles stay poisoned until they are closed.
+        std::fs::write(&wal_path, &complete_wal).unwrap();
+        let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(recovered.commit_epoch(), 2);
+        assert_eq!(recovered.node_count_for_label(None), 2);
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_candidate_keeps_only_post_snapshot_debt_age() {
+        let path = unique_test_dir("checkpoint_candidate_suffix_age");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+            .unwrap();
+        let old_debt = std::time::Instant::now() - std::time::Duration::from_secs(60);
+        store.durable.as_mut().unwrap().wal_uncheckpointed_since = Some(old_debt);
+        let source = store.checkpoint_source();
+        let capture_floor = source.checkpoint_capture_started.unwrap();
+        let mut candidate = source
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(2))]))
+            .unwrap();
+        let source = store.checkpoint_source();
+        candidate.catch_up(&source).unwrap();
+        drop(source);
+        store
+            .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
+            .unwrap();
+        assert_eq!(
+            store.durable.as_ref().unwrap().wal_uncheckpointed_since,
+            Some(capture_floor)
+        );
+        assert_ne!(
+            store.durable.as_ref().unwrap().wal_uncheckpointed_since,
+            Some(old_debt)
+        );
+        drop(candidate);
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(3))]))
+            .unwrap();
+        assert_eq!(
+            store.durable.as_ref().unwrap().wal_uncheckpointed_since,
+            Some(capture_floor)
+        );
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        candidate.finish_catch_up().unwrap();
+        store
+            .publish_checkpoint_candidate_deferred_reclamation(&mut candidate, None)
+            .unwrap();
+        assert!(store
+            .durable
+            .as_ref()
+            .unwrap()
+            .wal_uncheckpointed_since
+            .is_none());
+        assert_eq!(store.checkpoint_debt_snapshot().unwrap().wal_age_millis, 0);
+        drop(candidate);
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn wal_checkpoint_debt_age_does_not_reset_on_continuous_writes() {
+        let path = unique_test_dir("wal_checkpoint_debt_age");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+            .unwrap();
+        let started = std::time::Instant::now() - std::time::Duration::from_secs(60);
+        store.durable.as_mut().unwrap().wal_uncheckpointed_since = Some(started);
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(2))]))
+            .unwrap();
+        assert!(store.storage_pressure_snapshot(None).wal_age_millis >= 60_000);
+        assert_eq!(
+            store.durable.as_ref().unwrap().wal_uncheckpointed_since,
+            Some(started)
+        );
+        store.checkpoint(&catalog).unwrap();
+        assert_eq!(store.storage_pressure_snapshot(None).wal_age_millis, 0);
+        assert!(store
+            .durable
+            .as_ref()
+            .unwrap()
+            .wal_uncheckpointed_since
+            .is_none());
+        drop(store);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_wal_tail_rejects_corruption_without_selecting_a_candidate() {
+        let path = unique_test_dir("checkpoint_wal_tail_corruption");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+            .unwrap();
+        let source = store.checkpoint_source();
+        let prepared = source.prepare_checkpoint(&catalog).unwrap().unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(2))]))
+            .unwrap();
+        let durable = store.durable.as_ref().unwrap();
+        let manifest_path = path.join(super::MANIFEST_FILE);
+        let manifest = std::fs::read(&manifest_path).unwrap();
+        let mut bytes = std::fs::read(&durable.wal_path).unwrap();
+        // The complete second record remains the same length but its payload
+        // no longer matches the fragment checksum.
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        std::fs::write(&durable.wal_path, &bytes).unwrap();
+        let error = store.prepare_checkpoint_wal_tail(&prepared).unwrap_err();
+        assert!(matches!(error, HawDBError::StorageIntegrity(_)));
+        assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
+        assert_eq!(std::fs::read(&durable.wal_path).unwrap(), bytes);
+        assert!(!path
+            .join(format!("wal.{}.hawdb.tail.tmp", prepared.generation))
+            .exists());
+        drop(prepared);
+        drop(source);
+        drop(store);
         std::fs::remove_dir_all(path).unwrap();
     }
 

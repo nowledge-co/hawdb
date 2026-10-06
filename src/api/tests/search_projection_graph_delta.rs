@@ -107,7 +107,8 @@ fn database_facade_reexports_search_owned_catch_up_contracts() {
 fn database_facade_builds_search_projection_delta_from_graph_nodes() {
     let mut db = Database::new();
     let node_id = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Memory",
@@ -1411,7 +1412,8 @@ fn search_projection_delta_request_requires_rebuild_when_changefeed_start_is_too
 fn graph_search_projection_delta_budget_failure_keeps_projection_unchanged() {
     let mut db = Database::new();
     let node_id = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Memory",
@@ -1468,7 +1470,8 @@ fn graph_search_projection_delta_plan_is_absent_when_request_exceeds_limit() {
 fn graph_search_projection_delta_without_watermark_keeps_freshness_epoch() {
     let mut db = Database::new();
     let node_id = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Memory",
@@ -1508,7 +1511,8 @@ fn graph_search_projection_delta_without_watermark_keeps_freshness_epoch() {
 fn graph_search_projection_delta_rejects_future_freshness_watermark() {
     let mut db = Database::new();
     let node_id = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Memory",
@@ -1546,7 +1550,8 @@ fn graph_search_projection_delta_rejects_future_freshness_watermark() {
 fn background_graph_search_projection_delta_uses_qos_admission() {
     let mut db = Database::new();
     let node_id = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Memory",

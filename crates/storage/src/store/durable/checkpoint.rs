@@ -17,7 +17,8 @@
 use super::{
     load_published_canonical_adjacency, load_published_canonical_segments,
     load_published_property_projection, CheckpointImage, CheckpointManifestArtifacts,
-    DurableArtifactMetadata, DurableManifest, DurableStore, GraphManifestOpenBudget,
+    CheckpointReplayBoundary, DurableArtifactMetadata, DurableManifest, DurableStore,
+    GraphManifestOpenBudget,
 };
 use crate::error::{HawDBError, Result};
 use crate::file_io::{self as fs, File};
@@ -259,14 +260,23 @@ impl DurableStore {
         }
     }
 
-    pub(in crate::store) fn publish_checkpoint_manifest(
-        &mut self,
+    pub(in crate::store) fn checkpoint_manifest(
+        &self,
         generation: u64,
         artifacts: CheckpointManifestArtifacts,
         checkpoint_commit_epoch: u64,
         oldest_reader_commit_epoch: Option<u64>,
         source_scan_publication: Option<source_scan::SourceScanPublication>,
-    ) -> Result<()> {
+        replay: CheckpointReplayBoundary,
+    ) -> Result<DurableManifest> {
+        if replay.next_lsn < replay.start_lsn
+            || replay.commit_epoch < checkpoint_commit_epoch
+            || replay.next_lsn - replay.start_lsn != replay.commit_epoch - checkpoint_commit_epoch
+        {
+            return Err(HawDBError::StorageIntegrity(
+                "checkpoint replay LSN interval does not cover its commit epochs".into(),
+            ));
+        }
         self.admit_graph_manifest_artifacts(&artifacts)?;
         let safe_reclaim_commit_epoch =
             safe_reclaim_commit_epoch(checkpoint_commit_epoch, oldest_reader_commit_epoch);
@@ -275,7 +285,7 @@ impl DurableStore {
             source_scan_publication.map(|value| value.descriptor_checksum());
         let CheckpointManifestArtifacts {
             checkpoint,
-            relational_checkpoint,
+            relational_checkpoint: _,
             canonical_manifest,
             canonical_adjacency,
             property_spill_manifest,
@@ -317,12 +327,35 @@ impl DurableStore {
             checkpoint_commit_epoch,
             oldest_reader_commit_epoch,
             safe_reclaim_commit_epoch,
-            wal_replay_start_lsn: self.next_lsn,
-            next_lsn: self.next_lsn,
+            wal_replay_start_lsn: replay.start_lsn,
+            next_lsn: replay.next_lsn,
             source_scan_commit_epoch,
             source_scan_descriptor_checksum,
         };
         manifest.validate()?;
+        Ok(manifest)
+    }
+
+    pub(in crate::store) fn publish_checkpoint_manifest(
+        &mut self,
+        generation: u64,
+        artifacts: CheckpointManifestArtifacts,
+        checkpoint_commit_epoch: u64,
+        oldest_reader_commit_epoch: Option<u64>,
+        source_scan_publication: Option<source_scan::SourceScanPublication>,
+    ) -> Result<()> {
+        let manifest = self.checkpoint_manifest(
+            generation,
+            artifacts,
+            checkpoint_commit_epoch,
+            oldest_reader_commit_epoch,
+            source_scan_publication,
+            CheckpointReplayBoundary {
+                start_lsn: self.next_lsn,
+                next_lsn: self.next_lsn,
+                commit_epoch: checkpoint_commit_epoch,
+            },
+        )?;
         let publication = manifest
             .write(&self.manifest_path)
             .and_then(|()| checkpoint_publish_failpoint(CheckpointPublishStage::ManifestPublished));
@@ -339,6 +372,22 @@ impl DurableStore {
             });
         }
 
+        self.adopt_checkpoint_manifest(
+            manifest,
+            artifacts.relational_checkpoint,
+            checkpoint_commit_epoch,
+        )
+    }
+
+    /// Mounts validated immutable bindings without writing a durable selector.
+    /// A private candidate can use this before replaying its captured suffix.
+    pub(in crate::store) fn adopt_checkpoint_manifest(
+        &mut self,
+        manifest: DurableManifest,
+        relational_checkpoint: Option<DurableArtifactMetadata>,
+        wal_commit_epoch: u64,
+    ) -> Result<()> {
+        let generation = manifest.checkpoint_epoch;
         self.wal_append_file = None;
         self.checkpoint_path = manifest.checkpoint_path(&self.root_path);
         self.wal_path = manifest.wal_path(&self.root_path);
@@ -378,8 +427,12 @@ impl DurableStore {
         self.oldest_reader_commit_epoch = manifest.oldest_reader_commit_epoch;
         self.safe_reclaim_commit_epoch = manifest.safe_reclaim_commit_epoch;
         self.wal_replay_start_lsn = manifest.wal_replay_start_lsn;
+        self.next_lsn = manifest.next_lsn;
         self.wal_bytes = fs::metadata(&self.wal_path)?.len();
-        self.wal_commit_epoch = manifest.checkpoint_commit_epoch;
+        if manifest.next_lsn == manifest.wal_replay_start_lsn {
+            self.wal_uncheckpointed_since = None;
+        }
+        self.wal_commit_epoch = wal_commit_epoch;
         self.wal_free_space_probe.last_available_bytes = None;
         self.wal_free_space_probe.wal_bytes_since_probe = 0;
         self.source_scan_commit_epoch = manifest.source_scan_commit_epoch;

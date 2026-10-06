@@ -21,7 +21,8 @@ fn retrieves_bounded_multi_hop_knowledge_context() {
     db.query("CREATE (:Memory {id: 'root', title: 'Root traversal', content: 'Two hop graph context'})-[:LINKS]->(:Entity {id: 'mid', name: 'Mid'})")
             .unwrap();
     let leaf = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Entity",
@@ -33,7 +34,8 @@ fn retrieves_bounded_multi_hop_knowledge_context() {
     }
     .unwrap();
     {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_relationship(
             &mut branch_runtime.catalog,
             NodeId(1),
@@ -377,7 +379,8 @@ fn scoring_spec_database() -> (Database, NodeId, NodeId) {
     let mut db = Database::new();
     let mut create = |id: &str, pagerank: i64| {
         {
-            let branch_runtime = db.runtime.get_mut().unwrap();
+            let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+            let branch_runtime = &mut *branch_runtime_access;
             branch_runtime.store.create_node(
                 &mut branch_runtime.catalog,
                 "Memory",

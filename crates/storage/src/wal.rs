@@ -302,6 +302,51 @@ impl WalRecordCursor {
         self.generation
     }
 
+    /// Internal checkpoint reader. Header identity and both complete-record
+    /// byte boundaries are captured under the sole WAL writer; the caller
+    /// still verifies the expected contiguous LSN interval while consuming it.
+    pub(crate) fn open_range(
+        path: &Path,
+        max_record_bytes: Option<usize>,
+        generation: u64,
+        start_lsn: u64,
+        from_offset: u64,
+        to_offset: u64,
+    ) -> Result<Self> {
+        let cursor = match Self::open(path, max_record_bytes)? {
+            WalOpenOutcome::Cursor(cursor) => cursor,
+            _ => {
+                return Err(HawDBError::StorageIntegrity(
+                    "captured WAL has an invalid header".into(),
+                ))
+            }
+        };
+        if cursor.generation != generation || cursor.start_lsn != start_lsn {
+            return Err(HawDBError::StorageIntegrity(
+                "captured WAL header identity changed".into(),
+            ));
+        }
+        let reader = cursor.reader.into_reader();
+        if reader.get_ref().metadata()?.len() < to_offset {
+            return Err(HawDBError::StorageIntegrity(
+                "captured WAL interval lost previously committed bytes".into(),
+            ));
+        }
+        // Reuse the counted handle whose header was checked. A pathname reopen
+        // could select a different file after validation.
+        Ok(Self {
+            generation,
+            start_lsn,
+            reader: frame::BinaryWalReader::range(
+                reader,
+                generation,
+                max_record_bytes,
+                from_offset,
+                to_offset,
+            )?,
+        })
+    }
+
     pub const fn start_lsn(&self) -> u64 {
         self.start_lsn
     }

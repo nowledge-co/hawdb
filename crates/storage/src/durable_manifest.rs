@@ -1151,7 +1151,7 @@ impl DurableManifest {
         Ok(manifest)
     }
 
-    fn encode(&self) -> String {
+    pub(crate) fn encode(&self) -> String {
         let mut body = String::new();
         body.push_str(&format!("{MANIFEST_HEADER_V1}\n"));
         body.push_str(&format!("version\t{STORAGE_VERSION}\n"));

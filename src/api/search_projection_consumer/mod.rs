@@ -342,16 +342,17 @@ impl Database {
             .verified
             .insert(consumer.id().as_str().into(), State::Active);
         let epoch = self.runtime.get()?.store.commit_epoch();
-        let record = self
-            .runtime
-            .get_mut()?
-            .projection_consumers
-            .records
-            .get_mut(consumer.id().as_str())
-            .ok_or(Error::InvalidHandle)?;
-        record.expires_at_commit_epoch = epoch
-            .checked_add(record.max_idle_commits)
-            .ok_or_else(|| HawDBError::Semantic("consumer expiry epoch overflow".into()))?;
+        {
+            let mut runtime = self.runtime.get_mut()?;
+            let record = runtime
+                .projection_consumers
+                .records
+                .get_mut(consumer.id().as_str())
+                .ok_or(Error::InvalidHandle)?;
+            record.expires_at_commit_epoch = epoch
+                .checked_add(record.max_idle_commits)
+                .ok_or_else(|| HawDBError::Semantic("consumer expiry epoch overflow".into()))?;
+        }
         self.publish_consumer_registry(&root)?;
         self.search_projection_consumer_status(consumer.id())
     }
@@ -547,9 +548,8 @@ impl Database {
             .store
             .search_projection_database_identity();
         let epoch = self.runtime.get()?.store.commit_epoch();
-        let record = self
-            .runtime
-            .get_mut()?
+        let mut runtime = self.runtime.get_mut()?;
+        let record = runtime
             .projection_consumers
             .records
             .get_mut(id.as_str())
@@ -575,12 +575,13 @@ impl Database {
     }
 
     fn publish_consumer_registry(&mut self, root: &Path) -> SearchProjectionConsumerResult<()> {
-        if let Err(error) = self.runtime.get_mut()?.projection_consumers.publish(
+        let mut runtime = self.runtime.get_mut()?;
+        if let Err(error) = runtime.projection_consumers.publish(
             root,
             || publication_failpoint(PublicationStage::BeforeRegistry),
             || publication_failpoint(PublicationStage::AfterRegistry),
         ) {
-            self.runtime.get_mut()?.projection_consumers.unavailable = true;
+            runtime.projection_consumers.unavailable = true;
             return Err(error.into());
         }
         Ok(())

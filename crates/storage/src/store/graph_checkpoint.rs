@@ -440,7 +440,9 @@ impl GraphStore {
 
     #[doc(hidden)]
     pub fn checkpoint_source(&self) -> Self {
+        let captured_at = std::time::Instant::now();
         let mut source = self.snapshot();
+        source.checkpoint_capture_started = Some(captured_at);
         source.durable = self.durable.clone();
         if let Some(durable) = &mut source.durable {
             durable.wal_append_file = None;
@@ -451,6 +453,23 @@ impl GraphStore {
     #[doc(hidden)]
     pub fn prepare_checkpoint(&self, catalog: &Catalog) -> Result<Option<PreparedCheckpoint>> {
         self.prepare_checkpoint_with_build_config(catalog, DerivedArtifactBuildConfig::default())
+    }
+
+    /// Captures and reframes the committed suffix into the prepared generation.
+    /// Call on a checkpoint source captured under the writer, while retaining
+    /// the checkpoint coordinator. This does not publish a selector or change
+    /// the authoritative WAL. Runtime rebasing and final identity validation
+    /// are required before publication.
+    #[doc(hidden)]
+    pub fn prepare_checkpoint_wal_tail(
+        &self,
+        prepared: &PreparedCheckpoint,
+    ) -> Result<CheckpointWalTail> {
+        self.ensure_usable()?;
+        let durable = self.durable.as_ref().ok_or_else(|| {
+            HawDBError::Storage("checkpoint WAL suffix requires durable storage".into())
+        })?;
+        durable.prepare_checkpoint_wal_tail(prepared, self.commit_epoch)
     }
 
     fn prepare_checkpoint_with_build_config(
@@ -1003,6 +1022,8 @@ impl GraphStore {
                 source_commit_epoch: commit_epoch,
                 source_checkpoint_epoch: durable.checkpoint_epoch,
                 source_next_lsn: durable.next_lsn,
+                source_wal_generation: durable.wal_generation,
+                source_wal_bytes: durable.wal_bytes,
                 generation,
                 checkpoint_out_of_core,
                 projected_graph_artifacts: artifacts,
@@ -1114,7 +1135,7 @@ impl GraphStore {
 
     fn publish_prepared_checkpoint_with_reclamation_inner(
         &mut self,
-        prepared: PreparedCheckpoint,
+        mut prepared: PreparedCheckpoint,
         oldest_reader_commit_epoch: Option<u64>,
         pinned_reader_generations: Option<&BTreeSet<u64>>,
         shadow_admission: Option<ColumnarShadowAdmission>,
@@ -1126,6 +1147,8 @@ impl GraphStore {
         if self.commit_epoch != prepared.source_commit_epoch
             || durable.checkpoint_epoch != prepared.source_checkpoint_epoch
             || durable.next_lsn != prepared.source_next_lsn
+            || durable.wal_generation != prepared.source_wal_generation
+            || durable.wal_bytes != prepared.source_wal_bytes
         {
             durable.discard_prepared_checkpoint(prepared.generation, &prepared.staging_path)?;
             return Err(HawDBError::Storage(format!(
@@ -1165,41 +1188,8 @@ impl GraphStore {
             })
             .transpose()?
             .flatten();
-        self.projected_graph_artifacts = prepared.projected_graph_artifacts.into();
         self.source_scan_manifest = source_scan_manifest.into();
-        self.checkpoint_statistics = prepared.checkpoint_statistics;
-        if let Some(relational_state) = prepared.checkpoint_relational_state {
-            self.relational_state = relational_state;
-        }
-        self.append_state = AppendState::from_checkpoint_with_generated_order_watermarks(
-            prepared.checkpoint_append_reader.manifest().schemas.clone(),
-            prepared.checkpoint_append_reader.watermarks(),
-            prepared
-                .checkpoint_append_reader
-                .generated_order_watermarks()
-                .clone(),
-        )
-        .map_err(HawDBError::from_storage_error)?;
-        self.append_generation_reader = Some(prepared.checkpoint_append_reader);
-        if prepared.checkpoint_out_of_core {
-            self.canonical_base = durable.canonical_segments.clone();
-            self.canonical_adjacency = durable.canonical_adjacency.clone();
-            self.persistent_property_projection = durable.persistent_property_projection.clone();
-            self.canonical_base_out_of_core = true;
-            self.nodes = CowSegmentedMap::default();
-            self.relationships = CowSegmentedMap::default();
-            self.node_tombstones = CowSegment::default();
-            self.relationship_tombstones = CowSegment::default();
-            self.outgoing = CowSegmentedMap::default();
-            self.incoming = CowSegmentedMap::default();
-            self.property_index = CowSegmentedMap::default();
-            self.composite_property_index = CowSegmentedMap::default();
-            self.full_text_property_index = CowSegmentedMap::default();
-            self.relationship_property_index = CowSegmentedMap::default();
-        }
-        self.mount_relational_row_pages_for_recovery()?;
-        self.install_prepared_relational_index_candidate(prepared.relational_index_candidate);
-        self.validate_authoritative_relational_index_open()?;
+        self.adopt_prepared_checkpoint_state(&mut prepared)?;
         // Derived shadow double-write: published after the row-oriented
         // checkpoint so its `source_commit_epoch` is the epoch this
         // checkpoint made durable. The checkpoint's Result reflects
@@ -1223,6 +1213,54 @@ impl GraphStore {
         }
         self.reclaim_version_history();
         Ok(())
+    }
+
+    /// Mount the prepared base without publishing a selector. Private suffix
+    /// replay and ordinary strict publication share exactly this adoption path.
+    pub(super) fn adopt_prepared_checkpoint_state(
+        &mut self,
+        prepared: &mut PreparedCheckpoint,
+    ) -> Result<()> {
+        self.projected_graph_artifacts =
+            std::mem::take(&mut prepared.projected_graph_artifacts).into();
+        self.checkpoint_statistics = prepared.checkpoint_statistics.clone();
+        if let Some(relational_state) = prepared.checkpoint_relational_state.take() {
+            self.relational_state = relational_state;
+        }
+        self.append_state = AppendState::from_checkpoint_with_generated_order_watermarks(
+            prepared.checkpoint_append_reader.manifest().schemas.clone(),
+            prepared.checkpoint_append_reader.watermarks(),
+            prepared
+                .checkpoint_append_reader
+                .generated_order_watermarks()
+                .clone(),
+        )
+        .map_err(HawDBError::from_storage_error)?;
+        self.append_generation_reader = Some(prepared.checkpoint_append_reader.clone());
+        if prepared.checkpoint_out_of_core {
+            let durable = self.durable.as_ref().ok_or_else(|| {
+                HawDBError::StorageIntegrity("checkpoint base has no durable bindings".into())
+            })?;
+            self.canonical_base = durable.canonical_segments.clone();
+            self.canonical_adjacency = durable.canonical_adjacency.clone();
+            self.persistent_property_projection = durable.persistent_property_projection.clone();
+            self.canonical_base_out_of_core = true;
+            self.nodes = CowSegmentedMap::default();
+            self.relationships = CowSegmentedMap::default();
+            self.node_tombstones = CowSegment::default();
+            self.relationship_tombstones = CowSegment::default();
+            self.outgoing = CowSegmentedMap::default();
+            self.incoming = CowSegmentedMap::default();
+            self.property_index = CowSegmentedMap::default();
+            self.composite_property_index = CowSegmentedMap::default();
+            self.full_text_property_index = CowSegmentedMap::default();
+            self.relationship_property_index = CowSegmentedMap::default();
+        }
+        self.mount_relational_row_pages_for_recovery()?;
+        self.install_prepared_relational_index_candidate(
+            prepared.relational_index_candidate.take(),
+        );
+        self.validate_authoritative_relational_index_open()
     }
 
     /// Checkpoint entry that carries an explicit pre-admitted shadow

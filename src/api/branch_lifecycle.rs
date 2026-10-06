@@ -2587,6 +2587,10 @@ impl Database {
     ) -> crate::error::Result<BranchReclamationReport> {
         self.ensure_branch_writable()?;
         self.ensure_branch_work_idle()?;
+        let _checkpoint_suspension = self
+            .runtime
+            .suspend_automatic_checkpoint()
+            .map_err(BranchLifecycleError::Runtime)?;
         self.runtime.get_mut()?.store.reclaim_branch_storage(limits)
     }
 
@@ -2701,7 +2705,7 @@ impl Database {
             && selection.record.id == record.id
         {
             let refresh = selection.record.metadata_revision != record.metadata_revision;
-            let runtime = self
+            let mut runtime = self
                 .runtime
                 .get_mut()
                 .map_err(BranchLifecycleError::Runtime)?;
@@ -2715,6 +2719,13 @@ impl Database {
             return Ok(());
         }
         self.ensure_branch_work_idle()?;
+        let _checkpoint_suspension = if self.runtime.peek().is_some() {
+            self.runtime
+                .suspend_automatic_checkpoint()
+                .map_err(BranchLifecycleError::Runtime)?
+        } else {
+            None
+        };
         let _resources = self
             .runtime
             .reserve_target_admission_resources()
@@ -2723,7 +2734,7 @@ impl Database {
         let (store, schema) = admitted.into_parts();
         let mut candidate = Self::new_with_config(self.config.clone());
         {
-            let runtime = candidate
+            let mut runtime = candidate
                 .runtime
                 .get_mut()
                 .map_err(BranchLifecycleError::Runtime)?;
@@ -2748,7 +2759,7 @@ impl Database {
             .apply_engine_system_schema()
             .map_err(BranchLifecycleError::storage)?;
         {
-            let runtime = candidate
+            let mut runtime = candidate
                 .runtime
                 .get_mut()
                 .map_err(BranchLifecycleError::Runtime)?;
@@ -2764,6 +2775,14 @@ impl Database {
         }
         // Replace only after complete candidate validation. Old snapshots own
         // their schema/store/pins; completed jobs remain on the host handle.
+        candidate
+            .runtime
+            .arm_automatic(
+                &candidate.config,
+                candidate.local_qos_scheduler.clone(),
+                candidate.runtime_governor.clone(),
+            )
+            .map_err(BranchLifecycleError::Runtime)?;
         self.runtime = candidate.runtime;
         Ok(())
     }
@@ -3214,6 +3233,13 @@ impl Database {
         }
         let parent_id = parent.id;
         let parent_head_path = self.branch_head_path(parent_id.as_uuid())?;
+        let _checkpoint_suspension = if self.runtime.peek().is_some() {
+            self.runtime
+                .suspend_automatic_checkpoint()
+                .map_err(BranchLifecycleError::Runtime)?
+        } else {
+            None
+        };
         let sealed_source = if self.runtime.peek().is_some_and(|runtime| {
             runtime
                 .store

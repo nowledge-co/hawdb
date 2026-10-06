@@ -179,11 +179,12 @@ fn creation_checkpoint_catch_up_and_reopen_use_real_receipts() {
 fn empty_source_epoch_zero_and_repeated_catch_up_are_valid() {
     let fixture = Fixture::new();
     let mut db = Database::default();
-    db.runtime.get_mut().unwrap().store = crate::store::GraphStore::open(
-        fixture.0.join("database"),
-        &mut db.runtime.get_mut().unwrap().catalog,
-    )
-    .unwrap();
+    {
+        let mut runtime = db.runtime.get_mut().unwrap();
+        runtime.store =
+            crate::store::GraphStore::open(fixture.0.join("database"), &mut runtime.catalog)
+                .unwrap();
+    }
     let mut consumer = db
         .create_search_projection_consumer(
             id("empty"),

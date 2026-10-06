@@ -3375,7 +3375,8 @@ fn hawdb_lightning_scheduled_background_bootstrap_export_releases_import_budget(
 fn hawdb_lightning_graph_stream_validation_skips_length_coded_metadata() {
     let mut db = Database::new();
     let root = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Memory",
@@ -3400,7 +3401,8 @@ fn hawdb_lightning_graph_stream_validation_skips_length_coded_metadata() {
     }
     .unwrap();
     let target = {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_node(
             &mut branch_runtime.catalog,
             "Entity",
@@ -3412,7 +3414,8 @@ fn hawdb_lightning_graph_stream_validation_skips_length_coded_metadata() {
     }
     .unwrap();
     {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_relationship(
             &mut branch_runtime.catalog,
             root,

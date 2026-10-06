@@ -8443,7 +8443,8 @@ fn transfers_label_memory_edges_for_nowledge_label_merge_shape() {
         other => panic!("expected projected id int, got {other:?}"),
     };
     {
-        let branch_runtime = db.runtime.get_mut().unwrap();
+        let mut branch_runtime_access = db.runtime.get_mut().unwrap();
+        let branch_runtime = &mut *branch_runtime_access;
         branch_runtime.store.create_relationship(
             &mut branch_runtime.catalog,
             idless_memory_node_id,

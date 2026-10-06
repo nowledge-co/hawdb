@@ -548,6 +548,13 @@ impl GraphStore {
         source: RelationalRecoverySourceBuilder,
         replayed_entries: usize,
     ) -> Result<()> {
+        if let Some(durable) = &mut self.durable
+            && self.commit_epoch > durable.checkpoint_commit_epoch
+        {
+            durable
+                .wal_uncheckpointed_since
+                .get_or_insert_with(std::time::Instant::now);
+        }
         let identity = if replayed_entries == 0 {
             None
         } else {
@@ -743,40 +750,7 @@ impl GraphStore {
             expected_lsn = expected_lsn
                 .checked_add(1)
                 .ok_or_else(|| HawDBError::Storage("WAL LSN overflow during replay".to_string()))?;
-            match entry.op {
-                WalOp::Batch(ops) => {
-                    self.ensure_out_of_core_delta_replay_admission(&ops)?;
-                    let commit_epoch = self.commit_epoch + 1;
-                    let relational_primary_key_changes =
-                        self.relational_primary_key_changes_from_wal_ops(&ops)?;
-                    self.record_search_projection_changes_for_ops(
-                        catalog,
-                        commit_epoch,
-                        &ops,
-                        relational_primary_key_changes,
-                    );
-                    for op in ops {
-                        self.apply_wal_op(catalog, op)?;
-                    }
-                    self.commit_epoch += 1;
-                    self.advance_relational_row_recovery_epoch(self.commit_epoch);
-                }
-                op => {
-                    self.ensure_out_of_core_delta_replay_admission(std::slice::from_ref(&op))?;
-                    let commit_epoch = self.commit_epoch + 1;
-                    let relational_primary_key_changes = self
-                        .relational_primary_key_changes_from_wal_ops(std::slice::from_ref(&op))?;
-                    self.record_search_projection_changes_for_ops(
-                        catalog,
-                        commit_epoch,
-                        std::slice::from_ref(&op),
-                        relational_primary_key_changes,
-                    );
-                    self.apply_wal_op(catalog, op)?;
-                    self.commit_epoch += 1;
-                    self.advance_relational_row_recovery_epoch(self.commit_epoch);
-                }
-            }
+            self.apply_replayed_wal_transaction(catalog, entry.op)?;
         }
         if let Some(durable) = &mut self.durable {
             durable.next_lsn = expected_lsn;
@@ -805,5 +779,40 @@ impl GraphStore {
             torn_tail_reason,
             recovered_commit_epoch: self.commit_epoch,
         })
+    }
+
+    /// The same transaction/epoch boundary is used by ordinary recovery and
+    /// private checkpoint candidates. This never appends another WAL record.
+    pub(super) fn apply_replayed_wal_transaction(
+        &mut self,
+        catalog: &mut Catalog,
+        operation: WalOp,
+    ) -> Result<()> {
+        let operations = match &operation {
+            WalOp::Batch(operations) => operations.as_slice(),
+            operation => std::slice::from_ref(operation),
+        };
+        self.ensure_out_of_core_delta_replay_admission(operations)?;
+        let epoch = self.commit_epoch.checked_add(1).ok_or_else(|| {
+            HawDBError::StorageIntegrity("commit epoch overflow during WAL replay".into())
+        })?;
+        let relational_changes = self.relational_primary_key_changes_from_wal_ops(operations)?;
+        self.record_search_projection_changes_for_ops(
+            catalog,
+            epoch,
+            operations,
+            relational_changes,
+        );
+        match operation {
+            WalOp::Batch(operations) => {
+                for operation in operations {
+                    self.apply_wal_op(catalog, operation)?;
+                }
+            }
+            operation => self.apply_wal_op(catalog, operation)?,
+        }
+        self.commit_epoch = epoch;
+        self.advance_relational_row_recovery_epoch(epoch);
+        Ok(())
     }
 }

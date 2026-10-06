@@ -23,6 +23,9 @@ mod artifacts;
 mod backup;
 #[path = "durable/checkpoint.rs"]
 mod checkpoint;
+#[path = "durable/checkpoint_tail.rs"]
+mod checkpoint_tail;
+pub use checkpoint_tail::CheckpointWalTail;
 #[path = "durable/manifest.rs"]
 mod manifest;
 #[path = "durable/reclamation.rs"]
@@ -42,7 +45,7 @@ use super::{
     cleanup_abandoned_checkpoint_preparations, derived_repair, doctor, has_storage_artifacts,
     source_scan, store_id_for_path, ProjectedGraphArtifact, CANONICAL_MANIFEST_MAX_BYTES,
     MANIFEST_FILE, PROJECTED_GRAPHS_FILE, PROPERTY_PROJECTION_MANIFEST_MAX_BYTES,
-    PROPERTY_SPILL_MANIFEST_MAX_BYTES, STABLE_ID_MAPPING_FILE,
+    PROPERTY_SPILL_MANIFEST_MAX_BYTES, STABLE_ID_MAPPING_FILE, WAL_BINARY_FILE_HEADER_BYTES,
 };
 use crate::error::{HawDBError, Result};
 use crate::file_io::{self as fs, File};
@@ -122,6 +125,10 @@ pub(super) struct DurableStore {
     pub(super) wal_replay_start_lsn: u64,
     pub(super) next_lsn: u64,
     pub(super) wal_bytes: u64,
+    // Age of checkpoint debt, rather than time since the most recent write.
+    // Reopening starts a fresh monotonic observation window; active writes
+    // never move its beginning forward.
+    pub(super) wal_uncheckpointed_since: Option<std::time::Instant>,
     pub(super) wal_tail_repair: Option<hawdb_storage::doctor::WalTailRepairReport>,
     /// Commit epoch recorded in binary WAL records (spec §3.4.3). Advisory:
     /// replay derives commit epochs from LSN order, exactly as before.
@@ -172,6 +179,8 @@ pub struct PreparedCheckpoint {
     pub(super) source_commit_epoch: u64,
     pub(super) source_checkpoint_epoch: u64,
     pub(super) source_next_lsn: u64,
+    pub(super) source_wal_generation: u64,
+    pub(super) source_wal_bytes: u64,
     pub(super) generation: u64,
     pub(super) checkpoint_out_of_core: bool,
     pub(super) projected_graph_artifacts: BTreeMap<String, ProjectedGraphArtifact>,
@@ -227,6 +236,13 @@ pub(super) struct CheckpointManifestArtifacts {
     pub(super) append: AppendGenerationArtifacts,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct CheckpointReplayBoundary {
+    pub(super) start_lsn: u64,
+    pub(super) next_lsn: u64,
+    pub(super) commit_epoch: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DurableOpenMode {
     CreateIfMissing,
@@ -234,6 +250,10 @@ pub(super) enum DurableOpenMode {
 }
 
 impl DurableStore {
+    pub(super) fn max_wal_record_bytes(&self) -> Option<usize> {
+        self.max_record_bytes
+    }
+
     pub(super) fn project_file_descriptors(
         &self,
     ) -> &crate::file_descriptors::ProjectFileDescriptors {
@@ -564,6 +584,8 @@ impl DurableStore {
             wal_replay_start_lsn: manifest.wal_replay_start_lsn,
             next_lsn: manifest.next_lsn,
             wal_bytes,
+            wal_uncheckpointed_since: (wal_bytes > WAL_BINARY_FILE_HEADER_BYTES as u64)
+                .then(std::time::Instant::now),
             wal_tail_repair,
             wal_commit_epoch: manifest.checkpoint_commit_epoch,
             max_wal_bytes,
@@ -614,10 +636,33 @@ impl DurableStore {
     pub(super) fn next_checkpoint_generation(&self) -> Result<u64> {
         // Sealing can advance the active WAL before branch admission. A
         // checkpoint candidate must never replace that acknowledged prefix.
-        self.checkpoint_epoch
+        let mut generation = self
+            .checkpoint_epoch
             .max(self.wal_generation)
             .checked_add(1)
-            .ok_or_else(|| HawDBError::Storage("checkpoint generation overflow".to_string()))
+            .ok_or_else(|| HawDBError::Storage("checkpoint generation overflow".to_string()))?;
+        let Some(directory) = self
+            .branch_runtime
+            .as_ref()
+            .and_then(|branch| branch.head_path().parent())
+        else {
+            return Ok(generation);
+        };
+        // Interrupted candidates are evidence, not reusable WAL names. Bound
+        // discovery per attempt; maintenance must resolve a larger backlog.
+        for _ in 0..256 {
+            if !fs::try_exists(
+                directory.join(crate::artifact_files::wal_generation_file(generation)),
+            )? {
+                return Ok(generation);
+            }
+            generation = generation
+                .checked_add(1)
+                .ok_or_else(|| HawDBError::Storage("checkpoint generation overflow".into()))?;
+        }
+        Err(HawDBError::Storage(
+            "checkpoint generation discovery exceeded its bounded orphan probe budget".into(),
+        ))
     }
 
     pub(super) const fn generation_reclamation_debt(&self) -> GenerationReclamationDebt {

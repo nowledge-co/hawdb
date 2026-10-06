@@ -80,8 +80,7 @@ impl DurableStore {
     }
 
     pub(in crate::store) fn wal_age_millis(&self) -> Option<u64> {
-        let modified = fs::metadata(&self.wal_path).ok()?.modified().ok()?;
-        let elapsed = std::time::SystemTime::now().duration_since(modified).ok()?;
+        let elapsed = self.wal_uncheckpointed_since?.elapsed();
         Some(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
     }
 
@@ -236,6 +235,8 @@ impl DurableStore {
             });
         }
         if result.is_ok() {
+            self.wal_uncheckpointed_since
+                .get_or_insert_with(std::time::Instant::now);
             self.next_lsn += 1;
             self.wal_commit_epoch = self.wal_commit_epoch.saturating_add(1);
             self.wal_bytes = self.wal_bytes.saturating_add(byte_count);

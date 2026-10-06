@@ -683,7 +683,8 @@ impl Database {
                 query_runtime_checkpoint(task_context)?;
                 (
                     {
-                        let branch_runtime = self.runtime.get_mut()?;
+                        let mut branch_runtime_access = self.runtime.get_mut()?;
+                        let branch_runtime = &mut *branch_runtime_access;
                         executor::execute_mutation_with_limits(
                             &optimized.physical_plan,
                             &mut branch_runtime.catalog,
@@ -696,6 +697,8 @@ impl Database {
                     None,
                 )
             } else {
+                let mut branch_runtime_access = self.runtime.get_mut()?;
+                let branch_runtime = &mut *branch_runtime_access;
                 let profiled = executor::execute_with_request(
                     executor::ExecutionRequest::new(
                         &optimized.physical_plan,
@@ -707,14 +710,11 @@ impl Database {
                         self.config.max_read_result_payload_bytes,
                     )
                     .with_optional_task_context(task_context),
-                    {
-                        let branch_runtime = self.runtime.get_mut()?;
-                        executor::ExecutionResources::new(
-                            &mut branch_runtime.catalog,
-                            &mut branch_runtime.store,
-                            external,
-                        )
-                    },
+                    executor::ExecutionResources::new(
+                        &mut branch_runtime.catalog,
+                        &mut branch_runtime.store,
+                        external,
+                    ),
                 )?;
                 (profiled.rows, Some(profiled.profile))
             };
@@ -783,6 +783,8 @@ impl Database {
                     "EXPLAIN ANALYZE only supports read queries".to_string(),
                 ));
             }
+            let mut branch_runtime_access = self.runtime.get_mut()?;
+            let branch_runtime = &mut *branch_runtime_access;
             let profiled = executor::execute_with_request(
                 executor::ExecutionRequest::new(
                     &optimized.physical_plan,
@@ -794,14 +796,11 @@ impl Database {
                     self.config.max_read_result_payload_bytes,
                 )
                 .with_optional_task_context(task_context),
-                {
-                    let branch_runtime = self.runtime.get_mut()?;
-                    executor::ExecutionResources::new(
-                        &mut branch_runtime.catalog,
-                        &mut branch_runtime.store,
-                        external,
-                    )
-                },
+                executor::ExecutionResources::new(
+                    &mut branch_runtime.catalog,
+                    &mut branch_runtime.store,
+                    external,
+                ),
             )?;
             return Ok(QueryOutput {
                 rows: vec![explain_analyze_output_row(

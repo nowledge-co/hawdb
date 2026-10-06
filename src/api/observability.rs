@@ -360,7 +360,8 @@ impl Database {
                 let slow_queries = self.slow_query_log.borrow().snapshot();
                 let statement_summaries = self.statement_summary.borrow().snapshot();
                 return {
-                    let branch_runtime = self.runtime.get_mut()?;
+                    let mut branch_runtime_access = self.runtime.get_mut()?;
+                    let branch_runtime = &mut *branch_runtime_access;
                     system_sql::query_sql_with_params(
                         sql_text,
                         parameters,
@@ -482,7 +483,8 @@ impl Database {
                     )));
                 }
                 let summary = {
-                    let branch_runtime = self.runtime.get_mut()?;
+                    let mut branch_runtime_access = self.runtime.get_mut()?;
+                    let branch_runtime = &mut *branch_runtime_access;
                     branch_runtime.store.commit_kernel_write_batch(
                         &mut branch_runtime.catalog,
                         crate::store::KernelWriteBatch {
@@ -515,7 +517,8 @@ impl Database {
                 self.runtime.get()?.store.relational_state(),
             )?;
             let summary = {
-                let branch_runtime = self.runtime.get_mut()?;
+                let mut branch_runtime_access = self.runtime.get_mut()?;
+                let branch_runtime = &mut *branch_runtime_access;
                 branch_runtime.store.commit_relational_transaction(
                     &mut branch_runtime.catalog,
                     compiled.transaction,
