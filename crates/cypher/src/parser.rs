@@ -206,13 +206,17 @@ impl<'a> Parser<'a> {
     fn parse_public_query_pipeline(&mut self) -> Result<super::ast::QueryPipeline> {
         let query = self.parse_query_pipeline()?;
         // The standalone grammar API admits bounded shapes for binder tests.
-        // Preserve the public parser's existing one-hop OPTIONAL MATCH boundary.
-        if query.clauses.iter().any(|clause| {
-            matches!(&clause.kind,
+        // Simpler catalogue queries had a one-hop OPTIONAL boundary. Previously
+        // public multi-WITH pipelines already delegated bounded admission to
+        // the binder, so keep that boundary after parsing only once.
+        if !Self::is_multi_stage_pipeline(&query)
+            && query.clauses.iter().any(|clause| {
+                matches!(&clause.kind,
             super::ast::ClauseKind::Match { optional: true, patterns, .. }
             if patterns.iter().any(|pattern| pattern.steps.iter().any(|step|
                 step.relationship.min_hops != 1 || step.relationship.max_hops != 1)))
-        }) {
+            })
+        {
             return Err(self.error("OPTIONAL MATCH supports only one-hop relationships"));
         }
         Ok(query)
@@ -221,14 +225,7 @@ impl<'a> Parser<'a> {
     fn parse_multi_stage_pipeline_statement(&mut self) -> Option<Statement> {
         let checkpoint = self.checkpoint();
         let pipeline = self.parse_query_pipeline();
-        let is_multi_stage = pipeline.as_ref().is_ok_and(|pipeline| {
-            pipeline
-                .clauses
-                .iter()
-                .filter(|clause| matches!(clause.kind, crate::ClauseKind::With(_)))
-                .count()
-                >= 2
-        });
+        let is_multi_stage = pipeline.as_ref().is_ok_and(Self::is_multi_stage_pipeline);
         if is_multi_stage {
             return pipeline
                 .ok()
@@ -236,6 +233,15 @@ impl<'a> Parser<'a> {
         }
         self.restore(checkpoint);
         None
+    }
+
+    fn is_multi_stage_pipeline(pipeline: &crate::QueryPipeline) -> bool {
+        pipeline
+            .clauses
+            .iter()
+            .filter(|clause| matches!(clause.kind, crate::ClauseKind::With(_)))
+            .count()
+            >= 2
     }
 
     pub(super) fn with_recursion<T>(

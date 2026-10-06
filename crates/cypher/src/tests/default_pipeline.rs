@@ -100,3 +100,37 @@ fn public_query_wrappers_preserve_the_pipeline_body() {
         );
     }
 }
+
+#[test]
+fn public_multi_with_parser_retains_bounded_optional_admission() {
+    let body = "MATCH (a:Node {id: $id}) WITH a WITH a OPTIONAL MATCH (a)-[:LINK*1..2]->(b:Node) RETURN b.id";
+    for source in [
+        body.to_string(),
+        format!("EXPLAIN {body}"),
+        format!("CYPHER SYSTEM.execution = 'auto' {body}"),
+    ] {
+        let statement = parse(&source).unwrap();
+        let statement = match &statement {
+            Statement::Explain(explain) => &explain.statement,
+            Statement::CypherQuery(query) => &query.statement,
+            statement => statement,
+        };
+        let Statement::Pipeline(pipeline) = statement else {
+            panic!("previously admitted multi-WITH reads require the pipeline");
+        };
+        let ClauseKind::Match {
+            optional, patterns, ..
+        } = &pipeline.clauses[3].kind
+        else {
+            panic!("expected OPTIONAL MATCH");
+        };
+        assert!(*optional);
+        assert_eq!(patterns[0].steps[0].relationship.min_hops, 1);
+        assert_eq!(patterns[0].steps[0].relationship.max_hops, 2);
+    }
+    for prefix in ["", "WITH a "] {
+        let source =
+            format!("MATCH (a:Node) {prefix}OPTIONAL MATCH (a)-[:LINK*1..2]->(b:Node) RETURN b.id");
+        assert!(parse(&source).is_err(), "{source}");
+    }
+}

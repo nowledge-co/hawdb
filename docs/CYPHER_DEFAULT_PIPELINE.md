@@ -18,9 +18,11 @@ parsing does not speculatively parse the same query twice. The grammar-only
 ## Preserved behavior
 
 Binding validates scopes, types, parameters and bounded relationship admission
-before plan normalization. Public OPTIONAL MATCH parsing retains its one-hop
-boundary; the grammar-only seam lets binder tests prove rejection before either
-raw or normalized planning reaches execution. Unsupported atomic mutations fail
+before plan normalization. Simple public OPTIONAL MATCH parsing retains its
+one-hop boundary. Previously public queries with at least two WITH clauses keep
+their existing bounded OPTIONAL grammar and binder admission; the migration does
+not withdraw that capability. The grammar-only seam lets binder tests prove
+rejection before either raw or normalized planning reaches execution. Unsupported atomic mutations fail
 before any writes on both empty and populated databases.
 
 Typed clause/procedure classification preserves plan-cache eligibility: reads
@@ -29,6 +31,12 @@ and graph projection remain ineligible. Procedure capabilities are checked
 before parameter binding, planning, cache accounting or catalog mutation.
 Statement kinds, fast-path reasons and ordering/pagination reports are derived
 from the AST and preserve existing host reports.
+
+Optional plans with target-node properties retain GraphMatch when Expand cannot
+represent those predicates. Filtering above an optional Expand would discard
+the required NULL-extended row when no endpoint satisfies the properties. Runtime
+guards cover rows and counts with matching, rejected, isolated and missing sources,
+including one-WITH and existing multi-WITH paths.
 
 Newly migrated shapes use structural logical-plan normalization. Queries that
 already used the public multi-WITH pipeline retain their existing logical
