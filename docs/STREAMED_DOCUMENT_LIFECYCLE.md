@@ -18,12 +18,12 @@ consistency of a concurrently changing upstream source.
 | --- | --- | --- |
 | Initial build | `SearchOutOfCoreGenerationWriter::push_reader` | Capture once; validate complete input before accepting its record; poison the private writer on failure |
 | Append, replace, delete, restore | `prepare_streamed_delta_with_context`, then `SearchOutOfCoreMutationWriter::upsert_reader` / `delete` / `finish` | All operations share strictly increasing nonempty IDs, a borrowed base reader and one publication fence; duplicates or failed input poison the batch |
-| Governed build and mutation | `SearchGenerationAdmission::create_writer` / `prepare_streamed_update` | Retain the existing host permit across preparation, publication and deferred cleanup |
+| Governed build and mutation | `SearchGenerationAdmission::create_writer` / `prepare_streamed_update` | Retain the host permit through active work and its immediate cleanup; idle cleanup debt releases work admission |
 | Candidate queries | `search_candidates_with_options` / `search_candidates_with_context` | Share filtering, ACL, scoring, fusion, top-k and page selection with owned results; return exact generation/content identities |
 | Full content transfer | `open_verified_body` or the admission wrapper | Validate the complete required source segment, including unselected suffixes, before returning a sealed private reader |
 | Reopen | `SearchOutOfCoreReader::open_with_source_policy` | Enforce reader-local limits, retain term ranges and independently reanalyze exact target versions using bounded spill |
 | Segment compaction | `prepare_segment_compaction_with_context` or existing governed scheduling | Copy one visible body through private disk; share the build ledger and preserve target-bound retractions |
-| Deferred private cleanup | `SearchOutOfCoreGenerationWriter::retry_staging_cleanup` | Bounded explicit retries and up to four automatic attempts before stage creation or governor admission; report retained stages, conservative disk limits, cleanup memory and typed descriptor denial |
+| Deferred private cleanup | `SearchOutOfCoreGenerationWriter::retry_staging_cleanup` | Bounded explicit retries and inspection; writer creation, including scheduled compaction, also retries up to four same-root stages |
 
 The host calls `finish` to durably publish immutable generations. This does not
 route through the resident `SearchIndex` snapshot or its mini-delta. Existing
@@ -39,11 +39,22 @@ Read until successful EOF and check `is_complete()`; a short consumer read or a
 later I/O/cancellation error does not establish completed delivery. Initial
 verified output requires Linux and a filesystem supporting `O_TMPFILE`.
 Unsupported platforms/filesystems return an explicit error before output.
+Counted native equivalents for macOS and Windows are explicit #392 acceptance
+gates; a successful Linux fixture does not qualify either desktop platform.
 
 ## Resource profiles
 
 Capability selection is explicit. Account for the hex-encoded record separately
-from the logical source and set both writer and reader limits. Header fields,
+from the logical source. Select source bytes and weighted tokens together using
+`SearchLexicalSourcePolicy::with_max_document_tokens`, then pass that policy to
+the initial writer and `SearchOutOfCoreReader::open_with_source_policy`.
+Prepared updates, compaction and exact old-version reanalysis inherit the reader
+policy even with default build options. The default remains 4 MiB and 1,000,000
+weighted tokens. The initial writer's `lexical_source_policy()` exposes the
+complete policy selected through its build options. Artifacts never widen it;
+a host reopening with a lower policy can still reject old-version reanalysis.
+The reader's independent token knob introduced earlier in this PR is removed.
+Header fields,
 embeddings and the largest indivisible identifier/Jieba unit remain resident.
 Continuous Chinese is never split using an approximate overlap; an unadmittable
 unit fails without changing token semantics. A blocking host `Read` is only
@@ -70,40 +81,43 @@ ceiling. Shared dictionaries, allocator overhead, OS page cache, host source
 buffers and downstream consumers are independent owners. The ledger and native
 workspace allowances do not measure process RSS.
 
-Set `SearchOutOfCoreConfig::max_reanalysis_document_tokens` to the host's admitted
-token range on every reopen. Prepared compactions and owned/streamed updates use
-the maximum of this reader limit and the supplied build token limit. A default
-reader does not infer a larger admission from artifacts; an over-limit retraction
-fails without changing the published generation. This preserves low-resource
-reader admission while allowing default build options under an expanded reader.
-
 Source spool, generation artifacts, lexical spill, old-body staging and term
-files have explicit finite per-operation limits. A cleanup ticket conservatively
-retains their combined limits and the original host admission until deletion.
-This reports reserved occupancy, not measured live bytes or cumulative writes;
-it does not introduce a project-wide disk governor. Private stages use a fixed
-256-owner registry and fail admission when full. The registry is process-local;
-post-crash orphan-stage discovery/recovery is still unqualified.
-Automatic retries run before acquiring another governor permit, so a retained
-permit cannot indefinitely deny the operation that would reclaim it after a
-transient descriptor failure. Process-wide admission retries rotate their
-starting slot; permanent denial of one root does not monopolize every attempt.
-Each automatic stage attempt visits at most four batches of four entries,
-retaining unfinished tickets for later attempts instead of draining a large
-stage in one admission call. Explicit retries retain their existing stage limit.
-The original permit remains charged until deletion rather than leaving retained
-cleanup memory outside host accounting.
-Stage creation also attempts up to four other-root tickets if the registry is
-full, allowing an ungoverned writer to reclaim process-wide capacity.
+files have explicit finite per-operation limits. A pending cleanup ticket keeps
+their conservative combined disk reservation and ledger-accounted path/metadata,
+but releases the original governor permit, descriptor domain and directory-scan
+workspace. Before creating a governed stage, `RuntimePermit::reserve_retained_memory`
+admits an additional small metadata allowance against both the originating
+governor and its attached process-memory policy. It overlaps the active work
+reservation conservatively; exhausted memory rejects setup before directory
+creation. It remains charged after all shared active owners finish, without
+occupying CPU, task, blocking or I/O slots. It includes the three-account ledger
+metadata allowance; reports retain a fixed-size failure disposition instead of
+unbounded error strings. The FD domain is acquired afresh, allowing a closed
+project to reopen with a different descriptor limit.
 
-The following remain explicit [#392](https://github.com/nowledge-co/hawdb/issues/392)
-acceptance gates: verified-output equivalents on macOS and Windows with the same
-fail-closed ownership/integrity contract, and bounded crash-orphan discovery that
-proves a stage is no longer owned before removal. Neither is implemented here.
-Explicit cleanup retries still require the same root spelling used at creation;
-relative paths and symlink aliases need stable identity and counted normalization
-before alias-equivalent cleanup can be claimed. Automatic governor retries do
-not filter by root spelling.
+Each retry reserves fresh scan workspace and borrows the current project domain.
+Same-root creation retries up to four tickets, each for at most four batches of
+`STAGE_REMOVAL_BATCH_ENTRIES`. A full registry also triggers up to four rotating
+cross-root attempts under that operation's admission. The shared stage path covers
+admitted scheduled compaction and mutation validation. Idle tickets no longer
+hold work permits, so cleanup need not run before governor admission. Explicit
+maintenance remains available when memory admission itself is saturated.
+An advancing cursor prevents one persistently failing ticket from monopolizing
+bounded retry attempts. Reports distinguish descriptor denial, a bounded attempt
+that needs more work, and another blocking failure. Explicit
+retry accepts canonical, relative and symlink spellings of an existing root;
+inspection through its canonical or original absolute spelling needs no descriptor.
+
+Disk reports describe reserved occupancy, not measured live bytes or cumulative
+writes, and do not introduce a project-wide disk governor. Permanent I/O errors
+or unexpected subdirectories retain evidence and small metadata until a safe
+retry succeeds. The fixed 256-owner registry still fails admission when full:
+permanent debt can exhaust it, including across roots. Removing that process-wide
+availability boundary requires a separately qualified ownership handoff or
+per-project debt admission; it is explicitly tracked under #392 and #867 rather than
+silently evicting tickets or recursively deleting unknown contents. The registry
+is process-local. Safe post-crash orphan discovery, including PID reuse and live
+foreign creators, remains a separate #392 acceptance gate.
 
 ## Validation and remaining gates
 
@@ -112,6 +126,11 @@ complete scalar/range validation, exact source sizes and checksums, poisoned
 input, cancellation, stale publication, output-mode parity, ACL/metadata filters,
 old-reader visibility, repeated mutation, compaction and real descriptor pressure
 during cleanup. Empty contribution arrays consume the shared term-file quota.
+Review regressions cover release of governor and FD domains after denial,
+automatic retry, permanent-failure evidence, root aliases, single header
+admission, and an above-default token corpus through default-option compaction,
+replacement, deletion and reopen. Lowering the reader policy fails before
+publication; an old reader continues to observe its pinned generation.
 Late valid-syntax changes to stored term ranges are rejected by range integrity.
 Decoder admission failure retains its primary cause even if a second drain would
 otherwise fail while parsing an already-consumed frame header.

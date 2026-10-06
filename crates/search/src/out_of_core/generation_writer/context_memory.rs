@@ -112,17 +112,12 @@ impl Options {
         self._memory.shrink(old);
         self.value.source_graph_commit_epoch = source_graph_commit_epoch;
         self.value.import_source_graph_commit_epoch = reader.import_source_graph_commit_epoch();
-        // A prepared lifecycle operation must support the same token range as
-        // its host-configured reader, without inferring admission from disk.
-        self.value.lexical_max_document_tokens = self
-            .value
-            .lexical_max_document_tokens
-            .max(reader.config().max_reanalysis_document_tokens);
         Ok(())
     }
 
     pub(super) fn set_lexical_source_policy(&mut self, policy: SearchLexicalSourcePolicy) {
         self.value.lexical_max_document_source_bytes = policy.max_document_source_bytes();
+        self.value.lexical_max_document_tokens = policy.max_document_tokens();
     }
 }
 

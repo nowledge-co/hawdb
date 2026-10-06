@@ -525,6 +525,7 @@ pub(super) fn validate_targets(
     runs: &[SearchMutationRun],
     config: &SearchOutOfCoreConfig,
     analyzer: &SearchAnalyzerLexicon,
+    source_policy: crate::SearchLexicalSourcePolicy,
 ) -> Result<()> {
     if runs.is_empty() {
         return Ok(());
@@ -601,6 +602,7 @@ pub(super) fn validate_targets(
                 memory: &memory,
                 task: &task,
                 needs_chinese: source.needs_chinese,
+                source_policy,
             },
             |term| {
                 if terms.next()?.as_deref() != Some(&term) {

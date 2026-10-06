@@ -48,7 +48,6 @@ impl SearchGenerationAdmission {
         governor: &RuntimeGovernor,
         request: RuntimeWorkRequest,
     ) -> std::result::Result<Self, RuntimeAdmissionError> {
-        super::spool::retry_before_admission();
         governor.try_admit(request).map(|permit| Self {
             permit: std::sync::Arc::new(permit),
         })
@@ -172,7 +171,8 @@ impl GovernedSearchGenerationWriter {
         &mut self.writer
     }
 
-    /// Finalizes the generation and releases its admission after all cleanup.
+    /// Finalizes the generation and releases admission after immediate cleanup.
+    /// Deferred debt keeps only its separately accounted metadata and disk limits.
     pub fn finish(self) -> Result<SearchOutOfCoreGenerationBuildReport> {
         let Self { writer, admission } = self;
         let result = writer.finish();
@@ -199,7 +199,8 @@ impl GovernedSearchGenerationUpdate {
         &mut self.update
     }
 
-    /// Finalizes the update and releases its admission after all cleanup.
+    /// Finalizes the update and releases admission after immediate cleanup.
+    /// Deferred debt keeps only its separately accounted metadata and disk limits.
     pub fn finish(
         self,
     ) -> Result<(

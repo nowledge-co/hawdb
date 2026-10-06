@@ -21,6 +21,7 @@ pub(crate) struct RetractionContext<'a> {
     pub(crate) memory: &'a BuildMemory,
     pub(crate) task: &'a RuntimeTaskContext,
     pub(crate) needs_chinese: bool,
+    pub(crate) source_policy: crate::SearchLexicalSourcePolicy,
 }
 impl LexicalProjectionReader {
     pub(crate) fn source_retraction(
@@ -35,8 +36,11 @@ impl LexicalProjectionReader {
             memory,
             task,
             needs_chinese,
+            source_policy,
         } = context;
         let mut config = self.config;
+        config.max_document_source_bytes = source_policy.max_document_source_bytes();
+        config.max_document_tokens = source_policy.max_document_tokens();
         if let Some(reservation) = task.memory_reservation() {
             config.build_memory_bytes = NonZeroU64::new(
                 config

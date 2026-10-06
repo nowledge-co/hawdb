@@ -256,7 +256,10 @@ impl SearchOutOfCoreGenerationWriter {
     }
 
     /// Retries retained private-stage cleanup without bypassing descriptor limits.
-    /// Pass zero attempts to inspect pending ownership. Use the original root path.
+    /// Pass zero attempts to inspect pending ownership. Root aliases resolve to
+    /// the same canonical directory; retry work uses fresh descriptor admission.
+    /// Writer creation, including scheduled compaction, also retries up to four
+    /// stages with a bounded number of directory batches per attempt.
     pub fn retry_staging_cleanup(
         root: impl AsRef<Path>,
         max_attempts: usize,
@@ -315,6 +318,7 @@ impl SearchOutOfCoreGenerationWriter {
     ) -> Result<Self> {
         options.lexical_max_document_source_bytes =
             lexical_source_policy.max_document_source_bytes();
+        options.lexical_max_document_tokens = lexical_source_policy.max_document_tokens();
         Self::create(root, options)
     }
 
@@ -423,6 +427,7 @@ impl SearchOutOfCoreGenerationWriter {
     pub fn lexical_source_policy(&self) -> SearchLexicalSourcePolicy {
         SearchLexicalSourcePolicy::new(self.options.lexical_max_document_source_bytes)
             .expect("validated lexical source policy")
+            .with_max_document_tokens(self.options.lexical_max_document_tokens)
     }
 
     /// Changes the policy used by `finish` to analyze the complete staged corpus.

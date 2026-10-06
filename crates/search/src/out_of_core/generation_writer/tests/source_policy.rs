@@ -56,9 +56,141 @@ fn source_policy_has_checked_bounds_and_unchanged_default() {
         policy(4 * 1024 * 1024)
     );
     assert_eq!(policy(1).max_document_source_bytes().get(), 1);
+    assert_eq!(policy(1).max_document_tokens().get(), 1_000_000);
     for bytes in [isize::MAX as u64 + 1, u64::MAX] {
         assert!(SearchLexicalSourcePolicy::new(NonZeroU64::new(bytes).unwrap()).is_err());
     }
+}
+
+#[cfg(feature = "full-text-search")]
+#[test]
+fn review_token_policy_survives_default_option_compaction_replace_delete_and_reopen() {
+    use crate::{SearchDocumentBody, SearchDocumentHeader, SearchMode};
+
+    let root = test_dir("inherited_token_policy");
+    let content = "zz ".repeat(1_000_010);
+    let policy = SearchLexicalSourcePolicy::default()
+        .with_max_document_tokens(NonZeroUsize::new(1_000_100).unwrap());
+    let header = |id: &str| SearchDocumentHeader {
+        id: id.into(),
+        title: String::new(),
+        embedding: None,
+        metadata: Default::default(),
+    };
+    let source = SearchDocumentBody {
+        bytes: content.len() as u64,
+        expected_checksum: None,
+    };
+    let mut writer = SearchOutOfCoreGenerationWriter::create_with_source_policy(
+        &root,
+        Default::default(),
+        policy,
+    )
+    .unwrap();
+    assert_eq!(writer.lexical_source_policy(), policy);
+    writer
+        .push_reader(header("a"), content.as_bytes(), source)
+        .unwrap();
+    writer.finish().unwrap();
+    let open = || {
+        SearchOutOfCoreReader::open_with_source_policy(
+            &root,
+            Default::default(),
+            Default::default(),
+            policy,
+        )
+        .unwrap()
+    };
+    let original = open();
+    let mut append =
+        SearchOutOfCoreGenerationWriter::prepare_streamed_delta(&original, Default::default())
+            .unwrap();
+    append
+        .upsert_reader(
+            header("b"),
+            &b"small"[..],
+            SearchDocumentBody {
+                bytes: 5,
+                expected_checksum: None,
+            },
+        )
+        .unwrap();
+    append.finish().unwrap();
+    let appended = open();
+    SearchOutOfCoreGenerationWriter::prepare_segment_compaction_with_context(
+        &appended,
+        SearchOutOfCoreSegmentCompactionPolicy::new(
+            NonZeroUsize::new(2).unwrap(),
+            NonZeroU64::new(512 * 1024 * 1024).unwrap(),
+        )
+        .unwrap(),
+        Default::default(),
+        RuntimeTaskContext::default(),
+    )
+    .unwrap()
+    .unwrap()
+    .finish()
+    .unwrap();
+    let mut compacted = open();
+    assert_eq!(compacted.document_count(), 2);
+    let before = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+    compacted.set_lexical_source_policy(SearchLexicalSourcePolicy::default());
+    let mut rejected =
+        SearchOutOfCoreGenerationWriter::prepare_streamed_delta(&compacted, Default::default())
+            .unwrap();
+    assert!(rejected
+        .delete("a")
+        .unwrap_err()
+        .to_string()
+        .contains("tokens"));
+    drop(rejected);
+    assert_eq!(
+        fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+        before
+    );
+    compacted.set_lexical_source_policy(policy);
+    let mut replacement =
+        SearchOutOfCoreGenerationWriter::prepare_streamed_delta(&compacted, Default::default())
+            .unwrap();
+    replacement
+        .upsert_reader(header("a"), content.as_bytes(), source)
+        .unwrap();
+    replacement.finish().unwrap();
+    let replaced = open();
+    let query = crate::out_of_core::tests::options(8, None);
+    assert_eq!(
+        replaced
+            .search_candidates_with_options("zz", None, SearchMode::Text, query.clone())
+            .unwrap()
+            .result
+            .hits
+            .len(),
+        1
+    );
+    let mut delete =
+        SearchOutOfCoreGenerationWriter::prepare_streamed_delta(&replaced, Default::default())
+            .unwrap();
+    delete.delete("a").unwrap();
+    delete.finish().unwrap();
+    let deleted = open();
+    assert_eq!(deleted.document_count(), 1);
+    assert!(deleted
+        .search_candidates_with_options("zz", None, SearchMode::Text, query.clone())
+        .unwrap()
+        .result
+        .hits
+        .is_empty());
+    assert_eq!(
+        original
+            .search_candidates_with_options("zz", None, SearchMode::Text, query)
+            .unwrap()
+            .result
+            .hits
+            .len(),
+        1
+    );
+    drop((original, appended, compacted, replaced, deleted));
+    fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]
@@ -141,8 +273,8 @@ fn source_policy_covers_build_reopen_and_prepared_update_lifecycle() {
 #[test]
 fn reader_token_policy_covers_default_updates_compaction_and_retraction() {
     let root = test_dir("reader_token_policy_lifecycle");
-    let expanded = policy(8 * 1024 * 1024);
     let token_limit = NonZeroUsize::new(2_000_000).unwrap();
+    let expanded = policy(8 * 1024 * 1024).with_max_document_tokens(token_limit);
     let body = "omega ".repeat(1_000_001);
     let options = SearchOutOfCoreGenerationBuildOptions {
         lexical_max_document_tokens: token_limit,
@@ -161,14 +293,10 @@ fn reader_token_policy_covers_default_updates_compaction_and_retraction() {
         })
         .unwrap();
     writer.finish().unwrap();
-    let config = super::super::super::SearchOutOfCoreConfig {
-        max_reanalysis_document_tokens: token_limit,
-        ..Default::default()
-    };
     let open = || {
         SearchOutOfCoreReader::open_with_source_policy(
             &root,
-            config.clone(),
+            Default::default(),
             Default::default(),
             expanded,
         )
@@ -214,7 +342,7 @@ fn reader_token_policy_covers_default_updates_compaction_and_retraction() {
         &root,
         Default::default(),
         Default::default(),
-        expanded,
+        policy(8 * 1024 * 1024),
     )
     .unwrap();
     let before = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();

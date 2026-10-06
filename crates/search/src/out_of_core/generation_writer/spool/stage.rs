@@ -15,19 +15,20 @@
 //! Retain a pre-admitted cleanup owner when counted removal is denied.
 
 use super::*;
-use crate::build_memory::path::OwnedPath;
+use crate::build_memory::{directory, path::OwnedPath};
 use hawdb_executor::QueryMemoryLease;
 use hawdb_storage::file_descriptors::ProjectFileDescriptors;
-use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 
 // Admission happens before any private directory exists. Retention needs no
 // allocation during Drop, cancellation, unwind, or descriptor exhaustion.
 const MAX_OWNERS: usize = 256;
-const AUTOMATIC_CLEANUP_ATTEMPTS: usize = 4;
-const AUTOMATIC_CLEANUP_BATCHES: usize = 4;
 static OWNERS: Mutex<[Slot; MAX_OWNERS]> = Mutex::new([const { Slot::Vacant }; MAX_OWNERS]);
-static RETRY_CURSOR: AtomicUsize = AtomicUsize::new(0);
+static NEXT_RETRY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+const AUTOMATIC_RETRY_STAGES: usize = 4;
+const AUTOMATIC_CLEANUP_BATCHES: usize = 4;
+// Bound the three shared ledger accounts retained by path and metadata leases.
+const CLEANUP_ACCOUNT_METADATA_BYTES: usize = 4096;
 
 enum Slot {
     Vacant,
@@ -69,7 +70,7 @@ impl Drop for Registration {
 struct Ticket {
     value: Box<TicketFields>,
     _memory: QueryMemoryLease,
-    _admission: Option<Arc<hawdb_qos::RuntimePermit>>,
+    _host_memory: Option<hawdb_qos::RuntimeRetainedMemory>,
 }
 impl std::ops::Deref for Ticket {
     type Target = TicketFields;
@@ -84,9 +85,22 @@ impl std::ops::DerefMut for Ticket {
 }
 struct TicketFields {
     path: OwnedPath,
-    _project: ProjectFileDescriptors,
+    source_root: OwnedPath,
     disk_reservation: u64,
-    error: Option<HawDBError>,
+    error: Option<CleanupFailure>,
+}
+
+enum CleanupFailure {
+    Descriptor(hawdb_core::error::FileDescriptorError),
+    Other,
+}
+impl From<HawDBError> for CleanupFailure {
+    fn from(error: HawDBError) -> Self {
+        match error {
+            HawDBError::FileDescriptors(error) => Self::Descriptor(error),
+            _ => Self::Other,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -98,6 +112,10 @@ pub struct SearchStagingCleanupReport {
     pub reserved_disk_bytes: u64,
     pub retained_memory_bytes: usize,
     pub descriptor_denials: usize,
+    /// Tickets that used their bounded retry work without finishing.
+    pub progress_limited_stages: usize,
+    /// Non-descriptor failures; retained paths remain evidence for inspection.
+    pub blocked_stages: usize,
     pub descriptor_error: Option<hawdb_core::error::FileDescriptorError>,
 }
 
@@ -105,36 +123,47 @@ pub(in crate::out_of_core) fn retry_staging_cleanup(
     root: &Path,
     max_attempts: usize,
 ) -> Result<SearchStagingCleanupReport> {
-    Ok(retry_cleanup(Some(root), max_attempts, 0, usize::MAX))
+    let task = RuntimeTaskContext::default();
+    let memory = BuildMemory::new(&task)?;
+    let root = OwnedPath::absolute(root, &memory, &task)?;
+    // The original absolute spelling also needs no descriptor. In particular,
+    // Windows may add a verbatim prefix when canonicalizing the same directory.
+    let (pending, exact) = {
+        let owners = OWNERS.lock().unwrap_or_else(|error| error.into_inner());
+        (
+            owners.iter().any(|slot| matches!(slot, Slot::Pending(_))),
+            owners
+                .iter()
+                .any(|slot| matches!(slot, Slot::Pending(ticket) if ticket.matches_root(&root))),
+        )
+    };
+    if !pending {
+        return Ok(SearchStagingCleanupReport::default());
+    }
+    if exact {
+        retry_registered(Some(&root), max_attempts, usize::MAX, &memory, &task)
+    } else {
+        let root = OwnedPath::canonicalize(&root, &memory, &task)?;
+        retry_registered(Some(&root), max_attempts, usize::MAX, &memory, &task)
+    }
 }
 
-pub(in crate::out_of_core) fn retry_before_admission() {
-    // A retained permit can deny admission before create gets a chance to
-    // retry. Rotate bounded attempts so a permanently denied root cannot
-    // starve cleanup of other roots. Tickets retain their original admission.
-    let start = RETRY_CURSOR.fetch_add(AUTOMATIC_CLEANUP_ATTEMPTS, Ordering::Relaxed);
-    retry_cleanup(
-        None,
-        AUTOMATIC_CLEANUP_ATTEMPTS,
-        start,
-        AUTOMATIC_CLEANUP_BATCHES,
-    );
-}
-
-fn retry_cleanup(
+fn retry_registered(
     root: Option<&Path>,
     max_attempts: usize,
-    start: usize,
     max_batches: usize,
-) -> SearchStagingCleanupReport {
+    memory: &BuildMemory,
+    task: &RuntimeTaskContext,
+) -> Result<SearchStagingCleanupReport> {
     let mut report = SearchStagingCleanupReport::default();
+    let start = NEXT_RETRY.load(Ordering::Relaxed);
     for offset in 0..MAX_OWNERS {
-        let index = start.wrapping_add(offset) % MAX_OWNERS;
+        let index = (start + offset) % MAX_OWNERS;
         let ticket = {
             let mut owners = OWNERS.lock().unwrap_or_else(|error| error.into_inner());
             match &owners[index] {
                 Slot::Pending(ticket)
-                    if root.is_none_or(|root| ticket.path.parent() == Some(root))
+                    if root.is_none_or(|root| ticket.matches_root(root))
                         && report.attempted_stages < max_attempts =>
                 {
                     match std::mem::replace(&mut owners[index], Slot::Active) {
@@ -146,17 +175,28 @@ fn retry_cleanup(
             }
         };
         if let Some(mut ticket) = ticket {
+            let registration = Registration { index };
+            NEXT_RETRY.store((index + 1) % MAX_OWNERS, Ordering::Relaxed);
             report.attempted_stages += 1;
-            match ticket.remove_batches(max_batches) {
+            let result = (|| {
+                checkpoint(task)?;
+                let _workspace = memory
+                    .spool
+                    .reserve(directory::stage_removal_bytes(&ticket.path)?)?;
+                let _project = ProjectFileDescriptors::acquire_component(
+                    ticket.path.parent().expect("registered stage parent"),
+                    false,
+                )?;
+                ticket.remove_batches(max_batches)
+            })();
+            match result {
                 Ok(true) => {
                     report.removed_stages += 1;
                     drop(ticket);
-                    OWNERS.lock().unwrap_or_else(|error| error.into_inner())[index] = Slot::Vacant;
                 }
                 result => {
-                    ticket.error = result.err();
-                    OWNERS.lock().unwrap_or_else(|error| error.into_inner())[index] =
-                        Slot::Pending(ticket);
+                    ticket.error = result.err().map(CleanupFailure::from);
+                    registration.retain(ticket);
                 }
             }
         }
@@ -164,7 +204,7 @@ fn retry_cleanup(
     let owners = OWNERS.lock().unwrap_or_else(|error| error.into_inner());
     for slot in owners.iter() {
         if let Slot::Pending(ticket) = slot
-            && root.is_none_or(|root| ticket.path.parent() == Some(root))
+            && root.is_none_or(|root| ticket.matches_root(root))
         {
             report.pending_stages += 1;
             report.reserved_disk_bytes = report
@@ -172,17 +212,27 @@ fn retry_cleanup(
                 .saturating_add(ticket.disk_reservation);
             report.retained_memory_bytes = report
                 .retained_memory_bytes
-                .saturating_add(ticket._memory.bytes());
-            if let Some(HawDBError::FileDescriptors(error)) = &ticket.error {
-                report.descriptor_denials += 1;
-                report.descriptor_error = Some(error.clone());
+                .saturating_add(ticket._memory.bytes())
+                .saturating_add(ticket.path.retained_bytes())
+                .saturating_add(ticket.source_root.retained_bytes());
+            match &ticket.error {
+                Some(CleanupFailure::Descriptor(error)) => {
+                    report.descriptor_denials += 1;
+                    report.descriptor_error = Some(error.clone());
+                }
+                Some(CleanupFailure::Other) => report.blocked_stages += 1,
+                None => report.progress_limited_stages += 1,
             }
         }
     }
-    report
+    Ok(report)
 }
 
 impl Ticket {
+    fn matches_root(&self, root: &Path) -> bool {
+        self.path.parent() == Some(root) || &*self.source_root == root
+    }
+
     fn remove(&self) -> Result<()> {
         self.remove_batches(usize::MAX).map(|_| ())
     }
@@ -194,12 +244,16 @@ impl Ticket {
         match fs::symlink_metadata(&self.path) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
             result => {
-                result?;
+                if !result?.is_dir() {
+                    return Err(HawDBError::Storage(
+                        "search private stage is no longer a directory".into(),
+                    ));
+                }
             }
         }
         for _ in 0..max_batches {
             let mut paths: [Option<(std::path::PathBuf, bool)>;
-                crate::build_memory::directory::STAGE_REMOVAL_BATCH_ENTRIES] = Default::default();
+                directory::STAGE_REMOVAL_BATCH_ENTRIES] = Default::default();
             let mut count = 0;
             {
                 let entries = fs::read_dir(&self.path)?;
@@ -233,6 +287,9 @@ pub(in crate::out_of_core) struct StageDirectory {
     pub(in crate::out_of_core) path: super::super::context_memory::OwnedPath,
     registration: Option<Registration>,
     ticket: Option<Ticket>,
+    cleanup_memory: Option<QueryMemoryLease>,
+    project: Option<ProjectFileDescriptors>,
+    admission: Option<Arc<hawdb_qos::RuntimePermit>>,
 }
 
 impl StageDirectory {
@@ -241,17 +298,24 @@ impl StageDirectory {
         memory: &BuildMemory,
         task: &RuntimeTaskContext,
     ) -> Result<Self> {
-        checkpoint(task)?;
-        retry_cleanup(
-            Some(root),
-            AUTOMATIC_CLEANUP_ATTEMPTS,
-            0,
+        let source_root = OwnedPath::absolute(root, memory, task)?;
+        let project = ProjectFileDescriptors::acquire_component(&source_root, false)?;
+        let root = OwnedPath::canonicalize(&source_root, memory, task)?;
+        retry_registered(
+            Some(&root),
+            AUTOMATIC_RETRY_STAGES,
             AUTOMATIC_CLEANUP_BATCHES,
-        );
+            memory,
+            task,
+        )?;
         let registration = Registration::acquire().or_else(|_| {
-            // Ungoverned writers must also recover capacity retained by other
-            // roots after transient denial fills the process-wide registry.
-            retry_before_admission();
+            retry_registered(
+                None,
+                AUTOMATIC_RETRY_STAGES,
+                AUTOMATIC_CLEANUP_BATCHES,
+                memory,
+                task,
+            )?;
             Registration::acquire()
         })?;
         for _ in 0..64 {
@@ -269,17 +333,34 @@ impl StageDirectory {
                 ));
             }
             let path = super::super::context_memory::OwnedPath::join(
-                root,
+                &root,
                 Path::new(&name),
                 memory,
                 task,
             )?;
-            let cleanup = memory.spool.reserve(crate::build_memory::checked_add(
-                crate::build_memory::directory::stage_removal_bytes(&path)?,
-                std::mem::size_of::<TicketFields>(),
-            )?)?;
+            let cleanup = memory
+                .spool
+                .reserve(directory::stage_removal_bytes(&path)?)?;
+            let metadata = memory
+                .retained
+                .reserve(std::mem::size_of::<TicketFields>() + CLEANUP_ACCOUNT_METADATA_BYTES)?;
             let ticket_path = OwnedPath::copy(&path, memory, task)?;
-            let project = ProjectFileDescriptors::acquire_component(root, false)?;
+            let retained_bytes = crate::build_memory::checked_add(
+                metadata.bytes(),
+                crate::build_memory::checked_add(
+                    ticket_path.retained_bytes(),
+                    source_root.retained_bytes(),
+                )?,
+            )?;
+            let host_memory = memory
+                .host_admission
+                .as_ref()
+                .map(|permit| {
+                    permit
+                        .reserve_retained_memory(retained_bytes as u64)
+                        .map_err(|error| HawDBError::Execution(error.to_string()))
+                })
+                .transpose()?;
             let created = super::super::io::GenerationIo::new(memory, task)
                 .native(&[&path], || fs::create_dir(&path))?;
             match created {
@@ -290,13 +371,16 @@ impl StageDirectory {
                         ticket: Some(Ticket {
                             value: Box::new(TicketFields {
                                 path: ticket_path,
-                                _project: project,
+                                source_root,
                                 disk_reservation: 0,
                                 error: None,
                             }),
-                            _memory: cleanup,
-                            _admission: memory.host_admission.clone(),
+                            _memory: metadata,
+                            _host_memory: host_memory,
                         }),
+                        cleanup_memory: Some(cleanup),
+                        project: Some(project),
+                        admission: memory.host_admission.clone(),
                     };
                     checkpoint(task)?;
                     return Ok(stage);
@@ -330,13 +414,19 @@ impl StageDirectory {
             return false;
         };
         let registration = self.registration.take().expect("registered private stage");
-        if let Err(error) = ticket.remove() {
-            ticket.error = Some(error);
+        let pending = if let Err(error) = ticket.remove() {
+            ticket.error = Some(error.into());
             registration.retain(ticket);
             true
         } else {
             false
-        }
+        };
+        // Idle debt owns only its accounted metadata and disk reservation.
+        // Retries acquire fresh workspace and the current project FD domain.
+        self.cleanup_memory.take();
+        self.project.take();
+        self.admission.take();
+        pending
     }
 }
 
@@ -400,7 +490,7 @@ pub(super) mod evidence {
         resume: Receiver<()>,
     ) {
         *HOOK.lock().unwrap() = Some(Hook {
-            root,
+            root: std::fs::canonicalize(root).unwrap(),
             started,
             resume,
         });

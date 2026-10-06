@@ -188,11 +188,12 @@ fn streamed_mutable_lifecycle_keeps_large_bodies_out_of_operation_memory() {
         max_uncompressed_segment_bytes: NonZeroU64::new(bytes * 2 + 4096).unwrap(),
         max_hydrated_bytes: NonZeroU64::MIN,
         max_reanalysis_working_bytes: NonZeroU64::new(8 * 1024 * 1024).unwrap(),
-        max_reanalysis_document_tokens: NonZeroUsize::new(8_000_000).unwrap(),
         ..Default::default()
     };
     let source_policy =
-        crate::SearchLexicalSourcePolicy::new(NonZeroU64::new(bytes + 1024).unwrap()).unwrap();
+        crate::SearchLexicalSourcePolicy::new(NonZeroU64::new(bytes + 1024).unwrap())
+            .unwrap()
+            .with_max_document_tokens(NonZeroUsize::new(8_000_000).unwrap());
     let open = || {
         SearchOutOfCoreReader::open_with_source_policy(
             &root,

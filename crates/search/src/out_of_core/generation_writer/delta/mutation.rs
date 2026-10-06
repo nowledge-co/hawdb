@@ -181,6 +181,7 @@ impl Prepared {
                         memory,
                         task,
                         needs_chinese: document.needs_chinese,
+                        source_policy: reader.lexical_source_policy(),
                     },
                     |term| term_writer.push(&term),
                 )?;

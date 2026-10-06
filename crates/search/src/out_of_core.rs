@@ -99,11 +99,6 @@ pub struct SearchOutOfCoreConfig {
     pub max_reanalysis_spill_bytes: NonZeroU64,
     /// Bounded resident document header during streaming body operations.
     pub max_document_header_bytes: NonZeroUsize,
-    /// Weighted token events admitted when reconstructing an old version.
-    /// Prepared updates and compactions also inherit this as a minimum build
-    /// token limit. Hosts must configure it when reopening larger-token data;
-    /// stored artifacts never raise reader-local admission automatically.
-    pub max_reanalysis_document_tokens: NonZeroUsize,
     /// Caller-selected encoded lexical manifest limit, including private decoding.
     /// Prepared generation updates inherit this limit and require it to fit `isize`.
     pub max_lexical_manifest_bytes: NonZeroU64,
@@ -131,7 +126,6 @@ impl Default for SearchOutOfCoreConfig {
             max_reanalysis_working_bytes: NonZeroU64::new(128 * 1024 * 1024).unwrap(),
             max_reanalysis_spill_bytes: NonZeroU64::new(4 * 1024 * 1024 * 1024).unwrap(),
             max_document_header_bytes: NonZeroUsize::new(1024 * 1024).unwrap(),
-            max_reanalysis_document_tokens: NonZeroUsize::new(1_000_000).unwrap(),
             max_lexical_manifest_bytes: NonZeroU64::new(DEFAULT_MAX_MANIFEST_BYTES).unwrap(),
             max_candidate_spill_bytes: NonZeroU64::new(4 * 1024 * 1024 * 1024).unwrap(),
             max_candidate_block_bytes: NonZeroU64::new(16 * 1024 * 1024).unwrap(),
@@ -814,7 +808,7 @@ impl SearchOutOfCoreSegmentReader {
             max_manifest_bytes: config.max_lexical_manifest_bytes,
             max_term_bytes: lexical_term_policy.max_term_bytes(),
             max_document_source_bytes: lexical_source_policy.max_document_source_bytes(),
-            max_document_tokens: config.max_reanalysis_document_tokens,
+            max_document_tokens: lexical_source_policy.max_document_tokens(),
             max_spill_bytes: config.max_reanalysis_spill_bytes,
             max_query_score_entries: config.max_score_entries,
             ..LexicalProjectionConfig::default()
@@ -2662,7 +2656,14 @@ fn load_artifact_closure(
         )?);
     }
     mutation_run::validate_closure(&manifest, &mutation_runs)?;
-    mutation_run::validate_targets(root, &segments, &mutation_runs, config, analyzer_lexicon)?;
+    mutation_run::validate_targets(
+        root,
+        &segments,
+        &mutation_runs,
+        config,
+        analyzer_lexicon,
+        lexical_source_policy,
+    )?;
     Ok((
         manifest,
         segments,

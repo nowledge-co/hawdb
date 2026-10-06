@@ -603,10 +603,9 @@ fn governor_admission_covers_complete_generation_and_update_lifetimes() {
     let admission = SearchGenerationAdmission::acquire(&governor, request).unwrap();
     assert_eq!(admission.request(), request);
     let mut writer = admission.create_writer(&root.0, options()).unwrap();
-    assert_eq!(
-        governor.snapshot().admitted_memory_bytes,
-        request.memory_bytes
-    );
+    let admitted = governor.snapshot().admitted_memory_bytes;
+    assert!(admitted > request.memory_bytes);
+    assert!(admitted - request.memory_bytes < 64 * 1024);
     writer
         .writer_mut()
         .push(row("a", 101).into_document())
@@ -624,10 +623,9 @@ fn governor_admission_covers_complete_generation_and_update_lifetimes() {
         .prepare_update(&reader, delta("b", 102), update_options())
         .unwrap();
     assert_eq!(update.update().delta_report().upserted_documents, 1);
-    assert_eq!(
-        governor.snapshot().admitted_memory_bytes,
-        request.memory_bytes
-    );
+    let admitted = governor.snapshot().admitted_memory_bytes;
+    assert!(admitted > request.memory_bytes);
+    assert!(admitted - request.memory_bytes < 64 * 1024);
     drop(reader);
     let (_, report, _) = update.finish().unwrap();
     assert_eq!(report.document_count, 2);
@@ -732,10 +730,9 @@ fn facade_streamed_mutations_preserve_admission_ordering_and_stale_publication()
     cancelled
         .upsert_reader(header("a"), &b"graph"[..], body)
         .unwrap();
-    assert_eq!(
-        governor.snapshot().admitted_memory_bytes,
-        request.memory_bytes
-    );
+    let admitted = governor.snapshot().admitted_memory_bytes;
+    assert!(admitted > request.memory_bytes);
+    assert!(admitted - request.memory_bytes < 64 * 1024);
     cancellation.cancel();
     assert!(cancelled.delete("b").is_err());
     assert!(cancelled.finish().is_err());
