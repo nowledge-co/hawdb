@@ -220,6 +220,7 @@ impl DurableStore {
         generation: u64,
         source_commit_epoch: u64,
         config: CanonicalAdjacencyConfig,
+        work: &crate::background::CheckpointWorkContext,
     ) -> Result<CanonicalAdjacencyCheckpointArtifacts>
     where
         R: IntoIterator<
@@ -250,6 +251,7 @@ impl DurableStore {
             ..GraphDescriptorTreeBuildConfig::default()
         };
         let output = CanonicalAdjacencyWriter::new(config)
+            .with_work_context(work.clone())
             .write_fallible_with_descriptor_tree(
                 &artifact_path,
                 descriptor_paths,

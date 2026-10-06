@@ -8848,6 +8848,146 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_units_cancel_adjacency_and_retry_with_complete_relationships() {
+        use crate::background::{CheckpointWorkContext, CheckpointWorkProbe};
+        use hawdb_core::RuntimeTaskContext;
+        use hawdb_qos::{
+            LocalQosPolicy, LocalQosScheduler, QosTelemetryEvent, QosTelemetryPhase,
+            QosTelemetrySink,
+        };
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        #[derive(Debug)]
+        struct CancelAtAdjacencySpill {
+            probe: Arc<CheckpointWorkProbe>,
+            spill: std::path::PathBuf,
+            observed_spill: AtomicBool,
+        }
+
+        impl QosTelemetrySink for CancelAtAdjacencySpill {
+            fn record_qos(&self, event: QosTelemetryEvent) {
+                let completed = event.phase == QosTelemetryPhase::Completion;
+                self.probe.record_qos(event);
+                if completed && self.spill.exists() {
+                    self.observed_spill.store(true, Ordering::SeqCst);
+                    self.probe.cancellation.cancel();
+                }
+            }
+        }
+
+        let path = unique_test_dir("checkpoint_adjacency_unit_cancel");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        let nodes = (0..64i64)
+            .map(|id| {
+                store
+                    .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let mut relationships = nodes[1..]
+            .iter()
+            .enumerate()
+            .map(|(id, target)| {
+                store
+                    .create_relationship(
+                        &mut catalog,
+                        nodes[0],
+                        *target,
+                        "LINKS",
+                        properties([("id", Value::Int(id as i64))]),
+                    )
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        store.checkpoint(&catalog).unwrap();
+        relationships.push(
+            store
+                .create_relationship(&mut catalog, nodes[1], nodes[0], "LINKS", BTreeMap::new())
+                .unwrap(),
+        );
+        let identity = store.checkpoint_source_identity();
+        let durable = store.durable.as_ref().unwrap();
+        let generation = durable.next_checkpoint_generation().unwrap();
+        let wal_path = durable.wal_path.clone();
+        let manifest_path = durable.manifest_path().to_path_buf();
+        let wal = std::fs::read(&wal_path).unwrap();
+        let manifest = std::fs::read(&manifest_path).unwrap();
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        });
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        let observer = Arc::new(CancelAtAdjacencySpill {
+            probe: probe.clone(),
+            spill: path.join(format!(".adjacency.{generation}.run.0.tmp")),
+            observed_spill: AtomicBool::new(false),
+        });
+        scheduler.set_telemetry_sink(Some(observer.clone()));
+        let task = RuntimeTaskContext::without_deadline(probe.cancellation.clone())
+            .with_io_wave_controller(probe.clone());
+        let work = CheckpointWorkContext::new(task).with_scheduler(scheduler.clone());
+        let source = store.checkpoint_source();
+        let error = source
+            .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
+            .unwrap_err();
+        assert!(observer.observed_spill.load(Ordering::SeqCst));
+        assert!(error.to_string().contains("checkpoint build stopped"));
+        probe.assert_released(&scheduler);
+        assert_eq!(store.checkpoint_source_identity(), identity);
+        assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+        assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
+        assert!(!observer.spill.exists());
+        assert!(!path
+            .join(format!(".checkpoint.{generation}.prepare"))
+            .exists());
+        source.ensure_usable().unwrap();
+        store.ensure_usable().unwrap();
+        drop(source);
+
+        relationships.push(
+            store
+                .create_relationship(&mut catalog, nodes[2], nodes[0], "LINKS", BTreeMap::new())
+                .unwrap(),
+        );
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        let work = retry.context(scheduler.clone());
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        let captured = store.checkpoint_source();
+        candidate.catch_up(&captured).unwrap();
+        drop(captured);
+        store
+            .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
+            .unwrap();
+        drop(candidate);
+        retry.assert_released(&scheduler);
+        let expected = relationships
+            .into_iter()
+            .map(|id| store.relationship_owned(id).unwrap().unwrap())
+            .collect::<Vec<_>>();
+        let epoch = store.commit_epoch();
+        drop(store);
+        let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(recovered.commit_epoch(), epoch);
+        assert_eq!(recovered.scan_relationships(None).count(), expected.len());
+        for relationship in expected {
+            assert_eq!(
+                recovered.relationship_owned(relationship.id).unwrap(),
+                Some(relationship)
+            );
+        }
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn checkpoint_candidate_rejects_lost_private_tail_and_cleans_owned_artifacts() {
         let path = unique_test_dir("checkpoint_candidate_lost_tail");
         let mut catalog = Catalog::default();

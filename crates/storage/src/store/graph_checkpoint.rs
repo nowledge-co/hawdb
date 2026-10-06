@@ -756,12 +756,14 @@ impl GraphStore {
                     generation,
                     commit_epoch,
                     build_config.adjacency,
+                    work,
                 )?,
                 None => durable.write_canonical_adjacency(
                     self.relationships.values().cloned().map(Ok),
                     generation,
                     commit_epoch,
                     build_config.adjacency,
+                    work,
                 )?,
             };
             let property_projection_manifest_artifact = match property_projection_records {

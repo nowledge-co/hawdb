@@ -214,8 +214,21 @@ authority, subsequent writes, retry and complete ordinary reopen after base
 encoding cancellation. Only the job's own unpublished temporary paths are
 removed; published private files can remain as recovery evidence.
 
+Canonical adjacency now uses the same admitted context for source hydration,
+sorting memory-budgeted chunks, spill records, bounded fan-in merge records,
+artifact blocks and descriptor pages. Chunk sorting retains the existing
+configured memory bound (32 MiB by default); a unit never represents sorting
+the complete dataset. Spill payload lengths are checked against the record and
+chunk limits before allocation. Temporary-run ownership survives merge-level
+replacement and includes partially written runs. Focused tests completely
+reopen 2,000 relationships in both directions under one-operation per-work and
+four-operation total limits, cancel inside a multi-level merge and at every I/O
+admission point, and reject a corrupt spill length before payload allocation.
+The automatic path uses demand-paged descriptor trees; the older optional
+resident-manifest API still retains its complete descriptor vector.
+
 The automatic owner still holds its whole-candidate local permit: these units
-do not cover adjacency/projection sorting, append/relational builders, statistics,
+do not cover property-projection sorting, append/relational builders, statistics,
 candidate reopening or replay finalization. Temporary-file cleanup is currently
 best effort and lacks a complete retained cleanup-debt/resource ledger. Metadata
 buffers and dictionaries can still scale with the dataset. These focused tests
