@@ -223,7 +223,8 @@ fn replacement_rewrites_only_the_current_content_segment() {
     assert_eq!(update.delta_report().action, "incremental_mutation_publish");
     assert_eq!(update.delta_report().before_document_count, 4);
     assert_eq!(update.delta_report().after_document_count, 4);
-    assert_eq!(update.source_read_metrics().hydrated_documents, 1);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 0);
+    assert_eq!(update.source_read_metrics().streamed_documents, 1);
     assert!(update.source_read_metrics().segment_range_reads < full_metrics.segment_range_reads);
     assert!(update.source_read_metrics().segment_bytes_read < full_metrics.segment_bytes_read);
     let (_, build, _) = update.finish().unwrap();
@@ -295,7 +296,8 @@ fn deletion_rewrites_only_the_current_content_segment_and_updates_manifest_ident
     assert_eq!(update.delta_report().before_document_count, 4);
     assert_eq!(update.delta_report().after_document_count, 3);
     assert_eq!(update.delta_report().deleted_documents, 1);
-    assert_eq!(update.source_read_metrics().hydrated_documents, 1);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 0);
+    assert_eq!(update.source_read_metrics().streamed_documents, 1);
     assert!(update.source_read_metrics().segment_range_reads < full_metrics.segment_range_reads);
     assert!(update.source_read_metrics().segment_bytes_read < full_metrics.segment_bytes_read);
     let (_, build, _) = update.finish().unwrap();
@@ -351,7 +353,8 @@ fn same_segment_batch_replaces_and_deletes_without_hydrating_other_artifacts() {
     assert_eq!(update.delta_report().after_document_count, 3);
     assert_eq!(update.delta_report().upserted_documents, 1);
     assert_eq!(update.delta_report().deleted_documents, 1);
-    assert_eq!(update.source_read_metrics().hydrated_documents, 2);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 0);
+    assert_eq!(update.source_read_metrics().streamed_documents, 2);
     assert!(update.source_read_metrics().segment_range_reads < full_metrics.segment_range_reads);
     assert!(update.source_read_metrics().segment_bytes_read < full_metrics.segment_bytes_read);
     update.finish().unwrap();
@@ -393,7 +396,8 @@ fn contiguous_segment_batch_replaces_only_its_exact_artifact_range() {
     assert_eq!(update.delta_report().action, "incremental_mutation_publish");
     assert_eq!(update.delta_report().before_document_count, 5);
     assert_eq!(update.delta_report().after_document_count, 5);
-    assert_eq!(update.source_read_metrics().hydrated_documents, 2);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 0);
+    assert_eq!(update.source_read_metrics().streamed_documents, 2);
     assert!(update.source_read_metrics().segment_range_reads < full_metrics.segment_range_reads);
     assert!(update.source_read_metrics().segment_bytes_read < full_metrics.segment_bytes_read);
     update.finish().unwrap();
@@ -444,7 +448,8 @@ fn noncontiguous_segment_batch_retains_the_full_generation_path() {
     )
     .unwrap();
     assert_eq!(update.delta_report().action, "incremental_mutation_publish");
-    assert_eq!(update.source_read_metrics().hydrated_documents, 2);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 0);
+    assert_eq!(update.source_read_metrics().streamed_documents, 2);
     assert!(update.source_read_metrics().segment_range_reads < full_metrics.segment_range_reads);
     assert!(update.source_read_metrics().segment_bytes_read < full_metrics.segment_bytes_read);
 }
@@ -570,7 +575,8 @@ fn delta_context_survives_prepare_through_finish_and_report_handoff() {
         update.source_read_metrics().hydration_segment_bytes_read,
         legacy_metrics.hydration_segment_bytes_read
     );
-    assert_eq!(update.source_read_metrics().hydrated_documents, 2);
+    assert_eq!(update.source_read_metrics().hydrated_documents, 0);
+    assert_eq!(update.source_read_metrics().streamed_documents, 2);
     assert!(
         update.source_read_metrics().peak_segment_document_bytes
             <= legacy_metrics.peak_segment_document_bytes

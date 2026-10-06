@@ -21,7 +21,7 @@ jobs:
         os: [macos-latest, windows-latest]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.97.1
@@ -81,7 +81,7 @@ jobs:
             runner: windows-2025
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.97.1
@@ -95,6 +95,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Windows alias probes reserve handles across registered FD domains.
+          # Budget-exhaustion cases must not overlap unrelated reopen cases.
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            export RUST_TEST_THREADS=1
+          fi
           cargo test -p hawdb-search
           cargo test -p hawdb-search --no-default-features
           cargo test -p hawdb-search --no-default-features --features full-text-search
@@ -130,13 +135,24 @@ jobs:
         os: [macos-latest, windows-latest]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Test storage artifacts and ownership
         run: cargo test -p hawdb-storage
+
+      - name: Test ordinary project opening and pending recovery
+        shell: bash
+        run: |
+          bash scripts/cargo-test-required.sh --locked -p hawdb --test branch_project_open
+          bash scripts/cargo-test-required.sh --locked -p hawdb --no-default-features --test branch_project_open
+
+      - name: Test branch lifecycle and creation retries
+        shell: bash
+        run: |
+          bash scripts/cargo-test-required.sh --locked -p hawdb --features acl --lib api::branch_lifecycle::tests::
 
       - name: Test durable storage recovery
         run: cargo test -p hawdb --features acl --lib api::tests::storage_recovery
@@ -178,10 +194,59 @@ jobs:
 
       - name: Upload Windows storage lifecycle evidence
         if: always() && matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: storage-resource-windows-latest-${{ github.sha }}
           path: storage-resource-results
+          if-no-files-found: error
+
+  branch-power-loss:
+    name: Branch Power Loss (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        # The recorder models completed POSIX synchronization. Windows needs
+        # separate namespace qualification, not a zero-test Unix selection.
+        os: [ubuntu-24.04, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Run branch power-loss qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p branch-power-loss-results
+          git rev-parse HEAD > branch-power-loss-results/source-revision.txt
+          rustc --version --verbose > branch-power-loss-results/toolchain.txt
+          uname -a > branch-power-loss-results/platform.txt
+          df -Pk . "${TMPDIR:-/tmp}" > branch-power-loss-results/disk-before.txt
+          cargo test --locked -p hawdb --all-features --lib \
+            api::tests::power_loss:: -- --list 2>&1 \
+            | tee branch-power-loss-results/discovery.txt
+          set +e
+          bash scripts/cargo-test-required.sh --locked -p hawdb --all-features --lib \
+            api::tests::power_loss:: -- --nocapture --test-threads=1 2>&1 \
+            | tee branch-power-loss-results/test-output.txt
+          test_status=$?
+          set -e
+          df -Pk . "${TMPDIR:-/tmp}" > branch-power-loss-results/disk-after.txt
+          printf '{"protocol":"hawdb-branch-power-loss-ci-v1","source_revision":"%s","runner_os":"%s","test_status":%s}\n' \
+            "$GITHUB_SHA" "$RUNNER_OS" "$test_status" \
+            > branch-power-loss-results/manifest.json
+          exit "$test_status"
+
+      - name: Upload branch power-loss evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: branch-power-loss-${{ matrix.os }}-${{ github.sha }}
+          path: branch-power-loss-results
           if-no-files-found: error
 
   storage-crash-recovery:
@@ -194,7 +259,7 @@ jobs:
         os: [macos-latest, windows-latest]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.97.1
@@ -220,7 +285,7 @@ jobs:
 
       - name: Upload crash recovery evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: storage-crash-recovery-${{ matrix.os }}-${{ github.sha }}
           path: storage-crash-results

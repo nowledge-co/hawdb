@@ -298,6 +298,39 @@ impl ConcurrentDatabase {
             .publish_prepared_checkpoint(prepared)
     }
 
+    /// Runs project reclamation through the writer coordinator. Active readers,
+    /// transactions and checkpoint candidates retain their reachability pins.
+    pub fn reclaim_branch_storage(
+        &self,
+        limits: super::BranchReclamationLimits,
+    ) -> Result<super::BranchReclamationReport> {
+        self.inner.commits.reclaim_branch_storage(limits)
+    }
+
+    /// Reads the last pending-create scan without admitting a data runtime.
+    pub fn branch_create_recovery_report(
+        &self,
+    ) -> Result<Option<super::BranchCreateRecoveryReport>> {
+        Ok(self
+            .inner
+            .commits
+            .lock()?
+            .branch_create_recovery_report()
+            .cloned())
+    }
+
+    /// Retries pending child receipts under the writer coordinator. Existing
+    /// data publications and reader pins are unaffected by metadata recovery.
+    pub fn recover_pending_branch_creates(
+        &self,
+        limits: super::BranchCreateRecoveryLimits,
+    ) -> Result<super::BranchCreateRecoveryReport> {
+        self.inner
+            .commits
+            .lock()?
+            .recover_pending_branch_creates(limits)
+    }
+
     pub fn begin_transaction(
         &self,
         options: ConcurrentTransactionOptions,

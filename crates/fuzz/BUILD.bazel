@@ -39,6 +39,9 @@ _RELATIONAL_JOIN_REWRITE_DIFFERENTIAL_TEST = "sql_oracle::tests::relational_join
 
 rust_test(
     name = "hawdb_fuzz_fast_tests",
+    # Includes durable WAL recovery and row-page compaction campaigns whose
+    # synchronized I/O can exceed the default 300-second deadline.
+    timeout = "long",
     args = [
         "--skip",
         _APPEND_STATE_MACHINE_SEED_7_TEST,

@@ -45,6 +45,7 @@ pub(crate) struct BuildMemory {
     pub(crate) input: QueryMemoryAccount,
     pub(crate) spool: QueryMemoryAccount,
     pub(crate) retained: QueryMemoryAccount,
+    pub(crate) host_admission: Option<std::sync::Arc<hawdb_qos::RuntimePermit>>,
 }
 
 impl BuildMemory {
@@ -78,6 +79,26 @@ impl BuildMemory {
             input,
             spool,
             retained,
+            host_admission: None,
+        })
+    }
+
+    pub(crate) fn admit_header(
+        &self,
+        header: crate::SearchDocumentHeader,
+    ) -> Result<AdmittedHeader> {
+        let bytes = checked_add(
+            std::mem::size_of::<crate::SearchDocumentHeader>(),
+            field_bytes(
+                [&header.id, &header.title],
+                header.embedding.as_ref().map_or(0, Vec::capacity),
+                &header.metadata,
+            )?,
+        )?;
+        let memory = self.input.reserve(bytes)?;
+        Ok(AdmittedHeader {
+            header,
+            _memory: memory,
         })
     }
 
@@ -87,6 +108,19 @@ impl BuildMemory {
             document,
             _memory: DocumentMemory::Individual(memory),
         })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct AdmittedHeader {
+    pub(crate) header: crate::SearchDocumentHeader,
+    pub(crate) _memory: QueryMemoryLease,
+}
+
+impl Deref for AdmittedHeader {
+    type Target = crate::SearchDocumentHeader;
+    fn deref(&self) -> &Self::Target {
+        &self.header
     }
 }
 
@@ -208,8 +242,8 @@ pub(crate) fn projection_row_bytes(row: &SearchProjectionRow) -> Result<usize> {
     )
 }
 
-fn field_bytes(
-    strings: [&String; 3],
+fn field_bytes<'a>(
+    strings: impl IntoIterator<Item = &'a String>,
     embedding_capacity: usize,
     metadata: &std::collections::BTreeMap<String, String>,
 ) -> Result<usize> {

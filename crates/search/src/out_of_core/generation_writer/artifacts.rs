@@ -19,28 +19,31 @@ use super::super::{
 #[cfg(test)]
 use super::spool::SpoolSource;
 use super::{SearchOutOfCoreGenerationBuildOptions, STAGE_METADATA_FILE, STAGE_VECTOR_FILE};
-use crate::build_control::{checkpoint, temporary::RemoveOnDrop, write_checksummed};
+use crate::build_control::{checkpoint, temporary::RemoveOnDrop};
 use crate::build_memory::path::OwnedPath;
-use crate::build_memory::{
-    checked_mul, grow_slots, AdmittedDocument, BuildMemory, SPOOL_BUFFER_BYTES,
-};
+use crate::build_memory::{checked_mul, grow_slots, BuildMemory, SPOOL_BUFFER_BYTES};
 use crate::document_encoding::{
-    DescriptorEncoding, DocumentEncoding, SegmentEncoding, SegmentKind, HEX_BUFFER_BYTES,
+    DescriptorEncoding, SegmentEncoding, SegmentKind, HEX_BUFFER_BYTES,
 };
 use crate::error::{HawDBError, Result};
+#[cfg(test)]
+use crate::{build_memory::AdmittedDocument, SearchDocument};
 use crate::{
-    SearchDocument, SearchSegmentDescriptor, SearchSegmentDescriptorEntry,
-    SearchSegmentPayloadRange, SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS,
-    SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID, SEARCH_SEGMENT_PAYLOAD_FILE,
+    SearchSegmentDescriptor, SearchSegmentDescriptorEntry, SearchSegmentPayloadRange,
+    SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS, SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID,
+    SEARCH_SEGMENT_PAYLOAD_FILE,
 };
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
-use hawdb_storage::file_io::File;
+use hawdb_storage::file_io::{File, OpenOptions};
 use std::collections::BTreeSet;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
 mod descriptor;
+mod document;
+use crate::document_encoding::{HeaderSource, RecordSource};
+use document::SegmentDocument;
 pub(super) mod encoding;
 mod paths;
 
@@ -56,7 +59,7 @@ pub(super) struct SegmentArtifactBuilder<'a> {
     document_file: File,
     metadata_file: File,
     vector_file: File,
-    documents: Vec<AdmittedDocument>,
+    documents: Vec<SegmentDocument>,
     memory: BuildMemory,
     task: RuntimeTaskContext,
     segment_encoded_bytes: u64,
@@ -134,7 +137,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
         checkpoint(&task)?;
         let documents_memory = memory.retained.reserve(checked_mul(
             SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS,
-            std::mem::size_of::<AdmittedDocument>(),
+            std::mem::size_of::<SegmentDocument>(),
         )?)?;
         let mut documents = Vec::new();
         documents
@@ -158,7 +161,12 @@ impl<'a> SegmentArtifactBuilder<'a> {
             generation,
             options,
             fields,
-            document_file: File::create(&paths.document)?,
+            document_file: OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&paths.document)?,
             metadata_file: File::create(&paths.metadata)?,
             vector_file: File::create(&paths.vector)?,
             documents,
@@ -229,14 +237,30 @@ impl<'a> SegmentArtifactBuilder<'a> {
         self.push_admitted(ordinal, document)
     }
 
+    #[cfg(test)]
     pub(super) fn push_admitted(&mut self, ordinal: u64, document: AdmittedDocument) -> Result<()> {
+        self.push_document(ordinal, SegmentDocument::Owned(document))
+    }
+
+    pub(super) fn push_record(
+        &mut self,
+        ordinal: u64,
+        document: super::spool::SpoolRecord,
+    ) -> Result<()> {
+        self.push_document(
+            ordinal,
+            SegmentDocument::Spool(crate::build_memory::shared::Shared::new(document)),
+        )
+    }
+
+    fn push_document(&mut self, ordinal: u64, document: SegmentDocument) -> Result<()> {
         self.check_healthy()?;
         let result = self.push_inner(ordinal, document);
         self.failed = result.is_err();
         result
     }
 
-    fn push_inner(&mut self, ordinal: u64, document: AdmittedDocument) -> Result<()> {
+    fn push_inner(&mut self, ordinal: u64, document: SegmentDocument) -> Result<()> {
         checkpoint(&self.task)?;
         if ordinal != self.next_document_ordinal {
             return Err(HawDBError::Storage(format!(
@@ -247,8 +271,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
         let next_document_ordinal = ordinal.checked_add(1).ok_or_else(|| {
             HawDBError::Storage("search segment document ordinal overflow".to_string())
         })?;
-        let encoded_bytes =
-            DocumentEncoding::new_with_context(&document, Some(&self.task))?.len() as u64;
+        let encoded_bytes = document.encoded_len(Some(&self.task))? as u64;
         let projected = self.segment_encoded_bytes.saturating_add(encoded_bytes);
         if !self.documents.is_empty()
             && (self.documents.len() == SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS
@@ -259,7 +282,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
         if encoded_bytes.saturating_add(64) > self.options.max_segment_uncompressed_bytes.get() {
             return Err(HawDBError::Storage(format!(
                 "search generation document {} cannot fit the admitted segment buffer",
-                document.id
+                document.header().id
             )));
         }
         self.segment_encoded_bytes = self.segment_encoded_bytes.saturating_add(encoded_bytes);
@@ -304,12 +327,18 @@ impl<'a> SegmentArtifactBuilder<'a> {
             },
         )?;
 
-        let document_payload = self.encode_segment_payload(segment_id, SegmentKind::Documents)?;
-        let document_length = document_payload.len() as u64;
-        let checksum = write_checksummed(
-            &mut self.document_file,
-            document_payload.as_ref(),
+        let document_encoding = SegmentEncoding::new_with_context(
+            &self.documents,
+            SegmentKind::Documents,
             Some(&self.task),
+        )?;
+        let (document_length, checksum) = encoding::append_segment(
+            &mut self.document_file,
+            &document_encoding,
+            self.options.max_segment_uncompressed_bytes.get(),
+            self.options.max_segment_compressed_bytes.get(),
+            &self.memory,
+            &self.task,
         )?;
         descriptor.payload_range = Some(SearchSegmentPayloadRange {
             artifact_id: SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID,
@@ -321,7 +350,6 @@ impl<'a> SegmentArtifactBuilder<'a> {
             .document_offset
             .checked_add(document_length)
             .ok_or_else(|| HawDBError::Storage("search generation payload overflow".to_string()))?;
-        drop(document_payload);
 
         let vector_ordinal_base = self.next_vector_ordinal;
         let metadata_payload = self.encode_segment_payload(
@@ -342,7 +370,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
         let vector_count = self
             .documents
             .iter()
-            .filter(|document| document.embedding.is_some())
+            .filter(|document| document.header().embedding.is_some())
             .count();
         self.next_vector_ordinal = vector_ordinal_base.saturating_add(vector_count as u64);
         let vector_payload = self.encode_segment_payload(

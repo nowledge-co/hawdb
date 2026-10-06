@@ -39,3 +39,34 @@ alias(
     name = "storage_model_evidence",
     actual = ":storage_models_evidence",
 )
+
+# Small lifecycle counterexamples are independently runnable during integration.
+_LARGE_DOCUMENT_CONTROLS = [
+    "CleanupRetryWitness",
+    "DeliverEarly",
+    "IgnoreQuota",
+    "LostReplyWitness",
+    "PublishEarly",
+    "ReclaimPinned",
+    "ReleaseOwnerEarly",
+    "RollbackCommitted",
+]
+
+[
+    tla_check(
+        name = "HawDBLargeDocumentLifecycle" + control + "_check",
+        module = "HawDBLargeDocumentLifecycle.tla",
+        config = "mutants/HawDBLargeDocumentLifecycle" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in _LARGE_DOCUMENT_CONTROLS
+]
+
+tla_test_suite(
+    name = "large_document_controls",
+    tests = [":HawDBLargeDocumentLifecycle" + control + "_check" for control in _LARGE_DOCUMENT_CONTROLS],
+    tags = ["manual"],
+)

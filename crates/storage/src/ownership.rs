@@ -77,6 +77,10 @@ pub struct DatabaseDirectoryLease {
 }
 
 impl DatabaseDirectoryLease {
+    pub(crate) fn owns_directory(&self, path: &Path) -> io::Result<bool> {
+        Ok(fs::canonicalize(path)? == self.canonical_path)
+    }
+
     pub fn acquire(path: &Path) -> Result<Self, DatabaseDirectoryLeaseError> {
         let canonical_path =
             fs::canonicalize(path).map_err(DatabaseDirectoryLeaseError::Canonicalize)?;

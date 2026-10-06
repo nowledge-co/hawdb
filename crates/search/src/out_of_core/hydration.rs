@@ -130,16 +130,47 @@ fn read_selected(
     max_uncompressed_bytes: u64,
     remaining_bytes: u64,
 ) -> Result<Selection> {
+    read_validated(
+        input,
+        length,
+        checksum,
+        max_uncompressed_bytes,
+        None,
+        |text| select_documents(text, segment, ids, remaining_bytes),
+    )
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ReadAdmission<'a> {
+    pub(super) memory: &'a crate::build_memory::BuildMemory,
+    pub(super) task: &'a hawdb_core::RuntimeTaskContext,
+    pub(super) max_header_bytes: usize,
+}
+
+pub(super) fn read_validated<T>(
+    input: impl Read,
+    length: u64,
+    checksum: u64,
+    max_uncompressed_bytes: u64,
+    admission: Option<ReadAdmission<'_>>,
+    select: impl FnOnce(&mut dyn BufRead) -> Result<T>,
+) -> Result<T> {
+    // Three buffered readers coexist; draining also owns bounded copy scratch.
+    let _buffers = admission
+        .map(|admission| admission.memory.spool.reserve(4 * INPUT_BYTES))
+        .transpose()?;
     let mut range = CheckedReader::new(input.take(length));
     let mut buffered = BufReader::with_capacity(INPUT_BYTES, &mut range);
     let selected = read_envelope(
         &mut buffered,
         length,
-        segment,
-        ids,
         max_uncompressed_bytes,
-        remaining_bytes,
+        admission,
+        select,
     );
+    if let Some(admission) = admission {
+        crate::build_control::checkpoint(admission.task)?;
+    }
     // Preserve range-integrity precedence even if header parsing fails early.
     io::copy(&mut buffered, &mut io::sink())?;
     drop(buffered);
@@ -149,31 +180,75 @@ fn read_selected(
     if range.digest.finish() != checksum {
         return Err(invalid("payload checksum mismatch"));
     }
+    if let Some(admission) = admission {
+        crate::build_control::checkpoint(admission.task)?;
+    }
     selected
 }
 
-fn read_envelope(
+fn read_envelope<T>(
     buffered: &mut impl BufRead,
     length: u64,
-    segment: &SearchSegmentDescriptorEntry,
-    ids: &BTreeSet<String>,
     max_uncompressed_bytes: u64,
-    remaining_bytes: u64,
-) -> Result<Selection> {
+    admission: Option<ReadAdmission<'_>>,
+    select: impl FnOnce(&mut dyn BufRead) -> Result<T>,
+) -> Result<T> {
+    let mut header_memory = admission
+        .map(|admission| admission.memory.spool.reserve(0))
+        .transpose()?;
     let mut header = Vec::new();
-    // Preserve the envelope grammar, including noncanonical numeric spellings.
-    // Header storage remains admitted by the compressed range, not a new cap.
+    // The governed path admits the bounded envelope before copying each chunk.
     while !header.ends_with(b"\n\n") {
-        if buffered.read_until(b'\n', &mut header)? == 0 {
+        if let Some(admission) = admission {
+            crate::build_control::checkpoint(admission.task)?;
+        }
+        let available = match buffered.fill_buf() {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if available.is_empty() {
             return Err(invalid("compressed envelope missing header terminator"));
         }
+        let count = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        let required = header
+            .len()
+            .checked_add(count)
+            .ok_or_else(|| invalid("envelope size overflow"))?;
+        if admission.is_some_and(|admission| required > admission.max_header_bytes) {
+            return Err(invalid("envelope header exceeds admission"));
+        }
+        if let Some(memory) = &mut header_memory {
+            crate::build_memory::reserve_capacity(&mut header, required, memory)?;
+        }
+        header.extend_from_slice(&available[..count]);
+        buffered.consume(count);
     }
     let compressed_bytes = length
         .checked_sub(header.len() as u64)
         .ok_or_else(|| invalid("compressed length underflow"))?;
     let header = std::str::from_utf8(&header[..header.len() - 2])
         .map_err(|_| invalid("compressed envelope header is not UTF-8"))?;
-    let header = parse_snapshot_header(header)?;
+    let header = {
+        let _parse_memory = admission
+            .map(|admission| {
+                let slots = crate::build_memory::checked_mul(
+                    header.len(),
+                    2 * std::mem::size_of::<&str>(),
+                )?;
+                admission
+                    .memory
+                    .spool
+                    .reserve(crate::build_memory::checked_add(
+                        slots,
+                        6 * crate::build_memory::SET_ENTRY_BYTES,
+                    )?)
+            })
+            .transpose()?;
+        parse_snapshot_header(header)?
+    };
     let expected_compressed_len = header
         .compressed_len
         .ok_or_else(|| invalid("missing compressed_len"))? as u64;
@@ -194,23 +269,22 @@ fn read_envelope(
     }
 
     let mut compressed = CheckedReader::new(buffered);
-    let decoder = zstd::stream::read::Decoder::with_buffer(BufReader::with_capacity(
-        INPUT_BYTES,
-        &mut compressed,
-    ))?;
-    // A false small declaration must not inflate to the caller's larger limit.
-    let mut inflated = CheckedReader::new(decoder.take(expected_len.saturating_add(1)));
-    let mut text = BufReader::with_capacity(INPUT_BYTES, &mut inflated);
-    let selected = select_documents(&mut text, segment, ids, remaining_bytes);
-    // Results remain private until the entire segment has passed integrity.
-    // Even an early syntax/budget error cannot hide a later read failure.
-    let drained = io::copy(&mut text, &mut io::sink());
-    drop(text);
-    let inflated_count = inflated.count;
-    let inflated_checksum = inflated.digest.finish();
-    #[cfg(test)]
-    tests::record_inflated_bytes(inflated_count);
-    drop(inflated);
+    let compressed_input = BufReader::with_capacity(INPUT_BYTES, &mut compressed);
+    let (selected, drained, inflated_count, inflated_checksum) = if let Some(admission) = admission
+    {
+        let decoder = crate::build_memory::decoder::Decoder::new(
+            compressed_input,
+            admission.memory,
+            admission.task,
+        )?;
+        read_inflated(decoder, expected_len, select)
+    } else {
+        let decoder = zstd::stream::read::Decoder::with_buffer(compressed_input)?;
+        read_inflated(decoder, expected_len, select)
+    };
+    if let Some(admission) = admission {
+        crate::build_control::checkpoint(admission.task)?;
+    }
     let compressed_drained = io::copy(&mut compressed, &mut io::sink());
     let compressed_count = compressed.count;
     let compressed_checksum = compressed.digest.finish();
@@ -220,7 +294,11 @@ fn read_envelope(
     {
         return Err(invalid("compressed checksum or length mismatch"));
     }
-    drained?;
+    if let Err(error) = drained {
+        // A failed decoder admission or sink can leave no resumable decoder.
+        // Preserve that first failure instead of replacing it with a drain error.
+        return selected.and_then(|_| Err(error.into()));
+    }
     if inflated_count != expected_len {
         return Err(invalid("uncompressed length mismatch"));
     }
@@ -230,8 +308,25 @@ fn read_envelope(
     selected
 }
 
+fn read_inflated<T>(
+    decoder: impl Read,
+    expected_len: u64,
+    select: impl FnOnce(&mut dyn BufRead) -> Result<T>,
+) -> (Result<T>, io::Result<u64>, u64, u64) {
+    // A false small declaration must not inflate to the caller's larger limit.
+    let mut inflated = CheckedReader::new(decoder.take(expected_len.saturating_add(1)));
+    let mut text = BufReader::with_capacity(INPUT_BYTES, &mut inflated);
+    let selected = select(&mut text);
+    // Results remain private until the entire segment has passed integrity.
+    let drained = io::copy(&mut text, &mut io::sink());
+    drop(text);
+    #[cfg(test)]
+    tests::record_inflated_bytes(inflated.count);
+    (selected, drained, inflated.count, inflated.digest.finish())
+}
+
 fn select_documents(
-    text: &mut impl BufRead,
+    text: &mut dyn BufRead,
     segment: &SearchSegmentDescriptorEntry,
     ids: &BTreeSet<String>,
     remaining_bytes: u64,
@@ -304,3 +399,6 @@ fn select_documents(
 
 #[cfg(test)]
 mod tests;
+
+pub(super) mod selected_body;
+pub(super) mod source;

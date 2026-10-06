@@ -56,7 +56,11 @@ impl DurableStore {
             let bytes = read_closure_artifact(&path, "read checkpoint closure artifact")?;
             Ok(CheckpointArtifactInput {
                 path,
-                reference: ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, &bytes),
+                reference: ObjectReference::for_bytes(
+                    ObjectKind::CheckpointArtifact,
+                    ObjectKind::CheckpointArtifact.current_format_version(),
+                    &bytes,
+                ),
             })
         };
         let mut manifest_inputs = manifest.manifest_artifact_inputs(&self.root_path)?;
@@ -87,7 +91,7 @@ impl DurableStore {
                     path: relational_checkpoint,
                     reference: ObjectReference::for_bytes(
                         ObjectKind::CheckpointArtifact,
-                        1,
+                        ObjectKind::CheckpointArtifact.current_format_version(),
                         &bytes,
                     ),
                 });

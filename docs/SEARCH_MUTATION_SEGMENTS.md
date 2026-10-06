@@ -9,8 +9,11 @@ new-ID updates still use the append path; updates to visible IDs publish a
 target-bound mutation run. Cleanup can validate and retain those artifacts.
 
 Closure validation also resolves each retraction to its exact immutable content
-version, hydrates that record under the existing limits, and reconstructs its
+version, stages that record under reader-local limits, and reconstructs its
 digest, weighted lexical length and distinct terms with the selected analyzer.
+The [streamed lifecycle](STREAMED_DOCUMENT_LIFECYCLE.md) uses the external
+frequency reducer and retains immutable term-file ranges, so this validation
+does not require the complete old body or contribution set in memory.
 An internally checksummed run with a nonexistent target or fabricated
 contribution is rejected before the reader serves the closure.
 

@@ -21,6 +21,7 @@ use crate::artifact_files::{
 };
 use crate::checkpoint_closure::{read_closure_artifact, CheckpointArtifactInput};
 use crate::file_io::{self as fs, File};
+use crate::immutable_object::ObjectKind;
 use crate::text::parse_u64;
 use crate::{
     append_table::{AppendGenerationArtifacts, AppendSegmentArtifactMetadata},
@@ -424,7 +425,7 @@ impl DurableManifest {
             HawDBError::Storage("manifest artifact inputs require a checkpoint generation".into())
         })?;
         let mut inputs = Vec::new();
-        let mut add = |path: PathBuf, kind, len, sha| -> Result<()> {
+        let mut add = |path: PathBuf, kind: ObjectKind, len, sha| -> Result<()> {
             let (Some(byte_length), Some(content_sha256)) = (len, sha) else {
                 return Err(HawDBError::Storage(format!(
                     "manifest binding is incomplete for {}",
@@ -446,7 +447,11 @@ impl DurableManifest {
             }
             inputs.push(CheckpointArtifactInput {
                 path,
-                reference: crate::immutable_object::ObjectReference::for_bytes(kind, 1, &bytes),
+                reference: crate::immutable_object::ObjectReference::for_bytes(
+                    kind,
+                    kind.current_format_version(),
+                    &bytes,
+                ),
             });
             Ok(())
         };
