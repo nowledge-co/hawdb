@@ -15,7 +15,7 @@ hawdb-expression = { path = "../expression", version = "0.4.0" }
 hawdb-plan-cypher = { path = "../plan-cypher", version = "0.4.0" }
 hawdb-plan-cache = { path = "../plan-cache", version = "0.4.0" }
 hawdb-sql-syntax = { path = "../sql-syntax", version = "0.4.0" }
-sqlparser = "0.61"
+sqlparser = "0.63"
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

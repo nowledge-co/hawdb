@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Capacity envelopes for the pinned immutable Jieba analyzer and skip regex.
+//! Capacity envelopes for the pinned immutable Jieba analyzer and legacy regex reserve.
 //!
 //! These model Rust allocation requests, including replacement overlap. Process
 //! dictionary residency, allocator overhead and OS thread metadata are separate.
@@ -117,6 +117,9 @@ fn cache(automaton: Automaton) -> Option<usize> {
     sum(terms)
 }
 
+// Keep the previously qualified fixed regex reserves during this upgrade.
+// Jieba 0.11 uses an allocation-free scanner; removing these conservative
+// allowances is a separate admission-policy change.
 pub(super) fn regex_retained() -> Option<usize> {
     // Immutable forward/reverse NFA storage and captured-pattern metadata.
     // The compiler can emit no more than COMPILER_STATES intermediate states;
@@ -164,15 +167,26 @@ pub(super) fn regex_construction() -> Option<usize> {
     sum([syntax, 2 * compiler, onepass])
 }
 
-pub(super) fn hmm_retained(characters: usize) -> Option<usize> {
+pub(super) fn scratch_retained(characters: usize) -> Option<usize> {
+    // Jieba 0.11 retains route, DAG, decoded characters and HMM in one TLS
+    // scratch owner. Bound each Vec's geometric capacity until native join;
+    // release_if_huge can only reduce these capacities after a call.
+    let with_sentinel = characters.checked_add(1)?;
+    let dag_entries = characters.checked_mul(MAX_DICTIONARY_PREFIXES + 1)?;
     let states = characters.checked_mul(4)?;
+    let retained = |elements: usize, bytes: usize| {
+        elements
+            .max(MIN_GROWING_ELEMENTS)
+            .checked_mul(2)?
+            .checked_mul(bytes)
+    };
     sum([
-        states.max(8).checked_mul(2 * 8)?,
-        // State/Option<State> have four variants in pinned Jieba; a machine
-        // word is a conservative layout bound on supported 32/64-bit targets.
-        states.max(8).checked_mul(2 * WORD)?,
-        characters.max(8).checked_mul(2 * WORD)?,
-        characters.max(8).checked_mul(2 * 2 * WORD)?,
+        retained(with_sentinel, 3 * WORD)?, // route: probability, end, word id
+        retained(dag_entries, 8)?,          // encoded DAG edges
+        retained(with_sentinel, WORD)?,     // CSR starts including final offset
+        retained(characters, 2 * WORD)?,    // decoded byte offsets and characters
+        retained(states, WORD)?,            // HMM predecessors
+        retained(characters, WORD)?,        // HMM best path
     ])
 }
 
@@ -194,8 +208,8 @@ pub(super) fn invocation(bytes: usize, characters: usize) -> Option<usize> {
         growing_bytes(characters.checked_mul(2)?, 6 * WORD)?, // search output
         growing_bytes(characters, WORD)?,            // search word character offsets
         // The retained lease is grown before calling Jieba. This extra new
-        // workspace covers coexistence while old HMM buffers are replaced.
-        hmm_retained(characters)?,
+        // workspace covers coexistence while old TLS buffers are replaced.
+        scratch_retained(characters)?,
     ])
 }
 

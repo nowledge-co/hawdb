@@ -26,7 +26,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
+        let root = crate::test_temp_dir().join(format!(
             "hawdb-lexical-positioned-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed),
@@ -194,7 +194,7 @@ fn public_concurrent_queries_preserve_results_while_a_new_generation_publishes()
         SearchQueryOptions,
     };
 
-    let root = std::env::temp_dir().join(format!(
+    let root = crate::test_temp_dir().join(format!(
         "hawdb-lexical-public-concurrency-{}-{}",
         std::process::id(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed)

@@ -81,7 +81,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-        let root = std::env::temp_dir().join(format!(
+        let root = crate::test_temp_dir().join(format!(
             "hawdb-source-capture-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)

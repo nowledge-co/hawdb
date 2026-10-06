@@ -7817,6 +7817,13 @@ fn parse_usize(input: &str, name: &str) -> Result<usize> {
 }
 
 #[cfg(test)]
+fn test_temp_dir() -> PathBuf {
+    // Bazel sandboxes can reuse PIDs while sharing the host TMPDIR.
+    // Use the per-action directory to keep fixture names independent.
+    std::env::var_os("TEST_TMPDIR").map_or_else(std::env::temp_dir, PathBuf::from)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -7825,7 +7832,7 @@ mod tests {
         use hawdb_storage::file_descriptors::{ProjectFileDescriptors, DEFAULT_MAX_OPEN_FILES};
 
         let sequence = QUARANTINE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
+        let root = crate::test_temp_dir().join(format!(
             "hawdb-search-fd-projects-{}-{sequence}",
             std::process::id()
         ));
