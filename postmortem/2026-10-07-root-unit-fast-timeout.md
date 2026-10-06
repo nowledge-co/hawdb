@@ -24,13 +24,16 @@ Executed 1 out of 1 test: 1 fails locally.
 ```
 
 No assertion failure was reported before timeout. The binary listed 1,697 tests;
-1,689 names completed or were ignored. Five remaining names were intentionally
-excluded by the target because the crash matrix and row-page compaction have
-separate targets. Three selected cases remained unfinished:
+1,689 names completed or were ignored. Two remaining names were intentionally
+excluded: the crash matrix and the compaction convergence case have separate
+targets. Six selected cases remained unfinished:
 
 - `api::tests::concurrent_transactions::crash_recovery::subprocess_concurrent_crash_recovers_mixed_transactions_as_serial_prefixes`
 - `api::tests::concurrent_transactions::relational_mvcc::relational_mvcc_constrained_inserts_validate_unique_values_without_serializing_foreign_keys`
 - `api::tests::concurrent_transactions::relational_mvcc::relational_mvcc_constraint_preserving_updates_keep_disjoint_rows_and_barriers`
+- `store_facade_tests::row_page_compaction::row_page_compaction_admits_before_building_and_shares_shadow_capacity`
+- `store_facade_tests::row_page_compaction::row_page_compaction_dirty_and_materialized_limits_release_admission`
+- `store_facade_tests::row_page_compaction::row_page_compaction_failure_limits_leave_the_generation_retryable`
 
 An earlier focused selection of the crash-prefix and constraint-preserving
 updates cases passed in 559.86 seconds. That does not prove aggregate completion.
