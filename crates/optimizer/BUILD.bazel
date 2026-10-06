@@ -40,49 +40,50 @@ rust_test(
 )
 
 # Preserve the existing local campaign and golden labels across ownership moves.
-alias(
+# Forward tests through suites so Bazel runs both direct and aggregate labels.
+test_suite(
     name = "hawdb_optimizer_cardinality_metadata_fuzz_tests",
-    actual = "//crates/optimizer-graph:hawdb_optimizer_cardinality_metadata_fuzz_tests",
+    tests = ["//crates/optimizer-graph:hawdb_optimizer_cardinality_metadata_fuzz_tests"],
     tags = ["manual"],
 )
 
-alias(
+test_suite(
     name = "hawdb_optimizer_cardinality_defaults_fuzz_tests",
-    actual = "//crates/optimizer-graph:hawdb_optimizer_cardinality_defaults_fuzz_tests",
+    tests = ["//crates/optimizer-graph:hawdb_optimizer_cardinality_defaults_fuzz_tests"],
     tags = ["manual"],
 )
 
-alias(
+test_suite(
     name = "hawdb_optimizer_candidate_fingerprint_fuzz_tests",
-    actual = "//crates/optimizer-graph:hawdb_optimizer_candidate_fingerprint_fuzz_tests",
+    tests = ["//crates/optimizer-graph:hawdb_optimizer_candidate_fingerprint_fuzz_tests"],
     tags = ["manual"],
 )
 
-alias(
+test_suite(
     name = "hawdb_optimizer_trace_cost_fuzz_tests",
-    actual = "//crates/optimizer-graph:hawdb_optimizer_trace_cost_fuzz_tests",
+    tests = ["//crates/optimizer-graph:hawdb_optimizer_trace_cost_fuzz_tests"],
     tags = ["manual"],
 )
 
-alias(
+test_suite(
     name = "hawdb_optimizer_full_text_cost_fuzz_tests",
-    actual = "//crates/optimizer-graph:hawdb_optimizer_full_text_cost_fuzz_tests",
+    tests = ["//crates/optimizer-graph:hawdb_optimizer_full_text_cost_fuzz_tests"],
     tags = ["manual"],
 )
 
-alias(
+test_suite(
     name = "hawdb_optimizer_ddl_command_fuzz_tests",
-    actual = "//crates/optimizer-graph:hawdb_optimizer_ddl_command_fuzz_tests",
+    tests = ["//crates/optimizer-graph:hawdb_optimizer_ddl_command_fuzz_tests"],
     tags = ["manual"],
 )
 
-alias(
+test_suite(
     name = "hawdb_optimizer_access_cost_fuzz_tests",
-    actual = "//crates/optimizer-relational:hawdb_optimizer_access_cost_fuzz_tests",
+    tests = ["//crates/optimizer-relational:hawdb_optimizer_access_cost_fuzz_tests"],
     tags = ["manual"],
 )
 
-alias(
+test_suite(
     name = "planner_golden_test",
-    actual = "//crates/optimizer-graph:planner_golden_test",
+    tests = ["//crates/optimizer-graph:planner_golden_test"],
 )

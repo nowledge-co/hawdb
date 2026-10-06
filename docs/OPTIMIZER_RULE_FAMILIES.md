@@ -52,8 +52,9 @@ owner; graph's production library has no relational dependency.
 
 Every owner has Cargo and Bazel library/test targets and belongs to the canonical
 crate presubmit suite. Original `//crates/optimizer` golden and local fuzz labels
-remain aliases to the owning tests. Their full case selection, ignored-campaign
-admission and local-only policy are preserved. `hawdb-optimizer`'s presubmit
+forward through single-member test suites to the owning tests. Their full case
+selection, ignored-campaign admission and local-only policy are preserved. The
+`hawdb-optimizer` presubmit
 suite includes all four owner suites, so the historical aggregate still covers
 the moved tests.
 
