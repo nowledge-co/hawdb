@@ -97,14 +97,19 @@ project to reopen with a different descriptor limit.
 
 Each retry reserves fresh scan workspace and borrows the current project domain.
 Same-root creation retries up to four tickets, each for at most four batches of
-`STAGE_REMOVAL_BATCH_ENTRIES`. A full registry also triggers up to four rotating
-cross-root attempts under that operation's admission. The shared stage path covers
+`STAGE_REMOVAL_BATCH_ENTRIES`. A full registry fails admission without retrying
+other roots: unrelated work must not temporarily register a closed project's
+default FD domain and race reopening it with a different descriptor limit.
+Explicit maintenance selects the root to retry and must be coordinated with
+that project's reopen. The shared stage path covers
 admitted scheduled compaction and mutation validation. Idle tickets no longer
 hold work permits, so cleanup need not run before governor admission. Explicit
 maintenance remains available when memory admission itself is saturated.
 An advancing cursor prevents one persistently failing ticket from monopolizing
 bounded retry attempts. Reports distinguish descriptor denial, a bounded attempt
-that needs more work, and another blocking failure. Explicit
+that needs more work, and another blocking failure. Cancellation or workspace
+admission failure before cleanup propagates to the caller while preserving the
+ticket's previous disposition, evidence and reservations. Explicit
 retry accepts canonical, relative and symlink spellings of an existing root;
 inspection through its canonical or original absolute spelling needs no descriptor.
 

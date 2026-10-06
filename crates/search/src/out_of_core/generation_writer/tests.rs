@@ -24,6 +24,7 @@ use crate::{
 #[cfg(feature = "vector-search")]
 use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod compaction;
@@ -1345,13 +1346,15 @@ fn stage_directories(root: &Path) -> usize {
 }
 
 pub(super) fn test_dir(name: &str) -> PathBuf {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!(
-        "hawdb_search_{name}_{}_{}",
+        "hawdb_search_{name}_{}_{}_{}",
         std::process::id(),
-        nanos
+        nanos,
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ))
 }

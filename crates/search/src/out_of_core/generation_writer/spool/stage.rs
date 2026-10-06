@@ -141,15 +141,15 @@ pub(in crate::out_of_core) fn retry_staging_cleanup(
         return Ok(SearchStagingCleanupReport::default());
     }
     if exact {
-        retry_registered(Some(&root), max_attempts, usize::MAX, &memory, &task)
+        retry_registered(&root, max_attempts, usize::MAX, &memory, &task)
     } else {
         let root = OwnedPath::canonicalize(&root, &memory, &task)?;
-        retry_registered(Some(&root), max_attempts, usize::MAX, &memory, &task)
+        retry_registered(&root, max_attempts, usize::MAX, &memory, &task)
     }
 }
 
 fn retry_registered(
-    root: Option<&Path>,
+    root: &Path,
     max_attempts: usize,
     max_batches: usize,
     memory: &BuildMemory,
@@ -163,8 +163,7 @@ fn retry_registered(
             let mut owners = OWNERS.lock().unwrap_or_else(|error| error.into_inner());
             match &owners[index] {
                 Slot::Pending(ticket)
-                    if root.is_none_or(|root| ticket.matches_root(root))
-                        && report.attempted_stages < max_attempts =>
+                    if ticket.matches_root(root) && report.attempted_stages < max_attempts =>
                 {
                     match std::mem::replace(&mut owners[index], Slot::Active) {
                         Slot::Pending(ticket) => Some(ticket),
@@ -177,12 +176,23 @@ fn retry_registered(
         if let Some(mut ticket) = ticket {
             let registration = Registration { index };
             NEXT_RETRY.store((index + 1) % MAX_OWNERS, Ordering::Relaxed);
+            let workspace = (|| {
+                checkpoint(task)?;
+                memory
+                    .spool
+                    .reserve(directory::stage_removal_bytes(&ticket.path)?)
+            })();
+            let _workspace = match workspace {
+                Ok(workspace) => workspace,
+                Err(error) => {
+                    // Caller admission failed before touching the stage. Keep
+                    // its previous cleanup disposition and ownership intact.
+                    registration.retain(ticket);
+                    return Err(error);
+                }
+            };
             report.attempted_stages += 1;
             let result = (|| {
-                checkpoint(task)?;
-                let _workspace = memory
-                    .spool
-                    .reserve(directory::stage_removal_bytes(&ticket.path)?)?;
                 let _project = ProjectFileDescriptors::acquire_component(
                     ticket.path.parent().expect("registered stage parent"),
                     false,
@@ -204,7 +214,7 @@ fn retry_registered(
     let owners = OWNERS.lock().unwrap_or_else(|error| error.into_inner());
     for slot in owners.iter() {
         if let Slot::Pending(ticket) = slot
-            && root.is_none_or(|root| ticket.matches_root(root))
+            && ticket.matches_root(root)
         {
             report.pending_stages += 1;
             report.reserved_disk_bytes = report
@@ -302,22 +312,13 @@ impl StageDirectory {
         let project = ProjectFileDescriptors::acquire_component(&source_root, false)?;
         let root = OwnedPath::canonicalize(&source_root, memory, task)?;
         retry_registered(
-            Some(&root),
+            &root,
             AUTOMATIC_RETRY_STAGES,
             AUTOMATIC_CLEANUP_BATCHES,
             memory,
             task,
         )?;
-        let registration = Registration::acquire().or_else(|_| {
-            retry_registered(
-                None,
-                AUTOMATIC_RETRY_STAGES,
-                AUTOMATIC_CLEANUP_BATCHES,
-                memory,
-                task,
-            )?;
-            Registration::acquire()
-        })?;
+        let registration = Registration::acquire()?;
         for _ in 0..64 {
             checkpoint(task)?;
             let _name_memory = memory.retained.reserve(3 * 128)?;
@@ -439,6 +440,128 @@ impl Drop for StageDirectory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_admission_failure_preserves_cleanup_disposition() {
+        let root = crate::out_of_core::generation_writer::tests::test_dir("retry_admission");
+        fs::create_dir_all(&root).unwrap();
+        let project = ProjectFileDescriptors::acquire_existing(&root, 1).unwrap();
+        let task = RuntimeTaskContext::default();
+        let memory = BuildMemory::new(&task).unwrap();
+        let mut stage = StageDirectory::create(&root, &memory, &task).unwrap();
+        stage.reserve_disk(64);
+        let path = stage.path.to_path_buf();
+        fs::write(path.join("retained"), b"evidence").unwrap();
+        let held = File::create(root.join("held")).unwrap();
+        drop(stage);
+        drop(held);
+
+        for descriptor_denied in [true, false] {
+            if !descriptor_denied {
+                retry_registered(&root, 1, 0, &memory, &task).unwrap();
+            }
+            let before = retry_staging_cleanup(&root, 0).unwrap();
+            assert_eq!(before.descriptor_denials, usize::from(descriptor_denied));
+            assert_eq!(
+                before.progress_limited_stages,
+                usize::from(!descriptor_denied)
+            );
+            assert_eq!(before.blocked_stages, 0);
+            for cancelled in [true, false] {
+                let bytes = if cancelled { 8 * 1024 * 1024 } else { 1 };
+                let retry_task = RuntimeTaskContext::default()
+                    .with_memory_reservation(hawdb_core::RuntimeMemoryReservation::new(bytes, 0));
+                let retry_memory = BuildMemory::new(&retry_task).unwrap();
+                if cancelled {
+                    retry_task.cancellation().cancel();
+                }
+                assert!(retry_registered(&root, 1, 4, &retry_memory, &retry_task).is_err());
+                let after = retry_staging_cleanup(&root, 0).unwrap();
+                assert_eq!(after.pending_stages, 1);
+                assert_eq!(after.blocked_stages, 0);
+                assert_eq!(after.descriptor_denials, before.descriptor_denials);
+                assert_eq!(after.descriptor_error, before.descriptor_error);
+                assert_eq!(
+                    after.progress_limited_stages,
+                    before.progress_limited_stages
+                );
+                assert_eq!(after.retained_memory_bytes, before.retained_memory_bytes);
+                assert_eq!(after.reserved_disk_bytes, 64);
+                assert_eq!(fs::read(path.join("retained")).unwrap(), b"evidence");
+                assert_eq!(retry_memory.ledger.snapshot().used_bytes, 0);
+            }
+        }
+        assert_eq!(retry_staging_cleanup(&root, 1).unwrap().removed_stages, 1);
+        assert!(!path.exists());
+        assert_eq!(project.metrics().open, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn full_registry_does_not_retry_a_closed_foreign_project() {
+        const CHILD: &str = "HAWDB_STAGE_REGISTRY_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // Saturate the process-wide registry without affecting concurrent tests.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    concat!(
+                        module_path!(),
+                        "::full_registry_does_not_retry_a_closed_foreign_project"
+                    )
+                    .strip_prefix("hawdb_search::")
+                    .unwrap(),
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
+            return;
+        }
+        let root = crate::out_of_core::generation_writer::tests::test_dir("full_stage_registry");
+        let foreign = root.join("foreign");
+        let target = root.join("target");
+        fs::create_dir_all(&foreign).unwrap();
+        fs::create_dir(&target).unwrap();
+        let project = ProjectFileDescriptors::acquire_existing(&foreign, 1).unwrap();
+        let task = RuntimeTaskContext::default();
+        let memory = BuildMemory::new(&task).unwrap();
+        let stage = StageDirectory::create(&foreign, &memory, &task).unwrap();
+        let path = stage.path.to_path_buf();
+        fs::write(path.join("retained"), b"evidence").unwrap();
+        let held = File::create(foreign.join("held")).unwrap();
+        drop(stage);
+        drop(held);
+        drop(project);
+        let registrations = (0..MAX_OWNERS - 1)
+            .map(|_| Registration::acquire().unwrap())
+            .collect::<Vec<_>>();
+
+        let error = StageDirectory::create(&target, &memory, &task)
+            .err()
+            .unwrap();
+        assert!(error
+            .to_string()
+            .contains("cleanup owner capacity exhausted"));
+        assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+        assert_eq!(fs::read(path.join("retained")).unwrap(), b"evidence");
+        let reopened = ProjectFileDescriptors::acquire_existing(&foreign, 8).unwrap();
+        assert_eq!(
+            retry_staging_cleanup(&foreign, 1).unwrap().removed_stages,
+            1
+        );
+        assert_eq!(reopened.metrics().open, 0);
+        assert!(!path.exists());
+        drop(registrations);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn automatic_cleanup_bounds_each_attempt_and_preserves_remaining_ownership() {
