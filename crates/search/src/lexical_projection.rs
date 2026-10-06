@@ -43,6 +43,9 @@ mod block_encoding;
 use artifacts::ArtifactBuilder;
 mod build_manifest;
 mod document_frequency;
+pub(crate) mod retraction;
+pub(crate) mod source;
+pub(crate) use source::DocumentSource;
 mod documents;
 use documents::DocumentLookup;
 mod spill_control;
@@ -813,6 +816,13 @@ impl<'a> DocumentAnalysis<'a> {
         resident_bytes.saturating_add((terms as u64).saturating_mul(marker_bytes))
     }
 
+    fn tracked_map_bytes(&self, resident_bytes: u64, terms: usize) -> u64 {
+        self.required_map_bytes(resident_bytes, terms)
+            .saturating_add(
+                (terms as u64).saturating_mul((MAP_ENTRY_BYTES + Term::tracking_overhead()) as u64),
+            )
+    }
+
     fn into_frequencies(self) -> FrequencyEntries {
         FrequencyEntries {
             entries: self.frequencies.into_iter(),
@@ -893,6 +903,7 @@ impl LexicalCorpusStatistics {
 
     /// Subtract verified physical versions from the aggregate corpus. Stage the
     /// small query-term map so even a late invalid retraction changes no state.
+    #[cfg(test)]
     pub(super) fn retract_documents<'a>(
         &mut self,
         retractions: impl IntoIterator<Item = (u64, &'a [String])>,
@@ -927,6 +938,39 @@ impl LexicalCorpusStatistics {
         Ok(())
     }
 
+    pub(super) fn retract_streamed<'a>(
+        &mut self,
+        retractions: impl Iterator<Item = (u64, &'a crate::out_of_core::mutation_run::terms::Terms)>,
+    ) -> Result<()> {
+        let invalid = || HawDBError::Storage("invalid lexical corpus retraction".into());
+        let mut staged = self.clone();
+        for (length, terms) in retractions {
+            let count = staged.document_count.checked_sub(1).ok_or_else(invalid)?;
+            let total_len = staged
+                .total_document_len
+                .checked_sub(length)
+                .ok_or_else(invalid)?;
+            terms.visit(|term| {
+                if let Some(frequency) = staged.document_frequencies.get_mut(term) {
+                    *frequency = frequency.checked_sub(1).ok_or_else(invalid)?;
+                }
+                Ok(())
+            })?;
+            if staged
+                .document_frequencies
+                .values()
+                .any(|frequency| *frequency > count as u64)
+                || (count == 0 && total_len != 0)
+            {
+                return Err(invalid());
+            }
+            staged.document_count = count;
+            staged.total_document_len = total_len;
+        }
+        *self = staged;
+        Ok(())
+    }
+
     fn document_frequency(&self, term: &str) -> u64 {
         self.document_frequencies
             .get(term)
@@ -952,6 +996,7 @@ pub(super) struct LexicalProjectionReader {
 impl LexicalProjectionReader {
     /// Reconstruct a version's exact contribution with this reader's analyzer
     /// admission limits. Used before accepting an immutable mutation retraction.
+    #[cfg(test)]
     pub(super) fn document_retraction(
         &self,
         document: &SearchDocument,
@@ -962,68 +1007,6 @@ impl LexicalProjectionReader {
             u64::from(analyzed.document_len),
             analyzed.frequencies.into_keys().collect(),
         ))
-    }
-
-    pub(super) fn document_retraction_with_context(
-        &self,
-        document: &SearchDocument,
-        analyzer: &SearchAnalyzerLexicon,
-        memory: &BuildMemory,
-        task: &RuntimeTaskContext,
-        retained: &mut QueryMemoryLease,
-    ) -> Result<(u64, Vec<String>)> {
-        admit_document_source(document, self.config)?;
-        let mut analyze = |workspace: Option<&crate::analyzer_workspace::Workspace>| {
-            let mut accumulator =
-                DocumentAnalysis::new_with_memory(&document.id, self.config, Some(memory))?;
-            for (field, (text, weight)) in document_token_fields(document).enumerate() {
-                crate::analyzer_stream::visit_admitted_token_list(
-                    text,
-                    analyzer,
-                    crate::analyzer_stream::Control {
-                        memory: Some(memory),
-                        task: Some(task),
-                        workspace,
-                        checkpoint_throttle: None,
-                    },
-                    |term, occurrence| accumulator.push_term(term, occurrence, field as u8, weight),
-                )?;
-            }
-            let length = u64::from(accumulator.document_len);
-            let count = accumulator.frequencies.len();
-            retained.grow(crate::build_memory::checked_mul(
-                count,
-                std::mem::size_of::<String>(),
-            )?)?;
-            let mut terms = Vec::new();
-            terms.try_reserve_exact(count).map_err(|error| {
-                HawDBError::Execution(format!(
-                    "cannot allocate mutation retraction terms: {error}"
-                ))
-            })?;
-            if terms.capacity() > count {
-                return Err(HawDBError::Execution(
-                    "mutation retraction term slots exceed admission".into(),
-                ));
-            }
-            for (term, _) in accumulator.into_frequencies() {
-                crate::build_control::checkpoint(task)?;
-                retained.grow(term.len())?;
-                let owned = term.to_string();
-                if owned.capacity() > term.len() {
-                    return Err(HawDBError::Execution(
-                        "mutation retraction term exceeds admission".into(),
-                    ));
-                }
-                terms.push(owned);
-            }
-            Ok((length, terms))
-        };
-        if crate::analyzer_workspace::document_needs_workspace(document) {
-            crate::analyzer_workspace::run(memory, task, |workspace| analyze(Some(workspace)))
-        } else {
-            analyze(None)
-        }
     }
 
     pub(crate) fn document_id_bounds(&self) -> Option<(&str, &str)> {
@@ -2151,14 +2134,14 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn write_scanned(
+    pub(super) fn write_scanned<D: DocumentSource>(
         &self,
         root: &Path,
         generation: u64,
         source_graph_commit_epoch: Option<u64>,
         analyzer_digest: u64,
         documents_digest: u64,
-        scan: impl FnOnce(&mut dyn FnMut(u64, &SearchDocument) -> Result<()>) -> Result<()>,
+        scan: impl FnOnce(&mut dyn FnMut(u64, &D) -> Result<()>) -> Result<()>,
         analyzer: &SearchAnalyzerLexicon,
     ) -> Result<Arc<LexicalProjectionReader>> {
         let (memory, task) = self.context()?;
@@ -2179,7 +2162,8 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
         let mut document_count = 0u64;
         let mut total_document_len = 0u64;
         let mut previous_document_id = None::<String>;
-        let mut consume = |ordinal: u64, document: &SearchDocument| -> Result<()> {
+        let mut consume = |ordinal: u64, document: &D| -> Result<()> {
+            let document_id = document.id();
             if ordinal != document_count {
                 return Err(HawDBError::Storage(format!(
                     "lexical document ordinal {ordinal} does not follow {document_count}"
@@ -2190,7 +2174,7 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
             })?;
             if previous_document_id
                 .as_ref()
-                .is_some_and(|previous| previous >= &document.id)
+                .is_some_and(|previous| previous.as_str() >= document_id)
             {
                 return Err(HawDBError::Storage(
                     "lexical documents must have strictly increasing IDs".to_string(),
@@ -2210,15 +2194,17 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
             )?;
             let document_len = analyzed.document_len();
             document_count = next_document_count;
-            previous_document_id = Some(document.id.clone());
-            total_document_len = total_document_len.saturating_add(u64::from(document_len));
-            artifact.push_document(ordinal, &document.id, document_len)?;
+            previous_document_id = Some(document_id.to_string());
+            total_document_len = total_document_len
+                .checked_add(u64::from(document_len))
+                .ok_or_else(|| HawDBError::Storage("lexical corpus length overflow".into()))?;
+            artifact.push_document(ordinal, document_id, document_len)?;
             if let document_frequency::AnalyzedDocument::Spilled { run, .. } = analyzed {
                 chunk.flush(&mut runs)?;
                 document_frequency::spill_postings(run, ordinal, &mut runs)?;
             } else {
                 analyzed.visit(self.config, |term, term_frequency, retained| {
-                    runs.prepare(term.len(), document.id.len())?;
+                    runs.prepare(term.len(), document_id.len())?;
                     let bytes = Posting::resident_bytes(&term);
                     let posting_limit = self
                         .config

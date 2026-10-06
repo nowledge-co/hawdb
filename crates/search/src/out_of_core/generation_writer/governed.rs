@@ -36,7 +36,7 @@ use std::path::Path;
 /// governors.
 #[derive(Debug)]
 pub struct SearchGenerationAdmission {
-    permit: RuntimePermit,
+    permit: std::sync::Arc<RuntimePermit>,
 }
 
 impl SearchGenerationAdmission {
@@ -48,12 +48,29 @@ impl SearchGenerationAdmission {
         governor: &RuntimeGovernor,
         request: RuntimeWorkRequest,
     ) -> std::result::Result<Self, RuntimeAdmissionError> {
-        governor.try_admit(request).map(|permit| Self { permit })
+        governor.try_admit(request).map(|permit| Self {
+            permit: std::sync::Arc::new(permit),
+        })
     }
 
     /// Returns the exact request retained by this admission.
     pub fn request(&self) -> RuntimeWorkRequest {
         self.permit.request()
+    }
+
+    /// Verifies and stages one selected body while retaining shared admission
+    /// through the consumer's complete transfer and scratch-file closure.
+    pub fn open_verified_body<'reader>(
+        self,
+        reader: &'reader SearchOutOfCoreReader,
+        candidate: &crate::SearchOutOfCoreCandidate,
+        options: crate::SearchBodyReadOptions,
+        task: RuntimeTaskContext,
+    ) -> Result<crate::SearchVerifiedBody<'reader>> {
+        let task = self.permit.bind_task_context(task);
+        let mut body = reader.open_verified_body(candidate, options, task)?;
+        body._admission = Some(self);
+        Ok(body)
     }
 
     /// Creates a governed writer with a default task context.
@@ -73,12 +90,32 @@ impl SearchGenerationAdmission {
         task_context: RuntimeTaskContext,
     ) -> Result<GovernedSearchGenerationWriter> {
         let task_context = self.permit.bind_task_context(task_context);
-        let writer =
-            SearchOutOfCoreGenerationWriter::create_with_context(root, options, task_context)?;
+        let mut memory = crate::build_memory::BuildMemory::new(&task_context)?;
+        memory.host_admission = Some(self.permit.clone());
+        let options = super::context_memory::Options::new(options, &memory, &task_context)?;
+        let writer = SearchOutOfCoreGenerationWriter::create_with_memory(
+            root,
+            options,
+            task_context,
+            memory,
+        )?;
         Ok(GovernedSearchGenerationWriter {
             writer,
             admission: self,
         })
+    }
+
+    /// Starts an ordered streamed batch under this admission, including cleanup.
+    pub fn prepare_streamed_update<'reader>(
+        self,
+        reader: &'reader SearchOutOfCoreReader,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        task: RuntimeTaskContext,
+    ) -> Result<super::SearchOutOfCoreMutationWriter<'reader>> {
+        let task = self.permit.bind_task_context(task);
+        let mut memory = crate::build_memory::BuildMemory::new(&task)?;
+        memory.host_admission = Some(self.permit.clone());
+        super::mutations::SearchOutOfCoreMutationWriter::create(reader, options, task, memory)
     }
 
     /// Prepares a governed update with a default task context.
@@ -100,11 +137,14 @@ impl SearchGenerationAdmission {
         task_context: RuntimeTaskContext,
     ) -> Result<GovernedSearchGenerationUpdate> {
         let task_context = self.permit.bind_task_context(task_context);
-        let update = SearchOutOfCoreGenerationWriter::prepare_delta_with_context(
+        let mut memory = crate::build_memory::BuildMemory::new(&task_context)?;
+        memory.host_admission = Some(self.permit.clone());
+        let update = SearchOutOfCoreGenerationUpdate::prepare_with_memory(
             reader,
             delta,
             options,
             task_context,
+            memory,
         )?;
         Ok(GovernedSearchGenerationUpdate {
             update,
@@ -131,7 +171,8 @@ impl GovernedSearchGenerationWriter {
         &mut self.writer
     }
 
-    /// Finalizes the generation and releases its admission after all cleanup.
+    /// Finalizes the generation and releases admission after immediate cleanup.
+    /// Deferred debt keeps only its separately accounted metadata and disk limits.
     pub fn finish(self) -> Result<SearchOutOfCoreGenerationBuildReport> {
         let Self { writer, admission } = self;
         let result = writer.finish();
@@ -158,7 +199,8 @@ impl GovernedSearchGenerationUpdate {
         &mut self.update
     }
 
-    /// Finalizes the update and releases its admission after all cleanup.
+    /// Finalizes the update and releases admission after immediate cleanup.
+    /// Deferred debt keeps only its separately accounted metadata and disk limits.
     pub fn finish(
         self,
     ) -> Result<(

@@ -43,12 +43,13 @@ pub(super) fn visit(
 pub(super) fn visit_target(
     reader: &SearchOutOfCoreReader,
     id: &str,
+    stage: &std::path::Path,
     memory: &BuildMemory,
     task: &RuntimeTaskContext,
     consumer: &mut dyn FnMut(
         u64,
         &crate::lexical_projection::LexicalProjectionReader,
-        AdmittedDocument,
+        crate::out_of_core::hydration::source::Source,
     ) -> Result<()>,
 ) -> Result<SearchOutOfCoreMetrics> {
     checkpoint(task)?;
@@ -60,45 +61,42 @@ pub(super) fn visit_target(
         .segment
         .payload_range
         .ok_or_else(|| invalid("segment has no payload range"))?;
-    let mut found = false;
-    let peak = read_segment(
-        RangeReader {
-            file: &artifact.payload,
-            offset: range.offset,
-            remaining: range.length,
-        },
-        range.length,
-        range.checksum,
-        route.segment,
-        reader.config.max_uncompressed_segment_bytes.get(),
+    let path = crate::build_memory::path::OwnedPath::join(
+        stage,
+        std::path::Path::new("mutation-source.body"),
         memory,
         task,
-        &mut |document| {
-            if document.id == id {
-                if found {
-                    return Err(invalid("duplicate mutation target document"));
-                }
-                found = true;
-                consumer(
-                    artifact.content_segment_id,
-                    &artifact.lexical_projection,
-                    document,
-                )?;
-            }
-            Ok(())
-        },
     )?;
-    if !found {
-        return Err(invalid(
-            "mutation target disappeared from its content range",
-        ));
-    }
+    let file = hawdb_storage::file_io::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&*path)?;
+    let source = crate::out_of_core::hydration::source::Source::capture(
+        artifact,
+        route.segment,
+        id,
+        file,
+        (
+            reader.config.max_uncompressed_segment_bytes.get(),
+            reader.config.max_document_header_bytes.get(),
+        ),
+        memory,
+        task,
+    )?;
+    let body_bytes = source.bytes;
+    consumer(
+        artifact.content_segment_id,
+        &artifact.lexical_projection,
+        source,
+    )?;
     Ok(SearchOutOfCoreMetrics {
+        streamed_documents: 1,
+        streamed_body_bytes: body_bytes,
         segment_range_reads: 1,
         segment_bytes_read: range.length,
         hydration_segment_bytes_read: range.length,
-        peak_segment_document_bytes: peak,
-        hydrated_documents: 1,
         lexical_document_bytes_read: route.lexical_document_bytes_read,
         ..Default::default()
     })

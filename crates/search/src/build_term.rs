@@ -40,6 +40,10 @@ struct Payload<M = QueryMemoryLease> {
 }
 
 impl Term {
+    pub(crate) const fn tracking_overhead() -> usize {
+        size_of::<Payload>() + 2 * size_of::<usize>()
+    }
+
     // Legacy and independently admitted copies must opt in explicitly. Keep
     // infallible conversions out of production budget-tracked call sites.
     pub(crate) fn untracked(text: String) -> Self {
@@ -58,7 +62,7 @@ impl Term {
         let Some(memory) = memory else {
             return Ok(Self(Value::Untracked(build())));
         };
-        let header = size_of::<Payload>() + 2 * size_of::<usize>();
+        let header = Self::tracking_overhead();
         let mut lease = memory.retained.reserve(checked_add(capacity, header)?)?;
         let text = build();
         if text.capacity() > capacity {

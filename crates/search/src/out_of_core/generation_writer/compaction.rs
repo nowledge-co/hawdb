@@ -16,13 +16,12 @@
 
 use super::{
     context_memory::Options,
-    delta::hydration,
     publication::{ActiveManifestUpdate, CompactionMutationRewrite},
     SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationBuildReport,
     SearchOutOfCoreGenerationWriter,
 };
 use crate::build_control::checkpoint;
-use crate::build_memory::{checked_add, checked_mul, reserve_capacity, BuildMemory};
+use crate::build_memory::{checked_add, reserve_capacity, BuildMemory};
 use crate::error::{HawDBError, Result};
 use crate::{SearchOutOfCoreMetrics, SearchOutOfCoreReader};
 use hawdb_core::{RuntimeCapability, RuntimeTaskContext};
@@ -31,6 +30,8 @@ use hawdb_qos::{
     WorkClass,
 };
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+
+mod streaming;
 
 /// Selection limits for one immutable out-of-core segment compaction.
 ///
@@ -359,6 +360,10 @@ pub(super) fn prepare(
         memory.clone(),
     )?;
     writer.set_lexical_term_policy(reader.lexical_term_policy());
+    writer.set_lexical_source_policy(reader.lexical_source_policy());
+    writer
+        .stage
+        .reserve_additional_disk(reader.config.max_uncompressed_segment_bytes.get())?;
     writer.set_max_lexical_manifest_bytes(reader.config().max_lexical_manifest_bytes)?;
     // Keep dimension-only identity even when this batch has no vectors.
     writer.embedding_dimension = reader.manifest.embedding_dimension;
@@ -374,23 +379,8 @@ pub(super) fn prepare(
         mutation_rewrite,
     });
     let task_context = writer.task_context.clone();
-    let source_read_metrics = hydration::visit_range_with_segment(
-        reader,
-        selection.start,
-        selection.end,
-        &memory,
-        &task_context,
-        &mut |content_segment_id, document| {
-            if reader
-                .visibility
-                .is_visible(content_segment_id, &document.id)
-            {
-                writer.push_inner(document)
-            } else {
-                Ok(())
-            }
-        },
-    )?;
+    let source_read_metrics =
+        streaming::copy(reader, &selection, &mut writer, &memory, &task_context)?;
     Ok(Some(SearchOutOfCoreSegmentCompaction {
         writer,
         source_segment_count: selection.end - selection.start,
@@ -536,26 +526,13 @@ fn prepare_mutation_rewrite(
     reserve_capacity(&mut entries, retained_entries().count(), &mut lease)?;
     for entry in retained_entries() {
         checkpoint(task)?;
-        let terms = &entry.retraction.unique_terms;
-        let mut bytes = checked_add(
+        lease.grow(checked_add(
             entry.document_id.len(),
-            checked_mul(terms.len(), std::mem::size_of::<String>())?,
-        )?;
-        for term in terms {
-            checkpoint(task)?;
-            bytes = checked_add(bytes, term.len())?;
-        }
-        lease.grow(bytes)?;
+            usize::try_from(entry.retraction.unique_terms.retained_bytes()?)
+                .map_err(|_| HawDBError::Storage("retained mutation size exceeds usize".into()))?,
+        )?)?;
         let owned = entry.clone();
-        if owned.document_id.capacity() > entry.document_id.len()
-            || owned.retraction.unique_terms.capacity() > terms.len()
-            || owned
-                .retraction
-                .unique_terms
-                .iter()
-                .zip(terms)
-                .any(|(copy, source)| copy.capacity() > source.len())
-        {
+        if owned.document_id.capacity() > entry.document_id.len() {
             return Err(HawDBError::Execution(
                 "compaction mutation entries exceed admission".into(),
             ));

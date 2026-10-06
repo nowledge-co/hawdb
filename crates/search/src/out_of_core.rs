@@ -56,7 +56,9 @@ mod generation_writer;
 #[cfg(test)]
 pub(crate) use generation_writer::analyzer_read_evidence;
 mod hydration;
-mod mutation_run;
+mod verified_body;
+pub use verified_body::{SearchBodyReadOptions, SearchVerifiedBody};
+pub(crate) mod mutation_run;
 mod publish_lease;
 mod vector_serving;
 pub use generation_writer::{
@@ -64,8 +66,9 @@ pub use generation_writer::{
     ScheduledSearchOutOfCoreSegmentCompactionReport, SearchGenerationAdmission,
     SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationBuildReport,
     SearchOutOfCoreGenerationUpdate, SearchOutOfCoreGenerationWriter,
-    SearchOutOfCoreSegmentCompaction, SearchOutOfCoreSegmentCompactionPolicy,
-    SearchOutOfCoreSegmentCompactionReport, SearchOutOfCoreSegmentCompactionStopReason,
+    SearchOutOfCoreMutationWriter, SearchOutOfCoreSegmentCompaction,
+    SearchOutOfCoreSegmentCompactionPolicy, SearchOutOfCoreSegmentCompactionReport,
+    SearchOutOfCoreSegmentCompactionStopReason, SearchStagingCleanupReport,
 };
 pub(super) use publish_lease::SearchProjectionPublishLease;
 #[cfg(feature = "vector-search")]
@@ -90,6 +93,12 @@ pub struct SearchOutOfCoreConfig {
     /// Aggregate mutation-run buffers, decoded ownership and validation indexes.
     /// Content artifacts and one-target hydration/analysis use their own limits.
     pub max_mutation_working_bytes: NonZeroU64,
+    /// Total transient memory available for exact old-version reanalysis.
+    pub max_reanalysis_working_bytes: NonZeroU64,
+    /// External frequency-run bytes admitted during old-version reanalysis.
+    pub max_reanalysis_spill_bytes: NonZeroU64,
+    /// Bounded resident document header during streaming body operations.
+    pub max_document_header_bytes: NonZeroUsize,
     /// Caller-selected encoded lexical manifest limit, including private decoding.
     /// Prepared generation updates inherit this limit and require it to fit `isize`.
     pub max_lexical_manifest_bytes: NonZeroU64,
@@ -114,6 +123,9 @@ impl Default for SearchOutOfCoreConfig {
             max_descriptor_bytes: NonZeroU64::new(256 * 1024 * 1024).unwrap(),
             max_mutation_run_bytes: NonZeroU64::new(64 * 1024 * 1024).unwrap(),
             max_mutation_working_bytes: NonZeroU64::new(128 * 1024 * 1024).unwrap(),
+            max_reanalysis_working_bytes: NonZeroU64::new(128 * 1024 * 1024).unwrap(),
+            max_reanalysis_spill_bytes: NonZeroU64::new(4 * 1024 * 1024 * 1024).unwrap(),
+            max_document_header_bytes: NonZeroUsize::new(1024 * 1024).unwrap(),
             max_lexical_manifest_bytes: NonZeroU64::new(DEFAULT_MAX_MANIFEST_BYTES).unwrap(),
             max_candidate_spill_bytes: NonZeroU64::new(4 * 1024 * 1024 * 1024).unwrap(),
             max_candidate_block_bytes: NonZeroU64::new(16 * 1024 * 1024).unwrap(),
@@ -147,6 +159,9 @@ pub struct SearchOutOfCoreMetrics {
     pub candidate_bytes_read: u64,
     pub vector_bytes_read: u64,
     pub rabitq_payload_bytes_read: u64,
+    /// Bodies processed through bounded staging without owned materialization.
+    pub streamed_documents: usize,
+    pub streamed_body_bytes: u64,
     pub hydrated_documents: usize,
     pub hydrated_bytes: u64,
 }
@@ -158,9 +173,20 @@ struct SearchDocumentSegmentRoute<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct SearchOutOfCoreOutput {
-    pub result: SearchResultSet,
+pub struct SearchOutOfCoreOutput<H = SearchHit> {
+    pub result: SearchResultSet<H>,
     pub metrics: SearchOutOfCoreMetrics,
+}
+
+/// A ranked hit bound to this reader's immutable content version.
+///
+/// No body or matched spans are loaded. Keep the originating reader alive for
+/// subsequent version-specific reads; this value alone does not retain a pin.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchOutOfCoreCandidate {
+    pub scores: SearchScoredCandidate,
+    pub generation: u64,
+    pub content_segment_id: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -357,10 +383,16 @@ struct SearchVectorDocument {
 }
 
 #[derive(Clone, Copy)]
-struct SearchOutOfCoreExecutionContext<'a> {
-    access_control: Option<&'a SearchAccessControlContext>,
-    compressed_vector_search_mode: CompressedVectorSearchMode,
-    vector_execution_options: VectorSearchExecutionOptions<'a>,
+pub struct SearchOutOfCoreExecutionContext<'a> {
+    pub access_control: Option<&'a SearchAccessControlContext>,
+    pub compressed_vector_search_mode: CompressedVectorSearchMode,
+    pub vector_execution_options: VectorSearchExecutionOptions<'a>,
+}
+
+impl Default for SearchOutOfCoreExecutionContext<'_> {
+    fn default() -> Self {
+        Self::scalar()
+    }
 }
 
 impl SearchOutOfCoreExecutionContext<'_> {
@@ -776,6 +808,8 @@ impl SearchOutOfCoreSegmentReader {
             max_manifest_bytes: config.max_lexical_manifest_bytes,
             max_term_bytes: lexical_term_policy.max_term_bytes(),
             max_document_source_bytes: lexical_source_policy.max_document_source_bytes(),
+            max_document_tokens: lexical_source_policy.max_document_tokens(),
+            max_spill_bytes: config.max_reanalysis_spill_bytes,
             max_query_score_entries: config.max_score_entries,
             ..LexicalProjectionConfig::default()
         };
@@ -864,7 +898,7 @@ impl SearchOutOfCoreReader {
         )
     }
 
-    /// Opens a generation with an explicit source admission for later updates.
+    /// Opens with explicit source admission for target reanalysis and later updates.
     pub fn open_with_source_policy(
         path: impl AsRef<Path>,
         config: SearchOutOfCoreConfig,
@@ -882,8 +916,8 @@ impl SearchOutOfCoreReader {
 
     /// Opens a generation with explicit host-selected lexical policies.
     ///
-    /// Source admission governs subsequent writes only; it is never read from
-    /// the artifact, so an artifact cannot widen host input policy.
+    /// Source admission governs old-version reanalysis, compaction and subsequent
+    /// writes. It is never widened from an artifact declaration.
     pub fn open_with_lexical_policies(
         path: impl AsRef<Path>,
         config: SearchOutOfCoreConfig,
@@ -1349,6 +1383,64 @@ impl SearchOutOfCoreReader {
         Ok(metrics)
     }
 
+    /// Scores and filters through the same path as full hits, without body hydration.
+    pub fn search_candidates_with_options(
+        &self,
+        query_text: &str,
+        query_embedding: Option<&[f32]>,
+        mode: SearchMode,
+        options: SearchQueryOptions,
+    ) -> Result<SearchOutOfCoreOutput<SearchOutOfCoreCandidate>> {
+        self.search_candidates_with_context(
+            query_text,
+            query_embedding,
+            mode,
+            options,
+            Default::default(),
+        )
+    }
+
+    /// Selects candidate output with the same ACL and vector execution controls.
+    pub fn search_candidates_with_context(
+        &self,
+        query_text: &str,
+        query_embedding: Option<&[f32]>,
+        mode: SearchMode,
+        options: SearchQueryOptions,
+        execution: SearchOutOfCoreExecutionContext<'_>,
+    ) -> Result<SearchOutOfCoreOutput<SearchOutOfCoreCandidate>> {
+        self.search_with_materializer(
+            query_text,
+            query_embedding,
+            mode,
+            options,
+            execution,
+            |candidates, _context, metrics| {
+                candidates
+                    .iter()
+                    .map(|candidate| {
+                        let route = self.segment_for_document(&candidate.id)?.ok_or_else(|| {
+                            HawDBError::Storage(
+                                "ranked candidate has no visible content version".into(),
+                            )
+                        })?;
+                        metrics.lexical_document_bytes_read = metrics
+                            .lexical_document_bytes_read
+                            .saturating_add(route.lexical_document_bytes_read);
+                        metrics.lexical_document_block_reads =
+                            metrics.lexical_document_block_reads.saturating_add(1);
+                        Ok(SearchOutOfCoreCandidate {
+                            scores: candidate.clone(),
+                            generation: self.manifest.generation,
+                            content_segment_id: self.segments[route.artifact_index]
+                                .content_segment_id,
+                        })
+                    })
+                    .collect()
+            },
+        )
+    }
+
     fn search_with_options_internal(
         &self,
         query_text: &str,
@@ -1357,6 +1449,35 @@ impl SearchOutOfCoreReader {
         options: SearchQueryOptions,
         execution: SearchOutOfCoreExecutionContext<'_>,
     ) -> Result<SearchOutOfCoreOutput> {
+        if options.limit > self.config.max_hydrated_documents.get() {
+            return Err(HawDBError::Storage(format!(
+                "search hydration requested {} documents, exceeding {}",
+                options.limit, self.config.max_hydrated_documents
+            )));
+        }
+        self.search_with_materializer(
+            query_text,
+            query_embedding,
+            mode,
+            options,
+            execution,
+            |candidates, context, metrics| self.hydrate_hits(candidates, context, metrics),
+        )
+    }
+
+    fn search_with_materializer<H>(
+        &self,
+        query_text: &str,
+        query_embedding: Option<&[f32]>,
+        mode: SearchMode,
+        options: SearchQueryOptions,
+        execution: SearchOutOfCoreExecutionContext<'_>,
+        materialize: impl FnOnce(
+            &[SearchScoredCandidate],
+            HitHydrationContext<'_>,
+            &mut SearchOutOfCoreMetrics,
+        ) -> Result<Vec<H>>,
+    ) -> Result<SearchOutOfCoreOutput<H>> {
         let SearchOutOfCoreExecutionContext {
             access_control,
             compressed_vector_search_mode,
@@ -1381,12 +1502,6 @@ impl SearchOutOfCoreReader {
             return Err(HawDBError::Storage(format!(
                 "search page window requires {page_score_limit} score entries, exceeding {}",
                 self.config.max_score_entries
-            )));
-        }
-        if options.limit > self.config.max_hydrated_documents.get() {
-            return Err(HawDBError::Storage(format!(
-                "search hydration requested {} documents, exceeding {}",
-                options.limit, self.config.max_hydrated_documents
             )));
         }
         if options
@@ -1499,11 +1614,11 @@ impl SearchOutOfCoreReader {
                     self.lexical_term_policy.max_term_bytes(),
                 )?;
                 if !self.visibility.is_empty() {
-                    lexical_statistics.retract_documents(self.visibility.retractions().map(
+                    lexical_statistics.retract_streamed(self.visibility.retractions().map(
                         |entry| {
                             (
                                 entry.retraction.lexical_document_len,
-                                entry.retraction.unique_terms.as_slice(),
+                                &entry.retraction.unique_terms,
                             )
                         },
                     ))?;
@@ -1799,7 +1914,7 @@ impl SearchOutOfCoreReader {
             fallback_reasons: &fallback_reasons,
             projection_freshness: &projection_freshness,
         };
-        let hits = self.hydrate_hits(&page_candidates, hydration, &mut metrics)?;
+        let hits = materialize(&page_candidates, hydration, &mut metrics)?;
 
         let truncation_reasons = if truncated && options.offset > 0 {
             vec![format!(
@@ -2541,7 +2656,14 @@ fn load_artifact_closure(
         )?);
     }
     mutation_run::validate_closure(&manifest, &mutation_runs)?;
-    mutation_run::validate_targets(&segments, &mutation_runs, config, analyzer_lexicon)?;
+    mutation_run::validate_targets(
+        root,
+        &segments,
+        &mutation_runs,
+        config,
+        analyzer_lexicon,
+        lexical_source_policy,
+    )?;
     Ok((
         manifest,
         segments,
@@ -3701,9 +3823,15 @@ mod tests {
         static TEST_PROJECTS: std::cell::RefCell<Vec<hawdb_storage::file_descriptors::ProjectFileDescriptors>> = const { std::cell::RefCell::new(Vec::new()) };
     }
 
-    fn test_dir(name: &str) -> PathBuf {
+    pub(super) fn test_temp_dir() -> PathBuf {
+        // Bazel sandboxes can reuse PIDs while sharing the host TMPDIR.
+        // Use the per-action directory to keep fixture names independent.
+        std::env::var_os("TEST_TMPDIR").map_or_else(std::env::temp_dir, PathBuf::from)
+    }
+
+    pub(super) fn test_dir(name: &str) -> PathBuf {
         let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
+        let path = test_temp_dir().join(format!(
             "hawdb-search-out-of-core-{name}-{}-{sequence}",
             std::process::id()
         ));
@@ -3716,7 +3844,7 @@ mod tests {
         path
     }
 
-    fn options(limit: usize, rank_window: Option<usize>) -> SearchQueryOptions {
+    pub(super) fn options(limit: usize, rank_window: Option<usize>) -> SearchQueryOptions {
         SearchQueryOptions {
             limit,
             offset: 0,
@@ -4703,14 +4831,14 @@ mod tests {
         };
         let mut reader = mutation_reader_for_test(&path);
         reader.config.max_mutation_run_bytes = NonZeroU64::MIN;
-        let update =
-            SearchOutOfCoreGenerationWriter::prepare_delta(&reader, delta(), Default::default())
-                .unwrap();
-        assert!(update
-            .finish()
-            .unwrap_err()
-            .to_string()
-            .contains("search mutation run requires"));
+        assert!(SearchOutOfCoreGenerationWriter::prepare_delta(
+            &reader,
+            delta(),
+            Default::default()
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("mutation term spill exceeds byte admission"));
         assert_eq!(
             fs::read(path.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
             before
@@ -4815,7 +4943,8 @@ mod tests {
         let update = prepare(&reader);
         let stale = prepare(&reader);
         assert_eq!(update.delta_report().deleted_documents, 1);
-        assert_eq!(update.source_read_metrics().hydrated_documents, 1);
+        assert_eq!(update.source_read_metrics().hydrated_documents, 0);
+        assert_eq!(update.source_read_metrics().streamed_documents, 1);
         let (_, build, _) = update.finish().unwrap();
         assert_eq!(build.document_count, 1);
         assert_eq!(build.document_payload_bytes, 0);
@@ -5464,10 +5593,14 @@ mod tests {
                 "digest" => entry.retraction.documents_digest ^= 1,
                 "length" => entry.retraction.lexical_document_len += 1,
                 "missing_term" => {
-                    entry.retraction.unique_terms.pop().unwrap();
+                    entry.retraction.unique_terms.owned_mut().pop().unwrap();
                 }
                 "extra_term" => {
-                    entry.retraction.unique_terms.push("zzzzzz".into());
+                    entry
+                        .retraction
+                        .unique_terms
+                        .owned_mut()
+                        .push("zzzzzz".into());
                 }
                 _ => unreachable!(),
             });
@@ -5576,7 +5709,7 @@ mod tests {
                 if stopwords { 8 } else { 9 }
             );
             assert_eq!(
-                retraction.unique_terms,
+                retraction.unique_terms.to_vec(),
                 if stopwords {
                     vec!["graph", "graph_graph", "memory_graph"]
                 } else {
@@ -5613,17 +5746,25 @@ mod tests {
     }
 
     #[test]
-    fn out_of_core_mutation_target_validation_obeys_hydration_budget() {
+    fn out_of_core_mutation_target_validation_uses_reanalysis_budget() {
         let path = test_dir("mutation-target-hydration-budget");
         let document = document(0, "team");
         let mut index = SearchIndex::open(&path).unwrap();
         index.upsert(document.clone()).unwrap();
         index.checkpoint().unwrap();
         install_delete_mutation_run(&path, &document, 0, 2);
+        SearchOutOfCoreReader::open_with_config(
+            &path,
+            SearchOutOfCoreConfig {
+                max_hydrated_bytes: NonZeroU64::MIN,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let error = load_artifact_closure(
             &path,
             &SearchOutOfCoreConfig {
-                max_hydrated_bytes: NonZeroU64::new(1).unwrap(),
+                max_reanalysis_working_bytes: NonZeroU64::MIN,
                 ..SearchOutOfCoreConfig::default()
             },
             &SearchAnalyzerLexicon::default(),
@@ -5631,7 +5772,7 @@ mod tests {
             SearchLexicalSourcePolicy::default(),
         )
         .unwrap_err();
-        assert!(error.to_string().contains("exceeding 1"), "{error}");
+        assert!(error.to_string().contains("memory"), "{error}");
         fs::remove_dir_all(path).unwrap();
     }
 

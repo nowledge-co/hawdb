@@ -121,6 +121,8 @@ rust_library(
 
 rust_test(
     name = "hawdb_search_tests",
+    # Streamed document lifecycle coverage includes 128 MiB fixtures.
+    timeout = "long",
     crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
@@ -459,6 +461,7 @@ rust_test(
 [
     rust_test(
         name = "hawdb_search_%s_tests" % profile,
+        timeout = "long" if "full-text-search" in features else "moderate",
         crate_name = "hawdb_search",
         crate_root = "src/lib.rs",
         crate_features = features,

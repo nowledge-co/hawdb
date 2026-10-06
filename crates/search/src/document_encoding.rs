@@ -16,6 +16,8 @@ use crate::{HawDBError, Result, SearchDocument};
 use std::fmt::{self, Write};
 use std::io;
 
+mod header;
+pub(crate) use header::{Header, HeaderSource, RecordSource};
 mod segment;
 pub(super) use segment::{SegmentEncoding, SegmentKind};
 mod descriptor;
@@ -149,16 +151,28 @@ impl DocumentSink for EncodedLength {
 }
 
 fn write_document(sink: &mut impl DocumentSink, document: &SearchDocument) -> fmt::Result {
-    sink.write_str("doc\t")?;
-    sink.write_hex(&document.id)?;
-    sink.write_char('\t')?;
-    sink.write_hex(&document.title)?;
-    sink.write_char('\t')?;
+    write_document_prefix(sink, &document.id, &document.title)?;
     sink.write_hex(&document.content)?;
+    write_document_suffix(sink, document.embedding.as_deref(), &document.metadata)
+}
+
+fn write_document_prefix(sink: &mut impl DocumentSink, id: &str, title: &str) -> fmt::Result {
+    sink.write_str("doc\t")?;
+    sink.write_hex(id)?;
     sink.write_char('\t')?;
-    write_embedding(sink, document.embedding.as_deref())?;
+    sink.write_hex(title)?;
+    sink.write_char('\t')
+}
+
+fn write_document_suffix(
+    sink: &mut impl DocumentSink,
+    embedding: Option<&[f32]>,
+    metadata: &std::collections::BTreeMap<String, String>,
+) -> fmt::Result {
     sink.write_char('\t')?;
-    write_metadata(sink, &document.metadata)?;
+    write_embedding(sink, embedding)?;
+    sink.write_char('\t')?;
+    write_metadata(sink, metadata)?;
     sink.write_char('\n')
 }
 
@@ -273,3 +287,5 @@ pub(crate) use tests::legacy_encode;
 
 #[cfg(test)]
 mod io_tests;
+
+pub(crate) mod streamed;

@@ -117,6 +117,7 @@ impl Options {
 
     pub(super) fn set_lexical_source_policy(&mut self, policy: SearchLexicalSourcePolicy) {
         self.value.lexical_max_document_source_bytes = policy.max_document_source_bytes();
+        self.value.lexical_max_document_tokens = policy.max_document_tokens();
     }
 }
 

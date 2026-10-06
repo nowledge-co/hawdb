@@ -173,7 +173,7 @@ fn complete_lazy_state_space_stays_below_cache_clear_and_fallback_thresholds() {
 fn source_dimensions_and_overflow_fail_closed() {
     assert!(invocation(4, 5).is_none());
     assert!(invocation(usize::MAX, usize::MAX).is_none());
-    assert!(hmm_retained(usize::MAX).is_none());
+    assert!(scratch_retained(usize::MAX).is_none());
     assert!(invocation(0, 0).is_some());
 }
 
