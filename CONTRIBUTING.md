@@ -134,6 +134,15 @@ dependencies, and the default Bazel configuration. The [README](README.md#buildi
 documents the build and feature surfaces. Register new tests in the appropriate
 existing Cargo/Bazel target; a source file alone does not prove test discovery.
 
+Keep action/disk caches and repository caches in disjoint directories. Bazel's
+[disk-cache garbage collector](https://github.com/bazelbuild/bazel/blob/9.2.0/src/main/java/com/google/devtools/build/lib/remote/disk/DiskCacheGarbageCollector.java)
+recursively scans its root; sharing that root with `--repository_cache` can
+delete extracted dependency sources whose archive timestamps exceed the GC age.
+Repeatedly fetching a missing `rules_rust` BUILD file cannot repair that layout.
+Separate the cache roots first, then refetch the affected repositories; preserve
+complete content-addressed downloads when possible. Do not work around missing
+dependencies by changing rule versions, skipping checks or extending timeouts.
+
 Choose coverage by the behavior changed:
 
 | Change | Relevant coverage |

@@ -85,6 +85,33 @@ impl File {
             .open(path)
     }
 
+    /// Creates an anonymous, counted scratch file in the requested filesystem.
+    ///
+    /// No directory entry exists, including after an error, process exit, or
+    /// cancellation. Filesystems/platforms without anonymous-file support return
+    /// an explicit error; there is no named or uncounted fallback.
+    #[doc(hidden)]
+    pub fn anonymous(directory: &Path) -> io::Result<Self> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(libc::O_TMPFILE | libc::O_EXCL)
+                .mode(0o600)
+                .open(directory)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = directory;
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "anonymous scratch files are not supported on this platform",
+            ))
+        }
+    }
+
     pub fn try_clone(&self) -> io::Result<Self> {
         let backing = match &self.backing {
             FileBacking::Immutable(file) => FileBacking::Immutable(file.clone()),

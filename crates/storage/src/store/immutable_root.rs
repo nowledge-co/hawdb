@@ -101,6 +101,9 @@ pub struct PreparedImmutableRootHandoff {
     pub root: SealedRoot,
     pub rotation: PreparedWalRotation,
     pub immutable_store_root: PathBuf,
+    // A prepared candidate can outlive the exclusive borrow of its writer.
+    // Keep maintenance from treating that writer as the only reachability pin.
+    _source_lease: Option<Arc<DatabaseDirectoryLease>>,
 }
 
 /// Inputs to storage-owned branch admission or closed-source sealing.
@@ -216,6 +219,43 @@ impl std::error::Error for BranchAdmissionError {
 }
 
 impl GraphStore {
+    /// Reclaims unreachable project objects while retaining this writable
+    /// runtime. Shared snapshots and prepared handoffs defer the sweep.
+    #[doc(hidden)]
+    pub fn reclaim_branch_storage(
+        &mut self,
+        limits: crate::branch_reclamation::BranchReclamationLimits,
+    ) -> Result<crate::branch_reclamation::BranchReclamationReport> {
+        limits.validate()?;
+        self.ensure_usable()?;
+        let durable = self.durable.as_ref().ok_or_else(|| {
+            HawDBError::Storage("branch reclamation requires persistent storage".into())
+        })?;
+        if durable.read_only {
+            return Err(HawDBError::Storage(
+                "read-only storage cannot reclaim branch objects".into(),
+            ));
+        }
+        let branch = durable.branch_runtime.as_ref().ok_or_else(|| {
+            HawDBError::Storage("branch reclamation requires an admitted project".into())
+        })?;
+        let lease = self.branch_lease.as_mut().ok_or_else(|| {
+            HawDBError::StorageIntegrity("admitted branch has no ownership lease".into())
+        })?;
+        // get_mut also excludes Weak owners that could acquire another pin.
+        // No snapshot can be created concurrently through this &mut receiver.
+        let Some(owner) = Arc::get_mut(lease) else {
+            return Ok(crate::branch_reclamation::BranchReclamationReport::deferred());
+        };
+        crate::branch_reclamation::reclaim_owned_project(
+            &branch.catalog_path,
+            &branch.immutable_store_root,
+            owner,
+            &branch.head,
+            limits,
+        )
+    }
+
     #[doc(hidden)]
     pub fn reserve_project_branch_admission_resources(
         files: &crate::file_descriptors::ProjectFileDescriptors,
@@ -313,7 +353,11 @@ impl GraphStore {
             || root.checkpoint_epoch != self.commit_epoch
             || durable.checkpoint_commit_epoch != self.commit_epoch
             || root.durable_manifest
-                != ObjectReference::for_bytes(ObjectKind::DurableManifest, 1, &manifest_bytes)
+                != ObjectReference::for_bytes(
+                    ObjectKind::DurableManifest,
+                    ObjectKind::DurableManifest.current_format_version(),
+                    &manifest_bytes,
+                )
             || !root.sealed_wals.is_empty()
         {
             return Err(HawDBError::StorageIntegrity(
@@ -1006,6 +1050,7 @@ impl GraphStore {
             root,
             rotation,
             immutable_store_root,
+            _source_lease: self.branch_lease.clone(),
         })
     }
 
@@ -1730,8 +1775,11 @@ fn publish_sealed_root(
         DurableManifest::decode(std::str::from_utf8(&manifest_bytes).map_err(|error| {
             HawDBError::Storage(format!("decode durable manifest bytes: {error}"))
         })?)?;
-    let durable_manifest =
-        ObjectReference::for_bytes(ObjectKind::DurableManifest, 1, &manifest_bytes);
+    let durable_manifest = ObjectReference::for_bytes(
+        ObjectKind::DurableManifest,
+        ObjectKind::DurableManifest.current_format_version(),
+        &manifest_bytes,
+    );
     objects
         .publish(durable_manifest, &manifest_bytes)
         .map_err(HawDBError::from_storage_error)?;

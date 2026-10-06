@@ -16,7 +16,7 @@ use crate::build_control::checkpoint;
 use crate::build_memory::{
     checked_add, checked_mul, AdmittedDocument, BuildMemory, SET_ENTRY_BYTES, SPOOL_BUFFER_BYTES,
 };
-use crate::document_encoding::DocumentEncoding;
+use crate::document_encoding::{DocumentEncoding, Header, HeaderSource};
 use crate::error::{HawDBError, Result};
 use crate::generation_cleanup::{
     once::PreparedCleanup, SearchProjectionCleanupOptions, SearchProjectionGenerations,
@@ -43,7 +43,9 @@ use rabitq::RaBitQArtifactBuilder;
 use serde::Serialize;
 #[cfg(test)]
 pub(crate) use spool::read_evidence as analyzer_read_evidence;
-use spool::{SpoolSource, StageDirectory, SPOOL_FRAME_HEADER_BYTES, SPOOL_HEADER};
+pub use spool::SearchStagingCleanupReport;
+pub(in crate::out_of_core) use spool::StageDirectory;
+use spool::{SpoolSource, SPOOL_FRAME_HEADER_BYTES, SPOOL_HEADER};
 use std::collections::BTreeSet;
 use std::io::{BufWriter, Write};
 use std::num::{NonZeroU64, NonZeroUsize};
@@ -59,11 +61,14 @@ mod delta;
 mod discovery;
 mod governed;
 mod io;
+mod mutations;
 mod publication;
 mod rabitq;
 #[cfg(feature = "vector-search")]
 mod rabitq_memory;
 mod spool;
+mod streamed;
+pub use mutations::SearchOutOfCoreMutationWriter;
 #[cfg(test)]
 mod tests;
 
@@ -100,6 +105,8 @@ pub struct SearchOutOfCoreGenerationBuildOptions {
     pub lexical_max_spill_runs: NonZeroUsize,
     pub lexical_max_merge_fan_in: NonZeroUsize,
     pub lexical_max_document_source_bytes: NonZeroU64,
+    /// Weighted analyzed token events admitted per document, independent of body bytes.
+    pub lexical_max_document_tokens: NonZeroUsize,
     pub rabitq_segment_rows: NonZeroUsize,
     pub rabitq_build_memory_bytes: NonZeroUsize,
     pub rabitq_transform_seed: u64,
@@ -132,6 +139,7 @@ impl Default for SearchOutOfCoreGenerationBuildOptions {
             lexical_max_spill_runs: NonZeroUsize::new(4_096).unwrap(),
             lexical_max_merge_fan_in: NonZeroUsize::new(32).unwrap(),
             lexical_max_document_source_bytes: NonZeroU64::new(4 * 1024 * 1024).unwrap(),
+            lexical_max_document_tokens: NonZeroUsize::new(1_000_000).unwrap(),
             rabitq_segment_rows: NonZeroUsize::new(1_024).unwrap(),
             rabitq_build_memory_bytes: NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
             rabitq_transform_seed: 0x534b_4549_4e56_5134,
@@ -177,15 +185,16 @@ pub struct SearchOutOfCoreGenerationBuildReport {
     pub active_manifest_published_last: bool,
     pub cleanup_deleted_files: usize,
     pub cleanup_pending_files: usize,
+    pub cleanup_pending_stages: usize,
     pub cleanup_retry_required: bool,
 }
 
 /// Builds an immutable search generation without retaining the full document corpus.
 ///
 /// Documents must be pushed in strictly increasing UTF-8 ID order. The writer
-/// encodes spool records with fixed-size scratch while retaining the owned input.
-/// Spool decoding uses fixed-size input scratch and retains one decoded document;
-/// artifact production retains at most one descriptor segment. The descriptor itself
+/// captures each body once and validates immutable spool records with bounded
+/// scratch. Artifact production retains at most one segment of document headers
+/// and encoded source ranges, and compresses document payloads into private files. The descriptor itself
 /// remains bounded by `max_descriptor_working_bytes` because the serving reader
 /// must retain that range index.
 pub struct SearchOutOfCoreGenerationWriter {
@@ -193,7 +202,6 @@ pub struct SearchOutOfCoreGenerationWriter {
     spool_path: context_memory::OwnedPath,
     // Close the spool before stage cleanup, including on Windows.
     spool: Option<BufWriter<File>>,
-    stage: StageDirectory,
     options: context_memory::Options,
     lexical_term_policy: SearchLexicalTermPolicy,
     max_lexical_manifest_bytes: NonZeroU64,
@@ -218,6 +226,8 @@ pub struct SearchOutOfCoreGenerationWriter {
     spool_memory: Option<QueryMemoryLease>,
     metadata_memory: QueryMemoryLease,
     last_id_memory: Option<QueryMemoryLease>,
+    // Private source handles and leases close before deferred cleanup.
+    stage: StageDirectory,
 }
 
 impl std::fmt::Debug for SearchOutOfCoreGenerationWriter {
@@ -240,6 +250,23 @@ impl std::fmt::Debug for SearchOutOfCoreGenerationWriter {
 }
 
 impl SearchOutOfCoreGenerationWriter {
+    #[cfg(all(test, target_os = "linux"))]
+    pub(in crate::out_of_core) fn memory_for_test(&self) -> BuildMemory {
+        self.memory.clone()
+    }
+
+    /// Retries retained private-stage cleanup without bypassing descriptor limits.
+    /// Pass zero attempts to inspect pending ownership. Root aliases resolve to
+    /// the same canonical directory; retry work uses fresh descriptor admission.
+    /// Writer creation, including scheduled compaction, also retries up to four
+    /// stages with a bounded number of directory batches per attempt.
+    pub fn retry_staging_cleanup(
+        root: impl AsRef<Path>,
+        max_attempts: usize,
+    ) -> Result<SearchStagingCleanupReport> {
+        spool::retry_staging_cleanup(root.as_ref(), max_attempts)
+    }
+
     pub fn create(
         root: impl AsRef<Path>,
         options: SearchOutOfCoreGenerationBuildOptions,
@@ -291,6 +318,7 @@ impl SearchOutOfCoreGenerationWriter {
     ) -> Result<Self> {
         options.lexical_max_document_source_bytes =
             lexical_source_policy.max_document_source_bytes();
+        options.lexical_max_document_tokens = lexical_source_policy.max_document_tokens();
         Self::create(root, options)
     }
 
@@ -323,7 +351,14 @@ impl SearchOutOfCoreGenerationWriter {
         let root = context_memory::OwnedPath::copy(root.as_ref(), &memory, &task_context)?;
         io::GenerationIo::new(&memory, &task_context)
             .native(&[&root], || fs::create_dir_all(&root))??;
-        let stage = StageDirectory::create(&root, &memory, &task_context)?;
+        let mut stage = StageDirectory::create(&root, &memory, &task_context)?;
+        let disk_reservation = options
+            .max_spool_bytes
+            .get()
+            .checked_add(options.max_generation_bytes.get())
+            .and_then(|bytes| bytes.checked_add(options.lexical_max_spill_bytes.get()))
+            .ok_or_else(|| HawDBError::Storage("search stage disk reservation overflow".into()))?;
+        stage.reserve_disk(disk_reservation);
         let spool_path = context_memory::OwnedPath::join(
             &stage.path,
             Path::new("documents.spool.hawdb"),
@@ -392,6 +427,7 @@ impl SearchOutOfCoreGenerationWriter {
     pub fn lexical_source_policy(&self) -> SearchLexicalSourcePolicy {
         SearchLexicalSourcePolicy::new(self.options.lexical_max_document_source_bytes)
             .expect("validated lexical source policy")
+            .with_max_document_tokens(self.options.lexical_max_document_tokens)
     }
 
     /// Changes the policy used by `finish` to analyze the complete staged corpus.
@@ -730,6 +766,9 @@ impl SearchOutOfCoreGenerationWriter {
             &self.task_context,
         );
 
+        self.mutations.take();
+        self.active_manifest_update.take();
+        let cleanup_pending_stages = usize::from(self.stage.cleanup());
         Ok(SearchOutOfCoreGenerationBuildReport {
             generation,
             lexical_generation,
@@ -763,7 +802,8 @@ impl SearchOutOfCoreGenerationWriter {
             active_manifest_published_last: true,
             cleanup_deleted_files: cleanup.deleted_files,
             cleanup_pending_files: cleanup.pending_files,
-            cleanup_retry_required: cleanup.retry_required,
+            cleanup_pending_stages,
+            cleanup_retry_required: cleanup.retry_required || cleanup_pending_stages != 0,
         })
     }
 
@@ -799,6 +839,7 @@ impl SearchOutOfCoreGenerationWriter {
             max_spill_runs: self.options.lexical_max_spill_runs,
             max_merge_fan_in: self.options.lexical_max_merge_fan_in,
             max_document_source_bytes: self.options.lexical_max_document_source_bytes,
+            max_document_tokens: self.options.lexical_max_document_tokens,
             ..LexicalProjectionConfig::default()
         };
         let lexical = LexicalProjectionWriter::new(lexical_config)
@@ -811,10 +852,10 @@ impl SearchOutOfCoreGenerationWriter {
                 lexical_analyzer_digest(&self.options.analyzer_lexicon),
                 self.documents_digest.finish(),
                 |consume| {
-                    source.scan_admitted(&self.task_context, &mut |ordinal, document| {
+                    source.scan_records(&self.task_context, &mut |ordinal, document| {
                         consume(ordinal, &document)?;
-                        vectors.push(&document)?;
-                        segments.push_admitted(ordinal, document)
+                        vectors.push_embedding(document.header.embedding.as_deref())?;
+                        segments.push_record(ordinal, document)
                     })?;
                     // Drop both writers' buffers before lexical external merge.
                     // All artifacts remain private to the stage until publication.
@@ -845,7 +886,11 @@ impl SearchOutOfCoreGenerationWriter {
         })
     }
 
-    fn push_inner(&mut self, document: AdmittedDocument) -> Result<()> {
+    fn prepare_record(
+        &mut self,
+        document: Header<'_>,
+        record_bytes: u64,
+    ) -> Result<PreparedRecord> {
         checkpoint(&self.task_context)?;
         if document.id.is_empty() {
             return Err(HawDBError::Storage(
@@ -855,7 +900,7 @@ impl SearchOutOfCoreGenerationWriter {
         if self
             .last_document_id
             .as_ref()
-            .is_some_and(|previous| previous >= &document.id)
+            .is_some_and(|previous| previous.as_str() >= document.id)
         {
             return Err(HawDBError::Storage(format!(
                 "search generation document ids must be strictly increasing: previous {:?}, next {:?}",
@@ -870,12 +915,10 @@ impl SearchOutOfCoreGenerationWriter {
             )));
         }
         let next_dimension = validate_embedding(
-            &document,
+            document,
             self.embedding_dimension,
             self.options.embedding_manifest.as_ref(),
         )?;
-        let encoding = DocumentEncoding::new_with_context(&document, Some(&self.task_context))?;
-        let record_bytes = encoding.len() as u64;
         if record_bytes > self.options.max_record_bytes.get() {
             return Err(HawDBError::Storage(format!(
                 "search generation document {} requires {record_bytes} encoded bytes, exceeding {}",
@@ -924,7 +967,7 @@ impl SearchOutOfCoreGenerationWriter {
             )));
         }
 
-        let last_id_memory = self.memory.retained.reserve(document.id.capacity())?;
+        let last_id_memory = self.memory.retained.reserve(document.id.len())?;
         let added_field_capacity = document
             .metadata
             .keys()
@@ -938,6 +981,19 @@ impl SearchOutOfCoreGenerationWriter {
             added_field_capacity,
         )?)?;
         checkpoint(&self.task_context)?;
+        Ok(PreparedRecord {
+            next_dimension,
+            logical_document_bytes,
+            spool_bytes,
+            next_field_bytes,
+            last_id_memory,
+        })
+    }
+
+    fn push_inner(&mut self, document: AdmittedDocument) -> Result<()> {
+        let encoding = DocumentEncoding::new_with_context(&document, Some(&self.task_context))?;
+        let record_bytes = encoding.len() as u64;
+        let prepared = self.prepare_record(document.header(), record_bytes)?;
         let spool = self.spool.as_mut().ok_or_else(|| {
             HawDBError::Storage("search generation spool is already closed".to_string())
         })?;
@@ -953,21 +1009,51 @@ impl SearchOutOfCoreGenerationWriter {
         self.documents_digest = documents_digest;
         self.needs_chinese_analyzer |=
             crate::analyzer_workspace::document_needs_workspace(&document);
-        self.last_document_id = Some(document.document.id);
-        self.document_count = self.document_count.saturating_add(1);
-        if document.document.embedding.is_some() {
-            self.vector_document_count = self.vector_document_count.saturating_add(1);
-        }
-        self.logical_document_bytes = logical_document_bytes;
-        self.spool_bytes = spool_bytes;
-        self.peak_record_bytes = self.peak_record_bytes.max(record_bytes);
-        self.embedding_dimension = next_dimension;
-        self.metadata_fields
-            .extend(document.document.metadata.into_keys());
-        self.metadata_field_bytes = next_field_bytes;
-        self.last_id_memory = Some(last_id_memory);
+        let SearchDocument {
+            id,
+            title,
+            content: _,
+            embedding,
+            metadata,
+        } = document.document;
+        self.commit_record(
+            crate::SearchDocumentHeader {
+                id,
+                title,
+                embedding,
+                metadata,
+            },
+            record_bytes,
+            prepared,
+        );
+
         Ok(())
     }
+    fn commit_record(
+        &mut self,
+        header: crate::SearchDocumentHeader,
+        record_bytes: u64,
+        prepared: PreparedRecord,
+    ) {
+        self.last_document_id = Some(header.id);
+        self.document_count += 1;
+        self.vector_document_count += usize::from(header.embedding.is_some());
+        self.logical_document_bytes = prepared.logical_document_bytes;
+        self.spool_bytes = prepared.spool_bytes;
+        self.peak_record_bytes = self.peak_record_bytes.max(record_bytes);
+        self.embedding_dimension = prepared.next_dimension;
+        self.metadata_fields.extend(header.metadata.into_keys());
+        self.metadata_field_bytes = prepared.next_field_bytes;
+        self.last_id_memory = Some(prepared.last_id_memory);
+    }
+}
+
+struct PreparedRecord {
+    next_dimension: Option<usize>,
+    logical_document_bytes: u64,
+    spool_bytes: u64,
+    next_field_bytes: u64,
+    last_id_memory: QueryMemoryLease,
 }
 
 struct GenerationArtifacts {
@@ -1098,11 +1184,11 @@ fn validate_options(options: &SearchOutOfCoreGenerationBuildOptions) -> Result<(
 }
 
 fn validate_embedding(
-    document: &SearchDocument,
+    document: Header<'_>,
     current_dimension: Option<usize>,
     manifest: Option<&SearchEmbeddingManifest>,
 ) -> Result<Option<usize>> {
-    let Some(embedding) = document.embedding.as_deref() else {
+    let Some(embedding) = document.embedding else {
         return Ok(current_dimension);
     };
     if embedding.is_empty() || !embedding.iter().all(|value| value.is_finite()) {

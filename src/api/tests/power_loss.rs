@@ -27,7 +27,36 @@ use std::sync::atomic::{AtomicU64, Ordering};
 struct Fixture {
     root: PathBuf,
     model: PowerLossModel,
-    images: Vec<PathBuf>,
+    next_image: usize,
+}
+
+// Each fault schedule owns its image only until that schedule's reopened
+// handles have closed. Keeping every image until the fixture ends makes the
+// disk requirement grow with the number of generated fault plans.
+struct MaterializedImage(PathBuf);
+
+impl std::ops::Deref for MaterializedImage {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for MaterializedImage {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for MaterializedImage {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.0)
+            && !std::thread::panicking()
+        {
+            panic!("remove crash image {}: {error}", self.0.display());
+        }
+    }
 }
 
 impl Fixture {
@@ -43,25 +72,28 @@ impl Fixture {
         Self {
             root,
             model,
-            images: Vec::new(),
+            next_image: 0,
         }
     }
 
-    fn image(&mut self, snapshot: &PowerLossSnapshot, plan: &CrashPlan) -> PathBuf {
-        let root = self
-            .root
-            .with_extension(format!("crash-{}", self.images.len()));
-        snapshot.crash(plan).unwrap().materialize(&root).unwrap();
-        self.images.push(root.clone());
+    fn image(&mut self, snapshot: &PowerLossSnapshot, plan: &CrashPlan) -> MaterializedImage {
+        let root = MaterializedImage(
+            self.root
+                .with_extension(format!("crash-{}", self.next_image)),
+        );
+        self.next_image += 1;
+        snapshot
+            .crash(plan)
+            .unwrap()
+            .materialize(&root)
+            .unwrap_or_else(|error| panic!("materialize crash image {}: {error}", root.display()));
         root
     }
 }
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        for path in std::iter::once(&self.root).chain(&self.images) {
-            let _ = std::fs::remove_dir_all(path);
-        }
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
@@ -509,6 +541,24 @@ fn catalog_publication_cuts_preserve_creation_identity_after_a_lost_response() {
                         .iter()
                         .any(|record| Value::Uuid(record.id.as_uuid()) == child);
                     let mut recovered = open(&root, durability);
+                    if let Some(pending) = catalog.branches.iter().find(|record| {
+                        Value::Uuid(record.id.as_uuid()) == child
+                            && record.create_outcome
+                                == hawdb_storage::branch_catalog::CreateOutcome::Pending
+                    }) {
+                        let entry = recovered
+                            .branch_create_recovery_report()
+                            .unwrap()
+                            .entries
+                            .iter()
+                            .find(|entry| entry.branch_id == pending.id.as_uuid())
+                            .expect("ordinary open must attempt the interrupted receipt");
+                        assert!(matches!(
+                            entry.status,
+                            crate::BranchCreateRecoveryStatus::Completed
+                                | crate::BranchCreateRecoveryStatus::Aborted
+                        ));
+                    }
                     let retried = match recovered.query_sql_with_params(CREATE_BRANCH, &request) {
                         Ok(retried) => retried,
                         Err(HawDBError::Storage(message))
@@ -588,145 +638,293 @@ fn catalog_publication_cuts_preserve_creation_identity_after_a_lost_response() {
 }
 
 #[test]
+fn pending_recovery_publication_cuts_reopen_the_same_complete_child() {
+    use hawdb_storage::branch_catalog::{self, BranchState, CreateOutcome};
+
+    for durability in [
+        DurabilityPolicy::SyncOnEveryWrite,
+        DurabilityPolicy::SyncOnCheckpoint,
+    ] {
+        for boundary in [ObservationBoundary::Before, ObservationBoundary::After] {
+            let mut fixture = Fixture::new();
+            let mut database = open(&fixture.root, durability);
+            commit_mixed(&mut database);
+            let main = database
+                .describe_branch(BranchSelector::Name("main".into()))
+                .unwrap()
+                .id;
+            let child = fork(&mut database, main, "recovering-child");
+            // The creation-cut matrix above supplies actual interrupted
+            // receipts. Here a durable pending fixture isolates a second
+            // interruption while the ordinary opener publishes recovery.
+            let catalog_path = fixture.root.join("branches/catalog.hawdb");
+            let mut catalog = branch_catalog::read_catalog(&catalog_path).unwrap();
+            let pending = catalog
+                .branches
+                .iter_mut()
+                .find(|branch| branch.id.as_uuid() == child)
+                .unwrap();
+            pending.state = BranchState::Creating;
+            pending.create_outcome = CreateOutcome::Pending;
+            branch_catalog::write_catalog(&catalog_path, &catalog).unwrap();
+            drop(database);
+            fixture
+                .model
+                .observe(ObservationPoint {
+                    event: IoEvent::Rename,
+                    relative_path: PathBuf::from("branches/catalog.hawdb"),
+                    boundary,
+                    skip_matches: 0,
+                    include_descendants: false,
+                    keep_last: false,
+                })
+                .unwrap();
+            let recovered = open(&fixture.root, durability);
+            let report = recovered.branch_create_recovery_report().unwrap();
+            assert_eq!(report.entries.len(), 1);
+            assert_eq!(report.entries[0].branch_id, child);
+            assert_eq!(
+                report.entries[0].status,
+                crate::BranchCreateRecoveryStatus::Completed
+            );
+            assert_eq!(
+                recovered
+                    .file_descriptor_metrics()
+                    .unwrap()
+                    .admitted_runtimes,
+                0
+            );
+            let acknowledged = fixture.model.capture().unwrap();
+            let cut = fixture
+                .model
+                .take_observation()
+                .unwrap()
+                .expect("actual recovery publication");
+            drop(recovered);
+            let plans = publication_fault_plans(&cut)
+                .into_iter()
+                .map(|plan| (&cut, plan))
+                .chain(std::iter::once((&acknowledged, CrashPlan::default())));
+            for (snapshot, plan) in plans {
+                let root = fixture.image(snapshot, &plan);
+                let mut recovered = open(&root, durability);
+                assert_eq!(
+                    recovered
+                        .describe_branch(BranchSelector::Id(child))
+                        .unwrap()
+                        .state,
+                    crate::BranchLifecycleState::Ready
+                );
+                let catalog_path = root.join("branches/catalog.hawdb");
+                let before = std::fs::read(&catalog_path).unwrap();
+                assert!(recovered
+                    .recover_pending_branch_creates(crate::BranchCreateRecoveryLimits::default())
+                    .unwrap()
+                    .entries
+                    .is_empty());
+                assert_eq!(std::fs::read(&catalog_path).unwrap(), before);
+                assert!(assert_atomic(&mut recovered, main));
+                recovered
+                    .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(child)])
+                    .unwrap();
+                assert!(assert_atomic(&mut recovered, main));
+            }
+        }
+    }
+}
+
+fn assert_gc_survivors(database: &mut Database, main: Uuid, deleted: Uuid, nested: Uuid) {
+    assert_eq!(
+        database
+            .describe_branch(BranchSelector::Id(deleted))
+            .unwrap()
+            .state,
+        crate::BranchLifecycleState::Deleted
+    );
+    assert!(database
+        .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(deleted)])
+        .is_err());
+    database
+        .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(main)])
+        .unwrap();
+    assert!(assert_atomic(database, main));
+    database
+        .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(nested)])
+        .unwrap();
+    let rows = database
+        .query_sql("SELECT id, payload, tag FROM atomic_tail")
+        .unwrap();
+    assert_eq!(rows.rows.len(), 1);
+    assert_eq!(rows.rows[0]["id"], Value::Int(7));
+    assert_eq!(rows.rows[0]["payload"], Value::String("child".into()));
+    assert_eq!(rows.rows[0]["tag"], Value::String("inherited".into()));
+    assert_eq!(
+        database
+            .query("MATCH (m:Memory {id: 'nested-inherited'}) RETURN m.id AS id")
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GcCut {
+    OrphanUnlink,
+    DirectoryRetirement,
+    FirstRetiredUnlink,
+    RetiredDirectoryUnlink,
+}
+
+#[test]
 fn deletion_and_gc_cuts_keep_an_unleased_nested_branch_recoverable() {
-    use hawdb_storage::branch_catalog::{
-        read_catalog, reclaim_catalog_branches, BranchReclamationPath,
-    };
     use hawdb_storage::immutable_object::{ImmutableObjectStore, ObjectKind, ObjectReference};
 
     for durability in [
         DurabilityPolicy::SyncOnEveryWrite,
         DurabilityPolicy::SyncOnCheckpoint,
     ] {
-        let mut fixture = Fixture::new();
-        let mut database = open(&fixture.root, durability);
-        commit_mixed(&mut database);
-        let main = database
-            .describe_branch(BranchSelector::Name("main".into()))
-            .unwrap()
-            .id;
-        let child = fork(&mut database, main, "parent-to-delete");
-        database
-            .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(child)])
-            .unwrap();
-        database
-            .query_sql("ALTER TABLE atomic_tail ADD COLUMN tag TEXT")
-            .unwrap();
-        database
-            .query_sql("UPDATE atomic_tail SET payload = 'child', tag = 'inherited' WHERE id = 7")
-            .unwrap();
-        database
-            .query("CREATE (:Memory {id: 'nested-inherited'})")
-            .unwrap();
-        let nested = fork(&mut database, child, "surviving-descendant");
-        database
-            .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(main)])
-            .unwrap();
-        let revision = database
-            .describe_branch(BranchSelector::Id(child))
-            .unwrap()
-            .metadata_revision;
-        database
-            .query_sql_with_params(
-                "DROP BRANCH ID $1 AT REVISION $2",
-                &[Value::Uuid(child), Value::Int(revision as i64)],
-            )
-            .unwrap();
-        let deletion = fixture.model.capture().unwrap();
-        drop(database);
-        assert_eq!(fixture.model.project().metrics().admitted_runtimes, 0);
-
-        let catalog_path = fixture.root.join("branches/catalog.hawdb");
-        let catalog = read_catalog(&catalog_path).unwrap();
-        let paths: Vec<_> = catalog
-            .branches
-            .iter()
-            .map(|record| {
-                let directory = fixture
-                    .root
-                    .join("branches")
-                    .join(record.id.as_uuid().to_string());
-                BranchReclamationPath {
-                    id: record.id,
-                    head_path: directory.join("branch.head"),
-                    directory,
-                }
-            })
-            .collect();
-        let mut objects =
-            ImmutableObjectStore::open(catalog_path.parent().unwrap().join("objects")).unwrap();
-        let orphan = ObjectReference::for_bytes(
-            ObjectKind::Checkpoint,
-            1,
-            b"unreachable physical qualification object",
-        );
-        objects
-            .publish(orphan, b"unreachable physical qualification object")
-            .unwrap();
-        let orphan_path = objects.object_path(orphan);
-        fixture
-            .model
-            .observe(ObservationPoint {
-                event: IoEvent::Remove,
-                relative_path: orphan_path
-                    .strip_prefix(&fixture.root)
-                    .unwrap()
-                    .to_path_buf(),
-                boundary: ObservationBoundary::After,
-                skip_matches: 0,
-                include_descendants: false,
-                keep_last: false,
-            })
-            .unwrap();
-        let report =
-            reclaim_catalog_branches(&catalog_path, &mut objects, &[orphan], &paths).unwrap();
-        assert_eq!(report.reclaimed_objects, 1);
-        assert!(!report.deferred_for_active_leases);
-        assert!(!fixture
-            .root
-            .join("branches")
-            .join(child.to_string())
-            .exists());
-        let swept = fixture.model.capture().unwrap();
-        let cut = fixture
-            .model
-            .take_observation()
-            .unwrap()
-            .expect("actual GC unlink must be observed");
-        assert!(fixture.model.project().metrics().high_water <= 32);
-
-        let plans = publication_fault_plans(&cut)
-            .into_iter()
-            .map(|plan| (&cut, plan))
-            .chain([
-                (&deletion, CrashPlan::default()),
-                (&swept, CrashPlan::default()),
-            ]);
-        for (snapshot, plan) in plans {
-            let root = fixture.image(snapshot, &plan);
-            let mut recovered = open(&root, durability);
-            assert!(recovered
+        for gc_cut in [
+            GcCut::OrphanUnlink,
+            GcCut::DirectoryRetirement,
+            GcCut::FirstRetiredUnlink,
+            GcCut::RetiredDirectoryUnlink,
+        ] {
+            let mut fixture = Fixture::new();
+            let mut database = open(&fixture.root, durability);
+            commit_mixed(&mut database);
+            let main = database
+                .describe_branch(BranchSelector::Name("main".into()))
+                .unwrap()
+                .id;
+            let child = fork(&mut database, main, "parent-to-delete");
+            database
                 .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(child)])
-                .is_err());
-            assert!(assert_atomic(&mut recovered, main));
-            recovered
-                .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(nested)])
                 .unwrap();
-            let rows = recovered
-                .query_sql("SELECT id, payload, tag FROM atomic_tail")
+            database
+                .query_sql("ALTER TABLE atomic_tail ADD COLUMN tag TEXT")
                 .unwrap();
-            assert_eq!(rows.rows.len(), 1);
-            assert_eq!(rows.rows[0]["id"], Value::Int(7));
-            assert_eq!(rows.rows[0]["payload"], Value::String("child".into()));
-            assert_eq!(rows.rows[0]["tag"], Value::String("inherited".into()));
-            assert_eq!(
-                recovered
-                    .query("MATCH (m:Memory {id: 'nested-inherited'}) RETURN m.id AS id")
-                    .unwrap()
-                    .rows
-                    .len(),
-                1
+            database
+                .query_sql(
+                    "UPDATE atomic_tail SET payload = 'child', tag = 'inherited' WHERE id = 7",
+                )
+                .unwrap();
+            database
+                .query("CREATE (:Memory {id: 'nested-inherited'})")
+                .unwrap();
+            let nested = fork(&mut database, child, "surviving-descendant");
+            database
+                .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(main)])
+                .unwrap();
+            let revision = database
+                .describe_branch(BranchSelector::Id(child))
+                .unwrap()
+                .metadata_revision;
+            database
+                .query_sql_with_params(
+                    "DROP BRANCH ID $1 AT REVISION $2",
+                    &[Value::Uuid(child), Value::Int(revision as i64)],
+                )
+                .unwrap();
+            let deletion = fixture.model.capture().unwrap();
+            let catalog_path = fixture.root.join("branches/catalog.hawdb");
+            let mut objects =
+                ImmutableObjectStore::open(catalog_path.parent().unwrap().join("objects")).unwrap();
+            let orphan = ObjectReference::for_bytes(
+                ObjectKind::Checkpoint,
+                1,
+                b"unreachable physical qualification object",
             );
+            objects
+                .publish(orphan, b"unreachable physical qualification object")
+                .unwrap();
+            let orphan_path = objects.object_path(orphan);
+            let deleted_directory = PathBuf::from("branches").join(child.to_string());
+            let retired_directory = PathBuf::from("branches").join(format!(".reclaim-{child}"));
+            let (event, relative_path, include_descendants) = match gc_cut {
+                GcCut::OrphanUnlink => (
+                    IoEvent::Remove,
+                    orphan_path
+                        .strip_prefix(&fixture.root)
+                        .unwrap()
+                        .to_path_buf(),
+                    false,
+                ),
+                GcCut::DirectoryRetirement => (IoEvent::Rename, retired_directory.clone(), false),
+                GcCut::FirstRetiredUnlink => (IoEvent::Remove, retired_directory.clone(), true),
+                GcCut::RetiredDirectoryUnlink => {
+                    (IoEvent::Remove, retired_directory.clone(), false)
+                }
+            };
+            fixture
+                .model
+                .observe(ObservationPoint {
+                    event,
+                    relative_path,
+                    boundary: ObservationBoundary::After,
+                    skip_matches: 0,
+                    include_descendants,
+                    keep_last: false,
+                })
+                .unwrap();
+            let report = database
+                .reclaim_branch_storage(crate::BranchReclamationLimits::default())
+                .unwrap();
+            assert!(report.reclaimed_objects >= 1);
+            assert_eq!(report.reclaimed_branch_directories, 1);
+            assert!(!report.deferred_for_active_leases);
+            assert!(!fixture.root.join(&deleted_directory).exists());
+            assert!(!fixture.root.join(&retired_directory).exists());
+            let swept = fixture.model.capture().unwrap();
+            let cut = fixture
+                .model
+                .take_observation()
+                .unwrap()
+                .expect("actual GC boundary must be observed");
+            if matches!(gc_cut, GcCut::FirstRetiredUnlink) {
+                assert_ne!(cut.observed_path(), Some(retired_directory.as_path()));
+            }
+            assert!(fixture.model.project().metrics().high_water <= 32);
+            drop(database);
+            assert_eq!(fixture.model.project().metrics().admitted_runtimes, 0);
+
+            eprintln!("branch-power-gc-v1 durability={durability:?} cut={gc_cut:?}");
+            let plans = publication_fault_plans(&cut)
+                .into_iter()
+                .map(|plan| (&cut, plan))
+                .chain([
+                    (&deletion, CrashPlan::default()),
+                    (&swept, CrashPlan::default()),
+                ]);
+            for (snapshot, plan) in plans {
+                let root = fixture.image(snapshot, &plan);
+                if snapshot.observed_path().is_some()
+                    && matches!(
+                        gc_cut,
+                        GcCut::FirstRetiredUnlink | GcCut::RetiredDirectoryUnlink
+                    )
+                {
+                    // Destructive cleanup starts only after the retired name is
+                    // synchronized, so no crash may resurrect an admissible UUID.
+                    assert!(!root.join(&deleted_directory).exists());
+                }
+                let mut recovered = open(&root, durability);
+                assert_gc_survivors(&mut recovered, main, child, nested);
+                let retry = recovered
+                    .reclaim_branch_storage(crate::BranchReclamationLimits::default())
+                    .unwrap();
+                assert!(!retry.deferred_for_active_leases);
+                assert!(!root.join(&deleted_directory).exists());
+                assert!(!root.join(&retired_directory).exists());
+                let repeated = recovered
+                    .reclaim_branch_storage(crate::BranchReclamationLimits::default())
+                    .unwrap();
+                assert!(!repeated.deferred_for_active_leases);
+                assert_eq!(repeated.reclaimed_branch_directories, 0);
+                assert_eq!(repeated.reclaimed_objects, 0);
+                drop(recovered);
+                assert_gc_survivors(&mut open(&root, durability), main, child, nested);
+            }
         }
     }
 }

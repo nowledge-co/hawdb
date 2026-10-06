@@ -13,6 +13,11 @@ retain their type identity and behavior. Configure lexical terms and manifest
 bytes through the existing writer methods or reader configuration. No separate
 runtime, helper process or query route is introduced.
 
+The [streamed lifecycle](STREAMED_DOCUMENT_LIFECYCLE.md) adds `push_reader` and
+`prepare_streamed_delta_with_context` under this same operation ledger. The
+governed wrapper retains host admission through deferred private-stage cleanup;
+`retry_staging_cleanup` reports retained work and permits a bounded retry.
+
 ## Operation ownership
 
 The task follows create/push/finish, or prepare/finish, until the operation and

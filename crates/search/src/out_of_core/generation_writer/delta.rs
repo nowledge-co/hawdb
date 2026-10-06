@@ -86,8 +86,18 @@ impl SearchOutOfCoreGenerationUpdate {
         options: SearchOutOfCoreGenerationBuildOptions,
         task: RuntimeTaskContext,
     ) -> Result<Self> {
-        checkpoint(&task)?;
         let memory = BuildMemory::new(&task)?;
+        Self::prepare_with_memory(reader, delta, options, task, memory)
+    }
+
+    pub(super) fn prepare_with_memory(
+        reader: &SearchOutOfCoreReader,
+        delta: SearchProjectionDelta,
+        options: SearchOutOfCoreGenerationBuildOptions,
+        task: RuntimeTaskContext,
+        memory: BuildMemory,
+    ) -> Result<Self> {
+        checkpoint(&task)?;
         let operation_count = delta.operation_count();
         if let Some(limit) = delta.max_operations
             && operation_count > limit
@@ -157,11 +167,14 @@ impl SearchOutOfCoreGenerationUpdate {
                     .map(|segment| found || segment.is_some())
             })?;
         if !reader.visibility.is_empty() || targets_existing_document {
+            writer
+                .stage
+                .reserve_additional_disk(mutation::Prepared::disk_reservation(reader)?)?;
             let report_memory = memory
                 .retained
                 .reserve("search_projection".len() * 2 + "incremental_mutation_publish".len())?;
             let (mutations, deleted_documents, source_read_metrics) =
-                mutation::Prepared::prepare(reader, &input, &memory, &task)?;
+                mutation::Prepared::prepare(reader, &input, &writer.stage.path, &memory, &task)?;
             let after_document_count = before_document_count
                 .checked_sub(mutations.entries.len())
                 .and_then(|count| count.checked_add(upserted_documents))

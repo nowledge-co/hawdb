@@ -7,8 +7,8 @@ module(
     compatibility_level = 1,
 )
 
-bazel_dep(name = "platforms", version = "1.0.0")
-bazel_dep(name = "bazel_skylib", version = "1.8.2")
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "bazel_skylib", version = "1.9.2")
 
 # The TLA+ tools jar (SANY + TLC + PlusCal), pinned and hermetic. TLC runs on the
 # JDK resolved by Bazel's built-in java runtime toolchain, so there is no extra

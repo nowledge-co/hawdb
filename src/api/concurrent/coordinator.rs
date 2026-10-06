@@ -168,6 +168,28 @@ impl CommitSequencer {
         Ok(runtime.store.storage_pressure_snapshot(oldest))
     }
 
+    pub(super) fn reclaim_branch_storage(
+        &self,
+        limits: crate::BranchReclamationLimits,
+    ) -> Result<crate::BranchReclamationReport> {
+        let mut database = self.lock()?;
+        {
+            let mut published = self
+                .published_read
+                .lock()
+                .map_err(|_| read_publication_poisoned_error())?;
+            // Retire only an idle internal view. Borrowed queries and explicit
+            // readers retain their own ownership and must keep blocking sweep.
+            // New readers then wait for the writer and its final publication.
+            if published.as_ref().is_some_and(|view| {
+                Arc::strong_count(view) == 1 && Arc::strong_count(&view.snapshot.0._pin) == 1
+            }) {
+                published.take();
+            }
+        }
+        database.reclaim_branch_storage(limits)
+    }
+
     fn ensure_read_usable(&self, view: &PublishedConcurrentRead) -> Result<()> {
         if self.read_publication_failed.load(Ordering::Acquire)
             || self.database.is_poisoned()

@@ -63,6 +63,261 @@ fn values(database: &mut Database) -> Vec<BTreeMap<String, Value>> {
 }
 
 #[test]
+fn live_writer_reclamation_retains_readers_descendants_and_budget_retries() {
+    use hawdb::BranchReclamationLimits;
+    use hawdb_storage::immutable_object::{ImmutableObjectStore, ObjectKind, ObjectReference};
+
+    let project = Project::new();
+    let mut database = Database::open_with_config(
+        &project.0,
+        DatabaseConfig {
+            max_open_files: 32,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    database.query("CREATE (:Memory {id: 'main'})").unwrap();
+    database.checkpoint().unwrap();
+    let revision = database.commit_epoch().unwrap();
+    database
+        .query_sql(&format!(
+            "CREATE BRANCH parent FROM main AT REVISION {revision} REQUEST KEY 'reclaim-parent'"
+        ))
+        .unwrap();
+    database
+        .query_sql(&format!(
+            "CREATE BRANCH sibling FROM main AT REVISION {revision} REQUEST KEY 'reclaim-sibling'"
+        ))
+        .unwrap();
+    database.query_sql("USE BRANCH parent").unwrap();
+    database.query("CREATE (:Memory {id: 'parent'})").unwrap();
+    database
+        .query_sql("CREATE TABLE inherited (id BIGINT PRIMARY KEY, body TEXT)")
+        .unwrap();
+    database
+        .query_sql("INSERT INTO inherited (id, body) VALUES (7, 'parent schema and data')")
+        .unwrap();
+    database.checkpoint().unwrap();
+    let revision = database.commit_epoch().unwrap();
+    database.query_sql(&format!(
+        "CREATE BRANCH descendant FROM parent AT REVISION {revision} REQUEST KEY 'reclaim-descendant'"
+    )).unwrap();
+    let parent = database
+        .describe_branch(BranchSelector::Name("parent".into()))
+        .unwrap();
+    let descendant = database
+        .describe_branch(BranchSelector::Name("descendant".into()))
+        .unwrap();
+    let catalog =
+        hawdb_storage::branch_catalog::read_catalog(&project.0.join("branches/catalog.hawdb"))
+            .unwrap();
+    let baseline = catalog
+        .branches
+        .iter()
+        .find(|record| record.id.as_uuid() == descendant.id)
+        .unwrap()
+        .base_root_digest
+        .unwrap();
+    let initial_head = hawdb_storage::branch_head::read_branch_head(
+        &project
+            .0
+            .join("branches")
+            .join(descendant.id.to_string())
+            .join("branch.head"),
+    )
+    .unwrap();
+    assert_eq!(initial_head.sealed_root.sha256.as_bytes(), &baseline);
+    let mut objects = ImmutableObjectStore::open(project.0.join("branches/objects")).unwrap();
+    let baseline_path = objects.object_path(initial_head.sealed_root);
+    database.query_sql("USE BRANCH descendant").unwrap();
+    database
+        .query("CREATE (:Memory {id: 'descendant'})")
+        .unwrap();
+    database.checkpoint().unwrap();
+    database.query_sql("USE BRANCH main").unwrap();
+    database
+        .query_sql(&format!(
+            "DROP BRANCH ID '{}' AT REVISION {}",
+            parent.id, parent.metadata_revision
+        ))
+        .unwrap();
+    let parent_directory = project.0.join("branches").join(parent.id.to_string());
+    assert!(parent_directory.exists());
+    let orphan = ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, b"unpublished");
+    objects.publish(orphan, b"unpublished").unwrap();
+    let orphan_path = objects.object_path(orphan);
+    let staging = project
+        .0
+        .join("branches/objects/objects/.staging/999999-1.stage");
+    std::fs::write(&staging, b"interrupted publisher").unwrap();
+    let snapshot = database.begin_read_transaction().unwrap();
+    let deferred = database
+        .reclaim_branch_storage(BranchReclamationLimits::default())
+        .unwrap();
+    assert!(deferred.deferred_for_active_leases);
+    assert_eq!(deferred.reclaimed_objects, 0);
+    assert!(orphan_path.exists());
+    assert!(parent_directory.exists());
+    drop(snapshot);
+    assert!(database
+        .reclaim_branch_storage(BranchReclamationLimits {
+            max_objects: 1,
+            ..Default::default()
+        })
+        .is_err());
+    assert!(orphan_path.exists());
+    assert!(parent_directory.exists());
+    assert!(staging.exists());
+    let report = database
+        .reclaim_branch_storage(BranchReclamationLimits::default())
+        .unwrap();
+    assert!(!report.deferred_for_active_leases, "{report:?}");
+    assert!(report.reclaimed_objects > 0);
+    assert!(report.reclaimed_bytes >= orphan.byte_length);
+    assert_eq!(report.reclaimed_branch_directories, 1);
+    assert_eq!(report.reclaimed_staging_files, 1);
+    assert!(!staging.exists());
+    assert!(!orphan_path.exists());
+    assert!(!parent_directory.exists());
+    assert!(
+        baseline_path.exists(),
+        "a catalog creation baseline remains a GC root after head advancement"
+    );
+    assert_eq!(values(&mut database)[0]["id"], Value::String("main".into()));
+    database
+        .query("CREATE (:Memory {id: 'still-writable'})")
+        .unwrap();
+    assert!(
+        !database
+            .reclaim_branch_storage(BranchReclamationLimits::default())
+            .unwrap()
+            .deferred_for_active_leases
+    );
+    assert!(database.file_descriptor_metrics().unwrap().high_water <= 32);
+    drop(database);
+
+    let mut reopened = Database::open(&project.0).unwrap();
+    reopened.query_sql("USE BRANCH descendant").unwrap();
+    assert_eq!(values(&mut reopened).len(), 3);
+    assert_eq!(
+        reopened
+            .query_sql("SELECT body FROM inherited WHERE id = 7")
+            .unwrap()
+            .rows[0]["body"],
+        Value::String("parent schema and data".into())
+    );
+    reopened.query_sql("USE BRANCH sibling").unwrap();
+    assert_eq!(values(&mut reopened).len(), 1);
+    reopened.query_sql("USE BRANCH main").unwrap();
+    assert_eq!(values(&mut reopened).len(), 2);
+    assert!(reopened.query_sql("USE BRANCH parent").is_err());
+}
+
+#[test]
+fn concurrent_reclamation_retires_only_idle_publication_pins() {
+    use hawdb::BranchReclamationLimits;
+    use hawdb_storage::immutable_object::{ImmutableObjectStore, ObjectKind, ObjectReference};
+
+    let project = Project::new();
+    let mut database = Database::open(&project.0).unwrap();
+    database.query("CREATE (:Memory {id: 'before'})").unwrap();
+    database.checkpoint().unwrap();
+    let database = database.into_concurrent();
+    let mut reader = database.begin_read_transaction().unwrap();
+    database.query("CREATE (:Memory {id: 'after'})").unwrap();
+    database.checkpoint().unwrap();
+    let mut objects = ImmutableObjectStore::open(project.0.join("branches/objects")).unwrap();
+    let orphan =
+        ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, b"concurrent-orphan");
+    objects.publish(orphan, b"concurrent-orphan").unwrap();
+    assert!(
+        database
+            .reclaim_branch_storage(BranchReclamationLimits::default())
+            .unwrap()
+            .deferred_for_active_leases
+    );
+    assert!(objects.object_path(orphan).exists());
+    assert_eq!(
+        reader
+            .query("MATCH (m:Memory) RETURN m.id")
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+    drop(reader);
+    let report = database
+        .reclaim_branch_storage(BranchReclamationLimits::default())
+        .unwrap();
+    assert!(!report.deferred_for_active_leases, "{report:?}");
+    assert!(!objects.object_path(orphan).exists());
+    assert_eq!(
+        database
+            .query("MATCH (m:Memory) RETURN m.id")
+            .unwrap()
+            .rows
+            .len(),
+        2
+    );
+    database
+        .query("CREATE (:Memory {id: 'after-maintenance'})")
+        .unwrap();
+    assert_eq!(
+        database
+            .query("MATCH (m:Memory) RETURN m.id")
+            .unwrap()
+            .rows
+            .len(),
+        3
+    );
+}
+
+#[test]
+fn reclamation_rejects_corrupt_inventory_and_unrelated_writer_then_retries() {
+    use hawdb::BranchReclamationLimits;
+    use hawdb_storage::immutable_object::{ImmutableObjectStore, ObjectKind, ObjectReference};
+
+    let project = Project::new();
+    let mut database = Database::open(&project.0).unwrap();
+    database.query("CREATE (:Memory {id: 'retained'})").unwrap();
+    database.checkpoint().unwrap();
+    let revision = database.commit_epoch().unwrap();
+    database
+        .query_sql(&format!(
+            "CREATE BRANCH other FROM main AT REVISION {revision} REQUEST KEY 'gc-other'"
+        ))
+        .unwrap();
+    let mut other = Database::open(&project.0).unwrap();
+    other.query_sql("USE BRANCH other").unwrap();
+    let mut objects = ImmutableObjectStore::open(project.0.join("branches/objects")).unwrap();
+    let orphan = ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, b"retained-orphan");
+    objects.publish(orphan, b"retained-orphan").unwrap();
+    let path = objects.object_path(orphan);
+    assert!(
+        database
+            .reclaim_branch_storage(BranchReclamationLimits::default())
+            .unwrap()
+            .deferred_for_active_leases
+    );
+    assert!(path.exists());
+    drop(other);
+    std::fs::write(&path, b"damaged-orphan").unwrap();
+    assert!(database
+        .reclaim_branch_storage(BranchReclamationLimits::default())
+        .is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), b"damaged-orphan");
+    assert_eq!(values(&mut database).len(), 1);
+    std::fs::write(&path, b"retained-orphan").unwrap();
+    let report = database
+        .reclaim_branch_storage(BranchReclamationLimits::default())
+        .unwrap();
+    assert!(!report.deferred_for_active_leases);
+    assert!(!path.exists());
+    database.query_sql("USE BRANCH other").unwrap();
+    assert_eq!(values(&mut database).len(), 1);
+}
+
+#[test]
 fn storage_inventory_tracks_selection_and_retries_budget_exhaustion() {
     use hawdb_storage::file_descriptors::ProjectFileDescriptors;
     use hawdb_storage::file_io::OpenOptions;
@@ -926,4 +1181,451 @@ fn published_project_never_falls_back_after_selector_or_catalog_damage() {
     assert!(Database::open(&project.0).is_err());
     assert_eq!(std::fs::read(&manifest).unwrap(), selector);
     assert_eq!(std::fs::read(&catalog).unwrap(), b"damaged catalog");
+}
+
+fn pending_children(
+    root: &std::path::Path,
+    database: &mut Database,
+    count: usize,
+) -> Vec<hawdb::Uuid> {
+    use hawdb_storage::branch_catalog::{self, BranchState, CreateOutcome};
+
+    let epoch = database.commit_epoch().unwrap();
+    let ids: Vec<_> = (0..count)
+        .map(|index| {
+            database
+                .create_branch(BranchCreateRequest {
+                    name: Some(format!("pending-{index}")),
+                    parent: BranchSelector::Name("main".into()),
+                    expected_source_commit_epoch: epoch,
+                    owner: None,
+                    idempotency_key: format!("recover-pending-{index}"),
+                })
+                .unwrap()
+                .id
+        })
+        .collect();
+    let path = root.join("branches/catalog.hawdb");
+    let mut catalog = branch_catalog::read_catalog(&path).unwrap();
+    for branch in &mut catalog.branches {
+        if ids.contains(&branch.id.as_uuid()) {
+            branch.state = BranchState::Creating;
+            branch.create_outcome = CreateOutcome::Pending;
+        }
+    }
+    branch_catalog::write_catalog(&path, &catalog).unwrap();
+    ids
+}
+
+#[test]
+fn reclamation_defers_for_a_live_pending_creator_without_a_head() {
+    use hawdb::{BranchCreateRecoveryLimits, BranchCreateRecoveryStatus, BranchReclamationLimits};
+    use hawdb_storage::ownership::DatabaseDirectoryLease;
+
+    let project = Project::new();
+    let mut writer = Database::open(&project.0).unwrap();
+    writer.query("CREATE (:Memory {id: 'parent'})").unwrap();
+    let child = pending_children(&project.0, &mut writer, 1)[0];
+    let directory = project.0.join("branches").join(child.to_string());
+    let lease = DatabaseDirectoryLease::acquire(&directory).unwrap();
+    std::fs::remove_file(directory.join("branch.head")).unwrap();
+    let catalog_path = project.0.join("branches/catalog.hawdb");
+    let before = std::fs::read(&catalog_path).unwrap();
+
+    let report = writer
+        .reclaim_branch_storage(BranchReclamationLimits::default())
+        .unwrap();
+    assert!(report.deferred_for_active_leases);
+    assert_eq!(report.reclaimed_objects, 0);
+    assert_eq!(report.reclaimed_branch_directories, 0);
+    assert_eq!(std::fs::read(&catalog_path).unwrap(), before);
+    assert!(directory.exists());
+
+    drop(lease);
+    let recovery = writer
+        .recover_pending_branch_creates(BranchCreateRecoveryLimits::default())
+        .unwrap();
+    assert_eq!(recovery.entries[0].branch_id, child);
+    assert_eq!(
+        recovery.entries[0].status,
+        BranchCreateRecoveryStatus::Aborted
+    );
+    let report = writer
+        .reclaim_branch_storage(BranchReclamationLimits::default())
+        .unwrap();
+    assert!(!report.deferred_for_active_leases);
+    assert_eq!(report.reclaimed_branch_directories, 1);
+    assert!(!directory.exists());
+    assert_eq!(values(&mut writer).len(), 1);
+}
+
+#[test]
+fn retained_pending_create_blocks_reclamation_without_deleting_evidence() {
+    use hawdb::{BranchCreateRecoveryLimits, BranchCreateRecoveryStatus, BranchReclamationLimits};
+    use hawdb_storage::immutable_object::{ImmutableObjectStore, ObjectKind, ObjectReference};
+
+    let project = Project::new();
+    let mut writer = Database::open(&project.0).unwrap();
+    writer.query("CREATE (:Memory {id: 'parent'})").unwrap();
+    let child = pending_children(&project.0, &mut writer, 1)[0];
+    let directory = project.0.join("branches").join(child.to_string());
+    let head_path = directory.join("branch.head");
+    let mut damaged_head = std::fs::read(&head_path).unwrap();
+    damaged_head[0] ^= 0xff;
+    std::fs::write(&head_path, &damaged_head).unwrap();
+    let catalog_path = project.0.join("branches/catalog.hawdb");
+    let before = std::fs::read(&catalog_path).unwrap();
+    let mut objects = ImmutableObjectStore::open(project.0.join("branches/objects")).unwrap();
+    let orphan = ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, b"orphan");
+    objects.publish(orphan, b"orphan").unwrap();
+
+    for _ in 0..2 {
+        let recovery = writer
+            .recover_pending_branch_creates(BranchCreateRecoveryLimits::default())
+            .unwrap();
+        assert_eq!(recovery.entries[0].branch_id, child);
+        assert_eq!(
+            recovery.entries[0].status,
+            BranchCreateRecoveryStatus::Retained
+        );
+        assert!(recovery.entries[0].error.is_some());
+        assert!(writer
+            .reclaim_branch_storage(BranchReclamationLimits::default())
+            .is_err());
+        assert!(writer.delete_branch(BranchSelector::Id(child)).is_err());
+        assert_eq!(std::fs::read(&head_path).unwrap(), damaged_head);
+        assert_eq!(std::fs::read(&catalog_path).unwrap(), before);
+        assert_eq!(objects.read(orphan).unwrap(), b"orphan");
+        assert_eq!(values(&mut writer).len(), 1);
+    }
+}
+
+#[test]
+fn pending_recovery_preserves_live_creators_and_never_admits_busy_main() {
+    use hawdb::{BranchCreateRecoveryLimits, BranchCreateRecoveryStatus};
+    use hawdb_storage::ownership::DatabaseDirectoryLease;
+
+    for durability in [
+        DurabilityPolicy::SyncOnEveryWrite,
+        DurabilityPolicy::SyncOnCheckpoint,
+    ] {
+        let project = Project::new();
+        let mut writer = Database::open_with_durability(&project.0, durability).unwrap();
+        writer.query("CREATE (:Memory {id: 'inherited'})").unwrap();
+        let child = pending_children(&project.0, &mut writer, 1)[0];
+        writer
+            .query("CREATE (:Memory {id: 'parent-only'})")
+            .unwrap();
+        let catalog_path = project.0.join("branches/catalog.hawdb");
+        let before = std::fs::read(&catalog_path).unwrap();
+        let lease =
+            DatabaseDirectoryLease::acquire(&project.0.join("branches").join(child.to_string()))
+                .unwrap();
+        let mut metadata = Database::open(&project.0).unwrap();
+        let report = metadata.branch_create_recovery_report().unwrap();
+        assert_eq!(report.pending_at_start, 1);
+        assert_eq!(report.entries[0].branch_id, child);
+        assert_eq!(report.entries[0].status, BranchCreateRecoveryStatus::Busy);
+        assert_eq!(std::fs::read(&catalog_path).unwrap(), before);
+        assert_eq!(
+            metadata
+                .file_descriptor_metrics()
+                .unwrap()
+                .admitted_runtimes,
+            1
+        );
+        drop(lease);
+
+        let report = metadata
+            .recover_pending_branch_creates(BranchCreateRecoveryLimits::default())
+            .unwrap();
+        assert_eq!(
+            report.entries[0].status,
+            BranchCreateRecoveryStatus::Completed
+        );
+        assert_eq!(
+            metadata
+                .file_descriptor_metrics()
+                .unwrap()
+                .admitted_runtimes,
+            1
+        );
+        assert!(matches!(
+            metadata.commit_epoch(),
+            Err(HawDBError::BranchBusy { .. })
+        ));
+        metadata
+            .query_sql_with_params("USE BRANCH ID $1", &[Value::Uuid(child)])
+            .unwrap();
+        assert_eq!(
+            values(&mut metadata),
+            vec![BTreeMap::from([(
+                "id".into(),
+                Value::String("inherited".into()),
+            )])]
+        );
+        assert_eq!(values(&mut writer).len(), 2);
+    }
+}
+
+#[test]
+fn writable_open_recovers_pending_children_with_aggregate_limits_and_no_runtime() {
+    use hawdb::{BranchCreateRecoveryLimits, BranchCreateRecoveryStatus};
+
+    for limits in [
+        BranchCreateRecoveryLimits {
+            max_creates: 1,
+            ..Default::default()
+        },
+        BranchCreateRecoveryLimits {
+            max_files: 1,
+            ..Default::default()
+        },
+        BranchCreateRecoveryLimits {
+            max_bytes: 1,
+            ..Default::default()
+        },
+    ] {
+        let project = Project::new();
+        let mut writer = Database::open(&project.0).unwrap();
+        let children = pending_children(&project.0, &mut writer, 2);
+        drop(writer);
+        let catalog_path = project.0.join("branches/catalog.hawdb");
+        let before = std::fs::read(&catalog_path).unwrap();
+        let mut metadata = Database::open_with_config(
+            &project.0,
+            DatabaseConfig {
+                max_open_files: 4,
+                branch_create_recovery_limits: limits,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_no_runtime(&metadata);
+        let report = metadata.branch_create_recovery_report().unwrap();
+        assert_eq!(report.pending_at_start, 2);
+        assert!(report.limit_exceeded);
+        assert!(report.admitted_files <= limits.max_files);
+        assert!(report.admitted_bytes <= limits.max_bytes);
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(report.unattempted, 1);
+        if limits.max_creates == 1 {
+            assert_eq!(
+                report.entries[0].status,
+                BranchCreateRecoveryStatus::Completed
+            );
+        } else {
+            assert_eq!(
+                report.entries[0].status,
+                BranchCreateRecoveryStatus::Retained
+            );
+            assert_eq!(std::fs::read(&catalog_path).unwrap(), before);
+        }
+        let retry = metadata
+            .recover_pending_branch_creates(BranchCreateRecoveryLimits::default())
+            .unwrap();
+        assert!(!retry.limit_exceeded);
+        assert!(retry
+            .entries
+            .iter()
+            .all(|entry| entry.status == BranchCreateRecoveryStatus::Completed));
+        for id in children {
+            assert_eq!(
+                metadata
+                    .describe_branch(BranchSelector::Id(id))
+                    .unwrap()
+                    .state,
+                hawdb::BranchLifecycleState::Ready
+            );
+        }
+        assert_no_runtime(&metadata);
+        assert!(metadata.file_descriptor_metrics().unwrap().high_water <= 4);
+        assert!(metadata
+            .recover_pending_branch_creates(BranchCreateRecoveryLimits::default())
+            .unwrap()
+            .entries
+            .is_empty());
+    }
+}
+
+#[test]
+fn pending_recovery_retains_corruption_and_aborts_only_known_missing_head_or_wal() {
+    use hawdb::BranchCreateRecoveryStatus;
+    use hawdb_storage::immutable_object::ImmutableObjectStore;
+    use hawdb_storage::sealed_root::SealedRoot;
+    use hawdb_storage::{artifact_files::wal_generation_file, branch_head::read_branch_head};
+
+    for damage in [
+        "head",
+        "wal",
+        "root",
+        "checkpoint",
+        "absent-head",
+        "absent-wal",
+    ] {
+        let project = Project::new();
+        let mut writer = Database::open(&project.0).unwrap();
+        writer.query("CREATE (:Memory {id: 'retained'})").unwrap();
+        let child = pending_children(&project.0, &mut writer, 1)[0];
+        drop(writer);
+        let directory = project.0.join("branches").join(child.to_string());
+        let head_path = directory.join("branch.head");
+        let head = read_branch_head(&head_path).unwrap();
+        let wal_path = directory.join(wal_generation_file(head.active_wal.generation));
+        let objects = ImmutableObjectStore::open(project.0.join("branches/objects")).unwrap();
+        let path = match damage {
+            "head" | "absent-head" => head_path.clone(),
+            "wal" | "absent-wal" => wal_path.clone(),
+            "root" => objects.object_path(head.sealed_root),
+            "checkpoint" => {
+                let root = SealedRoot::decode(&objects.read(head.sealed_root).unwrap()).unwrap();
+                objects.object_path(root.checkpoint_references[0])
+            }
+            _ => unreachable!(),
+        };
+        let missing_pair = damage.starts_with("absent-");
+        if missing_pair {
+            std::fs::remove_file(&path).unwrap();
+        } else {
+            let mut bytes = std::fs::read(&path).unwrap();
+            bytes[0] ^= 0xff;
+            std::fs::write(&path, bytes).unwrap();
+        }
+        let retained = if path == head_path {
+            &wal_path
+        } else {
+            &head_path
+        };
+        let evidence = std::fs::read(retained).unwrap();
+        let catalog_path = project.0.join("branches/catalog.hawdb");
+        let before = std::fs::read(&catalog_path).unwrap();
+        let mut database = Database::open(&project.0).unwrap();
+        assert_no_runtime(&database);
+        let report = database.branch_create_recovery_report().unwrap();
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(report.entries[0].branch_id, child);
+        assert_eq!(std::fs::read(retained).unwrap(), evidence);
+        if missing_pair {
+            assert_eq!(
+                report.entries[0].status,
+                BranchCreateRecoveryStatus::Aborted
+            );
+            assert!(!path.exists());
+        } else {
+            assert_eq!(
+                report.entries[0].status,
+                BranchCreateRecoveryStatus::Retained
+            );
+            assert!(report.entries[0].error.is_some());
+            assert_eq!(std::fs::read(&catalog_path).unwrap(), before);
+            assert!(database
+                .create_branch(BranchCreateRequest {
+                    name: Some("pending-0".into()),
+                    parent: BranchSelector::Name("main".into()),
+                    expected_source_commit_epoch: head.logical_commit_epoch,
+                    owner: None,
+                    idempotency_key: "recover-pending-0".into(),
+                })
+                .is_err());
+            assert_eq!(std::fs::read(&catalog_path).unwrap(), before);
+        }
+    }
+}
+
+#[test]
+fn readonly_pending_open_does_not_recreate_missing_directories_or_repair_receipts() {
+    use hawdb::BranchCreateRecoveryLimits;
+
+    let project = Project::new();
+    let mut writer = Database::open(&project.0).unwrap();
+    let child = pending_children(&project.0, &mut writer, 1)[0];
+    drop(writer);
+    let directory = project.0.join("branches").join(child.to_string());
+    std::fs::remove_dir_all(&directory).unwrap();
+    let catalog_path = project.0.join("branches/catalog.hawdb");
+    let before = std::fs::read(&catalog_path).unwrap();
+    let mut reader = Database::open_with_config(
+        &project.0,
+        DatabaseConfig {
+            read_only: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(reader.branch_create_recovery_report().is_none());
+    assert!(reader
+        .recover_pending_branch_creates(BranchCreateRecoveryLimits::default())
+        .is_err());
+    assert_eq!(std::fs::read(&catalog_path).unwrap(), before);
+    assert!(!directory.exists());
+    assert_no_runtime(&reader);
+}
+
+#[test]
+fn concurrent_pending_reports_and_retries_preserve_deferred_main_admission() {
+    use hawdb::{BranchCreateRecoveryLimits, BranchCreateRecoveryStatus, ConcurrentDatabase};
+    use hawdb_storage::ownership::DatabaseDirectoryLease;
+
+    let project = Project::new();
+    let mut writer = Database::open(&project.0).unwrap();
+    let child = pending_children(&project.0, &mut writer, 1)[0];
+    let lease =
+        DatabaseDirectoryLease::acquire(&project.0.join("branches").join(child.to_string()))
+            .unwrap();
+    let shared = ConcurrentDatabase::open(&project.0).unwrap();
+    let report = shared.branch_create_recovery_report().unwrap().unwrap();
+    assert_eq!(report.entries[0].status, BranchCreateRecoveryStatus::Busy);
+    drop(lease);
+    let report = shared
+        .recover_pending_branch_creates(BranchCreateRecoveryLimits::default())
+        .unwrap();
+    assert_eq!(report.entries[0].branch_id, child);
+    assert_eq!(
+        report.entries[0].status,
+        BranchCreateRecoveryStatus::Completed
+    );
+    assert_eq!(
+        shared.branch_create_recovery_report().unwrap(),
+        Some(report)
+    );
+    assert_eq!(
+        writer.file_descriptor_metrics().unwrap().admitted_runtimes,
+        1
+    );
+    assert!(matches!(
+        shared.commit_epoch(),
+        Err(HawDBError::BranchBusy { .. })
+    ));
+}
+
+#[test]
+fn stale_pending_recovery_does_not_recreate_a_reclaimed_successful_child() {
+    use hawdb::{BranchCreateRecoveryLimits, BranchCreateRecoveryStatus, BranchReclamationLimits};
+    use hawdb_storage::branch_project::ProjectMetadata;
+
+    let project = Project::new();
+    let mut writer = Database::open(&project.0).unwrap();
+    let child = pending_children(&project.0, &mut writer, 1)[0];
+    let stale = ProjectMetadata::open(&project.0, writer.config().max_open_files).unwrap();
+    writer
+        .recover_pending_branch_creates(BranchCreateRecoveryLimits::default())
+        .unwrap();
+    writer.delete_branch(BranchSelector::Id(child)).unwrap();
+    let report = writer
+        .reclaim_branch_storage(BranchReclamationLimits::default())
+        .unwrap();
+    assert_eq!(report.reclaimed_branch_directories, 1);
+    let directory = project.0.join("branches").join(child.to_string());
+    assert!(!directory.exists());
+    let catalog_path = project.0.join("branches/catalog.hawdb");
+    let before = std::fs::read(&catalog_path).unwrap();
+    let report = stale
+        .recover_pending_creates(BranchCreateRecoveryLimits::default())
+        .unwrap();
+    assert_eq!(
+        report.entries[0].status,
+        BranchCreateRecoveryStatus::Completed
+    );
+    assert!(!directory.exists());
+    assert_eq!(std::fs::read(&catalog_path).unwrap(), before);
 }
