@@ -184,6 +184,28 @@ fn blocking_inventory_is_sorted_and_deduplicated_across_branches() {
     assert!(blocking_operator_kinds(&PhysicalPlan::EmptyExec).is_empty());
 }
 
+#[test]
+fn blocking_inventory_visits_scoring_and_its_nested_input() {
+    let plan = PhysicalPlan::ScoringRerankExec {
+        score_column: "score".into(),
+        spec: hawdb_core::graph_rag::ScoringSpec::weighted_scores(1.0, 0.0),
+        limit: 2,
+        input: Box::new(PhysicalPlan::TopNExec {
+            items: vec![],
+            offset: 0,
+            limit: 4,
+            input: Box::new(PhysicalPlan::SortExec {
+                items: vec![],
+                input: Box::new(PhysicalPlan::EmptyExec),
+            }),
+        }),
+    };
+    assert_eq!(
+        blocking_operator_kinds(&plan),
+        ["ScoringRerankExec", "SortExec", "TopNExec"]
+    );
+}
+
 // The reference model stores the input journal and computes totals in a wider
 // integer at readout; it does not reuse the observer's incremental updates.
 fn capped_sum(values: impl Iterator<Item = usize>) -> usize {

@@ -148,6 +148,99 @@ fn spilled_top_n_output_does_not_compete_with_merge_heap_account() {
     assert_spilled_output_has_its_own_account(true);
 }
 
+fn check_in_memory_output_accounting(top_n: bool) {
+    let memory = ExecutionMemoryConfig {
+        blocking_operator_bytes: NonZeroUsize::new(2048).unwrap(),
+        batch_payload_bytes: NonZeroUsize::new(200).unwrap(),
+        batch_rows: NonZeroUsize::new(4).unwrap(),
+        query_memory_bytes: NonZeroUsize::new(2048).unwrap(),
+        ..ExecutionMemoryConfig::default()
+    };
+    let catalog = Catalog::default();
+    let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+    let mut source = Rows(
+        (0..4)
+            .rev()
+            .map(|value| Binding::scalar("value", Value::Int(value)))
+            .collect(),
+    );
+    let items = [SortItem {
+        key: SortKey::Column("value".into()),
+        direction: SortDirection::Asc,
+    }];
+    let context = BlockingExecutionContext {
+        catalog: &catalog,
+        memory: &memory,
+        memory_ledger: &ledger,
+        task_context: None,
+        observer: &NoopExecutionObserver,
+    };
+    let mut output = Vec::new();
+    let mut emit = |batch: BindingBatch| {
+        assert!(batch.len() <= memory.batch_rows.get());
+        assert!(
+            batch.iter().map(binding_memory_bytes).sum::<usize>()
+                <= memory.batch_payload_bytes.get(),
+            "sorted output must respect the payload cap"
+        );
+        output.extend(batch);
+        Ok(BatchControl::Continue)
+    };
+    let result = if top_n {
+        stream_top_n_batches(
+            &PhysicalPlan::EmptyExec,
+            &items,
+            1,
+            2,
+            &mut source,
+            context,
+            ExecutionLimit::unlimited(),
+            &mut emit,
+        )
+    } else {
+        stream_sort_batches(
+            &PhysicalPlan::EmptyExec,
+            &items,
+            &mut source,
+            context,
+            ExecutionLimit::unlimited(),
+            &mut emit,
+        )
+    };
+    result.unwrap();
+    let expected: Vec<_> = if top_n { 1..3 } else { 0..4 }
+        .map(|value| Binding::scalar("value", Value::Int(value)))
+        .collect();
+    assert_eq!(output, expected);
+    let snapshot = ledger.snapshot();
+    assert_eq!(snapshot.used_bytes, 0);
+    assert!(snapshot.peak_bytes <= memory.query_memory_bytes.get());
+    assert!(
+        snapshot
+            .classes
+            .iter()
+            .any(|class| class.class == QueryMemoryClass::PipelineBatch && class.peak_bytes > 0),
+        "sorted output must acquire a pipeline account"
+    );
+    assert!(
+        snapshot
+            .classes
+            .iter()
+            .all(|class| class.class != QueryMemoryClass::SpillStaging || class.peak_bytes == 0),
+        "this guard must exercise the in-memory path"
+    );
+}
+
+#[test]
+fn in_memory_sort_obeys_output_payload_and_transfers_memory_ownership() {
+    check_in_memory_output_accounting(false);
+}
+
+#[test]
+fn in_memory_top_n_obeys_output_payload_and_transfers_memory_ownership() {
+    check_in_memory_output_accounting(true);
+}
+
 #[derive(Clone, Copy, Default)]
 enum Exit {
     #[default]

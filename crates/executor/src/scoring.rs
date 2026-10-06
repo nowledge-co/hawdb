@@ -182,24 +182,83 @@ mod tests {
 
     #[test]
     fn rerank_keeps_the_best_rows_with_a_deterministic_tie_break() {
-        let row = |value: i64| Binding {
-            values: BTreeMap::from([("value".to_string(), Value::Int(value))]),
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+        use crate::observer::NoopExecutionObserver;
+        use crate::pipeline::{
+            BatchControl, BatchExecutionContext, BindingBatch, BindingBatchSource,
         };
-        let mut retained = vec![
-            (1.0, 0usize, row(0)),
-            (3.0, 1, row(1)),
-            (3.0, 2, row(2)),
-            (2.0, 3, row(3)),
-        ];
-        crate::transform::retain_best_scored(&mut retained, 3);
-        let order: Vec<usize> = retained.iter().map(|(_, order, _)| *order).collect();
-        // Highest score first, and equal scores keep their input order.
-        assert_eq!(order, vec![1, 2, 3]);
-        assert_eq!(retained.len(), 3);
+        use crate::{ExecutionLimit, ExecutionMemoryConfig, QueryMemoryLedger};
+        use hawdb_core::{Catalog, Result};
+        use hawdb_plan_cypher::PhysicalPlan;
 
-        crate::transform::retain_best_scored(&mut retained, 0);
-        assert!(retained.is_empty());
+        struct Source(Vec<Binding>);
+        impl BindingBatchSource for Source {
+            fn execute(
+                &mut self,
+                _: &PhysicalPlan,
+                limit: ExecutionLimit,
+                emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+            ) -> Result<BatchControl> {
+                assert_eq!(limit, ExecutionLimit::unlimited());
+                emit(std::mem::take(&mut self.0))
+            }
+        }
+        let original: Vec<_> = [1.0, 3.0, 3.0, 2.0]
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, score)| {
+                binding([
+                    ("value", Value::Int(ordinal as i64)),
+                    ("score", Value::Float(score)),
+                ])
+            })
+            .collect();
+        let catalog = Catalog::default();
+        let memory = ExecutionMemoryConfig::default();
+        let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+        let spec = ScoringSpec {
+            terms: vec![ScoringTerm {
+                weight: 1.0,
+                feature: ScoreFeature::SearchScore,
+            }],
+            decay: Vec::new(),
+        };
+        for limit in [3, 0] {
+            let mut source = Source(original.clone());
+            let mut retained = Vec::new();
+            crate::transform::stream_scoring_rerank_batches(
+                &PhysicalPlan::EmptyExec,
+                "score",
+                &spec,
+                limit,
+                &mut source,
+                BatchExecutionContext {
+                    catalog: &catalog,
+                    memory: &memory,
+                    memory_ledger: &ledger,
+                    task_context: None,
+                    observer: &NoopExecutionObserver,
+                },
+                ExecutionLimit::unlimited(),
+                &mut |batch| {
+                    retained.extend(batch);
+                    Ok(BatchControl::Continue)
+                },
+            )
+            .unwrap();
+            let expected = if limit == 0 {
+                Vec::new()
+            } else {
+                vec![Value::Int(1), Value::Int(2), Value::Int(3)]
+            };
+            assert_eq!(
+                retained
+                    .iter()
+                    .map(|row| row.values["value"].clone())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(retained.len(), limit);
+            assert_eq!(ledger.snapshot().used_bytes, 0);
+        }
     }
 }

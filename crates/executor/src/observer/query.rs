@@ -197,46 +197,23 @@ pub fn blocking_operator_kinds(plan: &PhysicalPlan) -> Vec<String> {
 }
 
 fn collect_blocking_operator_kinds(plan: &PhysicalPlan, output: &mut BTreeSet<String>) {
-    match plan {
-        PhysicalPlan::GraphAlgorithm { .. } | PhysicalPlan::VectorSeedScan { .. } => {
-            output.insert(plan.kind().as_str().to_string());
+    visit_plan_with_ids(plan, &mut |_, operator| {
+        if matches!(
+            operator,
+            PhysicalPlan::GraphAlgorithm { .. }
+                | PhysicalPlan::VectorSeedScan { .. }
+                | PhysicalPlan::ShortestPathExec { .. }
+                | PhysicalPlan::AggregateExec { .. }
+                | PhysicalPlan::DistinctExec { .. }
+                | PhysicalPlan::SortExec { .. }
+                | PhysicalPlan::TopNExec { .. }
+                | PhysicalPlan::ScoringRerankExec { .. }
+                | PhysicalPlan::NodeCartesianProductExec { .. }
+                | PhysicalPlan::HashJoinExec { .. }
+        ) {
+            output.insert(operator.kind().as_str().to_string());
         }
-        PhysicalPlan::ShortestPathExec { .. } => {
-            output.insert("ShortestPathExec".to_string());
-        }
-        PhysicalPlan::AggregateExec { input, .. } => {
-            output.insert("AggregateExec".to_string());
-            collect_blocking_operator_kinds(input, output);
-        }
-        PhysicalPlan::DistinctExec { input } => {
-            output.insert("DistinctExec".to_string());
-            collect_blocking_operator_kinds(input, output);
-        }
-        PhysicalPlan::SortExec { input, .. } => {
-            output.insert("SortExec".to_string());
-            collect_blocking_operator_kinds(input, output);
-        }
-        PhysicalPlan::TopNExec { input, .. } => {
-            output.insert("TopNExec".to_string());
-            collect_blocking_operator_kinds(input, output);
-        }
-        PhysicalPlan::NodeCartesianProductExec { left, right }
-        | PhysicalPlan::HashJoinExec { left, right, .. } => {
-            output.insert(plan.kind().as_str().to_string());
-            collect_blocking_operator_kinds(left, output);
-            collect_blocking_operator_kinds(right, output);
-        }
-        PhysicalPlan::NodeColumnLookupExec { input, .. }
-        | PhysicalPlan::AdjacencyExpandExec { input, .. }
-        | PhysicalPlan::AdjacencyExistsExec { input, .. }
-        | PhysicalPlan::OptionalDegreeExec { input, .. }
-        | PhysicalPlan::FilterExec { input, .. }
-        | PhysicalPlan::ProjectExec { input, .. }
-        | PhysicalPlan::LimitExec { input, .. } => {
-            collect_blocking_operator_kinds(input, output);
-        }
-        _ => {}
-    }
+    });
 }
 
 #[cfg(test)]
