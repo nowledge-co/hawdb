@@ -595,6 +595,7 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: &BTreeMap<String, Val
         }
         PhysicalPlan::NodeColumnLookupExec { input, .. }
         | PhysicalPlan::DistinctExec { input }
+        | PhysicalPlan::ScoringRerankExec { input, .. }
         | PhysicalPlan::LimitExec { input, .. } => bind_physical_plan(input, parameters)?,
         PhysicalPlan::IndexNodeSeek { value, .. } => bind_value(value, parameters)?,
         PhysicalPlan::IndexNodeMultiSeek { values, .. } => {
@@ -1139,6 +1140,62 @@ mod tests {
 
         assert!(rebound.explain(0).contains("second"));
         assert!(!rebound.explain(0).contains("hawdb_parameter_slot"));
+    }
+
+    #[test]
+    fn scoring_rerank_rebinds_its_input_and_rejects_missing_parameter_slots() {
+        let spec = hawdb_core::graph_rag::ScoringSpec::weighted_scores(2.0, 1.0);
+        let template = PhysicalPlan::ScoringRerankExec {
+            score_column: "seed_score".into(),
+            spec: spec.clone(),
+            limit: 3,
+            input: Box::new(PhysicalPlan::IndexNodeSeek {
+                variable: "n".into(),
+                label: "Item".into(),
+                property: "scope".into(),
+                value: parameter_marker("scope", &Value::String("template".into()), &[]),
+            }),
+        };
+        for scope in ["first", "second"] {
+            let rebound = bind_physical_plan_parameters(
+                &template,
+                &BTreeMap::from([("scope".into(), Value::String(scope.into()))]),
+                true,
+            )
+            .unwrap();
+            let PhysicalPlan::ScoringRerankExec {
+                score_column,
+                spec: rebound_spec,
+                limit,
+                input,
+            } = rebound
+            else {
+                panic!("scoring operator must be preserved");
+            };
+            assert_eq!(score_column, "seed_score");
+            assert_eq!(rebound_spec, spec);
+            assert_eq!(limit, 3);
+            let PhysicalPlan::IndexNodeSeek { value, .. } = *input else {
+                panic!("scoring input seek must be preserved");
+            };
+            assert_eq!(
+                value,
+                Value::String(scope.into()),
+                "scoring input must use current request values"
+            );
+        }
+        assert!(bind_physical_plan_parameters(&template, &BTreeMap::new(), true).is_err());
+        let PhysicalPlan::ScoringRerankExec { input, .. } = &template else {
+            unreachable!()
+        };
+        let PhysicalPlan::IndexNodeSeek { value, .. } = input.as_ref() else {
+            unreachable!()
+        };
+        assert_eq!(
+            *value,
+            parameter_marker("scope", &Value::String("template".into()), &[]),
+            "binding must not mutate the retained template"
+        );
     }
 
     #[test]

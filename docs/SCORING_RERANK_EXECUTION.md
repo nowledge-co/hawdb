@@ -72,14 +72,17 @@ core oracle.
 | Invalid specification / arithmetic overflow | Separate precise validation and finite-result bypasses at `396a6c2`; unchanged guard fails on source-read count 1 vs 0 and unexpected success, respectively | Reject invalid specs before reading, and reject finite-input overflow before output |
 | Complete stream / combined-property late winner | Precise candidate cap at two and SearchScore-only bypass at `396a6c2`; complete output becomes ordinals 1,0 instead of 1,2 and winner 0 instead of 3 | No seed-only early truncation or loss of graph property contribution; old-code positive PASS is not relabeled RED |
 | Signed-zero ties and score bits | `396a6c2` production plus new guard chooses ordinal 1 instead of 0 | Numerical ties across batch boundaries and K=1/2; original reported score bits; expanded native oracle also checks zeros through actual spills |
-| Capped resident parent admission | `396a6c2` production plus new guard rejects ProjectExec at 1,079 bytes against a 1,024-byte cap | Callback admission while discarded child rows must already be uncharged, rather than only checking eventual cleanup |
+| Capped resident parent admission | `396a6c2` partial-batch guard rejects ProjectExec at 1,079 bytes against 1,024; at `1a18e8f`, changing only batch rows 4 to 1 reproduces the same failure independently for Sort and TopN | Partial and full terminal batches (cap 1, batch rows 1/4; cap 2, batch rows 2 and query budget 800); exact prefix, successful parent admission and zero retained ledger |
+| Scoring input parameter binding | `1a18e8f` retains a parameter-slot Map instead of current request value `first` | Two request values beneath the scoring parent, missing-slot rejection, unchanged score specification/operator and immutable stored template |
 
-Focused replay/verification uses the registered executor unit owner:
+Focused replay/verification uses the existing executor and plan-cache unit owners:
 
 ```sh
 cargo test --locked -p hawdb-executor --lib transform::tests::scoring -- --nocapture
 cargo test --locked -p hawdb-executor --lib blocking::sort::tests -- --nocapture
+cargo test --locked -p hawdb-plan-cache --lib
 bazel test //crates/executor:hawdb_executor_tests --nocache_test_results --test_output=errors
+bazel test //crates/plan-cache:hawdb_plan_cache_tests --nocache_test_results --test_output=errors
 ```
 
 The complete-stream bypass keeps all inputs and terminal assertions; only the
@@ -89,15 +92,17 @@ RED and GREEN are behavioral outcomes, not compiler failures or assertion
 mutations. The final exact head, commands and receipts belong to the delivery
 packet and PR; the wider required fuzz result remains a separate gate.
 
-CI owner is the existing hawdb-executor unit target in
+CI owners are the existing hawdb-executor and hawdb-plan-cache unit targets in
 `ci/skein-bazel-test-crates`; implementing owner is @hawkingrei, with the requested
 human contract review recorded in the PR. The BUILD source glob and unit-suite
 registration already discover these tests; no CI job, retry, feature or timeout
 is added. Existing manual differential owners stay local-only. On the recorded
 macOS focused run, scoring's eight tests took 1.66 seconds and sort's nine
 ordinary tests 7.03 seconds (one manual test ignored). These are observations,
-not CI p95 or an incremental before/after claim. The small guard additions fit
-the existing unit target budget; CI duration still needs its own receipt.
+not CI p95 or an incremental before/after claim. The separate plan-cache suite, including the new binding guard, executed 21
+tests in 0.01 seconds in the isolated native replay. These measurements are not
+an incremental CI duration claim. The small guard additions fit the existing
+unit targets; exact-head CI duration still needs its own receipt.
 
 Nonspill cases use isolated in-memory ledgers. Native spill qualification uses
 one exclusively created synthetic temporary directory and removes only that

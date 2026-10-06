@@ -270,76 +270,81 @@ fn in_memory_top_n_obeys_output_payload_and_transfers_memory_ownership() {
 
 #[test]
 fn capped_resident_sort_and_top_n_release_discarded_rows_before_parent_admission() {
-    for top_n in [false, true] {
-        let memory = ExecutionMemoryConfig {
-            blocking_operator_bytes: NonZeroUsize::new(1024).unwrap(),
-            batch_payload_bytes: NonZeroUsize::new(512).unwrap(),
-            batch_rows: NonZeroUsize::new(4).unwrap(),
-            query_memory_bytes: NonZeroUsize::new(1024).unwrap(),
-            ..ExecutionMemoryConfig::default()
-        };
-        let catalog = Catalog::default();
-        let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
-        let mut source = Rows(
-            (0..4)
-                .rev()
-                .map(|value| Binding::scalar("value", Value::Int(value)))
-                .collect(),
-        );
-        let items = [SortItem {
-            key: SortKey::Column("value".into()),
-            direction: SortDirection::Asc,
-        }];
-        let context = BlockingExecutionContext {
-            catalog: &catalog,
-            memory: &memory,
-            memory_ledger: &ledger,
-            task_context: None,
-            observer: &NoopExecutionObserver,
-        };
-        let mut output = Vec::new();
-        let mut emit = |batch: BindingBatch| {
-            let _parent = crate::pipeline::TransformBatchBuilder::new(
-                "ProjectExec",
-                memory.batch_rows.get(),
-                memory.batch_payload_bytes,
-                &ledger,
-            )?;
-            output.extend(batch);
-            Ok(BatchControl::Continue)
-        };
-        let cap = ExecutionLimit {
-            output_rows: Some(1),
-        };
-        let result = if top_n {
-            stream_top_n_batches(
-                &PhysicalPlan::EmptyExec,
-                &items,
-                0,
-                4,
-                &mut source,
-                context,
-                cap,
-                &mut emit,
-            )
-        } else {
-            stream_sort_batches(
-                &PhysicalPlan::EmptyExec,
-                &items,
-                &mut source,
-                context,
-                cap,
-                &mut emit,
-            )
-        };
-        result.expect("discarded retention must not reject parent output admission");
-        assert_eq!(output, vec![Binding::scalar("value", Value::Int(0))]);
-        assert_eq!(ledger.snapshot().used_bytes, 0);
-        assert!(ledger
-            .snapshot()
-            .classes
-            .iter()
-            .all(|class| class.class != QueryMemoryClass::SpillStaging || class.peak_bytes == 0));
+    for (batch_rows, result_rows, query_bytes) in [(4, 1, 1024), (1, 1, 1024), (2, 2, 800)] {
+        for top_n in [false, true] {
+            let memory = ExecutionMemoryConfig {
+                blocking_operator_bytes: NonZeroUsize::new(1024).unwrap(),
+                batch_payload_bytes: NonZeroUsize::new(512).unwrap(),
+                batch_rows: NonZeroUsize::new(batch_rows).unwrap(),
+                query_memory_bytes: NonZeroUsize::new(query_bytes).unwrap(),
+                ..ExecutionMemoryConfig::default()
+            };
+            let catalog = Catalog::default();
+            let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+            let mut source = Rows(
+                (0..4)
+                    .rev()
+                    .map(|value| Binding::scalar("value", Value::Int(value)))
+                    .collect(),
+            );
+            let items = [SortItem {
+                key: SortKey::Column("value".into()),
+                direction: SortDirection::Asc,
+            }];
+            let context = BlockingExecutionContext {
+                catalog: &catalog,
+                memory: &memory,
+                memory_ledger: &ledger,
+                task_context: None,
+                observer: &NoopExecutionObserver,
+            };
+            let mut output = Vec::new();
+            let mut emit = |batch: BindingBatch| {
+                let _parent = crate::pipeline::TransformBatchBuilder::new(
+                    "ProjectExec",
+                    memory.batch_rows.get(),
+                    memory.batch_payload_bytes,
+                    &ledger,
+                )?;
+                output.extend(batch);
+                Ok(BatchControl::Continue)
+            };
+            let cap = ExecutionLimit {
+                output_rows: Some(result_rows),
+            };
+            let result = if top_n {
+                stream_top_n_batches(
+                    &PhysicalPlan::EmptyExec,
+                    &items,
+                    0,
+                    4,
+                    &mut source,
+                    context,
+                    cap,
+                    &mut emit,
+                )
+            } else {
+                stream_sort_batches(
+                    &PhysicalPlan::EmptyExec,
+                    &items,
+                    &mut source,
+                    context,
+                    cap,
+                    &mut emit,
+                )
+            };
+            result.expect("discarded retention must not reject parent output admission");
+            assert_eq!(
+                output,
+                (0..result_rows)
+                    .map(|value| Binding::scalar("value", Value::Int(value as i64)))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(ledger.snapshot().used_bytes, 0);
+            assert!(ledger.snapshot().classes.iter().all(|class| class.class
+                != QueryMemoryClass::SpillStaging
+                || class.peak_bytes == 0));
+        }
     }
 }
 

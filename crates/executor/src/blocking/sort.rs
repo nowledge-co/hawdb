@@ -485,6 +485,9 @@ fn emit_sorted_output(
             return Ok(BatchControl::Stop);
         }
         emitted += 1;
+        if emitted == limit {
+            break;
+        }
         if output.is_full() && output.emit(emit)? == BatchControl::Stop {
             return Ok(BatchControl::Stop);
         }
