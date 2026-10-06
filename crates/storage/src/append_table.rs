@@ -23,6 +23,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 mod binary;
+mod checkpoint;
 mod codec;
 mod publication;
 mod segment;
@@ -30,6 +31,7 @@ mod segment;
 pub use codec::{
     decode_append_wal_batch, encode_append_wal_batch, AppendDecodeLimits, AppendWalBatch,
 };
+pub(crate) use publication::AppendCheckpointPublicationRequest;
 pub use publication::{
     append_generation_manifest_file, append_segment_file, AppendGenerationArtifacts,
     AppendGenerationManifest, AppendGenerationReader, AppendPublicationConfig,

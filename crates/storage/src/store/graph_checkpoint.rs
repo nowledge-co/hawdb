@@ -741,19 +741,25 @@ impl GraphStore {
             work.checkpoint().map_err(HawDBError::from_storage_error)?;
             let append_rows = self
                 .append_state
-                .checkpoint_rows(self.append_publication_config.segment.max_rows)
+                .checkpoint_rows_with_work_context(
+                    self.append_publication_config.segment.max_rows,
+                    work,
+                )
                 .map_err(HawDBError::from_storage_error)?;
-            let append_report = AppendPublisher::publish_candidate_with_state(
-                durable.root_path(),
-                generation,
-                commit_epoch,
-                self.append_generation_reader.as_ref(),
-                AppendPublicationState::new(
-                    self.append_state.schemas(),
-                    self.append_state.generated_order_watermarks(),
-                ),
-                &append_rows,
-                self.append_publication_config,
+            let append_report = AppendPublisher::publish_checkpoint_with_work_context(
+                hawdb_storage::append_table::AppendCheckpointPublicationRequest {
+                    directory: durable.root_path(),
+                    generation,
+                    source_commit_epoch: commit_epoch,
+                    previous: self.append_generation_reader.as_ref(),
+                    state: AppendPublicationState::new(
+                        self.append_state.schemas(),
+                        self.append_state.generated_order_watermarks(),
+                    ),
+                    rows: &append_rows,
+                    config: self.append_publication_config,
+                },
+                work,
             )
             .map_err(HawDBError::from_storage_error)?;
             let checkpoint_append_reader = AppendGenerationReader::open_bound(

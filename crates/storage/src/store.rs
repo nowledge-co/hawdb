@@ -9574,6 +9574,162 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_units_append_capture_candidate_stops_before_publication_and_reopens_all_rows() {
+        use crate::append_table::{
+            append_generation_manifest_file, append_segment_file, AppendOrderMode, AppendTableRow,
+            AppendTableSchema, AppendTransaction, AppendWrite,
+        };
+        use crate::background::{CheckpointWorkContext, CheckpointWorkProbe};
+        use hawdb_core::RuntimeTaskContext;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+
+        let path = unique_test_dir("checkpoint_append_capture_cancel");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        let schema = AppendTableSchema {
+            name: "events".into(),
+            columns: [
+                ("stream", RelationalScalarType::BigInt),
+                ("sequence", RelationalScalarType::BigInt),
+                ("payload", RelationalScalarType::Bytea),
+            ]
+            .into_iter()
+            .map(|(name, scalar_type)| RelationalColumnSchema {
+                name: name.into(),
+                scalar_type,
+                nullable: false,
+                default: None,
+            })
+            .collect(),
+            partition_key: vec!["stream".into()],
+            order_key: vec!["sequence".into()],
+            order_mode: AppendOrderMode::CallerProvided,
+        };
+        let row = |sequence| {
+            RelationalRow::new(vec![
+                RelationalValue::BigInt(sequence % 7),
+                RelationalValue::BigInt(sequence),
+                RelationalValue::Bytea(vec![sequence as u8; 17]),
+            ])
+        };
+        store
+            .append_transaction(AppendTransaction {
+                writes: vec![
+                    AppendWrite::CreateTable {
+                        schema: schema.clone(),
+                    },
+                    AppendWrite::Append {
+                        table: "events".into(),
+                        rows: (0..64).map(row).collect(),
+                    },
+                ],
+            })
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        store
+            .append_transaction(AppendTransaction {
+                writes: vec![AppendWrite::Append {
+                    table: "events".into(),
+                    rows: (64..128).map(row).collect(),
+                }],
+            })
+            .unwrap();
+        assert_eq!(store.append_state.live_rows(), 64);
+        let identity = store.checkpoint_source_identity();
+        let durable = store.durable.as_ref().unwrap();
+        let generation = durable.next_checkpoint_generation().unwrap();
+        let staging = path.join(format!(".checkpoint.{generation}.prepare"));
+        let wal_path = durable.wal_path.clone();
+        let manifest_path = durable.manifest_path().to_path_buf();
+        let wal = std::fs::read(&wal_path).unwrap();
+        let manifest = std::fs::read(&manifest_path).unwrap();
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        });
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        let observer = Arc::new(CancelCheckpointAtFile {
+            probe: probe.clone(),
+            path: staging.clone(),
+            observed_file: Default::default(),
+            completed_after_file: Default::default(),
+            cancel_after_file: 17,
+            file_bytes_at_cancellation: Default::default(),
+        });
+        scheduler.set_telemetry_sink(Some(observer.clone()));
+        let work = CheckpointWorkContext::new(
+            RuntimeTaskContext::without_deadline(probe.cancellation.clone())
+                .with_io_wave_controller(probe.clone()),
+        )
+        .with_scheduler(scheduler.clone());
+        let source = store.checkpoint_source();
+        let error = source
+            .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
+            .unwrap_err();
+        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert!(observer.observed_file.load(Ordering::SeqCst));
+        assert_eq!(observer.completed_after_file.load(Ordering::SeqCst), 17);
+        assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
+        probe.assert_released(&scheduler);
+        source.ensure_usable().unwrap();
+        drop(source);
+        assert_eq!(store.checkpoint_source_identity(), identity);
+        assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+        assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
+        assert!(!staging.exists());
+        assert!(!path.join(append_segment_file(generation)).exists());
+        assert!(!path
+            .join(append_generation_manifest_file(generation))
+            .exists());
+        store.ensure_usable().unwrap();
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate_with_work_context(
+                &catalog,
+                &retry.context(scheduler.clone()),
+            )
+            .unwrap()
+            .unwrap();
+        drop(source);
+        let captured = store.checkpoint_source();
+        candidate.catch_up(&captured).unwrap();
+        drop(captured);
+        store
+            .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
+            .unwrap();
+        drop(candidate);
+        retry.assert_released(&scheduler);
+        drop(store);
+        let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(recovered.append_state.schema("events"), Some(&schema));
+        let mut count = 0;
+        for stream in 0..7i64 {
+            let partition = RelationalKey(vec![RelationalValue::BigInt(stream)]);
+            let actual = recovered
+                .read_append_partition("events", &partition, None, 128)
+                .unwrap();
+            let expected = (0..128)
+                .filter(|sequence| sequence % 7 == stream)
+                .map(|sequence| AppendTableRow {
+                    table: "events".into(),
+                    partition_key: partition.clone(),
+                    order_key: RelationalKey(vec![RelationalValue::BigInt(sequence)]),
+                    row: row(sequence),
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual.rows, expected);
+            count += actual.rows.len();
+        }
+        assert_eq!(count, 128);
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn checkpoint_units_cancel_native_tombstone_run_before_survivor_and_retry() {
         use crate::background::{CheckpointWorkContext, CheckpointWorkProbe};
         use hawdb_core::RuntimeTaskContext;

@@ -345,6 +345,26 @@ individual key/value size, map/vector allocations and error/drop cleanup still
 lack hard byte bounds. Statistics serialization and final runtime adoption also
 remain outside these builder units. No whole-candidate bound is claimed.
 
+Live append-row capture now admits batch traversal and each row before
+copying its table/key ownership. Row payloads remain shared. Sorting uses runs
+of at most 1,024 rows, one admitted heap-merge output record, and one adjacent
+ordering check per unit, preserving table/partition/order semantics and the
+existing row-limit/duplicate/count errors. The candidate calls this controlled
+capture path. Complete captured vectors/runs remain retained; individual key
+size, allocator/drop costs, append segment encoding, compaction, manifests,
+publication and reopening still lack complete builder/resource bounds. These
+capture units do not justify releasing the owner's whole-candidate permit.
+
+Private append artifact publication now binds directory creation, exclusive
+owned temporary creation, 64 KiB writes, synchronization and durable rename to
+the admitted task's I/O waves. Cleanup arms only after creation and disarms
+once rename completes; interrupted earlier temporary evidence is preserved,
+and a lost reply after rename retains the complete published private artifact.
+Ordinary publication keeps its existing writer path and bytes. Validation,
+segment/overflow encoding, compaction, schema/manifest copying and hashing,
+reader mounting and retained cleanup/resource accounting remain uncontrolled;
+this is an I/O step boundary rather than a complete append-build bound.
+
 `HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
 two schema/data transactions under both durability policies. Its complete
 configured safety graph passed TLC (34,275 distinct states). Five deliberately
