@@ -21447,6 +21447,7 @@ impl DatabaseSession<'_> {
         let optimized =
             self.db
                 .optimized_explain_query_plan(cypher_text, &explain.statement, parameters)?;
+        let options = query_runtime::QueryExecutionOptions::for_bounded_read(None, None, None);
         let inner_statement_kind = statement_kind(statement_body(&explain.statement));
         if explain.analyze {
             if executor::is_mutation_plan(&optimized.physical_plan)? {
@@ -21476,25 +21477,21 @@ impl DatabaseSession<'_> {
             );
             self.db.poison_on_storage_error(&profiled);
             let profiled = profiled?;
-            return Ok(QueryOutput {
-                rows: vec![explain_analyze_output_row(
-                    &optimized,
-                    work_request,
-                    inner_statement_kind,
-                    profiled.rows.len(),
-                    &profiled.profile,
-                )]
-                .into(),
-            });
-        }
-        Ok(QueryOutput {
-            rows: vec![explain_output_row(
+            let row = explain_analyze_output_row(
                 &optimized,
                 work_request,
                 inner_statement_kind,
-            )]
-            .into(),
-        })
+                profiled.rows.len(),
+                &profiled.profile,
+            );
+            drop(profiled.rows);
+            return explain::admit_explain_output(row, &self.db.config, options);
+        }
+        explain::admit_explain_output(
+            explain_output_row(&optimized, work_request, inner_statement_kind),
+            &self.db.config,
+            options,
+        )
     }
 }
 
@@ -22122,29 +22119,25 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
             let profiled = profiled?;
             query_runtime::query_runtime_checkpoint(task_context)?;
             let row_count = profiled.rows.len();
+            let row = explain_analyze_output_row(
+                &optimized,
+                work_request,
+                inner_statement_kind,
+                row_count,
+                &profiled.profile,
+            );
+            drop(profiled.rows);
             return Ok(BoundedReadQueryOutput {
-                output: QueryOutput {
-                    rows: vec![explain_analyze_output_row(
-                        &optimized,
-                        work_request,
-                        inner_statement_kind,
-                        row_count,
-                        &profiled.profile,
-                    )]
-                    .into(),
-                },
+                output: explain::admit_explain_output(row, &self.config, options)?,
                 execution_profile: profiled.profile,
             });
         }
         Ok(BoundedReadQueryOutput {
-            output: QueryOutput {
-                rows: vec![explain_output_row(
-                    &optimized,
-                    work_request,
-                    inner_statement_kind,
-                )]
-                .into(),
-            },
+            output: explain::admit_explain_output(
+                explain_output_row(&optimized, work_request, inner_statement_kind),
+                &self.config,
+                options,
+            )?,
             execution_profile: empty_read_execution_profile(),
         })
     }

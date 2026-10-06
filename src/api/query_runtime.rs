@@ -878,25 +878,21 @@ impl Database {
                     )
                 },
             )?;
-            return Ok(QueryOutput {
-                rows: vec![explain_analyze_output_row(
-                    &optimized,
-                    work_request,
-                    inner_statement_kind,
-                    profiled.rows.len(),
-                    &profiled.profile,
-                )]
-                .into(),
-            });
-        }
-        Ok(QueryOutput {
-            rows: vec![explain_output_row(
+            let row = explain_analyze_output_row(
                 &optimized,
                 work_request,
                 inner_statement_kind,
-            )]
-            .into(),
-        })
+                profiled.rows.len(),
+                &profiled.profile,
+            );
+            drop(profiled.rows);
+            return super::explain::admit_explain_output(row, &self.config, options);
+        }
+        super::explain::admit_explain_output(
+            explain_output_row(&optimized, work_request, inner_statement_kind),
+            &self.config,
+            options,
+        )
     }
 }
 

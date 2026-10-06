@@ -542,6 +542,14 @@ mod tests {
         );
         assert!(matches!(
             database.query_request(
+                QueryRequest::new(query)
+                    .with_params(&params)
+                    .with_scoring(&score)
+            ),
+            Err(HawDBError::Semantic(_))
+        ));
+        assert!(matches!(
+            database.query_request(
                 QueryRequest::new("CREATE (:Memory {id: 'rejected'})").with_scoring(&score)
             ),
             Err(HawDBError::Semantic(_))
@@ -679,5 +687,128 @@ mod tests {
         assert!(snapshot
             .query_request(request.with_task_context(&context))
             .is_err());
+    }
+
+    fn assert_explain_report_limit(snapshot: bool, analyze: bool, payload: bool) {
+        let mut database = fixture();
+        let params = parameters("x");
+        // K=0 leaves no data output, so ANALYZE must fail on its report alone.
+        let program = scoring(ScoringCombination::WeightedSum, 1.0, 0.0)
+            .program()
+            .clone();
+        let scoring = ScoringRequest::new(program, "score", 0)
+            .unwrap()
+            .with_reference_time_millis(2_000);
+        let cypher = format!("EXPLAIN {}{QUERY}", if analyze { "ANALYZE " } else { "" });
+        let request = QueryRequest::new(&cypher)
+            .with_params(&params)
+            .with_scoring(&scoring);
+        let limits = QueryStreamOptions {
+            max_rows: (!payload).then_some(0),
+            max_payload_bytes: payload.then_some(1),
+        };
+        let result = if snapshot {
+            let mut transaction = database.begin_read_transaction().unwrap();
+            let output = transaction.query_request(request).unwrap();
+            assert_eq!(output.rows.len(), 1);
+            assert!(output.payload_bytes() > 1);
+            if analyze {
+                assert_eq!(output.rows[0].get("row_count"), Some(&Value::Int(0)));
+            }
+            transaction.query_request(request.with_output_limits(limits))
+        } else {
+            let output = database.query_request(request).unwrap();
+            assert_eq!(output.rows.len(), 1);
+            assert!(output.payload_bytes() > 1);
+            if analyze {
+                assert_eq!(output.rows[0].get("row_count"), Some(&Value::Int(0)));
+            }
+            database.query_request(request.with_output_limits(limits))
+        };
+        assert!(
+            matches!(result, Err(HawDBError::Execution(_))),
+            "report bypassed its output limit: snapshot={snapshot}, analyze={analyze}, payload={payload}"
+        );
+    }
+
+    #[test]
+    fn database_explain_respects_final_report_rows() {
+        assert_explain_report_limit(false, false, false);
+    }
+
+    #[test]
+    fn database_explain_respects_final_report_payload() {
+        assert_explain_report_limit(false, false, true);
+    }
+
+    #[test]
+    fn database_explain_analyze_respects_final_report_rows() {
+        assert_explain_report_limit(false, true, false);
+    }
+
+    #[test]
+    fn database_explain_analyze_respects_final_report_payload() {
+        assert_explain_report_limit(false, true, true);
+    }
+
+    #[test]
+    fn snapshot_explain_respects_final_report_rows() {
+        assert_explain_report_limit(true, false, false);
+    }
+
+    #[test]
+    fn snapshot_explain_respects_final_report_payload() {
+        assert_explain_report_limit(true, false, true);
+    }
+
+    #[test]
+    fn snapshot_explain_analyze_respects_final_report_rows() {
+        assert_explain_report_limit(true, true, false);
+    }
+
+    #[test]
+    fn snapshot_explain_analyze_respects_final_report_payload() {
+        assert_explain_report_limit(true, true, true);
+    }
+
+    fn assert_session_explain_report_limit(analyze: bool, payload: bool) {
+        let mut database = fixture();
+        // No inner data rows: only the session's final report can exceed caps.
+        let cypher = format!(
+            "EXPLAIN {}MATCH (m:Memory) WHERE m.kind = 'missing' RETURN m.id AS id",
+            if analyze { "ANALYZE " } else { "" }
+        );
+        let output = database.session().query(&cypher).unwrap();
+        assert_eq!(output.rows.len(), 1);
+        assert!(output.payload_bytes() > 1);
+        if analyze {
+            assert_eq!(output.rows[0].get("row_count"), Some(&Value::Int(0)));
+        }
+        database.config.max_read_result_rows = (!payload).then_some(0);
+        database.config.max_read_result_payload_bytes = payload.then_some(1);
+        assert!(
+            matches!(database.session().query(&cypher), Err(HawDBError::Execution(_))),
+            "session report bypassed its configured output limit: analyze={analyze}, payload={payload}"
+        );
+    }
+
+    #[test]
+    fn session_explain_respects_final_report_rows() {
+        assert_session_explain_report_limit(false, false);
+    }
+
+    #[test]
+    fn session_explain_respects_final_report_payload() {
+        assert_session_explain_report_limit(false, true);
+    }
+
+    #[test]
+    fn session_explain_analyze_respects_final_report_rows() {
+        assert_session_explain_report_limit(true, false);
+    }
+
+    #[test]
+    fn session_explain_analyze_respects_final_report_payload() {
+        assert_session_explain_report_limit(true, true);
     }
 }

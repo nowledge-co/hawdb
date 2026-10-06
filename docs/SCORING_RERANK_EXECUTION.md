@@ -51,7 +51,13 @@ Read snapshots can use the existing external-read operator through
 `query_request_streaming_with_external`; this is a generic library boundary.
 Materialized snapshot requests preserve EXPLAIN and EXPLAIN ANALYZE through
 the existing snapshot explain executor, including current scoring, task context
-and restrictive read caps. Streaming requests retain their existing EXPLAIN
+and restrictive read caps. Both plain and analyzed diagnostic rows pass the
+same final-output admission as read data, using the smaller database/request
+row and payload caps plus the admitted result-memory budget. Inactive database
+sessions use the same final admission with their configured caps; active
+session transactions keep their existing EXPLAIN rejection. ANALYZE retains
+its inner data caps independently; zero inner rows do not exempt its report.
+Streaming requests retain their existing EXPLAIN
 rejection. Parsing and clock capture occur once in either request path.
 
 Programs validate the legacy specification and explicitly declare composition:
@@ -163,6 +169,9 @@ core oracle.
 | Typed program shape and signal policy | Separate production mutations collapse composition or missing policy in the shape, ignore required missing values, and accept a nonfinite result | Distinct template identities, explicit missing-value failure and finite arithmetic; core scalar/diagnostic parity |
 | Ordinary request cache and read boundaries | Nine separate production mutations skip hit coefficient binding, retain a zero hit clock, collapse the scoring cache key, bypass candidate-window or write admission, or omit payload/row/task/access request forwarding; each fails its unchanged guard, and byte-restored ACL execution passes all four | Real cache hits and structural isolation; explicit retained query window; no ranked mutation; validated no-callback row/payload/cancellation failures; actual ACL-scoped winner |
 | Snapshot request EXPLAIN | The initial materialized snapshot request delegates to streaming and rejects EXPLAIN; the unchanged new guard fails its first actual request | Shared snapshot EXPLAIN/ANALYZE, cache-hit coefficients and time, executed final K, payload cap and precancelled request |
+| EXPLAIN final report budgets | Frozen `cd0c59d` fails eight unchanged API guards, one per Database/snapshot × EXPLAIN/ANALYZE × row/payload limit; ANALYZE K=0 isolates the final report | Common final report admission; original unbounded report succeeds, oversized report fails; inner ANALYZE data limits remain |
+| Session EXPLAIN final report budgets | Four additional unchanged session API guards fail the original direct report return, separately crossing EXPLAIN/ANALYZE and configured rows/payload; an empty inner read isolates the report | The same report admission for inactive sessions, preserving inner ANALYZE limits and active-transaction rejection |
+| Cached candidate-window admission | A precise production mutation changes only the cache key's window flag; the unchanged guard fails after an allowed template is cached | Reject the undeclared candidate window both before and after cached explicit-window execution |
 
 Focused replay/verification uses the existing executor and plan-cache unit owners:
 
@@ -181,11 +190,26 @@ RED and GREEN are behavioral outcomes, not compiler failures or assertion
 mutations. The final exact head, commands and receipts belong to the delivery
 packet and PR; the wider required fuzz result remains a separate gate.
 
-CI owners are the existing hawdb-executor and hawdb-plan-cache unit targets in
-`ci/skein-bazel-test-crates`; implementing owner is @hawkingrei, with the requested
-human contract review recorded in the PR. The BUILD source glob and unit-suite
-registration already discover these tests; no CI job, retry, feature or timeout
-is added. Existing manual differential owners stay local-only. On the recorded
+Implementing and regression-guard owner is @hawkingrei. Registered owners and
+unchanged test budgets are:
+
+| Guard family | Existing Bazel owner | Existing lane / local boundary | Target timeout |
+| --- | --- | --- | --- |
+| Typed program shape, missing/finite policy and scalar parity | `//crates/core:hawdb_core_tests` | `ci/skein-bazel-test-crates` | default medium, 300 s |
+| Ranking, resident/spill, caps, cancellation and dispatch | `//crates/executor:hawdb_executor_tests` (unit member `hawdb_executor_unit_tests`) | `ci/skein-bazel-test-crates` | unit default medium, 300 s |
+| Template and parameter binding | `//crates/plan-cache:hawdb_plan_cache_tests` | `ci/skein-bazel-test-crates` | default medium, 300 s |
+| Ordinary request, EXPLAIN, cache and default-capability behavior | `//:hawdb_unit_fast_tests` | `ci/skein-bazel-test-root` | existing large, 900 s |
+| The same request guards with actual ACL capability | `//:hawdb_storage_crash_recovery_tests` | opt-in manual target, local-only evidence here | existing large, 900 s |
+
+The BUILD source globs and unit-suite registration discover these tests; no CI
+job, retry, feature or timeout is added. The lane names identify existing owners;
+exact-head discovery/results and human approval remain delivery-packet evidence,
+not an inference from these registrations. Existing manual differential owners
+stay local-only. The final-report replay's 13 ordinary request guards took 0.01 s
+under default features and 0.32 s with ACL. The preceding checkpoint's focused
+root group executed 67 tests in 8.51 s and focused ACL group 61 in 7.81 s. Those
+latter groups include existing cache/observability guards, and neither is full
+root or full crash-recovery qualification. On the recorded
 macOS focused run, scoring's eight tests took 1.66 seconds and sort's nine
 ordinary tests 7.03 seconds (one manual test ignored). These are observations,
 not CI p95 or an incremental before/after claim. The separate plan-cache suite, including the new binding guard, executed 21
