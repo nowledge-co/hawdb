@@ -23,10 +23,10 @@ use crate::file_io::{self as fs, File};
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checksum_bytes, decode_projected_graph_artifacts,
-    encode_durable_text, property_projection_artifact_generation_file,
-    property_projection_manifest_generation_file, property_spill_artifact_generation_file,
-    property_spill_manifest_generation_file, read_durable_text, remove_source_scan_artifacts,
-    source_scan, split_projected_graph_artifact_checksum, sync_parent_dir, ProjectedGraphArtifact,
+    property_projection_artifact_generation_file, property_projection_manifest_generation_file,
+    property_spill_artifact_generation_file, property_spill_manifest_generation_file,
+    read_durable_text, remove_source_scan_artifacts, source_scan,
+    split_projected_graph_artifact_checksum, sync_parent_dir, ProjectedGraphArtifact,
     CANONICAL_MANIFEST_MAX_BYTES, PROPERTY_PROJECTION_MANIFEST_MAX_BYTES,
     PROPERTY_SPILL_MANIFEST_MAX_BYTES,
 };
@@ -70,11 +70,13 @@ use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-struct CheckpointMetadataTemporaryPath(PathBuf);
+struct CheckpointMetadataTemporaryPath(Option<PathBuf>);
 
 impl Drop for CheckpointMetadataTemporaryPath {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+        if let Some(path) = &self.0 {
+            let _ = fs::remove_file(path);
+        }
     }
 }
 
@@ -84,11 +86,12 @@ fn publish_checkpoint_metadata(
     work: &crate::background::CheckpointWorkContext,
 ) -> Result<()> {
     let tmp_path = path.with_extension("hawdb.tmp");
-    let _temporary_path = CheckpointMetadataTemporaryPath(tmp_path.clone());
+    let mut temporary_path = CheckpointMetadataTemporaryPath(None);
     let mut file = {
         let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
         let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
         let file = File::create(&tmp_path)?;
+        temporary_path.0 = Some(tmp_path.clone());
         unit.finish();
         file
     };
@@ -109,6 +112,7 @@ fn publish_checkpoint_metadata(
         let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
         let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
         durable_replace_file(&tmp_path, path)?;
+        temporary_path.0 = None;
         unit.finish();
     }
     work.checkpoint().map_err(HawDBError::from_storage_error)?;
@@ -377,17 +381,29 @@ impl DurableStore {
         path: &Path,
         body: &str,
     ) -> Result<()> {
-        let checksum = checksum_bytes(body.as_bytes());
+        self.write_projected_graph_artifacts_to_with_work_context(
+            path,
+            body,
+            &crate::background::CheckpointWorkContext::default(),
+        )
+    }
+
+    pub(in crate::store) fn write_projected_graph_artifacts_to_with_work_context(
+        &self,
+        path: &Path,
+        body: &str,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<()> {
+        let checksum = work
+            .checksum(body.as_bytes())
+            .map_err(HawDBError::from_storage_error)?;
         let data = format!("{body}checksum\t{checksum}\n");
-        let tmp_path = path.with_extension("hawdb.tmp");
-        {
-            let mut file = File::create(&tmp_path)?;
-            let encoded = encode_durable_text(&data, DurableCompression::default())?;
-            file.write_all(&encoded)?;
-            file.sync_all()?;
-        }
-        durable_replace_file(&tmp_path, path)?;
-        Ok(())
+        let encoded = crate::text::envelope::encode_durable_text_with_work_context(
+            &data,
+            DurableCompression::default(),
+            work,
+        )?;
+        publish_checkpoint_metadata(path, &encoded, work)
     }
 
     pub(super) fn remove_projected_graph_artifacts(&self) -> Result<()> {

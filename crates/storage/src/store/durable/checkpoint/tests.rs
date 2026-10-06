@@ -22,6 +22,116 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[test]
+fn checkpoint_units_projected_graph_publication_cancels_at_every_io_and_retries() {
+    use crate::background::CheckpointWorkProbe;
+    use crate::projection::{ProjectedGraphArtifactData, ProjectedGraphDefinition};
+    use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+
+    let scheduler = || {
+        LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        })
+    };
+    let data = ProjectedGraphArtifactData {
+        nodes: (0..4096).map(NodeId).collect(),
+        csr_offsets: (0..=4096).collect(),
+        csr_targets: (0..4096).collect(),
+        csc_offsets: (0..=4096).collect(),
+        csc_sources: (0..4096).collect(),
+    };
+    let definition = ProjectedGraphDefinition {
+        node_labels: vec!["Memory".into()],
+        rel_types: vec!["LINKS".into()],
+    };
+    let body = crate::projection::artifact::encode_projected_graph_artifacts(
+        41,
+        43,
+        [("graph", &definition, data.clone())],
+    );
+    let baseline = Fixture::new();
+    let baseline_path = baseline.staging.join("controlled_projection.hawdb");
+    let local = scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    baseline
+        .durable()
+        .write_projected_graph_artifacts_to_with_work_context(
+            &baseline_path,
+            &body,
+            &probe.context(local.clone()),
+        )
+        .unwrap();
+    let waves = probe.io_waves.load(Ordering::SeqCst);
+    assert!(waves >= 4);
+    probe.assert_released(&local);
+    let expected = std::fs::read(&baseline_path).unwrap();
+    for wave in 1..=waves {
+        let fixture = Fixture::new();
+        let path = fixture.staging.join("controlled_projection.hawdb");
+        let temporary = path.with_extension("hawdb.tmp");
+        if wave == 1 {
+            std::fs::write(&temporary, b"previous writer evidence").unwrap();
+        }
+        let local = scheduler();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_on_io_wave.store(wave, Ordering::SeqCst);
+        let error = fixture
+            .durable()
+            .write_projected_graph_artifacts_to_with_work_context(
+                &path,
+                &body,
+                &probe.context(local.clone()),
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            hawdb_core::HawDBError::Storage(
+                "checkpoint build I/O stopped: runtime I/O wave stopped: cancelled".into(),
+            )
+        );
+        assert_eq!(probe.io_waves.load(Ordering::SeqCst), wave);
+        probe.assert_released(&local);
+        if wave == 1 {
+            assert_eq!(
+                std::fs::read(&temporary).unwrap(),
+                b"previous writer evidence"
+            );
+        } else {
+            assert!(!temporary.exists());
+        }
+        assert!(!path.exists());
+        assert_eq!(read_sidecars(&fixture.root), fixture.old);
+        assert_eq!(
+            std::fs::read(fixture.durable().manifest_path()).unwrap(),
+            fixture.manifest
+        );
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        fixture
+            .durable()
+            .write_projected_graph_artifacts_to_with_work_context(
+                &path,
+                &body,
+                &retry.context(local.clone()),
+            )
+            .unwrap();
+        retry.assert_released(&local);
+        assert!(!temporary.exists());
+        assert_eq!(std::fs::read(&path).unwrap(), expected);
+        let text = crate::store::read_durable_text(&path, "projection retry").unwrap();
+        let (decoded, _) =
+            crate::projection::artifact::split_projected_graph_artifact_checksum(&text).unwrap();
+        let (epoch, mut recovered) =
+            crate::projection::artifact::decode_projected_graph_artifacts(decoded).unwrap();
+        assert_eq!(epoch, 43);
+        assert_eq!(recovered.remove("graph").unwrap().data, data);
+        assert!(recovered.is_empty());
+        assert_eq!(fixture.project.metrics().reserved, 0);
+        assert!(fixture.project.metrics().high_water <= 8);
+    }
+}
+
 thread_local! {
     static AFTER_FIRST_PUBLICATION: RefCell<Option<Box<dyn FnOnce()>>> =
         const { RefCell::new(None) };

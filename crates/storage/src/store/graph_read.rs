@@ -65,6 +65,46 @@ impl GraphStore {
         )
     }
 
+    pub(super) fn checkpoint_node_records_owned(
+        &self,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<GraphNodeIterator> {
+        let mut delta = Vec::new();
+        for node in self.nodes.values() {
+            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+            delta.push(node.clone());
+            unit.finish();
+        }
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        Ok(hawdb_storage::graph_overlay::node_records(
+            self.canonical_base
+                .as_ref()
+                .map(CanonicalSegmentReader::node_records),
+            delta,
+            self.node_tombstones.clone(),
+        ))
+    }
+
+    pub(super) fn checkpoint_relationship_records_owned(
+        &self,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<GraphRelationshipIterator> {
+        let mut delta = Vec::new();
+        for relationship in self.relationships.values() {
+            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+            delta.push(relationship.clone());
+            unit.finish();
+        }
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        Ok(hawdb_storage::graph_overlay::relationship_records(
+            self.canonical_base
+                .as_ref()
+                .map(CanonicalSegmentReader::relationship_records),
+            delta,
+            self.relationship_tombstones.clone(),
+        ))
+    }
+
     pub fn node_owned(&self, id: NodeId) -> Result<Option<NodeRecord>> {
         if self.node_tombstones.contains(&id) {
             return Ok(None);

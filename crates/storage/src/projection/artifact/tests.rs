@@ -13,6 +13,130 @@
 // limitations under the License.
 
 use super::*;
+use crate::text::decode_u64_vec;
+
+fn checkpoint_unit_scheduler() -> hawdb_qos::LocalQosScheduler {
+    hawdb_qos::LocalQosScheduler::new(hawdb_qos::LocalQosPolicy {
+        max_background_operations: Some(1),
+        max_total_background_operations: Some(4),
+        ..hawdb_qos::LocalQosPolicy::default()
+    })
+}
+
+#[test]
+fn checkpoint_units_projected_graph_codec_preserves_all_arrays_and_v1_bytes() {
+    use crate::background::CheckpointWorkProbe;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+
+    let scheduler = checkpoint_unit_scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let work = probe.context(scheduler.clone());
+    let edges = (0..2048usize)
+        .flat_map(|id| [(id, (id + 1) % 2048), (id, id)])
+        .collect::<Vec<_>>();
+    let data = edge_bag_data((0..2048).map(NodeId).collect(), &edges);
+    let definition = definition();
+    let name = "投影\t🦀";
+    let encoded = encode_projected_graph_artifacts_with_work_context(
+        19,
+        23,
+        [Ok((name, &definition, data.clone()))],
+        &work,
+    )
+    .unwrap();
+    assert_eq!(encoded, reference_body(name, &definition, &data, 19, 23));
+    let (epoch, mut recovered) =
+        decode_projected_graph_artifacts_with_work_context(&encoded, &work).unwrap();
+    assert_eq!(epoch, 23);
+    let artifact = recovered.remove(name).unwrap();
+    assert!(recovered.is_empty());
+    assert_eq!(artifact.projection_epoch, 19);
+    assert_eq!(artifact.commit_epoch, 23);
+    assert_eq!(artifact.definition, definition);
+    assert_eq!(artifact.data, data);
+    assert!(probe.completed.load(Ordering::SeqCst) > 20);
+    assert!(probe.peak_units.load(Ordering::SeqCst) <= 4);
+    assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
+    probe.assert_released(&scheduler);
+}
+
+#[test]
+fn checkpoint_units_projected_graph_codec_cancels_inside_numeric_arrays() {
+    use crate::background::CheckpointWorkProbe;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+
+    let data = edge_bag_data((0..4096).map(NodeId).collect(), &[]);
+    let definition = definition();
+    let encoded = reference_body("graph", &definition, &data, 29, 31);
+    for decoding in [false, true] {
+        let scheduler = checkpoint_unit_scheduler();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        let limit = if decoding { 1 } else { 2 };
+        probe.cancel_after.store(limit, Ordering::SeqCst);
+        let work = probe.context(scheduler.clone());
+        let error = if decoding {
+            decode_projected_graph_artifacts_with_work_context(&encoded, &work).unwrap_err()
+        } else {
+            encode_projected_graph_artifacts_with_work_context(
+                29,
+                31,
+                [Ok(("graph", &definition, data.clone()))],
+                &work,
+            )
+            .unwrap_err()
+        };
+        assert_eq!(
+            error,
+            HawDBError::Storage("checkpoint build stopped: cancelled".into())
+        );
+        assert_eq!(probe.completed.load(Ordering::SeqCst), limit);
+        probe.assert_released(&scheduler);
+    }
+}
+
+#[test]
+fn checkpoint_units_projected_graph_validates_chunk_boundary_offsets_and_indexes() {
+    use crate::background::CheckpointWorkProbe;
+    use std::sync::Arc;
+
+    let data = edge_bag_data(
+        (0..2048).map(NodeId).collect(),
+        &(0..2048usize).map(|id| (id, id)).collect::<Vec<_>>(),
+    );
+    for invalid_offsets in [true, false] {
+        let scheduler = checkpoint_unit_scheduler();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        let work = probe.context(scheduler.clone());
+        let mut bad = data.clone();
+        if invalid_offsets {
+            // Each chunk remains locally monotonic; the inversion crosses
+            // the boundary between the first and second validation chunks.
+            bad.csr_offsets[1024] = 1022;
+        } else {
+            bad.csr_targets[1024] = 2048;
+        }
+        let error = ProjectedGraphArtifactData::new_with_work_context(
+            bad.nodes,
+            bad.csr_offsets,
+            bad.csr_targets,
+            bad.csc_offsets,
+            bad.csc_sources,
+            &work,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            HawDBError::Storage(if invalid_offsets {
+                "invalid projected graph csr_offsets".into()
+            } else {
+                "projected graph csr_targets contains an out-of-range node index".into()
+            })
+        );
+        probe.assert_released(&scheduler);
+    }
+}
 
 const FIXTURE: &str = concat!(
     "HAWDB_PROJECTED_GRAPHS_V1\n",

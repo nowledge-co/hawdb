@@ -2445,22 +2445,56 @@ fn encode_projected_graph_artifacts(
     store: &GraphStore,
     projection_epoch: u64,
 ) -> String {
-    hawdb_storage::projection::artifact::encode_projected_graph_artifacts(
+    encode_projected_graph_artifacts_with_work_context(
+        catalog,
+        store,
+        projection_epoch,
+        &crate::background::CheckpointWorkContext::default(),
+    )
+    .expect("default projected graph build context cannot stop")
+}
+
+fn encode_projected_graph_artifacts_with_work_context(
+    catalog: &Catalog,
+    store: &GraphStore,
+    projection_epoch: u64,
+    work: &crate::background::CheckpointWorkContext,
+) -> Result<String> {
+    hawdb_storage::projection::artifact::encode_projected_graph_artifacts_with_work_context(
         projection_epoch,
         store.commit_epoch,
         store.projected_graphs.iter().map(|(name, definition)| {
+            work.checkpoint().map_err(HawDBError::from_storage_error)?;
+            // Analytics construction still needs its own cooperative builder
+            // contract. Do not count an entire graph build as one local unit.
             let graph = projected_graph_from_definition(catalog, store, definition);
-            let data = ProjectedGraphArtifactData::new(
-                graph.nodes().to_vec(),
-                graph.csr_offsets().to_vec(),
-                graph.csr_targets().to_vec(),
-                graph.csc_offsets().to_vec(),
-                graph.csc_sources().to_vec(),
-            )
-            .expect("fresh analytics projection is structurally valid");
-            (name.as_str(), definition, data)
+            work.checkpoint().map_err(HawDBError::from_storage_error)?;
+            let data = ProjectedGraphArtifactData::new_with_work_context(
+                copy_projection_values(graph.nodes(), work)?,
+                copy_projection_values(graph.csr_offsets(), work)?,
+                copy_projection_values(graph.csr_targets(), work)?,
+                copy_projection_values(graph.csc_offsets(), work)?,
+                copy_projection_values(graph.csc_sources(), work)?,
+                work,
+            )?;
+            Ok((name.as_str(), definition, data))
         }),
+        work,
     )
+}
+
+fn copy_projection_values<T: Copy>(
+    values: &[T],
+    work: &crate::background::CheckpointWorkContext,
+) -> Result<Vec<T>> {
+    let mut copied = Vec::new();
+    for block in values.chunks(1024) {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        copied.extend_from_slice(block);
+        unit.finish();
+    }
+    work.checkpoint().map_err(HawDBError::from_storage_error)?;
+    Ok(copied)
 }
 
 fn projected_graph_from_definition(
@@ -8749,6 +8783,183 @@ mod tests {
         std::fs::remove_dir_all(path).unwrap();
     }
 
+    #[test]
+    fn checkpoint_units_cancel_native_overlay_capture_before_io_and_retry_complete_graph() {
+        use crate::background::CheckpointWorkProbe;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+
+        let path = unique_test_dir("checkpoint_overlay_capture_cancel");
+        let open = |catalog: &mut Catalog| {
+            GraphStore::open_with_durability_and_replay_config(
+                &path,
+                catalog,
+                DurabilityPolicy::default(),
+                WalReplayConfig {
+                    residency_mode: StorageResidencyMode::OutOfCore,
+                    ..WalReplayConfig::default()
+                },
+            )
+            .unwrap()
+        };
+        let mut catalog = Catalog::default();
+        let mut store = open(&mut catalog);
+        let mut nodes = Vec::new();
+        let mut relationships = Vec::new();
+        for id in 0..192 {
+            nodes.push(
+                store
+                    .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                    .unwrap(),
+            );
+            if id > 0 {
+                relationships.push(
+                    store
+                        .create_relationship(
+                            &mut catalog,
+                            nodes[id as usize - 1],
+                            nodes[id as usize],
+                            "LINKS",
+                            properties([("id", Value::Int(id))]),
+                        )
+                        .unwrap(),
+                );
+            }
+            if id == 63 {
+                store.checkpoint(&catalog).unwrap();
+                assert!(store.canonical_base.is_some());
+                assert!(store.nodes.is_empty());
+                assert!(store.relationships.is_empty());
+            }
+        }
+        store
+            .set_node_properties_by_ids(
+                &mut catalog,
+                &[nodes[0]],
+                &[NodeSetAssignment {
+                    property: "revision".to_string(),
+                    value: super::NodeSetValue::Value(Value::Int(2)),
+                }],
+            )
+            .unwrap();
+        store
+            .delete_node_ids_with_limits(
+                &mut catalog,
+                &[nodes[20], nodes[150]],
+                true,
+                MutationLimits::default(),
+            )
+            .unwrap();
+        assert!(!store.node_tombstones.is_empty());
+        assert!(!store.relationship_tombstones.is_empty());
+        assert!(store.nodes.len() > 17);
+        assert!(store.relationships.len() > 17);
+        let expected_nodes = nodes
+            .into_iter()
+            .filter_map(|id| store.node_owned(id).unwrap())
+            .collect::<Vec<_>>();
+        let expected_relationships = relationships
+            .into_iter()
+            .filter_map(|id| store.relationship_owned(id).unwrap())
+            .collect::<Vec<_>>();
+        let identity = store.checkpoint_source_identity();
+        let durable = store.durable.as_ref().unwrap();
+        let wal_path = durable.wal_path.clone();
+        let manifest_path = durable.manifest_path().to_path_buf();
+        let wal = std::fs::read(&wal_path).unwrap();
+        let manifest = std::fs::read(&manifest_path).unwrap();
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        });
+
+        // Actual candidate preparation must stop during capture, before any
+        // builder can hydrate base records or create an artifact.
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_after.store(17, Ordering::SeqCst);
+        let source = store.checkpoint_source();
+        let error = source
+            .prepare_checkpoint_candidate_with_work_context(
+                &catalog,
+                &probe.context(scheduler.clone()),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert_eq!(probe.completed.load(Ordering::SeqCst), 17);
+        assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
+        probe.assert_released(&scheduler);
+        source.ensure_usable().unwrap();
+        drop(source);
+
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_after.store(17, Ordering::SeqCst);
+        let error = store
+            .checkpoint_relationship_records_owned(&probe.context(scheduler.clone()))
+            .err()
+            .expect("relationship capture must also stop before collecting its delta");
+        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert_eq!(probe.completed.load(Ordering::SeqCst), 17);
+        assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
+        probe.assert_released(&scheduler);
+        assert_eq!(store.checkpoint_source_identity(), identity);
+        assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+        assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
+        store.ensure_usable().unwrap();
+
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        let work = retry.context(scheduler.clone());
+        assert_eq!(
+            store
+                .checkpoint_node_records_owned(&work)
+                .unwrap()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap(),
+            expected_nodes,
+        );
+        assert_eq!(
+            store
+                .checkpoint_relationship_records_owned(&work)
+                .unwrap()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap(),
+            expected_relationships,
+        );
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        let captured = store.checkpoint_source();
+        candidate.catch_up(&captured).unwrap();
+        drop(captured);
+        store
+            .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
+            .unwrap();
+        drop(candidate);
+        retry.assert_released(&scheduler);
+        drop(store);
+        let recovered = open(&mut catalog);
+        assert_eq!(
+            recovered
+                .node_records_owned()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap(),
+            expected_nodes
+        );
+        assert_eq!(
+            recovered
+                .relationship_records_owned()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap(),
+            expected_relationships
+        );
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
     #[derive(Debug)]
     struct CancelCheckpointAtFile {
         probe: std::sync::Arc<crate::background::CheckpointWorkProbe>,
@@ -8897,6 +9108,11 @@ mod tests {
         assert_cancelled_derived_artifact_unit_preserves_authority("source-scan");
     }
 
+    #[test]
+    fn checkpoint_units_cancel_projected_graph_and_retry_with_complete_arrays() {
+        assert_cancelled_derived_artifact_unit_preserves_authority("projected-graph");
+    }
+
     fn assert_cancelled_derived_artifact_unit_preserves_authority(artifact: &str) {
         use crate::background::{CheckpointWorkContext, CheckpointWorkProbe};
         use hawdb_core::RuntimeTaskContext;
@@ -8934,6 +9150,17 @@ mod tests {
                     .unwrap()
             })
             .collect::<Vec<_>>();
+        if artifact == "projected-graph" {
+            store
+                .register_projected_graph(
+                    "CheckpointGraph",
+                    crate::projection::ProjectedGraphDefinition {
+                        node_labels: Vec::new(),
+                        rel_types: Vec::new(),
+                    },
+                )
+                .unwrap();
+        }
         store.checkpoint(&catalog).unwrap();
         relationships.push(
             store
@@ -8953,7 +9180,11 @@ mod tests {
             ..LocalQosPolicy::default()
         });
         let probe = Arc::new(CheckpointWorkProbe::default());
-        let temporary = if artifact == "source-scan" {
+        let temporary = if artifact == "projected-graph" {
+            path.join(format!(".checkpoint.{generation}.prepare"))
+                .join(super::PROJECTED_GRAPHS_FILE)
+                .with_extension("hawdb.tmp")
+        } else if artifact == "source-scan" {
             path.join(format!(".checkpoint.{generation}.prepare"))
                 .join(source_scan::SOURCE_SCAN_PAYLOAD_FILE)
                 .with_extension("hawdb.tmp")
@@ -9023,6 +9254,10 @@ mod tests {
         let recovered = GraphStore::open(&path, &mut catalog).unwrap();
         assert_eq!(recovered.commit_epoch(), epoch);
         assert_eq!(recovered.scan_nodes(None).count(), expected_nodes.len());
+        let expected_node_ids = expected_nodes
+            .iter()
+            .map(|node| node.id)
+            .collect::<Vec<_>>();
         for node in expected_nodes {
             assert_eq!(recovered.node_owned(node.id).unwrap(), Some(node));
         }
@@ -9044,6 +9279,40 @@ mod tests {
             };
             assert_eq!(plan.segments.len(), 1);
             assert_eq!(plan.segments[0].candidates.as_ref().unwrap().remaining(), 1);
+        }
+        if artifact == "projected-graph" {
+            let graph = recovered
+                .projected_graph_artifact(
+                    "CheckpointGraph",
+                    &crate::projection::ProjectedGraphDefinition {
+                        node_labels: Vec::new(),
+                        rel_types: Vec::new(),
+                    },
+                )
+                .expect("successful retry must reopen current projected arrays");
+            assert_eq!(graph.nodes(), expected_node_ids);
+            assert_eq!(
+                graph.csr_offsets(),
+                std::iter::once(0)
+                    .chain([63, 64])
+                    .chain(std::iter::repeat_n(65, 62))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                graph.csr_targets(),
+                (1..64).chain([0, 0]).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                graph.csc_offsets(),
+                std::iter::once(0).chain(2..=65).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                graph.csc_sources(),
+                [1, 2]
+                    .into_iter()
+                    .chain(std::iter::repeat_n(0, 63))
+                    .collect::<Vec<_>>()
+            );
         }
         drop(recovered);
         std::fs::remove_dir_all(path).unwrap();

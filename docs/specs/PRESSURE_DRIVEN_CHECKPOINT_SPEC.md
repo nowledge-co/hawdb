@@ -275,6 +275,30 @@ descriptor buffers; its work units do not establish a hard byte ledger or an
 allocation bound for a large individual row. These focused tests
 do not prove cancellation or memory bounds for the entire candidate.
 
+Projected-graph array copying, numeric encoding/decoding and structural
+validation now use at most 1,024 numeric elements per work unit. Offset checks
+include the boundary between adjacent chunks. The existing V1 text, decoded
+arrays, historical tolerances and validation errors are preserved. Compressed
+artifact publication uses the admitted task's CRC/compression blocks and I/O
+waves. Focused coverage checks complete 2,048-node/4,096-edge arrays against the
+independent text reference, cancellation inside numeric arrays, malformed
+cross-chunk offsets/indexes, every publication I/O admission, and candidate
+cancellation followed by unchanged authority, retry and complete array reopen.
+This does not control analytics projection construction or definition-list
+encoding/decoding, and complete array/text/compression buffers remain retained.
+The automatic owner's whole-candidate local permit and memory-accounting gaps
+remain in place; no complete projected-graph build bound is claimed.
+
+Native checkpoint overlay capture now admits each live delta record before
+cloning it, with cancellation between records for canonical, adjacency and
+property-projection inputs. Tombstones remain shared COW roots and the inputs
+remain ID ordered. An actual out-of-core candidate test cancels capture before
+any I/O, preserves authoritative identity/WAL/manifest, and retries with exact
+base/delta/replacement/tombstone parity through publication and reopen. The
+complete delta vectors remain retained, individual record cloning has no new
+byte bound, and a single iterator step can still skip many tombstoned base
+records. Those skipped-record loops and retained-memory accounting remain open.
+
 `HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
 two schema/data transactions under both durability policies. Its complete
 configured safety graph passed TLC (34,275 distinct states). Five deliberately

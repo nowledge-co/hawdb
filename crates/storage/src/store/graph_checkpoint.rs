@@ -554,9 +554,15 @@ impl GraphStore {
         let (projected_graph_artifacts, artifacts) = if checkpoint_out_of_core {
             (None, BTreeMap::new())
         } else {
-            let encoded =
-                encode_projected_graph_artifacts(catalog, self, self.next_projection_epoch());
-            let (_, artifacts) = decode_projected_graph_artifacts(&encoded)?;
+            let encoded = encode_projected_graph_artifacts_with_work_context(
+                catalog,
+                self,
+                self.next_projection_epoch(),
+                work,
+            )?;
+            let (_, artifacts) = hawdb_storage::projection::artifact::decode_projected_graph_artifacts_with_work_context(
+                &encoded, work,
+            )?;
             (Some(encoded), artifacts)
         };
         let source_scan_projection = (!checkpoint_out_of_core)
@@ -569,16 +575,22 @@ impl GraphStore {
                 )
             })
             .transpose()?;
-        let merged_nodes = self.canonical_base.as_ref().map(|_| {
-            self.node_records_owned()
-                .inspect(|record| self.poison_on_storage_error(record))
-                .map(|record| {
-                    record.map_err(|error| CanonicalSegmentError::Source(error.to_string()))
-                })
-        });
+        let merged_nodes = self
+            .canonical_base
+            .as_ref()
+            .map(|_| {
+                Ok::<_, HawDBError>(
+                    self.checkpoint_node_records_owned(work)?
+                        .inspect(|record| self.poison_on_storage_error(record))
+                        .map(|record| {
+                            record.map_err(|error| CanonicalSegmentError::Source(error.to_string()))
+                        }),
+                )
+            })
+            .transpose()?;
         let property_projection_records = self.canonical_base.as_ref().map(|_| {
             let nodes = self
-                .node_records_owned()
+                .checkpoint_node_records_owned(work)?
                 .inspect(|record| self.poison_on_storage_error(record))
                 .map(|record| {
                     record
@@ -590,7 +602,7 @@ impl GraphStore {
                         })
                 });
             let relationships = self
-                .relationship_records_owned()
+                .checkpoint_relationship_records_owned(work)?
                 .inspect(|record| self.poison_on_storage_error(record))
                 .map(|record| {
                     record
@@ -601,8 +613,8 @@ impl GraphStore {
                             )
                         })
                 });
-            nodes.chain(relationships)
-        });
+            Ok::<_, HawDBError>(nodes.chain(relationships))
+        }).transpose()?;
         let mut property_projection_definitions = Vec::new();
         let mut property_projection_definition_admission =
             PersistentPropertyProjectionDefinitionAdmission::new(build_config.property_projection);
@@ -667,24 +679,36 @@ impl GraphStore {
                 }
             }
         }
-        let merged_relationships = self.canonical_base.as_ref().map(|_| {
-            self.relationship_records_owned()
-                .inspect(|record| self.poison_on_storage_error(record))
-                .map(|record| {
-                    record.map_err(|error| CanonicalSegmentError::Source(error.to_string()))
-                })
-        });
-        let adjacency_relationships = self.canonical_base.as_ref().map(|_| {
-            self.relationship_records_owned()
-                .inspect(|record| self.poison_on_storage_error(record))
-                .map(|record| {
-                    record.map_err(|error| {
-                        hawdb_storage::canonical_adjacency::CanonicalAdjacencyError::Source(
-                            error.to_string(),
-                        )
-                    })
-                })
-        });
+        let merged_relationships = self
+            .canonical_base
+            .as_ref()
+            .map(|_| {
+                Ok::<_, HawDBError>(
+                    self.checkpoint_relationship_records_owned(work)?
+                        .inspect(|record| self.poison_on_storage_error(record))
+                        .map(|record| {
+                            record.map_err(|error| CanonicalSegmentError::Source(error.to_string()))
+                        }),
+                )
+            })
+            .transpose()?;
+        let adjacency_relationships = self
+            .canonical_base
+            .as_ref()
+            .map(|_| {
+                Ok::<_, HawDBError>(
+                    self.checkpoint_relationship_records_owned(work)?
+                        .inspect(|record| self.poison_on_storage_error(record))
+                        .map(|record| {
+                            record.map_err(|error| {
+                                hawdb_storage::canonical_adjacency::CanonicalAdjacencyError::Source(
+                                    error.to_string(),
+                                )
+                            })
+                        }),
+                )
+            })
+            .transpose()?;
         let commit_epoch = self.commit_epoch;
         let checkpoint_statistics = if checkpoint_out_of_core && !self.canonical_base_out_of_core {
             let mut statistics = graph_statistics_from_basic(self.basic_statistics(), false);
@@ -725,9 +749,10 @@ impl GraphStore {
             )
             .map_err(HawDBError::from_storage_error)?;
             if let Some(encoded) = projected_graph_artifacts.as_deref() {
-                durable.write_projected_graph_artifacts_to(
+                durable.write_projected_graph_artifacts_to_with_work_context(
                     &staging_path.join(PROJECTED_GRAPHS_FILE),
                     encoded,
+                    work,
                 )?;
             }
             let source_scan_publication = source_scan_projection
