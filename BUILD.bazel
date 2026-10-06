@@ -506,11 +506,16 @@ rust_test(
     deps = [":hawdb_minimal"] + all_crate_deps(normal = True),
 )
 
+_BRANCH_PROJECT_OPEN_SRCS = glob([
+    "tests/branch_project_open.rs",
+    "tests/branch_project_open/**/*.rs",
+])
+
 rust_test(
     name = "hawdb_branch_project_open_tests",
     crate_root = "tests/branch_project_open.rs",
     crate_features = _HAWDB_DEFAULT_FEATURES,
-    srcs = ["tests/branch_project_open.rs"],
+    srcs = _BRANCH_PROJECT_OPEN_SRCS,
     edition = "2024",
     deps = [":hawdb", "//crates/storage:hawdb_storage"],
 )
@@ -518,7 +523,7 @@ rust_test(
 rust_test(
     name = "hawdb_branch_project_open_minimal_tests",
     crate_root = "tests/branch_project_open.rs",
-    srcs = ["tests/branch_project_open.rs"],
+    srcs = _BRANCH_PROJECT_OPEN_SRCS,
     edition = "2024",
     deps = [":hawdb_minimal", "//crates/storage:hawdb_storage"],
 )

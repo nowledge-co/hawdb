@@ -3945,30 +3945,42 @@ mod tests {
             })
         ));
 
-        let deleting_child = remapped
-            .branches
-            .iter_mut()
-            .find(|branch| branch.id == child_id)
-            .expect("child catalog record before deletion");
-        deleting_child.metadata_revision = 3;
-        deleting_child.state = crate::branch_catalog::BranchState::Deleting;
-        remapped.revision = 3;
-        crate::branch_catalog::write_catalog(&catalog_path, &remapped)
-            .expect("publish deleting catalog revision");
-        assert!(matches!(
-            GraphStore::admit_branch_from_head(BranchAdmissionRequest {
-                catalog_path: &catalog_path,
-                branch_id: child_id,
-                expected_metadata_revision: 3,
-                head_path: &child_head_path,
-                immutable_store_root: &objects,
-                durability: DurabilityPolicy::default(),
-                replay_config: WalReplayConfig::default(),
-            }),
-            Err(BranchAdmissionError::InvalidState(
-                crate::branch_catalog::BranchState::Deleting
-            ))
-        ));
+        for (revision, state, outcome) in [
+            (
+                3,
+                crate::branch_catalog::BranchState::Creating,
+                crate::branch_catalog::CreateOutcome::Pending,
+            ),
+            (
+                4,
+                crate::branch_catalog::BranchState::Deleting,
+                crate::branch_catalog::CreateOutcome::Succeeded,
+            ),
+        ] {
+            let child = remapped
+                .branches
+                .iter_mut()
+                .find(|branch| branch.id == child_id)
+                .expect("child catalog record before lifecycle rejection");
+            child.metadata_revision = revision;
+            child.state = state;
+            child.create_outcome = outcome;
+            remapped.revision = revision;
+            crate::branch_catalog::write_catalog(&catalog_path, &remapped)
+                .expect("publish non-ready catalog revision");
+            assert!(matches!(
+                GraphStore::admit_branch_from_head(BranchAdmissionRequest {
+                    catalog_path: &catalog_path,
+                    branch_id: child_id,
+                    expected_metadata_revision: revision,
+                    head_path: &child_head_path,
+                    immutable_store_root: &objects,
+                    durability: DurabilityPolicy::default(),
+                    replay_config: WalReplayConfig::default(),
+                }),
+                Err(BranchAdmissionError::InvalidState(actual)) if actual == state
+            ));
+        }
 
         crate::branch_catalog::write_catalog(&catalog_path, &catalog)
             .expect("restore ready catalog before WAL corruption test");
