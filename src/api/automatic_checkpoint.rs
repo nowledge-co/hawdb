@@ -619,7 +619,15 @@ fn prepare(
         .map_err(|reason| {
             HawDBError::Storage(format!("automatic checkpoint admission deferred: {reason}"))
         })?;
-    let candidate = source.store.prepare_checkpoint_candidate(&source.catalog)?;
+    // Retain the whole-job QoS permit until all builders have bounded units.
+    // The canonical/descriptor builders can already consume this admitted task
+    // for cancellation and I/O without reacquiring CPU or memory admission.
+    let work = hawdb_storage::background::CheckpointWorkContext::new(
+        runtime.bind_task_context(task.clone()),
+    );
+    let candidate = source
+        .store
+        .prepare_checkpoint_candidate_with_work_context(&source.catalog, &work)?;
     task.checkpoint()
         .map_err(|reason| HawDBError::Storage(reason.to_string()))?;
     Ok(candidate.map(|candidate| (candidate, Admission { runtime, local })))

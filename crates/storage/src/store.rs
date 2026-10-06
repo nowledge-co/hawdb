@@ -8750,6 +8750,104 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_units_cancel_base_encoding_and_retry_without_changing_authority() {
+        use crate::background::CheckpointWorkProbe;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+
+        let path = unique_test_dir("checkpoint_base_unit_cancel");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        for id in 0..64i64 {
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                .unwrap();
+        }
+        store.checkpoint(&catalog).unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(64))]))
+            .unwrap();
+        let identity = store.checkpoint_source_identity();
+        let generation = store
+            .durable
+            .as_ref()
+            .unwrap()
+            .next_checkpoint_generation()
+            .unwrap();
+        let wal_path = store.durable.as_ref().unwrap().wal_path.clone();
+        let manifest_path = store
+            .durable
+            .as_ref()
+            .unwrap()
+            .manifest_path()
+            .to_path_buf();
+        let wal = std::fs::read(&wal_path).unwrap();
+        let manifest = std::fs::read(&manifest_path).unwrap();
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        });
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_after.store(10, Ordering::SeqCst);
+        let work = probe.context(scheduler.clone());
+        let source = store.checkpoint_source();
+        let error = source
+            .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
+            .unwrap_err();
+        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert_eq!(probe.completed.load(Ordering::SeqCst), 10);
+        probe.assert_released(&scheduler);
+        assert_eq!(store.checkpoint_source_identity(), identity);
+        assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+        assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
+        source.ensure_usable().unwrap();
+        store.ensure_usable().unwrap();
+        let private = path.join(super::canonical_artifact_generation_file(generation));
+        assert!(!private.exists());
+        assert!(!private.with_extension("hawdb.tmp").exists());
+        assert!(!path
+            .join(format!(".checkpoint.{generation}.prepare"))
+            .exists());
+        drop(source);
+
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(65))]))
+            .unwrap();
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        let work = retry.context(scheduler.clone());
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        let captured = store.checkpoint_source();
+        candidate.catch_up(&captured).unwrap();
+        drop(captured);
+        store
+            .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
+            .unwrap();
+        drop(candidate);
+        retry.assert_released(&scheduler);
+        drop(store);
+        let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+        let mut ids = recovered
+            .scan_nodes(None)
+            .map(|node| match node.properties["id"] {
+                Value::Int(id) => id,
+                _ => panic!("wrong recovered id"),
+            })
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        assert_eq!(ids, (0..66i64).collect::<Vec<_>>());
+        assert_eq!(recovered.commit_epoch(), 66);
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn checkpoint_candidate_rejects_lost_private_tail_and_cleans_owned_artifacts() {
         let path = unique_test_dir("checkpoint_candidate_lost_tail");
         let mut catalog = Catalog::default();

@@ -67,8 +67,53 @@ use hawdb_storage::{
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::num::NonZeroU64;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+struct CheckpointMetadataTemporaryPath(PathBuf);
+
+impl Drop for CheckpointMetadataTemporaryPath {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn publish_checkpoint_metadata(
+    path: &Path,
+    encoded: &[u8],
+    work: &crate::background::CheckpointWorkContext,
+) -> Result<()> {
+    let tmp_path = path.with_extension("hawdb.tmp");
+    let _temporary_path = CheckpointMetadataTemporaryPath(tmp_path.clone());
+    let mut file = {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
+        let file = File::create(&tmp_path)?;
+        unit.finish();
+        file
+    };
+    for block in encoded.chunks(64 * 1024) {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
+        file.write_all(block)?;
+        unit.finish();
+    }
+    {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
+        file.sync_all()?;
+        unit.finish();
+    }
+    drop(file);
+    {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
+        durable_replace_file(&tmp_path, path)?;
+        unit.finish();
+    }
+    work.checkpoint().map_err(HawDBError::from_storage_error)?;
+    Ok(())
+}
 
 impl DurableStore {
     pub(in crate::store) fn load_source_scan_manifest(
@@ -101,6 +146,7 @@ impl DurableStore {
         relationships: R,
         generation: u64,
         source_commit_epoch: u64,
+        work: &crate::background::CheckpointWorkContext,
     ) -> Result<(DurableArtifactMetadata, DurableArtifactMetadata)>
     where
         N: IntoIterator<Item = std::result::Result<NodeRecord, CanonicalSegmentError>>,
@@ -125,6 +171,7 @@ impl DurableStore {
         );
         let (canonical_manifest, property_spill_output) =
             CanonicalSegmentWriter::new(CanonicalSegmentConfig::default())
+                .with_work_context(work.clone())
                 .write_fallible_with_property_spills(
                     &artifact_path,
                     ManifestGeneration(generation),
@@ -140,32 +187,27 @@ impl DurableStore {
                 .map_err(HawDBError::from_storage_error)?;
         let property_spill_manifest = property_spill_output.manifest;
         let encoded = canonical_manifest
-            .encode()
+            .encode_with_work_context(work)
             .map_err(HawDBError::from_storage_error)?;
-        let metadata = DurableArtifactMetadata::for_bytes(encoded.as_bytes());
+        let integrity = work
+            .integrity(encoded.as_bytes())
+            .map_err(HawDBError::from_storage_error)?;
+        let metadata = DurableArtifactMetadata {
+            encoded_len: encoded.len() as u64,
+            encoded_checksum: integrity.crc32c.as_u64(),
+            encoded_sha256: integrity.sha256,
+        };
         let manifest_path = self
             .root_path
             .join(canonical_manifest_generation_file(generation));
-        let tmp_path = manifest_path.with_extension("hawdb.tmp");
-        {
-            let mut file = File::create(&tmp_path)?;
-            file.write_all(encoded.as_bytes())?;
-            file.sync_all()?;
-        }
-        durable_replace_file(&tmp_path, &manifest_path)?;
+        publish_checkpoint_metadata(&manifest_path, encoded.as_bytes(), work)?;
         let property_encoded = property_spill_manifest
             .encode()
             .map_err(HawDBError::from_storage_error)?;
         let property_manifest_path = self
             .root_path
             .join(property_spill_manifest_generation_file(generation));
-        let property_tmp_path = property_manifest_path.with_extension("hawdb.tmp");
-        {
-            let mut file = File::create(&property_tmp_path)?;
-            file.write_all(property_encoded.as_bytes())?;
-            file.sync_all()?;
-        }
-        durable_replace_file(&property_tmp_path, &property_manifest_path)?;
+        publish_checkpoint_metadata(&property_manifest_path, property_encoded.as_bytes(), work)?;
         Ok((
             metadata,
             DurableArtifactMetadata::for_bytes(property_encoded.as_bytes()),

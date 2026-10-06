@@ -487,11 +487,44 @@ impl GraphStore {
         exact_overflow: Option<ExactRelationalOverflowCheckpoint<'_>>,
         row_compaction: Option<RelationalRowCompactionCheckpoint<'_>>,
     ) -> Result<Option<PreparedCheckpoint>> {
+        self.prepare_checkpoint_with_maintenance_controlled(
+            catalog,
+            build_config,
+            exact_overflow,
+            row_compaction,
+            &crate::background::CheckpointWorkContext::default(),
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn prepare_checkpoint_with_work_context(
+        &self,
+        catalog: &Catalog,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Option<PreparedCheckpoint>> {
+        self.prepare_checkpoint_with_maintenance_controlled(
+            catalog,
+            DerivedArtifactBuildConfig::default(),
+            None,
+            None,
+            work,
+        )
+    }
+
+    fn prepare_checkpoint_with_maintenance_controlled(
+        &self,
+        catalog: &Catalog,
+        build_config: DerivedArtifactBuildConfig,
+        exact_overflow: Option<ExactRelationalOverflowCheckpoint<'_>>,
+        row_compaction: Option<RelationalRowCompactionCheckpoint<'_>>,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Option<PreparedCheckpoint>> {
         let result = self.prepare_checkpoint_with_maintenance_inner(
             catalog,
             build_config,
             exact_overflow,
             row_compaction,
+            work,
         );
         self.poison_on_storage_error(&result);
         result
@@ -503,10 +536,12 @@ impl GraphStore {
         build_config: DerivedArtifactBuildConfig,
         exact_overflow: Option<ExactRelationalOverflowCheckpoint<'_>>,
         row_compaction: Option<RelationalRowCompactionCheckpoint<'_>>,
+        work: &crate::background::CheckpointWorkContext,
     ) -> Result<Option<PreparedCheckpoint>> {
         let Some(durable) = self.durable.as_ref() else {
             return Ok(None);
         };
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
         let estimated_record_bytes = self.estimated_logical_record_bytes();
         let checkpoint_out_of_core = match self.residency_mode {
             StorageResidencyMode::Materialized => false,
@@ -662,6 +697,7 @@ impl GraphStore {
         let generation = durable.next_checkpoint_generation()?;
         let staging_path = durable.prepare_checkpoint_staging(generation)?;
         let prepared = (|| {
+            work.checkpoint().map_err(HawDBError::from_storage_error)?;
             let append_rows = self
                 .append_state
                 .checkpoint_rows(self.append_publication_config.segment.max_rows)
@@ -701,6 +737,7 @@ impl GraphStore {
                         relationships,
                         generation,
                         commit_epoch,
+                        work,
                     )?,
                     (None, None) => durable.write_canonical_segments(
                         self.nodes.values().map(|node| Ok(node.clone())),
@@ -709,6 +746,7 @@ impl GraphStore {
                             .map(|relationship| Ok(relationship.clone())),
                         generation,
                         commit_epoch,
+                        work,
                     )?,
                     _ => unreachable!("canonical base iterators are created together"),
                 };
@@ -1012,6 +1050,7 @@ impl GraphStore {
                 generation,
                 self.search_projection_graph_changes.iter().map(Arc::as_ref),
             )?;
+            work.checkpoint().map_err(HawDBError::from_storage_error)?;
             checkpoint_publish_failpoint(CheckpointPublishStage::CheckpointPersisted)?;
             durable.prepare_wal_generation(generation)?;
             checkpoint_publish_failpoint(CheckpointPublishStage::WalPrepared)?;

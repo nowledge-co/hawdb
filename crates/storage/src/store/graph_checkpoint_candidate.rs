@@ -203,8 +203,20 @@ impl GraphStore {
         &self,
         catalog: &Catalog,
     ) -> Result<Option<CheckpointCandidate>> {
+        self.prepare_checkpoint_candidate_with_work_context(
+            catalog,
+            &crate::background::CheckpointWorkContext::default(),
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn prepare_checkpoint_candidate_with_work_context(
+        &self,
+        catalog: &Catalog,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Option<CheckpointCandidate>> {
         self.ensure_usable()?;
-        let Some(prepared) = self.prepare_checkpoint(catalog)? else {
+        let Some(prepared) = self.prepare_checkpoint_with_work_context(catalog, work)? else {
             return Ok(None);
         };
         let durable = self
@@ -236,6 +248,7 @@ impl GraphStore {
             retired_store: None,
         };
         let store = candidate.store.as_mut().expect("candidate owns a runtime");
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
         // Private replay errors must not poison the still-authoritative writer.
         // The original shared flags are restored on successful selection.
         store.post_wal_apply_poisoned = Arc::new(AtomicBool::new(false));
@@ -266,7 +279,9 @@ impl GraphStore {
         store.adopt_prepared_checkpoint_state(prepared)?;
         store.mount_relational_index_shadow_for_recovery();
         store.validate_authoritative_relational_index_open()?;
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
         candidate.branch_root = store.prepare_checkpoint_branch_root(manifest)?;
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
         if let Some(head_path) = store
             .durable
             .as_ref()

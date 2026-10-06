@@ -188,8 +188,28 @@ cancellation is checked at complete-record boundaries. Selector I/O acquires
 its wave before taking the publication lock. A deterministic cancellation
 regression stops after a private suffix record has been replayed, verifies
 unchanged authoritative bytes and no leaked I/O waves, then checks candidate
-cleanup, subsequent writes and complete ordinary reopen. This does not prove
-cancellation bounds inside the checkpoint-base or replay-finalization builders.
+cleanup, subsequent writes and complete ordinary reopen.
+
+Checkpoint-base canonical records, property-spill blocks, descriptor leaves and
+interior pages now share the already-admitted task context. Source hydration is
+inside the record lease; bounded encoding, page construction, metadata hashing
+and metadata writes acquire actual per-unit local permits when a local scheduler
+is supplied. Each I/O wave is released before a nested builder acquires another
+wave. Focused tests construct and completely read back 2,000 records/descriptors
+with a per-work operation limit of one and a total limit of four, cancel during
+record and interior-page construction, and cancel at every I/O admission point
+in a canonical/property-spill fixture. They assert released QoS/I/O leases and
+absence of unpublished temporary data. Another storage test verifies unchanged
+authority, subsequent writes, retry and complete ordinary reopen after base
+encoding cancellation. Only the job's own unpublished temporary paths are
+removed; published private files can remain as recovery evidence.
+
+The automatic owner still holds its whole-candidate local permit: these units
+do not cover adjacency/projection sorting, append/relational builders, statistics,
+candidate reopening or replay finalization. Temporary-file cleanup is currently
+best effort and lacks a complete retained cleanup-debt/resource ledger. Metadata
+buffers and dictionaries can still scale with the dataset. These focused tests
+do not prove cancellation or memory bounds for the entire candidate.
 
 `HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
 two schema/data transactions under both durability policies. Its complete
@@ -205,8 +225,10 @@ Rust refinement, a platform synchronization proof, liveness or runtime fault
 campaign coverage. See `docs/tla/README.md` for exact commands and assumptions.
 
 The current whole-candidate operation estimate can exceed the default local
-QoS operation limit on a large database. Bounded cancellable build units and
-builder-specific memory/retention accounting remain required. Delta pressure,
+QoS operation limit on a large database. Remaining bounded cancellable build
+units and builder-specific memory/retention accounting remain required; the
+provisional whole-candidate memory estimate also omits append-state retention
+and compaction allowances. Delta pressure,
 columnar-shadow parity, the full cancellation/fault/model/platform matrix and
 paired release performance qualification are also incomplete. Whole-candidate
 memory estimates and narrow idle tests do not prove these requirements.

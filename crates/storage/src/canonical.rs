@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::background::{CheckpointWorkContext, CheckpointWorkError};
 use crate::file_io::{self as fs, File};
 use crate::graph_descriptor_tree::demand::{
     GraphDescriptorTreeDemandReader, GraphDescriptorTreeReadLimits, GraphDescriptorTreeReadReport,
@@ -460,6 +461,14 @@ impl CanonicalSegmentManifest {
     }
 
     pub fn validate(&self) -> Result<(), CanonicalSegmentError> {
+        self.validate_with_work_context(&CheckpointWorkContext::default())
+    }
+
+    fn validate_with_work_context(
+        &self,
+        work: &CheckpointWorkContext,
+    ) -> Result<(), CanonicalSegmentError> {
+        work.checkpoint()?;
         if self.artifact_id != ARTIFACT_ID {
             return Err(CanonicalSegmentError::Corrupt(
                 "canonical manifest has an unsupported artifact id".to_string(),
@@ -488,17 +497,27 @@ impl CanonicalSegmentManifest {
         }
         let mut seen = BTreeSet::new();
         for key in &self.property_keys {
+            let unit = work.start_unit()?;
             if !seen.insert(key.as_str()) {
                 return Err(CanonicalSegmentError::Corrupt(
                     "canonical manifest property keys are not unique".to_string(),
                 ));
             }
+            unit.finish();
         }
         Ok(())
     }
 
     pub fn encode(&self) -> Result<String, CanonicalSegmentError> {
-        self.validate()?;
+        self.encode_with_work_context(&CheckpointWorkContext::default())
+    }
+
+    #[doc(hidden)]
+    pub fn encode_with_work_context(
+        &self,
+        work: &CheckpointWorkContext,
+    ) -> Result<String, CanonicalSegmentError> {
+        self.validate_with_work_context(work)?;
         let mut body = format!(
             "{MANIFEST_HEADER_V1}\nrecord_layout\tproperty_key_ids\ngeneration\t{}\nsource_commit_epoch\t{}\nartifact_id\t{}\nartifact_len\t{}\nartifact_digest\t{}\nartifact_sha256\t{}\nnode_count\t{}\nrelationship_count\t{}\nsegment_count\t{}\nnode_segment_count\t{}\nrelationship_segment_count\t{}\ndescriptor_root_len\t{}\ndescriptor_root_crc32c\t{}\ndescriptor_root_sha256\t{}\n",
             self.generation.0,
@@ -517,12 +536,14 @@ impl CanonicalSegmentManifest {
             self.descriptor_root_artifact.encoded_sha256
         );
         for (id, key) in self.property_keys.iter().enumerate() {
+            let unit = work.start_unit()?;
             body.push_str(&format!(
                 "property_key\t{id}\t{}\n",
                 encode_property_key_hex(key)
             ));
+            unit.finish();
         }
-        let checksum = content_digest(body.as_bytes()).0;
+        let checksum = work.integrity(body.as_bytes())?.crc32c.as_u64();
         Ok(format!("{body}checksum\t{checksum}\n"))
     }
 
@@ -770,6 +791,7 @@ pub enum CanonicalSegmentError {
     Read(SegmentReadError),
     DescriptorTree(GraphDescriptorTreeError),
     PropertySpill(PropertySpillError),
+    Work(CheckpointWorkError),
     RecordTooLarge { record_bytes: u64, max_bytes: u64 },
     SegmentTooLarge { segment_bytes: u64, max_bytes: u64 },
     Source(String),
@@ -783,6 +805,7 @@ impl Display for CanonicalSegmentError {
             Self::Read(error) => Display::fmt(error, formatter),
             Self::DescriptorTree(error) => Display::fmt(error, formatter),
             Self::PropertySpill(error) => Display::fmt(error, formatter),
+            Self::Work(error) => Display::fmt(error, formatter),
             Self::RecordTooLarge {
                 record_bytes,
                 max_bytes,
@@ -809,6 +832,7 @@ impl Error for CanonicalSegmentError {
             Self::Read(error) => Some(error),
             Self::DescriptorTree(error) => Some(error),
             Self::PropertySpill(error) => Some(error),
+            Self::Work(error) => Some(error),
             _ => None,
         }
     }
@@ -838,13 +862,42 @@ impl From<PropertySpillError> for CanonicalSegmentError {
     }
 }
 
+impl From<CheckpointWorkError> for CanonicalSegmentError {
+    fn from(error: CheckpointWorkError) -> Self {
+        Self::Work(error)
+    }
+}
+
 pub struct CanonicalSegmentWriter {
     config: CanonicalSegmentConfig,
+    work: Option<CheckpointWorkContext>,
+}
+
+/// Own only unpublished data paths. Final artifacts can be recovery evidence
+/// after an uncertain rename and must not be removed by this guard.
+struct CanonicalTemporaryData {
+    canonical: PathBuf,
+    property_spill: Option<PathBuf>,
+}
+
+impl Drop for CanonicalTemporaryData {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.canonical);
+        if let Some(path) = &self.property_spill {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 impl CanonicalSegmentWriter {
     pub const fn new(config: CanonicalSegmentConfig) -> Self {
-        Self { config }
+        Self { config, work: None }
+    }
+
+    #[doc(hidden)]
+    pub fn with_work_context(mut self, work: CheckpointWorkContext) -> Self {
+        self.work = Some(work);
+        self
     }
 
     pub fn write<N, R>(
@@ -881,11 +934,17 @@ impl CanonicalSegmentWriter {
         N: IntoIterator<Item = Result<NodeRecord, CanonicalSegmentError>>,
         R: IntoIterator<Item = Result<RelRecord, CanonicalSegmentError>>,
     {
+        let work = self.work.clone().unwrap_or_default();
+        work.checkpoint()?;
         let tmp_path = path.with_extension("hawdb.tmp");
         let source_commit_epoch = generation.0;
         let descriptor_tree =
-            create_canonical_descriptor_tree(path, generation, source_commit_epoch)?;
-        let result = self.write_inner(
+            create_canonical_descriptor_tree(path, generation, source_commit_epoch, &work)?;
+        let _temporary_data = CanonicalTemporaryData {
+            canonical: tmp_path.clone(),
+            property_spill: None,
+        };
+        let prepared = self.write_inner(
             &tmp_path,
             CanonicalWriteIdentity {
                 generation,
@@ -895,15 +954,11 @@ impl CanonicalSegmentWriter {
             relationships,
             None,
             descriptor_tree,
-        );
-        let prepared = match result {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                let _ = fs::remove_file(&tmp_path);
-                return Err(error);
-            }
-        };
-        durable_replace_file(&tmp_path, path)?;
+        )?;
+        {
+            let _wave = work.io_wave()?;
+            durable_replace_file(&tmp_path, path)?;
+        }
         prepared.publish_descriptor_tree()
     }
 
@@ -919,19 +974,28 @@ impl CanonicalSegmentWriter {
         N: IntoIterator<Item = Result<NodeRecord, CanonicalSegmentError>>,
         R: IntoIterator<Item = Result<RelRecord, CanonicalSegmentError>>,
     {
+        let work = self.work.clone().unwrap_or_default();
+        work.checkpoint()?;
         let tmp_path = path.with_extension("hawdb.tmp");
         let spill_tmp_path = property_spill.artifact_path.with_extension("hawdb.tmp");
         let source_commit_epoch = property_spill.source_commit_epoch;
         let descriptor_tree =
-            create_canonical_descriptor_tree(path, generation, source_commit_epoch)?;
-        let mut spill_writer = PropertySpillWriter::create(
+            create_canonical_descriptor_tree(path, generation, source_commit_epoch, &work)?;
+        // Declared before the open writer/prepared artifacts so their handles
+        // close before cleanup, including failure during spill construction.
+        let _temporary_data = CanonicalTemporaryData {
+            canonical: tmp_path.clone(),
+            property_spill: Some(spill_tmp_path.clone()),
+        };
+        let mut spill_writer = PropertySpillWriter::create_with_work_context(
             &spill_tmp_path,
             generation,
             property_spill.source_commit_epoch,
             property_spill.config,
             property_spill.descriptor_tree,
+            work.clone(),
         )?;
-        let result = self.write_inner(
+        let prepared_canonical = self.write_inner(
             &tmp_path,
             CanonicalWriteIdentity {
                 generation,
@@ -941,32 +1005,13 @@ impl CanonicalSegmentWriter {
             relationships,
             Some(&mut spill_writer),
             descriptor_tree,
-        );
-        let prepared_canonical = match result {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                drop(spill_writer);
-                let _ = fs::remove_file(&tmp_path);
-                let _ = fs::remove_file(&spill_tmp_path);
-                return Err(error);
-            }
-        };
-        let prepared_spill = match spill_writer.finish() {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                let _ = fs::remove_file(&tmp_path);
-                let _ = fs::remove_file(&spill_tmp_path);
-                return Err(error.into());
-            }
-        };
-        let spill_output = match prepared_spill.publish(property_spill.artifact_path) {
-            Ok(output) => output,
-            Err(error) => {
-                let _ = fs::remove_file(&tmp_path);
-                return Err(error.into());
-            }
-        };
-        durable_replace_file(&tmp_path, path)?;
+        )?;
+        let prepared_spill = spill_writer.finish()?;
+        let spill_output = prepared_spill.publish(property_spill.artifact_path)?;
+        {
+            let _wave = work.io_wave()?;
+            durable_replace_file(&tmp_path, path)?;
+        }
         let canonical_manifest = prepared_canonical.publish_descriptor_tree()?;
         Ok((canonical_manifest, spill_output))
     }
@@ -988,10 +1033,13 @@ impl CanonicalSegmentWriter {
             generation,
             source_commit_epoch,
         } = identity;
+        let work = self.work.clone().unwrap_or_default();
+        let _wave = work.io_wave()?;
         let mut file = File::create(path)?;
         let mut artifact_digest = IntegrityHasher::new();
         write_hashed(&mut file, &mut artifact_digest, ARTIFACT_HEADER)?;
         write_hashed(&mut file, &mut artifact_digest, &generation.0.to_le_bytes())?;
+        drop(_wave);
         let mut artifact_len = ARTIFACT_HEADER.len() as u64 + 8;
         let mut segment_id = 1u64;
         let mut node_segment_count = 0u64;
@@ -1006,16 +1054,29 @@ impl CanonicalSegmentWriter {
             segment_id,
             self.config,
         );
-        for node in nodes {
+        let mut nodes = nodes.into_iter();
+        loop {
+            let unit = work.start_unit()?;
+            let node = {
+                let _wave = work.io_wave()?;
+                nodes.next()
+            };
+            let Some(node) = node else {
+                unit.finish();
+                break;
+            };
             let node = node?;
+            work.checkpoint()?;
             let payload = encode_node_with_property_spills(
                 &node,
                 property_spills.as_deref_mut(),
                 Some(&mut property_keys),
             )?;
             if accumulator.would_exceed(node.id.0, payload.len()) && !accumulator.is_empty() {
-                let descriptor =
-                    accumulator.flush(&mut file, &mut artifact_digest, artifact_len)?;
+                let descriptor = {
+                    let _wave = work.io_wave()?;
+                    accumulator.flush(&mut file, &mut artifact_digest, artifact_len)?
+                };
                 artifact_len = artifact_len.saturating_add(descriptor.length.get());
                 node_count = node_count.saturating_add(u64::from(descriptor.record_count));
                 descriptor_tree.push(
@@ -1037,9 +1098,13 @@ impl CanonicalSegmentWriter {
             }
             accumulator.add_node_properties(&node)?;
             accumulator.push(node.id.0, &payload, None)?;
+            unit.finish();
         }
         if !accumulator.is_empty() {
+            let unit = work.start_unit()?;
+            let _wave = work.io_wave()?;
             let descriptor = accumulator.flush(&mut file, &mut artifact_digest, artifact_len)?;
+            drop(_wave);
             artifact_len = artifact_len.saturating_add(descriptor.length.get());
             node_count = node_count.saturating_add(u64::from(descriptor.record_count));
             descriptor_tree.push(
@@ -1050,6 +1115,7 @@ impl CanonicalSegmentWriter {
                 CanonicalSegmentError::Corrupt("canonical node segment count overflow".to_string())
             })?;
             segment_id = segment_id.saturating_add(1);
+            unit.finish();
         }
 
         let mut accumulator = SegmentAccumulator::new(
@@ -1058,8 +1124,19 @@ impl CanonicalSegmentWriter {
             segment_id,
             self.config,
         );
-        for relationship in relationships {
+        let mut relationships = relationships.into_iter();
+        loop {
+            let unit = work.start_unit()?;
+            let relationship = {
+                let _wave = work.io_wave()?;
+                relationships.next()
+            };
+            let Some(relationship) = relationship else {
+                unit.finish();
+                break;
+            };
             let relationship = relationship?;
+            work.checkpoint()?;
             let payload = encode_relationship_with_property_spills(
                 &relationship,
                 property_spills.as_deref_mut(),
@@ -1067,8 +1144,10 @@ impl CanonicalSegmentWriter {
             )?;
             if accumulator.would_exceed(relationship.id.0, payload.len()) && !accumulator.is_empty()
             {
-                let descriptor =
-                    accumulator.flush(&mut file, &mut artifact_digest, artifact_len)?;
+                let descriptor = {
+                    let _wave = work.io_wave()?;
+                    accumulator.flush(&mut file, &mut artifact_digest, artifact_len)?
+                };
                 artifact_len = artifact_len.saturating_add(descriptor.length.get());
                 relationship_count =
                     relationship_count.saturating_add(u64::from(descriptor.record_count));
@@ -1095,9 +1174,13 @@ impl CanonicalSegmentWriter {
                 &payload,
                 Some((relationship.source.0, relationship.target.0)),
             )?;
+            unit.finish();
         }
         if !accumulator.is_empty() {
+            let unit = work.start_unit()?;
+            let _wave = work.io_wave()?;
             let descriptor = accumulator.flush(&mut file, &mut artifact_digest, artifact_len)?;
+            drop(_wave);
             artifact_len = artifact_len.saturating_add(descriptor.length.get());
             relationship_count =
                 relationship_count.saturating_add(u64::from(descriptor.record_count));
@@ -1111,11 +1194,16 @@ impl CanonicalSegmentWriter {
                         "canonical relationship segment count overflow".to_string(),
                     )
                 })?;
+            unit.finish();
         }
-        file.sync_all()?;
+        {
+            let _wave = work.io_wave()?;
+            file.sync_all()?;
+        }
         let artifact_integrity = artifact_digest.finish();
         let descriptor_tree = descriptor_tree.finish()?;
         Ok(PreparedCanonicalSegmentArtifact {
+            work,
             generation,
             source_commit_epoch,
             artifact_id: ARTIFACT_ID,
@@ -1142,21 +1230,24 @@ fn create_canonical_descriptor_tree(
     path: &Path,
     generation: ManifestGeneration,
     source_commit_epoch: u64,
+    work: &CheckpointWorkContext,
 ) -> Result<GraphDescriptorTreeBuilder, CanonicalSegmentError> {
     let descriptor_tree = PersistentCanonicalSegmentDescriptorTree::for_artifact(path, generation);
     let (paths, config) = descriptor_tree.into_parts();
-    GraphDescriptorTreeBuilder::create(
+    GraphDescriptorTreeBuilder::create_with_work_context(
         paths,
         GraphDescriptorKind::CanonicalSegment,
         generation.0,
         source_commit_epoch,
         CANONICAL_SEGMENT_DESCRIPTOR_ARTIFACT_ID,
         config,
+        work.clone(),
     )
     .map_err(Into::into)
 }
 
 struct PreparedCanonicalSegmentArtifact {
+    work: CheckpointWorkContext,
     generation: ManifestGeneration,
     source_commit_epoch: u64,
     artifact_id: u64,
@@ -1174,6 +1265,7 @@ struct PreparedCanonicalSegmentArtifact {
 impl PreparedCanonicalSegmentArtifact {
     fn publish_descriptor_tree(self) -> Result<CanonicalSegmentManifest, CanonicalSegmentError> {
         let Self {
+            work,
             generation,
             source_commit_epoch,
             artifact_id,
@@ -1219,7 +1311,8 @@ impl PreparedCanonicalSegmentArtifact {
             descriptor_root_artifact: descriptor_tree.root_artifact,
             property_keys,
         };
-        manifest.validate()?;
+        work.checkpoint()?;
+        manifest.validate_with_work_context(&work)?;
         Ok(manifest)
     }
 }
@@ -2760,7 +2853,8 @@ fn canonical_error_requires_poison(error: &CanonicalSegmentError) -> bool {
         CanonicalSegmentError::PropertySpill(_)
         | CanonicalSegmentError::RecordTooLarge { .. }
         | CanonicalSegmentError::SegmentTooLarge { .. }
-        | CanonicalSegmentError::Source(_) => false,
+        | CanonicalSegmentError::Source(_)
+        | CanonicalSegmentError::Work(_) => false,
     }
 }
 
@@ -3876,6 +3970,257 @@ mod tests {
         }
         let output = builder.finish().unwrap().publish().unwrap();
         manifest.descriptor_root_artifact = output.root_artifact;
+    }
+
+    #[test]
+    fn checkpoint_units_encode_more_records_than_one_qos_request_can_admit() {
+        use crate::background::CheckpointWorkProbe;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+
+        let path = unique_path("checkpoint_record_units");
+        let spill_path = path.with_extension("spill.hawdb");
+        let spill_paths = GraphDescriptorTreePaths::new(
+            spill_path.with_extension("pages.hawdb"),
+            spill_path.with_extension("root.hawdb"),
+        );
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        });
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        let work = probe.context(scheduler.clone());
+        let nodes = (0..2_000u64).map(|id| {
+            assert!(
+                scheduler.state().running_background_operations > 0,
+                "the record lease must cover source hydration as well as encoding"
+            );
+            Ok(NodeRecord {
+                id: NodeId(id),
+                labels: BTreeSet::from([LabelId(1)]),
+                properties: BTreeMap::from([
+                    ("id".to_string(), Value::Int(id as i64)),
+                    (
+                        "payload".to_string(),
+                        Value::String(format!("{id}:{}", "x".repeat(128))),
+                    ),
+                ]),
+            })
+        });
+        let (manifest, spill) = CanonicalSegmentWriter::new(CanonicalSegmentConfig {
+            target_segment_bytes: NonZeroU64::new(256).unwrap(),
+            max_record_bytes: NonZeroU64::new(4096).unwrap(),
+        })
+        .with_work_context(work)
+        .write_fallible_with_property_spills(
+            &path,
+            ManifestGeneration(91),
+            nodes,
+            std::iter::empty(),
+            PropertySpillWriteOptions {
+                artifact_path: &spill_path,
+                source_commit_epoch: 91,
+                config: PropertySpillConfig {
+                    spill_threshold_bytes: NonZeroU64::new(32).unwrap(),
+                    target_block_bytes: NonZeroU64::new(256).unwrap(),
+                    max_value_bytes: NonZeroU64::new(4096).unwrap(),
+                },
+                descriptor_tree: PersistentPropertySpillDescriptorTree::new(
+                    spill_paths.clone(),
+                    GraphDescriptorTreeBuildConfig::default(),
+                ),
+            },
+        )
+        .unwrap();
+        probe.assert_released(&scheduler);
+        assert_eq!(manifest.node_count, 2_000);
+        assert!(probe.completed.load(Ordering::SeqCst) > 2_000);
+        assert!(probe.peak_units.load(Ordering::SeqCst) <= 4);
+        let cache = Arc::new(SegmentCache::new(64 * 1024));
+        let spills = PropertySpillReader::open(
+            &spill_path,
+            spill.manifest,
+            PersistentPropertySpillDescriptorTree::new(
+                spill_paths.clone(),
+                GraphDescriptorTreeBuildConfig::default(),
+            ),
+            cache.clone(),
+            StoreId(91),
+            NonZeroU64::new(4096).unwrap(),
+        )
+        .unwrap();
+        let reader = CanonicalSegmentReader::open_with_property_spills(
+            &path,
+            manifest.clone(),
+            cache,
+            StoreId(91),
+            NonZeroU64::new(4096).unwrap(),
+            spills,
+        )
+        .unwrap();
+        for id in 0..2_000u64 {
+            let node = reader.get_node(NodeId(id)).unwrap().unwrap();
+            assert_eq!(node.properties["id"], Value::Int(id as i64));
+            assert_eq!(
+                node.properties["payload"],
+                Value::String(format!("{id}:{}", "x".repeat(128)))
+            );
+        }
+        drop(reader);
+        remove_fixture(&path, manifest.generation);
+        let _ = std::fs::remove_file(spill_path);
+        let _ = std::fs::remove_file(spill_paths.page_artifact);
+        let _ = std::fs::remove_file(spill_paths.root_manifest);
+    }
+
+    #[test]
+    fn checkpoint_units_cancel_between_canonical_records_without_partial_publication() {
+        use crate::background::CheckpointWorkProbe;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+
+        let path = unique_path("checkpoint_record_cancel");
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        });
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        let work = probe.context(scheduler.clone());
+        let reads = std::cell::Cell::new(0);
+        let nodes = (0..64u64).map(|id| {
+            reads.set(reads.get() + 1);
+            if id == 16 {
+                probe.cancellation.cancel();
+            }
+            Ok(NodeRecord {
+                id: NodeId(id),
+                labels: BTreeSet::from([LabelId(1)]),
+                properties: BTreeMap::from([("id".into(), Value::Int(id as i64))]),
+            })
+        });
+        let error = CanonicalSegmentWriter::new(CanonicalSegmentConfig {
+            target_segment_bytes: NonZeroU64::new(128).unwrap(),
+            max_record_bytes: NonZeroU64::new(1024).unwrap(),
+        })
+        .with_work_context(work)
+        .write_fallible(&path, ManifestGeneration(92), nodes, std::iter::empty())
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            CanonicalSegmentError::Work(CheckpointWorkError::Stopped(_))
+        ));
+        assert_eq!(reads.get(), 17);
+        probe.assert_released(&scheduler);
+        assert!(!path.exists());
+        assert!(!path.with_extension("hawdb.tmp").exists());
+        let (descriptor, _) =
+            PersistentCanonicalSegmentDescriptorTree::for_artifact(&path, ManifestGeneration(92))
+                .into_parts();
+        assert!(!descriptor.page_artifact.exists());
+        assert!(!descriptor.root_manifest.exists());
+        assert!(!descriptor
+            .page_artifact
+            .with_extension("hawdb.tmp")
+            .exists());
+    }
+
+    #[test]
+    fn checkpoint_units_cancel_at_every_io_boundary_without_leaking_temporary_data() {
+        use crate::background::CheckpointWorkProbe;
+        use hawdb_core::RuntimeIoWaveError;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+
+        let mut successful_waves = 0;
+        let mut cancel_at = 0;
+        loop {
+            let fixture = unique_path("checkpoint_io_cancel");
+            let directory = fixture.with_extension("work");
+            std::fs::create_dir(&directory).unwrap();
+            let path = directory.join("canonical.hawdb");
+            let spill_path = directory.join("spill.hawdb");
+            let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+                max_background_operations: Some(1),
+                max_total_background_operations: Some(4),
+                ..LocalQosPolicy::default()
+            });
+            let probe = Arc::new(CheckpointWorkProbe::default());
+            probe.cancel_on_io_wave.store(cancel_at, Ordering::SeqCst);
+            let nodes = (0..3u64).map(|id| {
+                Ok(NodeRecord {
+                    id: NodeId(id),
+                    labels: BTreeSet::from([LabelId(1)]),
+                    properties: BTreeMap::from([(
+                        "payload".into(),
+                        Value::String(format!("{id}:{}", "x".repeat(128))),
+                    )]),
+                })
+            });
+            let result = CanonicalSegmentWriter::new(CanonicalSegmentConfig {
+                target_segment_bytes: NonZeroU64::new(128).unwrap(),
+                max_record_bytes: NonZeroU64::new(1024).unwrap(),
+            })
+            .with_work_context(probe.context(scheduler.clone()))
+            .write_fallible_with_property_spills(
+                &path,
+                ManifestGeneration(93),
+                nodes,
+                std::iter::empty(),
+                PropertySpillWriteOptions {
+                    artifact_path: &spill_path,
+                    source_commit_epoch: 93,
+                    config: PropertySpillConfig {
+                        spill_threshold_bytes: NonZeroU64::new(32).unwrap(),
+                        target_block_bytes: NonZeroU64::new(128).unwrap(),
+                        max_value_bytes: NonZeroU64::new(1024).unwrap(),
+                    },
+                    descriptor_tree: PersistentPropertySpillDescriptorTree::new(
+                        GraphDescriptorTreePaths::new(
+                            directory.join("spill.pages.hawdb"),
+                            directory.join("spill.root.hawdb"),
+                        ),
+                        GraphDescriptorTreeBuildConfig::default(),
+                    ),
+                },
+            );
+            if cancel_at == 0 {
+                assert_eq!(result.unwrap().0.node_count, 3);
+                successful_waves = probe.io_waves.load(Ordering::SeqCst);
+                assert!(successful_waves > 10);
+            } else {
+                let error = result.unwrap_err();
+                let mut source: &(dyn Error + 'static) = &error;
+                let mut stopped = false;
+                loop {
+                    if let Some(work) = source.downcast_ref::<CheckpointWorkError>() {
+                        stopped |= matches!(
+                            work,
+                            CheckpointWorkError::Stopped(_)
+                                | CheckpointWorkError::Io(RuntimeIoWaveError::Stopped(_))
+                        );
+                    }
+                    let Some(next) = source.source() else { break };
+                    source = next;
+                }
+                assert!(stopped, "wave {cancel_at}: {error}");
+            }
+            probe.assert_released(&scheduler);
+            for entry in std::fs::read_dir(&directory).unwrap() {
+                let path = entry.unwrap().path();
+                assert_ne!(
+                    path.extension().and_then(|extension| extension.to_str()),
+                    Some("tmp"),
+                    "wave {cancel_at} leaked {}",
+                    path.display()
+                );
+            }
+            // Published private files can remain as recovery evidence. This
+            // fixture has no selector and owns all files in this directory.
+            std::fs::remove_dir_all(&directory).unwrap();
+            cancel_at += 1;
+            if cancel_at > successful_waves {
+                break;
+            }
+        }
     }
 
     #[test]

@@ -284,6 +284,7 @@ pub struct GraphDescriptorTreeGenerationArtifacts {
 pub enum GraphDescriptorTreeError {
     Io(std::io::Error),
     Page(GraphDescriptorPageError),
+    Work(crate::background::CheckpointWorkError),
     Admission(String),
     Corrupt(String),
 }
@@ -293,6 +294,7 @@ impl Display for GraphDescriptorTreeError {
         match self {
             Self::Io(error) => Display::fmt(error, formatter),
             Self::Page(error) => Display::fmt(error, formatter),
+            Self::Work(error) => Display::fmt(error, formatter),
             Self::Admission(message) => {
                 write!(
                     formatter,
@@ -309,6 +311,7 @@ impl std::error::Error for GraphDescriptorTreeError {
         match self {
             Self::Io(error) => Some(error),
             Self::Page(error) => Some(error),
+            Self::Work(error) => Some(error),
             Self::Admission(_) | Self::Corrupt(_) => None,
         }
     }
@@ -323,6 +326,12 @@ impl From<std::io::Error> for GraphDescriptorTreeError {
 impl From<GraphDescriptorPageError> for GraphDescriptorTreeError {
     fn from(error: GraphDescriptorPageError) -> Self {
         Self::Page(error)
+    }
+}
+
+impl From<crate::background::CheckpointWorkError> for GraphDescriptorTreeError {
+    fn from(error: crate::background::CheckpointWorkError) -> Self {
+        Self::Work(error)
     }
 }
 
@@ -439,6 +448,7 @@ pub use builder::GraphDescriptorTreeBuilder;
 
 #[derive(Debug)]
 pub struct PreparedGraphDescriptorTree {
+    work: crate::background::CheckpointWorkContext,
     paths: GraphDescriptorTreePaths,
     config: GraphDescriptorTreeBuildConfig,
     root: GraphDescriptorTreeRoot,
@@ -458,6 +468,8 @@ impl PreparedGraphDescriptorTree {
     }
 
     pub fn publish(mut self) -> Result<GraphDescriptorTreeWriteOutput, GraphDescriptorTreeError> {
+        let unit = self.work.start_unit()?;
+        let _wave = self.work.io_wave()?;
         if self.paths.page_artifact.exists() || self.paths.root_manifest.exists() {
             return Err(admission(
                 "graph descriptor publication refuses to replace an existing generation artifact",
@@ -477,6 +489,7 @@ impl PreparedGraphDescriptorTree {
         }
         self.published = true;
         let root_integrity = integrity_digest(&self.encoded_root);
+        unit.finish();
         Ok(GraphDescriptorTreeWriteOutput {
             root: self.root.clone(),
             report: self.report,
@@ -489,12 +502,14 @@ impl PreparedGraphDescriptorTree {
     }
 
     pub fn verify_encoded_root(&self) -> Result<(), GraphDescriptorTreeError> {
+        let unit = self.work.start_unit()?;
         let decoded = GraphDescriptorTreeRoot::decode(&self.encoded_root, self.config)?;
         if decoded != self.root {
             return Err(corrupt(
                 "prepared graph descriptor root does not round-trip exactly",
             ));
         }
+        unit.finish();
         Ok(())
     }
 }
