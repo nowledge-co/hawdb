@@ -30,6 +30,43 @@ pub(crate) struct OwnedPath {
 }
 
 impl OwnedPath {
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self._memory.bytes()
+    }
+
+    pub(crate) fn canonicalize(
+        path: &Path,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+    ) -> Result<Self> {
+        Self::resolve(path, memory, task, |path| {
+            hawdb_storage::file_io::canonicalize(path)
+        })
+    }
+
+    pub(crate) fn absolute(
+        path: &Path,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+    ) -> Result<Self> {
+        Self::resolve(path, memory, task, |path| std::path::absolute(path))
+    }
+
+    fn resolve(
+        path: &Path,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+        resolve: impl FnOnce(&Path) -> std::io::Result<PathBuf>,
+    ) -> Result<Self> {
+        checkpoint(task)?;
+        // Cover the native extended Windows path representation, its UTF-8
+        // result and overlapping conversion buffers before resolving aliases.
+        let bytes = add(4 * 32_768 * 3, super::reserved::native_path::bytes(path)?)?;
+        let lease = memory.retained.reserve(bytes)?;
+        let value = resolve(path)?;
+        Self::finish(value, lease, task)
+    }
+
     #[cfg(test)]
     pub(crate) fn capacity(&self) -> usize {
         self.value.capacity()

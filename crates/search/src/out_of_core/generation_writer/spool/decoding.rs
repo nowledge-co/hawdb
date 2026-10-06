@@ -17,7 +17,9 @@ use hawdb_executor::QueryMemoryLease;
 use std::collections::BTreeMap;
 
 mod admission;
+mod record;
 use admission::Admission;
+pub(super) use record::read_record_admitted;
 
 const INPUT_BYTES: usize = 8192;
 
@@ -67,6 +69,7 @@ fn decode_frame(
         digest: Crc32cHasher::new(),
         ordinal,
         admission,
+        consumed: 0,
     };
     let document = frame.document();
     // As with the original decoder, validate the whole frame before exposing
@@ -95,6 +98,7 @@ struct FrameReader<'a, R> {
     filled: usize,
     digest: Crc32cHasher,
     ordinal: usize,
+    consumed: u64,
     admission: Option<Admission<'a>>,
 }
 
@@ -123,7 +127,10 @@ impl<R: Read> FrameReader<'_, R> {
                 result => break result,
             }
         }
-        .map_err(|error| self.invalid(format_args!("is truncated: {error}")))?;
+        .map_err(|error| match HawDBError::from(error) {
+            error @ HawDBError::FileDescriptors(_) => error,
+            error => self.invalid(format_args!("is truncated: {error}")),
+        })?;
         if count == 0 {
             return Err(self.invalid("is truncated: unexpected end of file"));
         }
@@ -141,6 +148,7 @@ impl<R: Read> FrameReader<'_, R> {
     fn next(&mut self) -> Result<Option<u8>> {
         let byte = self.peek()?;
         self.position += usize::from(byte.is_some());
+        self.consumed += u64::from(byte.is_some());
         Ok(byte)
     }
 

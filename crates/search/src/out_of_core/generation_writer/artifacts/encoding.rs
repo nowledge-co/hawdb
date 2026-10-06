@@ -29,7 +29,7 @@ const HEADER_CAPACITY: usize = 512;
 const _: () = assert!(SEARCH_COMPRESSION_LEVEL == 3);
 
 #[cfg(test)]
-pub(super) fn encode_segment_payload<T: std::borrow::Borrow<crate::SearchDocument>>(
+pub(super) fn encode_segment_payload<T: crate::document_encoding::RecordSource>(
     encoding: &SegmentEncoding<'_, T>,
     segment_id: u64,
     name: &str,
@@ -50,7 +50,7 @@ pub(super) fn encode_segment_payload<T: std::borrow::Borrow<crate::SearchDocumen
     .map(|output| output.bytes)
 }
 
-pub(super) fn encode_segment_payload_with_context<T: std::borrow::Borrow<crate::SearchDocument>>(
+pub(super) fn encode_segment_payload_with_context<T: crate::document_encoding::RecordSource>(
     encoding: &SegmentEncoding<'_, T>,
     segment_id: u64,
     name: &str,
@@ -135,10 +135,6 @@ impl CompressedBuffer {
         })
     }
 
-    pub(super) fn len(&self) -> usize {
-        self.bytes.len()
-    }
-
     fn reserve(&mut self, additional: usize) -> io::Result<()> {
         checkpoint(&self.task).map_err(io::Error::other)?;
         let required = self.bytes.len().checked_add(additional).ok_or_else(|| {
@@ -203,6 +199,9 @@ impl<W: Write> Write for DigestWriter<'_, W> {
 
 #[cfg(test)]
 mod tests;
+
+mod file;
+pub(super) use file::append_segment;
 
 #[cfg(test)]
 pub(crate) mod evidence {

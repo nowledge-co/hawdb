@@ -33,6 +33,104 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn retained_host_memory_denial_leaves_no_private_stage() {
+    let fixture = Fixture::new();
+    let budget = 16 * 1024 * 1024;
+    let governor = hawdb_qos::RuntimeGovernor::detect(
+        hawdb_qos::RuntimeGovernorConfig {
+            memory_budget_bytes: Some(budget),
+            ..Default::default()
+        },
+        hawdb_qos::IoConcurrencyBudget::new(2, 1),
+    );
+    let admission = crate::SearchGenerationAdmission::acquire(
+        &governor,
+        hawdb_qos::RuntimeWorkRequest::background_maintenance(budget),
+    )
+    .unwrap();
+    let error = admission
+        .create_writer(&fixture.0, Default::default())
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("memory_saturated"), "{error}");
+    assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 0);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+    assert_eq!(governor.snapshot().active_background_tasks, 0);
+}
+
+#[test]
+fn pending_cleanup_releases_work_admission_and_retries_on_the_next_create() {
+    use hawdb_qos::{
+        IoConcurrencyBudget, RuntimeGovernor, RuntimeGovernorConfig, RuntimeWorkRequest,
+    };
+    use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+
+    let fixture = Fixture::new();
+    let project = ProjectFileDescriptors::acquire_existing(&fixture.0, 1).unwrap();
+    let governor = RuntimeGovernor::detect(
+        RuntimeGovernorConfig {
+            memory_budget_bytes: Some(64 * 1024 * 1024),
+            ..RuntimeGovernorConfig::shared_host()
+        },
+        IoConcurrencyBudget::new(2, 1),
+    );
+    let request = RuntimeWorkRequest::background_maintenance(16 * 1024 * 1024);
+    let permit = std::sync::Arc::new(governor.try_admit(request).unwrap());
+    let task = permit.bind_task_context(RuntimeTaskContext::default());
+    let mut memory = BuildMemory::new(&task).unwrap();
+    memory.host_admission = Some(permit.clone());
+    let stage = StageDirectory::create(&fixture.0, &memory, &task).unwrap();
+    let path = stage.path.to_path_buf();
+    let held = File::create(fixture.0.join("held")).unwrap();
+    drop(stage);
+    drop(memory);
+    drop(permit);
+    drop(held);
+    let pending =
+        crate::SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&fixture.0, 0).unwrap();
+    assert_eq!(
+        governor.snapshot().admitted_memory_bytes,
+        pending.retained_memory_bytes as u64
+    );
+    assert_eq!(governor.snapshot().active_background_tasks, 0);
+    assert!(pending.retained_memory_bytes > 0);
+    assert!(path.exists());
+
+    let task = RuntimeTaskContext::default();
+    let memory = BuildMemory::new(&task).unwrap();
+    let next = StageDirectory::create(&fixture.0, &memory, &task).unwrap();
+    assert!(!path.exists());
+    let report =
+        crate::SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&fixture.0, 0).unwrap();
+    assert_eq!(report.pending_stages, 0);
+    drop(next);
+    assert_eq!(project.metrics().open, 0);
+}
+
+#[test]
+fn pending_cleanup_does_not_pin_the_previous_project_descriptor_limit() {
+    use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+
+    let fixture = Fixture::new();
+    let project = ProjectFileDescriptors::acquire_existing(&fixture.0, 1).unwrap();
+    let task = RuntimeTaskContext::default();
+    let memory = BuildMemory::new(&task).unwrap();
+    let stage = StageDirectory::create(&fixture.0, &memory, &task).unwrap();
+    let path = stage.path.to_path_buf();
+    let held = File::create(fixture.0.join("held")).unwrap();
+    drop(stage);
+    drop(memory);
+    drop(held);
+    drop(project);
+    let reopened = ProjectFileDescriptors::acquire_existing(&fixture.0, 3).unwrap();
+    let report =
+        crate::SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&fixture.0, 1).unwrap();
+    assert_eq!(report.removed_stages, 1);
+    assert!(!path.exists());
+    assert_eq!(reopened.metrics().open, 0);
+}
+
+#[test]
 fn stage_cleanup_admission_precedes_creation_and_keeps_the_parent() {
     let fixture = Fixture::new();
     let bytes = directory::stage_removal_bytes(&fixture.0).unwrap();
@@ -97,4 +195,201 @@ fn native_stage_cleanup_unlinks_symlinks_without_following_their_targets() {
     assert!(!path.exists());
     assert_eq!(fs::read(outside.join("retained")).unwrap(), b"outside");
     assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn descriptor_denial_retains_only_cleanup_metadata_until_retry() {
+    use crate::SearchGenerationAdmission;
+    use hawdb_qos::IoConcurrencyBudget;
+    use hawdb_qos::{RuntimeGovernor, RuntimeGovernorConfig, RuntimeWorkRequest};
+    use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+
+    let fixture = Fixture::new();
+    let project = ProjectFileDescriptors::acquire_existing(&fixture.0, 4).unwrap();
+    let governor = RuntimeGovernor::detect(
+        RuntimeGovernorConfig {
+            memory_budget_bytes: Some(64 * 1024 * 1024),
+            ..RuntimeGovernorConfig::shared_host()
+        },
+        IoConcurrencyBudget::new(2, 1),
+    );
+    let request = RuntimeWorkRequest::background_maintenance(16 * 1024 * 1024);
+    let admission = SearchGenerationAdmission::acquire(&governor, request).unwrap();
+    let mut writer = admission
+        .create_writer(&fixture.0, Default::default())
+        .unwrap();
+    writer
+        .writer_mut()
+        .push(crate::SearchDocument {
+            id: "a".into(),
+            title: String::new(),
+            content: "retained bytes".into(),
+            embedding: None,
+            metadata: Default::default(),
+        })
+        .unwrap();
+    let (start_tx, start_rx) = std::sync::mpsc::channel();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    stage::evidence::install(fixture.0.clone(), start_tx, ready_rx);
+    let root = fixture.0.clone();
+    let competitor = std::thread::spawn(move || {
+        start_rx.recv().unwrap();
+        let held = (0..4)
+            .map(|index| File::create(root.join(format!("competitor-{index}"))).unwrap())
+            .collect::<Vec<_>>();
+        ready_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+        drop(held);
+    });
+    // Exhaust the real project after the scan closes, immediately before unlink.
+    drop(writer);
+    let report =
+        crate::SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&fixture.0, 0).unwrap();
+    assert_eq!(report.pending_stages, 1);
+    assert!(report.reserved_disk_bytes > 0);
+    assert!(report.retained_memory_bytes > 0);
+    assert!(report.retained_memory_bytes < 8192);
+    assert!(matches!(
+        report.descriptor_error,
+        Some(hawdb_core::error::FileDescriptorError::BudgetExceeded { .. })
+    ));
+    assert_eq!(
+        governor.snapshot().admitted_memory_bytes,
+        report.retained_memory_bytes as u64
+    );
+    assert_eq!(governor.snapshot().active_background_tasks, 0);
+    let denied =
+        crate::SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&fixture.0, 1).unwrap();
+    assert_eq!(denied.attempted_stages, 1);
+    assert_eq!(denied.pending_stages, 1);
+    assert_eq!(denied.reserved_disk_bytes, report.reserved_disk_bytes);
+    release_tx.send(()).unwrap();
+    competitor.join().unwrap();
+    let released =
+        crate::SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&fixture.0, 1).unwrap();
+    assert_eq!(released.removed_stages, 1);
+    assert_eq!(released.pending_stages, 0);
+    assert_eq!(released.reserved_disk_bytes, 0);
+    assert_eq!(released.retained_memory_bytes, 0);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+    assert_eq!(project.metrics().open, 0);
+}
+
+#[test]
+fn persistent_cleanup_failure_keeps_evidence_without_pinning_the_fd_domain() {
+    use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+
+    let fixture = Fixture::new();
+    let project = ProjectFileDescriptors::acquire_existing(&fixture.0, 4).unwrap();
+    let governor = hawdb_qos::RuntimeGovernor::detect(
+        hawdb_qos::RuntimeGovernorConfig {
+            memory_budget_bytes: Some(64 * 1024 * 1024),
+            background_task_limit: std::num::NonZeroUsize::new(1),
+            ..Default::default()
+        },
+        hawdb_qos::IoConcurrencyBudget::new(2, 1),
+    );
+    let request = hawdb_qos::RuntimeWorkRequest::background_maintenance(16 * 1024 * 1024);
+    let admission = crate::SearchGenerationAdmission::acquire(&governor, request).unwrap();
+    let mut writer = admission
+        .create_writer(&fixture.0, Default::default())
+        .unwrap();
+    writer
+        .writer_mut()
+        .push(crate::SearchDocument {
+            id: "private".into(),
+            title: String::new(),
+            content: "unpublished".into(),
+            embedding: None,
+            metadata: Default::default(),
+        })
+        .unwrap();
+    let path = fs::read_dir(&fixture.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "stage")
+        })
+        .unwrap();
+    let unexpected = path.join("unexpected");
+    fs::create_dir(&unexpected).unwrap();
+    fs::write(unexpected.join("evidence"), b"retained").unwrap();
+    drop(writer);
+    drop(project);
+    assert_eq!(governor.snapshot().active_background_tasks, 0);
+
+    let reopened = ProjectFileDescriptors::acquire_existing(&fixture.0, 8).unwrap();
+    for _ in 0..2 {
+        let report =
+            crate::SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&fixture.0, 1).unwrap();
+        assert_eq!(report.attempted_stages, 1);
+        assert_eq!(report.pending_stages, 1);
+        assert_eq!(report.blocked_stages, 1);
+        assert_eq!(
+            governor.snapshot().admitted_memory_bytes,
+            report.retained_memory_bytes as u64
+        );
+        assert!(report.retained_memory_bytes < 8192);
+        assert_eq!(fs::read(unexpected.join("evidence")).unwrap(), b"retained");
+        assert_eq!(reopened.metrics().open, 0);
+    }
+    let next = crate::SearchGenerationAdmission::acquire(&governor, request).unwrap();
+    let mut writer = next.create_writer(&fixture.0, Default::default()).unwrap();
+    writer
+        .writer_mut()
+        .push(crate::SearchDocument {
+            id: "published".into(),
+            title: String::new(),
+            content: "survives cleanup debt".into(),
+            embedding: None,
+            metadata: Default::default(),
+        })
+        .unwrap();
+    writer.finish().unwrap();
+    assert_eq!(
+        crate::SearchOutOfCoreReader::open(&fixture.0)
+            .unwrap()
+            .document_count(),
+        1
+    );
+    assert_eq!(fs::read(unexpected.join("evidence")).unwrap(), b"retained");
+    fs::remove_file(unexpected.join("evidence")).unwrap();
+    fs::remove_dir(unexpected).unwrap();
+    assert_eq!(
+        crate::SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&fixture.0, 1)
+            .unwrap()
+            .removed_stages,
+        1
+    );
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn cleanup_retry_resolves_root_aliases_and_preserves_active_stages() {
+    use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+
+    let fixture = Fixture::new();
+    let root = fixture.0.join("root");
+    let alias = fixture.0.join("alias");
+    fs::create_dir(&root).unwrap();
+    std::os::unix::fs::symlink(&root, &alias).unwrap();
+    let project = ProjectFileDescriptors::acquire_existing(&root, 1).unwrap();
+    let task = RuntimeTaskContext::default();
+    let memory = BuildMemory::new(&task).unwrap();
+    let pending = StageDirectory::create(&root, &memory, &task).unwrap();
+    let pending_path = pending.path.to_path_buf();
+    let active = StageDirectory::create(&root, &memory, &task).unwrap();
+    let held = File::create(root.join("held")).unwrap();
+    drop(pending);
+    drop(held);
+    let report =
+        crate::SearchOutOfCoreGenerationWriter::retry_staging_cleanup(alias.join("."), 1).unwrap();
+    assert_eq!(report.removed_stages, 1);
+    assert!(!pending_path.exists());
+    assert!(active.path.exists());
+    drop(active);
+    assert_eq!(project.metrics().open, 0);
 }

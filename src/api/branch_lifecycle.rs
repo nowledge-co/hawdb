@@ -9,6 +9,7 @@ use crate::error::HawDBError;
 use hawdb_core::Uuid;
 use hawdb_storage::branch_catalog as storage;
 use hawdb_storage::branch_head;
+pub use hawdb_storage::branch_reclamation::{BranchReclamationLimits, BranchReclamationReport};
 use hawdb_storage::ownership::DatabaseDirectoryLease;
 use std::fmt::{self, Display, Formatter};
 use std::path::PathBuf;
@@ -47,6 +48,51 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{mpsc, Arc, Condvar, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn prepared_branch_handoff_pins_candidates_during_live_maintenance() {
+        let path = test_directory("reclamation-candidate");
+        let mut database = Database::open(&path).unwrap();
+        database
+            .query("CREATE (:Memory {id: 'checkpoint'})")
+            .unwrap();
+        database.checkpoint().unwrap();
+        database.query("CREATE (:Memory {id: 'wal-tail'})").unwrap();
+        let objects_path = path.join("branches/objects");
+        let candidate = database
+            .runtime
+            .get_mut()
+            .unwrap()
+            .store
+            .prepare_immutable_root_handoff(&objects_path)
+            .unwrap();
+        let candidate_root = candidate.root.object_reference().unwrap();
+        let objects =
+            hawdb_storage::immutable_object::ImmutableObjectStore::open(&objects_path).unwrap();
+        let deferred = database
+            .reclaim_branch_storage(BranchReclamationLimits::default())
+            .unwrap();
+        assert!(deferred.deferred_for_active_leases);
+        assert!(objects.read(candidate_root).is_ok());
+        drop(candidate);
+        let reclaimed = database
+            .reclaim_branch_storage(BranchReclamationLimits::default())
+            .unwrap();
+        assert!(!reclaimed.deferred_for_active_leases);
+        assert!(objects.read(candidate_root).is_err());
+        drop(database);
+        let mut reopened = Database::open(&path).unwrap();
+        assert_eq!(
+            reopened
+                .query("MATCH (m:Memory) RETURN m.id")
+                .unwrap()
+                .rows
+                .len(),
+            2
+        );
+        drop(reopened);
+        std::fs::remove_dir_all(path).unwrap();
+    }
 
     fn test_directory(name: &str) -> PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -132,40 +178,46 @@ mod tests {
     }
 
     #[test]
-    fn sql_branch_switch_retains_job_outcomes_and_never_reuses_ids() {
+    fn unfinished_jobs_block_branch_switch_and_reclamation_until_success() {
+        use hawdb_storage::immutable_object::{ImmutableObjectStore, ObjectKind, ObjectReference};
+
         let (path, mut database, main) = initialized_database();
         let child = database
             .create_branch(create_request(&database, &main))
             .unwrap();
         database.query_sql("USE BRANCH main").unwrap();
+        let mut objects = ImmutableObjectStore::open(path.join("branches/objects")).unwrap();
+        let payload = b"unregistered job recovery candidate";
+        let candidate = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, payload);
+        objects.publish(candidate, payload).unwrap();
+        let assert_busy = |database: &mut Database| {
+            assert!(matches!(
+                database.query_sql("USE BRANCH child"),
+                Err(HawDBError::BranchBusy { .. })
+            ));
+            assert!(matches!(
+                database.reclaim_branch_storage(BranchReclamationLimits::default()),
+                Err(HawDBError::BranchBusy { .. })
+            ));
+            assert_eq!(database.current_branch().unwrap().unwrap().info.id, main.id);
+            assert_eq!(objects.read(candidate).unwrap(), payload);
+        };
         let job = database.derived_artifact_jobs.enqueue(
             "content_artifact",
             "document",
             "parse",
             BTreeMap::new(),
         );
-        assert!(matches!(
-            database.query_sql("USE BRANCH child"),
-            Err(HawDBError::BranchBusy { .. })
-        ));
-        assert_eq!(database.current_branch().unwrap().unwrap().info.id, main.id);
+        assert_busy(&mut database);
         let claim = database
             .derived_artifact_jobs
             .claim_external_by_id(job.id)
             .unwrap();
-        assert!(matches!(
-            database.query_sql("USE BRANCH child"),
-            Err(HawDBError::BranchBusy { .. })
-        ));
-        assert_eq!(database.current_branch().unwrap().unwrap().info.id, main.id);
+        assert_busy(&mut database);
         database
             .derived_artifact_jobs
             .complete(claim, Err(HawDBError::Execution("fixture failure".into())));
-        assert!(matches!(
-            database.query_sql("USE BRANCH child"),
-            Err(HawDBError::BranchBusy { .. })
-        ));
-        assert_eq!(database.current_branch().unwrap().unwrap().info.id, main.id);
+        assert_busy(&mut database);
         database
             .derived_artifact_jobs
             .retry_failed_external(job.id, None)
@@ -177,6 +229,12 @@ mod tests {
         let completed = database
             .derived_artifact_jobs
             .complete(claim, Ok(crate::QueryOutput::from_rows(Vec::new())));
+        let report = database
+            .reclaim_branch_storage(BranchReclamationLimits::default())
+            .unwrap();
+        assert!(!report.deferred_for_active_leases);
+        assert!(report.reclaimed_objects >= 1);
+        assert!(objects.read(candidate).is_err());
         database.query_sql("USE BRANCH child").unwrap();
         assert_eq!(
             database.current_branch().unwrap().unwrap().info.id,
@@ -2495,6 +2553,59 @@ fn request_fingerprint(request: &BranchCreateRequest) -> [u8; 32] {
 }
 
 impl Database {
+    /// The last pending-create scan, including incomplete outcomes. Read-only
+    /// and in-memory opens do not scan and return `None`. This admits no data.
+    pub fn branch_create_recovery_report(&self) -> Option<&super::BranchCreateRecoveryReport> {
+        self.branch_create_recovery.as_ref()
+    }
+
+    /// Retry pending child receipts with explicit aggregate bounds, without
+    /// requiring main or any healthy child runtime to close first.
+    pub fn recover_pending_branch_creates(
+        &mut self,
+        limits: super::BranchCreateRecoveryLimits,
+    ) -> crate::error::Result<super::BranchCreateRecoveryReport> {
+        self.ensure_branch_writable()?;
+        let root = self.project_root_path.as_ref().ok_or_else(|| {
+            HawDBError::Storage("pending branch recovery requires a persistent project".into())
+        })?;
+        let metadata =
+            hawdb_storage::branch_project::ProjectMetadata::open(root, self.config.max_open_files)?;
+        let report = metadata.recover_pending_creates(limits)?;
+        self.branch_create_recovery = Some(report.clone());
+        Ok(report)
+    }
+
+    /// Reclaims unreachable immutable objects and deleted branch directories.
+    /// Keep calling after readers or other branch owners retire if the report
+    /// indicates a conservative deferral. This never expires live branches.
+    /// Unfinished background jobs return a branch-busy error because their
+    /// historical dependencies cannot yet be enumerated independently.
+    pub fn reclaim_branch_storage(
+        &mut self,
+        limits: BranchReclamationLimits,
+    ) -> crate::error::Result<BranchReclamationReport> {
+        self.ensure_branch_writable()?;
+        self.ensure_branch_work_idle()?;
+        self.runtime.get_mut()?.store.reclaim_branch_storage(limits)
+    }
+
+    fn ensure_branch_work_idle(&self) -> Result<(), BranchLifecycleError> {
+        if self.derived_artifact_jobs.jobs().iter().any(|job| {
+            matches!(
+                job.status,
+                hawdb_artifact::DerivedArtifactJobStatus::Pending
+                    | hawdb_artifact::DerivedArtifactJobStatus::Running
+                    | hawdb_artifact::DerivedArtifactJobStatus::Failed
+            )
+        }) {
+            return Err(BranchLifecycleError::SourceBusy(
+                "unfinished background work",
+            ));
+        }
+        Ok(())
+    }
+
     fn ensure_branch_writable(&self) -> Result<(), BranchLifecycleError> {
         if self.config.read_only {
             return Err(BranchLifecycleError::Transition(
@@ -2603,18 +2714,7 @@ impl Database {
             runtime.branch_selection = Some(BranchSelection { record });
             return Ok(());
         }
-        if self.derived_artifact_jobs.jobs().iter().any(|job| {
-            matches!(
-                job.status,
-                hawdb_artifact::DerivedArtifactJobStatus::Pending
-                    | hawdb_artifact::DerivedArtifactJobStatus::Running
-                    | hawdb_artifact::DerivedArtifactJobStatus::Failed
-            )
-        }) {
-            return Err(BranchLifecycleError::SourceBusy(
-                "unfinished background work",
-            ));
-        }
+        self.ensure_branch_work_idle()?;
         let _resources = self
             .runtime
             .reserve_target_admission_resources()
@@ -3071,21 +3171,26 @@ impl Database {
                     ))
                 }
                 storage::CreateOutcome::Pending => {
-                    let completed = create_result_info(existing)?;
-                    let outcome = storage::recover_create_from_head_file(
-                        &catalog_path,
-                        existing.id,
-                        &self.branch_head_path(existing.id.as_uuid())?,
-                        self.config.max_wal_replay_bytes.unwrap_or(u64::MAX),
-                    )
-                    .map_err(|error| match error {
-                        storage::BranchCreateError::Lease(
-                            hawdb_storage::ownership::DatabaseDirectoryLeaseError::AlreadyOpen,
-                        ) => BranchLifecycleError::SourceBusy("pending child creation"),
-                        error => BranchLifecycleError::storage(error),
-                    })?;
+                    let outcome =
+                        hawdb_storage::branch_create_recovery::recover_create_from_head_file(
+                            &catalog_path,
+                            existing.id,
+                            &self.branch_head_path(existing.id.as_uuid())?,
+                            self.config.max_wal_replay_bytes.unwrap_or(u64::MAX),
+                            self.config.branch_create_recovery_limits,
+                        )
+                        .map_err(|error| match error {
+                            storage::BranchCreateError::Lease(
+                                hawdb_storage::ownership::DatabaseDirectoryLeaseError::AlreadyOpen,
+                            ) => BranchLifecycleError::SourceBusy("pending child creation"),
+                            error => BranchLifecycleError::storage(error),
+                        })?;
                     return match outcome {
-                        storage::CreateRecoveryOutcome::Completed => Ok(completed),
+                        storage::CreateRecoveryOutcome::Completed => {
+                            // Another recovery may have completed and then
+                            // deleted this receipt since the initial read.
+                            self.describe_branch(BranchSelector::Id(existing.id.as_uuid()))
+                        }
                         storage::CreateRecoveryOutcome::Aborted => {
                             Err(BranchLifecycleError::Transition(
                                 storage::CatalogTransitionError::InvalidState(

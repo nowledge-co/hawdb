@@ -1720,6 +1720,14 @@ without replacing the prior sample. QoS policy decisions remain modeled
 generically by `HawDBRuntimeAdmission.tla`; this model owns the index-refresh
 refinement at the scan and publication boundary.
 
+## Large-document lifecycle
+
+`HawDBLargeDocumentLifecycle.tla` separates input capture, validation, data flush,
+selector synchronization, cancellation, reader retention, and resource-denied
+cleanup. Six unsafe-transition controls and two reachability witnesses accompany
+the finite model. The streamed-input prototypes remain test-only; see the
+[proof scope and Rust integration gaps](LARGE_DOCUMENT_LIFECYCLE_PROOF.md).
+
 ## Search Mutation Publication
 
 `HawDBSearchMutationPublication.tla` checks a finite search mutation workload

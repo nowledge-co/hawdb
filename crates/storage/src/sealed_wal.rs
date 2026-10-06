@@ -237,7 +237,11 @@ pub fn seal_wal_file(
     }
 
     let bytes = read_stable_bytes(path, metadata.len(), max_bytes)?;
-    let reference = ObjectReference::for_bytes(ObjectKind::SealedWal, 1, &bytes);
+    let reference = ObjectReference::for_bytes(
+        ObjectKind::SealedWal,
+        ObjectKind::SealedWal.current_format_version(),
+        &bytes,
+    );
     let outcome = store
         .publish(reference, &bytes)
         .map_err(SealedWalError::Immutable)?;

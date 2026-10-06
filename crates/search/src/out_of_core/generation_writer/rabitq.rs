@@ -17,6 +17,7 @@
 use super::{RaBitQGenerationArtifact, SearchOutOfCoreGenerationWriter};
 use crate::build_control::checkpoint;
 use crate::error::Result;
+#[cfg(all(test, feature = "vector-search"))]
 use crate::SearchDocument;
 use hawdb_core::RuntimeTaskContext;
 
@@ -106,20 +107,25 @@ impl RaBitQArtifactBuilder {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn push(&mut self, document: &SearchDocument) -> Result<()> {
+        self.push_embedding(document.embedding.as_deref())
+    }
+
+    pub(super) fn push_embedding(&mut self, embedding: Option<&[f32]>) -> Result<()> {
         if self.failed {
             return Err(HawDBError::Storage(
                 "search RaBitQ writer already failed".to_owned(),
             ));
         }
-        let result = self.push_inner(document);
+        let result = self.push_inner(embedding);
         self.failed = result.is_err();
         result
     }
 
-    fn push_inner(&mut self, document: &SearchDocument) -> Result<()> {
+    fn push_inner(&mut self, embedding: Option<&[f32]>) -> Result<()> {
         checkpoint(&self.task_context)?;
-        let Some(embedding) = document.embedding.as_deref() else {
+        let Some(embedding) = embedding else {
             return Ok(());
         };
         if self.vector_ordinal >= self.expected_documents as u64 {
@@ -267,7 +273,7 @@ impl RaBitQArtifactBuilder {
         checkpoint(&input.task_context)?;
         Ok(Self(input.task_context.clone()))
     }
-    pub(super) fn push(&mut self, _: &SearchDocument) -> Result<()> {
+    pub(super) fn push_embedding(&mut self, _: Option<&[f32]>) -> Result<()> {
         checkpoint(&self.0)
     }
     pub(super) fn finish(self) -> Result<Option<RaBitQGenerationArtifact>> {

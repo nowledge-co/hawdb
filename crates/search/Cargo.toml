@@ -15,7 +15,7 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 # Opaque analyzer capacity bounds are qualified against this dependency set.
 jieba-rs = "=0.10.3"
 regex = { version = "=1.13.1", default-features = false }
-regex-automata = { version = "=0.4.16", default-features = false }
+regex-automata = { version = "=0.4.18", default-features = false }
 regex-syntax = { version = "=0.8.11", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -3,6 +3,11 @@
 This private implementation slice advances #392 without changing its complete
 large-document acceptance criteria or selecting the pending #325 term policy.
 
+For bodies larger than the operation reservation, the additive
+[candidate and verified-body APIs](STREAMED_DOCUMENT_LIFECYCLE.md) validate into
+private disk and return a sealed reader. The owned hydration path described here
+retains its full-output admission contract.
+
 `SearchOutOfCoreReader::hydrate_documents` and search-hit hydration now scan each
 selected source segment through positioned reads and streaming zstd decoding.
 They no longer retain a complete compressed range, decompressed segment string,
@@ -27,9 +32,9 @@ prepass or a second file traversal.
 Hydrated output admission is cumulative across segments. Requested IDs must
 remain unique; public output follows request order. Empty requests, missing IDs,
 old-reader retention and all-or-nothing public return semantics are unchanged.
-The update writer's existing full-segment visitor remains unchanged: it validates
-a complete segment before invoking its consumer. This query-only slice must not
-silently weaken that publication/recovery boundary.
+The streamed update and compaction paths share complete-segment validation and
+keep consumer writes private until the validation and publication fences pass.
+Later corruption discards the candidate; it cannot publish a valid prefix.
 
 ## Remaining resident floors and limitations
 
