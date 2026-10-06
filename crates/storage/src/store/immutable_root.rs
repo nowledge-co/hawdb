@@ -2511,6 +2511,98 @@ mod tests {
         assert_eq!(retried.store().node_count_for_label(None), 2);
     }
 
+    #[test]
+    fn admission_keeps_the_child_snapshot_while_its_parent_advances() {
+        for durability in [
+            DurabilityPolicy::SyncOnEveryWrite,
+            DurabilityPolicy::SyncOnCheckpoint,
+        ] {
+            let fixture = BranchFixture::new();
+            let mut source = fixture.admit(fixture.main, durability);
+            write_schema_and_graph(&mut source);
+            let (store, schema) = source.store_and_catalog_mut();
+            store.checkpoint(schema).unwrap();
+            let expected_schema = source
+                .store()
+                .relational_state()
+                .table_schema("messages")
+                .unwrap()
+                .clone();
+            let expected_epoch = source.store().commit_epoch();
+            source
+                .store_mut()
+                .seal_admitted_branch(expected_epoch)
+                .unwrap();
+            let source_head = *source.head();
+            let child = branch_id(2);
+            fixture.fork(&source, child, "child");
+            let catalog = branch_catalog::read_catalog(&fixture.catalog_path).unwrap();
+            let revision = catalog
+                .branches
+                .iter()
+                .find(|record| record.id == child)
+                .unwrap()
+                .metadata_revision;
+            let head_path = fixture.head_path(child);
+            let child_head = fs::read(&head_path).unwrap();
+            let mut advanced = false;
+            let admitted = GraphStore::admit_branch_from_head_with_revalidation(
+                BranchAdmissionRequest {
+                    catalog_path: &fixture.catalog_path,
+                    branch_id: child,
+                    expected_metadata_revision: revision,
+                    head_path: &head_path,
+                    immutable_store_root: &fixture.objects,
+                    durability,
+                    replay_config: WalReplayConfig::default(),
+                },
+                false,
+                false,
+                || {
+                    std::thread::scope(|scope| {
+                        scope.spawn(|| {
+                            write_row(&mut source, "source-only-during-admission");
+                            let (store, schema) = source.store_and_catalog_mut();
+                            store
+                                .create_node(schema, "SourceAfterChildRecovery", BTreeMap::new())
+                                .unwrap();
+                            store.checkpoint(schema).unwrap();
+                        });
+                    });
+                    advanced = true;
+                },
+                |runtime| fs::remove_dir_all(runtime).unwrap(),
+            )
+            .unwrap();
+            assert!(advanced);
+            assert_ne!(*source.head(), source_head);
+            assert!(source.store().commit_epoch() > expected_epoch);
+            assert_eq!(source.store().relational_state().row_count("messages"), 2);
+            assert_eq!(source.store().node_count_for_label(None), 4);
+            assert_eq!(admitted.store().commit_epoch(), expected_epoch);
+            assert_eq!(
+                admitted.store().relational_state().table_schema("messages"),
+                Some(&expected_schema)
+            );
+            assert_eq!(admitted.store().relational_state().row_count("messages"), 1);
+            assert_eq!(admitted.store().node_count_for_label(None), 3);
+            assert_eq!(fs::read(&head_path).unwrap(), child_head);
+            drop(admitted);
+            drop(source);
+            let child = fixture.admit(child, durability);
+            let source = fixture.admit(fixture.main, durability);
+            assert_eq!(child.store().commit_epoch(), expected_epoch);
+            assert_eq!(
+                child.store().relational_state().table_schema("messages"),
+                Some(&expected_schema)
+            );
+            assert_eq!(child.store().relational_state().row_count("messages"), 1);
+            assert_eq!(child.store().node_count_for_label(None), 3);
+            assert_eq!(source.store().relational_state().row_count("messages"), 2);
+            assert_eq!(source.store().node_count_for_label(None), 4);
+        }
+    }
+
     fn write_schema_and_graph(branch: &mut AdmittedBranchStore) {
         let table = RelationalTableSchema {
             name: "messages".into(),
