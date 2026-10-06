@@ -33,10 +33,6 @@ enum PropertyPredicateRight {
 }
 
 impl Parser<'_> {
-    pub(super) fn parse_property_predicate(&mut self) -> Result<PropertyPredicate> {
-        self.parse_predicate(false)
-    }
-
     pub(super) fn parse_predicate(&mut self, allow_columns: bool) -> Result<PropertyPredicate> {
         let mut predicates = vec![self.parse_property_conjunction(allow_columns)?];
         while self.consume_keyword("OR") {

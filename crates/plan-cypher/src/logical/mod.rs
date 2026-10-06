@@ -16,14 +16,10 @@ use hawdb_core::{HawDBError, Result, ValidatedRegex, Value};
 use hawdb_cypher::{
     AggregateExpression, ComparisonOp as CypherComparisonOp,
     GraphAlgorithmKind as CypherGraphAlgorithmKind,
-    GraphAlgorithmOptions as CypherGraphAlgorithmOptions, MatchReturn,
-    OrderDirection as CypherOrderDirection, OrderExpression, OrderItem, PostWithNodeLookup,
-    PropertyPredicate, RelationshipDirection, RelationshipExpand as CypherRelationshipExpand,
-    ReturnExpression, ReturnItem, ScalarExpression, SetProperty, SetValueExpression,
-    ShortestPathReturn, ShortestPathReturnExpression, Statement, ValueExpression,
-    VectorSearch as CypherVectorSearch, WithAggregateProjection, WithAliasFilter,
-    WithAliasFilterExpression, WithAliasFilterOp, WithCollect, WithDistinctProjection,
-    WithProjection,
+    GraphAlgorithmOptions as CypherGraphAlgorithmOptions, OrderDirection as CypherOrderDirection,
+    OrderExpression, OrderItem, PropertyPredicate, RelationshipDirection, ReturnExpression,
+    ReturnItem, ScalarExpression, SetProperty, SetValueExpression, ShortestPathReturnExpression,
+    Statement, ValueExpression, VectorSearch as CypherVectorSearch,
 };
 use hawdb_cypher::{
     AstNode, ReturnExpressionKind, ReturnItemKind, ScalarExpressionKind, ValueExpressionKind,
@@ -49,13 +45,11 @@ mod binding;
 mod case;
 mod projection;
 mod statement;
-mod with_clause;
 
 use binding::*;
 use case::*;
 use projection::*;
 pub use statement::{plan, plan_with_params};
-use with_clause::*;
 
 const MAX_VECTOR_SEEDED_GRAPH_HOPS: usize = 2;
 
