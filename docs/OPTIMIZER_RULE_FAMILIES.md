@@ -57,6 +57,9 @@ selection, ignored-campaign admission and local-only policy are preserved. The
 `hawdb-optimizer` presubmit
 suite includes all four owner suites, so the historical aggregate still covers
 the moved tests.
+The documented root `//:hawdb_system_sql_loom_tests` label also uses a
+single-member test suite, so direct invocation executes its owning Loom test
+instead of accepting an artifact-only alias.
 
 Validate owner tests, unchanged golden plans, facade/root consumers, the search
 feature matrix, portable/minimal consumers and the complete documented local

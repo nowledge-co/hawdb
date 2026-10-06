@@ -609,9 +609,9 @@ sh_test(
     data = [":hawdb_storage_crash_recovery_tests"],
 )
 
-alias(
+test_suite(
     name = "hawdb_system_sql_loom_tests",
-    actual = "//crates/system-sql:hawdb_system_sql_loom_tests",
+    tests = ["//crates/system-sql:hawdb_system_sql_loom_tests"],
 )
 
 # Matches `cargo test -p hawdb --features acl --lib` for the storage crash
