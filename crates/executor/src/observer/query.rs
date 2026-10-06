@@ -35,6 +35,7 @@ pub struct QueryExecutionReports {
 /// operator events are recorded. Final host/process metrics are added outside.
 pub struct QueryExecutionObserver {
     reports: RefCell<QueryExecutionReports>,
+    vector_graph_input: Option<hawdb_plan_cypher::ScoringVectorGraphInput>,
     operator_ids: BTreeMap<usize, PhysicalOperatorId>,
 }
 
@@ -42,6 +43,7 @@ impl Default for QueryExecutionObserver {
     fn default() -> Self {
         Self {
             reports: RefCell::new(QueryExecutionReports::default()),
+            vector_graph_input: None,
             operator_ids: BTreeMap::new(),
         }
     }
@@ -64,6 +66,12 @@ impl QueryExecutionObserver {
         });
         Self {
             reports: RefCell::new(reports),
+            vector_graph_input: match plan {
+                PhysicalPlan::ScoringProgramExec {
+                    vector_graph_input, ..
+                } => vector_graph_input.clone(),
+                _ => None,
+            },
             operator_ids,
         }
     }
@@ -181,6 +189,10 @@ fn plan_address(plan: &PhysicalPlan) -> usize {
 }
 
 impl ExecutionObserver for QueryExecutionObserver {
+    fn vector_graph_scoring_input(&self) -> Option<&hawdb_plan_cypher::ScoringVectorGraphInput> {
+        self.vector_graph_input.as_ref()
+    }
+
     fn record_scan_pruning_report(&self, report: ScanPruningReport) {
         self.reports.borrow_mut().scan_pruning.push(report);
     }

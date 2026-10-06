@@ -670,6 +670,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
         ),
         (
             PhysicalPlan::ScoringProgramExec {
+                vector_graph_input: None,
                 score_column: "score".into(),
                 program: hawdb_core::graph_rag::ScoringProgram::new(
                     hawdb_core::graph_rag::ScoringCombination::WeightedProduct,

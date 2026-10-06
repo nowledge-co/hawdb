@@ -99,6 +99,9 @@ pub(crate) fn stream_graph_match(
                 row.relationships.remove(name);
                 row.values.insert(name.clone(), Value::Null);
             }
+            if context.observer.vector_graph_scoring_input().is_some() {
+                crate::scoring::advance_vector_hop(&mut row, 0, false)?;
+            }
             if append(&row)? == ScanControl::Stop {
                 return Ok(BatchControl::Stop);
             }
@@ -323,7 +326,9 @@ impl MatchRuntime<'_> {
                         },
                         self.adjacency_memory(),
                         self.context.task_context,
-                        &mut |node, _| self.visit_target(index, row, used, target, node, emit),
+                        &mut |node, hop| {
+                            self.visit_target(index, row, used, target, (node, hop), emit)
+                        },
                     );
                 }
                 let bound_relationship = relationship
@@ -367,7 +372,7 @@ impl MatchRuntime<'_> {
                         if let Some(variable) = relationship {
                             next.relationships.insert(variable.clone(), edge);
                         }
-                        self.visit_target(index, &next, &used, target, node, emit)
+                        self.visit_target(index, &next, &used, target, (node, 1), emit)
                     },
                 )
             }
@@ -380,9 +385,10 @@ impl MatchRuntime<'_> {
         row: &Binding,
         used: &BTreeSet<RelId>,
         pattern: &GraphMatchNode,
-        node: NodeRecord,
+        observed_target: (NodeRecord, usize),
         emit: &mut dyn FnMut(&Binding) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
+        let (node, hop) = observed_target;
         if !self.node_matches(pattern, &node)
             || row
                 .nodes
@@ -399,6 +405,9 @@ impl MatchRuntime<'_> {
         )?;
         let mut next = row.clone();
         next.nodes.insert(pattern.variable.clone(), node);
+        if self.context.observer.vector_graph_scoring_input().is_some() {
+            crate::scoring::advance_vector_hop(&mut next, hop, true)?;
+        }
         self.visit(index + 1, &next, used, emit)
     }
 

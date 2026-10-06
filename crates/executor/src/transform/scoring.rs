@@ -222,8 +222,11 @@ impl BindingBatchSource for ScoringSource<'_, '_> {
             let mut output_bytes = 0usize;
             for mut binding in batch {
                 runtime_checkpoint(context.task_context)?;
-                let features =
-                    crate::scoring::BindingScoreFeatures::new(&binding, self.score_column);
+                let features = crate::scoring::BindingScoreFeatures::with_vector_graph_input(
+                    &binding,
+                    self.score_column,
+                    context.observer.vector_graph_scoring_input(),
+                );
                 let score = self.spec.evaluate(&features, self.reference_time)?;
                 runtime_checkpoint(context.task_context)?;
                 if !score.is_finite() {
@@ -232,11 +235,15 @@ impl BindingBatchSource for ScoringSource<'_, '_> {
                     ));
                 }
                 let original_bytes = binding_memory_bytes(&binding);
+                if context.observer.vector_graph_scoring_input().is_some() {
+                    crate::scoring::strip_vector_annotations(&mut binding);
+                }
+                let public_bytes = binding_memory_bytes(&binding);
                 let bytes = match binding.values.get(SCORING_RERANK_SCORE_COLUMN) {
-                    Some(previous) => original_bytes
+                    Some(previous) => public_bytes
                         .saturating_sub(value_payload_bytes(previous))
                         .saturating_add(std::mem::size_of::<f64>()),
-                    None => original_bytes
+                    None => public_bytes
                         .saturating_add(SCORING_RERANK_SCORE_COLUMN.len())
                         .saturating_add(std::mem::size_of::<f64>())
                         .saturating_add(std::mem::size_of::<usize>() * 6),

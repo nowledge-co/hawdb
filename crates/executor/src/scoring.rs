@@ -17,6 +17,7 @@
 use crate::binding::Binding;
 use hawdb_core::graph_rag::ScoringFeatureSource;
 use hawdb_core::{HawDBError, Result, RuntimeTaskContext, Value};
+use hawdb_plan_cypher::ScoringVectorGraphInput;
 use std::num::NonZeroU64;
 
 /// Validated identity and logical per-row cost for a host's batch scorer.
@@ -89,16 +90,72 @@ pub trait HostScorer {
     fn score_batch(&mut self, request: HostScorerBatch<'_>, scores: &mut [f64]) -> Result<()>;
 }
 
+const VECTOR_SCORE_ANNOTATION: &str = "\0hawdb.scoring.vector_score";
+const VECTOR_HOP_ANNOTATION: &str = "\0hawdb.scoring.hops";
+
+pub(crate) fn annotate_vector_seed(
+    values: &mut std::collections::BTreeMap<String, Value>,
+    score: f64,
+) {
+    values.insert(VECTOR_SCORE_ANNOTATION.into(), Value::Float(score));
+    values.insert(VECTOR_HOP_ANNOTATION.into(), Value::Int(0));
+}
+
+pub(crate) fn advance_vector_hop(binding: &mut Binding, hop: usize, matched: bool) -> Result<()> {
+    let previous = binding.values.get(VECTOR_HOP_ANNOTATION).ok_or_else(|| {
+        HawDBError::Execution("vector scoring lost producer hop provenance".into())
+    })?;
+    let next = if !matched || previous == &Value::Null {
+        Value::Null
+    } else {
+        let Value::Int(previous) = previous else {
+            return Err(HawDBError::Execution(
+                "invalid vector hop provenance".into(),
+            ));
+        };
+        let hop = i64::try_from(hop).map_err(|_| {
+            HawDBError::Execution("vector hop distance exceeds supported range".into())
+        })?;
+        Value::Int(
+            previous
+                .checked_add(hop)
+                .ok_or_else(|| HawDBError::Execution("vector hop distance overflow".into()))?,
+        )
+    };
+    *binding
+        .values
+        .get_mut(VECTOR_HOP_ANNOTATION)
+        .expect("provenance key was checked") = next;
+    Ok(())
+}
+
+pub(crate) fn preserve_vector_annotations(
+    values: &mut std::collections::BTreeMap<String, Value>,
+    binding: &Binding,
+) {
+    for name in [VECTOR_SCORE_ANNOTATION, VECTOR_HOP_ANNOTATION] {
+        if let Some(value) = binding.values.get(name) {
+            values.insert(name.into(), value.clone());
+        }
+    }
+}
+
+pub(crate) fn strip_vector_annotations(binding: &mut Binding) {
+    binding
+        .values
+        .retain(|name, _| !name.starts_with(hawdb_plan_cypher::SCORING_PROVENANCE_PREFIX));
+}
+
 /// Reads scoring features from one row.
 ///
-/// The search score comes from the declared score column the seed stage
-/// produced; property features come from row values of the same name, which is
-/// how node and relationship properties reach a row. Features this stage cannot
-/// supply — the graph-seed score and the hop distance — are reported absent so
-/// the specification records them instead of scoring them as zero.
+/// The legacy source reads the declared score column and returned value aliases.
+/// The opt-in vector source reads engine-owned original similarity/observed hop
+/// annotations and properties of its canonical pinned candidate node. Graph-seed
+/// relevance remains a distinct absent signal in both paths.
 pub struct BindingScoreFeatures<'a> {
     binding: &'a Binding,
     score_column: &'a str,
+    vector_graph_input: Option<&'a ScoringVectorGraphInput>,
 }
 
 impl<'a> BindingScoreFeatures<'a> {
@@ -106,6 +163,31 @@ impl<'a> BindingScoreFeatures<'a> {
         Self {
             binding,
             score_column,
+            vector_graph_input: None,
+        }
+    }
+
+    pub(crate) fn with_vector_graph_input(
+        binding: &'a Binding,
+        score_column: &'a str,
+        source: Option<&'a ScoringVectorGraphInput>,
+    ) -> Self {
+        Self {
+            binding,
+            score_column,
+            vector_graph_input: source,
+        }
+    }
+
+    fn property(&self, name: &str) -> Option<&Value> {
+        match self.vector_graph_input {
+            Some(source) => self
+                .binding
+                .nodes
+                .get(source.candidate_variable())?
+                .properties
+                .get(name),
+            None => self.binding.values.get(name),
         }
     }
 
@@ -120,7 +202,15 @@ impl<'a> BindingScoreFeatures<'a> {
 
 impl ScoringFeatureSource for BindingScoreFeatures<'_> {
     fn search_score(&self) -> Option<f64> {
-        self.numeric(self.binding.values.get(self.score_column))
+        self.numeric(
+            self.binding
+                .values
+                .get(if self.vector_graph_input.is_some() {
+                    VECTOR_SCORE_ANNOTATION
+                } else {
+                    self.score_column
+                }),
+        )
     }
 
     fn graph_seed_score(&self) -> Option<f64> {
@@ -128,15 +218,20 @@ impl ScoringFeatureSource for BindingScoreFeatures<'_> {
     }
 
     fn hop_distance(&self) -> Option<usize> {
-        None
+        let source = self.vector_graph_input?;
+        self.binding.nodes.get(source.candidate_variable())?;
+        match self.binding.values.get(VECTOR_HOP_ANNOTATION)? {
+            Value::Int(hops) => usize::try_from(*hops).ok(),
+            _ => None,
+        }
     }
 
     fn numeric_property(&self, property: &str) -> Option<f64> {
-        self.numeric(self.binding.values.get(property))
+        self.numeric(self.property(property))
     }
 
     fn timestamp_millis(&self, property: &str) -> Option<u64> {
-        match self.binding.values.get(property)? {
+        match self.property(property)? {
             Value::Int(millis) => u64::try_from(*millis).ok(),
             _ => None,
         }

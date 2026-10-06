@@ -3,7 +3,8 @@
 This records the physical scoring operator's resource contract for
 [issue #293](https://github.com/nowledge-co/hawdb/issues/293). It is not the
 complete Mem route migration. The ordinary query attachment and cache contract
-below are implemented; actual graph-hop/seed provenance and a Mem consumer
+below are implemented; opt-in vector/observed-hop provenance is implemented,
+while text/graph-seed producer attachment and a Mem consumer
 remain part of that issue's acceptance boundary.
 
 `ScoringRerankExec` validates its `ScoringSpec`, captures time once for the
@@ -35,8 +36,8 @@ The existing `ScoringSpec`, `Binding` and `QueryStreamOptions` fields and
 physical operator signature remain intact. This resource correction does not
 introduce product ranking weights or change SearchIndex RRF. The binding
 feature source still reads its declared score column and returned numeric
-property values; actual expansion-hop and graph-seed provenance are not yet
-attached to the binding feature source. The legacy operator captures its own
+property values; the legacy returned-alias source still has no graph-hop/seed provenance; the
+opt-in vector source below obtains actual observed hops. The legacy operator captures its own
 time; the new ordinary request path below uses one request-wide time anchor.
 
 ## Ordinary query scoring programs
@@ -77,8 +78,8 @@ Programs validate the legacy specification and explicitly declare composition:
 Property names refer to returned value aliases in this ordinary attachment.
 The declared score column supplies `SearchScore`; this does not by itself prove
 that an arbitrary host expression came from a vector or text retriever.
-`GraphSeedScore` and `HopDistance` remain absent until their actual producer
-provenance is attached. Strict programs requesting them fail; no graph bound
+`GraphSeedScore` remains absent in this ordinary attachment. `HopDistance` is
+absent without the explicit producer attachment below. Strict programs requesting them fail; no graph bound
 or fabricated seed value is substituted. The existing knowledge-retrieval
 pipeline's canonical feature source and neutral legacy policy are unchanged.
 
@@ -103,9 +104,52 @@ its current expression and estimated scoring cardinality/cost. Scalar program
 evaluation allocates no per-row diagnostic vectors.
 
 This does not yet complete https://github.com/nowledge-co/hawdb/issues/293:
-actual expansion provenance, one real Mem route and full delivery qualification
+text/graph-seed producers, one real Mem route and full delivery qualification
 remain required. No product weights or runtime
 activation are selected by these templates.
+
+## Vector provenance through graph expansion
+
+`ScoringRequest::with_vector_graph_input(seed_variable, candidate_variable)`
+opts into one validated producer chain. `SearchScore` reads the actual vector
+seed's raw similarity, even if WITH/RETURN omits or replaces its public alias.
+Numeric/timestamp properties read the declared candidate's canonical node held
+by the same snapshot; returned lookalike properties cannot replace those inputs.
+`GraphSeedScore` retains its distinct graph-side query-term meaning and is not
+supplied by a vector similarity.
+
+Admission proves an actual VectorSeedScan, unmodified producer ID-column
+lineage, one nonoptional canonical ID lookup and a connected expansion chain.
+Both AdjacencyExpandExec and connected GraphMatchExec use the traversal's
+observed hop, accumulated over expansions. GraphMatch imports, unrelated scans,
+extra lookups, branches, variable rebinding, aggregates, joins and DISTINCT are
+rejected instead of guessing provenance. Optional unmatched expansions report
+missing hop/properties. A genuine node with internal ID0 and hop0 is valid;
+node IDs cannot substitute for the producer's actual match result.
+
+Two reserved engine annotations travel in existing Binding values. Existing
+row/pipeline/blocking/spill accounting charges their full footprint; projections
+preserve them only for the query-owned opt-in descriptor, and ranked output
+strips them before adding the public score. Reserved output aliases and direct
+projection reads are rejected. Public Binding fields remain compatible. No
+thread-local state or host-provided score maps participate. The existing observer
+exposes one immutable descriptor to kernel contexts through a default method.
+Typed cache keys, physical fingerprints and EXPLAIN include the descriptor;
+coefficient/clock rebind is unchanged. Vector procedure plans retain the current
+explicit cache bypass, so this does not claim a vector cache-hit execution.
+The cost model charges two additional logical bookkeeping units per candidate;
+these units are not wall-clock coefficients.
+
+Actual embedded guards use controlled external seed rows under the existing
+VectorSeedScan resource contract and a synthetic stored graph. An independent
+ranking/score-bit oracle covers hop0/1/2, a late winner, complete input, K1 versus
+seed admission8, public alias replacement, two expansions, optional missing,
+unsupported lookup, descriptor identity, EXPLAIN and marker non-leakage. Both
+legacy ordinary and multi-stage pipeline query results must agree. Current
+main selects the ordered parser for two WITH clauses; post-MATCH projections
+exercise this supported public entrypoint. Default parser migration remains
+owned by https://github.com/nowledge-co/hawdb/issues/158. This is controlled
+producer/engine graph evidence, not RaBitQ retrieval, browser or Mem route proof.
 
 ## Host-scoring escape hatch
 

@@ -109,6 +109,9 @@ pub fn stream_projection_batches(
                 let value = project_value(item, context.catalog, &binding)?;
                 insert_projected_value(&mut values, &item.name, value);
             }
+            if context.observer.vector_graph_scoring_input().is_some() {
+                crate::scoring::preserve_vector_annotations(&mut values, &binding);
+            }
             projected.push(Binding {
                 values,
                 nodes: binding.nodes,

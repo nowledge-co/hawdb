@@ -15,7 +15,9 @@
 use super::{QueryAccessControlContext, QueryStreamOptions};
 use crate::{HawDBError, Result, Value};
 use hawdb_core::graph_rag::{ScoringProgram, ScoringProgramShape};
-use hawdb_plan_cypher::{visit_plan, PhysicalPlan, SCORING_RERANK_SCORE_COLUMN};
+use hawdb_plan_cypher::{
+    visit_plan, PhysicalPlan, ScoringVectorGraphInput, SCORING_RERANK_SCORE_COLUMN,
+};
 use std::collections::BTreeMap;
 
 /// Optional engine-owned ranking of the complete returned candidate stream.
@@ -26,6 +28,7 @@ pub struct ScoringRequest {
     score_column: String,
     limit: usize,
     candidate_window: bool,
+    vector_graph_input: Option<ScoringVectorGraphInput>,
     reference_time_millis: Option<u64>,
 }
 
@@ -50,6 +53,7 @@ impl ScoringRequest {
             score_column,
             limit,
             candidate_window: false,
+            vector_graph_input: None,
             reference_time_millis: None,
         })
     }
@@ -66,6 +70,20 @@ impl ScoringRequest {
     pub fn with_reference_time_millis(mut self, time: u64) -> Self {
         self.reference_time_millis = Some(time);
         self
+    }
+
+    /// Bind actual vector similarity, observed cumulative hops and canonical
+    /// candidate properties. Unsupported or ambiguous physical paths reject.
+    pub fn with_vector_graph_input(
+        mut self,
+        seed_variable: impl Into<String>,
+        candidate_variable: impl Into<String>,
+    ) -> Result<Self> {
+        self.vector_graph_input = Some(ScoringVectorGraphInput::new(
+            seed_variable,
+            candidate_variable,
+        )?);
+        Ok(self)
     }
 
     pub fn program(&self) -> &ScoringProgram {
@@ -145,6 +163,7 @@ pub(super) struct ScoringPlanCacheKey {
     score_column: String,
     limit: usize,
     candidate_window: bool,
+    vector_graph_input: Option<ScoringVectorGraphInput>,
 }
 
 impl BoundScoringRequest<'_> {
@@ -154,6 +173,7 @@ impl BoundScoringRequest<'_> {
             score_column: self.request.score_column.clone(),
             limit: self.request.limit,
             candidate_window: self.request.candidate_window,
+            vector_graph_input: self.request.vector_graph_input.clone(),
         }
     }
 
@@ -177,8 +197,12 @@ impl BoundScoringRequest<'_> {
                 ));
             }
         }
+        if let Some(source) = &self.request.vector_graph_input {
+            source.validate_plan(&input)?;
+        }
         Ok(PhysicalPlan::ScoringProgramExec {
             score_column: self.request.score_column.clone(),
+            vector_graph_input: self.request.vector_graph_input.clone(),
             program: self.request.program.neutral_template(),
             reference_time_millis: 0,
             limit: self.request.limit,
@@ -189,6 +213,7 @@ impl BoundScoringRequest<'_> {
     pub(super) fn rebind(self, plan: &mut PhysicalPlan) -> Result<()> {
         let PhysicalPlan::ScoringProgramExec {
             score_column,
+            vector_graph_input,
             program,
             reference_time_millis,
             limit,
@@ -199,7 +224,8 @@ impl BoundScoringRequest<'_> {
                 "cached scoring plan is missing its scoring operator".into(),
             ));
         };
-        if *score_column != self.request.score_column
+        if *vector_graph_input != self.request.vector_graph_input
+            || *score_column != self.request.score_column
             || *limit != self.request.limit
             || program.shape() != self.request.program.shape()
         {
@@ -812,3 +838,7 @@ mod tests {
         assert_session_explain_report_limit(true, true);
     }
 }
+
+#[cfg(test)]
+#[path = "query_request/provenance_tests.rs"]
+mod provenance_tests;

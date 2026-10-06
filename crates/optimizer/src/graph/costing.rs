@@ -534,12 +534,18 @@ fn estimate_local_operator_cost(
                 .max(1);
             input_cost.with_cpu(rows, rows, 0)
         }
-        PhysicalPlan::ScoringProgramExec { program, limit, .. } => {
+        PhysicalPlan::ScoringProgramExec {
+            program,
+            limit,
+            vector_graph_input,
+            ..
+        } => {
             let input_cost = inputs[0].expect("unary input cost");
             let retained_rows = (*limit as u64).min(input_cost.estimated_rows);
             let heap_depth = retained_rows.max(2).ilog2().max(1) as u64;
             let spec = program.specification();
-            let feature_work = spec.terms.len().saturating_add(spec.decay.len()) as u64;
+            let feature_work = (spec.terms.len().saturating_add(spec.decay.len()) as u64)
+                .saturating_add(if vector_graph_input.is_some() { 2 } else { 0 });
             let evaluation_cost = input_cost
                 .estimated_rows
                 .saturating_mul(feature_work)

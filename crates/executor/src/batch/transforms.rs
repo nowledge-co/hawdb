@@ -133,8 +133,9 @@ pub(super) fn stream_projection_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    if let Some(result) =
-        try_stream_columnar_projection_batches(items, input, context, execution_limit, emit)
+    if context.observer.vector_graph_scoring_input().is_none()
+        && let Some(result) =
+            try_stream_columnar_projection_batches(items, input, context, execution_limit, emit)
     {
         return result;
     }
