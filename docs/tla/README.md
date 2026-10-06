@@ -113,6 +113,40 @@ artifact bytes.
 
 ## Durable WAL and Checkpoint Publication
 
+`HawDBAutomaticCheckpoint` checks one old/candidate generation handoff with
+two complete schema/data transactions and both durability policies. The base
+image is an independently defined transaction prefix. Foreground writes may
+advance after base capture; replay copies each later transaction into a private
+WAL before the checkpoint/catalog closure and suffix are synchronized and the
+selector is published. Frontend adoption precedes reclamation, and pinned
+readers retain their generation. Cancellation retains its lease until private
+artifact cleanup completes.
+
+Power loss independently retains any subset of OS-flushed but unsynchronized
+schema/data fragments and checkpoint/catalog artifacts. This includes lost
+writes, torn transactions and reordering across files. Completed synchronization
+barriers retain all covered bytes. An interrupted selector may be uncertain;
+ordinary recovery then fails closed and retains both generations. Torn or
+noncontiguous selected WALs also fail closed. No action repairs corruption by
+silently truncating acknowledged data. The model assumes correctly validated
+artifact identities and completed file/directory synchronization; it does not
+establish those filesystem/platform assumptions or refinement by the Rust code.
+
+The full configured safety graph and seven controls run through:
+
+```bash
+bazel test //docs/tla:HawDBAutomaticCheckpoint_check \
+  //docs/tla:automatic_checkpoint_controls --jobs=1 --test_output=errors
+```
+
+Five controls omit a suffix transaction, select before synchronization, split
+a transaction, reclaim a pinned generation, or leak a cancelled job's lease.
+Two witness controls demonstrate permitted loss of relaxed acknowledged writes
+and recovery of synchronous commits whose response was lost. Each must produce
+its named invariant counterexample. These controls are also registered in the
+standalone mutant manifest. This bounded safety model does not prove scheduler
+liveness, build/publication time bounds, allocation accounting or p99 behavior.
+
 `HawDBStorageDurability.tla` models the default `SyncOnEveryWrite` path. A WAL
 batch becomes a durable commit decision at the WAL sync boundary. Applying that
 batch makes it visible, and returning from the mutation acknowledges it. A crash

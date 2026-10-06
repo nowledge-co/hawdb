@@ -191,6 +191,19 @@ unchanged authoritative bytes and no leaked I/O waves, then checks candidate
 cleanup, subsequent writes and complete ordinary reopen. This does not prove
 cancellation bounds inside the checkpoint-base or replay-finalization builders.
 
+`HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
+two schema/data transactions under both durability policies. Its complete
+configured safety graph passed TLC (34,275 distinct states). Five deliberately
+incorrect protocol controls each produce their expected counterexample; two
+additional witnesses demonstrate relaxed acknowledged-write loss and recovery
+after a lost synchronous reply. The model includes independent loss/torn/write
+reordering of unsynchronized WAL fragments and checkpoint/catalog artifacts,
+selector uncertainty, pinned readers and cancellation lease ownership. It
+assumes completed synchronization preserves covered bytes and identity checks
+detect incomplete/corrupt artifacts. This is bounded protocol evidence, not
+Rust refinement, a platform synchronization proof, liveness or runtime fault
+campaign coverage. See `docs/tla/README.md` for exact commands and assumptions.
+
 The current whole-candidate operation estimate can exceed the default local
 QoS operation limit on a large database. Bounded cancellable build units and
 builder-specific memory/retention accounting remain required. Delta pressure,
