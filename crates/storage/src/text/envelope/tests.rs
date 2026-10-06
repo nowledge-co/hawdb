@@ -14,6 +14,80 @@
 
 use super::*;
 
+#[test]
+fn checkpoint_units_text_envelope_preserves_existing_bytes_across_blocks() {
+    use crate::background::CheckpointWorkProbe;
+    use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+
+    let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+        max_background_operations: Some(1),
+        max_total_background_operations: Some(4),
+        ..LocalQosPolicy::default()
+    });
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let work = probe.context(scheduler.clone());
+    let mut state = 7u64;
+    let random = (0..1024 * 1024)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            char::from(b' ' + (state % 95) as u8)
+        })
+        .collect::<String>();
+    for text in [
+        String::new(),
+        "a".repeat(64 * 1024 - 1),
+        "a".repeat(64 * 1024),
+        "中文\t🦀\n".repeat(8193),
+        random,
+    ] {
+        let old = encode_durable_text(&text, DurableCompression::Zstd).unwrap();
+        let controlled =
+            encode_durable_text_with_work_context(&text, DurableCompression::Zstd, &work).unwrap();
+        assert_eq!(controlled, old);
+        assert_eq!(
+            read_durable_text_bytes_with_limit(&controlled, "controlled", Some(text.len() as u64))
+                .unwrap(),
+            text
+        );
+    }
+    assert!(probe.completed.load(Ordering::SeqCst) > 32);
+    assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
+    probe.assert_released(&scheduler);
+}
+
+#[test]
+fn checkpoint_units_text_envelope_cancels_between_compression_blocks() {
+    use crate::background::CheckpointWorkProbe;
+    use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+
+    let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+        max_background_operations: Some(1),
+        max_total_background_operations: Some(4),
+        ..LocalQosPolicy::default()
+    });
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    probe.cancel_after.store(3, Ordering::SeqCst);
+    let error = encode_durable_text_with_work_context(
+        &"large source payload\n".repeat(100_000),
+        DurableCompression::Zstd,
+        &probe.context(scheduler.clone()),
+    )
+    .unwrap_err();
+    // The shared text API retains its existing HawDBError surface.
+    assert_eq!(
+        error,
+        HawDBError::Storage("checkpoint build stopped: cancelled".into())
+    );
+    assert_eq!(probe.completed.load(Ordering::SeqCst), 3);
+    probe.assert_released(&scheduler);
+}
+
 // Raw zstd framing and bitwise CRC are independent of the production encoder.
 fn crc(bytes: &[u8]) -> u64 {
     let mut state = u32::MAX;

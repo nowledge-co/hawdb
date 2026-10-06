@@ -8749,9 +8749,34 @@ mod tests {
         std::fs::remove_dir_all(path).unwrap();
     }
 
+    #[derive(Debug)]
+    struct CancelCheckpointAtFile {
+        probe: std::sync::Arc<crate::background::CheckpointWorkProbe>,
+        path: std::path::PathBuf,
+        observed_file: std::sync::atomic::AtomicBool,
+        completed_after_file: std::sync::atomic::AtomicUsize,
+        cancel_after_file: usize,
+    }
+
+    impl hawdb_qos::QosTelemetrySink for CancelCheckpointAtFile {
+        fn record_qos(&self, event: hawdb_qos::QosTelemetryEvent) {
+            use std::sync::atomic::Ordering;
+            let completed = event.phase == hawdb_qos::QosTelemetryPhase::Completion;
+            self.probe.record_qos(event);
+            if completed && self.path.exists() {
+                self.observed_file.store(true, Ordering::SeqCst);
+                let completed = self.completed_after_file.fetch_add(1, Ordering::SeqCst) + 1;
+                if completed >= self.cancel_after_file {
+                    self.probe.cancellation.cancel();
+                }
+            }
+        }
+    }
+
     #[test]
     fn checkpoint_units_cancel_base_encoding_and_retry_without_changing_authority() {
-        use crate::background::CheckpointWorkProbe;
+        use crate::background::{CheckpointWorkContext, CheckpointWorkProbe};
+        use hawdb_core::RuntimeTaskContext;
         use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
         use std::sync::atomic::Ordering;
         use std::sync::Arc;
@@ -8790,21 +8815,31 @@ mod tests {
             ..LocalQosPolicy::default()
         });
         let probe = Arc::new(CheckpointWorkProbe::default());
-        probe.cancel_after.store(10, Ordering::SeqCst);
-        let work = probe.context(scheduler.clone());
+        let private = path.join(super::canonical_artifact_generation_file(generation));
+        let observer = Arc::new(CancelCheckpointAtFile {
+            probe: probe.clone(),
+            path: private.with_extension("hawdb.tmp"),
+            observed_file: Default::default(),
+            completed_after_file: Default::default(),
+            cancel_after_file: 10,
+        });
+        scheduler.set_telemetry_sink(Some(observer.clone()));
+        let task = RuntimeTaskContext::without_deadline(probe.cancellation.clone())
+            .with_io_wave_controller(probe.clone());
+        let work = CheckpointWorkContext::new(task).with_scheduler(scheduler.clone());
         let source = store.checkpoint_source();
         let error = source
             .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
             .unwrap_err();
         assert!(error.to_string().contains("checkpoint build stopped"));
-        assert_eq!(probe.completed.load(Ordering::SeqCst), 10);
+        assert!(observer.observed_file.load(Ordering::SeqCst));
+        assert_eq!(observer.completed_after_file.load(Ordering::SeqCst), 10);
         probe.assert_released(&scheduler);
         assert_eq!(store.checkpoint_source_identity(), identity);
         assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
         assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
         source.ensure_usable().unwrap();
         store.ensure_usable().unwrap();
-        let private = path.join(super::canonical_artifact_generation_file(generation));
         assert!(!private.exists());
         assert!(!private.with_extension("hawdb.tmp").exists());
         assert!(!path
@@ -8857,41 +8892,30 @@ mod tests {
         assert_cancelled_derived_artifact_unit_preserves_authority("property-index");
     }
 
+    #[test]
+    fn checkpoint_units_cancel_source_scan_and_retry_with_complete_graph() {
+        assert_cancelled_derived_artifact_unit_preserves_authority("source-scan");
+    }
+
     fn assert_cancelled_derived_artifact_unit_preserves_authority(artifact: &str) {
         use crate::background::{CheckpointWorkContext, CheckpointWorkProbe};
         use hawdb_core::RuntimeTaskContext;
-        use hawdb_qos::{
-            LocalQosPolicy, LocalQosScheduler, QosTelemetryEvent, QosTelemetryPhase,
-            QosTelemetrySink,
-        };
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+        use std::sync::atomic::Ordering;
         use std::sync::Arc;
-
-        #[derive(Debug)]
-        struct CancelAtDerivedSpill {
-            probe: Arc<CheckpointWorkProbe>,
-            spill: std::path::PathBuf,
-            observed_spill: AtomicBool,
-        }
-
-        impl QosTelemetrySink for CancelAtDerivedSpill {
-            fn record_qos(&self, event: QosTelemetryEvent) {
-                let completed = event.phase == QosTelemetryPhase::Completion;
-                self.probe.record_qos(event);
-                if completed && self.spill.exists() {
-                    self.observed_spill.store(true, Ordering::SeqCst);
-                    self.probe.cancellation.cancel();
-                }
-            }
-        }
 
         let path = unique_test_dir(&format!("checkpoint_{artifact}_unit_cancel"));
         let mut catalog = Catalog::default();
         let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        let label = if artifact == "source-scan" {
+            "Source"
+        } else {
+            "Memory"
+        };
         let nodes = (0..64i64)
             .map(|id| {
                 store
-                    .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                    .create_node(&mut catalog, label, properties([("id", Value::Int(id))]))
                     .unwrap()
             })
             .collect::<Vec<_>>();
@@ -8929,10 +8953,19 @@ mod tests {
             ..LocalQosPolicy::default()
         });
         let probe = Arc::new(CheckpointWorkProbe::default());
-        let observer = Arc::new(CancelAtDerivedSpill {
+        let temporary = if artifact == "source-scan" {
+            path.join(format!(".checkpoint.{generation}.prepare"))
+                .join(source_scan::SOURCE_SCAN_PAYLOAD_FILE)
+                .with_extension("hawdb.tmp")
+        } else {
+            path.join(format!(".{artifact}.{generation}.run.0.tmp"))
+        };
+        let observer = Arc::new(CancelCheckpointAtFile {
             probe: probe.clone(),
-            spill: path.join(format!(".{artifact}.{generation}.run.0.tmp")),
-            observed_spill: AtomicBool::new(false),
+            path: temporary,
+            observed_file: Default::default(),
+            completed_after_file: Default::default(),
+            cancel_after_file: 1,
         });
         scheduler.set_telemetry_sink(Some(observer.clone()));
         let task = RuntimeTaskContext::without_deadline(probe.cancellation.clone())
@@ -8942,13 +8975,13 @@ mod tests {
         let error = source
             .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
             .unwrap_err();
-        assert!(observer.observed_spill.load(Ordering::SeqCst));
+        assert!(observer.observed_file.load(Ordering::SeqCst));
         assert!(error.to_string().contains("checkpoint build stopped"));
         probe.assert_released(&scheduler);
         assert_eq!(store.checkpoint_source_identity(), identity);
         assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
         assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
-        assert!(!observer.spill.exists());
+        assert!(!observer.path.exists());
         assert!(!path
             .join(format!(".checkpoint.{generation}.prepare"))
             .exists());
@@ -8981,16 +9014,36 @@ mod tests {
             .into_iter()
             .map(|id| store.relationship_owned(id).unwrap().unwrap())
             .collect::<Vec<_>>();
+        let expected_nodes = nodes
+            .into_iter()
+            .map(|id| store.node_owned(id).unwrap().unwrap())
+            .collect::<Vec<_>>();
         let epoch = store.commit_epoch();
         drop(store);
         let recovered = GraphStore::open(&path, &mut catalog).unwrap();
         assert_eq!(recovered.commit_epoch(), epoch);
+        assert_eq!(recovered.scan_nodes(None).count(), expected_nodes.len());
+        for node in expected_nodes {
+            assert_eq!(recovered.node_owned(node.id).unwrap(), Some(node));
+        }
         assert_eq!(recovered.scan_relationships(None).count(), expected.len());
         for relationship in expected {
             assert_eq!(
                 recovered.relationship_owned(relationship.id).unwrap(),
                 Some(relationship)
             );
+        }
+        if artifact == "source-scan" {
+            let crate::scan::ScanSegmentAccessPlan::Read(plan) = recovered
+                .plan_published_source_scan(&ScanPredicate::Eq {
+                    property: "id".into(),
+                    value: Value::Int(31),
+                })
+            else {
+                panic!("successful retry must reopen a current Source sidecar");
+            };
+            assert_eq!(plan.segments.len(), 1);
+            assert_eq!(plan.segments[0].candidates.as_ref().unwrap().remaining(), 1);
         }
         drop(recovered);
         std::fs::remove_dir_all(path).unwrap();

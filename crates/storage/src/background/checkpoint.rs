@@ -88,6 +88,18 @@ impl CheckpointWorkContext {
         self.checkpoint()?;
         Ok(hasher.finish())
     }
+
+    /// Existing text envelopes use CRC32C, without a SHA-256 field.
+    pub(crate) fn checksum(&self, bytes: &[u8]) -> Result<u64, CheckpointWorkError> {
+        let mut hasher = hawdb_integrity::Crc32cHasher::new();
+        for block in bytes.chunks(64 * 1024) {
+            let unit = self.start_unit()?;
+            hasher.update(block);
+            unit.finish();
+        }
+        self.checkpoint()?;
+        Ok(hasher.finish())
+    }
 }
 
 pub(crate) struct CheckpointWorkUnit(Option<LocalQosPermit>);

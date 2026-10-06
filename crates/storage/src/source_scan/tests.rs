@@ -15,6 +15,259 @@
 use super::*;
 use crate::NodeId;
 
+fn checkpoint_unit_scheduler() -> hawdb_qos::LocalQosScheduler {
+    hawdb_qos::LocalQosScheduler::new(hawdb_qos::LocalQosPolicy {
+        max_background_operations: Some(1),
+        max_total_background_operations: Some(4),
+        ..hawdb_qos::LocalQosPolicy::default()
+    })
+}
+
+fn assert_checkpoint_unit_cancellation(error: &HawDBError) {
+    // The sidecar API converts the typed work error to its existing facade
+    // storage error, which must remain nonfatal and distinguish cancellation.
+    assert!(
+        matches!(error, HawDBError::Storage(message) if
+        message == "checkpoint build stopped: cancelled" ||
+        message == "checkpoint build I/O stopped: runtime I/O wave stopped: cancelled"),
+        "expected checkpoint cancellation: {error}"
+    );
+}
+
+#[test]
+fn checkpoint_units_source_scan_reopens_complete_segments_and_exact_candidates() {
+    use crate::background::CheckpointWorkProbe;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+
+    let directory = TestDir::new();
+    let scheduler = checkpoint_unit_scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let work = probe.context(scheduler.clone());
+    let nodes = (0..2500u64)
+        .map(|id| {
+            let mut node = source(
+                id,
+                LabelId(if id.is_multiple_of(5) { 8 } else { 7 }),
+                "scope",
+            );
+            node.properties.insert("rank".into(), Value::Int(id as i64));
+            node.properties.insert(
+                "nested".into(),
+                Value::List(vec![Value::Int(id as i64), Value::Binary(vec![0, 255])]),
+            );
+            if id.is_multiple_of(3) {
+                node.properties.insert("optional".into(), Value::Null);
+            }
+            node
+        })
+        .collect::<Vec<_>>();
+    let expected = rows(&nodes, Some(LabelId(7)));
+    assert_eq!(expected.len(), 2000);
+    let mut projection = build_with_work_context(
+        73,
+        Some(LabelId(7)),
+        nodes.iter().inspect(|_| {
+            assert!(probe.active_units.load(Ordering::SeqCst) > 0);
+        }),
+        &work,
+    )
+    .unwrap();
+    let publication = write_with_work_context(directory.path(), &mut projection, &work).unwrap();
+    let loaded = load(directory.path(), 73, publication.descriptor_checksum())
+        .unwrap()
+        .unwrap();
+    let payloads = fs::read(directory.path().join(SOURCE_SCAN_PAYLOAD_FILE)).unwrap();
+    let summaries = expected
+        .chunks(128)
+        .enumerate()
+        .map(|(id, rows)| reference::summary(id as u64, rows))
+        .collect::<Vec<_>>();
+    assert_eq!(loaded.segments().len(), summaries.len());
+    let mut recovered = Vec::new();
+    let mut ranges = Vec::new();
+    for (segment, summary) in loaded.segments().iter().zip(&summaries) {
+        assert_eq!(&segment.summary, summary);
+        let range = segment.payload_range;
+        let payload =
+            &payloads[range.offset as usize..(range.offset + range.length.get()) as usize];
+        assert_eq!(reference::crc(payload), range.checksum);
+        let segment_rows = decode_payload(payload).unwrap();
+        assert_eq!(unpack(payload), reference::payload(&segment_rows));
+        recovered.extend(segment_rows);
+        ranges.push(range);
+    }
+    assert_eq!(recovered, expected);
+    let descriptor = reference::descriptor(73, &summaries, &ranges);
+    let (file, checksum) = reference::descriptor_file(&descriptor);
+    assert_eq!(publication.descriptor_checksum(), checksum);
+    assert_eq!(
+        fs::read_to_string(directory.path().join(SOURCE_SCAN_DESCRIPTOR_FILE)).unwrap(),
+        file
+    );
+    for (index, row) in expected.iter().enumerate() {
+        let crate::scan::ScanSegmentAccessPlan::Read(mut plan) = loaded.plan_scan(
+            73,
+            &ScanPredicate::Eq {
+                property: "id".into(),
+                value: row.properties["id"].clone(),
+            },
+        ) else {
+            panic!("current epoch must use the sidecar");
+        };
+        assert_eq!(plan.segments.len(), 1);
+        assert_eq!(plan.skipped_segment_count, loaded.segments().len() - 1);
+        assert_eq!(plan.segments[0].segment_id, (index / 128) as u64);
+        assert_eq!(
+            plan.segments[0].candidates.as_mut().unwrap().next_batch(2),
+            vec![(index % 128) as u64]
+        );
+    }
+    let empty = build_with_work_context(
+        73,
+        None,
+        std::iter::from_fn(|| -> Option<&NodeRecord> {
+            panic!("an absent Source label must not hydrate the graph");
+        }),
+        &work,
+    )
+    .unwrap();
+    assert!(empty.segments.is_empty());
+    assert!(probe.completed.load(Ordering::SeqCst) > 2000);
+    assert!(probe.peak_units.load(Ordering::SeqCst) <= 4);
+    probe.assert_released(&scheduler);
+}
+
+#[test]
+fn checkpoint_units_source_scan_cancels_during_segment_summary() {
+    use crate::background::CheckpointWorkProbe;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let scheduler = checkpoint_unit_scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let work = probe.context(scheduler.clone());
+    let nodes = (0..256u64)
+        .map(|id| source(id, LabelId(7), "scope"))
+        .collect::<Vec<_>>();
+    let hydrated = AtomicUsize::new(0);
+    let records = nodes.iter().inspect(|_| {
+        let count = hydrated.fetch_add(1, Ordering::SeqCst) + 1;
+        if count == 128 {
+            // Finish this row, 384 field-name insertions and part of the
+            // first field's 128-row summary before requesting cancellation.
+            probe.cancel_after.store(
+                probe.completed.load(Ordering::SeqCst) + 400,
+                Ordering::SeqCst,
+            );
+        }
+    });
+    let error = build_with_work_context(74, Some(LabelId(7)), records, &work).unwrap_err();
+    assert_checkpoint_unit_cancellation(&error);
+    assert_eq!(hydrated.load(Ordering::SeqCst), 128);
+    probe.assert_released(&scheduler);
+}
+
+#[test]
+fn checkpoint_units_source_scan_precancel_preserves_unowned_temporary_files() {
+    use crate::background::CheckpointWorkProbe;
+    use std::sync::Arc;
+
+    let directory = TestDir::new();
+    let temporary = directory
+        .path()
+        .join("source_scan_segment_payloads.hawdb.tmp");
+    fs::write(&temporary, b"previous writer evidence").unwrap();
+    let nodes = [source(0, LabelId(7), "scope")];
+    let mut projection = build(76, Some(LabelId(7)), nodes.iter());
+    let scheduler = checkpoint_unit_scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    probe.cancellation.cancel();
+    let error = write_with_work_context(
+        directory.path(),
+        &mut projection,
+        &probe.context(scheduler.clone()),
+    )
+    .unwrap_err();
+    assert_checkpoint_unit_cancellation(&error);
+    probe.assert_released(&scheduler);
+    assert_eq!(fs::read(&temporary).unwrap(), b"previous writer evidence");
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn checkpoint_units_source_scan_cancels_at_every_io_admission_and_retries() {
+    use crate::background::CheckpointWorkProbe;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+
+    let nodes = (0..129u64)
+        .map(|id| source(id, LabelId(7), "scope"))
+        .collect::<Vec<_>>();
+    let complete = TestDir::new();
+    let scheduler = checkpoint_unit_scheduler();
+    let baseline = Arc::new(CheckpointWorkProbe::default());
+    let mut projection = build(75, Some(LabelId(7)), nodes.iter());
+    write_with_work_context(
+        complete.path(),
+        &mut projection,
+        &baseline.context(scheduler.clone()),
+    )
+    .unwrap();
+    let waves = baseline.io_waves.load(Ordering::SeqCst);
+    assert!(waves >= 9);
+    baseline.assert_released(&scheduler);
+    for wave in 1..=waves {
+        let directory = TestDir::new();
+        let scheduler = checkpoint_unit_scheduler();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_on_io_wave.store(wave, Ordering::SeqCst);
+        let mut projection = build(75, Some(LabelId(7)), nodes.iter());
+        let error = write_with_work_context(
+            directory.path(),
+            &mut projection,
+            &probe.context(scheduler.clone()),
+        )
+        .unwrap_err();
+        assert_checkpoint_unit_cancellation(&error);
+        assert_eq!(probe.io_waves.load(Ordering::SeqCst), wave);
+        probe.assert_released(&scheduler);
+        assert!(!directory
+            .path()
+            .join("source_scan_segments.hawdb.tmp")
+            .exists());
+        assert!(!directory
+            .path()
+            .join("source_scan_segment_payloads.hawdb.tmp")
+            .exists());
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        let publication = write_with_work_context(
+            directory.path(),
+            &mut projection,
+            &retry.context(scheduler.clone()),
+        )
+        .unwrap();
+        retry.assert_released(&scheduler);
+        let loaded = load(directory.path(), 75, publication.descriptor_checksum())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            loaded
+                .segments()
+                .iter()
+                .map(|segment| segment.summary.row_count)
+                .sum::<u64>(),
+            129
+        );
+        for name in [SOURCE_SCAN_DESCRIPTOR_FILE, SOURCE_SCAN_PAYLOAD_FILE] {
+            assert_eq!(
+                fs::read(directory.path().join(name)).unwrap(),
+                fs::read(complete.path().join(name)).unwrap()
+            );
+        }
+    }
+}
+
 fn source_candidate_request() -> SourceCandidateScanRequest {
     SourceCandidateScanRequest {
         predicate: ScanPredicate::True,

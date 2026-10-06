@@ -251,11 +251,28 @@ cancel during adjacency and property-projection spilling, verify unchanged
 authority and released leases, then write again, retry and completely reopen
 all relationships.
 
+Source-scan sidecars now use the same task for source hydration, 128-row segment
+summaries, per-row/per-value text encoding, compression and CRC32C in 64 KiB
+blocks, and bounded writes with admitted I/O waves. Segment construction moves
+the collected rows instead of retaining a second complete clone. Temporary-path
+cleanup becomes armed only after this writer creates the file; it removes its
+unpublished files and retains private final files as evidence. The existing V1
+envelope/descriptor formats and public sidecar error surface are preserved.
+Focused coverage checks the old compressed bytes, all 2,000 Source rows and
+their summaries/exact cursors against the independent reference, cancellation
+during summary/compression work and every sidecar I/O admission, and actual
+candidate cancellation followed by unchanged authority, retry and complete graph
+reopen. Cancellation tests observe actual artifact creation rather than assume
+a fixed number of preceding builder operations.
+
 The automatic owner still holds its whole-candidate local permit: these units
-do not cover projected-graph/source-scan preparation, append/relational builders, statistics,
+do not cover projected-graph preparation, append/relational builders, statistics,
 candidate reopening or replay finalization. Temporary-file cleanup is currently
 best effort and lacks a complete retained cleanup-debt/resource ledger. Metadata
-buffers and dictionaries can still scale with the dataset. These focused tests
+buffers and dictionaries can still scale with the dataset. Source-scan still
+retains complete projected rows/summaries and whole segment, compression and
+descriptor buffers; its work units do not establish a hard byte ledger or an
+allocation bound for a large individual row. These focused tests
 do not prove cancellation or memory bounds for the entire candidate.
 
 `HawDBAutomaticCheckpoint` independently models one old/candidate handoff and

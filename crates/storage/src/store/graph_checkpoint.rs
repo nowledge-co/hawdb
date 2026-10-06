@@ -559,13 +559,16 @@ impl GraphStore {
             let (_, artifacts) = decode_projected_graph_artifacts(&encoded)?;
             (Some(encoded), artifacts)
         };
-        let source_scan_projection = (!checkpoint_out_of_core).then(|| {
-            source_scan::build(
-                self.commit_epoch,
-                catalog.label_id("Source"),
-                self.nodes.values(),
-            )
-        });
+        let source_scan_projection = (!checkpoint_out_of_core)
+            .then(|| {
+                source_scan::build_with_work_context(
+                    self.commit_epoch,
+                    catalog.label_id("Source"),
+                    self.nodes.values(),
+                    work,
+                )
+            })
+            .transpose()?;
         let merged_nodes = self.canonical_base.as_ref().map(|_| {
             self.node_records_owned()
                 .inspect(|record| self.poison_on_storage_error(record))
@@ -728,7 +731,9 @@ impl GraphStore {
                 )?;
             }
             let source_scan_publication = source_scan_projection
-                .map(|mut projection| source_scan::write(&staging_path, &mut projection))
+                .map(|mut projection| {
+                    source_scan::write_with_work_context(&staging_path, &mut projection, work)
+                })
                 .transpose()?;
             let (canonical_manifest_artifact, property_spill_manifest_artifact) =
                 match (merged_nodes, merged_relationships) {
