@@ -192,6 +192,14 @@ external candidates and unfinished jobs until their actual completion; an owner
 regression checks reclamation followed by admission restoration and age-driven
 checkpoint progress with no intervening foreground write.
 
+Replacing a captured source while coalescing triggers returns the superseded
+snapshot to the frontend guard. That guard releases the publication mutex
+before destroying the source's COW maps, catalog and physical pins. A regression
+keeps the actual old source alive through submission and releases it after the
+guard, with complete old/new source identities. Destruction still occurs on the
+calling thread; this narrows the publication critical section and does not
+establish a foreground p99 bound or complete retained-source admission.
+
 Captured WAL replay receives the same governor-admitted task context as its
 owner. Read/write/synchronization waves use that task's I/O reservation;
 cancellation is checked at complete-record boundaries. Selector I/O acquires

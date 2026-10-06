@@ -81,10 +81,13 @@ pub(super) struct AdmittedBranchRuntimeMut<'a> {
 
 impl Drop for AdmittedBranchRuntimeMut<'_> {
     fn drop(&mut self) {
-        if let Some(state) = &mut self.publication {
+        let retired = self.publication.take().and_then(|mut state| {
             self.control
-                .submit(state, &self.runtime.store, &self.runtime.catalog);
-        }
+                .submit(&mut state, &self.runtime.store, &self.runtime.catalog)
+        });
+        // The closure released its mutex guard. Captured-source destruction
+        // must not extend the foreground publication critical section.
+        drop(retired);
     }
 }
 

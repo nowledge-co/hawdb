@@ -38,9 +38,22 @@ pub struct AutomaticCheckpointReport {
 }
 
 #[derive(Debug)]
-struct Source {
+pub(super) struct Source {
     store: GraphStore,
     catalog: Catalog,
+    #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+    retirement_probe: Option<SourceRetirementProbe>,
+}
+
+#[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+#[derive(Debug)]
+struct SourceRetirementProbe(Arc<std::sync::atomic::AtomicUsize>);
+
+#[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+impl Drop for SourceRetirementProbe {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 impl Source {
@@ -48,6 +61,8 @@ impl Source {
         Self {
             store: store.checkpoint_source(),
             catalog: catalog.clone(),
+            #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+            retirement_probe: None,
         }
     }
 }
@@ -142,19 +157,30 @@ impl Control {
         HawDBError::StorageIntegrity("automatic checkpoint owner lock is poisoned".into())
     }
 
-    pub(super) fn submit(&self, state: &mut State, store: &GraphStore, catalog: &Catalog) {
+    pub(super) fn submit(
+        &self,
+        state: &mut State,
+        store: &GraphStore,
+        catalog: &Catalog,
+    ) -> Option<Source> {
         if !state.enabled || state.stopping {
-            return;
+            return None;
         }
         let finished_group = state.sync_group_active && !store.wal_sync_group_active();
         state.sync_group_active = store.wal_sync_group_active();
         state.debt = store.checkpoint_debt_snapshot();
         let identity = store.checkpoint_source_identity();
-        if identity != state.last_identity || finished_group {
-            state.latest = Some(Source::capture(store, catalog));
+        let retired = if identity != state.last_identity || finished_group {
+            let retired = state.latest.replace(Source::capture(store, catalog));
             state.last_identity = identity;
-        }
+            retired
+        } else {
+            None
+        };
         self.changed.notify_all();
+        // The last owner of an older COW snapshot may destroy a large map.
+        // Its caller must release the publication guard before dropping it.
+        retired
     }
 
     pub(super) fn adopt(&self, state: &mut State, store: &mut GraphStore) -> Result<()> {
@@ -293,12 +319,13 @@ impl Owner {
                 hawdb_qos::IoConcurrencyBudget::shared_host(),
             )
         });
-        {
+        let retired = {
             let mut state = control.lock()?;
             state.enabled = true;
             state.governor = Some(governor);
-            control.submit(&mut state, store, catalog);
-        }
+            control.submit(&mut state, store, catalog)
+        };
+        drop(retired);
         let worker_control = Arc::clone(&control);
         let max_age = config.automatic_checkpoint_max_age;
         let worker = std::thread::Builder::new()
@@ -725,6 +752,49 @@ mod tests {
         );
         governor.pin_resources();
         governor
+    }
+
+    #[test]
+    fn superseded_source_remains_owned_until_publication_guard_is_released() {
+        let fixture = Fixture::new();
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&fixture.0, &mut catalog).unwrap();
+        for id in 0..32 {
+            store
+                .create_node(
+                    &mut catalog,
+                    "Memory",
+                    std::collections::BTreeMap::from([("id".into(), crate::Value::Int(id))]),
+                )
+                .unwrap();
+        }
+        let control = Control::default();
+        let mut state = control.lock().unwrap();
+        state.enabled = true;
+        assert!(control.submit(&mut state, &store, &catalog).is_none());
+        let old_identity = store.checkpoint_source_identity();
+        let retired_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        state.latest.as_mut().unwrap().retirement_probe =
+            Some(SourceRetirementProbe(retired_count.clone()));
+        store
+            .create_node(&mut catalog, "Memory", std::collections::BTreeMap::new())
+            .unwrap();
+        let retired = control.submit(&mut state, &store, &catalog).unwrap();
+        assert_eq!(retired_count.load(Ordering::SeqCst), 0);
+        assert_eq!(retired.store.checkpoint_source_identity(), old_identity);
+        assert_eq!(retired.store.scan_nodes(None).count(), 32);
+        assert_eq!(
+            state
+                .latest
+                .as_ref()
+                .unwrap()
+                .store
+                .checkpoint_source_identity(),
+            store.checkpoint_source_identity()
+        );
+        drop(state);
+        drop(retired);
+        assert_eq!(retired_count.load(Ordering::SeqCst), 1);
     }
 
     #[test]
