@@ -1,0 +1,13 @@
+[package]
+name = "hawdb-optimizer-vector"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+hawdb-cascades = { path = "../cascades", version = "0.3.0" }
+hawdb-plan-core = { path = "../plan-core", version = "0.3.0" }

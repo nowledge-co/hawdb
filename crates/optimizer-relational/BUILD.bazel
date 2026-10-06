@@ -8,46 +8,40 @@ test_suite(
 )
 
 rust_library(
-    name = "hawdb_plan_cypher",
-    crate_name = "hawdb_plan_cypher",
+    name = "hawdb_optimizer_relational",
+    crate_name = "hawdb_optimizer_relational",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
-        "//crates/core:hawdb_core",
-        "//crates/plan-core:hawdb_plan_core",
-        "//crates/cypher:hawdb_cypher",
-        "//crates/ddl:hawdb_ddl",
+        "//crates/cascades:hawdb_cascades",
         "//crates/expression:hawdb_expression",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
 
 rust_test(
-    name = "hawdb_plan_cypher_tests",
-    crate = ":hawdb_plan_cypher",
-    compile_data = ["//crates/cypher:migration_corpus_test_data"],
-    edition = "2024",
+    name = "hawdb_optimizer_relational_tests",
+    crate = ":hawdb_optimizer_relational",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
-    deps = all_crate_deps(normal_dev = True),
+    deps = all_crate_deps(normal_dev = True) + ["//crates/core:hawdb_core"],
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
 rust_test(
-    name = "hawdb_plan_cypher_explain_fuzz_tests",
+    name = "hawdb_optimizer_access_cost_fuzz_tests",
     size = "small",
-    compile_data = ["//crates/cypher:migration_corpus_test_data"],
     tags = ["manual"],
     args = [
-        "physical::explain::tests::explain_shape_and_payload_campaign",
+        "relational::cost_tests::access_cost_differential_campaign",
         "--exact",
         "--ignored",
         "--nocapture",
     ],
-    crate = ":hawdb_plan_cypher",
+    crate = ":hawdb_optimizer_relational",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
-    deps = all_crate_deps(normal_dev = True),
+    deps = all_crate_deps(normal_dev = True) + ["//crates/core:hawdb_core"],
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )

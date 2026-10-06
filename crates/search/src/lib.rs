@@ -24,13 +24,16 @@ pub use hawdb_evidence::{
     PRODUCTION_QUALIFICATION_POLICY_VERSION,
 };
 use hawdb_integrity::checksum_u64;
-use hawdb_optimizer::{
+use hawdb_optimizer_predicate::{
     normalize_search_enum_value, push_search_predicates, search_field_is_enum_like,
-    select_adaptive_vector_backend, AdaptiveVectorBackend, AdaptiveVectorBackendDecision,
-    AdaptiveVectorBackendInput, AdaptiveVectorBackendPolicy, SearchPredicate, SearchPredicateOp,
-    SearchPredicateSet, SearchScalarValue, SearchScanPredicateSupport, VectorCompressionPreference,
+    SearchPredicate, SearchPredicateOp, SearchPredicateSet, SearchScalarValue,
+    SearchScanPredicateSupport,
 };
-use hawdb_plan_cypher::{VectorBackendSelectionReason, VectorCandidateSource};
+use hawdb_optimizer_vector::{
+    select_adaptive_vector_backend, AdaptiveVectorBackend, AdaptiveVectorBackendDecision,
+    AdaptiveVectorBackendInput, AdaptiveVectorBackendPolicy, VectorCompressionPreference,
+};
+use hawdb_plan_core::{VectorBackendSelectionReason, VectorCandidateSource};
 use hawdb_qos::{
     BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy, LocalQosScheduler, LocalQosState,
     QosAdmission, WorkClass, WorkRequest,
@@ -5872,7 +5875,7 @@ impl SearchFilterSegmentSummary {
     fn values_may_match_not_in(
         &self,
         field: &str,
-        excluded_values: &BTreeSet<hawdb_optimizer::SearchScalarValue>,
+        excluded_values: &BTreeSet<hawdb_optimizer_predicate::SearchScalarValue>,
     ) -> bool {
         let present_count = self.present_counts.get(field).copied().unwrap_or_default();
         if present_count < self.document_count {
@@ -6160,7 +6163,7 @@ impl SearchSegmentDescriptorEntry {
     fn values_may_match_not_in(
         &self,
         field: &str,
-        excluded_values: &BTreeSet<hawdb_optimizer::SearchScalarValue>,
+        excluded_values: &BTreeSet<hawdb_optimizer_predicate::SearchScalarValue>,
     ) -> bool {
         let Some(summary) = self.metadata.get(field) else {
             return true;

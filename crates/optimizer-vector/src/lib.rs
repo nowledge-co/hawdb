@@ -12,19 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod logical;
-mod physical;
-mod root;
+//! Vector backend selection and bounded vector plan construction.
 
-pub use hawdb_plan_core::vector::*;
-pub use logical::*;
-pub use physical::*;
-pub use root::*;
-
-#[cfg(test)]
-mod schema_tests;
-
-#[cfg(test)]
-mod corpus_support;
-#[cfg(test)]
-mod migration_corpus_tests;
+pub mod vector;
+pub use hawdb_cascades::{OptimizerContext, QueryFamily, ResourceHints, VectorPrecision};
+pub use vector::{
+    plan_vector_search, select_adaptive_vector_backend, validate_vector_pipeline,
+    AdaptiveVectorBackend, AdaptiveVectorBackendDecision, AdaptiveVectorBackendInput,
+    AdaptiveVectorBackendPolicy, PlannedVectorSearch, VectorCompressionPreference, VectorPlanError,
+    VectorPlanProperties,
+};

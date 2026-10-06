@@ -372,6 +372,7 @@ dependencies = [
  "hawdb-integrity",
  "hawdb-nowledge-contracts",
  "hawdb-optimizer",
+ "hawdb-optimizer-relational",
  "hawdb-plan-cache",
  "hawdb-plan-cypher",
  "hawdb-qos",
@@ -559,11 +560,48 @@ name = "hawdb-optimizer"
 version = "0.3.0"
 dependencies = [
  "hawdb-cascades",
+ "hawdb-optimizer-graph",
+ "hawdb-optimizer-predicate",
+ "hawdb-optimizer-relational",
+ "hawdb-optimizer-vector",
+]
+
+[[package]]
+name = "hawdb-optimizer-graph"
+version = "0.3.0"
+dependencies = [
+ "hawdb-cascades",
  "hawdb-core",
  "hawdb-cypher",
  "hawdb-expression",
+ "hawdb-optimizer-relational",
+ "hawdb-optimizer-vector",
  "hawdb-plan-cypher",
+]
+
+[[package]]
+name = "hawdb-optimizer-predicate"
+version = "0.3.0"
+dependencies = [
+ "hawdb-cascades",
  "serde_json",
+]
+
+[[package]]
+name = "hawdb-optimizer-relational"
+version = "0.3.0"
+dependencies = [
+ "hawdb-cascades",
+ "hawdb-core",
+ "hawdb-expression",
+]
+
+[[package]]
+name = "hawdb-optimizer-vector"
+version = "0.3.0"
+dependencies = [
+ "hawdb-cascades",
+ "hawdb-plan-core",
 ]
 
 [[package]]
@@ -572,10 +610,14 @@ version = "0.3.0"
 dependencies = [
  "hawdb-core",
  "hawdb-cypher",
- "hawdb-optimizer",
+ "hawdb-optimizer-graph",
  "hawdb-plan-cypher",
  "loom",
 ]
+
+[[package]]
+name = "hawdb-plan-core"
+version = "0.3.0"
 
 [[package]]
 name = "hawdb-plan-cypher"
@@ -585,6 +627,7 @@ dependencies = [
  "hawdb-cypher",
  "hawdb-ddl",
  "hawdb-expression",
+ "hawdb-plan-core",
  "serde_json",
 ]
 
@@ -695,12 +738,14 @@ dependencies = [
  "bitpacking",
  "chrono",
  "fst",
+ "hawdb-cascades",
  "hawdb-core",
  "hawdb-evidence",
  "hawdb-executor",
  "hawdb-integrity",
- "hawdb-optimizer",
- "hawdb-plan-cypher",
+ "hawdb-optimizer-predicate",
+ "hawdb-optimizer-vector",
+ "hawdb-plan-core",
  "hawdb-qos",
  "hawdb-storage",
  "hawdb-telemetry",

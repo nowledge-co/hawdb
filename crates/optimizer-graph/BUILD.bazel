@@ -1,0 +1,155 @@
+load("@crate_index//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+test_suite(
+    name = "presubmit_tests",
+)
+
+rust_library(
+    name = "hawdb_optimizer_graph",
+    crate_name = "hawdb_optimizer_graph",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True) + [
+        "//crates/cascades:hawdb_cascades",
+        "//crates/core:hawdb_core",
+        "//crates/cypher:hawdb_cypher",
+        "//crates/expression:hawdb_expression",
+        "//crates/optimizer-vector:hawdb_optimizer_vector",
+        "//crates/plan-cypher:hawdb_plan_cypher",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+)
+
+rust_test(
+    name = "hawdb_optimizer_graph_tests",
+    crate = ":hawdb_optimizer_graph",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True) + ["//crates/optimizer-relational:hawdb_optimizer_relational"],
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "planner_golden_test",
+    srcs = ["tests/planner_golden.rs"],
+    crate_root = "tests/planner_golden.rs",
+    compile_data = [
+        "tests/testdata/filtered_vector_pipeline.golden",
+        "tests/testdata/indexed_memory_lookup.golden",
+    ],
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True) + [
+        ":hawdb_optimizer_graph",
+        "//crates/optimizer-vector:hawdb_optimizer_vector",
+        "//crates/cypher:hawdb_cypher",
+        "//crates/plan-cypher:hawdb_plan_cypher",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "hawdb_optimizer_cardinality_metadata_fuzz_tests",
+    size = "small",
+    tags = ["manual"],
+    args = [
+        "graph::cardinality::bindings::tests::cardinality_metadata_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":hawdb_optimizer_graph",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True) + ["//crates/optimizer-relational:hawdb_optimizer_relational"],
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "hawdb_optimizer_cardinality_defaults_fuzz_tests",
+    size = "small",
+    tags = ["manual"],
+    args = [
+        "graph::tests::cardinality_defaults::cardinality_defaults_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":hawdb_optimizer_graph",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True) + ["//crates/optimizer-relational:hawdb_optimizer_relational"],
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "hawdb_optimizer_candidate_fingerprint_fuzz_tests",
+    size = "small",
+    tags = ["manual"],
+    args = [
+        "graph::access_path::candidates::tests::candidate_fingerprint_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":hawdb_optimizer_graph",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True) + ["//crates/optimizer-relational:hawdb_optimizer_relational"],
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "hawdb_optimizer_trace_cost_fuzz_tests",
+    size = "small",
+    tags = ["manual"],
+    args = [
+        "graph::selected_trace::differential::selected_trace_cost_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":hawdb_optimizer_graph",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True) + ["//crates/optimizer-relational:hawdb_optimizer_relational"],
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "hawdb_optimizer_full_text_cost_fuzz_tests",
+    size = "small",
+    tags = ["manual"],
+    args = [
+        "graph::tests::fulltext_costing::full_text_cost_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":hawdb_optimizer_graph",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True) + ["//crates/optimizer-relational:hawdb_optimizer_relational"],
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
+    name = "hawdb_optimizer_ddl_command_fuzz_tests",
+    size = "small",
+    tags = ["manual"],
+    args = [
+        "graph::tests::ddl::ddl_command_pipeline_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":hawdb_optimizer_graph",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True) + ["//crates/optimizer-relational:hawdb_optimizer_relational"],
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)

@@ -24,8 +24,10 @@ hawdb-core = { path = "../core", version = "0.3.0" }
 hawdb-evidence = { path = "../evidence", version = "0.3.0" }
 hawdb-executor = { path = "../executor", version = "0.3.0" }
 hawdb-integrity = { path = "../integrity", version = "0.3.0" }
-hawdb-optimizer = { path = "../optimizer", version = "0.3.0" }
-hawdb-plan-cypher = { path = "../plan-cypher", version = "0.3.0" }
+hawdb-cascades = { path = "../cascades", version = "0.3.0" }
+hawdb-optimizer-predicate = { path = "../optimizer-predicate", version = "0.3.0" }
+hawdb-optimizer-vector = { path = "../optimizer-vector", version = "0.3.0" }
+hawdb-plan-core = { path = "../plan-core", version = "0.3.0" }
 hawdb-qos = { path = "../qos", version = "0.3.0" }
 hawdb-storage = { path = "../storage", version = "0.3.0" }
 hawdb-telemetry = { path = "../telemetry", version = "0.3.0" }

@@ -1,0 +1,16 @@
+[package]
+name = "hawdb-optimizer-relational"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+hawdb-cascades = { path = "../cascades", version = "0.3.0" }
+hawdb-expression = { path = "../expression", version = "0.3.0" }
+
+[dev-dependencies]
+hawdb-core = { path = "../core", version = "0.3.0" }

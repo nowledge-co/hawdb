@@ -73,9 +73,12 @@ SQL/PGQ syntax AST, `hawdb-sql` for semantic relational/SQL/PGQ lowering,
 `hawdb-relational` for storage-neutral RowPage DDL/DML compilation,
 strict-append statement/access planning, and shared scalar binding,
 `hawdb-plan-cypher` for Cypher logical/physical IR, typed phase roots, deterministic
-fingerprints, explain rendering, and plan-node metadata, and `hawdb-optimizer`
-for Cascades primitives plus graph-specific catalog, costing, access-path, and
-lowering logic. `hawdb-analytics` owns the storage-neutral immutable CSR/CSC
+fingerprints, explain rendering, and plan-node metadata. `hawdb-plan-core` owns
+the shared vector plan IR without parser or optimizer dependencies.
+`hawdb-cascades` owns domain-neutral memo, rule, stage, cost, property and context
+contracts. Graph, relational, predicate and vector planning belong to their
+respective `hawdb-optimizer-*` crates; `hawdb-optimizer` preserves the original
+compatibility surface. `hawdb-analytics` owns the storage-neutral immutable CSR/CSC
 kernel and deterministic PageRank/Louvain implementations. `hawdb-evidence`
 owns release identity validation, storage crash-recovery evidence contracts,
 and source-derived query inventory scanning and artifact models.
@@ -115,8 +118,14 @@ crates/
   compat/              fixtures, comparison, migration gates, shadow protocols
   evidence/            release identity, recovery, redacted diagnostic evidence
   plan-cypher/         Cypher logical/physical IR, phase roots, explain, fingerprints
+  plan-core/           shared vector plan IR, independent of parsers and optimizers
   qos/                 work classes, local admission, background ranking
-  optimizer/           Cascades memo/rules/search plus graph cost and lowering
+  cascades/            generic memo, rules, stages, cost, properties and context
+  optimizer/           compatibility facade over the framework and rule families
+  optimizer-graph/     graph catalog, rewrites, costing, lowering and typed traces
+  optimizer-relational/ relational access costing, join enumeration and sargability
+  optimizer-predicate/ search predicate normalization and pushdown
+  optimizer-vector/    vector backend selection and bounded vector plans
   cypher/              token cursor, parser, AST, parameter model
   sql-syntax/           PostgreSQL tokens, spans, errors, SQL/PGQ syntax AST
   sql/                  relational and SQL/PGQ semantic lowering
@@ -250,9 +259,12 @@ across run layouts. Database checkpoint/reopen and failure-before-publication
 tests remain at the root integration boundary.
 
 `src/cypher.rs`, `src/planner.rs`, and `src/optimizer.rs` are compatibility
-re-export facades over their owning crates. `hawdb-plan-cypher` depends only on
-`hawdb-core`, `hawdb-cypher`, and `hawdb-ddl`; `hawdb-optimizer` depends inward
-on `hawdb-plan-cypher` and remains free of executor and storage implementations.
+re-export facades over their owning crates. `hawdb-plan-cypher` depends inward on
+`hawdb-core`, `hawdb-cypher`, `hawdb-ddl`, `hawdb-expression` and `hawdb-plan-core`.
+The optimizer families remain free of executor and storage implementations.
+Search imports predicate/vector helpers directly, plan-cache's tests import the
+graph optimizer, and root SQL planning imports the relational optimizer. The
+root retains the complete optimizer facade for compatibility.
 
 `src/analytics.rs` is the compatibility facade and the sole adapter from the
 root `GraphStore` to `hawdb-analytics::ProjectionSource`. The analytics crate
@@ -681,7 +693,7 @@ database. They reuse a narrower, storage-neutral contract:
   types, direction, cardinality, readable properties, derived-field grain, and
   authorization;
 - graph logical operators and semantic-preserving rewrite fixtures;
-- `hawdb-optimizer` memo/search/report primitives, with backend-specific
+- `hawdb-cascades` memo/search/report primitives, with backend-specific
   physical rules and cost inputs;
 - a storage-neutral deterministic analytics kernel over immutable CSR/CSC
   snapshots.
@@ -752,11 +764,20 @@ to justify it.
 The optimizer boundary is:
 
 ```text
-crates/plan-cypher/             Cypher logical/physical IR and typed phase roots
-crates/optimizer/               generic Cascades primitives
-crates/optimizer/src/graph/     graph catalog, costing, rules, and lowering
-src/optimizer.rs                compatibility re-export facade
+crates/plan-core/              shared vector IR without domain syntax
+crates/plan-cypher/            Cypher logical/physical IR and typed phase roots
+crates/cascades/               generic framework and optimizer context
+crates/optimizer-graph/        graph catalog, costing, rules, lowering and traces
+crates/optimizer-relational/   relational join/access/sargability toolkit
+crates/optimizer-predicate/    search predicate normalization and pushdown
+crates/optimizer-vector/       vector backend selection and bounded planning
+crates/optimizer/              original public module/type compatibility facade
+src/optimizer.rs              embedded facade re-exports
 ```
+
+[Optimizer family extraction](OPTIMIZER_RULE_FAMILIES.md) records the ownership
+and consumer dependency contracts for
+[issue #502](https://github.com/nowledge-co/hawdb/issues/502).
 
 ## Logical Plan
 
@@ -810,8 +831,9 @@ properties kept as separate contracts:
   keep child topology owned by the query-node representation
 - keep `PhysicalPlanKind`, `PhysicalPlanClass`, `PlanChildren`, `PlanNode`, and
   plan histogram helpers beside the IR in `hawdb-plan-cypher`
-- keep `OptimizationSearchReport`, `SelectedPlanTrace`, memo/rule primitives,
-  and graph-specific costing/lowering in `hawdb-optimizer`
+- keep graph-specialized `OptimizationSearchReport`, `SelectedPlanTrace`, typed
+  cardinality traces and costing/lowering in `hawdb-optimizer-graph`; generic
+  memo/rule/stage/context primitives belong to `hawdb-cascades`
 - keep deterministic fingerprint helpers split by value, predicate, and
   projection responsibility, and keep access-path candidate composition
   separate from rule execution
@@ -819,8 +841,8 @@ properties kept as separate contracts:
   and traversal costing so failures retain a clear ownership boundary
 - migrate executor dispatch, explain, fingerprinting, and plan-cache identity
   only after the storage-independent analysis paths use the decomposed form
-- do not add another graph-optimizer crate unless the graph module develops an
-  independently reusable contract and the dependency direction remains acyclic
+- keep the graph optimizer reusable without the relational or predicate rule
+  families; maintain acyclic inward dependencies rather than duplicating IR
 
 Core physical operators:
 
@@ -847,8 +869,8 @@ index seeks matter more than full relational join sophistication.
 HawDB should use a Cascades model similar to Chryso:
 
 - `Memo`: stores equivalent plan alternatives. The generic group storage lives
-  in `hawdb-optimizer`; `hawdb_optimizer::graph` stores Cypher-specific
-  `GroupExpr` payloads in that crate-owned memo. The graph memo currently holds
+  in `hawdb-cascades`; `hawdb_optimizer_graph::graph` stores Cypher-specific
+  `GroupExpr` payloads in the framework-owned memo. The graph memo currently holds
   one expression per group; it is not an alternative-plan search engine.
 - `Group`: represents a logical equivalence class.
 - `GroupExpr`: stores an operator plus child group references. Graph-specific

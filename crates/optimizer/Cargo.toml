@@ -1,7 +1,7 @@
 [package]
 name = "hawdb-optimizer"
 version.workspace = true
-edition.workspace = true
+edition = "2024"
 rust-version.workspace = true
 license.workspace = true
 description.workspace = true
@@ -9,9 +9,8 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-serde_json = "1"
 hawdb-cascades = { path = "../cascades", version = "0.3.0" }
-hawdb-core = { path = "../core", version = "0.3.0" }
-hawdb-cypher = { path = "../cypher", version = "0.3.0" }
-hawdb-expression = { path = "../expression", version = "0.3.0" }
-hawdb-plan-cypher = { path = "../plan-cypher", version = "0.3.0" }
+hawdb-optimizer-graph = { path = "../optimizer-graph", version = "0.3.0" }
+hawdb-optimizer-relational = { path = "../optimizer-relational", version = "0.3.0" }
+hawdb-optimizer-predicate = { path = "../optimizer-predicate", version = "0.3.0" }
+hawdb-optimizer-vector = { path = "../optimizer-vector", version = "0.3.0" }

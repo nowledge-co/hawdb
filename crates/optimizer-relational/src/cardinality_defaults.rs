@@ -12,19 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod logical;
-mod physical;
-mod root;
-
-pub use hawdb_plan_core::vector::*;
-pub use logical::*;
-pub use physical::*;
-pub use root::*;
-
-#[cfg(test)]
-mod schema_tests;
-
-#[cfg(test)]
-mod corpus_support;
-#[cfg(test)]
-mod migration_corpus_tests;
+/// Materialized/hash/merge joins without usable key NDV retain 10% of candidate
+/// pairs. Probe inputs already estimate per-outer-row fanout and do not use it.
+pub(crate) const JOIN_SELECTIVITY_DIVISOR: u64 = 10;

@@ -14,6 +14,7 @@
 
 //! Domain-neutral Cascades memo, rule, stage, cost, and diagnostics contracts.
 
+pub mod context;
 pub mod cost;
 pub mod memo;
 pub mod properties;
@@ -21,6 +22,10 @@ pub mod rule;
 pub mod search;
 pub mod stage;
 
+pub use context::{
+    ExplainMode, OptimizerConfig, OptimizerContext, QueryFamily, ResourceHints, StatementClass,
+    TraceSink,
+};
 pub use cost::{PlanCost, PlanCostBreakdown};
 pub use memo::{GroupId, Memo, MemoGroup};
 pub use properties::{

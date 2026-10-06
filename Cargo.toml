@@ -29,6 +29,7 @@ hawdb-expression = { path = "crates/expression", version = "0.3.0" }
 hawdb-fuzz-contracts = { path = "crates/fuzz-contracts", version = "0.3.0" }
 hawdb-integrity = { path = "crates/integrity", version = "0.3.0" }
 hawdb-optimizer = { path = "crates/optimizer", version = "0.3.0" }
+hawdb-optimizer-relational = { path = "crates/optimizer-relational", version = "0.3.0" }
 hawdb-plan-cache = { path = "crates/plan-cache", version = "0.3.0" }
 hawdb-plan-cypher = { path = "crates/plan-cypher", version = "0.3.0" }
 hawdb-qos = { path = "crates/qos", version = "0.3.0" }
@@ -98,6 +99,11 @@ members = [
   "crates/cascades",
   "crates/integrity",
   "crates/optimizer",
+  "crates/optimizer-graph",
+  "crates/optimizer-relational",
+  "crates/optimizer-predicate",
+  "crates/optimizer-vector",
+  "crates/plan-core",
   "crates/plan-cache",
   "crates/plan-cypher",
   "crates/qos",

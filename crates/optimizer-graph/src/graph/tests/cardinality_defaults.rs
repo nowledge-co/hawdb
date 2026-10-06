@@ -16,12 +16,13 @@ use super::super::{
     cardinality::{self, estimate_full_text_rows, PlanBindings},
     OptimizerCatalog, OptimizerIndexStatistics,
 };
-use crate::{
-    estimate_relational_join_cost, PlanCostBreakdown, RelationalJoinCardinality,
-    RelationalJoinRightInput, RelationalJoinSelectivity,
-};
+use crate::PlanCostBreakdown;
 use hawdb_core::Value;
 use hawdb_cypher::RelationshipDirection;
+use hawdb_optimizer_relational::{
+    estimate_relational_join_cost, RelationalJoinCardinality, RelationalJoinRightInput,
+    RelationalJoinSelectivity,
+};
 use hawdb_plan_cypher::{ComparisonOp, PhysicalPlan, Predicate, Projection, ProjectionExpression};
 use std::collections::BTreeMap;
 

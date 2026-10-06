@@ -12,19 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod logical;
-mod physical;
-mod root;
+//! Compatibility path for the framework-owned optimizer context.
 
-pub use hawdb_plan_core::vector::*;
-pub use logical::*;
-pub use physical::*;
-pub use root::*;
-
-#[cfg(test)]
-mod schema_tests;
-
-#[cfg(test)]
-mod corpus_support;
-#[cfg(test)]
-mod migration_corpus_tests;
+pub use hawdb_cascades::context::*;
