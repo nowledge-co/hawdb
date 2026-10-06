@@ -581,21 +581,37 @@ impl CheckpointCandidate {
     /// Replays only the newly captured complete interval. Earlier prefixes and
     /// checkpoint artifacts are never rebuilt by a successful catch-up pass.
     pub fn catch_up(&mut self, source: &GraphStore) -> Result<CheckpointWalTail> {
+        self.catch_up_with_task_context(source, &RuntimeTaskContext::default())
+    }
+
+    /// The automatic owner passes its admitted task here. Cancellation is
+    /// checked between complete WAL records and physical read/write waves use
+    /// that task's existing I/O reservation. No second governor is acquired.
+    pub fn catch_up_with_task_context(
+        &mut self,
+        source: &GraphStore,
+        task: &RuntimeTaskContext,
+    ) -> Result<CheckpointWalTail> {
         source.ensure_usable()?;
+        replay_checkpoint(task)?;
         if self.replay_finalized {
             return Err(HawDBError::Storage(
                 "checkpoint candidate replay is finalized".into(),
             ));
         }
         self.validate_source(source)?;
-        let result = self.catch_up_inner(source);
+        let result = self.catch_up_inner(source, task);
         if result.is_err() {
             self.failed = true;
         }
         result
     }
 
-    fn catch_up_inner(&mut self, source: &GraphStore) -> Result<CheckpointWalTail> {
+    fn catch_up_inner(
+        &mut self,
+        source: &GraphStore,
+        task: &RuntimeTaskContext,
+    ) -> Result<CheckpointWalTail> {
         let original = source.durable.as_ref().expect("validated durable source");
         let prepared = self
             .prepared
@@ -611,15 +627,18 @@ impl CheckpointCandidate {
             .expect("validated candidate owns its catalog");
         let durable = store.durable.as_ref().expect("candidate is durable");
         let path = durable.wal_path.clone();
+        let open_wave = replay_io_wave(task)?;
         let mut output = fs::OpenOptions::new().append(true).open(&path)?;
         if output.metadata()?.len() != self.candidate_wal_bytes {
             return Err(HawDBError::StorageIntegrity(
                 "private checkpoint WAL length changed".into(),
             ));
         }
+        drop(open_wave);
         let mut bytes = self.candidate_wal_bytes;
         let mut expected_lsn = self.captured_next_lsn;
         if expected_lsn < original.next_lsn {
+            let open_wave = replay_io_wave(task)?;
             let cursor = WalRecordCursor::open_range(
                 &original.wal_path,
                 original.checkpoint_tail_record_limit(),
@@ -631,8 +650,12 @@ impl CheckpointCandidate {
             );
             source.poison_on_storage_error(&cursor);
             let mut cursor = cursor?;
+            drop(open_wave);
             loop {
+                replay_checkpoint(task)?;
+                let read_wave = replay_io_wave(task)?;
                 let event = cursor.next();
+                drop(read_wave);
                 source.poison_on_storage_error(&event);
                 let entry = match event? {
                     WalCursorEvent::Entry { entry, .. } => entry,
@@ -655,6 +678,9 @@ impl CheckpointCandidate {
                         "checkpoint suffix LSN is not contiguous".into(),
                     ));
                 }
+                // An observed corrupt source prefix remains an integrity
+                // failure even when cancellation arrives during this read.
+                replay_checkpoint(task)?;
                 let epoch = store.commit_epoch.checked_add(1).ok_or_else(|| {
                     HawDBError::StorageIntegrity("checkpoint suffix epoch overflow".into())
                 })?;
@@ -672,7 +698,10 @@ impl CheckpointCandidate {
                         "checkpoint suffix exceeds its WAL budget".into(),
                     ));
                 }
+                let write_wave = replay_io_wave(task)?;
                 output.write_all(&framed)?;
+                drop(write_wave);
+                replay_checkpoint(task)?;
                 let digest = hawdb_integrity::integrity_digest(&payload);
                 self.recovery_source
                     .as_mut()
@@ -693,12 +722,15 @@ impl CheckpointCandidate {
                 "checkpoint suffix lost a captured commit".into(),
             ));
         }
+        let sync_wave = replay_io_wave(task)?;
         if output.metadata()?.len() != bytes {
             return Err(HawDBError::StorageIntegrity(
                 "checkpoint WAL writes did not retain every reframed record".into(),
             ));
         }
         output.sync_all()?;
+        drop(sync_wave);
+        replay_checkpoint(task)?;
         let durable = store.durable.as_mut().expect("candidate is durable");
         durable.next_lsn = expected_lsn;
         durable.wal_commit_epoch = store.commit_epoch;
@@ -715,6 +747,19 @@ impl CheckpointCandidate {
             entries: expected_lsn - prepared.source_next_lsn,
         })
     }
+}
+
+fn replay_checkpoint(task: &RuntimeTaskContext) -> Result<()> {
+    task.checkpoint()
+        .map_err(|reason| HawDBError::Execution(format!("checkpoint WAL replay stopped: {reason}")))
+}
+
+fn replay_io_wave(
+    task: &RuntimeTaskContext,
+) -> Result<Option<Box<dyn hawdb_core::RuntimeIoWavePermit>>> {
+    task.acquire_io_wave(NonZeroUsize::MIN).map_err(|reason| {
+        HawDBError::Execution(format!("checkpoint WAL replay I/O stopped: {reason}"))
+    })
 }
 
 impl Drop for CheckpointCandidate {

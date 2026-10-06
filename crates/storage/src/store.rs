@@ -8617,6 +8617,139 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_candidate_cancellation_between_replay_records_preserves_authority() {
+        use hawdb_core::{
+            RuntimeCancellationToken, RuntimeIoWaveController, RuntimeIoWaveError,
+            RuntimeIoWavePermit, RuntimeTaskContext,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+        use std::sync::Arc;
+
+        #[derive(Debug)]
+        struct WaveLease(Arc<AtomicUsize>);
+
+        impl Drop for WaveLease {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, AtomicOrdering::SeqCst);
+            }
+        }
+
+        #[derive(Debug)]
+        struct CancelDuringReplay {
+            acquisitions: AtomicUsize,
+            in_flight: Arc<AtomicUsize>,
+            cancellation: RuntimeCancellationToken,
+        }
+
+        impl RuntimeIoWaveController for CancelDuringReplay {
+            fn try_acquire(
+                &self,
+                slots: NonZeroUsize,
+                task: &RuntimeTaskContext,
+            ) -> std::result::Result<Option<Box<dyn RuntimeIoWavePermit>>, RuntimeIoWaveError>
+            {
+                self.acquire(slots, task).map(Some)
+            }
+
+            fn acquire(
+                &self,
+                slots: NonZeroUsize,
+                _task: &RuntimeTaskContext,
+            ) -> std::result::Result<Box<dyn RuntimeIoWavePermit>, RuntimeIoWaveError> {
+                assert_eq!(slots.get(), 1);
+                // Candidate open, source open, read and write the first
+                // complete transaction, then cancel during the next read.
+                // This controls scheduling without a timing-dependent sleep.
+                if self.acquisitions.fetch_add(1, AtomicOrdering::SeqCst) + 1 == 5 {
+                    self.cancellation.cancel();
+                }
+                assert_eq!(self.in_flight.fetch_add(1, AtomicOrdering::SeqCst), 0);
+                Ok(Box::new(WaveLease(Arc::clone(&self.in_flight))))
+            }
+        }
+
+        let path = unique_test_dir("checkpoint_candidate_cancel_replay");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(1))]))
+            .unwrap();
+        let generation = store
+            .durable
+            .as_ref()
+            .unwrap()
+            .next_checkpoint_generation()
+            .unwrap();
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        for id in 2..=4 {
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                .unwrap();
+        }
+        let captured = store.checkpoint_source();
+        let manifest = std::fs::read(path.join(super::MANIFEST_FILE)).unwrap();
+        let original_wal = store.durable.as_ref().unwrap().wal_path.clone();
+        let original_bytes = std::fs::read(&original_wal).unwrap();
+        let cancellation = RuntimeCancellationToken::new();
+        let controller = Arc::new(CancelDuringReplay {
+            acquisitions: AtomicUsize::new(0),
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            cancellation: cancellation.clone(),
+        });
+        let task = RuntimeTaskContext::without_deadline(cancellation)
+            .with_io_wave_controller(controller.clone());
+        let result = candidate.catch_up_with_task_context(&captured, &task);
+        assert!(matches!(result, Err(HawDBError::Execution(_))));
+        assert_eq!(candidate.commit_epoch(), 2);
+        assert_eq!(controller.acquisitions.load(AtomicOrdering::SeqCst), 5);
+        assert_eq!(controller.in_flight.load(AtomicOrdering::SeqCst), 0);
+        assert!(store
+            .publish_checkpoint_candidate(&mut candidate, None, &BTreeSet::new())
+            .is_err());
+        store.ensure_usable().unwrap();
+        assert_eq!(std::fs::read(&original_wal).unwrap(), original_bytes);
+        assert_eq!(
+            std::fs::read(path.join(super::MANIFEST_FILE)).unwrap(),
+            manifest
+        );
+        let candidate_wal = path.join(super::wal_generation_file(generation));
+        assert!(
+            std::fs::metadata(&candidate_wal).unwrap().len()
+                > super::WAL_BINARY_FILE_HEADER_BYTES as u64
+        );
+        drop(candidate);
+        drop(captured);
+        assert!(!candidate_wal.exists());
+        assert!(!path
+            .join(super::checkpoint_generation_file(generation))
+            .exists());
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(5))]))
+            .unwrap();
+        drop(store);
+        let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(recovered.commit_epoch(), 5);
+        for id in 0..5 {
+            assert_eq!(
+                recovered
+                    .node_owned(NodeId(id))
+                    .unwrap()
+                    .unwrap()
+                    .properties
+                    .get("id"),
+                Some(&Value::Int(id as i64 + 1)),
+            );
+        }
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn checkpoint_candidate_rejects_lost_private_tail_and_cleans_owned_artifacts() {
         let path = unique_test_dir("checkpoint_candidate_lost_tail");
         let mut catalog = Catalog::default();

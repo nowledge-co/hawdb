@@ -431,6 +431,7 @@ fn run(
                 continue;
             }
         };
+        let admitted_task = admission.runtime.bind_task_context(task.clone());
         // Amortize a captured suffix without freezing the writer. The final
         // pass then covers only writes that arrived during this replay, rather
         // than every write that arrived during the database-sized base build.
@@ -447,7 +448,9 @@ fn run(
         };
         let catch_up = if let Some(latest) = first_tail {
             source = latest;
-            candidate.catch_up(&source.store).map(|_| ())
+            candidate
+                .catch_up_with_task_context(&source.store, &admitted_task)
+                .map(|_| ())
         } else {
             Ok(())
         };
@@ -492,7 +495,7 @@ fn run(
         }
         let result = if may_publish {
             candidate
-                .catch_up(&source.store)
+                .catch_up_with_task_context(&source.store, &admitted_task)
                 .and_then(|_| candidate.finish_catch_up())
         } else {
             Err(HawDBError::Storage(
@@ -501,6 +504,13 @@ fn run(
         };
         let expected = source.store.checkpoint_source_identity();
         let result = result.and_then(|_| {
+            // Acquire the admitted I/O wave before taking the publication
+            // lock, so a saturated pool can be cancelled by the manual owner.
+            let _publication_wave = admitted_task
+                .acquire_io_wave(std::num::NonZeroUsize::MIN)
+                .map_err(|reason| {
+                    HawDBError::Execution(format!("checkpoint selector I/O stopped: {reason}"))
+                })?;
             let state = control.lock()?;
             if state.stopping || state.suspensions != 0 || task.checkpoint().is_err() {
                 return Err(HawDBError::Storage(

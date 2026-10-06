@@ -182,6 +182,15 @@ in-flight WAL sync groups and joins at handle closure. Focused native Cargo
 tests exercise idle facade/concurrent/Tokio progress, old reader retention,
 manual checkpoint coordination and governor denial/restoration.
 
+Captured WAL replay receives the same governor-admitted task context as its
+owner. Read/write/synchronization waves use that task's I/O reservation;
+cancellation is checked at complete-record boundaries. Selector I/O acquires
+its wave before taking the publication lock. A deterministic cancellation
+regression stops after a private suffix record has been replayed, verifies
+unchanged authoritative bytes and no leaked I/O waves, then checks candidate
+cleanup, subsequent writes and complete ordinary reopen. This does not prove
+cancellation bounds inside the checkpoint-base or replay-finalization builders.
+
 The current whole-candidate operation estimate can exceed the default local
 QoS operation limit on a large database. Bounded cancellable build units and
 builder-specific memory/retention accounting remain required. Delta pressure,
