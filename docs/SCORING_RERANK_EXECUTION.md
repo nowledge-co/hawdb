@@ -74,6 +74,7 @@ core oracle.
 | Signed-zero ties and score bits | `396a6c2` production plus new guard chooses ordinal 1 instead of 0 | Numerical ties across batch boundaries and K=1/2; original reported score bits; expanded native oracle also checks zeros through actual spills |
 | Capped resident parent admission | `396a6c2` partial-batch guard rejects ProjectExec at 1,079 bytes against 1,024; at `1a18e8f`, changing only batch rows 4 to 1 reproduces the same failure independently for Sort and TopN | Partial and full terminal batches (cap 1, batch rows 1/4; cap 2, batch rows 2 and query budget 800); exact prefix, successful parent admission and zero retained ledger |
 | Scoring input parameter binding | `1a18e8f` retains a parameter-slot Map instead of current request value `first` | Two request values beneath the scoring parent, missing-slot rejection, unchanged score specification/operator and immutable stored template |
+| EXISTS input parameter binding | `064df131` retains a parameter-slot Map instead of current request value `first` | Two request values beneath EXISTS, missing-slot rejection, unchanged relationship/direction/input and immutable stored template; the physical binder exhaustively classifies all operators |
 
 Focused replay/verification uses the existing executor and plan-cache unit owners:
 
