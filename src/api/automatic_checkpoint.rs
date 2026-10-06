@@ -203,6 +203,24 @@ impl Control {
         Ok(())
     }
 
+    pub(super) fn release_suspended_source(&self) -> Result<()> {
+        let mut state = self.lock()?;
+        if state.enabled && (state.suspensions == 0 || state.phase != Phase::Idle) {
+            return Err(HawDBError::StorageIntegrity(
+                "checkpoint source release requires an idle suspended owner".into(),
+            ));
+        }
+        let source = state.latest.take();
+        // The following mutable frontend guard must recapture even if the
+        // reclamation operation does not change the WAL/source identity.
+        state.last_identity = None;
+        drop(state);
+        // Releasing snapshot/branch leases and old COW pages can scale with
+        // the source. Never destroy them under the publication mutex.
+        drop(source);
+        Ok(())
+    }
+
     pub(super) fn report(&self) -> Result<Option<AutomaticCheckpointReport>> {
         let state = self.lock()?;
         Ok(state.enabled.then_some(state.report))
@@ -803,6 +821,37 @@ mod tests {
         let suspension = db.runtime.suspend_automatic_checkpoint().unwrap();
         assert_eq!(restored.snapshot().admitted_memory_bytes, 0);
         drop(suspension);
+    }
+
+    #[test]
+    fn branch_reclamation_releases_parked_source_and_rearms_age_without_a_write() {
+        let fixture = Fixture::new();
+        let config = DatabaseConfig {
+            automatic_checkpoint_max_age: Duration::from_millis(20),
+            ..DatabaseConfig::default()
+        };
+        let mut db = Database::open_with_config(&fixture.0, config).unwrap();
+        db.set_runtime_governor(governor(1));
+        db.query("CREATE (:Memory {id: 'reclamation-age'})")
+            .unwrap();
+        wait_for(&db, |report| report.deferred_attempts > 0);
+        let report = db
+            .reclaim_branch_storage(crate::BranchReclamationLimits::default())
+            .unwrap();
+        assert!(!report.deferred_for_active_leases);
+        // Wake the existing owner without a mutable frontend access that
+        // could accidentally repair a missing post-reclamation source.
+        db.runtime
+            .set_automatic_governor(governor(512 * 1024 * 1024))
+            .unwrap();
+        wait_for(&db, |report| report.completed_checkpoints >= 1);
+        assert_eq!(
+            db.query("MATCH (n:Memory) RETURN n.id").unwrap().rows,
+            vec![std::collections::BTreeMap::from([(
+                "n.id".into(),
+                crate::Value::String("reclamation-age".into()),
+            )])]
+        );
     }
 
     #[test]

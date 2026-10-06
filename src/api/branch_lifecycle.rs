@@ -2591,6 +2591,9 @@ impl Database {
             .runtime
             .suspend_automatic_checkpoint()
             .map_err(BranchLifecycleError::Runtime)?;
+        // A parked automatic source is an internal snapshot, not an external
+        // reader that should indefinitely defer explicit branch reclamation.
+        self.runtime.release_suspended_checkpoint_source()?;
         self.runtime.get_mut()?.store.reclaim_branch_storage(limits)
     }
 

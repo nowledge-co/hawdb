@@ -285,6 +285,10 @@ impl BranchRuntimeCell {
         self.publication.set_governor(governor)
     }
 
+    pub(super) fn release_suspended_checkpoint_source(&self) -> Result<()> {
+        self.publication.release_suspended_source()
+    }
+
     pub(super) fn pending_mut(&mut self) -> Option<&mut DeferredBranchAdmission> {
         self.pending.as_mut()
     }

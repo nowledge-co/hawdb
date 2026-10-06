@@ -182,6 +182,16 @@ in-flight WAL sync groups and joins at handle closure. Focused native Cargo
 tests exercise idle facade/concurrent/Tokio progress, old reader retention,
 manual checkpoint coordination and governor denial/restoration.
 
+Explicit branch reclamation suspends the owner and releases its parked internal
+source after preparation/retirement is idle. The source's branch/snapshot leases
+must not permanently defer reclamation once external candidates and readers
+are gone. Source destruction runs outside the publication mutex. The following
+mutable frontend guard recaptures the unchanged source identity, so age-based
+work can resume without another write. Focused branch regressions retain live
+external candidates and unfinished jobs until their actual completion; an owner
+regression checks reclamation followed by admission restoration and age-driven
+checkpoint progress with no intervening foreground write.
+
 Captured WAL replay receives the same governor-admitted task context as its
 owner. Read/write/synchronization waves use that task's I/O reservation;
 cancellation is checked at complete-record boundaries. Selector I/O acquires
