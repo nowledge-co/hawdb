@@ -433,7 +433,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        super::super::tests::test_temp_dir().join(format!(
+        crate::test_temp_dir().join(format!(
             "hawdb_search_publish_lease_{}_{}_{}",
             std::process::id(),
             nanos,

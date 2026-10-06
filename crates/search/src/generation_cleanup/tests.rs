@@ -265,7 +265,7 @@ fn quarantined_generation_is_deleted_without_removing_the_live_artifact() {
 
 fn test_root(name: &str) -> std::path::PathBuf {
     let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
+    crate::test_temp_dir().join(format!(
         "hawdb-search-projection-cleanup-{name}-{}-{sequence}",
         std::process::id()
     ))

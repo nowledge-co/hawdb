@@ -3823,15 +3823,9 @@ mod tests {
         static TEST_PROJECTS: std::cell::RefCell<Vec<hawdb_storage::file_descriptors::ProjectFileDescriptors>> = const { std::cell::RefCell::new(Vec::new()) };
     }
 
-    pub(super) fn test_temp_dir() -> PathBuf {
-        // Bazel sandboxes can reuse PIDs while sharing the host TMPDIR.
-        // Use the per-action directory to keep fixture names independent.
-        std::env::var_os("TEST_TMPDIR").map_or_else(std::env::temp_dir, PathBuf::from)
-    }
-
     pub(super) fn test_dir(name: &str) -> PathBuf {
         let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = test_temp_dir().join(format!(
+        let path = crate::test_temp_dir().join(format!(
             "hawdb-search-out-of-core-{name}-{}-{sequence}",
             std::process::id()
         ));

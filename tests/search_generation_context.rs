@@ -35,7 +35,9 @@ struct Directory(PathBuf);
 impl Directory {
     fn new() -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        Self(std::env::temp_dir().join(format!(
+        let temp_dir =
+            std::env::var_os("TEST_TMPDIR").map_or_else(std::env::temp_dir, PathBuf::from);
+        Self(temp_dir.join(format!(
             "hawdb-facade-generation-{}-{:06}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
