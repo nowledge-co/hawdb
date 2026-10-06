@@ -1218,6 +1218,89 @@ fn pending_children(
 }
 
 #[test]
+fn reclamation_defers_for_a_live_pending_creator_without_a_head() {
+    use hawdb::{BranchCreateRecoveryLimits, BranchCreateRecoveryStatus, BranchReclamationLimits};
+    use hawdb_storage::ownership::DatabaseDirectoryLease;
+
+    let project = Project::new();
+    let mut writer = Database::open(&project.0).unwrap();
+    writer.query("CREATE (:Memory {id: 'parent'})").unwrap();
+    let child = pending_children(&project.0, &mut writer, 1)[0];
+    let directory = project.0.join("branches").join(child.to_string());
+    let lease = DatabaseDirectoryLease::acquire(&directory).unwrap();
+    std::fs::remove_file(directory.join("branch.head")).unwrap();
+    let catalog_path = project.0.join("branches/catalog.hawdb");
+    let before = std::fs::read(&catalog_path).unwrap();
+
+    let report = writer
+        .reclaim_branch_storage(BranchReclamationLimits::default())
+        .unwrap();
+    assert!(report.deferred_for_active_leases);
+    assert_eq!(report.reclaimed_objects, 0);
+    assert_eq!(report.reclaimed_branch_directories, 0);
+    assert_eq!(std::fs::read(&catalog_path).unwrap(), before);
+    assert!(directory.exists());
+
+    drop(lease);
+    let recovery = writer
+        .recover_pending_branch_creates(BranchCreateRecoveryLimits::default())
+        .unwrap();
+    assert_eq!(recovery.entries[0].branch_id, child);
+    assert_eq!(
+        recovery.entries[0].status,
+        BranchCreateRecoveryStatus::Aborted
+    );
+    let report = writer
+        .reclaim_branch_storage(BranchReclamationLimits::default())
+        .unwrap();
+    assert!(!report.deferred_for_active_leases);
+    assert_eq!(report.reclaimed_branch_directories, 1);
+    assert!(!directory.exists());
+    assert_eq!(values(&mut writer).len(), 1);
+}
+
+#[test]
+fn retained_pending_create_blocks_reclamation_without_deleting_evidence() {
+    use hawdb::{BranchCreateRecoveryLimits, BranchCreateRecoveryStatus, BranchReclamationLimits};
+    use hawdb_storage::immutable_object::{ImmutableObjectStore, ObjectKind, ObjectReference};
+
+    let project = Project::new();
+    let mut writer = Database::open(&project.0).unwrap();
+    writer.query("CREATE (:Memory {id: 'parent'})").unwrap();
+    let child = pending_children(&project.0, &mut writer, 1)[0];
+    let directory = project.0.join("branches").join(child.to_string());
+    let head_path = directory.join("branch.head");
+    let mut damaged_head = std::fs::read(&head_path).unwrap();
+    damaged_head[0] ^= 0xff;
+    std::fs::write(&head_path, &damaged_head).unwrap();
+    let catalog_path = project.0.join("branches/catalog.hawdb");
+    let before = std::fs::read(&catalog_path).unwrap();
+    let mut objects = ImmutableObjectStore::open(project.0.join("branches/objects")).unwrap();
+    let orphan = ObjectReference::for_bytes(ObjectKind::CheckpointArtifact, 1, b"orphan");
+    objects.publish(orphan, b"orphan").unwrap();
+
+    for _ in 0..2 {
+        let recovery = writer
+            .recover_pending_branch_creates(BranchCreateRecoveryLimits::default())
+            .unwrap();
+        assert_eq!(recovery.entries[0].branch_id, child);
+        assert_eq!(
+            recovery.entries[0].status,
+            BranchCreateRecoveryStatus::Retained
+        );
+        assert!(recovery.entries[0].error.is_some());
+        assert!(writer
+            .reclaim_branch_storage(BranchReclamationLimits::default())
+            .is_err());
+        assert!(writer.delete_branch(BranchSelector::Id(child)).is_err());
+        assert_eq!(std::fs::read(&head_path).unwrap(), damaged_head);
+        assert_eq!(std::fs::read(&catalog_path).unwrap(), before);
+        assert_eq!(objects.read(orphan).unwrap(), b"orphan");
+        assert_eq!(values(&mut writer).len(), 1);
+    }
+}
+
+#[test]
 fn pending_recovery_preserves_live_creators_and_never_admits_busy_main() {
     use hawdb::{BranchCreateRecoveryLimits, BranchCreateRecoveryStatus};
     use hawdb_storage::ownership::DatabaseDirectoryLease;

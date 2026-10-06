@@ -365,7 +365,7 @@ impl SealedRoot {
         let encoded = self.encode()?;
         Ok(ObjectReference::for_bytes(
             ObjectKind::SealedRoot,
-            2,
+            ObjectKind::SealedRoot.current_format_version(),
             &encoded,
         ))
     }

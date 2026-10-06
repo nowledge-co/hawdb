@@ -353,7 +353,11 @@ impl GraphStore {
             || root.checkpoint_epoch != self.commit_epoch
             || durable.checkpoint_commit_epoch != self.commit_epoch
             || root.durable_manifest
-                != ObjectReference::for_bytes(ObjectKind::DurableManifest, 1, &manifest_bytes)
+                != ObjectReference::for_bytes(
+                    ObjectKind::DurableManifest,
+                    ObjectKind::DurableManifest.current_format_version(),
+                    &manifest_bytes,
+                )
             || !root.sealed_wals.is_empty()
         {
             return Err(HawDBError::StorageIntegrity(
@@ -1771,8 +1775,11 @@ fn publish_sealed_root(
         DurableManifest::decode(std::str::from_utf8(&manifest_bytes).map_err(|error| {
             HawDBError::Storage(format!("decode durable manifest bytes: {error}"))
         })?)?;
-    let durable_manifest =
-        ObjectReference::for_bytes(ObjectKind::DurableManifest, 1, &manifest_bytes);
+    let durable_manifest = ObjectReference::for_bytes(
+        ObjectKind::DurableManifest,
+        ObjectKind::DurableManifest.current_format_version(),
+        &manifest_bytes,
+    );
     objects
         .publish(durable_manifest, &manifest_bytes)
         .map_err(HawDBError::from_storage_error)?;

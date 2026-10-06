@@ -649,6 +649,25 @@ candidate contents and reachable closures are validated before sweeping. Idle
 immutable cache descriptors are retired before unlink; an active cached read
 rejects collection. Project file-descriptor admission covers scan and cleanup.
 
+A leased `Creating/Pending` child need not have published its first head yet.
+Collection skips that owner's head and defers without sweeping; an absent head
+is not an integrity failure while creation is active. Unleased records still
+require complete, valid metadata before collection can proceed.
+
+A corrupt unleased pending head or immutable dependency blocks project-wide
+reclamation, even if other branches remain usable. Recovery retains that receipt
+and its evidence, while ordinary deletion rejects `Creating` records; there is
+currently no operator abandonment or quarantine transition. Repeated writable
+opens or explicit recovery retries revisit the receipt within the configured
+aggregate recovery budget. Hosts can identify its UUID through the existing
+`BranchCreateRecoveryReport`, but reclamation errors do not yet have a distinct
+pending-create blocker variant. The regression preserves the damaged head,
+catalog and otherwise collectible orphan across repeated recovery/GC attempts.
+[#778](https://github.com/nowledge-co/hawdb/issues/778) tracks typed blocker
+reporting and an explicitly authorized, revision-checked abandonment/quarantine
+protocol. Until that work is qualified, callers must retain the evidence rather
+than deleting or manually editing the pending receipt to resume GC.
+
 Deleted UUID directories move to `.reclaim-<uuid>` before recursive cleanup.
 Unix retains the original OS lease across that move. Windows refuses directory
 renames with open descendant handles: the collector closes its own handle for
@@ -1502,6 +1521,15 @@ reachable object remains fatal. The returned typed report counts retained
 inventory entries and reclaimed objects/bytes. Branch leases, pending catalog
 records, and directory cleanup still belong to the caller and must be included
 in the inventory/root snapshot before invoking this primitive.
+
+Object authentication uses a fixed 64 KiB streaming buffer for candidates and
+non-root dependencies. Sealed roots still use their bounded decoder to enumerate
+the closure. Inventory and publishers share the per-kind identity format version;
+verification does not synchronize objects or require write access. Recovery adds
+the required durability barriers and requests write access only on Windows, where
+`FlushFileBuffers` requires it. The metadata lease still covers the complete
+bounded inventory/mark/sweep, including digest I/O; streaming limits temporary
+payload memory but does not remove that serialization cost.
 
 ## Model and implementation qualification
 

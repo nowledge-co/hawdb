@@ -45,6 +45,16 @@ pub enum ObjectKind {
 }
 
 impl ObjectKind {
+    pub(crate) const fn current_format_version(self) -> u16 {
+        match self {
+            Self::SealedRoot => 2,
+            Self::Checkpoint
+            | Self::SealedWal
+            | Self::CheckpointArtifact
+            | Self::DurableManifest => 1,
+        }
+    }
+
     const fn directory(self) -> &'static str {
         match self {
             Self::Checkpoint => "checkpoint",
@@ -329,7 +339,7 @@ impl ImmutableObjectStore {
                 }
                 objects.push(ObjectReference {
                     kind,
-                    format_version: if kind == ObjectKind::SealedRoot { 2 } else { 1 },
+                    format_version: kind.current_format_version(),
                     byte_length: metadata.len(),
                     sha256,
                 });
@@ -375,6 +385,18 @@ impl ImmutableObjectStore {
         &self,
         reference: ObjectReference,
     ) -> Result<(), ImmutableObjectError> {
+        self.verify_object(reference, true)
+    }
+
+    fn verify(&self, reference: ObjectReference) -> Result<(), ImmutableObjectError> {
+        self.verify_object(reference, false)
+    }
+
+    fn verify_object(
+        &self,
+        reference: ObjectReference,
+        synchronize: bool,
+    ) -> Result<(), ImmutableObjectError> {
         let path = self.object_path(reference);
         let metadata = map_io(
             "inspect immutable recovery dependency",
@@ -391,7 +413,10 @@ impl ImmutableObjectStore {
         // truncate a missing dependency while recovering an existing receipt.
         let mut file = map_io(
             "open immutable recovery dependency",
-            OpenOptions::new().read(true).write(true).open(&path),
+            OpenOptions::new()
+                .read(true)
+                .write(synchronize && cfg!(windows))
+                .open(&path),
         )?;
         let mut hasher = identity_hasher(
             reference.kind,
@@ -415,14 +440,17 @@ impl ImmutableObjectStore {
         {
             return Err(ImmutableObjectError::ExistingObjectCorrupt { path });
         }
-        map_io("sync immutable recovery dependency", file.sync_all())?;
-        drop(file);
-        map_io(
-            "sync immutable recovery namespace",
-            crate::durability::sync_directory_ancestors(
-                path.parent().expect("object kind directory"),
-            ),
-        )
+        if synchronize {
+            map_io("sync immutable recovery dependency", file.sync_all())?;
+            drop(file);
+            map_io(
+                "sync immutable recovery namespace",
+                crate::durability::sync_directory_ancestors(
+                    path.parent().expect("object kind directory"),
+                ),
+            )?;
+        }
+        Ok(())
     }
 
     /// Reclaims only explicitly inventoried objects that are unreachable from
@@ -450,13 +478,15 @@ impl ImmutableObjectStore {
             if !reachable.insert(reference) {
                 continue;
             }
-            let bytes = self.read(reference)?;
             if reference.kind == ObjectKind::SealedRoot {
+                let bytes = self.read(reference)?;
                 let root = crate::sealed_root::SealedRoot::decode(&bytes)
                     .map_err(|source| ImmutableObjectError::InvalidSealedRoot { source })?;
                 pending.push(root.durable_manifest);
                 pending.extend(root.checkpoint_references);
                 pending.extend(root.sealed_wals.into_iter().map(|wal| wal.object));
+            } else {
+                self.verify(reference)?;
             }
         }
 
@@ -464,8 +494,8 @@ impl ImmutableObjectStore {
         // A missing unreachable candidate is an idempotent remnant of an
         // earlier sweep; a missing reachable object remains fatal.
         for reference in &inventory {
-            match self.read(*reference) {
-                Ok(_) => {}
+            match self.verify(*reference) {
+                Ok(()) => {}
                 Err(ImmutableObjectError::Io { source, .. })
                     if source.kind() == io::ErrorKind::NotFound
                         && !reachable.contains(reference) => {}
@@ -532,8 +562,12 @@ impl ImmutableObjectStore {
     ) -> Result<ReclamationReport, ImmutableObjectError> {
         let mut roots = retained_roots.to_vec();
         for branch in &inventory.branches {
-            let removable = matches!(branch.state, crate::branch_catalog::BranchState::Deleted)
-                && !branch.active_lease;
+            // A leased creator can still be preparing its first head. The
+            // sweep below defers without trusting that incomplete metadata.
+            if branch.active_lease {
+                continue;
+            }
+            let removable = matches!(branch.state, crate::branch_catalog::BranchState::Deleted);
             if !removable {
                 roots.push(branch.sealed_root.ok_or(
                     ImmutableObjectError::BranchMetadataIncomplete(
@@ -543,9 +577,9 @@ impl ImmutableObjectStore {
             }
         }
         if inventory.branches.iter().any(|branch| branch.active_lease) {
-            // A lease prevents removal, never metadata validation. A head
-            // cannot describe unpublished candidates or old reader pins, so
-            // retain them while any owner is active.
+            // A head cannot describe unpublished candidates or old reader
+            // pins, so retain them while any owner is active. Unleased
+            // records above still require complete root metadata.
             // Tracking precise publication and historical-reader roots across
             // owners is follow-up #778. A publication-only flag cannot protect
             // snapshots of an older head after publication has completed.
@@ -1138,15 +1172,18 @@ mod tests {
     fn reclamation_retains_unknown_files_and_aborts_before_sweep_on_corruption() {
         let root = test_root("reclamation-retention");
         let mut store = ImmutableObjectStore::open(&root).unwrap();
-        let orphan = b"orphan bytes";
-        let orphan_reference = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, orphan);
-        store.publish(orphan_reference, orphan).unwrap();
+        let mut orphan = vec![0x5a; 2 * 64 * 1024 + 1];
+        let orphan_reference = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, &orphan);
+        store.publish(orphan_reference, &orphan).unwrap();
         let unknown = root.join("objects").join("checkpoint").join("unknown-file");
         fs::write(&unknown, b"unlisted object").unwrap();
         let second = b"second orphan";
         let second_reference = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, second);
         store.publish(second_reference, second).unwrap();
-        fs::write(store.object_path(orphan_reference), b"tampered").unwrap();
+        // Keep the length unchanged and corrupt a byte beyond two hash
+        // buffers: a partial verification must not allow any deletion.
+        *orphan.last_mut().unwrap() ^= 0xff;
+        fs::write(store.object_path(orphan_reference), &orphan).unwrap();
 
         assert!(matches!(
             store.reclaim_unreachable(&[orphan_reference, second_reference], &[]),
@@ -1174,6 +1211,27 @@ mod tests {
             .unwrap();
         assert_eq!(report.reclaimed_objects, 2);
         assert_eq!(report.reclaimed_bytes, (first.len() + second.len()) as u64);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_authenticates_and_syncs_a_read_only_immutable_object() {
+        let root = test_root("read-only-recovery-dependency");
+        let mut store = ImmutableObjectStore::open(&root).unwrap();
+        let payload = vec![0x5a; 2 * 64 * 1024 + 1];
+        let reference = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, &payload);
+        store.publish(reference, &payload).unwrap();
+        let path = store.object_path(reference);
+        let original = fs::metadata(&path).unwrap().permissions();
+        let mut read_only = original.clone();
+        read_only.set_readonly(true);
+        std::fs::set_permissions(&path, read_only).unwrap();
+
+        let result = store.verify_and_sync(reference);
+        std::fs::set_permissions(&path, original).unwrap();
+        result.unwrap();
+        assert_eq!(store.read(reference).unwrap(), payload);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1369,22 +1427,28 @@ mod tests {
     }
 
     #[test]
-    fn branch_reclamation_fails_closed_for_live_branch_without_root() {
+    fn branch_reclamation_requires_a_root_only_without_an_active_lease() {
         let root = test_root("branch-reclamation-incomplete");
         let mut store = ImmutableObjectStore::open(&root).unwrap();
         let orphan_reference = ObjectReference::for_bytes(ObjectKind::Checkpoint, 1, b"orphan");
         store.publish(orphan_reference, b"orphan").unwrap();
-        let error = store
-            .reclaim_branches(&BranchReclamationInventory {
-                objects: vec![orphan_reference],
-                branches: vec![BranchReclamationEntry {
-                    state: crate::branch_catalog::BranchState::Creating,
-                    sealed_root: None,
-                    directory: root.join("branches").join("creating"),
-                    active_lease: false,
-                }],
-            })
-            .unwrap_err();
+        let mut inventory = BranchReclamationInventory {
+            objects: vec![orphan_reference],
+            branches: vec![BranchReclamationEntry {
+                state: crate::branch_catalog::BranchState::Creating,
+                sealed_root: None,
+                directory: root.join("branches").join("creating"),
+                active_lease: true,
+            }],
+        };
+        let report = store.reclaim_branches(&inventory).unwrap();
+        assert!(report.deferred_for_active_leases);
+        assert_eq!(report.reclaimed_objects, 0);
+        assert_eq!(report.retained_objects, 1);
+        assert!(store.object_path(orphan_reference).exists());
+
+        inventory.branches[0].active_lease = false;
+        let error = store.reclaim_branches(&inventory).unwrap_err();
         assert!(matches!(
             error,
             ImmutableObjectError::BranchMetadataIncomplete(_)

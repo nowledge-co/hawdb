@@ -1360,7 +1360,9 @@ pub(crate) fn reclamation_entries(
                 }
             }
         };
-        let sealed_root = if matches!(record.state, BranchState::Deleted) {
+        // A creator owns its lease before publishing the pending receipt or
+        // child head. Its lease defers collection without requiring a head.
+        let sealed_root = if active_lease || matches!(record.state, BranchState::Deleted) {
             None
         } else {
             let head = read_branch_head(&path.head_path).map_err(BranchReclamationError::Head)?;
