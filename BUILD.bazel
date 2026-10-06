@@ -249,6 +249,8 @@ sh_test(
     ],
 )
 
+_HAWDB_ROW_PAGE_COMPACTION_TEST = "store_facade_tests::row_page_compaction::row_page_compaction_converges_disk_bytes_and_preserves_pinned_readers"
+
 _HAWDB_STORAGE_CRASH_MATRIX_TEST = "api::tests::storage_recovery::subprocess_crash_matrix_recovers_whole_batches_and_artifact_generations"
 
 # Use the same external consumer source as the isolated Cargo profile matrix.
@@ -305,11 +307,32 @@ sh_test(
 rust_test(
     name = "hawdb_unit_fast_tests",
     # The remaining root tests can still exceed the 300-second default under
-    # Prow contention even after the crash matrix is isolated.
+    # Prow contention even after the crash matrix and compaction are isolated.
     size = "large",
     args = [
         "--skip",
         _HAWDB_STORAGE_CRASH_MATRIX_TEST,
+        "--skip",
+        _HAWDB_ROW_PAGE_COMPACTION_TEST,
+    ],
+    crate = ":hawdb",
+    crate_features = _HAWDB_DEFAULT_FEATURES,
+    edition = "2024",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+# Keep the full compaction/reopen workload under an independent deadline.
+rust_test(
+    name = "hawdb_unit_row_page_compaction_tests",
+    size = "large",
+    args = [
+        _HAWDB_ROW_PAGE_COMPACTION_TEST,
+        "--exact",
     ],
     crate = ":hawdb",
     crate_features = _HAWDB_DEFAULT_FEATURES,
@@ -461,6 +484,7 @@ test_suite(
         ":hawdb_search_lexical_corpus_qualification_tests",
         ":hawdb_wasm_playground_bridge_tests",
         ":hawdb_unit_fast_tests",
+        ":hawdb_unit_row_page_compaction_tests",
         ":hawdb_unit_storage_crash_matrix_tests",
     ],
 )

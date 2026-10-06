@@ -250,7 +250,7 @@ impl std::fmt::Debug for SearchOutOfCoreGenerationWriter {
 }
 
 impl SearchOutOfCoreGenerationWriter {
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(in crate::out_of_core) fn memory_for_test(&self) -> BuildMemory {
         self.memory.clone()
     }
