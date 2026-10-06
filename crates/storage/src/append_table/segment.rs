@@ -30,6 +30,8 @@ use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+mod checkpoint;
+
 const SEGMENT_MAGIC: &[u8; 8] = b"SKAPSEG1";
 const SEGMENT_VERSION: u16 = 2;
 const SEGMENT_HEADER_BYTES: usize = 96;
@@ -197,6 +199,16 @@ pub struct AppendSegmentReadOutput {
 pub struct AppendSegmentWriter;
 
 impl AppendSegmentWriter {
+    pub(crate) fn encode_with_work_context(
+        generation: u64,
+        source_commit_epoch: u64,
+        rows: &[AppendTableRow],
+        config: AppendSegmentConfig,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<AppendSegmentWriteOutput, AppendTableError> {
+        checkpoint::encode(generation, source_commit_epoch, rows, config, work)
+    }
+
     pub fn encode(
         generation: u64,
         source_commit_epoch: u64,

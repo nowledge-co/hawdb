@@ -51,6 +51,56 @@ pub(super) fn encode_ordered_relational_key(
     Ok(encoded)
 }
 
+/// Internal checkpoint codec; ordinary host key encoding remains unchanged.
+pub(super) fn encode_ordered_relational_key_with_work_context(
+    key: &RelationalKey,
+    work: &crate::background::CheckpointWorkContext,
+) -> Result<Vec<u8>, super::RelationalError> {
+    let stopped = |error: crate::background::CheckpointWorkError| {
+        super::RelationalError::Admission(error.to_string())
+    };
+    let codec_error =
+        |error: OrderedRelationalKeyError| super::RelationalError::Corruption(error.to_string());
+    work.checkpoint().map_err(stopped)?;
+    if key.0.is_empty() {
+        return Err(codec_error(OrderedRelationalKeyError::Corrupt(
+            "key contains no values".to_string(),
+        )));
+    }
+    let mut encoded = Vec::new();
+    for value in &key.0 {
+        let unit = work.start_unit().map_err(stopped)?;
+        let variable = match value {
+            RelationalValue::Text(text) => Some((4, text.as_bytes())),
+            RelationalValue::Bytea(bytes) => Some((5, bytes.as_slice())),
+            _ => None,
+        };
+        if let Some((tag, bytes)) = variable {
+            encoded.push(tag);
+            unit.finish();
+            for chunk in bytes.chunks(64 * 1024) {
+                let unit = work.start_unit().map_err(stopped)?;
+                for byte in chunk {
+                    if *byte == 0 {
+                        encoded.extend_from_slice(&[0, 255]);
+                    } else {
+                        encoded.push(*byte);
+                    }
+                }
+                unit.finish();
+            }
+            let unit = work.start_unit().map_err(stopped)?;
+            encoded.extend_from_slice(&[0, 0]);
+            unit.finish();
+        } else {
+            encode_ordered_relational_value(&mut encoded, value).map_err(codec_error)?;
+            unit.finish();
+        }
+    }
+    work.checkpoint().map_err(stopped)?;
+    Ok(encoded)
+}
+
 pub(super) fn encode_ordered_relational_value(
     encoded: &mut Vec<u8>,
     value: &RelationalValue,

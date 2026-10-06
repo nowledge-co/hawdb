@@ -38,6 +38,9 @@ use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Arc;
 
+mod checkpoint;
+pub(crate) use checkpoint::encode_relational_row_payload_with_work_context;
+
 const WAL_MAGIC: &[u8; 8] = b"SKRLWAL1";
 const CHECKPOINT_MAGIC: &[u8; 8] = b"SKRLCKP1";
 const CODEC_VERSION: u16 = 1;

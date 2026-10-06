@@ -46,7 +46,7 @@ pub use codec::{
 };
 pub(crate) use codec::{
     decode_relational_row_payload, decode_relational_table_schema, encode_relational_row_payload,
-    encode_relational_table_schema,
+    encode_relational_row_payload_with_work_context, encode_relational_table_schema,
 };
 #[doc(hidden)]
 pub use compaction::relational_row_page_compaction_publication_config;
@@ -680,6 +680,13 @@ impl RelationalIndexRangeScan {
 pub fn encode_relational_primary_key(key: &RelationalKey) -> Result<Vec<u8>, RelationalError> {
     ordered_key::encode_ordered_relational_key(key)
         .map_err(|error| RelationalError::Corruption(error.to_string()))
+}
+
+pub(crate) fn encode_relational_primary_key_with_work_context(
+    key: &RelationalKey,
+    work: &crate::background::CheckpointWorkContext,
+) -> Result<Vec<u8>, RelationalError> {
+    ordered_key::encode_ordered_relational_key_with_work_context(key, work)
 }
 
 pub fn decode_relational_primary_key(encoded: &[u8]) -> Result<RelationalKey, RelationalError> {

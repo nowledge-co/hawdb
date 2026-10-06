@@ -335,18 +335,26 @@ fn publish_checkpoint_request(
     let mut segments = if compact {
         Vec::new()
     } else {
-        previous
-            .map(|reader| reader.manifest.segments.clone())
-            .unwrap_or_default()
+        checkpoint::copy_segment_bindings(previous, work)?
     };
     let mut segment_bytes_written = 0;
     if !rows_to_write.is_empty() {
-        let output = AppendSegmentWriter::encode(
-            generation,
-            source_commit_epoch,
-            rows_to_write,
-            config.segment,
-        )?;
+        let output = if let Some(work) = work {
+            AppendSegmentWriter::encode_with_work_context(
+                generation,
+                source_commit_epoch,
+                rows_to_write,
+                config.segment,
+                work,
+            )?
+        } else {
+            AppendSegmentWriter::encode(
+                generation,
+                source_commit_epoch,
+                rows_to_write,
+                config.segment,
+            )?
+        };
         checkpoint::write_artifact(
             directory,
             &append_segment_file(generation),
@@ -373,14 +381,31 @@ fn publish_checkpoint_request(
         source_commit_epoch,
         previous_generation: previous.map(|reader| reader.manifest.generation),
         root_set_digest: integrity_digest(&[]).sha256,
-        schemas: state.schemas.clone(),
-        generated_order_watermarks: state.generated_order_watermarks.clone(),
+        schemas: checkpoint::copy_schemas(state.schemas, work)?,
+        generated_order_watermarks: checkpoint::copy_watermarks(
+            state.generated_order_watermarks,
+            work,
+        )?,
         segments,
     };
-    let payload = encode_manifest_payload(&manifest, config)?;
-    manifest.root_set_digest = integrity_digest(&payload).sha256;
-    let encoded_manifest = encode_manifest_with_payload(&manifest, payload, config)?;
-    let manifest_digest = integrity_digest(&encoded_manifest);
+    let (encoded_manifest, manifest_digest) = if let Some(work) = work {
+        let payload = checkpoint::manifest_payload(&manifest, config, work)?;
+        manifest.root_set_digest = work
+            .integrity(&payload)
+            .map_err(super::checkpoint::work_error)?
+            .sha256;
+        let encoded = checkpoint::manifest_envelope(&manifest, &payload, config, work)?;
+        let digest = work
+            .integrity(&encoded)
+            .map_err(super::checkpoint::work_error)?;
+        (encoded, digest)
+    } else {
+        let payload = encode_manifest_payload(&manifest, config)?;
+        manifest.root_set_digest = integrity_digest(&payload).sha256;
+        let encoded = encode_manifest_with_payload(&manifest, payload, config)?;
+        let digest = integrity_digest(&encoded);
+        (encoded, digest)
+    };
     let manifest_artifact = AppendSegmentArtifactMetadata {
         encoded_len: encoded_manifest.len() as u64,
         encoded_crc32c: manifest_digest.crc32c.get(),

@@ -365,6 +365,35 @@ segment/overflow encoding, compaction, schema/manifest copying and hashing,
 reader mounting and retained cleanup/resource accounting remain uncontrolled;
 this is an I/O step boundary rather than a complete append-build bound.
 
+Append manifest preparation now copies schema/watermark entries and at most
+1,024 prior segment bindings per work unit. Payload encoding admits each schema
+record, watermark and segment entry, copies binary strings/records in 64 KiB
+chunks, and hashes/copies the manifest closure in 64 KiB chunks. The integrity
+closure hashes borrowed header/payload slices without a second complete
+integrity-input buffer. Individual schema cloning and WAL-schema encoding,
+publication validation, segment/overflow codecs, compaction and reader mounting
+still have uncontrolled inner work, and complete buffers lack a hard byte
+ledger. These metadata units do not establish whole-append-build bounds.
+
+Private append segment construction now scans each partition boundary once,
+admits individual ordering/partition/row/value/descriptor work, and encodes
+variable-width row payloads and escaped keys in 64 KiB source chunks. Overflow
+sample/compression policy and envelope bytes remain unchanged, with compression,
+copying, checksums and digests performed in 64 KiB units. Segment compression,
+payload/directory copies and integrity likewise use bounded chunks; the segment
+body digest hashes borrowed directory/payload slices instead of building a
+second complete body buffer. Ordinary segment/row/key/overflow codecs remain
+separate references. Variable-width key comparison/descriptor cloning, vector
+reallocation, full-buffer retention and Vec-to-Arc conversion still require
+hard byte/time accounting. Publication validation, append compaction and reader
+mounting are not yet covered. These operations do not authorize removing the
+whole-candidate permit or claiming a complete append-build bound. Regressions
+compare the complete 2,049-row multi-table/partition/overflow segment and its
+reopened rows against the ordinary encoder, verify large Unicode/NUL keys and
+all scalar row tags, exercise raw/compressed overflow fixtures with cancellation
+at every admitted completion, and stop/retry block/directory/compression/copy/
+integrity steps with a one-operation class limit and four-operation total limit.
+
 `HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
 two schema/data transactions under both durability policies. Its complete
 configured safety graph passed TLC (34,275 distinct states). Five deliberately

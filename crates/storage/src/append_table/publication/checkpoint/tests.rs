@@ -234,3 +234,162 @@ fn checkpoint_units_append_publication_matches_legacy_bytes_and_complete_reopen(
     assert_eq!(probe.peak_units.load(Ordering::SeqCst), 1);
     probe.assert_released(&scheduler);
 }
+
+fn manifest_fixture() -> AppendGenerationManifest {
+    let schemas = (0..500)
+        .map(|index| {
+            let name = format!("table-{index:04}-🦀{}", "x".repeat(130));
+            let schema = AppendTableSchema {
+                name: name.clone(),
+                columns: vec![RelationalColumnSchema {
+                    name: "sequence".into(),
+                    scalar_type: RelationalScalarType::BigInt,
+                    nullable: false,
+                    default: None,
+                }],
+                partition_key: vec![],
+                order_key: vec!["sequence".into()],
+                order_mode: AppendOrderMode::CallerProvided,
+            };
+            (name, schema)
+        })
+        .collect();
+    AppendGenerationManifest {
+        generation: 5000,
+        source_commit_epoch: 10000,
+        previous_generation: Some(4000),
+        root_set_digest: integrity_digest(&[]).sha256,
+        schemas,
+        generated_order_watermarks: BTreeMap::new(),
+        segments: (1..=3000)
+            .map(|generation| AppendSegmentBinding {
+                generation,
+                source_commit_epoch: generation * 2,
+                artifact: AppendSegmentArtifactMetadata {
+                    encoded_len: generation + 128,
+                    encoded_crc32c: generation as u32,
+                    encoded_sha256: integrity_digest(&generation.to_le_bytes()).sha256,
+                },
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn checkpoint_units_append_manifest_preserves_complete_payload_integrity_and_decode() {
+    let mut manifest = manifest_fixture();
+    let config = AppendPublicationConfig::default();
+    let reference_payload = encode_manifest_payload(&manifest, config).unwrap();
+    assert!(reference_payload.len() > 4 * 64 * 1024);
+    let scheduler = scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let work = probe.context(scheduler.clone());
+    let payload = manifest_payload(&manifest, config, &work).unwrap();
+    assert_eq!(payload, reference_payload);
+    manifest.root_set_digest = integrity_digest(&payload).sha256;
+    let encoded = manifest_envelope(&manifest, &payload, config, &work).unwrap();
+    assert_eq!(
+        encoded,
+        encode_manifest_with_payload(&manifest, reference_payload, config).unwrap()
+    );
+    assert_eq!(decode_manifest(&encoded, config).unwrap(), manifest);
+    assert_eq!(probe.peak_units.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
+    probe.assert_released(&scheduler);
+}
+
+#[test]
+fn checkpoint_units_append_manifest_copying_cancels_entries_and_binding_chunks() {
+    let manifest = manifest_fixture();
+    let previous = AppendGenerationReader {
+        manifest: Arc::new(manifest.clone()),
+        segments: Arc::from([]),
+    };
+    let scheduler = scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let work = probe.context(scheduler.clone());
+    assert_eq!(
+        copy_segment_bindings(Some(&previous), Some(&work)).unwrap(),
+        manifest.segments
+    );
+    assert_eq!(probe.completed.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        copy_schemas(&manifest.schemas, Some(&work)).unwrap(),
+        manifest.schemas
+    );
+    let watermarks = manifest
+        .schemas
+        .keys()
+        .enumerate()
+        .map(|(index, name)| (name.clone(), index as i64))
+        .collect();
+    assert_eq!(
+        copy_watermarks(&watermarks, Some(&work)).unwrap(),
+        watermarks
+    );
+    probe.assert_released(&scheduler);
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    probe.cancel_after.store(2, Ordering::SeqCst);
+    assert_stopped(copy_segment_bindings(
+        Some(&previous),
+        Some(&probe.context(scheduler.clone())),
+    ));
+    assert_eq!(probe.completed.load(Ordering::SeqCst), 2);
+    probe.assert_released(&scheduler);
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    probe.cancel_after.store(17, Ordering::SeqCst);
+    assert_stopped(copy_schemas(
+        &manifest.schemas,
+        Some(&probe.context(scheduler.clone())),
+    ));
+    assert_eq!(probe.completed.load(Ordering::SeqCst), 17);
+    probe.assert_released(&scheduler);
+}
+
+#[test]
+fn checkpoint_units_append_manifest_cancel_encoding_copy_and_hash_keep_legacy_limits() {
+    let mut manifest = manifest_fixture();
+    let config = AppendPublicationConfig::default();
+    let payload = encode_manifest_payload(&manifest, config).unwrap();
+    manifest.root_set_digest = integrity_digest(&payload).sha256;
+    let scheduler = scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    probe.cancel_after.store(2, Ordering::SeqCst);
+    assert_stopped(manifest_payload(
+        &manifest,
+        config,
+        &probe.context(scheduler.clone()),
+    ));
+    assert_eq!(probe.completed.load(Ordering::SeqCst), 2);
+    probe.assert_released(&scheduler);
+    // Header allocation, payload chunks, two covered header slices, then two
+    // payload hash chunks. The latter cut is inside the integrity closure.
+    for limit in [2, 1 + payload.len().div_ceil(64 * 1024) + 2 + 2] {
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_after.store(limit, Ordering::SeqCst);
+        assert_stopped(manifest_envelope(
+            &manifest,
+            &payload,
+            config,
+            &probe.context(scheduler.clone()),
+        ));
+        assert_eq!(probe.completed.load(Ordering::SeqCst), limit);
+        probe.assert_released(&scheduler);
+    }
+    let tight = AppendPublicationConfig {
+        max_manifest_bytes: payload.len() + MANIFEST_HEADER_BYTES - 1,
+        ..config
+    };
+    assert_eq!(
+        manifest_envelope(&manifest, &payload, tight, &Default::default()).unwrap_err(),
+        encode_manifest_with_payload(&manifest, payload, tight).unwrap_err()
+    );
+    let tight = AppendPublicationConfig {
+        max_schema_bytes: 32,
+        ..config
+    };
+    assert_eq!(
+        manifest_payload(&manifest, tight, &Default::default()).unwrap_err(),
+        encode_manifest_payload(&manifest, tight).unwrap_err()
+    );
+}

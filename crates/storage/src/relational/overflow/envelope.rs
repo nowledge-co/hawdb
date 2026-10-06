@@ -22,6 +22,9 @@ use hawdb_integrity::{crc32c, integrity_digest};
 use std::io::{Cursor, Read};
 use std::sync::Arc;
 
+mod checkpoint;
+pub(crate) use checkpoint::encode_overflow_envelope_with_work_context;
+
 const OVERFLOW_MAGIC: &[u8; 8] = b"SKOVFL01";
 const OVERFLOW_CODEC_RAW: u8 = 0;
 const OVERFLOW_CODEC_ZSTD: u8 = 1;
