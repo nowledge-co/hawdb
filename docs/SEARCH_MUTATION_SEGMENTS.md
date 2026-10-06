@@ -179,6 +179,14 @@ revalidate mapped payloads.
 
 ## Publication and recovery
 
+Writer admission synchronizes the canonical search root and every parent up to
+the containing project root before creating its private stage. Writable project
+admission covers the project root's own ancestry. This is required even when
+an interrupted attempt left the component directories visible: synchronizing
+the search directory alone does not persist its name in its parent. Each barrier
+uses one counted descriptor and admitted native path scratch, with cooperative
+cancellation between directories.
+
 Mutation preparation has four ordered stages:
 
 1. Resolve every changed ID to its currently visible content segment and read
@@ -251,6 +259,36 @@ mutation artifacts to serving before the shared visibility and statistic
 contracts are complete.
 
 ## Verification matrix
+
+`api::tests::power_loss::search_projection` runs the real search writer and reader
+under storage's Unix `PowerLossModel`. It validates native IO coverage, then
+materializes and reopens loss of all uncovered operations, complete/reversed
+persistence, isolated pending operations, and prefix/suffix torn manifest
+temporary writes. Append and bounded compaction are observed after the last
+manifest temporary write; all three publication kinds are observed immediately
+before/after active manifest rename. Mutation's post-commit discovery writes
+validation scratch, so its single retained observation uses the exact rename
+path rather than the last write under the component. Every selected manifest
+must be byte-identical to the complete
+old or new selector; document hydration, text/vector/hybrid IDs and scores, and
+metadata filters must match that generation. Acknowledged publication must
+survive loss of all remaining uncovered operations. Initial one/two-level roots
+and retries of existing unsynchronized roots cover namespace ancestry, including
+admission denial and startup with only one descriptor available.
+
+Run the bounded qualification through its existing native CI owner:
+
+```console
+bash scripts/cargo-test-required.sh --locked -p hawdb --all-features --lib \
+  api::tests::power_loss::search_projection:: -- --nocapture --test-threads=1
+```
+
+The existing Linux/macOS `api::tests::power_loss::` CI discovery and execution
+include this module; default Bazel targets do not enable its `test-support` gate.
+The model assumes completed POSIX file/directory synchronization and atomic
+same-directory rename. These finite fixtures do not qualify native Windows
+namespace durability, physical storage hardware, sustained RSS, or the
+representative tens-of-GB workload required by #291.
 
 The current bounded checkpoint regression is
 `mutation_delete_publication_reuses_content_and_repeated_delete_is_a_noop`.

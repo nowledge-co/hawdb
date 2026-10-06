@@ -309,8 +309,18 @@ impl StageDirectory {
         task: &RuntimeTaskContext,
     ) -> Result<Self> {
         let source_root = OwnedPath::absolute(root, memory, task)?;
-        let project = ProjectFileDescriptors::acquire_component(&source_root, false)?;
+        let project = {
+            checkpoint(task)?;
+            // Writable bootstrap may resolve aliases and walk project ancestry.
+            // Admit its path workspace before any namespace synchronization.
+            let _workspace = memory
+                .spool
+                .reserve(OwnedPath::resolution_bytes(&source_root)?)?;
+            ProjectFileDescriptors::acquire_component(&source_root, true)?
+        };
         let root = OwnedPath::canonicalize(&source_root, memory, task)?;
+        super::super::io::GenerationIo::new(memory, task)
+            .sync_root_namespace(&root, project.root())?;
         retry_registered(
             &root,
             AUTOMATIC_RETRY_STAGES,
