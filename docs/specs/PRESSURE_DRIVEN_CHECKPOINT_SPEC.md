@@ -227,8 +227,24 @@ admission point, and reject a corrupt spill length before payload allocation.
 The automatic path uses demand-paged descriptor trees; the older optional
 resident-manifest API still retains its complete descriptor vector.
 
+Persistent property projections share the same context for definition
+preparation, source hydration, scalar/composite keys, streaming full-text tokens,
+memory-bounded chunk sorts, spill/merge records, artifact blocks and descriptor
+pages. Controlled definition sorting checks the raw input against the configured
+definition count/byte limits before sorting or deduplication. This prevents
+duplicate definitions from making a supposedly bounded sort unbounded; the
+older writer API without a task context retains its existing deduplication
+behavior. Metadata hashing and publication use bounded units. Temporary-run
+ownership covers partial files and all merge levels. Focused tests completely
+reopen 2,000 nodes and 2,000 relationships across all six projection kinds,
+cancel inside a multi-level merge and at every I/O admission boundary, and
+reject excess raw definitions before source hydration. Actual candidate tests
+cancel during adjacency and property-projection spilling, verify unchanged
+authority and released leases, then write again, retry and completely reopen
+all relationships.
+
 The automatic owner still holds its whole-candidate local permit: these units
-do not cover property-projection sorting, append/relational builders, statistics,
+do not cover projected-graph/source-scan preparation, append/relational builders, statistics,
 candidate reopening or replay finalization. Temporary-file cleanup is currently
 best effort and lacks a complete retained cleanup-debt/resource ledger. Metadata
 buffers and dictionaries can still scale with the dataset. These focused tests

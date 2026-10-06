@@ -8849,6 +8849,15 @@ mod tests {
 
     #[test]
     fn checkpoint_units_cancel_adjacency_and_retry_with_complete_relationships() {
+        assert_cancelled_derived_artifact_unit_preserves_authority("adjacency");
+    }
+
+    #[test]
+    fn checkpoint_units_cancel_property_projection_and_retry_with_complete_relationships() {
+        assert_cancelled_derived_artifact_unit_preserves_authority("property-index");
+    }
+
+    fn assert_cancelled_derived_artifact_unit_preserves_authority(artifact: &str) {
         use crate::background::{CheckpointWorkContext, CheckpointWorkProbe};
         use hawdb_core::RuntimeTaskContext;
         use hawdb_qos::{
@@ -8859,13 +8868,13 @@ mod tests {
         use std::sync::Arc;
 
         #[derive(Debug)]
-        struct CancelAtAdjacencySpill {
+        struct CancelAtDerivedSpill {
             probe: Arc<CheckpointWorkProbe>,
             spill: std::path::PathBuf,
             observed_spill: AtomicBool,
         }
 
-        impl QosTelemetrySink for CancelAtAdjacencySpill {
+        impl QosTelemetrySink for CancelAtDerivedSpill {
             fn record_qos(&self, event: QosTelemetryEvent) {
                 let completed = event.phase == QosTelemetryPhase::Completion;
                 self.probe.record_qos(event);
@@ -8876,7 +8885,7 @@ mod tests {
             }
         }
 
-        let path = unique_test_dir("checkpoint_adjacency_unit_cancel");
+        let path = unique_test_dir(&format!("checkpoint_{artifact}_unit_cancel"));
         let mut catalog = Catalog::default();
         let mut store = GraphStore::open(&path, &mut catalog).unwrap();
         let nodes = (0..64i64)
@@ -8920,9 +8929,9 @@ mod tests {
             ..LocalQosPolicy::default()
         });
         let probe = Arc::new(CheckpointWorkProbe::default());
-        let observer = Arc::new(CancelAtAdjacencySpill {
+        let observer = Arc::new(CancelAtDerivedSpill {
             probe: probe.clone(),
-            spill: path.join(format!(".adjacency.{generation}.run.0.tmp")),
+            spill: path.join(format!(".{artifact}.{generation}.run.0.tmp")),
             observed_spill: AtomicBool::new(false),
         });
         scheduler.set_telemetry_sink(Some(observer.clone()));

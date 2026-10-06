@@ -298,6 +298,7 @@ impl DurableStore {
         generation: u64,
         source_commit_epoch: u64,
         config: PersistentPropertyProjectionConfig,
+        work: &crate::background::CheckpointWorkContext,
     ) -> Result<DurableArtifactMetadata>
     where
         N: IntoIterator<
@@ -323,6 +324,7 @@ impl DurableStore {
             ),
         );
         let output = PersistentPropertyProjectionWriter::new(config)
+            .with_work_context(work.clone())
             .write_fallible(
                 &artifact_path,
                 ManifestGeneration(generation),
@@ -345,21 +347,24 @@ impl DurableStore {
                 "property projection descriptor root identity is inconsistent".to_string(),
             ));
         }
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
         let encoded = output
             .manifest
             .encode()
             .map_err(HawDBError::from_storage_error)?;
-        let metadata = DurableArtifactMetadata::for_bytes(encoded.as_bytes());
+        unit.finish();
+        let integrity = work
+            .integrity(encoded.as_bytes())
+            .map_err(HawDBError::from_storage_error)?;
+        let metadata = DurableArtifactMetadata {
+            encoded_len: encoded.len() as u64,
+            encoded_checksum: integrity.crc32c.as_u64(),
+            encoded_sha256: integrity.sha256,
+        };
         let manifest_path = self
             .root_path
             .join(property_projection_manifest_generation_file(generation));
-        let tmp_path = manifest_path.with_extension("hawdb.tmp");
-        {
-            let mut file = File::create(&tmp_path)?;
-            file.write_all(encoded.as_bytes())?;
-            file.sync_all()?;
-        }
-        durable_replace_file(&tmp_path, &manifest_path)?;
+        publish_checkpoint_metadata(&manifest_path, encoded.as_bytes(), work)?;
         Ok(metadata)
     }
 

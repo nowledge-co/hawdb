@@ -773,6 +773,7 @@ impl GraphStore {
                     generation,
                     commit_epoch,
                     build_config.property_projection,
+                    work,
                 )?,
                 None => durable.write_persistent_property_projection(
                     property_projection_definitions,
@@ -791,6 +792,7 @@ impl GraphStore {
                     generation,
                     commit_epoch,
                     build_config.property_projection,
+                    work,
                 )?,
             };
             let relational_checkpoint_artifact = durable.write_relational_checkpoint(

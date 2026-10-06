@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::background::{CheckpointWorkContext, CheckpointWorkError};
 use crate::canonical::{
     decode_standalone_value, encode_standalone_value, CanonicalScanControl, CanonicalSegmentError,
 };
@@ -37,7 +38,7 @@ use crate::{
 use hawdb_core::{LabelId, RelTypeId, Value};
 use hawdb_integrity::{Crc32cHasher, IntegrityHasher, Sha256Digest};
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -169,6 +170,7 @@ pub enum PersistentPropertyProjectionError {
     Read(SegmentReadError),
     Canonical(CanonicalSegmentError),
     DescriptorTree(GraphDescriptorTreeError),
+    Work(CheckpointWorkError),
     Source(String),
     Corrupt(String),
     MemoryBudgetExceeded {
@@ -208,6 +210,7 @@ impl Display for PersistentPropertyProjectionError {
             Self::Read(error) => Display::fmt(error, formatter),
             Self::Canonical(error) => Display::fmt(error, formatter),
             Self::DescriptorTree(error) => Display::fmt(error, formatter),
+            Self::Work(error) => Display::fmt(error, formatter),
             Self::Source(message) | Self::Corrupt(message) => formatter.write_str(message),
             Self::MemoryBudgetExceeded {
                 required_bytes,
@@ -269,6 +272,7 @@ impl Error for PersistentPropertyProjectionError {
             Self::Read(error) => Some(error),
             Self::Canonical(error) => Some(error),
             Self::DescriptorTree(error) => Some(error),
+            Self::Work(error) => Some(error),
             _ => None,
         }
     }
@@ -295,6 +299,12 @@ impl From<CanonicalSegmentError> for PersistentPropertyProjectionError {
 impl From<GraphDescriptorTreeError> for PersistentPropertyProjectionError {
     fn from(error: GraphDescriptorTreeError) -> Self {
         Self::DescriptorTree(error)
+    }
+}
+
+impl From<CheckpointWorkError> for PersistentPropertyProjectionError {
+    fn from(error: CheckpointWorkError) -> Self {
+        Self::Work(error)
     }
 }
 
@@ -843,11 +853,26 @@ impl EntryKey {
 
 pub struct PersistentPropertyProjectionWriter {
     config: PersistentPropertyProjectionConfig,
+    work: Option<CheckpointWorkContext>,
+}
+
+struct TemporaryProjectionArtifact(PathBuf);
+
+impl Drop for TemporaryProjectionArtifact {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
 }
 
 impl PersistentPropertyProjectionWriter {
     pub const fn new(config: PersistentPropertyProjectionConfig) -> Self {
-        Self { config }
+        Self { config, work: None }
+    }
+
+    #[doc(hidden)]
+    pub fn with_work_context(mut self, work: CheckpointWorkContext) -> Self {
+        self.work = Some(work);
+        self
     }
 
     pub fn write_fallible<N>(
@@ -889,22 +914,61 @@ impl PersistentPropertyProjectionWriter {
         >,
     {
         let (descriptor_paths, descriptor_config) = descriptor_tree.into_parts();
-        definitions.sort_by(|left, right| definition_key(left).cmp(&definition_key(right)));
-        definitions.dedup_by(|left, right| {
-            left.label_id == right.label_id
-                && left.property == right.property
-                && left.kind == right.kind
-        });
+        let work = self.work.clone().unwrap_or_default();
+        {
+            let unit = work.start_unit()?;
+            let _wave = work.io_wave()?;
+            for artifact in [
+                path,
+                &descriptor_paths.page_artifact,
+                &descriptor_paths.root_manifest,
+            ] {
+                if artifact.exists() {
+                    return Err(PersistentPropertyProjectionError::Io(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        format!(
+                            "immutable property projection artifact {} already exists",
+                            artifact.display()
+                        ),
+                    )));
+                }
+            }
+            unit.finish();
+        }
+        if self.work.is_some() {
+            // Bound the controlled sort before starting it. Automatic callers
+            // already validate these definitions while collecting them.
+            let mut input_admission =
+                PersistentPropertyProjectionDefinitionAdmission::new(self.config);
+            for definition in &definitions {
+                let unit = work.start_unit()?;
+                input_admission.admit(definition)?;
+                unit.finish();
+            }
+        }
+        {
+            let unit = work.start_unit()?;
+            definitions.sort_by(|left, right| definition_key(left).cmp(&definition_key(right)));
+            definitions.dedup_by(|left, right| {
+                left.label_id == right.label_id
+                    && left.property == right.property
+                    && left.kind == right.kind
+            });
+            unit.finish();
+        }
         let mut definition_admission =
             PersistentPropertyProjectionDefinitionAdmission::new(self.config);
         for definition in &definitions {
+            let unit = work.start_unit()?;
             definition_admission.admit(definition)?;
+            unit.finish();
         }
         let definition_count = definition_admission.definition_count();
         let definition_bytes = definition_admission.resident_bytes();
         let mut by_subject: BTreeMap<ProjectionSubject, Vec<PreparedProjectionDefinition>> =
             BTreeMap::new();
         for (index, definition) in definitions.iter_mut().enumerate() {
+            let unit = work.start_unit()?;
             definition.complete = true;
             let value_source =
                 if definition.kind == PersistentPropertyProjectionKind::CompositeEquality {
@@ -921,15 +985,27 @@ impl PersistentPropertyProjectionWriter {
                     definition_index: index,
                     value_source,
                 });
+            unit.finish();
         }
-        let mut runs = ProjectionSpillRuns::new(path, generation, self.config);
+        let mut runs = ProjectionSpillRuns::new(path, generation, self.config, work.clone());
         let mut chunk = Vec::new();
         let mut chunk_bytes = 0u64;
         let mut generated_entries = 0u64;
         let mut input_records = 0u64;
         let mut peak_resident_bytes = 0u64;
-        for record in nodes {
+        let mut records = nodes.into_iter();
+        loop {
+            let unit = work.start_unit()?;
+            let record = {
+                let _wave = work.io_wave()?;
+                records.next()
+            };
+            let Some(record) = record else {
+                unit.finish();
+                break;
+            };
             let record = record?;
+            work.checkpoint()?;
             input_records = input_records.saturating_add(1);
             let (subjects, properties, entity_id) = match &record {
                 PersistentPropertyProjectionRecord::Node(node) => (
@@ -947,22 +1023,28 @@ impl PersistentPropertyProjectionWriter {
                     NodeId(relationship.id.0),
                 ),
             };
+            unit.finish();
             for subject in subjects {
+                work.checkpoint()?;
                 let Some(indexes) = by_subject.get(&subject) else {
                     continue;
                 };
                 for prepared in indexes {
+                    let unit = work.start_unit()?;
                     let definition_index = prepared.definition_index;
                     let definition = &definitions[definition_index];
+                    unit.finish();
                     match definition.kind {
                         PersistentPropertyProjectionKind::Equality
                         | PersistentPropertyProjectionKind::RelationshipEquality => {
                             let Some(value) = properties.get(&definition.property) else {
                                 continue;
                             };
+                            let unit = work.start_unit()?;
                             let encoded = encode_standalone_value(value)?;
                             if encoded.len() as u64 > self.config.max_index_key_bytes.get() {
                                 definitions[definition_index].complete = false;
+                                unit.finish();
                                 continue;
                             }
                             self.emit(
@@ -979,6 +1061,7 @@ impl PersistentPropertyProjectionWriter {
                                 &mut generated_entries,
                                 &mut peak_resident_bytes,
                             )?;
+                            unit.finish();
                         }
                         PersistentPropertyProjectionKind::Range
                         | PersistentPropertyProjectionKind::RelationshipRange => {
@@ -988,9 +1071,11 @@ impl PersistentPropertyProjectionWriter {
                             if !is_range_value(value) {
                                 continue;
                             }
+                            let unit = work.start_unit()?;
                             let encoded = encode_standalone_value(value)?;
                             if encoded.len() as u64 > self.config.max_index_key_bytes.get() {
                                 definitions[definition_index].complete = false;
+                                unit.finish();
                                 continue;
                             }
                             self.emit(
@@ -1007,6 +1092,7 @@ impl PersistentPropertyProjectionWriter {
                                 &mut generated_entries,
                                 &mut peak_resident_bytes,
                             )?;
+                            unit.finish();
                         }
                         PersistentPropertyProjectionKind::FullText => {
                             let Some(value) = properties.get(&definition.property) else {
@@ -1015,7 +1101,13 @@ impl PersistentPropertyProjectionWriter {
                             let Value::String(value) = value else {
                                 continue;
                             };
-                            for token in full_text_tokens_streaming(value) {
+                            let mut tokens = full_text_tokens_streaming(value);
+                            loop {
+                                let unit = work.start_unit()?;
+                                let Some(token) = tokens.next() else {
+                                    unit.finish();
+                                    break;
+                                };
                                 self.emit(
                                     EntryKey {
                                         kind: definition.kind,
@@ -1030,9 +1122,11 @@ impl PersistentPropertyProjectionWriter {
                                     &mut generated_entries,
                                     &mut peak_resident_bytes,
                                 )?;
+                                unit.finish();
                             }
                         }
                         PersistentPropertyProjectionKind::CompositeEquality => {
+                            let unit = work.start_unit()?;
                             let ProjectionValueSource::Composite(composite_properties) =
                                 &prepared.value_source
                             else {
@@ -1046,12 +1140,14 @@ impl PersistentPropertyProjectionWriter {
                                 .map(|property| properties.get(property).cloned())
                                 .collect::<Option<Vec<_>>>()
                             else {
+                                unit.finish();
                                 continue;
                             };
                             let value = Value::List(values);
                             let encoded = encode_standalone_value(&value)?;
                             if encoded.len() as u64 > self.config.max_index_key_bytes.get() {
                                 definitions[definition_index].complete = false;
+                                unit.finish();
                                 continue;
                             }
                             self.emit(
@@ -1068,6 +1164,7 @@ impl PersistentPropertyProjectionWriter {
                                 &mut generated_entries,
                                 &mut peak_resident_bytes,
                             )?;
+                            unit.finish();
                         }
                     }
                 }
@@ -1078,7 +1175,8 @@ impl PersistentPropertyProjectionWriter {
         }
         runs.compact()?;
         let tmp_path = path.with_extension("hawdb.tmp");
-        let output = self.merge_runs(
+        let _temporary_artifact = TemporaryProjectionArtifact(tmp_path.clone());
+        let prepared = self.merge_runs(
             &tmp_path,
             generation,
             source_commit_epoch,
@@ -1091,15 +1189,13 @@ impl PersistentPropertyProjectionWriter {
             &runs,
             descriptor_paths,
             descriptor_config,
-        );
-        let prepared = match output {
-            Ok(output) => output,
-            Err(error) => {
-                let _ = fs::remove_file(&tmp_path);
-                return Err(error);
-            }
-        };
-        durable_replace_file(&tmp_path, path)?;
+        )?;
+        {
+            let unit = work.start_unit()?;
+            let _wave = work.io_wave()?;
+            durable_replace_file(&tmp_path, path)?;
+            unit.finish();
+        }
         let descriptor_tree = prepared.descriptor_tree.publish()?;
         if descriptor_tree.root.kind != GraphDescriptorKind::PropertyProjection
             || descriptor_tree.root.generation != generation.0
@@ -1122,7 +1218,9 @@ impl PersistentPropertyProjectionWriter {
             definitions: prepared.definitions,
             descriptor_root_artifact: descriptor_tree.root_artifact,
         };
+        let unit = work.start_unit()?;
         manifest.validate()?;
+        unit.finish();
         Ok(PersistentPropertyProjectionWriteOutput {
             manifest,
             report: prepared.report,
@@ -1140,6 +1238,7 @@ impl PersistentPropertyProjectionWriter {
         generated_entries: &mut u64,
         peak_resident_bytes: &mut u64,
     ) -> Result<(), PersistentPropertyProjectionError> {
+        let unit = runs.work.start_unit()?;
         let required_entries = generated_entries.saturating_add(1);
         if required_entries > self.config.max_generated_entries.get() {
             return Err(
@@ -1166,6 +1265,7 @@ impl PersistentPropertyProjectionWriter {
         *peak_resident_bytes = (*peak_resident_bytes).max(*chunk_bytes);
         *generated_entries = required_entries;
         chunk.push(entry);
+        unit.finish();
         Ok(())
     }
 
@@ -1185,28 +1285,45 @@ impl PersistentPropertyProjectionWriter {
         descriptor_paths: GraphDescriptorTreePaths,
         descriptor_config: GraphDescriptorTreeBuildConfig,
     ) -> Result<PreparedPropertyProjectionArtifact, PersistentPropertyProjectionError> {
+        let work = &runs.work;
         let mut readers = runs
             .paths
             .iter()
-            .map(|path| ProjectionRunReader::open(path, self.config.max_index_key_bytes))
+            .map(|path| {
+                let unit = work.start_unit()?;
+                let _wave = work.io_wave()?;
+                let reader = ProjectionRunReader::open(path, self.config.max_index_key_bytes)?;
+                unit.finish();
+                Ok::<_, PersistentPropertyProjectionError>(reader)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let mut current = Vec::with_capacity(readers.len());
         let mut heap = BinaryHeap::new();
         for (index, reader) in readers.iter_mut().enumerate() {
+            let unit = work.start_unit()?;
+            let _wave = work.io_wave()?;
             let key = reader.next_key()?;
             if let Some(key) = &key {
                 heap.push(Reverse((key.clone(), index)));
             }
             current.push(key);
+            unit.finish();
         }
-        let file = File::create(path)?;
-        let descriptor_tree = GraphDescriptorTreeBuilder::create(
+        let file = {
+            let unit = work.start_unit()?;
+            let _wave = work.io_wave()?;
+            let file = File::create(path)?;
+            unit.finish();
+            file
+        };
+        let descriptor_tree = GraphDescriptorTreeBuilder::create_with_work_context(
             descriptor_paths,
             GraphDescriptorKind::PropertyProjection,
             generation.0,
             source_commit_epoch,
             DESCRIPTOR_ARTIFACT_ID,
             descriptor_config,
+            work.clone(),
         )?;
         let mut artifact = ProjectionArtifactBuilder::new(
             file,
@@ -1214,9 +1331,11 @@ impl PersistentPropertyProjectionWriter {
             definitions,
             self.config,
             descriptor_tree,
+            work.clone(),
         )?;
         let mut previous = None;
         while let Some(Reverse((key, run_index))) = heap.pop() {
+            let unit = work.start_unit()?;
             if current[run_index].as_ref() != Some(&key) {
                 return Err(PersistentPropertyProjectionError::Corrupt(
                     "property projection spill heap does not match its reader".to_string(),
@@ -1226,10 +1345,14 @@ impl PersistentPropertyProjectionWriter {
                 artifact.push(key.clone())?;
                 previous = Some(key);
             }
-            current[run_index] = readers[run_index].next_key()?;
+            current[run_index] = {
+                let _wave = work.io_wave()?;
+                readers[run_index].next_key()?
+            };
             if let Some(next) = &current[run_index] {
                 heap.push(Reverse((next.clone(), run_index)));
             }
+            unit.finish();
         }
         let mut prepared = artifact.finish()?;
         prepared.report = PersistentPropertyProjectionBuildReport {
@@ -1264,12 +1387,14 @@ enum ProjectionValueSource {
 }
 
 struct ProjectionSpillRuns {
+    work: CheckpointWorkContext,
     prefix: PathBuf,
     generation: ManifestGeneration,
     config: PersistentPropertyProjectionConfig,
     paths: Vec<PathBuf>,
     spill_bytes: u64,
     next_run_sequence: usize,
+    temporary_files: BTreeSet<PathBuf>,
 }
 
 impl ProjectionSpillRuns {
@@ -1277,14 +1402,17 @@ impl ProjectionSpillRuns {
         path: &Path,
         generation: ManifestGeneration,
         config: PersistentPropertyProjectionConfig,
+        work: CheckpointWorkContext,
     ) -> Self {
         Self {
+            work,
             prefix: path.to_path_buf(),
             generation,
             config,
             paths: Vec::new(),
             spill_bytes: 0,
             next_run_sequence: 0,
+            temporary_files: BTreeSet::new(),
         }
     }
 
@@ -1292,6 +1420,7 @@ impl ProjectionSpillRuns {
         &mut self,
         entries: &mut Vec<EntryKey>,
     ) -> Result<(), PersistentPropertyProjectionError> {
+        let unit = self.work.start_unit()?;
         let required_runs = self.paths.len().saturating_add(1);
         if required_runs > self.config.max_spill_runs.get() {
             return Err(PersistentPropertyProjectionError::SpillRunBudgetExceeded {
@@ -1316,15 +1445,30 @@ impl ProjectionSpillRuns {
             });
         }
         let path = self.next_path()?;
-        let mut writer = BufWriter::new(File::create(&path)?);
-        writer.write_all(RUN_HEADER)?;
+        unit.finish();
+        let mut writer = {
+            let unit = self.work.start_unit()?;
+            let _wave = self.work.io_wave()?;
+            let mut writer = BufWriter::new(File::create(&path)?);
+            writer.write_all(RUN_HEADER)?;
+            unit.finish();
+            writer
+        };
         for entry in entries.iter() {
+            let unit = self.work.start_unit()?;
+            let _wave = self.work.io_wave()?;
             write_entry_key(&mut writer, entry)?;
+            unit.finish();
         }
-        writer.flush()?;
+        let unit = self.work.start_unit()?;
+        {
+            let _wave = self.work.io_wave()?;
+            writer.flush()?;
+        }
         self.paths.push(path);
         self.spill_bytes = required_bytes;
         entries.clear();
+        unit.finish();
         Ok(())
     }
 
@@ -1336,11 +1480,13 @@ impl ProjectionSpillRuns {
             ));
         }
         while self.paths.len() > fan_in {
+            self.work.checkpoint()?;
             let old_paths = std::mem::take(&mut self.paths);
             let mut merged_paths = Vec::with_capacity(old_paths.len().div_ceil(fan_in));
             for group in old_paths.chunks(fan_in) {
                 let path = self.next_path()?;
-                let bytes = match merge_projection_run_group(group, &path, self.config) {
+                let bytes = match merge_projection_run_group(group, &path, self.config, &self.work)
+                {
                     Ok(bytes) => bytes,
                     Err(error) => {
                         let _ = fs::remove_file(&path);
@@ -1363,9 +1509,13 @@ impl ProjectionSpillRuns {
                 }
                 self.spill_bytes = required_bytes;
                 merged_paths.push(path);
+                let unit = self.work.start_unit()?;
+                let _wave = self.work.io_wave()?;
                 for source in group {
                     fs::remove_file(source)?;
+                    self.temporary_files.remove(source);
                 }
+                unit.finish();
             }
             self.paths = merged_paths;
         }
@@ -1382,16 +1532,18 @@ impl ProjectionSpillRuns {
         }
         let sequence = self.next_run_sequence;
         self.next_run_sequence = self.next_run_sequence.saturating_add(1);
-        Ok(self.prefix.with_file_name(format!(
+        let path = self.prefix.with_file_name(format!(
             ".property-index.{}.run.{sequence}.tmp",
             self.generation.0
-        )))
+        ));
+        self.temporary_files.insert(path.clone());
+        Ok(path)
     }
 }
 
 impl Drop for ProjectionSpillRuns {
     fn drop(&mut self) {
-        for path in &self.paths {
+        for path in &self.temporary_files {
             let _ = fs::remove_file(path);
         }
     }
@@ -1453,25 +1605,43 @@ fn merge_projection_run_group(
     sources: &[PathBuf],
     destination: &Path,
     config: PersistentPropertyProjectionConfig,
+    work: &CheckpointWorkContext,
 ) -> Result<u64, PersistentPropertyProjectionError> {
     let mut readers = sources
         .iter()
-        .map(|path| ProjectionRunReader::open(path, config.max_index_key_bytes))
+        .map(|path| {
+            let unit = work.start_unit()?;
+            let _wave = work.io_wave()?;
+            let reader = ProjectionRunReader::open(path, config.max_index_key_bytes)?;
+            unit.finish();
+            Ok::<_, PersistentPropertyProjectionError>(reader)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let mut current = Vec::with_capacity(readers.len());
     let mut heap = BinaryHeap::new();
     for (index, reader) in readers.iter_mut().enumerate() {
+        let unit = work.start_unit()?;
+        let _wave = work.io_wave()?;
         let key = reader.next_key()?;
         if let Some(key) = &key {
             heap.push(Reverse((key.clone(), index)));
         }
         current.push(key);
+        unit.finish();
     }
-    let mut writer = BufWriter::new(File::create(destination)?);
-    writer.write_all(RUN_HEADER)?;
+    let mut writer = {
+        let unit = work.start_unit()?;
+        let _wave = work.io_wave()?;
+        let mut writer = BufWriter::new(File::create(destination)?);
+        writer.write_all(RUN_HEADER)?;
+        unit.finish();
+        writer
+    };
     let mut bytes = RUN_HEADER.len() as u64;
     let mut previous = None;
     while let Some(Reverse((key, run_index))) = heap.pop() {
+        let unit = work.start_unit()?;
+        let _wave = work.io_wave()?;
         if current[run_index].as_ref() != Some(&key) {
             return Err(PersistentPropertyProjectionError::Corrupt(
                 "property projection spill compaction heap mismatch".to_string(),
@@ -1486,12 +1656,19 @@ fn merge_projection_run_group(
         if let Some(next) = &current[run_index] {
             heap.push(Reverse((next.clone(), run_index)));
         }
+        unit.finish();
     }
-    writer.flush()?;
+    {
+        let unit = work.start_unit()?;
+        let _wave = work.io_wave()?;
+        writer.flush()?;
+        unit.finish();
+    }
     Ok(bytes)
 }
 
 struct ProjectionArtifactBuilder {
+    work: CheckpointWorkContext,
     writer: BufWriter<File>,
     artifact_digest: IntegrityHasher,
     generation: ManifestGeneration,
@@ -1514,7 +1691,10 @@ impl ProjectionArtifactBuilder {
         definitions: Vec<PersistentPropertyProjectionDefinition>,
         config: PersistentPropertyProjectionConfig,
         descriptor_tree: GraphDescriptorTreeBuilder,
+        work: CheckpointWorkContext,
     ) -> Result<Self, PersistentPropertyProjectionError> {
+        let unit = work.start_unit()?;
+        let _wave = work.io_wave()?;
         let mut writer = BufWriter::new(file);
         let mut artifact_digest = IntegrityHasher::new();
         write_hashed(&mut writer, &mut artifact_digest, ARTIFACT_HEADER)?;
@@ -1523,7 +1703,9 @@ impl ProjectionArtifactBuilder {
             &mut artifact_digest,
             &generation.0.to_le_bytes(),
         )?;
+        unit.finish();
         Ok(Self {
+            work: work.clone(),
             writer,
             artifact_digest,
             generation,
@@ -1541,6 +1723,7 @@ impl ProjectionArtifactBuilder {
     }
 
     fn push(&mut self, entry: EntryKey) -> Result<(), PersistentPropertyProjectionError> {
+        self.work.checkpoint()?;
         let entry_bytes = 4u64
             .saturating_add(encode_standalone_value(&entry.value)?.len() as u64)
             .saturating_add(8);
@@ -1589,6 +1772,7 @@ impl ProjectionArtifactBuilder {
         if self.pending.is_empty() {
             return Ok(());
         }
+        let unit = self.work.start_unit()?;
         let first = self.pending.first().expect("projection block is non-empty");
         let property_len = u32::try_from(first.property.len()).map_err(|_| {
             PersistentPropertyProjectionError::Corrupt(
@@ -1630,6 +1814,7 @@ impl ProjectionArtifactBuilder {
             .value
             .clone();
         let mut block_digest = Crc32cHasher::new();
+        let wave = self.work.io_wave()?;
         for bytes in [
             BLOCK_HEADER.as_slice(),
             &self.generation.0.to_le_bytes(),
@@ -1681,6 +1866,7 @@ impl ProjectionArtifactBuilder {
             content_digest: ContentDigest(block_digest.finish()),
             entry_count,
         };
+        drop(wave);
         self.descriptor_tree.push(
             descriptor.descriptor_tree_key(),
             descriptor.encode_descriptor_tree_value()?,
@@ -1711,6 +1897,7 @@ impl ProjectionArtifactBuilder {
         self.pending.clear();
         self.pending_bytes = 0;
         self.pending_resident_bytes = 0;
+        unit.finish();
         Ok(())
     }
 
@@ -1718,8 +1905,13 @@ impl ProjectionArtifactBuilder {
         mut self,
     ) -> Result<PreparedPropertyProjectionArtifact, PersistentPropertyProjectionError> {
         self.flush_block()?;
-        self.writer.flush()?;
-        self.writer.get_ref().sync_all()?;
+        {
+            let unit = self.work.start_unit()?;
+            let _wave = self.work.io_wave()?;
+            self.writer.flush()?;
+            self.writer.get_ref().sync_all()?;
+            unit.finish();
+        }
         let artifact_integrity = self.artifact_digest.finish();
         let descriptor_tree = self.descriptor_tree.finish()?;
         Ok(PreparedPropertyProjectionArtifact {
@@ -2658,6 +2850,7 @@ fn property_projection_error_requires_poison(error: &PersistentPropertyProjectio
                 | GraphDescriptorTreeError::Corrupt(_)
         ),
         PersistentPropertyProjectionError::Canonical(_)
+        | PersistentPropertyProjectionError::Work(_)
         | PersistentPropertyProjectionError::Source(_)
         | PersistentPropertyProjectionError::MemoryBudgetExceeded { .. }
         | PersistentPropertyProjectionError::SpillBudgetExceeded { .. }
@@ -3211,6 +3404,373 @@ mod tests {
             root.join(format!("{stem}-descriptors.pages.hawdb")),
             root.join(format!("{stem}-descriptors.root.hawdb")),
         )
+    }
+
+    fn checkpoint_unit_definitions() -> Vec<PersistentPropertyProjectionDefinition> {
+        [
+            (
+                PersistentPropertyProjectionKind::Equality,
+                "rank".to_string(),
+            ),
+            (PersistentPropertyProjectionKind::Range, "rank".to_string()),
+            (
+                PersistentPropertyProjectionKind::FullText,
+                "text".to_string(),
+            ),
+            (
+                PersistentPropertyProjectionKind::CompositeEquality,
+                persistent_composite_property_identity(&["rank".to_string(), "text".to_string()])
+                    .unwrap(),
+            ),
+            (
+                PersistentPropertyProjectionKind::RelationshipEquality,
+                "rank".to_string(),
+            ),
+            (
+                PersistentPropertyProjectionKind::RelationshipRange,
+                "rank".to_string(),
+            ),
+        ]
+        .into_iter()
+        .map(|(kind, property)| PersistentPropertyProjectionDefinition {
+            label_id: LabelId(1),
+            property,
+            kind,
+            complete: false,
+        })
+        .collect()
+    }
+
+    fn checkpoint_unit_scheduler() -> hawdb_qos::LocalQosScheduler {
+        hawdb_qos::LocalQosScheduler::new(hawdb_qos::LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..hawdb_qos::LocalQosPolicy::default()
+        })
+    }
+
+    fn checkpoint_unit_directory() -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "hawdb-property-checkpoint-units-{}",
+            hawdb_core::generate_uuidv7().unwrap()
+        ));
+        fs::create_dir(&path).unwrap();
+        path
+    }
+
+    fn assert_checkpoint_unit_cancellation(error: &PersistentPropertyProjectionError) {
+        let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+        while let Some(error) = source {
+            if let Some(work) = error.downcast_ref::<CheckpointWorkError>() {
+                assert!(matches!(
+                    work,
+                    CheckpointWorkError::Stopped(_)
+                        | CheckpointWorkError::Io(hawdb_core::RuntimeIoWaveError::Stopped(_))
+                ));
+                return;
+            }
+            source = error.source();
+        }
+        panic!("expected typed checkpoint cancellation: {error}");
+    }
+
+    #[test]
+    fn checkpoint_units_property_projection_reopens_all_six_kinds() {
+        use crate::background::CheckpointWorkProbe;
+        use std::sync::atomic::Ordering;
+
+        let root = checkpoint_unit_directory();
+        let path = root.join("projection.hawdb");
+        let descriptor_paths = test_descriptor_paths(&root, "projection");
+        let config = PersistentPropertyProjectionConfig {
+            memory_budget_bytes: NonZeroU64::new(4096).unwrap(),
+            max_merge_fan_in: NonZeroUsize::new(2).unwrap(),
+            target_block_bytes: NonZeroU64::new(256).unwrap(),
+            ..PersistentPropertyProjectionConfig::default()
+        };
+        let scheduler = checkpoint_unit_scheduler();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        let work = probe.context(scheduler.clone());
+        let records = (0..2000u64).rev().flat_map(|index| {
+            assert!(probe.active_units.load(Ordering::SeqCst) > 0);
+            [
+                Ok(PersistentPropertyProjectionRecord::Node(node(
+                    index + 1,
+                    index as i64,
+                    "ab",
+                ))),
+                Ok(PersistentPropertyProjectionRecord::Relationship(
+                    relationship(index + 10000, index as i64),
+                )),
+            ]
+        });
+        let output = PersistentPropertyProjectionWriter::new(config)
+            .with_work_context(work)
+            .write_fallible(
+                &path,
+                ManifestGeneration(61),
+                4000,
+                checkpoint_unit_definitions(),
+                records,
+                PersistentPropertyProjectionDescriptorTree::new(
+                    descriptor_paths.clone(),
+                    GraphDescriptorTreeBuildConfig::default(),
+                ),
+            )
+            .unwrap();
+        assert_eq!(output.report.input_record_count, 4000);
+        assert_eq!(output.manifest.entry_count, 16000);
+        assert!(output
+            .manifest
+            .definitions
+            .iter()
+            .all(|definition| definition.complete));
+        assert!(output.report.spill_run_count > 4);
+        assert!(probe.completed.load(Ordering::SeqCst) > 16000);
+        assert!(probe.peak_units.load(Ordering::SeqCst) <= 4);
+        probe.assert_released(&scheduler);
+        let manifest =
+            PersistentPropertyProjectionManifest::decode(&output.manifest.encode().unwrap())
+                .unwrap();
+        let reader = PersistentPropertyProjectionReader::open(
+            &path,
+            manifest,
+            PersistentPropertyProjectionDescriptorTree::new(
+                descriptor_paths,
+                GraphDescriptorTreeBuildConfig::default(),
+            ),
+            Arc::new(SegmentCache::new(1024 * 1024)),
+            StoreId(61),
+            NonZeroU64::new(64 * 1024).unwrap(),
+        )
+        .unwrap();
+        for index in 0..2000u64 {
+            let mut ids = Vec::new();
+            reader
+                .scan_equality_candidates(LabelId(1), "rank", &Value::Int(index as i64), |id| {
+                    ids.push(id.0);
+                    Ok(CanonicalScanControl::Continue)
+                })
+                .unwrap();
+            assert_eq!(ids, vec![index + 1]);
+            ids.clear();
+            reader
+                .scan_composite_equality_candidates(
+                    LabelId(1),
+                    &["rank".to_string(), "text".to_string()],
+                    &[&Value::Int(index as i64), &Value::String("ab".to_string())],
+                    |id| {
+                        ids.push(id.0);
+                        Ok(CanonicalScanControl::Continue)
+                    },
+                )
+                .unwrap();
+            assert_eq!(ids, vec![index + 1]);
+            ids.clear();
+            reader
+                .scan_relationship_equality_candidates(
+                    RelTypeId(1),
+                    "rank",
+                    &Value::Int(index as i64),
+                    |id| {
+                        ids.push(id.0);
+                        Ok(CanonicalScanControl::Continue)
+                    },
+                )
+                .unwrap();
+            assert_eq!(ids, vec![index + 10000]);
+        }
+        let mut node_ids = Vec::new();
+        reader
+            .scan_range_candidates(LabelId(1), "rank", None, None, |id| {
+                node_ids.push(id.0);
+                Ok(CanonicalScanControl::Continue)
+            })
+            .unwrap();
+        assert_eq!(node_ids, (1..=2000).collect::<Vec<_>>());
+        let mut relationship_ids = Vec::new();
+        reader
+            .scan_relationship_range_candidates(RelTypeId(1), "rank", None, None, |id| {
+                relationship_ids.push(id.0);
+                Ok(CanonicalScanControl::Continue)
+            })
+            .unwrap();
+        assert_eq!(relationship_ids, (10000..12000).collect::<Vec<_>>());
+        for token in ["a", "ab", "b"] {
+            let mut ids = Vec::new();
+            reader
+                .scan_full_text_token_candidates(LabelId(1), "text", token, |id| {
+                    ids.push(id.0);
+                    Ok(CanonicalScanControl::Continue)
+                })
+                .unwrap();
+            assert_eq!(ids, (1..=2000).collect::<Vec<_>>());
+        }
+        assert_eq!(
+            reader.deep_scrub().unwrap().projection_entries_checked,
+            16000
+        );
+        assert!(fs::read_dir(&root).unwrap().all(|entry| !entry
+            .unwrap()
+            .path()
+            .extension()
+            .is_some_and(|extension| extension == "tmp")));
+        drop(reader);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_units_property_projection_cancel_inside_spill_merge() {
+        use crate::background::CheckpointWorkProbe;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let root = checkpoint_unit_directory();
+        let scheduler = checkpoint_unit_scheduler();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        let work = probe.context(scheduler.clone());
+        let mut records = (0..128u64).rev();
+        let consumed = AtomicBool::new(false);
+        let records = std::iter::from_fn(|| {
+            if let Some(index) = records.next() {
+                return Some(Ok(PersistentPropertyProjectionRecord::Node(node(
+                    index + 1,
+                    index as i64,
+                    "",
+                ))));
+            }
+            consumed.store(true, Ordering::SeqCst);
+            // The final source chunk has fewer than four entries; the next
+            // 32 completed units reach a multi-level spill merge.
+            probe.cancel_after.store(
+                probe.completed.load(Ordering::SeqCst) + 32,
+                Ordering::SeqCst,
+            );
+            None
+        });
+        let config = PersistentPropertyProjectionConfig {
+            memory_budget_bytes: NonZeroU64::new(512).unwrap(),
+            max_merge_fan_in: NonZeroUsize::new(2).unwrap(),
+            ..PersistentPropertyProjectionConfig::default()
+        };
+        let error = PersistentPropertyProjectionWriter::new(config)
+            .with_work_context(work)
+            .write_fallible(
+                &root.join("projection.hawdb"),
+                ManifestGeneration(62),
+                128,
+                vec![checkpoint_unit_definitions().remove(0)],
+                records,
+                PersistentPropertyProjectionDescriptorTree::new(
+                    test_descriptor_paths(&root, "projection"),
+                    GraphDescriptorTreeBuildConfig::default(),
+                ),
+            )
+            .unwrap_err();
+        assert!(consumed.load(Ordering::SeqCst));
+        assert_checkpoint_unit_cancellation(&error);
+        probe.assert_released(&scheduler);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_units_property_projection_bounds_raw_definition_sort_input() {
+        use crate::background::CheckpointWorkProbe;
+
+        let root = checkpoint_unit_directory();
+        let scheduler = checkpoint_unit_scheduler();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        let work = probe.context(scheduler.clone());
+        let config = PersistentPropertyProjectionConfig {
+            max_definition_count: NonZeroUsize::new(2).unwrap(),
+            ..PersistentPropertyProjectionConfig::default()
+        };
+        let definition = checkpoint_unit_definitions().remove(0);
+        let records = std::iter::from_fn(|| -> Option<Result<PersistentPropertyProjectionRecord, PersistentPropertyProjectionError>> {
+            panic!("denied definitions must not hydrate source records")
+        });
+        let error = PersistentPropertyProjectionWriter::new(config)
+            .with_work_context(work)
+            .write_fallible(
+                &root.join("projection.hawdb"),
+                ManifestGeneration(64),
+                1,
+                vec![definition.clone(), definition.clone(), definition],
+                records,
+                PersistentPropertyProjectionDescriptorTree::new(
+                    test_descriptor_paths(&root, "projection"),
+                    GraphDescriptorTreeBuildConfig::default(),
+                ),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            PersistentPropertyProjectionError::DefinitionCountBudgetExceeded {
+                required_definitions: 3,
+                max_definitions: 2
+            }
+        ));
+        probe.assert_released(&scheduler);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_units_property_projection_cancel_at_every_io_admission() {
+        use crate::background::CheckpointWorkProbe;
+        use std::sync::atomic::Ordering;
+
+        let mut waves = 0;
+        let mut boundary = 0;
+        loop {
+            let root = checkpoint_unit_directory();
+            let scheduler = checkpoint_unit_scheduler();
+            let probe = Arc::new(CheckpointWorkProbe::default());
+            probe.cancel_on_io_wave.store(boundary, Ordering::SeqCst);
+            let work = probe.context(scheduler.clone());
+            let config = PersistentPropertyProjectionConfig {
+                memory_budget_bytes: NonZeroU64::new(256).unwrap(),
+                max_merge_fan_in: NonZeroUsize::new(2).unwrap(),
+                target_block_bytes: NonZeroU64::new(256).unwrap(),
+                ..PersistentPropertyProjectionConfig::default()
+            };
+            let result = PersistentPropertyProjectionWriter::new(config)
+                .with_work_context(work)
+                .write_fallible(
+                    &root.join("projection.hawdb"),
+                    ManifestGeneration(63),
+                    2,
+                    checkpoint_unit_definitions(),
+                    [
+                        Ok(PersistentPropertyProjectionRecord::Node(node(1, 1, "ab"))),
+                        Ok(PersistentPropertyProjectionRecord::Relationship(
+                            relationship(2, 2),
+                        )),
+                    ],
+                    PersistentPropertyProjectionDescriptorTree::new(
+                        test_descriptor_paths(&root, "projection"),
+                        GraphDescriptorTreeBuildConfig::default(),
+                    ),
+                );
+            if boundary == 0 {
+                result.unwrap();
+                waves = probe.io_waves.load(Ordering::SeqCst);
+                assert!(waves > 10);
+            } else {
+                assert_checkpoint_unit_cancellation(&result.unwrap_err());
+            }
+            probe.assert_released(&scheduler);
+            assert!(fs::read_dir(&root).unwrap().all(|entry| !entry
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "tmp")));
+            fs::remove_dir_all(root).unwrap();
+            boundary += 1;
+            if boundary > waves {
+                break;
+            }
+        }
     }
 
     fn descriptor(
