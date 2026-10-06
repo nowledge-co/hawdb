@@ -86,4 +86,3 @@ alias(
     name = "planner_golden_test",
     actual = "//crates/optimizer-graph:planner_golden_test",
 )
-

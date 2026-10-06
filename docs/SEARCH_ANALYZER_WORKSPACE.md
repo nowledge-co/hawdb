@@ -45,13 +45,13 @@ unwinds and releases its leases first. The guard joins in its destructor, includ
 when both threads panic. Worker errors preserve the previous generation and clean
 the private stage through existing publication ownership.
 
-Before work begins, a fixed unknown two-Han word initializes the worker's HMM and
-skip regex under a separate constructor reservation. The immutable default Jieba
+Before work begins, a fixed unknown two-Han word initializes the worker's analyzer TLS
+under the existing conservative constructor reservation. The immutable default Jieba
 dictionary remains a shared process owner, including its first lazy initialization;
 its residency belongs to #186 rather than an individual operation.
 
 Every `cut_for_search` call admits its input-dependent capacity before entering
-Jieba. HMM vectors retain a character-count high-water reservation across shorter
+Jieba. All TLS vectors retain a character-count high-water reservation across shorter
 calls and until native join. Call scratch covers old/replacement coexistence and
 stays live through the returned token iterator and its consumer. Consumer errors,
 unwind and cancellation drop that iterator before its scratch lease. Checkpoints
@@ -60,30 +60,49 @@ call is not internally interruptible.
 
 ## Qualified dependency envelope
 
-The model is tied to Rust 1.97.1, Jieba 0.10.3, regex 1.13.1,
-regex-automata 0.4.16 and regex-syntax 0.8.11. Exact dependency requirements prevent
+The model is tied to Rust 1.97.1 and Jieba 0.11.0. The retained legacy regex
+allowance is qualified with regex 1.13.1, regex-automata 0.4.18 and regex-syntax
+0.8.11. Exact dependency requirements prevent
 a downstream compatible-version update from silently changing the opaque layout
 or algorithm. Requalify the model when updating these requirements. Bounds use
 8-byte words and cover the supported 32/64-bit layouts. Rust allocation requests,
 including spare capacity and conservative replacement overlap, are the metric;
 these are not process RSS bounds.
 
-For input byte length B and scalar count C, the pinned `cut` implementation owns
-word slices, token output, a byte-indexed route, sparse DAG edges/start positions
-and touched-start positions. Search mode additionally owns expanded token output
-and word character offsets. Each original token spans disjoint characters; its
-two/three-gram expansion produces at most twice that span's scalar count. The
-immutable default dictionary has 349,045 distinct words and at most seven nested
-matching prefixes, so the DAG requires at most eight entries per scalar including
-its sentinel. The dictionary SHA-256 is
+Jieba 0.11 moves its route, compressed sparse-row DAG, decoded characters and
+HMM predecessor/path vectors into one thread-local scratch owner. The immutable
+default dictionary remains unchanged: 349,045 distinct words, at most seven
+nested matching prefixes, and SHA-256
 `139519822fe8ab9e10d9d07e68ea0451045380aedaf54ecc51e2a28c6b42a13f`.
 
-`bounds::invocation` covers each initial allocation and all geometric growth.
-`bounds::hmm_retained` covers four Viterbi states per scalar, predecessor states,
-the best path and character offsets. The call allowance includes a second HMM
-envelope while old and replacement buffers coexist.
+For scalar count C, `bounds::scratch_retained` reserves geometric capacity for
+C+1 route records (three words each), at most 8C encoded DAG edges, C+1 DAG start
+offsets, C decoded character/offset pairs, 4C HMM predecessor states and C best-path
+states. State and character layouts are bounded conservatively by machine words.
+The high-water lease covers every buffer through native join, including a short
+call after a long one. Upstream's per-buffer release thresholds can reduce actual
+retention; correctness does not depend on reaching those thresholds.
 
-The fixed skip pattern is `([a-zA-Z0-9]+(?:.\d+)?%?)`. Its HIR has 11 nodes,
+`bounds::invocation` retains the previous conservative call allowances and adds
+a complete scratch envelope for replacement overlap. The historical fixed regex
+construction/cache reserves are also preserved. Jieba 0.11 uses an allocation-free
+ASCII scanner instead of regex; these reserves are additional headroom, not a
+claim that Jieba still constructs a regex. Removing the unused allowances is a
+separate admission-policy optimization. The checks below continue to qualify the
+legacy regex envelope independently.
+
+Jieba search mode now emits connector-delimited alphanumeric compounds and
+eligible parts. HawDB still retains only its Han-containing Jieba outputs. The
+analyzer fingerprint now identifies Jieba 0.11.0, so lexical projections
+written by earlier analyzers are skipped through the existing stale-projection
+path and can be rebuilt. Canonical documents and artifact encoding are unchanged. The allocator
+qualification includes mixed compounds and the dictionary's maximum-prefix word,
+in addition to its previous Unicode and growth cases. The unchanged dictionary
+contains no `.`, `_` or `-` word entries: compound-part emission does not add
+dictionary n-grams across those separators, preserving the two-tokens-per-scalar
+output envelope for the immutable default dictionary.
+
+The legacy fixed skip pattern is `([a-zA-Z0-9]+(?:.\d+)?%?)`. Its HIR has 11 nodes,
 76 class ranges and 273 UTF-8 transition edges. Construction accounts for AST/HIR
 and parser worklists; the 10,000-entry UTF-8 bounded table and 1,000-entry suffix
 table; mutable/immutable NFA overlap, cached transition payloads, ID remapping and

@@ -60,7 +60,7 @@
     },
     {
       "path": "crates/sql/src/parser/clause_tests.rs",
-      "sha256": "58a17f6b03d65ec7d3c1555db8ceab8245d43825d96cc7181c4630c88b9de771",
+      "sha256": "17016c56d638bceced08a0005e9f39002fbd3502f90d5dfe0686264110d365c1",
       "case_ids": [
         "case-0039",
         "case-0040",

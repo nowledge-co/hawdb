@@ -27,7 +27,7 @@ pub(super) fn lower_insert_statement(insert: &sqlparser::ast::Insert) -> Result<
     super::reject_unsupported_clauses(
         "INSERT",
         &[
-            ("optimizer hint", insert.optimizer_hint.is_some()),
+            ("optimizer hint", !insert.optimizer_hints.is_empty()),
             ("OR conflict action", insert.or.is_some()),
             ("IGNORE", insert.ignore),
             ("missing INTO", !insert.into),
@@ -42,6 +42,17 @@ pub(super) fn lower_insert_statement(insert: &sqlparser::ast::Insert) -> Result<
             ("row alias", insert.insert_alias.is_some()),
             ("SETTINGS", insert.settings.is_some()),
             ("FORMAT", insert.format_clause.is_some()),
+            ("OUTPUT", insert.output.is_some()),
+            ("multi-table type", insert.multi_table_insert_type.is_some()),
+            (
+                "multi-table INTO",
+                !insert.multi_table_into_clauses.is_empty(),
+            ),
+            (
+                "multi-table WHEN",
+                !insert.multi_table_when_clauses.is_empty(),
+            ),
+            ("multi-table ELSE", insert.multi_table_else_clause.is_some()),
         ],
     )?;
     let TableObject::TableName(table) = &insert.table else {
@@ -81,8 +92,16 @@ pub(super) fn lower_insert_statement(insert: &sqlparser::ast::Insert) -> Result<
     let columns = insert
         .columns
         .iter()
-        .map(normalize_ident)
-        .collect::<Vec<_>>();
+        .map(|name| {
+            let parts = object_name_parts(name)?;
+            let [column] = parts.as_slice() else {
+                return Err(HawDBError::Semantic(
+                    "INSERT columns must be unqualified identifiers".to_string(),
+                ));
+            };
+            Ok(column.clone())
+        })
+        .collect::<Result<Vec<_>>>()?;
     let rows = values
         .rows
         .iter()
@@ -113,6 +132,7 @@ pub(super) fn lower_insert_statement(insert: &sqlparser::ast::Insert) -> Result<
                 ) => super::lower_column_expr(expr),
                 SelectItem::UnnamedExpr(_)
                 | SelectItem::ExprWithAlias { .. }
+                | SelectItem::ExprWithAliases { .. }
                 | SelectItem::QualifiedWildcard(_, _)
                 | SelectItem::Wildcard(_) => Err(HawDBError::Semantic(
                     "INSERT RETURNING supports column references only".to_string(),
@@ -151,7 +171,9 @@ fn lower_on_conflict(on_insert: &OnInsert) -> Result<SqlOnConflict> {
 }
 
 pub(super) fn lower_update_statement(update: &sqlparser::ast::Update) -> Result<SqlStatement> {
-    if update.optimizer_hint.is_some()
+    if !update.optimizer_hints.is_empty()
+        || !update.order_by.is_empty()
+        || update.output.is_some()
         || update.from.is_some()
         || update.returning.is_some()
         || update.or.is_some()
@@ -259,7 +281,8 @@ fn lower_arithmetic_operand(expr: &Expr) -> Result<SqlArithmeticOperand> {
 }
 
 pub(super) fn lower_delete_statement(delete: &sqlparser::ast::Delete) -> Result<SqlStatement> {
-    if delete.optimizer_hint.is_some()
+    if !delete.optimizer_hints.is_empty()
+        || delete.output.is_some()
         || !delete.tables.is_empty()
         || delete.using.is_some()
         || delete.returning.is_some()

@@ -85,7 +85,7 @@ impl Workspace {
         let next_characters = retained.characters.max(characters);
         let next_bytes = checked_add(
             required(bounds::regex_retained())?,
-            required(bounds::hmm_retained(next_characters))?,
+            required(bounds::scratch_retained(next_characters))?,
         )?;
         let growth = next_bytes.saturating_sub(retained.memory.bytes());
         retained.memory.grow(growth)?;

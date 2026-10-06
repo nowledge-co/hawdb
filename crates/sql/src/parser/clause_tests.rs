@@ -51,7 +51,7 @@ fn insert_base() -> Insert {
     insert
 }
 
-// Independent test inputs in the original rejection-wall priority order.
+// Independent test inputs preserving the original rejection-wall priority order.
 // Some(empty) and Some(false) intentionally exercise presence, not truthiness.
 fn create_cases() -> Vec<ClauseCase<CreateTable>> {
     vec![
@@ -157,16 +157,38 @@ fn create_cases() -> Vec<ClauseCase<CreateTable>> {
             c.initialize = Some(InitializeKind::OnCreate)
         }),
         ("REQUIRE USER", |c| c.require_user = true),
+        ("UNLOGGED", |c| c.unlogged = true),
+        ("SNAPSHOT", |c| c.snapshot = true),
+        ("WITH STORAGE LIFECYCLE POLICY", |c| {
+            c.with_storage_lifecycle_policy = Some(StorageLifecyclePolicy {
+                policy: name(),
+                on: vec![],
+            })
+        }),
+        ("WITH CONNECTION", |c| c.with_connection = Some(name())),
+        ("DISTSTYLE", |c| c.diststyle = Some(DistStyle::Auto)),
+        ("DISTKEY", |c| c.distkey = Some(expr())),
+        ("SORTKEY", |c| c.sortkey = Some(vec![])),
+        ("BACKUP", |c| c.backup = Some(false)),
+        ("MULTISET", |c| c.multiset = Some(false)),
+        ("FALLBACK", |c| c.fallback = Some(false)),
+        ("WITH DATA", |c| {
+            c.with_data = Some(WithData {
+                data: false,
+                statistics: Some(false),
+            })
+        }),
     ]
 }
 
 fn insert_cases() -> Vec<ClauseCase<Insert>> {
     vec![
         ("optimizer hint", |i| {
-            i.optimizer_hint = Some(OptimizerHint {
+            i.optimizer_hints = vec![OptimizerHint {
+                prefix: String::new(),
                 text: "private_hint".into(),
                 style: OptimizerHintStyle::MultiLine,
-            })
+            }]
         }),
         ("OR conflict action", |i| {
             i.or = Some(SqliteOnConflict::Ignore)
@@ -174,7 +196,10 @@ fn insert_cases() -> Vec<ClauseCase<Insert>> {
         ("IGNORE", |i| i.ignore = true),
         ("missing INTO", |i| i.into = false),
         ("table alias", |i| {
-            i.table_alias = Some(Ident::new("private_alias"))
+            i.table_alias = Some(TableAliasWithoutColumns {
+                explicit: true,
+                alias: Ident::new("private_alias"),
+            })
         }),
         ("OVERWRITE", |i| i.overwrite = true),
         ("SET assignments", |i| {
@@ -223,7 +248,7 @@ fn every_original_clause_condition_is_rejected_by_lowering() {
     let create = create_base();
     assert!(lower_statement(&ParserStatement::CreateTable(create.clone())).is_ok());
     let cases = create_cases();
-    assert_eq!(cases.len(), 48);
+    assert_eq!(cases.len(), 59);
     for (clause, set) in cases {
         let mut input = create.clone();
         set(&mut input);
@@ -435,7 +460,7 @@ fn clause_diagnostics_campaign() {
             pairs += 1;
         }
     }
-    assert_eq!(pairs, 1233);
+    assert_eq!(pairs, 1816);
     for case in 0..1024 {
         source_contract(case);
     }

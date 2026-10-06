@@ -3193,7 +3193,7 @@ mod tests {
     mod robustness;
 
     fn projection_root(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
+        crate::test_temp_dir().join(format!(
             "hawdb-lexical-projection-{name}-{}-{:?}",
             std::process::id(),
             std::thread::current().id()

@@ -372,34 +372,39 @@ fn mini_delta_snapshot_lifecycle_campaign() {
 }
 
 #[test]
-fn old_analyzer_fingerprints_are_not_reused_for_supplementary_han_ngrams() {
-    let fixture = Fixture::new("analyzer-fingerprint");
-    let analyzer = SearchAnalyzerLexicon::empty();
-    let old_digest = checksum(b"hawdb-search-analyzer-v2-jieba-search");
-    let current_digest = analyzer_digest(&analyzer);
-    assert_ne!(old_digest, current_digest);
-    let old = LexicalProjectionWriter::new(LexicalProjectionConfig::default())
-        .write(
+fn old_analyzer_fingerprints_are_not_reused_after_analyzer_upgrades() {
+    for version in [
+        b"hawdb-search-analyzer-v2-jieba-search".as_slice(),
+        b"hawdb-search-analyzer-v2-jieba-search-han-ngrams".as_slice(),
+    ] {
+        let fixture = Fixture::new("analyzer-fingerprint");
+        let analyzer = SearchAnalyzerLexicon::empty();
+        let old_digest = checksum(version);
+        let current_digest = analyzer_digest(&analyzer);
+        assert_ne!(old_digest, current_digest);
+        let old = LexicalProjectionWriter::new(LexicalProjectionConfig::default())
+            .write(
+                &fixture.root,
+                2,
+                Some(7),
+                old_digest,
+                13,
+                fixture.documents.values(),
+                &analyzer,
+            )
+            .unwrap();
+        assert!(LexicalProjectionReader::load(
             &fixture.root,
-            2,
             Some(7),
-            old_digest,
+            current_digest,
             13,
-            fixture.documents.values(),
-            &analyzer,
+            LexicalProjectionConfig::default()
         )
-        .unwrap();
-    assert!(LexicalProjectionReader::load(
-        &fixture.root,
-        Some(7),
-        current_digest,
-        13,
-        LexicalProjectionConfig::default()
-    )
-    .unwrap()
-    .is_none());
-    // A stale derived projection is not evidence of corruption.
-    assert!(fixture.root.join(artifact_file(old.generation())).exists());
+        .unwrap()
+        .is_none());
+        // A stale derived projection is not evidence of corruption.
+        assert!(fixture.root.join(artifact_file(old.generation())).exists());
+    }
 }
 
 #[test]
