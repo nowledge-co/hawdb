@@ -195,12 +195,7 @@ impl AccountedBindingBatch {
         emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Result<BatchControl> {
         let target_bytes = binding_memory_bytes(&binding);
-        if target_bytes > self.tracker.budget_bytes {
-            return Err(HawDBError::Execution(format!(
-                "intermediate row uses {target_bytes} bytes, exceeding batch_payload_bytes {}",
-                self.tracker.budget_bytes
-            )));
-        }
+        self.check_row_size(target_bytes)?;
         if self.tracker.would_exceed(target_bytes)
             && !self.bindings.is_empty()
             && self.emit(emit)? == BatchControl::Stop
@@ -248,12 +243,7 @@ impl AccountedBindingBatch {
         bytes: usize,
         emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Result<BatchControl> {
-        if bytes > self.tracker.budget_bytes {
-            return Err(HawDBError::Execution(format!(
-                "intermediate row uses {bytes} bytes, exceeding batch_payload_bytes {}",
-                self.tracker.budget_bytes
-            )));
-        }
+        self.check_row_size(bytes)?;
         if self.tracker.would_exceed(bytes)
             && !self.bindings.is_empty()
             && self.emit(emit)? == BatchControl::Stop
@@ -262,6 +252,16 @@ impl AccountedBindingBatch {
         }
         self.tracker.try_charge(bytes)?;
         Ok(BatchControl::Continue)
+    }
+
+    pub(crate) fn check_row_size(&self, bytes: usize) -> Result<()> {
+        if bytes > self.tracker.budget_bytes {
+            return Err(HawDBError::Execution(format!(
+                "intermediate row uses {bytes} bytes, exceeding batch_payload_bytes {}",
+                self.tracker.budget_bytes
+            )));
+        }
+        Ok(())
     }
 
     pub fn is_empty(&self) -> bool {
