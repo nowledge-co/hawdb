@@ -716,15 +716,24 @@ impl GraphStore {
             .transpose()?;
         let commit_epoch = self.commit_epoch;
         let checkpoint_statistics = if checkpoint_out_of_core && !self.canonical_base_out_of_core {
-            let mut statistics = graph_statistics_from_basic(self.basic_statistics(), false);
-            statistics.index_samples = compute_index_statistics_samples(
-                catalog,
-                &self.property_index,
-                &self.composite_property_index,
-            );
+            let basic = hawdb_storage::statistics::checkpoint::clone_basic_with_work_context(
+                &self.basic_statistics,
+                self.commit_epoch,
+                work,
+            )
+            .map_err(HawDBError::from_storage_error)?;
+            let mut statistics = graph_statistics_from_basic(basic, false);
+            statistics.index_samples =
+                hawdb_storage::statistics::checkpoint::index_samples_with_work_context(
+                    catalog,
+                    &self.property_index,
+                    &self.composite_property_index,
+                    work,
+                )
+                .map_err(HawDBError::from_storage_error)?;
             statistics
         } else {
-            self.statistics(catalog)
+            self.checkpoint_statistics_with_work_context(catalog, work)?
         };
         let generation = durable.next_checkpoint_generation()?;
         let staging_path = durable.prepare_checkpoint_staging(generation)?;

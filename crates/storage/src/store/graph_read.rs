@@ -434,6 +434,39 @@ impl GraphStore {
         statistics
     }
 
+    pub(super) fn checkpoint_statistics_with_work_context(
+        &self,
+        catalog: &Catalog,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<GraphStatistics> {
+        use hawdb_storage::statistics::checkpoint::{
+            clone_basic_with_work_context, clone_retained_with_work_context,
+            compute_with_work_context, index_samples_with_work_context,
+        };
+        let basic = clone_basic_with_work_context(&self.basic_statistics, self.commit_epoch, work)
+            .map_err(HawDBError::from_storage_error)?;
+        if self.canonical_base_out_of_core {
+            return clone_retained_with_work_context(
+                &self.checkpoint_statistics,
+                catalog,
+                basic,
+                work,
+            )
+            .map_err(HawDBError::from_storage_error);
+        }
+        let mut statistics =
+            compute_with_work_context(&self.nodes, &self.relationships, Some(catalog), basic, work)
+                .map_err(HawDBError::from_storage_error)?;
+        statistics.index_samples = index_samples_with_work_context(
+            catalog,
+            &self.property_index,
+            &self.composite_property_index,
+            work,
+        )
+        .map_err(HawDBError::from_storage_error)?;
+        Ok(statistics)
+    }
+
     pub fn basic_statistics(&self) -> BasicGraphStatistics {
         let mut statistics = self.basic_statistics.clone();
         statistics.computed_at_commit_epoch = self.commit_epoch;

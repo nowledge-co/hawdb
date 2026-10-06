@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use super::*;
-use crate::text::decode_u64_vec;
+use crate::text::{
+    decode_string, decode_string_vec, decode_u64_vec, encode_string, encode_string_vec,
+};
 
 fn checkpoint_unit_scheduler() -> hawdb_qos::LocalQosScheduler {
     hawdb_qos::LocalQosScheduler::new(hawdb_qos::LocalQosPolicy {
@@ -67,25 +69,26 @@ fn checkpoint_units_projected_graph_codec_cancels_inside_numeric_arrays() {
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
 
-    let data = edge_bag_data((0..4096).map(NodeId).collect(), &[]);
-    let definition = definition();
-    let encoded = reference_body("graph", &definition, &data, 29, 31);
+    let values = (0..4096u64).collect::<Vec<_>>();
+    let encoded = values
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
     for decoding in [false, true] {
         let scheduler = checkpoint_unit_scheduler();
         let probe = Arc::new(CheckpointWorkProbe::default());
-        let limit = if decoding { 1 } else { 2 };
+        let limit = 2;
         probe.cancel_after.store(limit, Ordering::SeqCst);
         let work = probe.context(scheduler.clone());
         let error = if decoding {
-            decode_projected_graph_artifacts_with_work_context(&encoded, &work).unwrap_err()
-        } else {
-            encode_projected_graph_artifacts_with_work_context(
-                29,
-                31,
-                [Ok(("graph", &definition, data.clone()))],
-                &work,
-            )
+            decode_number_vector(&encoded, &work, |value| {
+                parse_u64(value, "test numeric value")
+            })
             .unwrap_err()
+        } else {
+            append_number_vector(&mut String::new(), "nodes", values.iter().copied(), &work)
+                .unwrap_err()
         };
         assert_eq!(
             error,
@@ -631,4 +634,193 @@ fn projected_artifact_differential_campaign() {
     let checks = run_campaign(128, 64);
     assert_eq!(checks, 131_072);
     println!("projected artifact campaign: 128 seeds, 64 steps, {checks} checks");
+}
+
+#[test]
+fn checkpoint_units_projected_definitions_preserve_large_unicode_and_empty_names() {
+    use crate::background::CheckpointWorkProbe;
+    use std::sync::Arc;
+    let name = format!("{}🦀{}", "a".repeat(65535), "z".repeat(65536));
+    let definition = ProjectedGraphDefinition {
+        node_labels: vec![String::new(), name.clone(), "nul\0:tab\t".to_string()],
+        rel_types: (0..4096).map(|index| format!("type-{index}")).collect(),
+    };
+    let data = edge_bag_data(Vec::new(), &[]);
+    let scheduler = checkpoint_unit_scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let work = probe.context(scheduler.clone());
+    let encoded = encode_projected_graph_artifacts_with_work_context(
+        37,
+        41,
+        [Ok((name.as_str(), &definition, data.clone()))],
+        &work,
+    )
+    .unwrap();
+    assert_eq!(encoded, reference_body(&name, &definition, &data, 37, 41));
+    let (epoch, mut recovered) =
+        decode_projected_graph_artifacts_with_work_context(&encoded, &work).unwrap();
+    assert_eq!(epoch, 41);
+    let artifact = recovered.remove(&name).unwrap();
+    assert!(recovered.is_empty());
+    assert_eq!(artifact.definition, definition);
+    assert_eq!(artifact.data, data);
+    assert_eq!(probe.io_waves.load(std::sync::atomic::Ordering::SeqCst), 0);
+    probe.assert_released(&scheduler);
+    // Preserve the V1 ambiguity between no names and one empty name.
+    for names in [
+        Vec::new(),
+        vec![String::new()],
+        vec![String::new(), String::new()],
+    ] {
+        let mut encoded = String::new();
+        append_projected_name_list(&mut encoded, &names, &work).unwrap();
+        assert_eq!(encoded, format!("\t{}", encode_string_vec(&names)));
+        assert_eq!(
+            decode_projected_name_list(&encoded[1..], &work).unwrap(),
+            decode_string_vec(&encoded[1..]).unwrap()
+        );
+    }
+}
+
+#[test]
+fn checkpoint_units_projected_definition_names_cancel_and_preserve_legacy_errors() {
+    use crate::background::CheckpointWorkProbe;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    let name = "🦀".repeat(50000);
+    let encoded = encode_string(&name);
+    for decoding in [false, true] {
+        let scheduler = checkpoint_unit_scheduler();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_after.store(2, Ordering::SeqCst);
+        let work = probe.context(scheduler.clone());
+        let error = if decoding {
+            decode_projected_name(&encoded, &work).unwrap_err()
+        } else {
+            append_projected_name(&mut String::new(), &name, &work).unwrap_err()
+        };
+        assert_eq!(
+            error,
+            HawDBError::Storage("checkpoint build stopped: cancelled".to_string())
+        );
+        assert_eq!(probe.completed.load(Ordering::SeqCst), 2);
+        probe.assert_released(&scheduler);
+    }
+    let scheduler = checkpoint_unit_scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let work = probe.context(scheduler.clone());
+    for input in [
+        "".to_string(),
+        "0".to_string(),
+        "gg".to_string(),
+        "é".to_string(),
+        "+f".to_string(),
+        "FF".to_string(),
+        "c0af".to_string(),
+        "f09f".to_string(),
+        format!("{}c0af", "61".repeat(65535)),
+        format!("{}e282", "61".repeat(65535)),
+        format!("{}f09fa680", "61".repeat(65535)),
+    ] {
+        assert_eq!(
+            decode_projected_name(&input, &work),
+            decode_string(&input),
+            "input length {}",
+            input.len()
+        );
+    }
+    let names = (0..1025)
+        .map(|index| format!("label-{index}"))
+        .collect::<Vec<_>>();
+    for decoding in [false, true] {
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_after.store(7, Ordering::SeqCst);
+        let work = probe.context(scheduler.clone());
+        let error = if decoding {
+            decode_projected_name_list(&encode_string_vec(&names), &work).unwrap_err()
+        } else {
+            append_projected_name_list(&mut String::new(), &names, &work).unwrap_err()
+        };
+        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert_eq!(probe.completed.load(Ordering::SeqCst), 7);
+        probe.assert_released(&scheduler);
+    }
+}
+
+#[test]
+fn checkpoint_units_projected_text_boundaries_match_standard_splits() {
+    use crate::background::CheckpointWorkProbe;
+    use std::sync::Arc;
+    let scheduler = checkpoint_unit_scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let work = probe.context(scheduler.clone());
+    let mut cases = [
+        "",
+        "\n",
+        "\r",
+        "x\r",
+        "x\r\n",
+        "x\n",
+        "x\n\n",
+        "x\t\t",
+        "🦀\r\n\t終",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    for size in [65534, 65535, 65536, 65537, 131071] {
+        cases.push(format!("{}🦀\r\n\nend\r", "x".repeat(size)));
+        cases.push(format!("{}\r\n", "x".repeat(size)));
+        cases.push(format!("{}\t\t🦀\tend\t", "x".repeat(size)));
+    }
+    for text in cases {
+        let mut lines = ProjectedTextLines::new(&text);
+        let mut actual = Vec::new();
+        while let Some(line) = lines.next(&work).unwrap() {
+            actual.push(line);
+        }
+        assert!(lines.next(&work).unwrap().is_none());
+        assert_eq!(
+            actual,
+            text.lines().collect::<Vec<_>>(),
+            "text bytes {}",
+            text.len()
+        );
+        for max_fields in [3, 7] {
+            assert_eq!(
+                projected_text_fields(&text, max_fields, &work).unwrap(),
+                text.split('\t').take(max_fields).collect::<Vec<_>>()
+            );
+        }
+    }
+    let crlf = FIXTURE.replace('\n', "\r\n");
+    assert_eq!(
+        decode_projected_graph_artifacts_with_work_context(&crlf, &work).unwrap(),
+        decode_projected_graph_artifacts(FIXTURE).unwrap()
+    );
+    probe.assert_released(&scheduler);
+}
+
+#[test]
+fn checkpoint_units_projected_text_cancels_before_complete_line_or_field() {
+    use crate::background::CheckpointWorkProbe;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    let text = format!("{}\n", "x".repeat(256 * 1024));
+    for fields in [false, true] {
+        let scheduler = checkpoint_unit_scheduler();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_after.store(2, Ordering::SeqCst);
+        let work = probe.context(scheduler.clone());
+        let error = if fields {
+            projected_text_fields(&text, 7, &work).unwrap_err()
+        } else {
+            ProjectedTextLines::new(&text).next(&work).unwrap_err()
+        };
+        assert_eq!(
+            error,
+            HawDBError::Storage("checkpoint build stopped: cancelled".to_string())
+        );
+        assert_eq!(probe.completed.load(Ordering::SeqCst), 2);
+        probe.assert_released(&scheduler);
+    }
 }

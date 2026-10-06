@@ -267,7 +267,7 @@ a fixed number of preceding builder operations.
 
 The automatic owner still holds its whole-candidate local permit: these units
 do not cover all projected-graph preparation, append/relational builders,
-statistics, candidate reopening or replay finalization. Temporary-file cleanup is currently
+statistics serialization/adoption, candidate reopening or replay finalization. Temporary-file cleanup is currently
 best effort and lacks a complete retained cleanup-debt/resource ledger. Metadata
 buffers and dictionaries can still scale with the dataset. Source-scan still
 retains complete projected rows/summaries and whole segment, compression and
@@ -293,8 +293,20 @@ analytics path remains a reference. Tests compare all arrays against an
 independent edge set and analytics over 1,025 nodes with skew, parallel edges,
 self-loops and seven label/type filter combinations, including unknown names.
 They cancel capture, hydration, adjacency construction and flattening, restore
-all permits and retry. Definition-list encoding/decoding, complete
-arrays/text/compression retention and their hard byte ledger remain uncontrolled. The automatic owner's whole-candidate local permit and
+all permits and retry. Projected names and definition lists now encode hex
+bytes in 64 KiB source chunks and decode hex/UTF-8 in 64 KiB decoded chunks,
+with cancellation between names and chunks. A split UTF-8 code point is carried
+into the next block; existing hex/UTF-8 errors, empty-name list ambiguity and V1
+bytes remain unchanged. Tests cover Unicode crossing the 64 KiB boundary,
+4,096 definition names, chunk/list cancellation and malformed input against the
+independent legacy text decoder. Locating line and field boundaries now scans
+at most 64 KiB per admitted unit and retains only the required fields plus one
+excess-field sentinel. Boundary tests match standard line/field splitting for
+empty strings, trailing separators, CRLF and Unicode around 64 KiB boundaries,
+including whole-codec CRLF compatibility; cancellation stops before a complete
+256 KiB line/field has been found. Complete arrays/text/compression retention,
+malformed numeric token/diagnostic size, reallocations/drop costs and the hard
+byte ledger remain open. The automatic owner's whole-candidate local permit and
 memory-accounting gaps remain in place; no complete build bound is claimed.
 
 Native checkpoint overlay capture now admits each live delta record before
@@ -315,6 +327,23 @@ returns exactly the survivor. Synthetic step counts, native node/relationship
 factories and physical-error checks cover the step contract. Canonical segment
 hydration still decodes a complete bounded segment per read, and retained-memory
 accounting and cleanup/drop costs remain open.
+
+Checkpoint graph statistics now admit records, labels, property collection,
+index entries and composite key components, path lookup/visits, distinct-set
+retirement and histogram sampling. Sampling consumes ordered values directly
+in at most 1,024-element chunks, preserving the existing endpoint-inclusive
+quantiles without a second complete sorted vector. Basic-count copying and
+retained out-of-core statistics copy/filter groups under admitted entries and
+values. The existing 100,000-visit global path budget and empty truncated output
+remain unchanged; cancellation returns a stopped build rather than publishing
+partial statistics. Tests compare complete results against the existing
+statistics path and independent chain counts, cover histogram thresholds,
+late unsupported groups, scalar/composite index entries, retained stale epochs,
+path-budget truncation, cancellation/permit restoration and real candidate
+retry/reopen in materialized and out-of-core modes. Full fact-set retention,
+individual key/value size, map/vector allocations and error/drop cleanup still
+lack hard byte bounds. Statistics serialization and final runtime adoption also
+remain outside these builder units. No whole-candidate bound is claimed.
 
 `HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
 two schema/data transactions under both durability policies. Its complete

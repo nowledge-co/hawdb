@@ -9266,6 +9266,174 @@ mod tests {
         std::fs::remove_dir_all(path).unwrap();
     }
 
+    #[test]
+    fn checkpoint_units_statistics_candidate_cancellation_preserves_authority_and_reopens() {
+        use crate::background::CheckpointWorkProbe;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+
+        for residency in [
+            StorageResidencyMode::Materialized,
+            StorageResidencyMode::OutOfCore,
+        ] {
+            let path = unique_test_dir("checkpoint_statistics_cancel");
+            let open = |catalog: &mut Catalog| {
+                GraphStore::open_with_durability_and_replay_config(
+                    &path,
+                    catalog,
+                    DurabilityPolicy::default(),
+                    WalReplayConfig {
+                        residency_mode: residency,
+                        ..WalReplayConfig::default()
+                    },
+                )
+                .unwrap()
+            };
+            let mut catalog = Catalog::default();
+            let mut store = open(&mut catalog);
+            let index = store
+                .create_property_index(&mut catalog, "Memory", "rank")
+                .unwrap();
+            let mut ids = Vec::new();
+            for rank in 0..97i64 {
+                let node = store
+                    .create_node(
+                        &mut catalog,
+                        "Memory",
+                        properties([("rank", Value::Int(rank))]),
+                    )
+                    .unwrap();
+                if let Some(previous) = ids.last() {
+                    store
+                        .create_relationship(
+                            &mut catalog,
+                            *previous,
+                            node,
+                            "LINKS",
+                            properties([("rank", Value::Int(rank))]),
+                        )
+                        .unwrap();
+                }
+                ids.push(node);
+            }
+            let expected_nodes = store
+                .node_records_owned()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap();
+            let expected_relationships = store
+                .relationship_records_owned()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap();
+            let expected_statistics = store.statistics(&catalog);
+            let identity = store.checkpoint_source_identity();
+            let durable = store.durable.as_ref().unwrap();
+            let wal_path = durable.wal_path.clone();
+            let manifest_path = durable.manifest_path().to_path_buf();
+            let wal = std::fs::read(&wal_path).unwrap();
+            let manifest = std::fs::read(&manifest_path).unwrap();
+            let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+                max_background_operations: Some(1),
+                max_total_background_operations: Some(4),
+                ..LocalQosPolicy::default()
+            });
+            // Direct materialized statistics cancellation cannot be mistaken
+            // for stopping an earlier projection phase. The first out-of-core
+            // checkpoint instead admits basic counts and declared-index scans.
+            if residency == StorageResidencyMode::Materialized {
+                let probe = Arc::new(CheckpointWorkProbe::default());
+                probe.cancel_after.store(17, Ordering::SeqCst);
+                let error = store
+                    .checkpoint_statistics_with_work_context(
+                        &catalog,
+                        &probe.context(scheduler.clone()),
+                    )
+                    .unwrap_err();
+                assert!(error.to_string().contains("checkpoint build stopped"));
+                assert_eq!(probe.completed.load(Ordering::SeqCst), 17);
+                probe.assert_released(&scheduler);
+            }
+            let probe = Arc::new(CheckpointWorkProbe::default());
+            probe.cancel_after.store(17, Ordering::SeqCst);
+            let source = store.checkpoint_source();
+            let error = source
+                .prepare_checkpoint_candidate_with_work_context(
+                    &catalog,
+                    &probe.context(scheduler.clone()),
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("checkpoint build stopped"));
+            assert_eq!(probe.completed.load(Ordering::SeqCst), 17);
+            assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
+            probe.assert_released(&scheduler);
+            source.ensure_usable().unwrap();
+            drop(source);
+            assert_eq!(store.checkpoint_source_identity(), identity);
+            assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+            assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
+            store.ensure_usable().unwrap();
+            let retry = Arc::new(CheckpointWorkProbe::default());
+            let source = store.checkpoint_source();
+            let mut candidate = source
+                .prepare_checkpoint_candidate_with_work_context(
+                    &catalog,
+                    &retry.context(scheduler.clone()),
+                )
+                .unwrap()
+                .unwrap();
+            drop(source);
+            let captured = store.checkpoint_source();
+            candidate.catch_up(&captured).unwrap();
+            drop(captured);
+            store
+                .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
+                .unwrap();
+            drop(candidate);
+            retry.assert_released(&scheduler);
+            drop(store);
+            let recovered = open(&mut catalog);
+            assert_eq!(
+                recovered
+                    .node_records_owned()
+                    .collect::<crate::Result<Vec<_>>>()
+                    .unwrap(),
+                expected_nodes
+            );
+            assert_eq!(
+                recovered
+                    .relationship_records_owned()
+                    .collect::<crate::Result<Vec<_>>>()
+                    .unwrap(),
+                expected_relationships
+            );
+            let statistics = recovered.statistics(&catalog);
+            assert_eq!(statistics.node_count, 97);
+            assert_eq!(statistics.relationship_count, 96);
+            assert_eq!(
+                statistics.index_samples[&index],
+                hawdb_core::IndexStatisticsSample::exact(97, 97)
+            );
+            if residency == StorageResidencyMode::Materialized {
+                assert_eq!(statistics, expected_statistics);
+            } else {
+                assert!(!statistics.advanced_statistics_complete);
+            }
+            let retry = Arc::new(CheckpointWorkProbe::default());
+            assert_eq!(
+                recovered
+                    .checkpoint_statistics_with_work_context(
+                        &catalog,
+                        &retry.context(scheduler.clone())
+                    )
+                    .unwrap(),
+                statistics
+            );
+            retry.assert_released(&scheduler);
+            drop(recovered);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+
     #[derive(Debug)]
     struct CancelCheckpointAtFile {
         probe: std::sync::Arc<crate::background::CheckpointWorkProbe>,

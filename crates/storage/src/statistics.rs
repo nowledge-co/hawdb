@@ -15,6 +15,8 @@
 //! Graph statistics sampling, computation, and full-text tokenization.
 
 #[doc(hidden)]
+pub mod checkpoint;
+#[doc(hidden)]
 pub mod node_index_updates;
 
 use crate::graph_index::{CompositePropertyIndex, NodePropertyIndex, RelationshipPropertyIndex};
