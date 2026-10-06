@@ -14,6 +14,7 @@
 
 use super::*;
 use crate::analyzer_stream::Control;
+use crate::build_memory::AdmittedHeader;
 use crate::document_encoding::streamed;
 use crate::{SearchDocumentBody, SearchDocumentHeader};
 use std::io::Read;
@@ -28,6 +29,28 @@ impl SearchOutOfCoreGenerationWriter {
     pub fn push_reader(
         &mut self,
         header: SearchDocumentHeader,
+        body: impl Read,
+        source: SearchDocumentBody,
+    ) -> Result<()> {
+        if self.poisoned {
+            return Err(HawDBError::Storage(
+                "search generation writer is poisoned after an earlier input failure".into(),
+            ));
+        }
+        let header =
+            match checkpoint(&self.task_context).and_then(|()| self.memory.admit_header(header)) {
+                Ok(header) => header,
+                Err(error) => {
+                    self.poisoned = true;
+                    return Err(error);
+                }
+            };
+        self.push_admitted_reader(header, body, source)
+    }
+
+    pub(super) fn push_admitted_reader(
+        &mut self,
+        header: AdmittedHeader,
         mut body: impl Read,
         source: SearchDocumentBody,
     ) -> Result<()> {
@@ -38,7 +61,6 @@ impl SearchOutOfCoreGenerationWriter {
         }
         let result = (|| {
             checkpoint(&self.task_context)?;
-            let header = self.memory.admit_header(header)?;
             crate::lexical_projection::source::admit_streamed_source(
                 header.header(),
                 source.bytes,

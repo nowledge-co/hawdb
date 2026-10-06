@@ -100,6 +100,9 @@ pub struct SearchOutOfCoreConfig {
     /// Bounded resident document header during streaming body operations.
     pub max_document_header_bytes: NonZeroUsize,
     /// Weighted token events admitted when reconstructing an old version.
+    /// Prepared updates and compactions also inherit this as a minimum build
+    /// token limit. Hosts must configure it when reopening larger-token data;
+    /// stored artifacts never raise reader-local admission automatically.
     pub max_reanalysis_document_tokens: NonZeroUsize,
     /// Caller-selected encoded lexical manifest limit, including private decoding.
     /// Prepared generation updates inherit this limit and require it to fit `isize`.

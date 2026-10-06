@@ -136,3 +136,130 @@ fn source_policy_covers_build_reopen_and_prepared_update_lifecycle() {
     assert_eq!(stage_directories(&root), 0);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[cfg(feature = "full-text-search")]
+#[test]
+fn reader_token_policy_covers_default_updates_compaction_and_retraction() {
+    let root = test_dir("reader_token_policy_lifecycle");
+    let expanded = policy(8 * 1024 * 1024);
+    let token_limit = NonZeroUsize::new(2_000_000).unwrap();
+    let body = "omega ".repeat(1_000_001);
+    let options = SearchOutOfCoreGenerationBuildOptions {
+        lexical_max_document_tokens: token_limit,
+        ..Default::default()
+    };
+    let mut writer =
+        SearchOutOfCoreGenerationWriter::create_with_source_policy(&root, options, expanded)
+            .unwrap();
+    writer
+        .push(SearchDocument {
+            id: "memory:000000".into(),
+            title: String::new(),
+            content: body.clone(),
+            embedding: None,
+            metadata: Default::default(),
+        })
+        .unwrap();
+    writer.finish().unwrap();
+    let config = super::super::super::SearchOutOfCoreConfig {
+        max_reanalysis_document_tokens: token_limit,
+        ..Default::default()
+    };
+    let open = || {
+        SearchOutOfCoreReader::open_with_source_policy(
+            &root,
+            config.clone(),
+            Default::default(),
+            expanded,
+        )
+        .unwrap()
+    };
+
+    let reader = open();
+    SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![SearchProjectionRow {
+                kind: SearchProjectionKind::Memory,
+                external_id: "000001".into(),
+                title: String::new(),
+                body: body.clone(),
+                embedding: None,
+                source_id: None,
+                metadata: Default::default(),
+            }],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
+    let reader = open();
+    let compaction = SearchOutOfCoreGenerationWriter::compact_segments(
+        &reader,
+        SearchOutOfCoreSegmentCompactionPolicy::new(
+            NonZeroUsize::new(2).unwrap(),
+            NonZeroU64::new(64 * 1024 * 1024).unwrap(),
+        )
+        .unwrap(),
+        Default::default(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(compaction.build().document_count, 2);
+
+    // Artifacts cannot silently increase a default reader's token admission.
+    let restricted = SearchOutOfCoreReader::open_with_source_policy(
+        &root,
+        Default::default(),
+        Default::default(),
+        expanded,
+    )
+    .unwrap();
+    let before = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+    let mut rejected =
+        SearchOutOfCoreGenerationWriter::prepare_streamed_delta(&restricted, Default::default())
+            .unwrap();
+    assert!(rejected
+        .delete("memory:000000")
+        .unwrap_err()
+        .to_string()
+        .contains("tokens"));
+    assert!(rejected.finish().is_err());
+    assert_eq!(
+        fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+        before
+    );
+
+    let reader = open();
+    let mut replaced =
+        SearchOutOfCoreGenerationWriter::prepare_streamed_delta(&reader, Default::default())
+            .unwrap();
+    replaced
+        .upsert_reader(
+            crate::SearchDocumentHeader {
+                id: "memory:000000".into(),
+                title: String::new(),
+                embedding: None,
+                metadata: Default::default(),
+            },
+            body.as_bytes(),
+            crate::SearchDocumentBody {
+                bytes: body.len() as u64,
+                expected_checksum: None,
+            },
+        )
+        .unwrap();
+    replaced.finish().unwrap();
+    let reader = open();
+    let mut deleted =
+        SearchOutOfCoreGenerationWriter::prepare_streamed_delta(&reader, Default::default())
+            .unwrap();
+    deleted.delete("memory:000000").unwrap();
+    deleted.finish().unwrap();
+    assert_eq!(open().document_count(), 1);
+    drop(reader);
+    drop(restricted);
+    fs::remove_dir_all(root).unwrap();
+}

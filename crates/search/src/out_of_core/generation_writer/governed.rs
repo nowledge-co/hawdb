@@ -48,6 +48,7 @@ impl SearchGenerationAdmission {
         governor: &RuntimeGovernor,
         request: RuntimeWorkRequest,
     ) -> std::result::Result<Self, RuntimeAdmissionError> {
+        super::spool::retry_before_admission();
         governor.try_admit(request).map(|permit| Self {
             permit: std::sync::Arc::new(permit),
         })

@@ -234,6 +234,7 @@ impl SpoolSource<'_> {
 }
 
 mod stage;
+pub(in crate::out_of_core) use stage::retry_before_admission;
 pub(in crate::out_of_core) use stage::retry_staging_cleanup;
 pub use stage::SearchStagingCleanupReport;
 pub(in crate::out_of_core) use stage::StageDirectory;

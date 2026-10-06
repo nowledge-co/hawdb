@@ -23,7 +23,7 @@ consistency of a concurrently changing upstream source.
 | Full content transfer | `open_verified_body` or the admission wrapper | Validate the complete required source segment, including unselected suffixes, before returning a sealed private reader |
 | Reopen | `SearchOutOfCoreReader::open_with_source_policy` | Enforce reader-local limits, retain term ranges and independently reanalyze exact target versions using bounded spill |
 | Segment compaction | `prepare_segment_compaction_with_context` or existing governed scheduling | Copy one visible body through private disk; share the build ledger and preserve target-bound retractions |
-| Deferred private cleanup | `SearchOutOfCoreGenerationWriter::retry_staging_cleanup` | Bounded explicit retries; report retained stages, conservative disk limits, cleanup memory and typed descriptor denial |
+| Deferred private cleanup | `SearchOutOfCoreGenerationWriter::retry_staging_cleanup` | Bounded explicit retries and up to four automatic attempts before stage creation or governor admission; report retained stages, conservative disk limits, cleanup memory and typed descriptor denial |
 
 The host calls `finish` to durably publish immutable generations. This does not
 route through the resident `SearchIndex` snapshot or its mini-delta. Existing
@@ -70,6 +70,13 @@ ceiling. Shared dictionaries, allocator overhead, OS page cache, host source
 buffers and downstream consumers are independent owners. The ledger and native
 workspace allowances do not measure process RSS.
 
+Set `SearchOutOfCoreConfig::max_reanalysis_document_tokens` to the host's admitted
+token range on every reopen. Prepared compactions and owned/streamed updates use
+the maximum of this reader limit and the supplied build token limit. A default
+reader does not infer a larger admission from artifacts; an over-limit retraction
+fails without changing the published generation. This preserves low-resource
+reader admission while allowing default build options under an expanded reader.
+
 Source spool, generation artifacts, lexical spill, old-body staging and term
 files have explicit finite per-operation limits. A cleanup ticket conservatively
 retains their combined limits and the original host admission until deletion.
@@ -77,6 +84,26 @@ This reports reserved occupancy, not measured live bytes or cumulative writes;
 it does not introduce a project-wide disk governor. Private stages use a fixed
 256-owner registry and fail admission when full. The registry is process-local;
 post-crash orphan-stage discovery/recovery is still unqualified.
+Automatic retries run before acquiring another governor permit, so a retained
+permit cannot indefinitely deny the operation that would reclaim it after a
+transient descriptor failure. Process-wide admission retries rotate their
+starting slot; permanent denial of one root does not monopolize every attempt.
+Each automatic stage attempt visits at most four batches of four entries,
+retaining unfinished tickets for later attempts instead of draining a large
+stage in one admission call. Explicit retries retain their existing stage limit.
+The original permit remains charged until deletion rather than leaving retained
+cleanup memory outside host accounting.
+Stage creation also attempts up to four other-root tickets if the registry is
+full, allowing an ungoverned writer to reclaim process-wide capacity.
+
+The following remain explicit [#392](https://github.com/nowledge-co/hawdb/issues/392)
+acceptance gates: verified-output equivalents on macOS and Windows with the same
+fail-closed ownership/integrity contract, and bounded crash-orphan discovery that
+proves a stage is no longer owned before removal. Neither is implemented here.
+Explicit cleanup retries still require the same root spelling used at creation;
+relative paths and symlink aliases need stable identity and counted normalization
+before alias-equivalent cleanup can be claimed. Automatic governor retries do
+not filter by root spelling.
 
 ## Validation and remaining gates
 

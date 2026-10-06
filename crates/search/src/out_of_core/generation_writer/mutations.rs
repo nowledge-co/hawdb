@@ -121,7 +121,7 @@ impl<'reader> SearchOutOfCoreMutationWriter<'reader> {
         let result = (|| {
             let header = self.writer.memory.admit_header(header)?;
             self.target(&header.id, SearchMutationOperation::Replace)?;
-            self.writer.push_reader(header.header, body, source)
+            self.writer.push_admitted_reader(header, body, source)
         })();
         if result.is_err() {
             self.writer.poisoned = true;
@@ -232,5 +232,73 @@ impl<'reader> SearchOutOfCoreMutationWriter<'reader> {
         };
         let build = self.writer.finish()?;
         Ok((report, build, self.metrics))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hawdb_core::RuntimeMemoryReservation;
+
+    #[test]
+    fn streamed_upsert_charges_one_header_with_bounded_remaining_memory() {
+        let root = super::super::tests::test_dir("single_mutation_header");
+        let mut initial =
+            SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+        initial
+            .push(SearchDocument {
+                id: "a".into(),
+                title: String::new(),
+                content: "small".into(),
+                embedding: None,
+                metadata: Default::default(),
+            })
+            .unwrap();
+        initial.finish().unwrap();
+        let reader = SearchOutOfCoreReader::open(&root).unwrap();
+        let task = RuntimeTaskContext::default()
+            .with_memory_reservation(RuntimeMemoryReservation::new(16 * 1024 * 1024, 0));
+        let mut update = SearchOutOfCoreGenerationWriter::prepare_streamed_delta_with_context(
+            &reader,
+            Default::default(),
+            task,
+        )
+        .unwrap();
+        let memory = update.writer.memory.clone();
+        let header = SearchDocumentHeader {
+            id: "b".into(),
+            title: " ".repeat(512 * 1024),
+            embedding: None,
+            metadata: Default::default(),
+        };
+        let admitted = memory.admit_header(header).unwrap();
+        let header_bytes = admitted._memory.bytes();
+        let header = admitted.header;
+        drop(admitted._memory);
+        let used = memory.ledger.snapshot().used_bytes;
+        // One header plus bounded encoding/ID scratch fits; a second header
+        // does not. The body is empty so the cap isolates header ownership.
+        let held = memory
+            .input
+            .reserve(16 * 1024 * 1024 - used - header_bytes - 64 * 1024)
+            .unwrap();
+        update
+            .upsert_reader(
+                header,
+                std::io::empty(),
+                SearchDocumentBody {
+                    bytes: 0,
+                    expected_checksum: None,
+                },
+            )
+            .unwrap();
+        drop(held);
+        update.finish().unwrap();
+        assert_eq!(
+            SearchOutOfCoreReader::open(&root).unwrap().document_count(),
+            2
+        );
+        drop(reader);
+        fs::remove_dir_all(root).unwrap();
     }
 }

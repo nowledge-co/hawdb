@@ -18,12 +18,16 @@ use super::*;
 use crate::build_memory::path::OwnedPath;
 use hawdb_executor::QueryMemoryLease;
 use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 
 // Admission happens before any private directory exists. Retention needs no
 // allocation during Drop, cancellation, unwind, or descriptor exhaustion.
 const MAX_OWNERS: usize = 256;
+const AUTOMATIC_CLEANUP_ATTEMPTS: usize = 4;
+const AUTOMATIC_CLEANUP_BATCHES: usize = 4;
 static OWNERS: Mutex<[Slot; MAX_OWNERS]> = Mutex::new([const { Slot::Vacant }; MAX_OWNERS]);
+static RETRY_CURSOR: AtomicUsize = AtomicUsize::new(0);
 
 enum Slot {
     Vacant,
@@ -101,13 +105,36 @@ pub(in crate::out_of_core) fn retry_staging_cleanup(
     root: &Path,
     max_attempts: usize,
 ) -> Result<SearchStagingCleanupReport> {
+    Ok(retry_cleanup(Some(root), max_attempts, 0, usize::MAX))
+}
+
+pub(in crate::out_of_core) fn retry_before_admission() {
+    // A retained permit can deny admission before create gets a chance to
+    // retry. Rotate bounded attempts so a permanently denied root cannot
+    // starve cleanup of other roots. Tickets retain their original admission.
+    let start = RETRY_CURSOR.fetch_add(AUTOMATIC_CLEANUP_ATTEMPTS, Ordering::Relaxed);
+    retry_cleanup(
+        None,
+        AUTOMATIC_CLEANUP_ATTEMPTS,
+        start,
+        AUTOMATIC_CLEANUP_BATCHES,
+    );
+}
+
+fn retry_cleanup(
+    root: Option<&Path>,
+    max_attempts: usize,
+    start: usize,
+    max_batches: usize,
+) -> SearchStagingCleanupReport {
     let mut report = SearchStagingCleanupReport::default();
-    for index in 0..MAX_OWNERS {
+    for offset in 0..MAX_OWNERS {
+        let index = start.wrapping_add(offset) % MAX_OWNERS;
         let ticket = {
             let mut owners = OWNERS.lock().unwrap_or_else(|error| error.into_inner());
             match &owners[index] {
                 Slot::Pending(ticket)
-                    if ticket.path.parent() == Some(root)
+                    if root.is_none_or(|root| ticket.path.parent() == Some(root))
                         && report.attempted_stages < max_attempts =>
                 {
                     match std::mem::replace(&mut owners[index], Slot::Active) {
@@ -120,14 +147,14 @@ pub(in crate::out_of_core) fn retry_staging_cleanup(
         };
         if let Some(mut ticket) = ticket {
             report.attempted_stages += 1;
-            match ticket.remove() {
-                Ok(()) => {
+            match ticket.remove_batches(max_batches) {
+                Ok(true) => {
                     report.removed_stages += 1;
                     drop(ticket);
                     OWNERS.lock().unwrap_or_else(|error| error.into_inner())[index] = Slot::Vacant;
                 }
-                Err(error) => {
-                    ticket.error = Some(error);
+                result => {
+                    ticket.error = result.err();
                     OWNERS.lock().unwrap_or_else(|error| error.into_inner())[index] =
                         Slot::Pending(ticket);
                 }
@@ -137,7 +164,7 @@ pub(in crate::out_of_core) fn retry_staging_cleanup(
     let owners = OWNERS.lock().unwrap_or_else(|error| error.into_inner());
     for slot in owners.iter() {
         if let Slot::Pending(ticket) = slot
-            && ticket.path.parent() == Some(root)
+            && root.is_none_or(|root| ticket.path.parent() == Some(root))
         {
             report.pending_stages += 1;
             report.reserved_disk_bytes = report
@@ -152,22 +179,27 @@ pub(in crate::out_of_core) fn retry_staging_cleanup(
             }
         }
     }
-    Ok(report)
+    report
 }
 
 impl Ticket {
     fn remove(&self) -> Result<()> {
+        self.remove_batches(usize::MAX).map(|_| ())
+    }
+
+    fn remove_batches(&self, max_batches: usize) -> Result<bool> {
         // Cleanup is resumable: each counted step can defer without losing the
         // owner. Close the iterator before unlinking its bounded batch.
         // No operation-wide descriptor reservation or busy retry is needed.
         match fs::symlink_metadata(&self.path) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
             result => {
                 result?;
             }
         }
-        loop {
-            let mut paths: [Option<(std::path::PathBuf, bool)>; 4] = Default::default();
+        for _ in 0..max_batches {
+            let mut paths: [Option<(std::path::PathBuf, bool)>;
+                crate::build_memory::directory::STAGE_REMOVAL_BATCH_ENTRIES] = Default::default();
             let mut count = 0;
             {
                 let entries = fs::read_dir(&self.path)?;
@@ -180,7 +212,7 @@ impl Ticket {
             }
             if count == 0 {
                 fs::remove_dir(&self.path)?;
-                return Ok(());
+                return Ok(true);
             }
             for (path, directory) in paths.into_iter().flatten() {
                 if directory {
@@ -193,6 +225,7 @@ impl Ticket {
                 fs::remove_file(path)?;
             }
         }
+        Ok(false)
     }
 }
 
@@ -208,7 +241,19 @@ impl StageDirectory {
         memory: &BuildMemory,
         task: &RuntimeTaskContext,
     ) -> Result<Self> {
-        let registration = Registration::acquire()?;
+        checkpoint(task)?;
+        retry_cleanup(
+            Some(root),
+            AUTOMATIC_CLEANUP_ATTEMPTS,
+            0,
+            AUTOMATIC_CLEANUP_BATCHES,
+        );
+        let registration = Registration::acquire().or_else(|_| {
+            // Ungoverned writers must also recover capacity retained by other
+            // roots after transient denial fills the process-wide registry.
+            retry_before_admission();
+            Registration::acquire()
+        })?;
         for _ in 0..64 {
             checkpoint(task)?;
             let _name_memory = memory.retained.reserve(3 * 128)?;
@@ -298,6 +343,41 @@ impl StageDirectory {
 impl Drop for StageDirectory {
     fn drop(&mut self) {
         self.cleanup();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn automatic_cleanup_bounds_each_attempt_and_preserves_remaining_ownership() {
+        let root = crate::out_of_core::generation_writer::tests::test_dir("bounded_stage_cleanup");
+        fs::create_dir_all(&root).unwrap();
+        let task = RuntimeTaskContext::default();
+        let memory = BuildMemory::new(&task).unwrap();
+        let stage = StageDirectory::create(&root, &memory, &task).unwrap();
+        for index in 0..33 {
+            fs::write(stage.path.join(format!("partial-{index}")), b"partial").unwrap();
+        }
+        // Keep this ticket active so unrelated concurrent admissions cannot
+        // accelerate cleanup and invalidate the per-attempt observation.
+        let ticket = stage.ticket.as_ref().unwrap();
+        for remaining in [17, 1, 0] {
+            assert_eq!(
+                ticket.remove_batches(AUTOMATIC_CLEANUP_BATCHES).unwrap(),
+                remaining == 0
+            );
+            if remaining == 0 {
+                assert!(!stage.path.exists());
+            } else {
+                assert_eq!(fs::read_dir(&stage.path).unwrap().count(), remaining);
+                assert!(memory.ledger.snapshot().used_bytes > 0);
+            }
+        }
+        drop(stage);
+        assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+        fs::remove_dir_all(root).unwrap();
     }
 }
 
