@@ -150,7 +150,10 @@ pub(super) struct DurableStore {
     max_batch_operations: Option<usize>,
     pub(super) telemetry: Option<Arc<dyn StorageTelemetrySink>>,
     wal_sync_group: Option<WalSyncGroupState>,
-    generation_reclamation_debt: GenerationReclamationDebt,
+    // The selected frontend and off-gate retirement source observe the same
+    // maintenance result. A checkpoint-source clone must not hide a failed
+    // reclamation from admission, pressure reports, or the next retry.
+    generation_reclamation_debt: Arc<std::sync::Mutex<GenerationReclamationDebt>>,
     wal_free_space_probe: WalFreeSpaceProbeState,
 }
 
@@ -605,7 +608,9 @@ impl DurableStore {
             max_batch_operations,
             telemetry: None,
             wal_sync_group: None,
-            generation_reclamation_debt: GenerationReclamationDebt::default(),
+            generation_reclamation_debt: Arc::new(std::sync::Mutex::new(
+                GenerationReclamationDebt::default(),
+            )),
             wal_free_space_probe: WalFreeSpaceProbeState::default(),
         })
     }
@@ -665,8 +670,11 @@ impl DurableStore {
         ))
     }
 
-    pub(super) const fn generation_reclamation_debt(&self) -> GenerationReclamationDebt {
-        self.generation_reclamation_debt
+    pub(super) fn generation_reclamation_debt(&self) -> GenerationReclamationDebt {
+        *self
+            .generation_reclamation_debt
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
     pub(super) fn store_id(&self) -> StoreId {

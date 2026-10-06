@@ -9160,6 +9160,77 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_retirement_source_shares_failed_reclamation_and_retry_with_frontend() {
+        let path = unique_test_dir("checkpoint_retirement_shared_debt");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        for id in 1..=2 {
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                .unwrap();
+            store.checkpoint(&catalog).unwrap();
+        }
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(3))]))
+            .unwrap();
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(4))]))
+            .unwrap();
+        let mut final_source = store.checkpoint_source();
+        let expected = final_source.checkpoint_source_identity().unwrap();
+        candidate.catch_up(&final_source).unwrap();
+        candidate.finish_catch_up().unwrap();
+        final_source
+            .publish_checkpoint_candidate_deferred_reclamation(&mut candidate, None)
+            .unwrap();
+        let retired = store
+            .adopt_selected_checkpoint(final_source, expected)
+            .unwrap();
+        drop(retired);
+
+        // The owner retires files using a source, outside mutable frontend
+        // access. A failed deletion must still appear in that frontend's
+        // pressure/admission signals, rather than only in this temporary copy.
+        let mut retirement_source = store.checkpoint_source();
+        set_generation_reclamation_remove_failpoint(Some("checkpoint.1.hawdb".to_string()));
+        let result =
+            candidate.reclaim_published_generations(&mut retirement_source, &BTreeSet::new());
+        set_generation_reclamation_remove_failpoint(None);
+        result.unwrap();
+        let pressure = store.storage_pressure_snapshot(None);
+        assert!(pressure.generation_reclamation_retry_required);
+        assert_eq!(pressure.generation_reclamation_pending_files, 1);
+        assert!(pressure.generation_reclamation_pending_bytes > 0);
+        assert!(path.join("checkpoint.1.hawdb").exists());
+        assert_eq!(store.commit_epoch(), 4);
+        assert_eq!(store.scan_nodes(None).count(), 4);
+
+        candidate
+            .reclaim_published_generations(&mut retirement_source, &BTreeSet::new())
+            .unwrap();
+        let pressure = store.storage_pressure_snapshot(None);
+        assert!(!pressure.generation_reclamation_retry_required);
+        assert_eq!(pressure.generation_reclamation_pending_files, 0);
+        assert_eq!(pressure.generation_reclamation_pending_bytes, 0);
+        assert!(!path.join("checkpoint.1.hawdb").exists());
+        drop(candidate);
+        drop(retirement_source);
+        drop(store);
+        let mut recovered_catalog = Catalog::default();
+        let recovered = GraphStore::open(&path, &mut recovered_catalog).unwrap();
+        assert_eq!(recovered.commit_epoch(), 4);
+        assert_eq!(recovered.scan_nodes(None).count(), 4);
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn checkpoint_reclamation_failure_is_reported_and_retried_after_publication() {
         let path = unique_test_dir("checkpoint_reclamation_retry");
         let mut catalog = Catalog::default();

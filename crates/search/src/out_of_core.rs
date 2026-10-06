@@ -3825,7 +3825,7 @@ mod tests {
 
     pub(super) fn test_dir(name: &str) -> PathBuf {
         let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
+        let path = crate::test_temp_dir().join(format!(
             "hawdb-search-out-of-core-{name}-{}-{sequence}",
             std::process::id()
         ));

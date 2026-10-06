@@ -39,6 +39,11 @@ fn opaque_workspace_capacity_covers_construction_growth_and_tls_destruction() {
         ),
         ("mixed", "a_\u{660}\u{104a0}%\u{9f98}\u{9f49}"),
         ("supplementary", "\u{20000}\u{20001}"),
+        (
+            "prefix-dense",
+            "\u{52a0}\u{5229}\u{798f}\u{5c3c}\u{4e9a}\u{5dde}\u{7acb}\u{5927}\u{5b66}",
+        ),
+        ("compound", "\u{9f98}alpha-beta_v2.3%\u{9f49}"),
     ] {
         std::thread::scope(|scope| {
             scope.spawn(|| {
@@ -47,7 +52,7 @@ fn opaque_workspace_capacity_covers_construction_growth_and_tls_destruction() {
                 let (_, peak) = allocation::measure(|| drop(jieba.cut_for_search(warmup, true)));
                 assert!(peak <= bounds::regex_construction().unwrap()
                     + bounds::regex_retained().unwrap()
-                    + bounds::hmm_retained(2).unwrap()
+                    + bounds::scratch_retained(2).unwrap()
                     + bounds::invocation(warmup.len(), 2).unwrap());
                 let mut high_water = 2;
                 // Short-after-long and subsequent growth exercise retained TLS
@@ -57,7 +62,7 @@ fn opaque_workspace_capacity_covers_construction_growth_and_tls_destruction() {
                     let characters = input.chars().count();
                     high_water = high_water.max(characters);
                     let retained = bounds::regex_retained().unwrap()
-                        + bounds::hmm_retained(high_water).unwrap();
+                        + bounds::scratch_retained(high_water).unwrap();
                     let allowed = retained + bounds::invocation(input.len(), characters).unwrap();
                     let (tokens, peak) = allocation::measure(|| {
                         let tokens = jieba.cut_for_search(&input, true);

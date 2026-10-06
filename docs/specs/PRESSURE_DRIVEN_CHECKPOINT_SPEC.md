@@ -170,6 +170,12 @@ sources retain a suspension through preparation and selection; branch
 switching/sealing, backup, row-page and overflow compaction coordinate with
 the same owner.
 
+Off-gate retirement publishes its complete reclamation receipt through shared
+durable runtime state. The serving frontend observes failed deletions and their
+pending file/byte counts, and successful retry clears the same receipt. The
+receipt lock never spans filesystem work. A regression exercises selection,
+frontend adoption, injected deletion failure, retry and complete ordinary reopen.
+
 Default writable branch admission arms one library-owned worker. It consumes
 byte and monotonic age signals, coalesces sources, retries admission, drains
 in-flight WAL sync groups and joins at handle closure. Focused native Cargo

@@ -23,7 +23,7 @@ struct Directory(PathBuf);
 impl Directory {
     fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
+        let path = crate::test_temp_dir().join(format!(
             "hawdb-publication-io-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed),
