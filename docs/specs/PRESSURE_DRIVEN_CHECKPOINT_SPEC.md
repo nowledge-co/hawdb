@@ -266,8 +266,8 @@ reopen. Cancellation tests observe actual artifact creation rather than assume
 a fixed number of preceding builder operations.
 
 The automatic owner still holds its whole-candidate local permit: these units
-do not cover projected-graph preparation, append/relational builders, statistics,
-candidate reopening or replay finalization. Temporary-file cleanup is currently
+do not cover all projected-graph preparation, append/relational builders,
+statistics, candidate reopening or replay finalization. Temporary-file cleanup is currently
 best effort and lacks a complete retained cleanup-debt/resource ledger. Metadata
 buffers and dictionaries can still scale with the dataset. Source-scan still
 retains complete projected rows/summaries and whole segment, compression and
@@ -284,10 +284,18 @@ waves. Focused coverage checks complete 2,048-node/4,096-edge arrays against the
 independent text reference, cancellation inside numeric arrays, malformed
 cross-chunk offsets/indexes, every publication I/O admission, and candidate
 cancellation followed by unchanged authority, retry and complete array reopen.
-This does not control analytics projection construction or definition-list
-encoding/decoding, and complete array/text/compression buffers remain retained.
-The automatic owner's whole-candidate local permit and memory-accounting gaps
-remain in place; no complete projected-graph build bound is claimed.
+Native checkpoint projection construction now resolves definitions, captures
+and hydrates node/relationship records, allocates adjacency entries and inserts
+neighbors under actual record units. Ordered neighbor sets preserve sorted,
+deduplicated directed edges without an uninterruptible high-degree sort; CSR
+and CSC flattening copies at most 1,024 neighbors per unit. The explicit
+analytics path remains a reference. Tests compare all arrays against an
+independent edge set and analytics over 1,025 nodes with skew, parallel edges,
+self-loops and seven label/type filter combinations, including unknown names.
+They cancel capture, hydration, adjacency construction and flattening, restore
+all permits and retry. Definition-list encoding/decoding, complete
+arrays/text/compression retention and their hard byte ledger remain uncontrolled. The automatic owner's whole-candidate local permit and
+memory-accounting gaps remain in place; no complete build bound is claimed.
 
 Native checkpoint overlay capture now admits each live delta record before
 cloning it, with cancellation between records for canonical, adjacency and
@@ -295,9 +303,18 @@ property-projection inputs. Tombstones remain shared COW roots and the inputs
 remain ID ordered. An actual out-of-core candidate test cancels capture before
 any I/O, preserves authoritative identity/WAL/manifest, and retries with exact
 base/delta/replacement/tombstone parity through publication and reopen. The
-complete delta vectors remain retained, individual record cloning has no new
-byte bound, and a single iterator step can still skip many tombstoned base
-records. Those skipped-record loops and retained-memory accounting remain open.
+complete delta vectors remain retained and individual record cloning has no
+new byte bound. Checkpoint-only overlay steps now expose each physical merge
+or tombstone decision, so canonical, adjacency, property-projection and graph
+projection builders admit and cancel skipped records individually. Ordinary
+owned iterators retain their complete-result behavior and physical errors are
+never hidden by newer deltas or tombstones. A real 512-record base/511-tombstone
+candidate cancels before encoding its survivor: the private file contains only
+the 24-byte canonical header/generation, authority is unchanged and retry/reopen
+returns exactly the survivor. Synthetic step counts, native node/relationship
+factories and physical-error checks cover the step contract. Canonical segment
+hydration still decodes a complete bounded segment per read, and retained-memory
+accounting and cleanup/drop costs remain open.
 
 `HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
 two schema/data transactions under both durability policies. Its complete

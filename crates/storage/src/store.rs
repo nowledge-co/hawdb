@@ -2445,13 +2445,22 @@ fn encode_projected_graph_artifacts(
     store: &GraphStore,
     projection_epoch: u64,
 ) -> String {
-    encode_projected_graph_artifacts_with_work_context(
-        catalog,
-        store,
+    hawdb_storage::projection::artifact::encode_projected_graph_artifacts(
         projection_epoch,
-        &crate::background::CheckpointWorkContext::default(),
+        store.commit_epoch,
+        store.projected_graphs.iter().map(|(name, definition)| {
+            let graph = projected_graph_from_definition(catalog, store, definition);
+            let data = ProjectedGraphArtifactData::new(
+                graph.nodes().to_vec(),
+                graph.csr_offsets().to_vec(),
+                graph.csr_targets().to_vec(),
+                graph.csc_offsets().to_vec(),
+                graph.csc_sources().to_vec(),
+            )
+            .expect("analytics graph has valid adjacency arrays");
+            (name.as_str(), definition, data)
+        }),
     )
-    .expect("default projected graph build context cannot stop")
 }
 
 fn encode_projected_graph_artifacts_with_work_context(
@@ -2464,37 +2473,140 @@ fn encode_projected_graph_artifacts_with_work_context(
         projection_epoch,
         store.commit_epoch,
         store.projected_graphs.iter().map(|(name, definition)| {
-            work.checkpoint().map_err(HawDBError::from_storage_error)?;
-            // Analytics construction still needs its own cooperative builder
-            // contract. Do not count an entire graph build as one local unit.
-            let graph = projected_graph_from_definition(catalog, store, definition);
-            work.checkpoint().map_err(HawDBError::from_storage_error)?;
-            let data = ProjectedGraphArtifactData::new_with_work_context(
-                copy_projection_values(graph.nodes(), work)?,
-                copy_projection_values(graph.csr_offsets(), work)?,
-                copy_projection_values(graph.csr_targets(), work)?,
-                copy_projection_values(graph.csc_offsets(), work)?,
-                copy_projection_values(graph.csc_sources(), work)?,
-                work,
-            )?;
+            let data =
+                checkpoint_projected_graph_from_definition(catalog, store, definition, work)?;
             Ok((name.as_str(), definition, data))
         }),
         work,
     )
 }
 
-fn copy_projection_values<T: Copy>(
-    values: &[T],
+fn checkpoint_projected_graph_from_definition(
+    catalog: &Catalog,
+    store: &GraphStore,
+    definition: &ProjectedGraphDefinition,
     work: &crate::background::CheckpointWorkContext,
-) -> Result<Vec<T>> {
-    let mut copied = Vec::new();
-    for block in values.chunks(1024) {
+) -> Result<ProjectedGraphArtifactData> {
+    let mut labels = BTreeSet::new();
+    for name in &definition.node_labels {
         let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-        copied.extend_from_slice(block);
+        if let Some(id) = catalog.label_id(name) {
+            labels.insert(id);
+        }
+        unit.finish();
+    }
+    let mut rel_types = BTreeSet::new();
+    for name in &definition.rel_types {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        if let Some(id) = catalog.rel_type_id(name) {
+            rel_types.insert(id);
+        }
+        unit.finish();
+    }
+    if !definition.node_labels.is_empty() && labels.is_empty() {
+        return ProjectedGraphArtifactData::new_with_work_context(
+            Vec::new(),
+            vec![0],
+            Vec::new(),
+            vec![0],
+            Vec::new(),
+            work,
+        );
+    }
+    let mut nodes = Vec::new();
+    let mut source = store
+        .checkpoint_node_records_owned(work)?
+        .checkpoint_steps();
+    loop {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        let next = {
+            let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
+            source.next()
+        };
+        let Some(record) = next else {
+            unit.finish();
+            break;
+        };
+        store.poison_on_storage_error(&record);
+        let Some(node) = record? else {
+            unit.finish();
+            continue;
+        };
+        if labels.is_empty() || node.labels.iter().any(|label| labels.contains(label)) {
+            nodes.push(node.id);
+        }
+        unit.finish();
+    }
+    let mut outgoing = Vec::new();
+    let mut incoming = Vec::new();
+    for _ in &nodes {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        outgoing.push(BTreeSet::new());
+        incoming.push(BTreeSet::new());
+        unit.finish();
+    }
+    if definition.rel_types.is_empty() || !rel_types.is_empty() {
+        let mut source = store
+            .checkpoint_relationship_records_owned(work)?
+            .checkpoint_steps();
+        loop {
+            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+            let next = {
+                let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
+                source.next()
+            };
+            let Some(record) = next else {
+                unit.finish();
+                break;
+            };
+            store.poison_on_storage_error(&record);
+            let Some(relationship) = record? else {
+                unit.finish();
+                continue;
+            };
+            if (rel_types.is_empty() || rel_types.contains(&relationship.rel_type))
+                && let Ok(source) = nodes.binary_search(&relationship.source)
+                && let Ok(target) = nodes.binary_search(&relationship.target)
+            {
+                // Ordered sets preserve sorted, deduplicated analytics edges
+                // without a complete high-degree neighbor sort at finalization.
+                outgoing[source].insert(target);
+                incoming[target].insert(source);
+            }
+            unit.finish();
+        }
+    }
+    let (csr_offsets, csr_targets) = flatten_checkpoint_projection(outgoing, work)?;
+    let (csc_offsets, csc_sources) = flatten_checkpoint_projection(incoming, work)?;
+    ProjectedGraphArtifactData::new_with_work_context(
+        nodes,
+        csr_offsets,
+        csr_targets,
+        csc_offsets,
+        csc_sources,
+        work,
+    )
+}
+
+fn flatten_checkpoint_projection(
+    adjacency: Vec<BTreeSet<usize>>,
+    work: &crate::background::CheckpointWorkContext,
+) -> Result<(Vec<usize>, Vec<usize>)> {
+    let mut offsets = vec![0];
+    let mut targets = Vec::new();
+    for neighbors in adjacency {
+        let mut neighbors = neighbors.into_iter().peekable();
+        while neighbors.peek().is_some() {
+            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+            targets.extend(neighbors.by_ref().take(1024));
+            unit.finish();
+        }
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        offsets.push(targets.len());
         unit.finish();
     }
     work.checkpoint().map_err(HawDBError::from_storage_error)?;
-    Ok(copied)
+    Ok((offsets, targets))
 }
 
 fn projected_graph_from_definition(
@@ -8783,6 +8895,200 @@ mod tests {
         std::fs::remove_dir_all(path).unwrap();
     }
 
+    fn checkpoint_projection_fixture() -> (Catalog, GraphStore, Vec<(NodeId, NodeId, String)>) {
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::default();
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        for id in 0..1025 {
+            nodes.push(
+                store
+                    .create_node(
+                        &mut catalog,
+                        if id % 2 == 0 { "Memory" } else { "Source" },
+                        properties([("id", Value::Int(id))]),
+                    )
+                    .unwrap(),
+            );
+        }
+        for index in 0..nodes.len() {
+            let mut add = |source, target, rel_type: &str| {
+                store
+                    .create_relationship(&mut catalog, source, target, rel_type, BTreeMap::new())
+                    .unwrap();
+                edges.push((source, target, rel_type.to_string()));
+            };
+            add(nodes[0], nodes[index], "LINKS");
+            if index % 3 == 0 {
+                add(nodes[0], nodes[index], "LINKS");
+            }
+            if index % 5 == 0 {
+                add(nodes[index], nodes[0], "BACK");
+            }
+            if index % 7 == 0 {
+                add(nodes[0], nodes[index], "OTHER");
+            }
+        }
+        (catalog, store, edges)
+    }
+
+    #[test]
+    fn checkpoint_units_projected_build_matches_independent_edges_and_analytics_filters() {
+        use crate::background::CheckpointWorkProbe;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+        use std::sync::Arc;
+        let (catalog, store, edges) = checkpoint_projection_fixture();
+        let cases = [
+            (vec![], vec![]),
+            (vec!["Memory"], vec![]),
+            (vec!["Source", "Missing"], vec!["BACK", "Missing"]),
+            (vec!["Memory", "Memory", "Missing"], vec!["LINKS", "OTHER"]),
+            (vec!["Missing"], vec![]),
+            (vec![], vec!["Missing"]),
+            (vec!["Memory"], vec!["Missing"]),
+        ];
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        });
+        for (labels, rel_types) in cases {
+            let definition = ProjectedGraphDefinition {
+                node_labels: labels.iter().map(|label| (*label).to_string()).collect(),
+                rel_types: rel_types
+                    .iter()
+                    .map(|rel_type| (*rel_type).to_string())
+                    .collect(),
+            };
+            let ids = (0..1025)
+                .filter(|id| {
+                    labels.is_empty()
+                        || labels.contains(&if id % 2 == 0 { "Memory" } else { "Source" })
+                })
+                .map(NodeId)
+                .collect::<Vec<_>>();
+            let indices = ids
+                .iter()
+                .enumerate()
+                .map(|(index, id)| (*id, index))
+                .collect::<BTreeMap<_, _>>();
+            let pairs = edges
+                .iter()
+                .filter(|(_, _, kind)| rel_types.is_empty() || rel_types.contains(&kind.as_str()))
+                .filter_map(|(source, target, _)| {
+                    Some((*indices.get(source)?, *indices.get(target)?))
+                })
+                .collect::<BTreeSet<_>>();
+            let mut outgoing = Vec::new();
+            let mut incoming = Vec::new();
+            let mut outgoing_offsets = vec![0];
+            let mut incoming_offsets = vec![0];
+            for node in 0..ids.len() {
+                outgoing.extend(
+                    pairs
+                        .iter()
+                        .filter(|(source, _)| *source == node)
+                        .map(|(_, target)| *target),
+                );
+                incoming.extend(
+                    pairs
+                        .iter()
+                        .filter(|(_, target)| *target == node)
+                        .map(|(source, _)| *source),
+                );
+                outgoing_offsets.push(outgoing.len());
+                incoming_offsets.push(incoming.len());
+            }
+            let expected = super::ProjectedGraphArtifactData::new(
+                ids,
+                outgoing_offsets,
+                outgoing,
+                incoming_offsets,
+                incoming,
+            )
+            .unwrap();
+            let probe = Arc::new(CheckpointWorkProbe::default());
+            let actual = super::checkpoint_projected_graph_from_definition(
+                &catalog,
+                &store,
+                &definition,
+                &probe.context(scheduler.clone()),
+            )
+            .unwrap();
+            assert_eq!(actual, expected, "definition={definition:?}");
+            let analytics = super::projected_graph_from_definition(&catalog, &store, &definition);
+            assert_eq!(actual.nodes, analytics.nodes());
+            assert_eq!(actual.csr_offsets, analytics.csr_offsets());
+            assert_eq!(actual.csr_targets, analytics.csr_targets());
+            assert_eq!(actual.csc_offsets, analytics.csc_offsets());
+            assert_eq!(actual.csc_sources, analytics.csc_sources());
+            probe.assert_released(&scheduler);
+        }
+    }
+
+    #[test]
+    fn checkpoint_units_projected_build_cancels_capture_hydration_and_flatten_then_retries() {
+        use crate::background::CheckpointWorkProbe;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+        let (catalog, store, _) = checkpoint_projection_fixture();
+        let nodes = store.nodes.len();
+        let relationships = store.relationships.len();
+        let definition = ProjectedGraphDefinition {
+            node_labels: Vec::new(),
+            rel_types: Vec::new(),
+        };
+        let identity = store.checkpoint_source_identity();
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        });
+        for cancel_after in [
+            17,
+            nodes + 17,
+            2 * nodes + 17,
+            3 * nodes + 1 + 17,
+            3 * nodes + relationships + 1 + 17,
+            3 * nodes + 2 * relationships + 2 + 17,
+        ] {
+            let probe = Arc::new(CheckpointWorkProbe::default());
+            probe.cancel_after.store(cancel_after, Ordering::SeqCst);
+            let error = super::checkpoint_projected_graph_from_definition(
+                &catalog,
+                &store,
+                &definition,
+                &probe.context(scheduler.clone()),
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("checkpoint build stopped"),
+                "cancel_after={cancel_after}: {error}"
+            );
+            assert_eq!(probe.completed.load(Ordering::SeqCst), cancel_after);
+            assert_eq!(probe.peak_units.load(Ordering::SeqCst), 1);
+            probe.assert_released(&scheduler);
+            assert_eq!(store.checkpoint_source_identity(), identity);
+            store.ensure_usable().unwrap();
+        }
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        let actual = super::checkpoint_projected_graph_from_definition(
+            &catalog,
+            &store,
+            &definition,
+            &retry.context(scheduler.clone()),
+        )
+        .unwrap();
+        let reference = super::projected_graph_from_definition(&catalog, &store, &definition);
+        assert_eq!(actual.nodes, reference.nodes());
+        assert_eq!(actual.csr_offsets, reference.csr_offsets());
+        assert_eq!(actual.csr_targets, reference.csr_targets());
+        assert_eq!(actual.csc_offsets, reference.csc_offsets());
+        assert_eq!(actual.csc_sources, reference.csc_sources());
+        retry.assert_released(&scheduler);
+    }
+
     #[test]
     fn checkpoint_units_cancel_native_overlay_capture_before_io_and_retry_complete_graph() {
         use crate::background::CheckpointWorkProbe;
@@ -8967,6 +9273,7 @@ mod tests {
         observed_file: std::sync::atomic::AtomicBool,
         completed_after_file: std::sync::atomic::AtomicUsize,
         cancel_after_file: usize,
+        file_bytes_at_cancellation: std::sync::atomic::AtomicU64,
     }
 
     impl hawdb_qos::QosTelemetrySink for CancelCheckpointAtFile {
@@ -8978,6 +9285,10 @@ mod tests {
                 self.observed_file.store(true, Ordering::SeqCst);
                 let completed = self.completed_after_file.fetch_add(1, Ordering::SeqCst) + 1;
                 if completed >= self.cancel_after_file {
+                    self.file_bytes_at_cancellation.store(
+                        std::fs::metadata(&self.path).unwrap().len(),
+                        Ordering::SeqCst,
+                    );
                     self.probe.cancellation.cancel();
                 }
             }
@@ -9033,6 +9344,7 @@ mod tests {
             observed_file: Default::default(),
             completed_after_file: Default::default(),
             cancel_after_file: 10,
+            file_bytes_at_cancellation: Default::default(),
         });
         scheduler.set_telemetry_sink(Some(observer.clone()));
         let task = RuntimeTaskContext::without_deadline(probe.cancellation.clone())
@@ -9089,6 +9401,120 @@ mod tests {
         ids.sort_unstable();
         assert_eq!(ids, (0..66i64).collect::<Vec<_>>());
         assert_eq!(recovered.commit_epoch(), 66);
+        drop(recovered);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_units_cancel_native_tombstone_run_before_survivor_and_retry() {
+        use crate::background::{CheckpointWorkContext, CheckpointWorkProbe};
+        use hawdb_core::RuntimeTaskContext;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+        let path = unique_test_dir("checkpoint_tombstone_run_cancel");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            WalReplayConfig {
+                residency_mode: StorageResidencyMode::OutOfCore,
+                ..WalReplayConfig::default()
+            },
+        )
+        .unwrap();
+        let mut ids = Vec::new();
+        for id in 0..512 {
+            ids.push(
+                store
+                    .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                    .unwrap(),
+            );
+        }
+        store.checkpoint(&catalog).unwrap();
+        store
+            .delete_node_ids_with_limits(&mut catalog, &ids[..511], true, MutationLimits::default())
+            .unwrap();
+        assert!(store.nodes.is_empty());
+        assert_eq!(store.node_tombstones.len(), 511);
+        let expected = store.node_owned(ids[511]).unwrap().unwrap();
+        let identity = store.checkpoint_source_identity();
+        let durable = store.durable.as_ref().unwrap();
+        let generation = durable.next_checkpoint_generation().unwrap();
+        let wal_path = durable.wal_path.clone();
+        let manifest_path = durable.manifest_path().to_path_buf();
+        let wal = std::fs::read(&wal_path).unwrap();
+        let manifest = std::fs::read(&manifest_path).unwrap();
+        let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        });
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        let private = path.join(super::canonical_artifact_generation_file(generation));
+        let observer = Arc::new(CancelCheckpointAtFile {
+            probe: probe.clone(),
+            path: private.with_extension("hawdb.tmp"),
+            observed_file: Default::default(),
+            completed_after_file: Default::default(),
+            cancel_after_file: 17,
+            file_bytes_at_cancellation: Default::default(),
+        });
+        scheduler.set_telemetry_sink(Some(observer.clone()));
+        let task = RuntimeTaskContext::without_deadline(probe.cancellation.clone())
+            .with_io_wave_controller(probe.clone());
+        let work = CheckpointWorkContext::new(task).with_scheduler(scheduler.clone());
+        let source = store.checkpoint_source();
+        let error = source
+            .prepare_checkpoint_candidate_with_work_context(&catalog, &work)
+            .unwrap_err();
+        assert!(error.to_string().contains("checkpoint build stopped"));
+        assert!(observer.observed_file.load(Ordering::SeqCst));
+        assert_eq!(observer.completed_after_file.load(Ordering::SeqCst), 17);
+        // No surviving record has been encoded: only the immutable 16-byte
+        // canonical header and 8-byte generation were written before stopping.
+        assert_eq!(
+            observer.file_bytes_at_cancellation.load(Ordering::SeqCst),
+            24
+        );
+        probe.assert_released(&scheduler);
+        assert_eq!(store.checkpoint_source_identity(), identity);
+        assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+        assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
+        assert!(!private.exists());
+        assert!(!observer.path.exists());
+        source.ensure_usable().unwrap();
+        store.ensure_usable().unwrap();
+        drop(source);
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate_with_work_context(
+                &catalog,
+                &retry.context(scheduler.clone()),
+            )
+            .unwrap()
+            .unwrap();
+        drop(source);
+        let captured = store.checkpoint_source();
+        candidate.catch_up(&captured).unwrap();
+        drop(captured);
+        store
+            .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
+            .unwrap();
+        drop(candidate);
+        retry.assert_released(&scheduler);
+        drop(store);
+        let recovered = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(
+            recovered
+                .node_records_owned()
+                .collect::<crate::Result<Vec<_>>>()
+                .unwrap(),
+            vec![expected]
+        );
+        assert_eq!(recovered.relationship_records_owned().count(), 0);
         drop(recovered);
         std::fs::remove_dir_all(path).unwrap();
     }
@@ -9197,6 +9623,7 @@ mod tests {
             observed_file: Default::default(),
             completed_after_file: Default::default(),
             cancel_after_file: 1,
+            file_bytes_at_cancellation: Default::default(),
         });
         scheduler.set_telemetry_sink(Some(observer.clone()));
         let task = RuntimeTaskContext::without_deadline(probe.cancellation.clone())

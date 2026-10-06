@@ -33,6 +33,16 @@ pub struct GraphNodeIterator {
     inner: OverlayIterator<NodeRecord, CanonicalNodeIterator>,
 }
 
+impl GraphNodeIterator {
+    /// Expose one physical overlay decision per step, including tombstones.
+    /// Checkpoint builders can admit each decision instead of charging a whole
+    /// tombstone run as one logical record operation.
+    #[doc(hidden)]
+    pub fn checkpoint_steps(mut self) -> impl Iterator<Item = Result<Option<NodeRecord>>> {
+        std::iter::from_fn(move || self.inner.next_step())
+    }
+}
+
 impl Iterator for GraphNodeIterator {
     type Item = Result<NodeRecord>;
 
@@ -43,6 +53,13 @@ impl Iterator for GraphNodeIterator {
 
 pub struct GraphRelationshipIterator {
     inner: OverlayIterator<RelRecord, CanonicalRelationshipIterator>,
+}
+
+impl GraphRelationshipIterator {
+    #[doc(hidden)]
+    pub fn checkpoint_steps(mut self) -> impl Iterator<Item = Result<Option<RelRecord>>> {
+        std::iter::from_fn(move || self.inner.next_step())
+    }
 }
 
 impl Iterator for GraphRelationshipIterator {
@@ -125,6 +142,41 @@ impl<R: OverlayRecord, B: Iterator<Item = std::result::Result<R, CanonicalSegmen
     }
 }
 
+impl<R: OverlayRecord, B: Iterator<Item = std::result::Result<R, CanonicalSegmentError>>>
+    OverlayIterator<R, B>
+{
+    fn next_step(&mut self) -> Option<Result<Option<R>>> {
+        // A tombstone or a newer delta must never hide a physical read error.
+        let base_id = match self.base.as_mut().and_then(|base| base.peek()) {
+            Some(Ok(record)) => Some(record.id()),
+            Some(Err(_)) => return Some(self.next_base().map(Some)),
+            None => None,
+        };
+        let delta_id = self.delta.peek().map(OverlayRecord::id);
+        let record = match (base_id, delta_id) {
+            (None, None) => return None,
+            (Some(base_id), Some(delta_id)) if base_id == delta_id => {
+                if let Err(error) = self.next_base() {
+                    return Some(Err(error));
+                }
+                Ok(self.delta.next().expect("matching delta record exists"))
+            }
+            (None, Some(_)) => Ok(self.delta.next().expect("peeked delta record exists")),
+            (Some(base_id), Some(delta_id)) if base_id > delta_id => {
+                Ok(self.delta.next().expect("peeked delta record exists"))
+            }
+            (Some(_), _) => self.next_base(),
+        };
+        Some(record.map(|record| {
+            if self.tombstones.contains(&record.id()) {
+                None
+            } else {
+                Some(record)
+            }
+        }))
+    }
+}
+
 impl<R: OverlayRecord, B: Iterator<Item = std::result::Result<R, CanonicalSegmentError>>> Iterator
     for OverlayIterator<R, B>
 {
@@ -132,30 +184,10 @@ impl<R: OverlayRecord, B: Iterator<Item = std::result::Result<R, CanonicalSegmen
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            // A tombstone or a newer delta must never hide a physical read error.
-            let base_id = match self.base.as_mut().and_then(|base| base.peek()) {
-                Some(Ok(record)) => Some(record.id()),
-                Some(Err(_)) => return Some(self.next_base()),
-                None => None,
-            };
-            let delta_id = self.delta.peek().map(OverlayRecord::id);
-            let record = match (base_id, delta_id) {
-                (None, None) => return None,
-                (Some(base_id), Some(delta_id)) if base_id == delta_id => {
-                    if let Err(error) = self.next_base() {
-                        return Some(Err(error));
-                    }
-                    Ok(self.delta.next().expect("matching delta record exists"))
-                }
-                (None, Some(_)) => Ok(self.delta.next().expect("peeked delta record exists")),
-                (Some(base_id), Some(delta_id)) if base_id > delta_id => {
-                    Ok(self.delta.next().expect("peeked delta record exists"))
-                }
-                (Some(_), _) => self.next_base(),
-            };
-            match record {
-                Ok(record) if self.tombstones.contains(&record.id()) => continue,
-                other => return Some(other),
+            match self.next_step()? {
+                Ok(None) => continue,
+                Ok(Some(record)) => return Some(Ok(record)),
+                Err(error) => return Some(Err(error)),
             }
         }
     }

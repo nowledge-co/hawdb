@@ -153,8 +153,8 @@ impl DurableStore {
         work: &crate::background::CheckpointWorkContext,
     ) -> Result<(DurableArtifactMetadata, DurableArtifactMetadata)>
     where
-        N: IntoIterator<Item = std::result::Result<NodeRecord, CanonicalSegmentError>>,
-        R: IntoIterator<Item = std::result::Result<RelRecord, CanonicalSegmentError>>,
+        N: IntoIterator<Item = std::result::Result<Option<NodeRecord>, CanonicalSegmentError>>,
+        R: IntoIterator<Item = std::result::Result<Option<RelRecord>, CanonicalSegmentError>>,
     {
         let artifact_path = self
             .root_path
@@ -176,7 +176,7 @@ impl DurableStore {
         let (canonical_manifest, property_spill_output) =
             CanonicalSegmentWriter::new(CanonicalSegmentConfig::default())
                 .with_work_context(work.clone())
-                .write_fallible_with_property_spills(
+                .write_fallible_with_property_spills_steps(
                     &artifact_path,
                     ManifestGeneration(generation),
                     nodes,
@@ -229,7 +229,7 @@ impl DurableStore {
     where
         R: IntoIterator<
             Item = std::result::Result<
-                RelRecord,
+                Option<RelRecord>,
                 hawdb_storage::canonical_adjacency::CanonicalAdjacencyError,
             >,
         >,
@@ -256,7 +256,7 @@ impl DurableStore {
         };
         let output = CanonicalAdjacencyWriter::new(config)
             .with_work_context(work.clone())
-            .write_fallible_with_descriptor_tree(
+            .write_fallible_with_descriptor_tree_steps(
                 &artifact_path,
                 descriptor_paths,
                 ManifestGeneration(generation),
@@ -307,7 +307,7 @@ impl DurableStore {
     where
         N: IntoIterator<
             Item = std::result::Result<
-                PersistentPropertyProjectionRecord,
+                Option<PersistentPropertyProjectionRecord>,
                 hawdb_storage::property_projection::PersistentPropertyProjectionError,
             >,
         >,
@@ -329,7 +329,7 @@ impl DurableStore {
         );
         let output = PersistentPropertyProjectionWriter::new(config)
             .with_work_context(work.clone())
-            .write_fallible(
+            .write_fallible_steps(
                 &artifact_path,
                 ManifestGeneration(generation),
                 source_commit_epoch,

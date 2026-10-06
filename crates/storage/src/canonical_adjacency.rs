@@ -638,7 +638,12 @@ impl CanonicalAdjacencyWriter {
     where
         R: IntoIterator<Item = Result<RelRecord, CanonicalAdjacencyError>>,
     {
-        self.write_fallible_internal(path, generation, None, relationships)
+        self.write_fallible_internal(
+            path,
+            generation,
+            None,
+            relationships.into_iter().map(|record| record.map(Some)),
+        )
     }
 
     pub fn write_fallible_with_descriptor_tree<R>(
@@ -652,6 +657,27 @@ impl CanonicalAdjacencyWriter {
     ) -> Result<CanonicalAdjacencyWriteOutput, CanonicalAdjacencyError>
     where
         R: IntoIterator<Item = Result<RelRecord, CanonicalAdjacencyError>>,
+    {
+        self.write_fallible_internal(
+            path,
+            generation,
+            Some((descriptor_paths, source_commit_epoch, descriptor_config)),
+            relationships.into_iter().map(|record| record.map(Some)),
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn write_fallible_with_descriptor_tree_steps<R>(
+        &self,
+        path: &Path,
+        descriptor_paths: GraphDescriptorTreePaths,
+        generation: ManifestGeneration,
+        source_commit_epoch: u64,
+        descriptor_config: GraphDescriptorTreeBuildConfig,
+        relationships: R,
+    ) -> Result<CanonicalAdjacencyWriteOutput, CanonicalAdjacencyError>
+    where
+        R: IntoIterator<Item = Result<Option<RelRecord>, CanonicalAdjacencyError>>,
     {
         self.write_fallible_internal(
             path,
@@ -673,7 +699,7 @@ impl CanonicalAdjacencyWriter {
         relationships: R,
     ) -> Result<CanonicalAdjacencyWriteOutput, CanonicalAdjacencyError>
     where
-        R: IntoIterator<Item = Result<RelRecord, CanonicalAdjacencyError>>,
+        R: IntoIterator<Item = Result<Option<RelRecord>, CanonicalAdjacencyError>>,
     {
         let work = self.work.clone().unwrap_or_default();
         {
@@ -708,7 +734,10 @@ impl CanonicalAdjacencyWriter {
                 unit.finish();
                 break;
             };
-            let relationship = relationship?;
+            let Some(relationship) = relationship? else {
+                unit.finish();
+                continue;
+            };
             work.checkpoint()?;
             let payload = if estimated_relationship_payload_bytes(&relationship)
                 <= self.config.max_record_bytes.get()

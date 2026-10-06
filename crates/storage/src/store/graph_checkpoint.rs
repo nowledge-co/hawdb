@@ -581,6 +581,7 @@ impl GraphStore {
             .map(|_| {
                 Ok::<_, HawDBError>(
                     self.checkpoint_node_records_owned(work)?
+                        .checkpoint_steps()
                         .inspect(|record| self.poison_on_storage_error(record))
                         .map(|record| {
                             record.map_err(|error| CanonicalSegmentError::Source(error.to_string()))
@@ -591,10 +592,11 @@ impl GraphStore {
         let property_projection_records = self.canonical_base.as_ref().map(|_| {
             let nodes = self
                 .checkpoint_node_records_owned(work)?
+                        .checkpoint_steps()
                 .inspect(|record| self.poison_on_storage_error(record))
                 .map(|record| {
                     record
-                        .map(PersistentPropertyProjectionRecord::Node)
+                        .map(|record| record.map(PersistentPropertyProjectionRecord::Node))
                         .map_err(|error| {
                             hawdb_storage::property_projection::PersistentPropertyProjectionError::Source(
                                 error.to_string(),
@@ -603,10 +605,11 @@ impl GraphStore {
                 });
             let relationships = self
                 .checkpoint_relationship_records_owned(work)?
+                        .checkpoint_steps()
                 .inspect(|record| self.poison_on_storage_error(record))
                 .map(|record| {
                     record
-                        .map(PersistentPropertyProjectionRecord::Relationship)
+                        .map(|record| record.map(PersistentPropertyProjectionRecord::Relationship))
                         .map_err(|error| {
                             hawdb_storage::property_projection::PersistentPropertyProjectionError::Source(
                                 error.to_string(),
@@ -685,6 +688,7 @@ impl GraphStore {
             .map(|_| {
                 Ok::<_, HawDBError>(
                     self.checkpoint_relationship_records_owned(work)?
+                        .checkpoint_steps()
                         .inspect(|record| self.poison_on_storage_error(record))
                         .map(|record| {
                             record.map_err(|error| CanonicalSegmentError::Source(error.to_string()))
@@ -698,6 +702,7 @@ impl GraphStore {
             .map(|_| {
                 Ok::<_, HawDBError>(
                     self.checkpoint_relationship_records_owned(work)?
+                        .checkpoint_steps()
                         .inspect(|record| self.poison_on_storage_error(record))
                         .map(|record| {
                             record.map_err(|error| {
@@ -770,10 +775,10 @@ impl GraphStore {
                         work,
                     )?,
                     (None, None) => durable.write_canonical_segments(
-                        self.nodes.values().map(|node| Ok(node.clone())),
+                        self.nodes.values().map(|node| Ok(Some(node.clone()))),
                         self.relationships
                             .values()
-                            .map(|relationship| Ok(relationship.clone())),
+                            .map(|relationship| Ok(Some(relationship.clone()))),
                         generation,
                         commit_epoch,
                         work,
@@ -789,7 +794,7 @@ impl GraphStore {
                     work,
                 )?,
                 None => durable.write_canonical_adjacency(
-                    self.relationships.values().cloned().map(Ok),
+                    self.relationships.values().cloned().map(Some).map(Ok),
                     generation,
                     commit_epoch,
                     build_config.adjacency,
@@ -811,12 +816,14 @@ impl GraphStore {
                         .values()
                         .cloned()
                         .map(PersistentPropertyProjectionRecord::Node)
+                        .map(Some)
                         .map(Ok)
                         .chain(
                             self.relationships
                                 .values()
                                 .cloned()
                                 .map(PersistentPropertyProjectionRecord::Relationship)
+                                .map(Some)
                                 .map(Ok),
                         ),
                     generation,

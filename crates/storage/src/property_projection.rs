@@ -894,6 +894,34 @@ impl PersistentPropertyProjectionWriter {
             generation,
             source_commit_epoch,
             definitions,
+            nodes.into_iter().map(|record| record.map(Some)),
+            descriptor_tree,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn write_fallible_steps<N>(
+        &self,
+        path: &Path,
+        generation: ManifestGeneration,
+        source_commit_epoch: u64,
+        definitions: Vec<PersistentPropertyProjectionDefinition>,
+        nodes: N,
+        descriptor_tree: PersistentPropertyProjectionDescriptorTree,
+    ) -> Result<PersistentPropertyProjectionWriteOutput, PersistentPropertyProjectionError>
+    where
+        N: IntoIterator<
+            Item = Result<
+                Option<PersistentPropertyProjectionRecord>,
+                PersistentPropertyProjectionError,
+            >,
+        >,
+    {
+        self.write_fallible_inner(
+            path,
+            generation,
+            source_commit_epoch,
+            definitions,
             nodes,
             descriptor_tree,
         )
@@ -910,7 +938,10 @@ impl PersistentPropertyProjectionWriter {
     ) -> Result<PersistentPropertyProjectionWriteOutput, PersistentPropertyProjectionError>
     where
         N: IntoIterator<
-            Item = Result<PersistentPropertyProjectionRecord, PersistentPropertyProjectionError>,
+            Item = Result<
+                Option<PersistentPropertyProjectionRecord>,
+                PersistentPropertyProjectionError,
+            >,
         >,
     {
         let (descriptor_paths, descriptor_config) = descriptor_tree.into_parts();
@@ -1004,7 +1035,10 @@ impl PersistentPropertyProjectionWriter {
                 unit.finish();
                 break;
             };
-            let record = record?;
+            let Some(record) = record? else {
+                unit.finish();
+                continue;
+            };
             work.checkpoint()?;
             input_records = input_records.saturating_add(1);
             let (subjects, properties, entity_id) = match &record {

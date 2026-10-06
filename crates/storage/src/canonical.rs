@@ -950,8 +950,8 @@ impl CanonicalSegmentWriter {
                 generation,
                 source_commit_epoch,
             },
-            nodes,
-            relationships,
+            nodes.into_iter().map(|record| record.map(Some)),
+            relationships.into_iter().map(|record| record.map(Some)),
             None,
             descriptor_tree,
         )?;
@@ -973,6 +973,28 @@ impl CanonicalSegmentWriter {
     where
         N: IntoIterator<Item = Result<NodeRecord, CanonicalSegmentError>>,
         R: IntoIterator<Item = Result<RelRecord, CanonicalSegmentError>>,
+    {
+        self.write_fallible_with_property_spills_steps(
+            path,
+            generation,
+            nodes.into_iter().map(|record| record.map(Some)),
+            relationships.into_iter().map(|record| record.map(Some)),
+            property_spill,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn write_fallible_with_property_spills_steps<N, R>(
+        &self,
+        path: &Path,
+        generation: ManifestGeneration,
+        nodes: N,
+        relationships: R,
+        property_spill: PropertySpillWriteOptions<'_>,
+    ) -> Result<(CanonicalSegmentManifest, PropertySpillWriteOutput), CanonicalSegmentError>
+    where
+        N: IntoIterator<Item = Result<Option<NodeRecord>, CanonicalSegmentError>>,
+        R: IntoIterator<Item = Result<Option<RelRecord>, CanonicalSegmentError>>,
     {
         let work = self.work.clone().unwrap_or_default();
         work.checkpoint()?;
@@ -1026,8 +1048,8 @@ impl CanonicalSegmentWriter {
         mut descriptor_tree: GraphDescriptorTreeBuilder,
     ) -> Result<PreparedCanonicalSegmentArtifact, CanonicalSegmentError>
     where
-        N: IntoIterator<Item = Result<NodeRecord, CanonicalSegmentError>>,
-        R: IntoIterator<Item = Result<RelRecord, CanonicalSegmentError>>,
+        N: IntoIterator<Item = Result<Option<NodeRecord>, CanonicalSegmentError>>,
+        R: IntoIterator<Item = Result<Option<RelRecord>, CanonicalSegmentError>>,
     {
         let CanonicalWriteIdentity {
             generation,
@@ -1065,7 +1087,10 @@ impl CanonicalSegmentWriter {
                 unit.finish();
                 break;
             };
-            let node = node?;
+            let Some(node) = node? else {
+                unit.finish();
+                continue;
+            };
             work.checkpoint()?;
             let payload = encode_node_with_property_spills(
                 &node,
@@ -1135,7 +1160,10 @@ impl CanonicalSegmentWriter {
                 unit.finish();
                 break;
             };
-            let relationship = relationship?;
+            let Some(relationship) = relationship? else {
+                unit.finish();
+                continue;
+            };
             work.checkpoint()?;
             let payload = encode_relationship_with_property_spills(
                 &relationship,
