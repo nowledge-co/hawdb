@@ -128,7 +128,7 @@ jobs:
 
       - name: Retain typed soak report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mixed-runtime-soak-${{ github.sha }}-${{ github.run_attempt }}
           path: artifacts/soak
@@ -180,7 +180,7 @@ jobs:
 
       - name: Upload async I/O evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: async-segment-io-${{ github.sha }}-${{ github.run_attempt }}
           path: artifacts/async-segment-io
