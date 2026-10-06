@@ -149,6 +149,14 @@ fn spilled_top_n_output_does_not_compete_with_merge_heap_account() {
 }
 
 fn check_in_memory_output_accounting(top_n: bool) {
+    for exit in [Exit::Complete, Exit::Stop, Exit::Error, Exit::Cancel] {
+        check_in_memory_output_exit(top_n, exit);
+    }
+}
+
+fn check_in_memory_output_exit(top_n: bool, exit: Exit) {
+    let token = hawdb_core::RuntimeCancellationToken::new();
+    let task = RuntimeTaskContext::without_deadline(token.clone());
     let memory = ExecutionMemoryConfig {
         blocking_operator_bytes: NonZeroUsize::new(2048).unwrap(),
         batch_payload_bytes: NonZeroUsize::new(200).unwrap(),
@@ -172,7 +180,7 @@ fn check_in_memory_output_accounting(top_n: bool) {
         catalog: &catalog,
         memory: &memory,
         memory_ledger: &ledger,
-        task_context: None,
+        task_context: Some(&task),
         observer: &NoopExecutionObserver,
     };
     let mut output = Vec::new();
@@ -184,7 +192,15 @@ fn check_in_memory_output_accounting(top_n: bool) {
             "sorted output must respect the payload cap"
         );
         output.extend(batch);
-        Ok(BatchControl::Continue)
+        match exit {
+            Exit::Complete => Ok(BatchControl::Continue),
+            Exit::Stop => Ok(BatchControl::Stop),
+            Exit::Error => Err(HawDBError::Execution("consumer failure".into())),
+            Exit::Cancel => {
+                token.cancel();
+                Ok(BatchControl::Continue)
+            }
+        }
     };
     let result = if top_n {
         stream_top_n_batches(
@@ -207,10 +223,21 @@ fn check_in_memory_output_accounting(top_n: bool) {
             &mut emit,
         )
     };
-    result.unwrap();
-    let expected: Vec<_> = if top_n { 1..3 } else { 0..4 }
+    match exit {
+        Exit::Complete => assert_eq!(result.unwrap(), BatchControl::Continue),
+        Exit::Stop => assert_eq!(result.unwrap(), BatchControl::Stop),
+        Exit::Error => assert!(result.unwrap_err().to_string().contains("consumer failure")),
+        Exit::Cancel => assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("runtime task stopped")),
+    }
+    let mut expected: Vec<_> = if top_n { 1..3 } else { 0..4 }
         .map(|value| Binding::scalar("value", Value::Int(value)))
         .collect();
+    if !matches!(exit, Exit::Complete) {
+        expected.truncate(1);
+    }
     assert_eq!(output, expected);
     let snapshot = ledger.snapshot();
     assert_eq!(snapshot.used_bytes, 0);
@@ -239,6 +266,81 @@ fn in_memory_sort_obeys_output_payload_and_transfers_memory_ownership() {
 #[test]
 fn in_memory_top_n_obeys_output_payload_and_transfers_memory_ownership() {
     check_in_memory_output_accounting(true);
+}
+
+#[test]
+fn capped_resident_sort_and_top_n_release_discarded_rows_before_parent_admission() {
+    for top_n in [false, true] {
+        let memory = ExecutionMemoryConfig {
+            blocking_operator_bytes: NonZeroUsize::new(1024).unwrap(),
+            batch_payload_bytes: NonZeroUsize::new(512).unwrap(),
+            batch_rows: NonZeroUsize::new(4).unwrap(),
+            query_memory_bytes: NonZeroUsize::new(1024).unwrap(),
+            ..ExecutionMemoryConfig::default()
+        };
+        let catalog = Catalog::default();
+        let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+        let mut source = Rows(
+            (0..4)
+                .rev()
+                .map(|value| Binding::scalar("value", Value::Int(value)))
+                .collect(),
+        );
+        let items = [SortItem {
+            key: SortKey::Column("value".into()),
+            direction: SortDirection::Asc,
+        }];
+        let context = BlockingExecutionContext {
+            catalog: &catalog,
+            memory: &memory,
+            memory_ledger: &ledger,
+            task_context: None,
+            observer: &NoopExecutionObserver,
+        };
+        let mut output = Vec::new();
+        let mut emit = |batch: BindingBatch| {
+            let _parent = crate::pipeline::TransformBatchBuilder::new(
+                "ProjectExec",
+                memory.batch_rows.get(),
+                memory.batch_payload_bytes,
+                &ledger,
+            )?;
+            output.extend(batch);
+            Ok(BatchControl::Continue)
+        };
+        let cap = ExecutionLimit {
+            output_rows: Some(1),
+        };
+        let result = if top_n {
+            stream_top_n_batches(
+                &PhysicalPlan::EmptyExec,
+                &items,
+                0,
+                4,
+                &mut source,
+                context,
+                cap,
+                &mut emit,
+            )
+        } else {
+            stream_sort_batches(
+                &PhysicalPlan::EmptyExec,
+                &items,
+                &mut source,
+                context,
+                cap,
+                &mut emit,
+            )
+        };
+        result.expect("discarded retention must not reject parent output admission");
+        assert_eq!(output, vec![Binding::scalar("value", Value::Int(0))]);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+        assert!(ledger
+            .snapshot()
+            .classes
+            .iter()
+            .all(|class| class.class != QueryMemoryClass::SpillStaging || class.peak_bytes == 0));
+    }
 }
 
 #[derive(Clone, Copy, Default)]

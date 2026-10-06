@@ -23,7 +23,8 @@ use crate::{BlockingOperatorMemoryReport, ExecutionLimit, QueryMemoryClass};
 use hawdb_core::graph_rag::ScoringSpec;
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_plan_cypher::{
-    PhysicalPlan, SortDirection, SortItem, SortKey, SCORING_RERANK_SCORE_COLUMN,
+    PhysicalPlan, ProjectionExpression, ScalarBinaryOp, SortDirection, SortItem, SortKey,
+    SCORING_RERANK_SCORE_COLUMN,
 };
 use hawdb_storage::scan::ScanPruningReport;
 
@@ -59,7 +60,16 @@ pub fn stream_scoring_rerank_batches(
     stream_top_n_batches(
         input,
         &[SortItem {
-            key: SortKey::Column(SCORING_RERANK_SCORE_COLUMN.to_string()),
+            // The previous scorer used numerical float equality: -0.0 and
+            // +0.0 tie. Normalize only the ordering value and preserve the
+            // reported arithmetic score, including its sign bit.
+            key: SortKey::Expression(ProjectionExpression::Binary {
+                left: Box::new(ProjectionExpression::Column(
+                    SCORING_RERANK_SCORE_COLUMN.to_string(),
+                )),
+                op: ScalarBinaryOp::Add,
+                right: Box::new(ProjectionExpression::Literal(Value::Float(0.0))),
+            }),
             direction: SortDirection::Desc,
         }],
         0,

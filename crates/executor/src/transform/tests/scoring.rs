@@ -160,6 +160,62 @@ fn scoring_consumes_the_complete_stream_and_preserves_exact_ties() {
 }
 
 #[test]
+fn scoring_preserves_signed_zero_ties_and_reported_score_bits() {
+    use hawdb_core::graph_rag::DecayTerm;
+
+    let mut scoring = spec();
+    scoring.decay.push(DecayTerm {
+        feature: ScoreFeature::TimestampProperty("timestamp".into()),
+        half_life: 1.0,
+        min_factor: 0.0,
+    });
+    let originals: Vec<_> = [-1.0, 1.0]
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, score)| {
+            Binding::values(BTreeMap::from([
+                ("score".into(), Value::Float(score)),
+                ("timestamp".into(), Value::Int(0)),
+                ("ordinal".into(), Value::Int(ordinal as i64)),
+            ]))
+        })
+        .collect();
+    for batch_rows in [1, 2] {
+        for limit in [1, 2] {
+            with_context(4, 32_768, |context| {
+                let mut source = Source::new(originals.clone(), batch_rows);
+                let mut output = Vec::new();
+                stream_scoring_rerank_batches(
+                    &PhysicalPlan::EmptyExec,
+                    "score",
+                    &scoring,
+                    limit,
+                    &mut source,
+                    context,
+                    ExecutionLimit::unlimited(),
+                    &mut |batch| {
+                        output.extend(batch);
+                        Ok(BatchControl::Continue)
+                    },
+                )
+                .unwrap();
+                assert_eq!(output.len(), limit);
+                for (ordinal, row) in output.iter().enumerate() {
+                    assert_eq!(row.values["ordinal"], Value::Int(ordinal as i64));
+                    let Value::Float(score) =
+                        row.values[hawdb_plan_cypher::SCORING_RERANK_SCORE_COLUMN]
+                    else {
+                        panic!("scoring must report the combined float");
+                    };
+                    let expected: f64 = if ordinal == 0 { -0.0 } else { 0.0 };
+                    assert_eq!(score.to_bits(), expected.to_bits());
+                }
+            });
+        }
+    }
+}
+
+#[test]
 fn scoring_uses_combined_signals_before_truncating_candidates() {
     with_context(4, 32_768, |context| {
         let mut source = Source::new(
@@ -282,89 +338,119 @@ fn scoring_spills_without_changing_ranking_or_leaking_admissions() {
     std::fs::create_dir(&path).unwrap();
     let directory = Directory(path);
     let catalog = Catalog::default();
-    let originals: Vec<_> = (0..24)
-        .map(|ordinal| {
-            Binding::values(BTreeMap::from([
-                ("score".into(), Value::Int((ordinal * 7) % 11)),
-                ("ordinal".into(), Value::Int(ordinal)),
-            ]))
-        })
-        .collect();
-    let mut expected = originals.clone();
-    expected.sort_by_key(|row| std::cmp::Reverse(row.values["score"].clone()));
-    expected.truncate(8);
-    for row in &mut expected {
-        let Value::Int(score) = row.values["score"] else {
-            unreachable!()
-        };
-        row.values.insert(
-            hawdb_plan_cypher::SCORING_RERANK_SCORE_COLUMN.into(),
-            Value::Float(score as f64),
-        );
-    }
-    for blocking_bytes in [65_536, 1024] {
-        let memory = ExecutionMemoryConfig {
-            blocking_operator_bytes: NonZeroUsize::new(blocking_bytes).unwrap(),
-            query_memory_bytes: NonZeroUsize::new(131_072).unwrap(),
-            batch_payload_bytes: NonZeroUsize::new(1024).unwrap(),
-            batch_rows: NonZeroUsize::new(4).unwrap(),
-            min_spill_free_bytes: NonZeroU64::MIN,
-            spill_directory: directory.0.clone(),
-            ..ExecutionMemoryConfig::default()
-        };
-        let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
-        let reports = Reports::default();
-        let context = BatchExecutionContext {
-            catalog: &catalog,
-            memory: &memory,
-            memory_ledger: &ledger,
-            task_context: None,
-            observer: &reports,
-        };
-        let mut source = Source::new(originals.clone(), 1);
-        let mut output = Vec::new();
-        stream_scoring_rerank_batches(
-            &PhysicalPlan::EmptyExec,
-            "score",
-            &spec(),
-            8,
-            &mut source,
-            context,
-            ExecutionLimit::unlimited(),
-            &mut |batch| {
-                assert!(batch.len() <= memory.batch_rows.get());
-                assert!(
-                    batch
-                        .iter()
-                        .map(crate::binding::binding_memory_bytes)
-                        .sum::<usize>()
-                        <= memory.batch_payload_bytes.get()
-                );
-                output.extend(batch);
-                Ok(BatchControl::Continue)
-            },
-        )
-        .unwrap();
-        assert_eq!(output, expected);
-        let snapshot = ledger.snapshot();
-        assert_eq!(snapshot.used_bytes, 0);
-        assert!(snapshot.peak_bytes <= memory.query_memory_bytes.get());
-        let report = reports.0.borrow();
-        assert_eq!(report.len(), 1);
-        assert_eq!(report[0].operator, "ScoringRerankExec");
-        assert_eq!(report[0].input_rows, originals.len());
-        assert_eq!(
-            report[0].spill_run_count > 0,
-            blocking_bytes == 1024,
-            "both spill and resident paths must actually execute"
-        );
-        assert_eq!(
-            snapshot
-                .classes
-                .iter()
-                .any(|class| class.class == QueryMemoryClass::SpillStaging && class.peak_bytes > 0),
-            blocking_bytes == 1024
-        );
-        assert_eq!(memory.spill_pool_snapshot().unwrap().active_runs, 0);
+    for signed_zeros in [false, true] {
+        let originals: Vec<_> = (0..24)
+            .map(|ordinal| {
+                let score = if signed_zeros {
+                    Value::Float(if ordinal % 2 == 0 { -1.0 } else { 1.0 })
+                } else {
+                    Value::Int((ordinal * 7) % 11)
+                };
+                Binding::values(BTreeMap::from([
+                    ("score".into(), score),
+                    ("ordinal".into(), Value::Int(ordinal)),
+                    ("timestamp".into(), Value::Int(0)),
+                ]))
+            })
+            .collect();
+        let mut scoring = spec();
+        if signed_zeros {
+            scoring.decay.push(hawdb_core::graph_rag::DecayTerm {
+                feature: ScoreFeature::TimestampProperty("timestamp".into()),
+                half_life: 1.0,
+                min_factor: 0.0,
+            });
+        }
+        let mut expected = originals.clone();
+        if !signed_zeros {
+            expected.sort_by_key(|row| std::cmp::Reverse(row.values["score"].clone()));
+        }
+        expected.truncate(8);
+        for row in &mut expected {
+            let score = match row.values["score"] {
+                Value::Int(score) => score as f64,
+                Value::Float(score) => score * 0.0,
+                _ => unreachable!(),
+            };
+            row.values.insert(
+                hawdb_plan_cypher::SCORING_RERANK_SCORE_COLUMN.into(),
+                Value::Float(score),
+            );
+        }
+        for blocking_bytes in [65_536, 1024] {
+            let memory = ExecutionMemoryConfig {
+                blocking_operator_bytes: NonZeroUsize::new(blocking_bytes).unwrap(),
+                query_memory_bytes: NonZeroUsize::new(131_072).unwrap(),
+                batch_payload_bytes: NonZeroUsize::new(1024).unwrap(),
+                batch_rows: NonZeroUsize::new(4).unwrap(),
+                min_spill_free_bytes: NonZeroU64::MIN,
+                spill_directory: directory.0.clone(),
+                ..ExecutionMemoryConfig::default()
+            };
+            let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+            let reports = Reports::default();
+            let context = BatchExecutionContext {
+                catalog: &catalog,
+                memory: &memory,
+                memory_ledger: &ledger,
+                task_context: None,
+                observer: &reports,
+            };
+            let mut source = Source::new(originals.clone(), 1);
+            let mut output = Vec::new();
+            stream_scoring_rerank_batches(
+                &PhysicalPlan::EmptyExec,
+                "score",
+                &scoring,
+                8,
+                &mut source,
+                context,
+                ExecutionLimit::unlimited(),
+                &mut |batch| {
+                    assert!(batch.len() <= memory.batch_rows.get());
+                    assert!(
+                        batch
+                            .iter()
+                            .map(crate::binding::binding_memory_bytes)
+                            .sum::<usize>()
+                            <= memory.batch_payload_bytes.get()
+                    );
+                    output.extend(batch);
+                    Ok(BatchControl::Continue)
+                },
+            )
+            .unwrap();
+            assert_eq!(output, expected);
+            for (row, expected_row) in output.iter().zip(&expected) {
+                let column = hawdb_plan_cypher::SCORING_RERANK_SCORE_COLUMN;
+                let (Value::Float(score), Value::Float(expected_score)) =
+                    (&row.values[column], &expected_row.values[column])
+                else {
+                    panic!("combined scores must remain floats");
+                };
+                assert_eq!(score.to_bits(), expected_score.to_bits());
+            }
+            let snapshot = ledger.snapshot();
+            assert_eq!(snapshot.used_bytes, 0);
+            assert!(snapshot.peak_bytes <= memory.query_memory_bytes.get());
+            let report = reports.0.borrow();
+            assert_eq!(report.len(), 1);
+            assert_eq!(report[0].operator, "ScoringRerankExec");
+            assert_eq!(report[0].input_rows, originals.len());
+            assert_eq!(
+                report[0].spill_run_count > 0,
+                blocking_bytes == 1024,
+                "both spill and resident paths must actually execute"
+            );
+            assert_eq!(
+                snapshot
+                    .classes
+                    .iter()
+                    .any(|class| class.class == QueryMemoryClass::SpillStaging
+                        && class.peak_bytes > 0),
+                blocking_bytes == 1024
+            );
+            assert_eq!(memory.spill_pool_snapshot().unwrap().active_runs, 0);
+        }
     }
 }

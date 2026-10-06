@@ -489,6 +489,10 @@ fn emit_sorted_output(
             return Ok(BatchControl::Stop);
         }
     }
+    // The for-loop has destroyed its iterator, including rows beyond the
+    // result cap. Release their old retention charges before the final batch
+    // asks a parent transform to admit its output.
+    tracker.reset();
     runtime_checkpoint(task_context)?;
     output.emit(emit)
 }
