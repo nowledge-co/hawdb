@@ -18,6 +18,7 @@
 //! the host-facing contracts can depend on, because the scoring operator runs in
 //! the executor while the request contract lives above the search crate.
 
+use super::ScoringCombination;
 use std::fmt;
 
 /// Typed, host-injectable rerank scoring.
@@ -212,6 +213,7 @@ impl ScoringSpec {
         let combined_score = self.evaluate_into(
             source,
             reference_time_millis,
+            ScoringCombination::WeightedSum,
             &mut |value| term_contributions.push(value),
             &mut |value| decay_factors.push(value),
             &mut |feature: &ScoreFeature| missing_features.push(feature.clone()),
@@ -237,31 +239,48 @@ impl ScoringSpec {
         self.evaluate_into(
             source,
             reference_time_millis,
+            ScoringCombination::WeightedSum,
             &mut |_| {},
             &mut |_| {},
             &mut |_| {},
         )
     }
 
-    fn evaluate_into(
+    pub(super) fn evaluate_into(
         &self,
         source: &impl ScoringFeatureSource,
         reference_time_millis: u64,
+        combination: ScoringCombination,
         term_contribution: &mut impl FnMut(f64),
         decay_factor: &mut impl FnMut(f64),
         missing_feature: &mut impl FnMut(&ScoreFeature),
     ) -> f64 {
-        let mut combined_score = 0.0;
+        let mut combined_score = match combination {
+            ScoringCombination::WeightedSum => 0.0,
+            ScoringCombination::WeightedProduct => 1.0,
+        };
         for term in &self.terms {
             let value = match self.term_value(&term.feature, source) {
                 Some(value) => value,
                 None => {
                     missing_feature(&term.feature);
-                    0.0
+                    match combination {
+                        ScoringCombination::WeightedSum => 0.0,
+                        ScoringCombination::WeightedProduct => {
+                            term_contribution(1.0);
+                            continue;
+                        }
+                    }
                 }
             };
-            let contribution = term.weight * value;
-            combined_score += contribution;
+            let contribution = match combination {
+                ScoringCombination::WeightedSum => term.weight * value,
+                ScoringCombination::WeightedProduct => value.powf(term.weight),
+            };
+            match combination {
+                ScoringCombination::WeightedSum => combined_score += contribution,
+                ScoringCombination::WeightedProduct => combined_score *= contribution,
+            }
             term_contribution(contribution);
         }
         for decay in &self.decay {

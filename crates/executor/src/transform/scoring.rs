@@ -20,7 +20,7 @@ use crate::pipeline::{
     TransformBatchBuilder,
 };
 use crate::{BlockingOperatorMemoryReport, ExecutionLimit, QueryMemoryClass};
-use hawdb_core::graph_rag::ScoringSpec;
+use hawdb_core::graph_rag::{ScoringProgram, ScoringSpec};
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_plan_cypher::{
     PhysicalPlan, ProjectionExpression, ScalarBinaryOp, SortDirection, SortItem, SortKey,
@@ -41,10 +41,97 @@ pub fn stream_scoring_rerank_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
+    stream_scoring_batches(
+        input,
+        score_column,
+        ScoringEvaluator::Legacy(spec),
+        crate::scoring::reference_time_millis(),
+        limit,
+        source,
+        context,
+        execution_limit,
+        emit,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn stream_scoring_program_batches(
+    input: &PhysicalPlan,
+    score_column: &str,
+    program: &ScoringProgram,
+    reference_time_millis: u64,
+    limit: usize,
+    source: &mut dyn BindingBatchSource,
+    context: BatchExecutionContext<'_>,
+    execution_limit: ExecutionLimit,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
+    stream_scoring_batches(
+        input,
+        score_column,
+        ScoringEvaluator::Program(program),
+        reference_time_millis,
+        limit,
+        source,
+        context,
+        execution_limit,
+        emit,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum ScoringEvaluator<'a> {
+    Legacy(&'a ScoringSpec),
+    Program(&'a ScoringProgram),
+}
+
+impl ScoringEvaluator<'_> {
+    fn operator(self) -> &'static str {
+        match self {
+            Self::Legacy(_) => "ScoringRerankExec",
+            Self::Program(_) => "ScoringProgramExec",
+        }
+    }
+
+    fn input_account(self) -> &'static str {
+        match self {
+            Self::Legacy(_) => "ScoringRerankExec input",
+            Self::Program(_) => "ScoringProgramExec input",
+        }
+    }
+
+    fn evaluate(
+        self,
+        features: &crate::scoring::BindingScoreFeatures<'_>,
+        time: u64,
+    ) -> Result<f64> {
+        match self {
+            Self::Legacy(spec) => Ok(spec.evaluate_score(features, time)),
+            Self::Program(program) => program
+                .evaluate_score(features, time)
+                .map_err(|error| HawDBError::Execution(format!("scoring program failed: {error}"))),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stream_scoring_batches(
+    input: &PhysicalPlan,
+    score_column: &str,
+    spec: ScoringEvaluator<'_>,
+    reference_time: u64,
+    limit: usize,
+    source: &mut dyn BindingBatchSource,
+    context: BatchExecutionContext<'_>,
+    execution_limit: ExecutionLimit,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
     runtime_checkpoint(context.task_context)?;
-    spec.validate().map_err(|error| {
-        HawDBError::Execution(format!("invalid scoring specification: {error}"))
-    })?;
+    if let ScoringEvaluator::Legacy(spec) = spec {
+        spec.validate().map_err(|error| {
+            HawDBError::Execution(format!("invalid scoring specification: {error}"))
+        })?;
+    }
     let retained = limit.min(execution_limit.output_rows.unwrap_or(usize::MAX));
     if retained == 0 {
         return Ok(BatchControl::Continue);
@@ -54,9 +141,9 @@ pub fn stream_scoring_rerank_batches(
         score_column,
         spec,
         context,
-        reference_time: crate::scoring::reference_time_millis(),
+        reference_time,
     };
-    let observer = ScoringObserver(context.observer);
+    let observer = ScoringObserver(context.observer, spec.operator());
     stream_top_n_batches(
         input,
         &[SortItem {
@@ -84,7 +171,7 @@ pub fn stream_scoring_rerank_batches(
     )
 }
 
-struct ScoringObserver<'a>(&'a dyn ExecutionObserver);
+struct ScoringObserver<'a>(&'a dyn ExecutionObserver, &'static str);
 
 impl ExecutionObserver for ScoringObserver<'_> {
     fn record_scan_pruning_report(&self, report: ScanPruningReport) {
@@ -93,7 +180,7 @@ impl ExecutionObserver for ScoringObserver<'_> {
 
     fn record_blocking_memory_report(&self, mut report: BlockingOperatorMemoryReport) {
         if report.operator == "TopNExec" {
-            report.operator = "ScoringRerankExec".to_string();
+            report.operator = self.1.to_string();
         }
         self.0.record_blocking_memory_report(report);
     }
@@ -102,7 +189,7 @@ impl ExecutionObserver for ScoringObserver<'_> {
 struct ScoringSource<'a, 'runtime> {
     source: &'a mut dyn BindingBatchSource,
     score_column: &'a str,
-    spec: &'a ScoringSpec,
+    spec: ScoringEvaluator<'a>,
     context: BatchExecutionContext<'runtime>,
     reference_time: u64,
 }
@@ -122,12 +209,12 @@ impl BindingBatchSource for ScoringSource<'_, '_> {
             });
             let input_account = context.memory_ledger.account(
                 QueryMemoryClass::PipelineBatch,
-                "ScoringRerankExec input",
+                self.spec.input_account(),
                 context.memory.batch_payload_bytes,
             );
             let mut input_lease = input_account.reserve(input_bytes)?;
             let mut output = TransformBatchBuilder::new(
-                "ScoringRerankExec",
+                self.spec.operator(),
                 context.memory.batch_rows.get(),
                 context.memory.batch_payload_bytes,
                 context.memory_ledger,
@@ -137,7 +224,7 @@ impl BindingBatchSource for ScoringSource<'_, '_> {
                 runtime_checkpoint(context.task_context)?;
                 let features =
                     crate::scoring::BindingScoreFeatures::new(&binding, self.score_column);
-                let score = self.spec.evaluate_score(&features, self.reference_time);
+                let score = self.spec.evaluate(&features, self.reference_time)?;
                 runtime_checkpoint(context.task_context)?;
                 if !score.is_finite() {
                     return Err(HawDBError::Execution(

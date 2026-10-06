@@ -190,3 +190,28 @@ pub(super) fn stream_scoring_rerank_batches(
         emit,
     )
 }
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn stream_scoring_program_batches(
+    input: &PhysicalPlan,
+    score_column: &str,
+    program: &hawdb_core::graph_rag::ScoringProgram,
+    reference_time_millis: u64,
+    limit: usize,
+    context: BatchReadContext<'_>,
+    execution_limit: ExecutionLimit,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
+    let mut source = PreparedTransformSource { context };
+    executor_transform::stream_scoring_program_batches(
+        input,
+        score_column,
+        program,
+        reference_time_millis,
+        limit,
+        &mut source,
+        context.kernel_context(),
+        execution_limit,
+        emit,
+    )
+}

@@ -16,7 +16,78 @@
 
 use crate::binding::Binding;
 use hawdb_core::graph_rag::ScoringFeatureSource;
-use hawdb_core::Value;
+use hawdb_core::{HawDBError, Result, RuntimeTaskContext, Value};
+use std::num::NonZeroU64;
+
+/// Validated identity and logical per-row cost for a host's batch scorer.
+/// A future query attachment must include name/version in its cache identity
+/// or bypass the cache. This cost is a planning hint, not elapsed time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostScorerDescriptor<'a> {
+    name: &'a str,
+    version: &'a str,
+    cpu_units_per_row: NonZeroU64,
+}
+
+impl<'a> HostScorerDescriptor<'a> {
+    pub fn new(name: &'a str, version: &'a str, cpu_units_per_row: NonZeroU64) -> Result<Self> {
+        if [name, version]
+            .iter()
+            .any(|value| value.is_empty() || value.chars().any(char::is_control))
+        {
+            return Err(HawDBError::Semantic(
+                "host scorer name and version must be nonempty without control characters".into(),
+            ));
+        }
+        Ok(Self {
+            name,
+            version,
+            cpu_units_per_row,
+        })
+    }
+
+    pub fn name(self) -> &'a str {
+        self.name
+    }
+
+    pub fn version(self) -> &'a str {
+        self.version
+    }
+
+    pub fn cpu_units_per_row(self) -> NonZeroU64 {
+        self.cpu_units_per_row
+    }
+}
+
+/// Borrowed inputs for the host-scoring escape hatch.
+/// Scratch allocations must reserve this query account before allocation and
+/// release their leases before returning; feature rows cannot escape the call.
+pub struct HostScorerBatch<'a> {
+    pub features: &'a [&'a dyn ScoringFeatureSource],
+    pub reference_time_millis: u64,
+    pub task_context: Option<&'a RuntimeTaskContext>,
+    pub scratch_account: &'a crate::QueryMemoryAccount,
+}
+
+impl HostScorerBatch<'_> {
+    pub fn checkpoint(&self) -> Result<()> {
+        crate::pipeline::runtime_checkpoint(self.task_context)
+    }
+}
+
+/// Batch scorer contract for a concrete formula that templates cannot express.
+///
+/// This declaration does not register or execute callbacks in queries. When
+/// integrated, the engine owns a score slice exactly matching the feature-row
+/// count, checkpoints cancellation before/after the call, and validates every
+/// finite output before TopN or consumer delivery. Implementations must write
+/// every score in input order, be deterministic for the declared identity,
+/// parameters and clock, and obey the scratch/cancellation contract.
+pub trait HostScorer {
+    fn descriptor(&self) -> HostScorerDescriptor<'_>;
+
+    fn score_batch(&mut self, request: HostScorerBatch<'_>, scores: &mut [f64]) -> Result<()>;
+}
 
 /// Reads scoring features from one row.
 ///

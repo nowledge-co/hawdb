@@ -25,6 +25,174 @@ fn spec() -> ScoringSpec {
     }
 }
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[test]
+fn scoring_program_product_uses_fixed_time_and_matches_resident_and_spilled_output() {
+    use crate::observer::ExecutionObserver;
+    use crate::{BlockingOperatorMemoryReport, QueryMemoryClass};
+    use hawdb_core::graph_rag::{
+        DecayTerm, MissingScoringFeature, ScoringCombination, ScoringProgram,
+    };
+    use std::cell::RefCell;
+    use std::num::NonZeroU64;
+
+    #[derive(Default)]
+    struct Reports(RefCell<Vec<BlockingOperatorMemoryReport>>);
+    impl ExecutionObserver for Reports {
+        fn record_blocking_memory_report(&self, report: BlockingOperatorMemoryReport) {
+            self.0.borrow_mut().push(report);
+        }
+    }
+    struct Directory(std::path::PathBuf);
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+    let path = std::env::temp_dir().join(format!(
+        "hawdb-scoring-program-spill-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&path).unwrap();
+    let directory = Directory(path);
+    let catalog = Catalog::default();
+    let program = ScoringProgram::new(
+        ScoringCombination::WeightedProduct,
+        MissingScoringFeature::Reject,
+        ScoringSpec {
+            terms: vec![
+                ScoringTerm {
+                    feature: ScoreFeature::SearchScore,
+                    weight: 2.0,
+                },
+                ScoringTerm {
+                    feature: ScoreFeature::NodeProperty("importance".into()),
+                    weight: 1.0,
+                },
+            ],
+            decay: vec![DecayTerm {
+                feature: ScoreFeature::TimestampProperty("created".into()),
+                half_life: 1.0,
+                min_factor: 0.0,
+            }],
+        },
+    )
+    .unwrap();
+    let originals: Vec<_> = (0..24)
+        .map(|ordinal| {
+            Binding::values(BTreeMap::from([
+                ("ordinal".into(), Value::Int(ordinal)),
+                (
+                    "score".into(),
+                    Value::Float(((ordinal * 5) % 13 + 1) as f64 / 13.0),
+                ),
+                (
+                    "importance".into(),
+                    Value::Float(((ordinal * 7) % 17 + 1) as f64 / 17.0),
+                ),
+                (
+                    "created".into(),
+                    Value::Int(if ordinal % 2 == 0 { 2_000 } else { 1_000 }),
+                ),
+            ]))
+        })
+        .collect();
+    let column = hawdb_plan_cypher::SCORING_RERANK_SCORE_COLUMN;
+    let mut expected = originals.clone();
+    for row in &mut expected {
+        let (Value::Float(seed), Value::Float(importance), Value::Int(created)) = (
+            &row.values["score"],
+            &row.values["importance"],
+            &row.values["created"],
+        ) else {
+            unreachable!()
+        };
+        let independent =
+            seed.powf(2.0) * importance * 0.5f64.powf((2_000 - created) as f64 / 1_000.0);
+        row.values.insert(column.into(), Value::Float(independent));
+    }
+    expected.sort_by(|left, right| {
+        let (Value::Float(left), Value::Float(right)) =
+            (&left.values[column], &right.values[column])
+        else {
+            unreachable!()
+        };
+        right.partial_cmp(left).unwrap()
+    });
+    expected.truncate(8);
+    for blocking_bytes in [65_536, 1_024] {
+        let memory = ExecutionMemoryConfig {
+            blocking_operator_bytes: NonZeroUsize::new(blocking_bytes).unwrap(),
+            query_memory_bytes: NonZeroUsize::new(131_072).unwrap(),
+            batch_payload_bytes: NonZeroUsize::new(1_024).unwrap(),
+            batch_rows: NonZeroUsize::new(2).unwrap(),
+            min_spill_free_bytes: NonZeroU64::MIN,
+            spill_directory: directory.0.clone(),
+            ..ExecutionMemoryConfig::default()
+        };
+        let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+        let reports = Reports::default();
+        let context = BatchExecutionContext {
+            catalog: &catalog,
+            memory: &memory,
+            memory_ledger: &ledger,
+            task_context: None,
+            observer: &reports,
+        };
+        let mut source = Source::new(originals.clone(), 1);
+        let mut output = Vec::new();
+        stream_scoring_program_batches(
+            &PhysicalPlan::EmptyExec,
+            "score",
+            &program,
+            2_000,
+            8,
+            &mut source,
+            context,
+            ExecutionLimit::unlimited(),
+            &mut |batch| {
+                assert!(batch.len() <= memory.batch_rows.get());
+                assert!(
+                    batch
+                        .iter()
+                        .map(crate::binding::binding_memory_bytes)
+                        .sum::<usize>()
+                        <= memory.batch_payload_bytes.get()
+                );
+                output.extend(batch);
+                Ok(BatchControl::Continue)
+            },
+        )
+        .unwrap();
+        assert_eq!(output, expected);
+        for (actual, expected) in output.iter().zip(&expected) {
+            let (Value::Float(actual), Value::Float(expected)) =
+                (&actual.values[column], &expected.values[column])
+            else {
+                unreachable!()
+            };
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+        assert_eq!(source.calls, 24, "evaluate the whole candidate stream");
+        assert_eq!(source.requested, vec![ExecutionLimit::unlimited()]);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+        let report = reports.0.borrow();
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0].operator, "ScoringProgramExec");
+        assert_eq!(report[0].input_rows, 24);
+        assert_eq!(report[0].spill_run_count > 0, blocking_bytes == 1_024);
+        assert_eq!(
+            ledger
+                .snapshot()
+                .classes
+                .iter()
+                .any(|class| class.class == QueryMemoryClass::SpillStaging && class.peak_bytes > 0),
+            blocking_bytes == 1_024
+        );
+        assert_eq!(memory.spill_pool_snapshot().unwrap().active_runs, 0);
+    }
+}
+
 fn score_rows() -> Vec<Binding> {
     [1, 4, 4, 2]
         .into_iter()

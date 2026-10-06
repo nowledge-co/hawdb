@@ -30,7 +30,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 
 mod scoring;
-pub use scoring::stream_scoring_rerank_batches;
+pub use scoring::{stream_scoring_program_batches, stream_scoring_rerank_batches};
 
 pub fn stream_filter_batches(
     input: &PhysicalPlan,

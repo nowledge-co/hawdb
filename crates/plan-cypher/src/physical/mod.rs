@@ -592,6 +592,14 @@ pub enum PhysicalPlan {
         limit: usize,
         input: Box<PhysicalPlan>,
     },
+    /// Host-selected sum/product program with one fixed execution clock.
+    ScoringProgramExec {
+        score_column: String,
+        program: hawdb_core::graph_rag::ScoringProgram,
+        reference_time_millis: u64,
+        limit: usize,
+        input: Box<PhysicalPlan>,
+    },
 }
 
 pub use domain::{

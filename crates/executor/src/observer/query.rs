@@ -208,6 +208,7 @@ fn collect_blocking_operator_kinds(plan: &PhysicalPlan, output: &mut BTreeSet<St
                 | PhysicalPlan::SortExec { .. }
                 | PhysicalPlan::TopNExec { .. }
                 | PhysicalPlan::ScoringRerankExec { .. }
+                | PhysicalPlan::ScoringProgramExec { .. }
                 | PhysicalPlan::NodeCartesianProductExec { .. }
                 | PhysicalPlan::HashJoinExec { .. }
         ) {

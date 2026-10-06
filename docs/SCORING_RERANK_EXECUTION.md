@@ -2,8 +2,9 @@
 
 This records the physical scoring operator's resource contract for
 [issue #293](https://github.com/nowledge-co/hawdb/issues/293). It is not the
-ordinary Cypher attachment, cache/template contract or Mem route migration;
-those remain part of that issue's acceptance boundary.
+complete Mem route migration. The ordinary query attachment and cache contract
+below are implemented; actual graph-hop/seed provenance and a Mem consumer
+remain part of that issue's acceptance boundary.
 
 `ScoringRerankExec` validates its `ScoringSpec`, captures time once for the
 operator execution, and evaluates every candidate before selecting its result
@@ -35,8 +36,91 @@ physical operator signature remain intact. This resource correction does not
 introduce product ranking weights or change SearchIndex RRF. The binding
 feature source still reads its declared score column and returned numeric
 property values; actual expansion-hop and graph-seed provenance are not yet
-attached. A request-wide time anchor and coefficient/cache rebinding also
-remain outstanding.
+attached to the binding feature source. The legacy operator captures its own
+time; the new ordinary request path below uses one request-wide time anchor.
+
+## Ordinary query scoring programs
+
+The embedded `hawdb` facade exports `ScoringProgram`, `ScoringRequest` and
+the borrowed `QueryRequest`. `Database::query_request` and
+`DatabaseReadTransaction::{query_request,query_request_streaming}` accept the
+same Cypher text and parameters with optional scoring, access control, task
+context and restrictive read-output caps. Existing string overloads and public
+`Binding`, `ScoringSpec` and `QueryStreamOptions` fields remain intact.
+Read snapshots can use the existing external-read operator through
+`query_request_streaming_with_external`; this is a generic library boundary.
+Materialized snapshot requests preserve EXPLAIN and EXPLAIN ANALYZE through
+the existing snapshot explain executor, including current scoring, task context
+and restrictive read caps. Streaming requests retain their existing EXPLAIN
+rejection. Parsing and clock capture occur once in either request path.
+
+Programs validate the legacy specification and explicitly declare composition:
+
+- `WeightedSum` computes the ordered sum of `weight * value`, preserving the
+  legacy arithmetic bits.
+- `WeightedProduct` computes the ordered product of `value.powf(weight)`.
+  Weights are exponents; a zero weight contributes one. Negative bases with
+  fractional weights and overflow fail when their combined result is nonfinite.
+- Both multiply the same declared exponential decay factors afterward.
+  A half-life is measured in hops for `HopDistance` and seconds for timestamp
+  properties, which are read as epoch milliseconds.
+- `Reject` reports a missing or nonfinite declared signal as an error.
+  `Neutral` uses zero for missing sum terms and one for missing product terms
+  or decay factors. These are explicit request choices, with distinct shapes.
+
+Property names refer to returned value aliases in this ordinary attachment.
+The declared score column supplies `SearchScore`; this does not by itself prove
+that an arbitrary host expression came from a vector or text retriever.
+`GraphSeedScore` and `HopDistance` remain absent until their actual producer
+provenance is attached. Strict programs requesting them fail; no graph bound
+or fabricated seed value is substituted. The existing knowledge-retrieval
+pipeline's canonical feature source and neutral legacy policy are unchanged.
+
+`ScoringRequest` carries the final K independently of the Cypher candidate
+source. The planner preserves every existing query operator and appends the
+known, costed `ScoringProgramExec`, which streams every candidate through the
+shared accounted TopN implementation. A query with an existing LIMIT/OFFSET
+requires `with_candidate_window()`; that explicit window remains in force.
+Neither K nor a smaller result cap becomes an upstream seed or graph limit.
+The combined result column is `scoring_rerank_score`. Timestamp decay uses one
+anchor captured before parsing/planning, or the host's explicit
+`with_reference_time_millis` input. Zero K retains its no-source-read behavior.
+
+The real plan-cache key includes the typed ordered program shape, composition,
+missing policy, input score-column name, final K and candidate-window policy.
+Coefficients, half-lives, floors and reference time are execution values.
+Cached physical templates hold neutral coefficients and a zero time anchor;
+both hits and misses validate the structure and rebind the current program
+and anchor. Query parameter and access-scope binding descend through scoring.
+Unscored requests use a distinct key. EXPLAIN refreshes the executed program,
+its current expression and estimated scoring cardinality/cost. Scalar program
+evaluation allocates no per-row diagnostic vectors.
+
+This does not yet complete https://github.com/nowledge-co/hawdb/issues/293:
+actual expansion provenance, one real Mem route and full delivery qualification
+remain required. No product weights or runtime
+activation are selected by these templates.
+
+## Host-scoring escape hatch
+
+The facade exports the batch-oriented `HostScorer` declaration required by the
+issue, with a validated borrowed `HostScorerDescriptor` (name, version and
+nonzero logical CPU units per row) and `HostScorerBatch`. Batch inputs borrow
+feature rows, one fixed clock, task context and the existing query scratch
+account. The host writes into an engine-owned score slice in input order;
+scratch allocation must reserve the supplied account first and release its
+leases before returning. The descriptor identifies deterministic behavior,
+including any host configuration that affects scores.
+
+No query request registers or invokes this trait yet. A concrete non-template
+formula must establish the need before callback execution is added. That future
+attachment must capture a stable descriptor, include identity/version in the
+cache key or bypass it, account the input/output buffers, checkpoint before and
+after the callback, and reject incomplete/nonfinite output before ranking or
+delivery. Mid-call work must check the borrowed cancellation context. Native
+shared-library discovery, WASM UDFs and a new scorer runtime are outside this
+contract. This declaration supplies an extension contract, not execution or
+resource-acceptance evidence for a callback pipeline.
 
 ## Regression coverage
 
@@ -75,6 +159,10 @@ core oracle.
 | Capped resident parent admission | `396a6c2` partial-batch guard rejects ProjectExec at 1,079 bytes against 1,024; at `1a18e8f`, changing only batch rows 4 to 1 reproduces the same failure independently for Sort and TopN | Partial and full terminal batches (cap 1, batch rows 1/4; cap 2, batch rows 2 and query budget 800); exact prefix, successful parent admission and zero retained ledger |
 | Scoring input parameter binding | `1a18e8f` retains a parameter-slot Map instead of current request value `first` | Two request values beneath the scoring parent, missing-slot rejection, unchanged score specification/operator and immutable stored template |
 | EXISTS input parameter binding | `064df131` retains a parameter-slot Map instead of current request value `first` | Two request values beneath EXISTS, missing-slot rejection, unchanged relationship/direction/input and immutable stored template; the physical binder exhaustively classifies all operators |
+| Weighted product / fixed clock through resident and spill | Production mutations replace exponentiation with weighted multiplication, and bind the operator clock to zero | Independent complete binding/score-bit oracle, whole candidate stream, resident versus actual spill, caps and released ledger/run admissions |
+| Typed program shape and signal policy | Separate production mutations collapse composition or missing policy in the shape, ignore required missing values, and accept a nonfinite result | Distinct template identities, explicit missing-value failure and finite arithmetic; core scalar/diagnostic parity |
+| Ordinary request cache and read boundaries | Nine separate production mutations skip hit coefficient binding, retain a zero hit clock, collapse the scoring cache key, bypass candidate-window or write admission, or omit payload/row/task/access request forwarding; each fails its unchanged guard, and byte-restored ACL execution passes all four | Real cache hits and structural isolation; explicit retained query window; no ranked mutation; validated no-callback row/payload/cancellation failures; actual ACL-scoped winner |
+| Snapshot request EXPLAIN | The initial materialized snapshot request delegates to streaming and rejects EXPLAIN; the unchanged new guard fails its first actual request | Shared snapshot EXPLAIN/ANALYZE, cache-hit coefficients and time, executed final K, payload cap and precancelled request |
 
 Focused replay/verification uses the existing executor and plan-cache unit owners:
 

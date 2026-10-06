@@ -600,6 +600,7 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: &BTreeMap<String, Val
         | PhysicalPlan::AdjacencyExistsExec { input, .. }
         | PhysicalPlan::DistinctExec { input }
         | PhysicalPlan::ScoringRerankExec { input, .. }
+        | PhysicalPlan::ScoringProgramExec { input, .. }
         | PhysicalPlan::LimitExec { input, .. } => bind_physical_plan(input, parameters)?,
         PhysicalPlan::IndexNodeSeek { value, .. } => bind_value(value, parameters)?,
         PhysicalPlan::IndexNodeMultiSeek { values, .. } => {
