@@ -36,6 +36,41 @@ pub(super) use validation::{
 use super::*;
 use crate::background::{CheckpointWorkContext, CheckpointWorkError};
 
+pub(crate) fn encode_relational_table_schema_with_work_context(
+    schema: &RelationalTableSchema,
+    work: &CheckpointWorkContext,
+) -> Result<Vec<u8>, RelationalError> {
+    validate_table_schema_with_work_context(schema, work)?;
+    let mut encoder = Encoder::default();
+    table_schema_with_work_context(&mut encoder, schema, work)?;
+    work.checkpoint().map_err(work_error)?;
+    Ok(encoder.finish())
+}
+
+pub(crate) fn validate_relational_table_schema_codec_shape_with_work_context(
+    schema: &RelationalTableSchema,
+    max_schema_items: usize,
+    work: &CheckpointWorkContext,
+) -> Result<(), RelationalError> {
+    validate_table_schema_with_work_context(schema, work)?;
+    for (context, count) in [
+        ("columns", schema.columns.len()),
+        ("primary-key columns", schema.primary_key.len()),
+        ("unique constraints", schema.unique_constraints.len()),
+        ("foreign keys", schema.foreign_keys.len()),
+        ("indexes", schema.indexes.len()),
+    ] {
+        let unit = work.start_unit().map_err(work_error)?;
+        if count > max_schema_items {
+            return Err(RelationalError::Admission(format!(
+                "relational table schema contains {count} {context}, exceeding limit {max_schema_items}"
+            )));
+        }
+        unit.finish();
+    }
+    work.checkpoint().map_err(work_error)
+}
+
 pub(crate) fn encode_relational_row_payload_with_work_context(
     row: &RelationalRow,
     work: &CheckpointWorkContext,

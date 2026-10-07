@@ -71,7 +71,7 @@ pub(in crate::relational::row_page::publication) fn clone_bytes(
     Ok(output)
 }
 
-pub(super) fn hash(
+pub(in crate::relational::row_page::publication) fn hash(
     hasher: &mut IntegrityHasher,
     bytes: &[u8],
     work: &CheckpointWorkContext,

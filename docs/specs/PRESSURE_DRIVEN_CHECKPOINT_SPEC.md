@@ -598,6 +598,25 @@ disk/FD/cleanup debt and shared hard resource bounds remain incomplete. This
 partial binding does not authorize production per-unit admission or prove the
 whole-candidate resource, fault/platform or release-performance requirements.
 
+Row-root manifest generation now binds schema shape validation, schema encoding,
+table/occupancy accounting, key-bound comparisons, field copies and complete
+root/manifest integrity to the admitted task. The existing index-shadow schema
+identity is hashed directly from borrowed fields without a complete schema
+identity buffer; zero-escaped text/binary defaults use a reused 64 KiB scratch
+buffer, including all-zero inputs. Ordinary schema/manifest encoders remain the
+complete byte, digest, decoded-value and diagnostic references. The canonical
+manifest binding is computed before immutable publication. Focused regressions
+cover all 1025 tables, columns, unique/foreign/index entries and scalar/default
+forms, wide Unicode/zero fields, all actual encoding/escape/hash cancellation
+points, admission denial with unchanged source and full retry, and 24 invalid
+metadata/schema/budget diagnostic cases. These synthetic metadata fixtures do
+not qualify physical page recovery; complete publisher/recovery suites provide
+separate evidence. Initial opening/decoding, schema clone/equality and collection
+comparisons, preflight scans/sorting, publication and selector I/O, allocator/
+retention/drop and shared hard disk/FD/cleanup bounds remain open. These controls
+are insufficient to enable production per-unit admission or close the whole
+issue's resource, lifecycle, power-loss/platform and release-performance gates.
+
 Actual automatic row-page preparation now binds page encoding and writes to
 the admitted checkpoint task. Ordered primary keys, each scalar/value directory
 entry, row/page directory entry, variable payload/bound copies and integrity

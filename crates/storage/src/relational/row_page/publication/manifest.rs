@@ -23,6 +23,9 @@ use std::io::Read;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::Path;
 
+mod checkpoint;
+pub(super) use checkpoint::{encode_manifest_with_work_context, root_set_digest_with_work_context};
+
 const MANIFEST_MAGIC: &[u8; 8] = b"SKRPGM01";
 const MANIFEST_VERSION: u16 = 1;
 const PHYSICAL_GENERATIONS_FLAG: u16 = 1;
@@ -355,6 +358,16 @@ fn validate_manifest(
     config: RelationalRowPagePublicationConfig,
     class: ErrorClass,
 ) -> Result<(), RelationalRowPagePublicationError> {
+    validate_manifest_inner(manifest, config, class, None)
+}
+
+fn validate_manifest_inner(
+    manifest: &RelationalRowPageRootManifest,
+    config: RelationalRowPagePublicationConfig,
+    class: ErrorClass,
+    work: Option<&crate::background::CheckpointWorkContext>,
+) -> Result<(), RelationalRowPagePublicationError> {
+    let unit = start_unit(work)?;
     let fail = |message| class.error(message);
     if manifest.generation == 0
         || (manifest.source_commit_epoch == 0
@@ -422,7 +435,9 @@ fn validate_manifest(
             manifest.root_page_count, config.max_root_pages
         )));
     }
-    validate_occupancy(manifest, config, class)?;
+    finish_unit(unit);
+    validate_occupancy(manifest, config, class, work)?;
+    let unit = start_unit(work)?;
     let expected_descriptor_bytes = manifest
         .root_page_count
         .checked_mul(super::root::ROOT_DESCRIPTOR_BYTES as u64)
@@ -448,7 +463,9 @@ fn validate_manifest(
     }
     let mut expected_descriptor = 0u64;
     let mut previous_table: Option<&str> = None;
+    finish_unit(unit);
     for table in &manifest.tables {
+        let unit = start_unit(work)?;
         if table.table.is_empty() || table.table.len() > config.max_table_name_bytes.get() {
             return Err(fail(format!(
                 "row-page table name contains {} bytes, outside admitted range",
@@ -474,14 +491,26 @@ fn validate_manifest(
                 table.table
             )));
         }
-        crate::relational::codec::validate_relational_table_schema_codec_shape(
-            &table.schema,
-            config.page_limits.max_columns.get(),
-        )
+        finish_unit(unit);
+        match work {
+            Some(work) => crate::relational::codec::validate_relational_table_schema_codec_shape_with_work_context(
+                &table.schema, config.page_limits.max_columns.get(), work,
+            ),
+            None => crate::relational::codec::validate_relational_table_schema_codec_shape(
+                &table.schema, config.page_limits.max_columns.get(),
+            ),
+        }.map_err(|error| fail(error.to_string()))?;
+        let schema_digest = match work {
+            Some(work) => {
+                crate::relational::index_shadow::relational_schema_digest_with_work_context(
+                    &table.schema,
+                    work,
+                )
+            }
+            None => crate::relational::index_shadow::relational_schema_digest(&table.schema),
+        }
         .map_err(|error| fail(error.to_string()))?;
-        let schema_digest =
-            crate::relational::index_shadow::relational_schema_digest(&table.schema)
-                .map_err(|error| fail(error.to_string()))?;
+        let mut unit = start_unit(work)?;
         if schema_digest != table.schema_digest {
             return Err(fail(format!(
                 "table {} row-page schema digest mismatch",
@@ -518,9 +547,17 @@ fn validate_manifest(
                     table.table, table.row_count, table.page_count
                 )));
             }
+            finish_unit(unit.take());
+            let ordering = match work {
+                Some(work) => {
+                    super::root::checkpoint::compare(&table.lower_bound, &table.upper_bound, work)?
+                }
+                None => table.lower_bound.cmp(&table.upper_bound),
+            };
+            unit = start_unit(work)?;
             if table.lower_bound.is_empty()
                 || table.upper_bound.is_empty()
-                || table.lower_bound > table.upper_bound
+                || ordering == std::cmp::Ordering::Greater
                 || table.lower_bound.len() > config.page_limits.max_key_bytes.get()
                 || table.upper_bound.len() > config.page_limits.max_key_bytes.get()
             {
@@ -531,6 +568,7 @@ fn validate_manifest(
             }
         }
         previous_table = Some(&table.table);
+        finish_unit(unit);
     }
     if expected_descriptor != manifest.root_page_count {
         return Err(fail(format!(
@@ -538,10 +576,11 @@ fn validate_manifest(
             manifest.root_page_count
         )));
     }
-    let payload = encode_tables(&manifest.tables)?;
-    let mut hasher = IntegrityHasher::new();
-    hasher.update(&payload);
-    if hasher.finish().sha256 != manifest.root_set_digest {
+    let digest = match work {
+        Some(work) => root_set_digest_with_work_context(&manifest.tables, work)?,
+        None => root_set_digest(&manifest.tables)?,
+    };
+    if digest != manifest.root_set_digest {
         return Err(fail("row-page root-set digest mismatch".to_string()));
     }
     Ok(())
@@ -551,7 +590,9 @@ fn validate_occupancy(
     manifest: &RelationalRowPageRootManifest,
     config: RelationalRowPagePublicationConfig,
     class: ErrorClass,
+    work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<(), RelationalRowPagePublicationError> {
+    let unit = start_unit(work)?;
     let fail = |message: &str| class.error(message.to_string());
     if manifest.physical_generations.len()
         > config.max_manifest_bytes.get() / PHYSICAL_GENERATION_BYTES
@@ -565,7 +606,9 @@ fn validate_occupancy(
     let mut live_pages = 0u64;
     let mut allocated_pages = 0u64;
     let mut current_allocation = 0;
+    finish_unit(unit);
     for entry in &manifest.physical_generations {
+        let unit = start_unit(work)?;
         if entry.generation <= previous || entry.generation > manifest.generation {
             return Err(fail(
                 "row-page physical generations are unordered or outside the root generation",
@@ -592,7 +635,9 @@ fn validate_occupancy(
             }
         }
         previous = entry.generation;
+        finish_unit(unit);
     }
+    let unit = start_unit(work)?;
     allocated_pages
         .checked_mul(manifest.page_bytes)
         .ok_or_else(|| fail("row-page physical allocation byte count overflow"))?;
@@ -604,6 +649,7 @@ fn validate_occupancy(
             "row-page current-generation inventory does not match written slots",
         ));
     }
+    finish_unit(unit);
     Ok(())
 }
 
@@ -868,5 +914,21 @@ impl ErrorClass {
             Self::Admission => RelationalRowPagePublicationError::Admission(message),
             Self::Corrupt => RelationalRowPagePublicationError::Corrupt(message),
         }
+    }
+}
+
+fn start_unit(
+    work: Option<&crate::background::CheckpointWorkContext>,
+) -> Result<Option<crate::background::CheckpointWorkUnit>, RelationalRowPagePublicationError> {
+    work.map(|work| {
+        work.start_unit()
+            .map_err(super::root::checkpoint::work_error)
+    })
+    .transpose()
+}
+
+fn finish_unit(unit: Option<crate::background::CheckpointWorkUnit>) {
+    if let Some(unit) = unit {
+        unit.finish();
     }
 }

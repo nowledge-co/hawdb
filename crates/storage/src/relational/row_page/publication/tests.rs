@@ -1692,3 +1692,6 @@ mod checkpoint_page;
 
 #[path = "tests/checkpoint_root.rs"]
 mod checkpoint_root;
+
+#[path = "tests/checkpoint_manifest.rs"]
+mod checkpoint_manifest;

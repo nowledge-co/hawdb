@@ -49,6 +49,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 mod build;
+mod checkpoint;
+pub(super) use checkpoint::relational_schema_digest_with_work_context;
 mod demand_read;
 mod recovery;
 

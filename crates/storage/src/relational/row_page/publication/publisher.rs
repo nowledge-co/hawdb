@@ -325,12 +325,26 @@ impl RelationalRowPagePublisher {
             page_artifact,
             root_descriptor_artifact: root.descriptor_artifact,
             root_key_artifact: root.key_artifact,
-            root_set_digest: manifest::root_set_digest(&root.tables)?,
+            root_set_digest: match &self.work {
+                Some(work) => manifest::root_set_digest_with_work_context(&root.tables, work)?,
+                None => manifest::root_set_digest(&root.tables)?,
+            },
             overflow_root: build.overflow_root,
             tables: root.tables,
             physical_generations: root.physical_generations,
         };
-        let encoded_manifest = manifest::encode_manifest(&manifest, self.config)?;
+        let encoded_manifest = match &self.work {
+            Some(work) => {
+                manifest::encode_manifest_with_work_context(&manifest, self.config, work)?
+            }
+            None => manifest::encode_manifest(&manifest, self.config)?,
+        };
+        let manifest_digest = match &self.work {
+            Some(work) => work
+                .integrity(&encoded_manifest)
+                .map_err(root::checkpoint::work_error)?,
+            None => integrity_digest(&encoded_manifest),
+        };
         write_synced(
             build.temporary,
             &build.paths.generation_manifest_tmp,
@@ -384,8 +398,6 @@ impl RelationalRowPagePublisher {
             )
             .map_err(durability("publish latest row-page manifest"))?;
         }
-
-        let manifest_digest = integrity_digest(&encoded_manifest);
 
         Ok(RelationalRowPagePublicationReport {
             generation: build.generation,
