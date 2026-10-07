@@ -158,3 +158,116 @@ fn checkpoint_units_memory_buffer_allocator_failure_is_typed_and_never_returns_p
         Err(CheckpointWorkError::Allocation { .. })
     ));
 }
+
+#[test]
+fn checkpoint_units_shared_copy_retains_memory_until_the_last_clone_drops() {
+    for length in [0usize, 1, 64 * 1024 + 1] {
+        let ceiling = length as u64 + 4096;
+        let governor = governor(ceiling);
+        let permit = governor
+            .try_admit(hawdb_qos::RuntimeWorkRequest::background_maintenance(
+                ceiling,
+            ))
+            .unwrap();
+        let work =
+            CheckpointWorkContext::new(permit.bind_task_context(RuntimeTaskContext::default()));
+        let expected = (0..length)
+            .map(|ordinal| (ordinal.wrapping_mul(79) % 256) as u8)
+            .collect::<Vec<_>>();
+        let output = work.arc_bytes(&expected).unwrap();
+        let retained = output.clone();
+        assert_eq!(output.as_ref(), expected.as_slice());
+        drop(permit);
+        let closed = governor.snapshot();
+        assert_eq!(closed.active_cpu_slots, 0);
+        assert_eq!(closed.active_background_tasks, 0);
+        assert_eq!(closed.admitted_memory_bytes, ceiling);
+        drop(output);
+        assert_eq!(governor.snapshot().admitted_memory_bytes, ceiling);
+        assert_eq!(retained.as_ref(), expected.as_slice());
+        assert!(matches!(
+            CheckpointBytes::new(0, &work),
+            Err(CheckpointWorkError::Memory(RuntimeMemoryError::Closed))
+        ));
+        drop(work);
+        assert_eq!(governor.snapshot().admitted_memory_bytes, ceiling);
+        assert_eq!(retained.as_ref(), expected.as_slice());
+        drop(retained);
+        assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+    }
+}
+
+#[test]
+fn checkpoint_units_shared_copy_admits_empty_allocation_ownership_before_copy() {
+    let governor = governor(1);
+    let permit = governor
+        .try_admit(hawdb_qos::RuntimeWorkRequest::background_maintenance(1))
+        .unwrap();
+    let work = CheckpointWorkContext::new(permit.bind_task_context(RuntimeTaskContext::default()));
+    assert!(matches!(
+        work.arc_bytes(&[]),
+        Err(CheckpointWorkError::Memory(
+            RuntimeMemoryError::ReservationExceeded { .. }
+        ))
+    ));
+    drop(permit);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}
+
+#[test]
+fn checkpoint_units_shared_copy_overlap_denied_by_one_byte_preserves_complete_retry() {
+    let expected = vec![0xa7; 64 * 1024 + 1];
+    let ceiling = 1024 * 1024;
+    let measure = governor(ceiling);
+    let permit = measure
+        .try_admit(hawdb_qos::RuntimeWorkRequest::background_maintenance(
+            ceiling,
+        ))
+        .unwrap();
+    let work = CheckpointWorkContext::new(permit.bind_task_context(RuntimeTaskContext::default()));
+    let first = work.arc_bytes(&expected).unwrap();
+    // Query through the shared controller, within the static task ceiling.
+    // A larger request returns that static ceiling before consulting usage.
+    let available = match work.task.reserve_working_memory(ceiling) {
+        Err(RuntimeMemoryError::ReservationExceeded {
+            available_bytes, ..
+        }) => available_bytes,
+        other => panic!("expected an over-limit reservation: {other:?}"),
+    };
+    let charged = ceiling - available;
+    assert!(charged > expected.len() as u64);
+    drop(first);
+    drop(permit);
+    assert_eq!(measure.snapshot().admitted_memory_bytes, 0);
+
+    let ceiling = 2 * charged - 1;
+    let bounded = governor(ceiling);
+    let permit = bounded
+        .try_admit(hawdb_qos::RuntimeWorkRequest::background_maintenance(
+            ceiling,
+        ))
+        .unwrap();
+    let work = CheckpointWorkContext::new(permit.bind_task_context(RuntimeTaskContext::default()));
+    let first = work.arc_bytes(&expected).unwrap();
+    let retained = first.clone();
+    assert!(matches!(
+        work.arc_bytes(&expected),
+        Err(CheckpointWorkError::Memory(
+            RuntimeMemoryError::ReservationExceeded {
+                requested_bytes,
+                available_bytes,
+            }
+        )) if requested_bytes == charged && available_bytes == charged - 1
+    ));
+    assert_eq!(first.as_ref(), expected.as_slice());
+    assert_eq!(retained.as_ref(), expected.as_slice());
+    drop(first);
+    drop(retained);
+    let retry = work.arc_bytes(&expected).unwrap();
+    assert_eq!(retry.as_ref(), expected.as_slice());
+    drop(permit);
+    assert_eq!(bounded.snapshot().active_background_tasks, 0);
+    assert_eq!(bounded.snapshot().admitted_memory_bytes, ceiling);
+    drop(retry);
+    assert_eq!(bounded.snapshot().admitted_memory_bytes, 0);
+}

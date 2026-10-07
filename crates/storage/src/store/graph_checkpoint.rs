@@ -954,7 +954,7 @@ impl GraphStore {
                     .overflow_delta_generation_inputs_with_work_context(&row_plan.deltas, work)
                     .map_err(HawDBError::from_storage_error)?;
                 overflow_publisher
-                    .persist_generation_retaining_base(
+                    .persist_checkpoint_generation_retaining_base(
                         durable.root_path(),
                         generation,
                         commit_epoch,
@@ -973,7 +973,7 @@ impl GraphStore {
                     )
                     .map_err(HawDBError::from_storage_error)?;
                 overflow_publisher
-                    .persist_generation(
+                    .persist_checkpoint_generation(
                         durable.root_path(),
                         generation,
                         commit_epoch,

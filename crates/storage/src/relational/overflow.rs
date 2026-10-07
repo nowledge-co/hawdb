@@ -43,12 +43,13 @@ pub use publication::{
     relational_overflow_manifest_generation_file, RelationalOverflowArtifactMetadata,
     RelationalOverflowExactGenerationRequest, RelationalOverflowExactPublicationReport,
     RelationalOverflowExtentDescriptor, RelationalOverflowExtentInput,
-    RelationalOverflowGenerationArtifacts, RelationalOverflowPublicationConfig,
-    RelationalOverflowPublicationError, RelationalOverflowPublicationPhase,
-    RelationalOverflowPublicationReport, RelationalOverflowPublisher,
-    RelationalOverflowRootBinding, RelationalOverflowRootManifest, RelationalOverflowRootReader,
-    DEFAULT_RELATIONAL_OVERFLOW_EXTENTS, DEFAULT_RELATIONAL_OVERFLOW_MANIFEST_BYTES,
-    DEFAULT_RELATIONAL_OVERFLOW_NEW_EXTENT_BYTES, RELATIONAL_OVERFLOW_MANIFEST_FILE,
+    RelationalOverflowGenerationArtifacts, RelationalOverflowInputs, RelationalOverflowInputsIter,
+    RelationalOverflowPublicationConfig, RelationalOverflowPublicationError,
+    RelationalOverflowPublicationPhase, RelationalOverflowPublicationReport,
+    RelationalOverflowPublisher, RelationalOverflowRootBinding, RelationalOverflowRootManifest,
+    RelationalOverflowRootReader, DEFAULT_RELATIONAL_OVERFLOW_EXTENTS,
+    DEFAULT_RELATIONAL_OVERFLOW_MANIFEST_BYTES, DEFAULT_RELATIONAL_OVERFLOW_NEW_EXTENT_BYTES,
+    RELATIONAL_OVERFLOW_MANIFEST_FILE,
 };
 
 pub const DEFAULT_RELATIONAL_OVERFLOW_THRESHOLD_BYTES: usize = 4 * 1024;

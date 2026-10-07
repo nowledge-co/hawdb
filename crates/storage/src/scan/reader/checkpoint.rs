@@ -13,10 +13,13 @@
 // limitations under the License.
 
 //! Private checkpoint reads use the captured file identity and bounded waves.
-//! They bypass serving caches. Full output allocation still needs a byte ledger.
+//! They bypass serving caches and retain admitted output/scratch ownership.
 
 use super::*;
-use crate::background::{CheckpointWorkContext, CheckpointWorkError};
+use crate::background::{CheckpointBytes, CheckpointWorkContext, CheckpointWorkError};
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Debug)]
 pub(crate) enum CheckpointRangeReadError {
@@ -59,7 +62,7 @@ impl FileSegmentRangeReader {
         &self,
         range: &SegmentReadRange,
         work: &CheckpointWorkContext,
-    ) -> Result<Vec<u8>, CheckpointRangeReadError> {
+    ) -> Result<CheckpointBytes, CheckpointRangeReadError> {
         work.checkpoint()?;
         let artifact =
             self.artifacts
@@ -104,35 +107,29 @@ impl FileSegmentRangeReader {
             },
             |file| file.as_ref(),
         );
-        let mut payload = {
-            let unit = work.start_unit()?;
-            let payload = Vec::with_capacity(length);
-            unit.finish();
-            payload
-        };
-        let mut scratch = {
-            let unit = work.start_unit()?;
-            let scratch = vec![0; length.min(64 * 1024)];
-            unit.finish();
-            scratch
-        };
+        let mut payload = CheckpointBytes::new(length, work)?;
+        let mut scratch = CheckpointBytes::zeroed(length.min(64 * 1024), work)?;
         for start in (0..length).step_by(64 * 1024) {
             let end = start.saturating_add(64 * 1024).min(length);
-            let unit = work.start_unit()?;
-            let _wave = work.io_wave()?;
-            let offset = range.offset.checked_add(start as u64).ok_or_else(|| {
-                range_io_error(
-                    range,
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "segment range offset overflows u64",
-                    ),
-                )
-            })?;
-            read_exact_at(file, &mut scratch[..end - start], offset)
-                .map_err(|source| range_io_error(range, source))?;
-            payload.extend_from_slice(&scratch[..end - start]);
-            unit.finish();
+            {
+                let unit = work.start_unit()?;
+                let _wave = work.io_wave()?;
+                let offset = range.offset.checked_add(start as u64).ok_or_else(|| {
+                    range_io_error(
+                        range,
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "segment range offset overflows u64",
+                        ),
+                    )
+                })?;
+                read_exact_at(file, &mut scratch.as_mut_slice()[..end - start], offset)
+                    .map_err(|source| range_io_error(range, source))?;
+                unit.finish();
+            }
+            // The append owns a separate bounded unit; release read admission
+            // and its I/O wave before copying, including with a one-unit limit.
+            payload.append(&scratch[..end - start], work)?;
         }
         if let Some(expected) = range.content_digest {
             let actual = crate::cache::ContentDigest(work.checksum(&payload)?);

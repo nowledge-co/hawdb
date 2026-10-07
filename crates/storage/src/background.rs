@@ -22,7 +22,8 @@ pub(crate) use checkpoint::tests::CheckpointWorkProbe;
 pub(crate) use checkpoint::CheckpointOperationError;
 pub(crate) use checkpoint::{CheckpointBytes, CheckpointWorkUnit};
 #[doc(hidden)]
-pub use checkpoint::{CheckpointWorkContext, CheckpointWorkError};
+pub use checkpoint::{CheckpointSharedBytes, CheckpointWorkContext, CheckpointWorkError};
+pub(crate) use checkpoint::{CheckpointSharedValues, CheckpointValues};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackgroundWorkRequest {

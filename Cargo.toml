@@ -320,3 +320,7 @@ harness = false
 [[bench]]
 name = "wal_group_commit"
 harness = false
+
+[[bench]]
+name = "graph_analytics"
+harness = false

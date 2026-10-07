@@ -22,7 +22,7 @@ use super::{
     relational_overflow_extent_file, relational_overflow_manifest_generation_file,
     RelationalOverflowArtifactMetadata, RelationalOverflowExactGenerationRequest,
     RelationalOverflowExactPublicationReport, RelationalOverflowExtentDescriptor,
-    RelationalOverflowExtentInput, RelationalOverflowPublicationConfig,
+    RelationalOverflowExtentInput, RelationalOverflowInputs, RelationalOverflowPublicationConfig,
     RelationalOverflowPublicationError, RelationalOverflowPublicationPhase,
     RelationalOverflowPublicationReport, RelationalOverflowRootManifest,
     RelationalOverflowRootReader, CANDIDATE_PUBLICATION_TRACE, COMPLETE_PUBLICATION_TRACE,
@@ -99,7 +99,7 @@ impl RelationalOverflowPublisher {
                 select_latest: false,
                 stop_after: None,
             },
-            extents,
+            extents.into(),
         )
     }
 
@@ -119,6 +119,58 @@ impl RelationalOverflowPublisher {
         base: &RelationalOverflowRootReader,
         expected_previous_generation: u64,
         extents: Vec<RelationalOverflowExtentInput>,
+    ) -> Result<RelationalOverflowPublicationReport, RelationalOverflowPublicationError> {
+        self.persist_generation_inner(
+            GenerationPublication {
+                directory,
+                generation,
+                source_commit_epoch,
+                base: Some(base),
+                expected_previous_generation: Some(expected_previous_generation),
+                retain_unmentioned_base: true,
+                select_latest: false,
+                stop_after: None,
+            },
+            extents.into(),
+        )
+    }
+
+    /// Persists an admitted immutable input list without detaching its capacity.
+    #[doc(hidden)]
+    pub fn persist_checkpoint_generation(
+        &self,
+        directory: &Path,
+        generation: u64,
+        source_commit_epoch: u64,
+        base: Option<&RelationalOverflowRootReader>,
+        expected_previous_generation: Option<u64>,
+        extents: RelationalOverflowInputs,
+    ) -> Result<RelationalOverflowPublicationReport, RelationalOverflowPublicationError> {
+        self.persist_generation_inner(
+            GenerationPublication {
+                directory,
+                generation,
+                source_commit_epoch,
+                base,
+                expected_previous_generation,
+                retain_unmentioned_base: false,
+                select_latest: false,
+                stop_after: None,
+            },
+            extents,
+        )
+    }
+
+    /// Retains the pinned base while persisting an admitted checkpoint list.
+    #[doc(hidden)]
+    pub fn persist_checkpoint_generation_retaining_base(
+        &self,
+        directory: &Path,
+        generation: u64,
+        source_commit_epoch: u64,
+        base: &RelationalOverflowRootReader,
+        expected_previous_generation: u64,
+        extents: RelationalOverflowInputs,
     ) -> Result<RelationalOverflowPublicationReport, RelationalOverflowPublicationError> {
         self.persist_generation_inner(
             GenerationPublication {
@@ -255,14 +307,14 @@ impl RelationalOverflowPublisher {
                 select_latest: true,
                 stop_after,
             },
-            extents,
+            extents.into(),
         )
     }
 
     fn persist_generation_inner(
         &self,
         publication: GenerationPublication<'_>,
-        extents: Vec<RelationalOverflowExtentInput>,
+        extents: RelationalOverflowInputs,
     ) -> Result<RelationalOverflowPublicationReport, RelationalOverflowPublicationError> {
         let GenerationPublication {
             directory,
@@ -904,6 +956,9 @@ impl<'a> ArtifactWriter<'a> {
             RelationalOverflowExtentInput::Write { reference, encoded } => {
                 self.emit_encoded(reference, encoded)
             }
+            RelationalOverflowExtentInput::CheckpointWrite { reference, encoded } => {
+                self.emit_encoded(reference, encoded)
+            }
         }
     }
 
@@ -1043,8 +1098,8 @@ fn validate_matching_input(
             input.reference().digest
         )));
     }
-    if let RelationalOverflowExtentInput::Write { reference, encoded } = input {
-        validate_encoded_extent(reference, encoded, config, work)?;
+    if let Some(encoded) = input.encoded_bytes() {
+        validate_encoded_extent(input.reference(), encoded, config, work)?;
     }
     Ok(())
 }
@@ -1105,10 +1160,10 @@ fn validate_encoded_extent(
 }
 
 fn preflight_inputs(
-    mut inputs: Vec<RelationalOverflowExtentInput>,
+    mut inputs: RelationalOverflowInputs,
     config: RelationalOverflowPublicationConfig,
     work: Option<&CheckpointWorkContext>,
-) -> Result<Vec<RelationalOverflowExtentInput>, RelationalOverflowPublicationError> {
+) -> Result<RelationalOverflowInputs, RelationalOverflowPublicationError> {
     let input_count = u64::try_from(inputs.len()).map_err(|_| {
         RelationalOverflowPublicationError::Admission(
             "overflow extent count does not fit u64".to_string(),
@@ -1133,9 +1188,18 @@ fn preflight_inputs(
             config.max_descriptor_bytes
         )));
     }
-    checkpoint::sort(&mut inputs, work)?;
+    if let Some(ordinary) = inputs.ordinary_mut() {
+        checkpoint::sort(ordinary, work)?;
+    }
     for pair in inputs.windows(2) {
         checkpoint::cpu(work, || {
+            // Private checkpoint lists originate in the ordered reference map.
+            // Fail closed if that immutable contract is ever violated.
+            if pair[0].reference().digest > pair[1].reference().digest {
+                return Err(RelationalOverflowPublicationError::Admission(
+                    "checkpoint overflow inputs are not sorted by digest".into(),
+                ));
+            }
             if pair[0].reference().digest == pair[1].reference().digest {
                 return Err(RelationalOverflowPublicationError::Admission(format!(
                     "overflow publication contains duplicate digest {}",
@@ -1182,8 +1246,8 @@ fn preflight_root_capacity(
         0
     };
     for input in inputs {
-        if let RelationalOverflowExtentInput::Write { reference, encoded } = input {
-            validate_encoded_extent(reference, encoded, config, work)?;
+        if let Some(encoded) = input.encoded_bytes() {
+            validate_encoded_extent(input.reference(), encoded, config, work)?;
         }
         while base_descriptor
             .as_ref()
@@ -1222,6 +1286,19 @@ fn preflight_root_capacity(
                     ));
                 }
                 RelationalOverflowExtentInput::Write { encoded, .. } => {
+                    let encoded_bytes = u64::try_from(encoded.len()).map_err(|_| {
+                        RelationalOverflowPublicationError::Admission(
+                            "overflow envelope length does not fit u64".to_string(),
+                        )
+                    })?;
+                    new_extent_bytes =
+                        new_extent_bytes.checked_add(encoded_bytes).ok_or_else(|| {
+                            RelationalOverflowPublicationError::Admission(
+                                "overflow extent artifact length overflow".to_string(),
+                            )
+                        })?;
+                }
+                RelationalOverflowExtentInput::CheckpointWrite { encoded, .. } => {
                     let encoded_bytes = u64::try_from(encoded.len()).map_err(|_| {
                         RelationalOverflowPublicationError::Admission(
                             "overflow envelope length does not fit u64".to_string(),

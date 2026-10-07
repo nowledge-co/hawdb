@@ -876,6 +876,119 @@ buffer holds its lease through decode and releases it after its bytes die.
 Allocator bookkeeping/rounding and allocation/destruction latency remain stated
 platform assumptions requiring RSS and release measurement evidence.
 
+Immutable overflow copies now keep their exact Vec capacity and concrete shared
+cell in one allocation lease. Shared input clones retain that same lease, with
+no API to detach the allocation; payload bytes are destroyed before the lease.
+The shared cell accounts the pinned standard Arc layout's two reference counters;
+its allocator metadata/layout and final deallocation remain platform assumptions.
+The controlled file-backed collector carries these owners through a dedicated
+checkpoint-write input. Borrowed inline inputs and ordinary publication remain
+independent. Logical equality compares references and complete encoded bytes,
+so ordinary and admitted inputs produce identical immutable files.
+
+Actual-governor regressions retain empty, single-byte and 64 KiB+1 copies after
+execution closes, deny empty shared ownership under a one-byte ceiling, and
+reject two overlapping complete buffers by exactly one byte before retrying
+every byte. Both original ownership regressions fail against the former untracked
+Arc copy. A file-backed collector/publication regression clones every admitted
+input, compares all three immutable artifacts with the ordinary publisher,
+closes execution, hydrates every value through ordinary generation open, and
+checks the reservation survives until the final inputs drop. Seven byte-buffer,
+six overflow-input and 32 publisher tests pass with strict workspace Clippy;
+every preceding copy cancellation/denial cut and fixture remains exercised.
+The first additional overlap probe bypassed the shared controller by exceeding
+the static task ceiling; its failure is retained, and the corrected probe uses
+the unchanged ceiling to observe shared usage. Source values, limits and the
+one-byte denial assertion are unchanged. Input vectors, reference maps and
+source ownership still require their own admission; this
+does not qualify the complete candidate or enable production per-unit work.
+
+Private file-range reads now admit both the complete return capacity and the
+simultaneous scratch capacity before fallible allocation. Scratch initialization
+and payload copying use 64 KiB work units. The read unit and I/O wave end before
+the separately admitted copy starts, including under a one-operation limit.
+Returned bytes retain their allocation lease after execution closes; the private
+legacy overflow encoder uses an owning borrowed/allocated value instead of
+detaching that lease into a raw Vec. Inline borrowing, captured file identity,
+digest diagnostics and serving-cache bypass remain unchanged. These buffers do
+not account for file-handle retention, parser/maps or the entire candidate.
+
+Two actual-governor regressions fail against the former raw range Vec: its
+reservation disappears while returned data remains alive, and scratch overlap
+is never denied when only the complete payload fits. Their byte-identical
+fixtures/assertions pass after correction. Further regressions cancel every
+completed unit of a three-chunk read and fully retry all bytes, and retain typed
+digest-mismatch/truncated-file diagnostics without leaking buffers or I/O slots.
+The initial test fixture omitted its declared I/O wave width; that failure is
+preserved separately from the corrected before/after ownership reproductions.
+Reader, buffer, overflow collector and legacy image tests and strict workspace
+Clippy pass on the recorded code snapshot. Allocator metadata/latency, complete
+resource qualification, supported-profile/full regression and release evidence
+remain separate gates; no whole-issue completion follows from these tests.
+
+Private overflow input lists now admit their complete element capacity, concrete
+shared cell and pinned Arc counters before fallible allocation. Immutable clones
+and owned iterators retain the same list allocation after execution closes;
+they cannot detach its capacity into a raw Vec. Elements retain their existing
+inline/shared-byte ownership independently. The collector produces digest order
+from its reference workspace; checkpoint publication checks that immutable order and
+duplicates before any artifact I/O. Ordinary Vec collectors/publication keep
+their existing signatures and sorting path. Two hidden checkpoint publication
+methods accept the retained list directly. Allocator layout/metadata, final Arc
+header deallocation and allocation/destruction latency remain assumptions.
+
+Two actual-governor regressions fail against the former raw input Vec and pass
+with identical bodies after correction: retained inline-only inputs lose their
+reservation after task close, and a one-byte task never denies the nonempty list.
+Additional tests retain a complete sparse-delta iterator through exhaustion and
+task closure, verify clones consume no new list capacity, and reject overlapping
+lists by exactly one byte before a full retry. Ten collector, 32 ordinary/private
+publisher, seven buffer, 24 reader and eight legacy image tests pass with strict
+workspace Clippy on the recorded code snapshot. Ordinary sort
+scratch, mounted/captured state, disk/FD and cleanup debt remain separate gaps;
+this does not enable production per-unit admission or qualify the full candidate.
+
+Controlled full and sparse-delta overflow collection now replaces its untracked
+reference BTreeMap with an admitted fixed-capacity reference vector. A bounded
+count pass determines the complete capacity including duplicate occurrences;
+allocation is fallible and rejects allocator overgrant. In-place heap sorting
+compares at most three fixed-size references and swaps one pair per work unit,
+without allocating map nodes or sort scratch. Separate bounded deduplication
+preserves complete conflicting-metadata diagnostics and ordinary digest order.
+The reference capacity remains charged through input allocation and collection,
+then dies before its lease is released. Inline/shared source bytes still have
+their independent ownership; source retention is not established by this vector.
+
+Two actual-governor regressions fail against the untracked map and pass with
+identical bodies after correction: the live reference working set is absent
+from the measured peak, and a ceiling that covers only retained inputs wrongly
+allows the complete build. A further test cancels every actual completed full
+and delta collection unit, verifies the same real reservation has no leaked
+capacity, and retries every result. The existing overlap fixture now includes
+the measured simultaneous reference capacity; its exact requested-byte/one-byte
+shortfall assertion and all source/clone/full-retry checks remain. Its initial
+failure under the new truthful peak is archived. All 13 collector tests pass,
+including 1025 distinct values, duplicate references, every former cancellation
+cut, file publication and complete ordinary diagnostics. Allocator latency,
+remaining builders/maps/source ownership and disk/FD/cleanup debt, full profiles,
+regressions/fuzz and paired release performance remain qualification gates.
+
+The row-page publisher's complete cancellation matrix repeatedly recreated and
+synchronized the identical durable source for every CPU/I/O cut. Two full
+current-main commands and one unchanged isolated diagnostic reached the existing
+900-second limit; complete logs/XML and source identities remain archived. The
+fixture now publishes each immutable generation-1 source once, links its complete
+authority into each fresh case namespace and synchronizes that directory before
+opening the base. Every candidate/cancellation/retry still executes its real
+barriers, every CPU/I/O cut and all three modes remain, and every prior assertion
+is retained. Added assertions compare each case's starting authority and the
+unchanged shared source after every case. Required qualification still uses the
+original deadlines, budgets, jobs and complete commands; the new fixture has not
+yet passed that complete gate merely because the other focused tests are green.
+The first linked-source fixture omitted creation of the case directory and
+failed before the first candidate attempt; its full logs/XML remain archived.
+The revised fixture creates that namespace before linking/synchronizing the base.
+
 The complete 92-test QoS suite and five storage memory tests pass, covering
 shared/narrowed/concurrent capacity, cancellation, critical-pressure recovery,
 retained bytes after execution closes, shared process-policy retention,

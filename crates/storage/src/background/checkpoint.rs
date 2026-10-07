@@ -26,6 +26,10 @@ use std::sync::{Arc, Mutex};
 
 mod buffer;
 pub(crate) use buffer::CheckpointBytes;
+pub use buffer::CheckpointSharedBytes;
+
+mod values;
+pub(crate) use values::{CheckpointSharedValues, CheckpointValues};
 
 /// The task already admitted by the owner, optionally with per-unit local QoS.
 /// This never creates a governor or reserves the owner's memory a second time.
@@ -163,39 +167,14 @@ impl CheckpointWorkContext {
         Ok(hasher.finish())
     }
 
-    /// Detach bytes into their final shared representation without a whole
-    /// value initialization/copy primitive. Actual allocation capacity and
-    /// allocator latency still need the candidate's hard resource accounting.
+    /// Copy into immutable shared ownership, retaining admitted exact byte
+    /// capacity and the shared cell through the last clone. Initialization
+    /// uses bounded units and does not detach the allocation from its lease.
     pub(crate) fn arc_bytes(
         &self,
         bytes: &[u8],
-    ) -> Result<std::sync::Arc<[u8]>, CheckpointWorkError> {
-        let unit = self.start_unit()?;
-        let mut output = std::sync::Arc::<[u8]>::new_uninit_slice(bytes.len());
-        unit.finish();
-        {
-            let destination = std::sync::Arc::get_mut(&mut output)
-                .expect("new checkpoint byte allocation is exclusively owned");
-            for (destination, source) in destination
-                .chunks_mut(64 * 1024)
-                .zip(bytes.chunks(64 * 1024))
-            {
-                let unit = self.start_unit()?;
-                for (destination, source) in destination.iter_mut().zip(source) {
-                    destination.write(*source);
-                }
-                unit.finish();
-            }
-        }
-        let unit = self.start_unit()?;
-        // SAFETY: the allocation length equals bytes.len(), both chunk
-        // iterators cover that length, and every element has been initialized
-        // through MaybeUninit::write above. Cancellation returns before this
-        // conversion and drops only the uninitialized representation.
-        let output = unsafe { output.assume_init() };
-        unit.finish();
-        self.checkpoint()?;
-        Ok(output)
+    ) -> Result<CheckpointSharedBytes, CheckpointWorkError> {
+        CheckpointSharedBytes::copy(bytes, self)
     }
 }
 

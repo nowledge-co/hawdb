@@ -89,12 +89,13 @@ pub use overflow::{
     RelationalOverflowArtifactMetadata, RelationalOverflowConfig,
     RelationalOverflowExactGenerationRequest, RelationalOverflowExactPublicationReport,
     RelationalOverflowExtentDescriptor, RelationalOverflowExtentInput,
-    RelationalOverflowGenerationArtifacts, RelationalOverflowPublicationConfig,
-    RelationalOverflowPublicationError, RelationalOverflowPublicationPhase,
-    RelationalOverflowPublicationReport, RelationalOverflowPublisher, RelationalOverflowRef,
-    RelationalOverflowReferenceSet, RelationalOverflowReferenceSetBuilder,
-    RelationalOverflowReferenceSortConfig, RelationalOverflowReferenceSortReport,
-    RelationalOverflowRootBinding, RelationalOverflowRootManifest, RelationalOverflowRootReader,
+    RelationalOverflowGenerationArtifacts, RelationalOverflowInputs, RelationalOverflowInputsIter,
+    RelationalOverflowPublicationConfig, RelationalOverflowPublicationError,
+    RelationalOverflowPublicationPhase, RelationalOverflowPublicationReport,
+    RelationalOverflowPublisher, RelationalOverflowRef, RelationalOverflowReferenceSet,
+    RelationalOverflowReferenceSetBuilder, RelationalOverflowReferenceSortConfig,
+    RelationalOverflowReferenceSortReport, RelationalOverflowRootBinding,
+    RelationalOverflowRootManifest, RelationalOverflowRootReader,
     DEFAULT_MAX_RELATIONAL_HYDRATION_BYTES, DEFAULT_RELATIONAL_OVERFLOW_EXTENTS,
     DEFAULT_RELATIONAL_OVERFLOW_MANIFEST_BYTES, DEFAULT_RELATIONAL_OVERFLOW_NEW_EXTENT_BYTES,
     DEFAULT_RELATIONAL_OVERFLOW_REFERENCE_OCCURRENCES, DEFAULT_RELATIONAL_OVERFLOW_REFERENCE_RUNS,
@@ -4073,7 +4074,7 @@ impl RelationalState {
         has_base_generation: bool,
         max_materialized_bytes: usize,
         work: &crate::background::CheckpointWorkContext,
-    ) -> Result<Vec<RelationalOverflowExtentInput>, RelationalError> {
+    ) -> Result<RelationalOverflowInputs, RelationalError> {
         overflow::checkpoint::generation_inputs(
             self,
             has_base_generation,
@@ -4136,7 +4137,7 @@ impl RelationalState {
         &self,
         deltas: &[RelationalRowPageTableDelta],
         work: &crate::background::CheckpointWorkContext,
-    ) -> Result<Vec<RelationalOverflowExtentInput>, RelationalError> {
+    ) -> Result<RelationalOverflowInputs, RelationalError> {
         overflow::checkpoint::delta_inputs(self, deltas, work)
     }
 }

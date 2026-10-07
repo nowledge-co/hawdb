@@ -73,6 +73,24 @@ fn authority(directory: &std::path::Path) -> Vec<Vec<u8>> {
         .collect()
 }
 
+fn reuse_synced_authority(
+    source: &std::path::Path,
+    directory: &std::path::Path,
+) -> RelationalRowPageRootReader {
+    // The source publisher has synchronized every immutable dependency once.
+    // Synchronize all new namespace links before using the same complete base.
+    // Candidate publication and each cancellation/retry retain their own real
+    // file/directory barriers; only repeated baseline publication is avoided.
+    fs::create_dir_all(directory).unwrap();
+    for name in names(1) {
+        fs::hard_link(source.join(&name), directory.join(&name)).unwrap();
+    }
+    crate::durability::sync_directory(directory).unwrap();
+    RelationalRowPageRootReader::open_latest(directory, config())
+        .unwrap()
+        .unwrap()
+}
+
 fn deltas() -> Vec<RelationalRowPageTableDelta> {
     let mut dirty = page(1, 2, 11, 1, 2);
     for (index, entry) in dirty.rows.iter_mut().enumerate() {
@@ -215,6 +233,9 @@ fn checkpoint_units_row_page_publisher_preserves_complete_artifacts_in_every_mod
 fn checkpoint_units_row_page_publisher_cancel_every_actual_cpu_and_io_unit_retains_publication_and_retries(
 ) {
     for mode in 0..3 {
+        let source_directory = unique_test_dir("page-unit-synced-source");
+        let source_base = setup(&source_directory, config());
+        let source_authority = authority(&source_directory);
         let baseline_directory = unique_test_dir("page-unit-count");
         let base = setup(&baseline_directory, config());
         let local = scheduler();
@@ -233,13 +254,15 @@ fn checkpoint_units_row_page_publisher_cancel_every_actual_cpu_and_io_unit_retai
             .iter()
             .map(|name| fs::read(baseline_directory.join(name)).unwrap())
             .collect();
+        drop(base);
         fs::remove_dir_all(baseline_directory).unwrap();
         for io in [false, true] {
             let count = if io { waves } else { units };
             for limit in 1..=count {
                 let directory = unique_test_dir("page-unit-cancel");
-                let base = setup(&directory, config());
+                let base = reuse_synced_authority(&source_directory, &directory);
                 let before = authority(&directory);
+                assert_eq!(before, source_authority);
                 let probe = Arc::new(CheckpointWorkProbe::default());
                 if io {
                     probe.cancel_on_io_wave.store(limit, Ordering::SeqCst);
@@ -299,10 +322,11 @@ fn checkpoint_units_row_page_publisher_cancel_every_actual_cpu_and_io_unit_retai
                 assert_eq!(&authority(&directory)[..4], &before[..4]);
                 assert_no_temporary_files(&directory);
                 fs::remove_dir_all(directory).unwrap();
+                assert_eq!(authority(&source_directory), source_authority);
             }
         }
         let directory = unique_test_dir("page-unit-deny");
-        let base = setup(&directory, config());
+        let base = reuse_synced_authority(&source_directory, &directory);
         let before = authority(&directory);
         let probe = Arc::new(CheckpointWorkProbe::default());
         let work = probe.context(local.clone());
@@ -324,6 +348,9 @@ fn checkpoint_units_row_page_publisher_cancel_every_actual_cpu_and_io_unit_retai
         retry.assert_released(&local);
         verify(&directory, mode);
         fs::remove_dir_all(directory).unwrap();
+        assert_eq!(authority(&source_directory), source_authority);
+        drop(source_base);
+        fs::remove_dir_all(source_directory).unwrap();
     }
 }
 

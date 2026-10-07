@@ -244,6 +244,14 @@ impl GraphStore {
     }
 
     pub(super) fn load_projected_graph_artifacts(&mut self) -> Result<()> {
+        // These optional V1 caches own complete CSR/CSC arrays. An out-of-core
+        // reader executes from canonical adjacency and must not load an old
+        // materialized-mode cache before query admission. Keep the file intact;
+        // the authoritative projection definitions still recover normally.
+        if self.canonical_base_out_of_core {
+            self.projected_graph_artifacts = BTreeMap::new().into();
+            return Ok(());
+        }
         let Some(durable) = &self.durable else {
             return Ok(());
         };

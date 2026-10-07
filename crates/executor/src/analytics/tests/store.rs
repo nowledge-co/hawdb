@@ -40,12 +40,38 @@ impl GraphExecutionRead for Fixture {
     }
     fn visit_adjacent_relationships_owned(
         &self,
-        _node_id: NodeId,
-        _: Option<RelTypeId>,
-        _direction: AdjacencyDirection,
-        _consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
+        node_id: NodeId,
+        rel_type: Option<RelTypeId>,
+        direction: AdjacencyDirection,
+        consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
-        panic!("unexpected graph execution read: visit_adjacent_relationships_owned")
+        for relationship in &self.relationships {
+            let endpoint = match direction {
+                AdjacencyDirection::Outgoing => relationship.source,
+                AdjacencyDirection::Incoming => relationship.target,
+            };
+            if endpoint != node_id
+                || rel_type.is_some_and(|selected| relationship.rel_type != selected)
+            {
+                continue;
+            }
+            let ordinal = self.adjacency_visits.get();
+            if self.fail_adjacency_at == Some(ordinal) {
+                return Err(HawDBError::StorageIntegrity(
+                    "adjacency scan sentinel".into(),
+                ));
+            }
+            self.adjacency_visits.set(ordinal + 1);
+            if let Some((at, token)) = &self.cancel_adjacency_at
+                && *at == ordinal
+            {
+                token.cancel();
+            }
+            if consumer(relationship.clone())? == ScanControl::Stop {
+                return Ok(ScanControl::Stop);
+            }
+        }
+        Ok(ScanControl::Continue)
     }
     fn scan_nodes_borrowed<'a>(
         &'a self,

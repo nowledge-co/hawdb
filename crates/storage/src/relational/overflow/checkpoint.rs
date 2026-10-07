@@ -13,13 +13,15 @@
 // limitations under the License.
 
 //! Cooperative collection for ordinary and metadata-only checkpoint inputs.
-//! Map insertion/lookup, capacity allocation and final-owner destruction still
-//! need hard resource/time bounds; a field boundary is not a complete bound.
+//! Reference and input capacity is admitted before allocation. Reference sorting
+//! uses fixed-size comparison/swap units without allocating map nodes or scratch.
+//! Source retention and allocator/destruction latency remain separate bounds.
 
 use super::*;
-use crate::background::{CheckpointWorkContext, CheckpointWorkError};
-use crate::relational::{RelationalOverflowExtentInput, RelationalRowPageTableDelta};
-use std::collections::BTreeMap;
+use crate::background::{CheckpointValues, CheckpointWorkContext, CheckpointWorkError};
+use crate::relational::{
+    RelationalOverflowExtentInput, RelationalOverflowInputs, RelationalRowPageTableDelta,
+};
 
 fn work_error(error: CheckpointWorkError) -> RelationalError {
     RelationalError::Admission(error.to_string())
@@ -36,7 +38,117 @@ fn cpu<T>(
     Ok(result)
 }
 
-type References = BTreeMap<Sha256Digest, RelationalOverflowRef>;
+struct References {
+    values: CheckpointValues<RelationalOverflowRef>,
+    distinct: usize,
+}
+
+impl References {
+    fn new(capacity: usize, work: &CheckpointWorkContext) -> Result<Self, RelationalError> {
+        Ok(Self {
+            values: CheckpointValues::new(capacity, work).map_err(work_error)?,
+            distinct: 0,
+        })
+    }
+
+    fn sorted_distinct(
+        &mut self,
+        work: &CheckpointWorkContext,
+    ) -> Result<&[RelationalOverflowRef], RelationalError> {
+        let values = self.values.as_mut_slice();
+        let length = values.len();
+        // In-place heap sort requires no second database-sized allocation.
+        // Every sift step compares at most three fixed-size references and
+        // swaps at most one pair; no unit represents the entire heap or sort.
+        for root in (0..length / 2).rev() {
+            sift_down(values, root, length, work)?;
+        }
+        for end in (1..values.len()).rev() {
+            cpu(work, || {
+                values.swap(0, end);
+                Ok(())
+            })?;
+            sift_down(values, 0, end, work)?;
+        }
+        let mut distinct = 0;
+        for index in 0..values.len() {
+            cpu(work, || {
+                let reference = values[index];
+                if distinct != 0 && values[distinct - 1].digest == reference.digest {
+                    if values[distinct - 1] != reference {
+                        return Err(RelationalError::Corruption(format!(
+                            "overflow digest {} has conflicting reference metadata",
+                            reference.digest
+                        )));
+                    }
+                } else {
+                    values[distinct] = reference;
+                    distinct += 1;
+                }
+                Ok(())
+            })?;
+        }
+        self.distinct = distinct;
+        work.checkpoint().map_err(work_error)?;
+        Ok(&values[..distinct])
+    }
+
+    fn as_slice(&self) -> &[RelationalOverflowRef] {
+        &self.values.as_slice()[..self.distinct]
+    }
+}
+
+fn sift_down(
+    values: &mut [RelationalOverflowRef],
+    mut root: usize,
+    end: usize,
+    work: &CheckpointWorkContext,
+) -> Result<(), RelationalError> {
+    while let Some(left) = root
+        .checked_mul(2)
+        .and_then(|index| index.checked_add(1))
+        .filter(|index| *index < end)
+    {
+        let next = cpu(work, || {
+            let right = left + 1;
+            let child = if right < end && values[left].digest < values[right].digest {
+                right
+            } else {
+                left
+            };
+            if values[root].digest < values[child].digest {
+                values.swap(root, child);
+                Ok(Some(child))
+            } else {
+                Ok(None)
+            }
+        })?;
+        let Some(next) = next else { break };
+        root = next;
+    }
+    Ok(())
+}
+
+fn count_row(
+    row: &RelationalRow,
+    capacity: &mut usize,
+    work: &CheckpointWorkContext,
+) -> Result<(), RelationalError> {
+    cpu(work, || Ok(()))?;
+    for value in row.values.iter() {
+        cpu(work, || {
+            if matches!(value, RelationalValue::Overflow(_)) {
+                *capacity = capacity.checked_add(1).ok_or_else(|| {
+                    RelationalError::Admission(
+                        "checkpoint overflow reference count overflows usize".into(),
+                    )
+                })?;
+            }
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
 
 fn collect_row(
     row: &RelationalRow,
@@ -46,18 +158,14 @@ fn collect_row(
     // Include empty rows and non-overflow values in the admitted traversal.
     cpu(work, || Ok(()))?;
     for value in row.values.iter() {
-        cpu(work, || {
-            if let RelationalValue::Overflow(reference) = value
-                && let Some(previous) = references.insert(reference.digest, *reference)
-                && previous != *reference
-            {
-                return Err(RelationalError::Corruption(format!(
-                    "overflow digest {} has conflicting reference metadata",
-                    reference.digest
-                )));
-            }
-            Ok(())
-        })?;
+        if let RelationalValue::Overflow(reference) = value {
+            references
+                .values
+                .push(*reference, work)
+                .map_err(work_error)?;
+        } else {
+            cpu(work, || Ok(()))?;
+        }
     }
     Ok(())
 }
@@ -67,28 +175,36 @@ pub(in crate::relational) fn generation_inputs(
     has_base_generation: bool,
     max_materialized_bytes: usize,
     work: &CheckpointWorkContext,
-) -> Result<Vec<RelationalOverflowExtentInput>, RelationalError> {
+) -> Result<RelationalOverflowInputs, RelationalError> {
     cpu(work, || {
         state.require_materialized_rows("relational overflow checkpoint")
     })?;
-    let mut references = References::new();
+    let mut capacity = 0;
+    for segment in state.segments.values() {
+        cpu(work, || Ok(()))?;
+        for row in segment.rows.values() {
+            count_row(row, &mut capacity, work)?;
+        }
+    }
+    let mut references = References::new(capacity, work)?;
     for segment in state.segments.values() {
         cpu(work, || Ok(()))?;
         for row in segment.rows.values() {
             collect_row(row, &mut references, work)?;
         }
     }
+    let sorted = references.sorted_distinct(work)?;
     cpu(work, || {
-        if references.len() != state.overflow_segments.len() {
+        if sorted.len() != state.overflow_segments.len() {
             return Err(RelationalError::Corruption(
                 "relational overflow segments do not match the reachable row closure".into(),
             ));
         }
         Ok(())
     })?;
-    for digest in references.keys() {
+    for reference in sorted {
         cpu(work, || {
-            if !state.overflow_segments.contains_key(digest) {
+            if !state.overflow_segments.contains_key(&reference.digest) {
                 return Err(RelationalError::Corruption(
                     "relational overflow segments do not match the reachable row closure".into(),
                 ));
@@ -96,9 +212,11 @@ pub(in crate::relational) fn generation_inputs(
             Ok(())
         })?;
     }
-    let mut inputs = cpu(work, || Ok(Vec::with_capacity(references.len())))?;
+    let mut inputs =
+        CheckpointValues::new(references.as_slice().len(), work).map_err(work_error)?;
     let mut materialized_bytes = 0usize;
-    for (digest, reference) in references {
+    for &reference in references.as_slice() {
+        let digest = reference.digest;
         let segment = cpu(work, || {
             state.overflow_segments.get(&digest).ok_or_else(|| {
                 RelationalError::Corruption(format!(
@@ -146,27 +264,38 @@ pub(in crate::relational) fn generation_inputs(
                     Ok(())
                 })?;
                 let encoded = work.arc_bytes(&encoded).map_err(work_error)?;
-                RelationalOverflowExtentInput::Write { reference, encoded }
+                RelationalOverflowExtentInput::CheckpointWrite { reference, encoded }
             }
         };
-        cpu(work, || {
-            inputs.push(input);
-            Ok(())
-        })?;
+        inputs.push(input, work).map_err(work_error)?;
     }
+    drop(references);
     work.checkpoint().map_err(work_error)?;
-    Ok(inputs)
+    inputs
+        .share(work)
+        .map(RelationalOverflowInputs::checkpoint)
+        .map_err(work_error)
 }
 
 pub(in crate::relational) fn delta_inputs(
     state: &RelationalState,
     deltas: &[RelationalRowPageTableDelta],
     work: &CheckpointWorkContext,
-) -> Result<Vec<RelationalOverflowExtentInput>, RelationalError> {
+) -> Result<RelationalOverflowInputs, RelationalError> {
     cpu(work, || {
         state.require_sparse_workspace_source("relational overflow delta checkpoint")
     })?;
-    let mut references = References::new();
+    let mut capacity = 0;
+    for delta in deltas {
+        cpu(work, || Ok(()))?;
+        for page in &delta.dirty_pages {
+            cpu(work, || Ok(()))?;
+            for row in &page.rows {
+                count_row(&row.row, &mut capacity, work)?;
+            }
+        }
+    }
+    let mut references = References::new(capacity, work)?;
     for delta in deltas {
         cpu(work, || Ok(()))?;
         for page in &delta.dirty_pages {
@@ -176,8 +305,10 @@ pub(in crate::relational) fn delta_inputs(
             }
         }
     }
-    let mut inputs = cpu(work, || Ok(Vec::with_capacity(references.len())))?;
-    for (digest, reference) in references {
+    let sorted = references.sorted_distinct(work)?;
+    let mut inputs = CheckpointValues::new(sorted.len(), work).map_err(work_error)?;
+    for &reference in sorted {
+        let digest = reference.digest;
         let input = cpu(work, || {
             Ok(match state.overflow_segments.get(&digest) {
                 Some(RelationalOverflowSegment::Inline(encoded)) => {
@@ -191,13 +322,14 @@ pub(in crate::relational) fn delta_inputs(
                 }
             })
         })?;
-        cpu(work, || {
-            inputs.push(input);
-            Ok(())
-        })?;
+        inputs.push(input, work).map_err(work_error)?;
     }
+    drop(references);
     work.checkpoint().map_err(work_error)?;
-    Ok(inputs)
+    inputs
+        .share(work)
+        .map(RelationalOverflowInputs::checkpoint)
+        .map_err(work_error)
 }
 
 #[cfg(test)]

@@ -25,6 +25,396 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_FILE: AtomicU64 = AtomicU64::new(1);
 
+fn input_governor(bytes: u64) -> hawdb_qos::RuntimeGovernor {
+    use hawdb_qos::{
+        IoConcurrencyBudget, RuntimeGovernor, RuntimeGovernorConfig, RuntimeMemorySnapshot,
+        RuntimeResourceBudget, RuntimeResourceSnapshot,
+    };
+    RuntimeGovernor::new(
+        RuntimeGovernorConfig {
+            memory_budget_bytes: Some(bytes),
+            background_task_limit: Some(std::num::NonZeroUsize::MIN),
+            ..RuntimeGovernorConfig::shared_host()
+        },
+        RuntimeResourceSnapshot::from_parts(
+            RuntimeResourceBudget::from_limits(std::num::NonZeroUsize::MIN, None, None),
+            RuntimeMemorySnapshot::from_limits(Some(1 << 30), Some(1 << 30), None, None, None),
+        ),
+        IoConcurrencyBudget::new(2, 1),
+    )
+}
+
+#[derive(Debug)]
+struct ReferenceMemoryProbe {
+    task: hawdb_core::RuntimeTaskContext,
+    ceiling: u64,
+    peak: AtomicU64,
+}
+
+impl ReferenceMemoryProbe {
+    fn used(&self) -> u64 {
+        match self.task.reserve_working_memory(self.ceiling) {
+            Err(hawdb_core::RuntimeMemoryError::ReservationExceeded {
+                available_bytes, ..
+            }) => self.ceiling - available_bytes,
+            other => panic!("expected shared governor allocation usage: {other:?}"),
+        }
+    }
+}
+
+impl hawdb_qos::QosTelemetrySink for ReferenceMemoryProbe {
+    fn record_qos(&self, _: hawdb_qos::QosTelemetryEvent) {
+        self.peak.fetch_max(self.used(), Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn checkpoint_units_reference_capacity_charges_live_reference_work_beside_all_inputs() {
+    let state = source(3);
+    let delta = deltas(&state);
+    let sparse = sparse(&state);
+    for (state, delta) in [(&state, None), (&sparse, Some(delta.as_slice()))] {
+        let expected = collect(state, delta, None).unwrap();
+        let ceiling = 64 * 1024;
+        let governor = input_governor(ceiling);
+        let permit = governor
+            .try_admit(hawdb_qos::RuntimeWorkRequest::background_maintenance(
+                ceiling,
+            ))
+            .unwrap();
+        let task = permit.bind_task_context(hawdb_core::RuntimeTaskContext::default());
+        let probe = Arc::new(ReferenceMemoryProbe {
+            task: task.clone(),
+            ceiling,
+            peak: AtomicU64::new(0),
+        });
+        let local = scheduler();
+        local.set_telemetry_sink(Some(probe.clone()));
+        let work = CheckpointWorkContext::new(task).with_scheduler(local.clone());
+        let actual = collect(state, delta, Some(&work)).unwrap();
+        assert_eq!(actual, expected);
+        let retained = probe.used();
+        assert!(retained > 0);
+        // Every distinct reference must remain available while its complete
+        // input list is allocated, even if duplicated row values share bytes.
+        let reference_floor =
+            (expected.len() * std::mem::size_of::<RelationalOverflowRef>()) as u64;
+        assert!(
+            probe.peak.load(Ordering::SeqCst) >= retained + reference_floor,
+            "reference working memory disappeared from admission: peak={}, retained={retained}, reference_floor={reference_floor}",
+            probe.peak.load(Ordering::SeqCst)
+        );
+        assert_eq!(collect(state, delta, None).unwrap(), expected);
+        drop(actual);
+        assert_eq!(probe.used(), 0);
+        local.set_telemetry_sink(None);
+        drop(work);
+        drop(probe);
+        drop(permit);
+        assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+    }
+}
+
+#[test]
+fn checkpoint_units_reference_capacity_denies_when_only_the_retained_inputs_fit() {
+    use crate::background::CheckpointOperationError;
+    let state = source(3);
+    let delta = deltas(&state);
+    let sparse = sparse(&state);
+    for (state, delta) in [(&state, None), (&sparse, Some(delta.as_slice()))] {
+        let expected = collect(state, delta, None).unwrap();
+        let ceiling = 64 * 1024;
+        let governor = input_governor(ceiling);
+        let permit = governor
+            .try_admit(hawdb_qos::RuntimeWorkRequest::background_maintenance(
+                ceiling,
+            ))
+            .unwrap();
+        let task = permit.bind_task_context(hawdb_core::RuntimeTaskContext::default());
+        let work = CheckpointWorkContext::new(task.clone());
+        let output = collect(state, delta, Some(&work)).unwrap();
+        let retained = match task.reserve_working_memory(ceiling) {
+            Err(hawdb_core::RuntimeMemoryError::ReservationExceeded {
+                available_bytes, ..
+            }) => ceiling - available_bytes,
+            other => panic!("expected retained capacity: {other:?}"),
+        };
+        drop(output);
+        drop(work);
+        drop(task);
+        drop(permit);
+        assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+
+        let reference_floor =
+            (expected.len() * std::mem::size_of::<RelationalOverflowRef>()) as u64;
+        let limited = retained + reference_floor - 1;
+        let governor = input_governor(limited);
+        let permit = governor
+            .try_admit(hawdb_qos::RuntimeWorkRequest::background_maintenance(
+                limited,
+            ))
+            .unwrap();
+        let task = permit.bind_task_context(hawdb_core::RuntimeTaskContext::default());
+        let work = CheckpointWorkContext::new(task);
+        assert!(matches!(
+            work.classify(|work| collect(state, delta, Some(work))),
+            Err(CheckpointOperationError::Work(CheckpointWorkError::Memory(
+                hawdb_core::RuntimeMemoryError::ReservationExceeded { .. }
+            )))
+        ));
+        assert_eq!(collect(state, delta, None).unwrap(), expected);
+        drop(work);
+        drop(permit);
+        assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+    }
+}
+
+#[test]
+fn checkpoint_units_reference_capacity_releases_every_cancelled_unit_and_fully_retries() {
+    let state = source(4);
+    let delta = deltas(&state);
+    let sparse = sparse(&state);
+    for (state, delta) in [(&state, None), (&sparse, Some(delta.as_slice()))] {
+        let expected = collect(state, delta, None).unwrap();
+        let local = scheduler();
+        let baseline = Arc::new(CheckpointWorkProbe::default());
+        let output = collect(state, delta, Some(&baseline.context(local.clone()))).unwrap();
+        assert_eq!(output, expected);
+        let units = baseline.completed.load(Ordering::SeqCst);
+        assert!(units > 20);
+        drop(output);
+        baseline.assert_released(&local);
+        for stop in 1..=units {
+            let ceiling = 64 * 1024;
+            let governor = input_governor(ceiling);
+            let permit = governor
+                .try_admit(hawdb_qos::RuntimeWorkRequest::background_maintenance(
+                    ceiling,
+                ))
+                .unwrap();
+            let probe = Arc::new(CheckpointWorkProbe::default());
+            probe.cancel_after.store(stop, Ordering::SeqCst);
+            local.set_telemetry_sink(Some(probe.clone()));
+            let task = permit.bind_task_context(hawdb_core::RuntimeTaskContext::without_deadline(
+                probe.cancellation.clone(),
+            ));
+            let work = CheckpointWorkContext::new(task).with_scheduler(local.clone());
+            let error = collect(state, delta, Some(&work)).unwrap_err();
+            assert!(error.to_string().contains("stopped"), "{error:?}");
+            probe.assert_released(&local);
+            assert_eq!(collect(state, delta, None).unwrap(), expected);
+            drop(work);
+
+            // Reuse the same real admitted reservation with a fresh execution
+            // token; leaked scratch would reduce the observed available bytes.
+            let fresh = permit.bind_task_context(hawdb_core::RuntimeTaskContext::default());
+            assert!(matches!(
+                fresh.reserve_working_memory(ceiling),
+                Err(hawdb_core::RuntimeMemoryError::ReservationExceeded {
+                    available_bytes, ..
+                }) if available_bytes == ceiling
+            ));
+            let retry = Arc::new(CheckpointWorkProbe::default());
+            local.set_telemetry_sink(Some(retry.clone()));
+            let retry_work =
+                CheckpointWorkContext::new(fresh.clone()).with_scheduler(local.clone());
+            let output = collect(state, delta, Some(&retry_work)).unwrap();
+            assert_eq!(output, expected);
+            retry.assert_released(&local);
+            drop(output);
+            assert!(matches!(
+                fresh.reserve_working_memory(ceiling),
+                Err(hawdb_core::RuntimeMemoryError::ReservationExceeded {
+                    available_bytes, ..
+                }) if available_bytes == ceiling
+            ));
+            assert_eq!(collect(state, delta, None).unwrap(), expected);
+            local.set_telemetry_sink(None);
+            drop(retry_work);
+            drop(fresh);
+            drop(permit);
+            let closed = governor.snapshot();
+            assert_eq!(closed.active_cpu_slots, 0);
+            assert_eq!(closed.active_background_tasks, 0);
+            assert_eq!(closed.active_background_io_slots, 0);
+            assert_eq!(closed.admitted_memory_bytes, 0);
+        }
+    }
+}
+
+#[test]
+fn checkpoint_units_input_capacity_retains_the_list_after_task_close_until_last_clone() {
+    let state = source(3);
+    let expected = state.overflow_generation_inputs(true, 0).unwrap();
+    let ceiling = 64 * 1024;
+    let governor = input_governor(ceiling);
+    let permit = governor
+        .try_admit(hawdb_qos::RuntimeWorkRequest::background_maintenance(
+            ceiling,
+        ))
+        .unwrap();
+    let work = CheckpointWorkContext::new(
+        permit.bind_task_context(hawdb_core::RuntimeTaskContext::default()),
+    );
+    let actual = state
+        .overflow_generation_inputs_with_work_context(true, 0, &work)
+        .unwrap();
+    assert_eq!(actual, expected);
+    let retained = actual.clone();
+    drop(permit);
+    drop(work);
+    let closed = governor.snapshot();
+    assert_eq!(closed.active_cpu_slots, 0);
+    assert_eq!(closed.active_background_tasks, 0);
+    assert_eq!(closed.active_background_io_slots, 0);
+    assert_eq!(closed.admitted_memory_bytes, ceiling);
+    drop(actual);
+    assert_eq!(retained, expected);
+    assert_eq!(state.overflow_generation_inputs(true, 0).unwrap(), expected);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, ceiling);
+    drop(retained);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}
+
+#[test]
+fn checkpoint_units_input_capacity_denies_before_allocating_a_nonempty_list() {
+    use crate::background::{CheckpointOperationError, CheckpointWorkError};
+    let state = source(1);
+    let expected = state.overflow_generation_inputs(true, 0).unwrap();
+    let governor = input_governor(1);
+    let permit = governor
+        .try_admit(hawdb_qos::RuntimeWorkRequest::background_maintenance(1))
+        .unwrap();
+    let work = CheckpointWorkContext::new(
+        permit.bind_task_context(hawdb_core::RuntimeTaskContext::default()),
+    );
+    assert!(matches!(
+        work.classify(|work| state.overflow_generation_inputs_with_work_context(true, 0, work)),
+        Err(CheckpointOperationError::Work(CheckpointWorkError::Memory(
+            hawdb_core::RuntimeMemoryError::ReservationExceeded { .. }
+        )))
+    ));
+    assert_eq!(state.overflow_generation_inputs(true, 0).unwrap(), expected);
+    drop(work);
+    drop(permit);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}
+
+#[test]
+fn checkpoint_units_input_capacity_delta_iterator_retains_all_values_and_closed_ownership() {
+    let state = source(3);
+    let deltas = deltas(&state);
+    let sparse = sparse(&state);
+    let expected = sparse.overflow_delta_generation_inputs(&deltas).unwrap();
+    let ceiling = 64 * 1024;
+    let governor = input_governor(ceiling);
+    let permit = governor
+        .try_admit(hawdb_qos::RuntimeWorkRequest::background_maintenance(
+            ceiling,
+        ))
+        .unwrap();
+    let work = CheckpointWorkContext::new(
+        permit.bind_task_context(hawdb_core::RuntimeTaskContext::default()),
+    );
+    let output = sparse
+        .overflow_delta_generation_inputs_with_work_context(&deltas, &work)
+        .unwrap();
+    assert_eq!(output, expected);
+    drop(permit);
+    drop(work);
+    let retained = output.clone();
+    drop(output);
+    let mut iterator = retained.into_iter();
+    for (index, item) in expected.iter().enumerate() {
+        assert_eq!(iterator.len(), expected.len() - index);
+        assert_eq!(iterator.next().as_ref(), Some(item));
+        assert_eq!(governor.snapshot().admitted_memory_bytes, ceiling);
+    }
+    assert_eq!(iterator.len(), 0);
+    assert!(iterator.next().is_none());
+    assert!(iterator.next().is_none());
+    assert_eq!(governor.snapshot().admitted_memory_bytes, ceiling);
+    assert_eq!(
+        sparse.overflow_delta_generation_inputs(&deltas).unwrap(),
+        expected
+    );
+    drop(iterator);
+    let closed = governor.snapshot();
+    assert_eq!(closed.active_cpu_slots, 0);
+    assert_eq!(closed.active_background_tasks, 0);
+    assert_eq!(closed.admitted_memory_bytes, 0);
+}
+
+#[test]
+fn checkpoint_units_input_capacity_clone_shares_admission_and_one_byte_overlap_retries() {
+    use crate::background::{CheckpointOperationError, CheckpointWorkError};
+    use hawdb_core::RuntimeMemoryError;
+    let state = source(3);
+    let expected = state.overflow_generation_inputs(true, 0).unwrap();
+    let ceiling = 64 * 1024;
+    let governor = input_governor(ceiling);
+    let permit = governor
+        .try_admit(hawdb_qos::RuntimeWorkRequest::background_maintenance(
+            ceiling,
+        ))
+        .unwrap();
+    let task = permit.bind_task_context(hawdb_core::RuntimeTaskContext::default());
+    let probe = Arc::new(ReferenceMemoryProbe {
+        task: task.clone(),
+        ceiling,
+        peak: AtomicU64::new(0),
+    });
+    let local = scheduler();
+    local.set_telemetry_sink(Some(probe.clone()));
+    let work = CheckpointWorkContext::new(task.clone()).with_scheduler(local.clone());
+    let available = || match task.reserve_working_memory(ceiling) {
+        Err(RuntimeMemoryError::ReservationExceeded {
+            available_bytes, ..
+        }) => available_bytes,
+        other => panic!("expected actual shared-controller usage: {other:?}"),
+    };
+    let first = state
+        .overflow_generation_inputs_with_work_context(true, 0, &work)
+        .unwrap();
+    let remaining = available();
+    let used = ceiling - remaining;
+    let temporary = probe.peak.load(Ordering::SeqCst) - used;
+    assert!(used > 0);
+    assert!(temporary > 0);
+    let retained = first.clone();
+    assert_eq!(available(), remaining);
+    drop(first);
+    assert_eq!(available(), remaining);
+    // Leave exactly one byte less than the measured complete next build's
+    // peak, including its simultaneous references and retained inputs. The
+    // pinned governor's filler allocation owns a concrete 24-byte lease.
+    let filler = task
+        .reserve_working_memory(ceiling - 2 * used - temporary + 1 - 24)
+        .unwrap();
+    assert_eq!(available(), used + temporary - 1);
+    assert!(matches!(
+        work.classify(|work| state.overflow_generation_inputs_with_work_context(true, 0, work)),
+        Err(CheckpointOperationError::Work(CheckpointWorkError::Memory(
+            RuntimeMemoryError::ReservationExceeded { requested_bytes, available_bytes }
+        ))) if requested_bytes == used && available_bytes == used - 1
+    ));
+    assert_eq!(retained, expected);
+    assert_eq!(state.overflow_generation_inputs(true, 0).unwrap(), expected);
+    drop(filler);
+    let retry = state
+        .overflow_generation_inputs_with_work_context(true, 0, &work)
+        .unwrap();
+    assert_eq!(retry, expected);
+    drop(retry);
+    drop(retained);
+    local.set_telemetry_sink(None);
+    drop(work);
+    drop(probe);
+    drop(task);
+    drop(permit);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}
+
 fn scheduler() -> LocalQosScheduler {
     LocalQosScheduler::new(LocalQosPolicy {
         max_background_operations: Some(1),
@@ -146,11 +536,13 @@ fn collect(
     state: &RelationalState,
     deltas: Option<&[RelationalRowPageTableDelta]>,
     work: Option<&CheckpointWorkContext>,
-) -> Result<Vec<RelationalOverflowExtentInput>, RelationalError> {
+) -> Result<crate::relational::RelationalOverflowInputs, RelationalError> {
     match (deltas, work) {
-        (None, None) => state.overflow_generation_inputs(true, 0),
+        (None, None) => state.overflow_generation_inputs(true, 0).map(Into::into),
         (None, Some(work)) => state.overflow_generation_inputs_with_work_context(true, 0, work),
-        (Some(deltas), None) => state.overflow_delta_generation_inputs(deltas),
+        (Some(deltas), None) => state
+            .overflow_delta_generation_inputs(deltas)
+            .map(Into::into),
         (Some(deltas), Some(work)) => {
             state.overflow_delta_generation_inputs_with_work_context(deltas, work)
         }
@@ -185,6 +577,123 @@ fn checkpoint_units_overflow_input_collection_preserves_all_1025_inputs_and_inli
         }
         probe.assert_released(&local);
     }
+}
+
+#[test]
+fn checkpoint_units_overflow_file_inputs_retain_memory_through_publication_and_clones() {
+    use crate::relational::{
+        decode_relational_checkpoint_file, encode_relational_checkpoint, RelationalDecodeLimits,
+    };
+    use hawdb_qos::{
+        IoConcurrencyBudget, RuntimeGovernor, RuntimeGovernorConfig, RuntimeMemorySnapshot,
+        RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeWorkRequest,
+    };
+    let original = source(3);
+    let checkpoint = encode_relational_checkpoint(2, &original).unwrap();
+    let directory = std::env::temp_dir().join(format!(
+        "hawdb-overflow-owned-inputs-{}-{}",
+        std::process::id(),
+        NEXT_FILE.fetch_add(1, Ordering::Relaxed)
+    ));
+    crate::file_io::create_dir_all(&directory).unwrap();
+    let path = directory.join("source.hawdb");
+    crate::file_io::write(&path, &checkpoint).unwrap();
+    let state = decode_relational_checkpoint_file(&path, RelationalDecodeLimits::checkpoint())
+        .unwrap()
+        .state;
+    assert_eq!(state.file_backed_overflow_segment_count(), 3);
+    let expected = state.overflow_generation_inputs(false, usize::MAX).unwrap();
+    let total = expected
+        .iter()
+        .map(|input| input.encoded_bytes().unwrap().len())
+        .sum();
+    let ceiling = 2 * 1024 * 1024;
+    let governor = RuntimeGovernor::new(
+        RuntimeGovernorConfig {
+            memory_budget_bytes: Some(ceiling),
+            background_task_limit: Some(std::num::NonZeroUsize::MIN),
+            ..RuntimeGovernorConfig::shared_host()
+        },
+        RuntimeResourceSnapshot::from_parts(
+            RuntimeResourceBudget::from_limits(std::num::NonZeroUsize::MIN, None, None),
+            RuntimeMemorySnapshot::from_limits(Some(1 << 30), Some(1 << 30), None, None, None),
+        ),
+        IoConcurrencyBudget::new(2, 1),
+    );
+    let permit = governor
+        .try_admit(RuntimeWorkRequest::background_maintenance(ceiling).with_io_wave_slots(1))
+        .unwrap();
+    let work = CheckpointWorkContext::new(
+        permit.bind_task_context(hawdb_core::RuntimeTaskContext::default()),
+    );
+    let actual = state
+        .overflow_generation_inputs_with_work_context(false, total, &work)
+        .unwrap();
+    assert_eq!(actual, expected);
+    assert!(actual
+        .iter()
+        .all(|input| matches!(input, RelationalOverflowExtentInput::CheckpointWrite { .. })));
+    let retained = actual.clone();
+    let config = crate::relational::RelationalOverflowPublicationConfig::default();
+    let reference_directory = directory.join("reference");
+    let candidate_directory = directory.join("candidate");
+    let publisher = crate::relational::RelationalOverflowPublisher::new(config);
+    publisher
+        .persist_generation(&reference_directory, 1, 2, None, None, expected)
+        .unwrap();
+    let publication = publisher
+        .with_work_context(&work)
+        .persist_checkpoint_generation(&candidate_directory, 1, 2, None, None, actual)
+        .unwrap();
+    assert_eq!(publication.extent_count, 3);
+    for filename in [
+        crate::relational::relational_overflow_extent_file(1),
+        crate::relational::relational_overflow_descriptor_file(1),
+        crate::relational::relational_overflow_manifest_generation_file(1),
+    ] {
+        assert_eq!(
+            crate::file_io::read(reference_directory.join(&filename)).unwrap(),
+            crate::file_io::read(candidate_directory.join(&filename)).unwrap()
+        );
+    }
+    drop(permit);
+    assert_eq!(governor.snapshot().active_background_tasks, 0);
+    assert_eq!(governor.snapshot().active_background_io_slots, 0);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, ceiling);
+    drop(work);
+    let reader = crate::relational::RelationalOverflowRootReader::open_generation(
+        &candidate_directory,
+        1,
+        config,
+    )
+    .unwrap();
+    let mut observed = Vec::new();
+    for input in &retained {
+        let value = reader
+            .hydrate(
+                input.reference(),
+                &mut crate::relational::RelationalHydrationBudget::default(),
+                None,
+            )
+            .unwrap();
+        let RelationalValue::Text(value) = value else {
+            unreachable!()
+        };
+        observed.push(value);
+    }
+    observed.sort();
+    assert_eq!(
+        observed,
+        (0..3)
+            .map(|seed| format!("value-{seed:04}-{}", "界🙂".repeat(800)))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(crate::file_io::read(&path).unwrap(), checkpoint);
+    drop(retained);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+    drop(reader);
+    drop(state);
+    crate::file_io::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -453,10 +962,8 @@ fn checkpoint_units_overflow_input_collection_detaches_file_bytes_without_servin
     assert_eq!(actual, expected);
     assert_eq!(cache.snapshot(), before);
     for (input, retained) in actual.iter().zip(&retained) {
-        let RelationalOverflowExtentInput::Write { encoded, .. } = input else {
-            unreachable!()
-        };
-        assert_eq!(encoded.as_ref(), retained.as_ref());
+        let encoded = input.encoded_bytes().unwrap();
+        assert_eq!(encoded, retained.as_ref());
         assert_ne!(encoded.as_ptr(), retained.as_ptr());
     }
     let units = baseline.completed.load(Ordering::SeqCst);

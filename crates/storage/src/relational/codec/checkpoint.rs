@@ -36,7 +36,7 @@ pub(super) use validation::{
 };
 
 use super::*;
-use crate::background::{CheckpointWorkContext, CheckpointWorkError};
+use crate::background::{CheckpointBytes, CheckpointWorkContext, CheckpointWorkError};
 
 pub(crate) fn encode_relational_table_schema_with_work_context(
     schema: &RelationalTableSchema,
@@ -301,16 +301,32 @@ pub(super) fn validate_reachability(
     work.checkpoint().map_err(work_error)
 }
 
+enum OverflowBytes<'a> {
+    Borrowed(&'a [u8]),
+    Owned(CheckpointBytes),
+}
+
+impl std::ops::Deref for OverflowBytes<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(bytes) => bytes,
+            Self::Owned(bytes) => bytes,
+        }
+    }
+}
+
 fn overflow_with_work_context<'a>(
     segment: &'a RelationalOverflowSegment,
     work: &CheckpointWorkContext,
-) -> Result<std::borrow::Cow<'a, [u8]>, RelationalError> {
+) -> Result<OverflowBytes<'a>, RelationalError> {
     work.checkpoint().map_err(work_error)?;
     match segment {
-        RelationalOverflowSegment::Inline(bytes) => Ok(std::borrow::Cow::Borrowed(bytes)),
+        RelationalOverflowSegment::Inline(bytes) => Ok(OverflowBytes::Borrowed(bytes)),
         RelationalOverflowSegment::FileRange { reader, range } => reader
             .checkpoint_range_with_work_context(range, work)
-            .map(std::borrow::Cow::Owned)
+            .map(OverflowBytes::Owned)
             .map_err(|error| match error {
                 crate::scan::CheckpointRangeReadError::Read(error) => RelationalError::Corruption(
                     format!("failed to read file-backed overflow segment: {error}"),
