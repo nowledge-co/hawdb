@@ -20,16 +20,16 @@ regex-syntax = { version = "=0.8.11", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 zstd = "0.13"
-hawdb-core = { path = "../core", version = "0.3.0" }
-hawdb-evidence = { path = "../evidence", version = "0.3.0" }
-hawdb-executor = { path = "../executor", version = "0.3.0" }
-hawdb-integrity = { path = "../integrity", version = "0.3.0" }
-hawdb-optimizer = { path = "../optimizer", version = "0.3.0" }
-hawdb-plan-cypher = { path = "../plan-cypher", version = "0.3.0" }
-hawdb-qos = { path = "../qos", version = "0.3.0" }
-hawdb-storage = { path = "../storage", version = "0.3.0" }
-hawdb-telemetry = { path = "../telemetry", version = "0.3.0" }
-hawdb-vector-projection = { path = "../vector-projection", version = "0.3.0", optional = true }
+hawdb-core = { path = "../core", version = "0.4.0" }
+hawdb-evidence = { path = "../evidence", version = "0.4.0" }
+hawdb-executor = { path = "../executor", version = "0.4.0" }
+hawdb-integrity = { path = "../integrity", version = "0.4.0" }
+hawdb-optimizer = { path = "../optimizer", version = "0.4.0" }
+hawdb-plan-cypher = { path = "../plan-cypher", version = "0.4.0" }
+hawdb-qos = { path = "../qos", version = "0.4.0" }
+hawdb-storage = { path = "../storage", version = "0.4.0" }
+hawdb-telemetry = { path = "../telemetry", version = "0.4.0" }
+hawdb-vector-projection = { path = "../vector-projection", version = "0.4.0", optional = true }
 
 [features]
 default = [
@@ -46,4 +46,4 @@ qualification = []
 vector-search = ["dep:hawdb-vector-projection", "hawdb-vector-projection/storage-io"]
 
 [dev-dependencies]
-hawdb-vector-projection = { path = "../vector-projection", version = "0.3.0" }
+hawdb-vector-projection = { path = "../vector-projection", version = "0.4.0" }
