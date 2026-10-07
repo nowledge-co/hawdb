@@ -474,6 +474,22 @@ pub fn clone_retained_with_work_context(
     basic: BasicGraphStatistics,
     work: &CheckpointWorkContext,
 ) -> Result<GraphStatistics, CheckpointWorkError> {
+    clone_retained_with_index_samples_and_work_context(
+        source,
+        source.index_samples.iter(),
+        catalog,
+        basic,
+        work,
+    )
+}
+
+pub(crate) fn clone_retained_with_index_samples_and_work_context<'a>(
+    source: &GraphStatistics,
+    index_samples: impl Iterator<Item = (&'a IndexId, &'a IndexStatisticsSample)>,
+    catalog: &Catalog,
+    basic: BasicGraphStatistics,
+    work: &CheckpointWorkContext,
+) -> Result<GraphStatistics, CheckpointWorkError> {
     let mut copy = graph_statistics_from_basic(basic, source.advanced_statistics_complete);
     copy.computed_at_commit_epoch = source.computed_at_commit_epoch;
     copy.histogram_sample_limit = source.histogram_sample_limit;
@@ -491,7 +507,7 @@ pub fn clone_retained_with_work_context(
         clone_map_with_work_context(&source.bounded_path_source_distinct_counts, work)?;
     copy.bounded_path_target_distinct_counts =
         clone_map_with_work_context(&source.bounded_path_target_distinct_counts, work)?;
-    for (id, sample) in &source.index_samples {
+    for (id, sample) in index_samples {
         let unit = work.start_unit()?;
         if catalog.supports_index_statistics(*id) && sample.is_valid() {
             copy.index_samples.insert(*id, *sample);

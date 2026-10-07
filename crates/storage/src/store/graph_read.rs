@@ -423,7 +423,7 @@ impl GraphStore {
             );
             return statistics;
         }
-        let mut statistics = self.checkpoint_statistics.clone();
+        let mut statistics = self.checkpoint_statistics.materialize();
         retain_supported_property_statistics(&mut statistics, Some(catalog));
         retain_valid_index_statistics_samples(&mut statistics, catalog);
         let basic = self.basic_statistics();
@@ -440,14 +440,17 @@ impl GraphStore {
         work: &crate::background::CheckpointWorkContext,
     ) -> Result<GraphStatistics> {
         use hawdb_storage::statistics::checkpoint::{
-            clone_basic_with_work_context, clone_retained_with_work_context,
-            compute_with_work_context, index_samples_with_work_context,
+            clone_retained_with_index_samples_and_work_context, compute_with_work_context,
+            index_samples_with_work_context,
         };
-        let basic = clone_basic_with_work_context(&self.basic_statistics, self.commit_epoch, work)
+        let basic = self
+            .basic_statistics
+            .materialize_with_work_context(self.commit_epoch, work)
             .map_err(HawDBError::from_storage_error)?;
         if self.canonical_base_out_of_core {
-            return clone_retained_with_work_context(
+            return clone_retained_with_index_samples_and_work_context(
                 &self.checkpoint_statistics,
+                self.checkpoint_statistics.index_samples.iter(),
                 catalog,
                 basic,
                 work,
@@ -468,9 +471,7 @@ impl GraphStore {
     }
 
     pub fn basic_statistics(&self) -> BasicGraphStatistics {
-        let mut statistics = self.basic_statistics.clone();
-        statistics.computed_at_commit_epoch = self.commit_epoch;
-        statistics
+        self.basic_statistics.materialize(self.commit_epoch)
     }
 
     pub fn basic_statistics_consistency_report(&self) -> BasicStatisticsConsistencyReport {

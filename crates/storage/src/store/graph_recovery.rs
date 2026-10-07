@@ -345,15 +345,15 @@ impl GraphStore {
             .into_iter()
             .map(Arc::new)
             .collect();
-        self.basic_statistics = decoded.basic_statistics;
-        self.checkpoint_statistics = decoded.checkpoint_statistics;
+        self.basic_statistics = decoded.basic_statistics.into();
+        self.checkpoint_statistics = decoded.checkpoint_statistics.into();
         for (name, definition) in decoded.projected_graphs {
             self.apply_project_graph_definition(name, definition);
         }
         if !decoded.nodes.is_empty() || !decoded.relationships.is_empty() {
             // Applying inline records rebuilds the basic counts. The decoded
             // totals must not be counted again during that reconstruction.
-            self.basic_statistics = BasicGraphStatistics::default();
+            self.basic_statistics = BasicStatisticsState::default();
         }
         for node in decoded.nodes {
             self.apply_create_node_with_labels(catalog, node.id, node.labels, node.properties);
@@ -378,7 +378,8 @@ impl GraphStore {
             self.checkpoint_statistics.advanced_statistics_complete =
                 loaded_statistics_complete.unwrap_or(true);
             retain_supported_property_statistics(&mut self.checkpoint_statistics, Some(catalog));
-            retain_valid_index_statistics_samples(&mut self.checkpoint_statistics, catalog);
+            self.checkpoint_statistics
+                .retain_valid_index_samples(catalog);
         }
         if loaded_generation != Some(expected_generation) {
             return Err(HawDBError::Storage(format!(
@@ -476,7 +477,7 @@ impl GraphStore {
                 }
             };
             if materialize {
-                self.basic_statistics = BasicGraphStatistics::default();
+                self.basic_statistics = BasicStatisticsState::default();
                 reader
                     .scan_nodes(|node| {
                         self.apply_create_node_with_labels(

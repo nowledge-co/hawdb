@@ -716,12 +716,10 @@ impl GraphStore {
             .transpose()?;
         let commit_epoch = self.commit_epoch;
         let checkpoint_statistics = if checkpoint_out_of_core && !self.canonical_base_out_of_core {
-            let basic = hawdb_storage::statistics::checkpoint::clone_basic_with_work_context(
-                &self.basic_statistics,
-                self.commit_epoch,
-                work,
-            )
-            .map_err(HawDBError::from_storage_error)?;
+            let basic = self
+                .basic_statistics
+                .materialize_with_work_context(self.commit_epoch, work)
+                .map_err(HawDBError::from_storage_error)?;
             let mut statistics = graph_statistics_from_basic(basic, false);
             statistics.index_samples =
                 hawdb_storage::statistics::checkpoint::index_samples_with_work_context(
@@ -1125,7 +1123,11 @@ impl GraphStore {
                 projected_graph_artifacts: artifacts,
                 publish_projected_graph_artifacts: projected_graph_artifacts.is_some(),
                 source_scan_publication,
-                checkpoint_statistics,
+                checkpoint_statistics: CheckpointStatisticsState::with_work_context(
+                    checkpoint_statistics,
+                    work,
+                )
+                .map_err(HawDBError::from_storage_error)?,
                 checkpoint_relational_state,
                 checkpoint_append_reader,
                 relational_index_candidate,
@@ -1632,10 +1634,10 @@ impl GraphStore {
 
     #[doc(hidden)]
     pub fn checkpoint_estimated_operations(&self) -> usize {
-        let statistics = self.basic_statistics();
-        let graph_operations = statistics
+        let graph_operations = self
+            .basic_statistics
             .node_count
-            .saturating_add(statistics.relationship_count);
+            .saturating_add(self.basic_statistics.relationship_count);
         usize::try_from(graph_operations)
             .unwrap_or(usize::MAX)
             .saturating_add(self.relational_state.total_row_count())

@@ -16,7 +16,7 @@
 //! snapshots.
 
 use crate::{adjacency::AdjacencyPostingList, NodeId, NodeRecord, RelId, RelRecord};
-use hawdb_core::{LabelId, RelTypeId, Value};
+use hawdb_core::{IndexId, IndexStatisticsSample, LabelId, RelTypeId, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
@@ -131,6 +131,24 @@ impl CowPageWeight for LabelId {
 }
 
 impl CowPageWeight for RelTypeId {
+    fn cow_page_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+impl CowPageWeight for IndexId {
+    fn cow_page_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+impl CowPageWeight for IndexStatisticsSample {
+    fn cow_page_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+impl CowPageWeight for u64 {
     fn cow_page_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
     }

@@ -441,9 +441,22 @@ than copying every schema name/descriptor under the publication guard. Schema
 mutation detaches only the changed collection, preserving old source and
 candidate identities. The public catalog APIs and serialization inputs remain
 unchanged. This addresses schema-size-dependent capture copying; DDL detachment,
-last-owner destruction, checkpoint statistics capture and retained-source
+last-owner destruction and retained-source
 admission still need bounds and foreground release measurements. It does not
 establish a complete capture-time or commit-p99 guarantee.
+
+Store statistics capture and prepared-state adoption now share the advanced
+statistics root. Basic label/type counters and mutable index samples live in
+separate paged COW maps, so updating a sample after capture does not detach all
+histograms and path facts. Public statistics DTOs and checkpoint formats remain
+unchanged. Controlled materialization and prepared-state sealing admit each
+counter/sample and preserve cancellation or QoS rejection without mutating the
+source. Full snapshot/write isolation and out-of-core checkpoint/reopen coverage
+also preserves initial basic-only and retained advanced-statistics behavior.
+This removes database-sized statistics copying from capture/adoption, but page
+directory copies, individual DDL detachment, DTO serialization, allocations and
+final-owner destruction still lack complete byte/time bounds and resource
+accounting. These changes do not qualify the entire candidate or commit p99.
 
 `HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
 two schema/data transactions under both durability policies. Its complete

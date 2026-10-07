@@ -131,6 +131,11 @@ pub mod relational_row_pages;
 mod search_projection_change_log;
 #[path = "store/statistics_refresh.rs"]
 mod statistics_refresh;
+#[path = "store/statistics_state.rs"]
+mod statistics_state;
+use statistics_state::{
+    decrement_statistic_counter, BasicStatisticsState, CheckpointStatisticsState,
+};
 #[path = "store/wal_codec.rs"]
 mod wal_codec;
 use crate::file_io as fs;
@@ -214,8 +219,8 @@ pub use hawdb_storage::statistics::{
     composite_property_index_key, composite_property_index_unique_values, compute_basic_statistics,
     compute_index_statistics_samples, compute_node_property_distinct_counts_from_index,
     compute_relationship_property_distinct_counts_from_index, compute_statistics_for_catalog,
-    compute_statistics_with_basic, decrement_counter, full_text_index_tokens,
-    full_text_query_tokens, graph_statistics_from_basic, recompute_node_property_index,
+    compute_statistics_with_basic, full_text_index_tokens, full_text_query_tokens,
+    graph_statistics_from_basic, recompute_node_property_index,
     recompute_relationship_property_index, scalar_property_index_cardinality,
 };
 use hawdb_storage::statistics_refresh::{
@@ -799,8 +804,8 @@ pub struct GraphStore {
     version_snapshot_pin: Option<hawdb_storage::version::VersionSnapshotPin>,
     nodes: CowSegmentedMap<NodeId, NodeRecord>,
     relationships: CowSegmentedMap<RelId, RelRecord>,
-    basic_statistics: BasicGraphStatistics,
-    checkpoint_statistics: GraphStatistics,
+    basic_statistics: BasicStatisticsState,
+    checkpoint_statistics: CheckpointStatisticsState,
     advanced_statistics_dirty: AdvancedStatisticsDirtyState,
     outgoing: CowSegmentedMap<(NodeId, RelTypeId), AdjacencyPostingList>,
     incoming: CowSegmentedMap<(NodeId, RelTypeId), AdjacencyPostingList>,
@@ -1727,8 +1732,8 @@ impl GraphStore {
             version_snapshot_pin: None,
             nodes: CowSegmentedMap::default(),
             relationships: CowSegmentedMap::default(),
-            basic_statistics: BasicGraphStatistics::default(),
-            checkpoint_statistics: GraphStatistics::default(),
+            basic_statistics: BasicStatisticsState::default(),
+            checkpoint_statistics: CheckpointStatisticsState::default(),
             advanced_statistics_dirty: AdvancedStatisticsDirtyState::default(),
             outgoing: CowSegmentedMap::default(),
             incoming: CowSegmentedMap::default(),

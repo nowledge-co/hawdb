@@ -31,8 +31,7 @@ impl GraphStore {
             *self
                 .basic_statistics
                 .label_counts
-                .entry(*label_id)
-                .or_default() += 1;
+                .entry_or_default(*label_id) += 1;
         }
         self.refresh_basic_statistics_epoch();
     }
@@ -40,7 +39,7 @@ impl GraphStore {
     fn remove_node_from_basic_statistics(&mut self, node: &NodeRecord) {
         self.basic_statistics.node_count = self.basic_statistics.node_count.saturating_sub(1);
         for label_id in &node.labels {
-            decrement_counter(&mut self.basic_statistics.label_counts, label_id);
+            decrement_statistic_counter(&mut self.basic_statistics.label_counts, label_id);
         }
         self.refresh_basic_statistics_epoch();
     }
@@ -50,15 +49,14 @@ impl GraphStore {
         *self
             .basic_statistics
             .rel_type_counts
-            .entry(relationship.rel_type)
-            .or_default() += 1;
+            .entry_or_default(relationship.rel_type) += 1;
         self.refresh_basic_statistics_epoch();
     }
 
     fn remove_relationship_from_basic_statistics(&mut self, relationship: &RelRecord) {
         self.basic_statistics.relationship_count =
             self.basic_statistics.relationship_count.saturating_sub(1);
-        decrement_counter(
+        decrement_statistic_counter(
             &mut self.basic_statistics.rel_type_counts,
             &relationship.rel_type,
         );
