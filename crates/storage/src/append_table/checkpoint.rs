@@ -21,6 +21,32 @@ use std::collections::{BinaryHeap, VecDeque};
 
 const SORT_ROWS_PER_UNIT: usize = 1024;
 
+pub(super) enum CompactionFailure {
+    Work(CheckpointWorkError),
+    Data(AppendTableError),
+}
+
+impl From<CheckpointWorkError> for CompactionFailure {
+    fn from(error: CheckpointWorkError) -> Self {
+        Self::Work(error)
+    }
+}
+
+impl From<AppendTableError> for CompactionFailure {
+    fn from(error: AppendTableError) -> Self {
+        Self::Data(error)
+    }
+}
+
+impl CompactionFailure {
+    pub(super) fn into_append(self) -> AppendTableError {
+        match self {
+            Self::Work(error) => work_error(error),
+            Self::Data(error) => error,
+        }
+    }
+}
+
 pub(super) fn work_error(error: CheckpointWorkError) -> AppendTableError {
     AppendTableError::Admission(error.to_string())
 }
@@ -78,7 +104,7 @@ fn inconsistent_batches() -> AppendTableError {
     )
 }
 
-fn sort_rows_with_work_context(
+pub(super) fn sort_rows_with_work_context(
     rows: Vec<AppendTableRow>,
     work: &CheckpointWorkContext,
 ) -> Result<Vec<AppendTableRow>, AppendTableError> {

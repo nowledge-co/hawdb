@@ -172,6 +172,7 @@ pub struct AppendPublicationReport {
 
 pub struct AppendPublisher;
 
+#[derive(Debug)]
 struct AppendCompactionPlan {
     due: bool,
     checkpoint_rows: Option<Vec<AppendTableRow>>,
@@ -322,7 +323,11 @@ fn publish_checkpoint_request(
     }
 
     let prior_segment_count = previous.map_or(0, |reader| reader.manifest.segments.len());
-    let compaction = plan_compaction(previous, rows, config)?;
+    let compaction = if let Some(work) = work {
+        checkpoint::plan_compaction(previous, rows, config, work)?
+    } else {
+        plan_compaction(previous, rows, config)?
+    };
     let compact = compaction.checkpoint_rows.is_some();
     let rows_to_write = compaction.checkpoint_rows.as_deref().unwrap_or(rows);
     let mut segments = if compact {

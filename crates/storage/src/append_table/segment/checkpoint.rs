@@ -18,6 +18,7 @@
 //! Complete buffers, variable-sized key comparisons and Arc conversion still
 //! need the owner's resource reservation; this is not a byte-ledger substitute.
 
+mod compaction;
 pub(super) mod read;
 
 use super::*;

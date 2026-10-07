@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod compaction;
 pub(super) mod read;
+
+pub(super) use compaction::plan_compaction;
 
 use super::*;
 use crate::append_table::checkpoint::work_error;

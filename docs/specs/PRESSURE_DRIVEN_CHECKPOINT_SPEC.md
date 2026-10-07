@@ -422,6 +422,20 @@ representative descriptor/entry boundaries, preserve both published files,
 release all work/I/O leases, and retry to an exact 512-row reopen. No full
 append resource or cancellation bound is established by these mounts.
 
+
+Private append compaction now checks descriptors and payload totals per row,
+reads compressed blocks in admitted 64 KiB I/O waves, and decompresses in 64 KiB
+units. Row traversal, overflow-reference closure validation and hydration have
+separate work boundaries; sorted runs and heap outputs reuse the controlled
+capture sorter. The private path avoids populating serving reader caches.
+Compaction preserves existing row/payload deferral limits, but distinguishes
+work admission/cancellation from decoder budget rejection so a stopped candidate
+cannot silently proceed as an incremental publication. Individual row/key and
+overflow decoding, variable-value cloning, retained buffers and allocation/drop
+costs still need inner byte/time accounting. These boundaries do not establish
+a complete compaction cancellation or candidate memory bound. Full issue
+qualification remains required.
+
 Catalog capture now shares its fixed set of immutable collection roots rather
 than copying every schema name/descriptor under the publication guard. Schema
 mutation detaches only the changed collection, preserving old source and
