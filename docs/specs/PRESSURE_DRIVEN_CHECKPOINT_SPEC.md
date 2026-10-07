@@ -608,8 +608,29 @@ can lose the response while the complete result remains selected and recoverable
 Targeted regressions compare complete bytes/all 1025 values, first-duplicate
 diagnostics, sort cancellation, every actual I/O wave in all three candidate
 modes, unchanged base authority, cleanup and complete fresh-generation retry,
-and completed selection after a lost reply. Exact-compaction reference-source
-traversal and encoded-extent hydration still need controls. Retained inputs,
+and completed selection after a lost reply. Exact-compaction reference iteration
+now admits each in-memory entry or capped-buffer spill record independently.
+Spill merging uses an explicit heap with fixed comparisons/swaps per unit;
+visitors run after releasing CPU and I/O leases so nested builders can acquire
+the same scheduler. Ordinary iteration remains an independent full ordering,
+deduplication and corruption-error reference. Regressions cover all 1025 unique
+references with duplicates across multiple runs, nested admission, each actual
+unit and I/O-wave cancellation with unchanged source files and full retry,
+metadata conflicts and spill corruption, early-stop and callback cancellation,
+and complete exact-publication values/three artifact images for a spilled closure.
+Sort/spill construction, collection capacities, retained FDs, final-owner cleanup
+and shared resource accounting remain incomplete. The controlled encoded-extent
+read now initializes,
+reads and hashes at most 64 KiB per CPU/I/O unit and verifies the complete CRC/SHA
+before returning the owned Vec. Exact publication borrows that vector directly
+instead of converting it into an Arc slice with another whole-value copy. The
+ordinary reader remains an independent checksum/error reference. Regressions
+compare every input byte, range/metadata/CRC/SHA diagnostics, each actual read
+unit and I/O-wave cancellation with released leases and unchanged authority,
+denial before I/O and full exact-compaction values/artifact bytes. A complete
+encoded value is still retained and its allocation occurs before block reads;
+these controls do not bound allocator latency or actual retained capacity.
+Retained inputs,
 allocator/capacity costs, final-owner destruction, disk/FD/cleanup debt and the
 shared hard resource ledger remain incomplete; these primitives do not qualify
 whole-candidate resources, production per-unit admission or release performance.

@@ -49,8 +49,8 @@ impl RelationalOverflowPublisher {
     }
 
     /// Binds construction/publication to the admitted checkpoint task.
-    /// Retained inputs, exact-compaction extent reads and cleanup debt still
-    /// require hard resource controls.
+    /// Retained inputs, reference sort resources and cleanup debt
+    /// still require hard resource controls.
     #[doc(hidden)]
     pub fn with_work_context(mut self, work: &CheckpointWorkContext) -> Self {
         self.work = Some(work.clone());
@@ -582,7 +582,7 @@ fn preflight_exact_references(
     let mut new_extent_bytes = 0u64;
     let mut copied_base_extent_count = 0u64;
     let mut introduced_extent_count = 0u64;
-    references.visit(&mut |reference| {
+    references.visit_with_work_context(&mut |reference| {
         task.checkpoint()
             .map_err(RelationalOverflowPublicationError::Stopped)?;
         while base_descriptor
@@ -643,7 +643,7 @@ fn preflight_exact_references(
             )));
         }
         Ok(true)
-    })?;
+    }, work)?;
     Ok(ExactReferencePreflight {
         copied_base_extent_count,
         introduced_extent_count,
@@ -700,40 +700,52 @@ fn write_exact_artifacts(
     } else {
         Some(checkpoint::descriptor(base, &mut base_file, 0, work)?)
     };
-    references.visit(&mut |reference| {
-        task.checkpoint()
-            .map_err(RelationalOverflowPublicationError::Stopped)?;
-        while base_descriptor
-            .as_ref()
-            .is_some_and(|descriptor| descriptor.reference.digest < reference.digest)
-        {
-            advance_base_descriptor(
-                base,
-                &mut base_file,
-                &mut base_ordinal,
-                &mut base_descriptor,
-                work,
-            )?;
-        }
-        if let Some(existing) =
-            base_descriptor.filter(|descriptor| descriptor.reference.digest == reference.digest)
-        {
-            if existing.reference != reference {
-                return Err(RelationalOverflowPublicationError::Corrupt(format!(
-                    "base overflow descriptor {} changed after exact preflight",
-                    reference.digest
-                )));
+    references.visit_with_work_context(
+        &mut |reference| {
+            task.checkpoint()
+                .map_err(RelationalOverflowPublicationError::Stopped)?;
+            while base_descriptor
+                .as_ref()
+                .is_some_and(|descriptor| descriptor.reference.digest < reference.digest)
+            {
+                advance_base_descriptor(
+                    base,
+                    &mut base_file,
+                    &mut base_ordinal,
+                    &mut base_descriptor,
+                    work,
+                )?;
             }
-            let encoded = base.read_encoded_extent(&existing)?;
-            writer.emit_input(&RelationalOverflowExtentInput::Write { reference, encoded })?;
-        } else {
-            let encoded = resolve_new(&reference)?.ok_or(
-                RelationalOverflowPublicationError::MissingExtent(reference.digest),
-            )?;
-            writer.emit_input(&RelationalOverflowExtentInput::Write { reference, encoded })?;
-        }
-        Ok(true)
-    })?;
+            if let Some(existing) =
+                base_descriptor.filter(|descriptor| descriptor.reference.digest == reference.digest)
+            {
+                if existing.reference != reference {
+                    return Err(RelationalOverflowPublicationError::Corrupt(format!(
+                        "base overflow descriptor {} changed after exact preflight",
+                        reference.digest
+                    )));
+                }
+                match work {
+                    Some(work) => {
+                        let encoded =
+                            base.read_encoded_extent_with_work_context(&existing, work)?;
+                        writer.emit_encoded(&reference, &encoded)?;
+                    }
+                    None => {
+                        let encoded = base.read_encoded_extent(&existing)?;
+                        writer.emit_encoded(&reference, &encoded)?;
+                    }
+                }
+            } else {
+                let encoded = resolve_new(&reference)?.ok_or(
+                    RelationalOverflowPublicationError::MissingExtent(reference.digest),
+                )?;
+                writer.emit_input(&RelationalOverflowExtentInput::Write { reference, encoded })?;
+            }
+            Ok(true)
+        },
+        work,
+    )?;
     writer.finish()
 }
 
@@ -890,48 +902,55 @@ impl<'a> ArtifactWriter<'a> {
                 RelationalOverflowPublicationError::MissingExtent(reference.digest),
             ),
             RelationalOverflowExtentInput::Write { reference, encoded } => {
-                validate_encoded_extent(reference, encoded, self.config, self.work)?;
-                let encoded_len = u64::try_from(encoded.len()).map_err(|_| {
-                    RelationalOverflowPublicationError::Admission(
-                        "overflow envelope length does not fit u64".to_string(),
-                    )
-                })?;
-                let next_extent_bytes =
-                    self.extent_bytes.checked_add(encoded_len).ok_or_else(|| {
-                        RelationalOverflowPublicationError::Admission(
-                            "overflow extent artifact length overflow".to_string(),
-                        )
-                    })?;
-                if next_extent_bytes > self.config.max_new_extent_bytes.get() {
-                    return Err(RelationalOverflowPublicationError::Admission(format!(
-                        "overflow extent artifact requires {next_extent_bytes} bytes, exceeding limit {}",
-                        self.config.max_new_extent_bytes
-                    )));
-                }
-                checkpoint::write(
-                    &mut self.extent_file,
-                    encoded,
-                    "write overflow extent candidate",
-                    self.work,
-                )?;
-                checkpoint::update(&mut self.extent_hasher, encoded, self.work)?;
-                let digest = checkpoint::integrity(encoded, self.work)?;
-                let descriptor = RelationalOverflowExtentDescriptor {
-                    reference: *reference,
-                    physical_generation: self.generation,
-                    physical_offset: self.extent_bytes,
-                    envelope_bytes: encoded_len,
-                    envelope_crc32c: digest.crc32c.get(),
-                };
-                self.extent_bytes = next_extent_bytes;
-                self.new_extent_count = self.new_extent_count.checked_add(1).ok_or_else(|| {
-                    RelationalOverflowPublicationError::Admission(
-                        "new overflow extent count overflow".to_string(),
-                    )
-                })?;
-                self.emit_descriptor(descriptor)
+                self.emit_encoded(reference, encoded)
             }
         }
+    }
+
+    fn emit_encoded(
+        &mut self,
+        reference: &RelationalOverflowRef,
+        encoded: &[u8],
+    ) -> Result<(), RelationalOverflowPublicationError> {
+        validate_encoded_extent(reference, encoded, self.config, self.work)?;
+        let encoded_len = u64::try_from(encoded.len()).map_err(|_| {
+            RelationalOverflowPublicationError::Admission(
+                "overflow envelope length does not fit u64".to_string(),
+            )
+        })?;
+        let next_extent_bytes = self.extent_bytes.checked_add(encoded_len).ok_or_else(|| {
+            RelationalOverflowPublicationError::Admission(
+                "overflow extent artifact length overflow".to_string(),
+            )
+        })?;
+        if next_extent_bytes > self.config.max_new_extent_bytes.get() {
+            return Err(RelationalOverflowPublicationError::Admission(format!(
+                "overflow extent artifact requires {next_extent_bytes} bytes, exceeding limit {}",
+                self.config.max_new_extent_bytes
+            )));
+        }
+        checkpoint::write(
+            &mut self.extent_file,
+            encoded,
+            "write overflow extent candidate",
+            self.work,
+        )?;
+        checkpoint::update(&mut self.extent_hasher, encoded, self.work)?;
+        let digest = checkpoint::integrity(encoded, self.work)?;
+        let descriptor = RelationalOverflowExtentDescriptor {
+            reference: *reference,
+            physical_generation: self.generation,
+            physical_offset: self.extent_bytes,
+            envelope_bytes: encoded_len,
+            envelope_crc32c: digest.crc32c.get(),
+        };
+        self.extent_bytes = next_extent_bytes;
+        self.new_extent_count = self.new_extent_count.checked_add(1).ok_or_else(|| {
+            RelationalOverflowPublicationError::Admission(
+                "new overflow extent count overflow".to_string(),
+            )
+        })?;
+        self.emit_descriptor(descriptor)
     }
 
     fn emit_reused(

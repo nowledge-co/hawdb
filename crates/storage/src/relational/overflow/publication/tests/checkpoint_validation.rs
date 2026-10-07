@@ -21,6 +21,9 @@ use std::sync::Arc;
 #[path = "checkpoint_publication.rs"]
 mod operations;
 
+#[path = "checkpoint_reader.rs"]
+mod encoded_reads;
+
 fn scheduler() -> LocalQosScheduler {
     LocalQosScheduler::new(LocalQosPolicy {
         max_background_operations: Some(1),
