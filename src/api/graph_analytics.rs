@@ -30,7 +30,8 @@ pub enum GraphAnalyticsAlgorithm {
     Louvain(crate::LouvainOptions),
 }
 
-/// Limits apply to the complete result, including every Louvain hierarchy level.
+/// Row and payload limits cover the complete query output, including every
+/// Louvain hierarchy level. The staging limit covers one final value per node.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphAnalyticsRequest {
     pub projection: String,
@@ -65,7 +66,7 @@ pub struct PreparedGraphAnalytics {
     snapshot: DatabaseReadTransaction,
     request: GraphAnalyticsRequest,
     publication_id: String,
-    rows: Vec<(i64, Value)>,
+    rows: BTreeMap<i64, (i64, Value)>,
     _staging: hawdb_executor::QueryMemoryLease,
     report: QueryStreamReport,
 }
@@ -79,6 +80,8 @@ impl PreparedGraphAnalytics {
         &self.publication_id
     }
 
+    /// Number of node values to publish, after selecting the highest Louvain
+    /// level per node. The execution report counts all hierarchy rows instead.
     pub fn row_count(&self) -> usize {
         self.rows.len()
     }
@@ -133,7 +136,8 @@ impl Database {
                 ))
             })?;
         let (query, parameters, value_column) = algorithm_query(&request)?;
-        let mut rows = Vec::new();
+        let mut rows = BTreeMap::new();
+        let mut streamed_rows = 0;
         let result = snapshot.query_with_params_streaming(
             &query,
             &parameters,
@@ -142,16 +146,6 @@ impl Database {
                 max_payload_bytes: Some(request.max_payload_bytes.get()),
             },
             |row| {
-                let bytes = rows
-                    .len()
-                    .saturating_add(1)
-                    .saturating_mul(STAGED_ROW_BYTES)
-                    .saturating_add(STAGED_HEADER_BYTES);
-                if bytes > request.max_staged_bytes.get() {
-                    return Err(HawDBError::Execution(
-                        "complete analytics result exceeds max_staged_bytes".into(),
-                    ));
-                }
                 let Some(Value::Int(node)) = row.get("node") else {
                     return Err(HawDBError::StorageIntegrity(
                         "analytics returned an invalid node ID".into(),
@@ -165,13 +159,36 @@ impl Database {
                         "analytics returned a nonscalar value".into(),
                     ));
                 }
-                rows.push((*node, value.clone()));
+                let level = match request.algorithm {
+                    GraphAnalyticsAlgorithm::PageRank(_) => 0,
+                    GraphAnalyticsAlgorithm::Louvain(options) => match row.get("level") {
+                        Some(Value::Int(level))
+                            if usize::try_from(*level)
+                                .is_ok_and(|level| level < options.max_levels.max(1)) =>
+                        {
+                            *level
+                        }
+                        _ => {
+                            return Err(HawDBError::StorageIntegrity(
+                                "analytics returned an invalid hierarchy level".into(),
+                            ));
+                        }
+                    },
+                };
+                stage_analytics_row(
+                    &mut rows,
+                    *node,
+                    level,
+                    value,
+                    request.max_staged_bytes.get(),
+                )?;
+                streamed_rows += 1;
                 Ok(())
             },
         );
         permit.finish_with_outcome(result.is_ok());
         let report = result?;
-        if !report.fully_streamed || report.output_rows != rows.len() {
+        if !report.fully_streamed || report.output_rows != streamed_rows {
             return Err(HawDBError::Execution(
                 "analytics staging did not cover the complete result".into(),
             ));
@@ -267,7 +284,7 @@ impl Database {
             // The property name is validated structural input. Every data value,
             // internal ID, and epoch is bound. The host does no graph scan or join.
             let update = format!("MATCH (n) WHERE id(n) = $node SET n.{property} = $value, n.{property}_computed_at_commit_epoch = $source, n.{property}_published_at_commit_epoch = $published, n.{property}_publication_id = $publication");
-            for (ordinal, (node, value)) in prepared.rows.iter().enumerate() {
+            for (ordinal, (node, (_, value))) in prepared.rows.iter().enumerate() {
                 if ordinal.is_multiple_of(1024) {
                     hawdb_executor::pipeline::runtime_checkpoint(task_context)?;
                 }
@@ -318,6 +335,8 @@ impl Database {
 
     /// Freshness is conservative: any commit after publication makes the result
     /// stale. Publishing the result itself does not make it immediately stale.
+    /// Nodes outside a refreshed projection retain older property values;
+    /// readers must match the property's `_publication_id` to this status.
     pub fn graph_analytics_publication_status(
         &self,
         projection: &str,
@@ -371,6 +390,43 @@ impl Database {
         }
         Ok(status)
     }
+}
+
+fn stage_analytics_row(
+    rows: &mut BTreeMap<i64, (i64, Value)>,
+    node: i64,
+    level: i64,
+    value: &Value,
+    max_staged_bytes: usize,
+) -> Result<()> {
+    // The charge covers the scalar, hierarchy level and BTreeMap overhead.
+    // Publication iterates this map directly, avoiding a second retained copy.
+    let bytes = rows
+        .len()
+        .saturating_add(1)
+        .saturating_mul(STAGED_ROW_BYTES)
+        .saturating_add(STAGED_HEADER_BYTES);
+    match rows.entry(node) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            if bytes > max_staged_bytes {
+                return Err(HawDBError::Execution(
+                    "complete analytics result exceeds max_staged_bytes".into(),
+                ));
+            }
+            entry.insert((level, value.clone()));
+        }
+        std::collections::btree_map::Entry::Occupied(mut entry) => {
+            let (previous_level, previous_value) = entry.get();
+            if level > *previous_level {
+                entry.insert((level, value.clone()));
+            } else if level == *previous_level && value != previous_value {
+                return Err(HawDBError::StorageIntegrity(
+                    "analytics returned conflicting values for one node and level".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_request(request: &GraphAnalyticsRequest) -> Result<()> {
@@ -463,5 +519,40 @@ fn publication_schema() -> hawdb_storage::relational::RelationalTableSchema {
         unique_constraints: vec![],
         foreign_keys: vec![],
         indexes: vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn staging_selects_the_highest_level_independently_of_row_order() {
+        let inputs = [(1, 0, 1), (2, 0, 2), (1, 2, 3), (2, 2, 3), (1, 1, 2)];
+        let budget = STAGED_HEADER_BYTES + 2 * STAGED_ROW_BYTES;
+        let mut forward = BTreeMap::new();
+        let mut reverse = BTreeMap::new();
+        for (node, level, value) in inputs {
+            stage_analytics_row(&mut forward, node, level, &Value::Int(value), budget).unwrap();
+        }
+        for (node, level, value) in inputs.into_iter().rev() {
+            stage_analytics_row(&mut reverse, node, level, &Value::Int(value), budget).unwrap();
+        }
+        let expected = BTreeMap::from([(1, (2, Value::Int(3))), (2, (2, Value::Int(3)))]);
+        assert_eq!(forward, expected);
+        assert_eq!(reverse, expected);
+        assert!(
+            stage_analytics_row(&mut forward, 3, 0, &Value::Int(3), budget)
+                .unwrap_err()
+                .to_string()
+                .contains("max_staged_bytes")
+        );
+        assert!(
+            stage_analytics_row(&mut forward, 1, 2, &Value::Int(4), budget)
+                .unwrap_err()
+                .to_string()
+                .contains("conflicting values")
+        );
+        assert_eq!(forward, expected);
     }
 }

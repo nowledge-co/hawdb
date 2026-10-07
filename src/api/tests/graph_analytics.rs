@@ -87,6 +87,145 @@ fn complete_analytics_publish_atomically_and_preserve_old_readers_and_retry_outc
 }
 
 #[test]
+fn louvain_publication_writes_only_the_highest_level_per_original_node() {
+    let mut config = DatabaseConfig::default();
+    config.mutation_limits.max_operations = NonZeroUsize::new(4 * 8 + 3).unwrap();
+    let mut db = Database::new_with_config(config);
+    for id in 1..=8 {
+        db.query_with_params(
+            "CREATE (:Memory {id: $id})",
+            &BTreeMap::from([("id".into(), Value::Int(id))]),
+        )
+        .unwrap();
+    }
+    for (source, target) in [
+        (1, 2),
+        (2, 3),
+        (3, 1),
+        (3, 4),
+        (4, 5),
+        (5, 3),
+        (5, 6),
+        (6, 7),
+        (7, 5),
+        (7, 8),
+    ] {
+        db.query_with_params(
+            "MATCH (a:Memory {id: $source}), (b:Memory {id: $target}) CREATE (a)-[:LINK]->(b)",
+            &BTreeMap::from([
+                ("source".into(), Value::Int(source)),
+                ("target".into(), Value::Int(target)),
+            ]),
+        )
+        .unwrap();
+    }
+    db.query("CALL project_graph('graph', ['Memory'], ['LINK'])")
+        .unwrap();
+    let hierarchy = db
+        .query("CALL louvain('graph', maxIterations := 20, maxLevels := 3) RETURN node, level, louvain_id")
+        .unwrap();
+    let mut expected = BTreeMap::new();
+    let mut initial = BTreeMap::new();
+    for row in &hierarchy.rows {
+        let (Value::Int(node), Value::Int(level)) = (&row["node"], &row["level"]) else {
+            panic!("invalid hierarchy identity");
+        };
+        if *level == 0 {
+            initial.insert(*node, row["louvain_id"].clone());
+        }
+        let entry = expected
+            .entry(*node)
+            .or_insert((*level, row["louvain_id"].clone()));
+        if *level > entry.0 {
+            *entry = (*level, row["louvain_id"].clone());
+        }
+    }
+    assert_eq!(expected.len(), 8);
+    assert!(hierarchy.rows.len() > expected.len());
+    assert!(expected
+        .iter()
+        .any(|(node, (_, value))| initial[node] != *value));
+    let mut options = request(GraphAnalyticsAlgorithm::Louvain(LouvainOptions {
+        max_iterations: 20,
+        max_levels: 3,
+    }));
+    // Raw hierarchy output remains bounded; retained state fits only eight rows.
+    options.max_rows = NonZeroUsize::new(hierarchy.rows.len()).unwrap();
+    options.max_staged_bytes = NonZeroUsize::new(1024 + 128 * 8).unwrap();
+    let prepared = db.prepare_graph_analytics(options, None).unwrap();
+    assert_eq!(prepared.row_count(), expected.len());
+    assert_eq!(
+        prepared.execution_report().output_rows,
+        hierarchy.rows.len()
+    );
+    let status = db
+        .publish_graph_analytics(&prepared, "community_id", None)
+        .unwrap();
+    assert_eq!(status.freshness, GraphAnalyticsFreshness::Fresh);
+    let published = db
+        .query("MATCH (n:Memory) RETURN id(n) AS node, n.community_id AS community")
+        .unwrap();
+    assert_eq!(published.rows.len(), expected.len());
+    for row in &published.rows {
+        let Value::Int(node) = row["node"] else {
+            panic!("invalid published node ID");
+        };
+        assert_eq!(row["community"], expected[&node].1);
+    }
+    let metadata = db
+        .query_sql("SELECT row_count FROM __hawdb_analytics_publications")
+        .unwrap();
+    assert_eq!(metadata.rows[0]["row_count"], Value::Int(8));
+    assert_eq!(
+        db.publish_graph_analytics(&prepared, "community_id", None)
+            .unwrap(),
+        status
+    );
+}
+
+#[test]
+fn publication_identity_filters_old_values_after_projection_redefinition() {
+    let mut db = Database::new();
+    fixture(&mut db);
+    let options = request(GraphAnalyticsAlgorithm::PageRank(PageRankOptions::default()));
+    let old = db.prepare_graph_analytics(options.clone(), None).unwrap();
+    db.publish_graph_analytics(&old, "rank", None).unwrap();
+    let old_values = ranks(&mut db);
+    db.query("CREATE (:Included {id: 3})").unwrap();
+    db.query("CALL project_graph('graph', ['Included'], ['LINK'])")
+        .unwrap();
+    let new = db.prepare_graph_analytics(options, None).unwrap();
+    assert_eq!(new.row_count(), 1);
+    let status = db.publish_graph_analytics(&new, "rank", None).unwrap();
+    assert_eq!(status.freshness, GraphAnalyticsFreshness::Fresh);
+    assert_eq!(ranks(&mut db), old_values);
+    assert_ne!(status.publication_id.as_deref(), Some(old.publication_id()));
+    let mut snapshot = db.begin_read_transaction().unwrap();
+    assert_eq!(snapshot.commit_epoch(), status.current_commit_epoch);
+    let mut current = Vec::new();
+    snapshot
+        .query_with_params_streaming(
+            "MATCH (n) WHERE n.rank_publication_id = $publication RETURN n.id AS id, n.rank AS rank",
+            &BTreeMap::from([(
+                "publication".into(),
+                Value::String(status.publication_id.unwrap()),
+            )]),
+            QueryStreamOptions {
+                max_rows: Some(1),
+                max_payload_bytes: Some(4096),
+            },
+            |row| {
+                current.push(row);
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(current.len(), 1);
+    assert_eq!(current[0]["id"], Value::Int(3));
+    assert!(matches!(current[0]["rank"], Value::Float(_)));
+}
+
+#[test]
 fn changed_source_different_database_cancellation_and_budgets_keep_old_results() {
     let mut db = Database::new();
     fixture(&mut db);

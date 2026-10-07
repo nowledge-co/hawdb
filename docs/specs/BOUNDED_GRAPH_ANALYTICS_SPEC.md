@@ -62,16 +62,21 @@ The facade exposes `GraphAnalyticsRequest`, `GraphAnalyticsAlgorithm`,
 
 1. `Database::prepare_graph_analytics` pins the source epoch and projection,
    obtains background projection admission, and executes ordinary parameterized
-   Cypher. Explicit row, payload and staged-result budgets cover the complete
-   result. The staging reservation is deducted from the configured query
+   Cypher. Explicit row and payload budgets cover the complete query output,
+   including every Louvain hierarchy level. Staging retains only the highest
+   level per original node, independently of row order; its byte budget covers
+   those unique node values and the map overhead. `row_count()` counts retained
+   node values; `execution_report().output_rows` counts raw hierarchy rows.
+   The staging reservation is deducted from the configured query
    budget. Iterations and damping are parameters; the projection name is escaped
    structural input because the existing CALL grammar requires a string literal.
 2. `Database::publish_graph_analytics` validates the database incarnation,
    branch and source epoch, obtains background admission for the complete
    publication, then applies scalar properties and provenance with
    parameterized Cypher in one existing mixed graph/SQL transaction. For Louvain,
-   every computed level is staged and the final level determines the published
-   node property. Complete publication must fit mutation/WAL operation limits;
+   only each node's highest-level value is written, and operation admission and
+   metadata row count use the number of published nodes. Complete publication
+   must fit mutation/WAL operation limits;
    it is never split across transactions.
 3. The transaction also updates `__hawdb_analytics_publications`, keyed by
    `(projection, property)`, with publication identity, source/publication epochs,
@@ -100,6 +105,14 @@ status in readiness/observability without enabling Mem cutover. Larger workloads
 may require explicitly configured background QoS and transaction limits; the
 library's default admission and power-loss-safe durability remain unchanged.
 
+Publication leaves older values on nodes that no longer belong to the projection.
+`Fresh` describes the current publication, not every property with the same name.
+Readers must bind the status's `publication_id` and filter by provenance, for
+example `MATCH (n) WHERE n.rank_publication_id = $publication RETURN n.id, n.rank`,
+with explicit row and payload budgets. Reading status and values from the same
+pinned source, or verifying the epoch after reading, avoids combining different
+publication generations.
+
 ## Verification and measurement
 
 Executor differential tests compare resident and external execution, including
@@ -112,6 +125,10 @@ mid-scan cancellation and impossible budgets produce no algorithm rows.
 Facade tests cover source changes, old readers, idempotent retry, failed
 constraints, partial WAL append, WAL/checkpoint reopen under both durability
 policies, and preservation of a completed publication across a later torn tail.
+Contracting Louvain fixtures verify one staged and published value per original
+node, highest-level selection and node-sized transaction admission. Reordered
+hierarchy rows exercise order independence; projection redefinition exercises
+the provenance filter for departed nodes.
 The isolated native RSS test opens a checkpointed 128-node/16,256-edge database
 in out-of-core mode with a 2 MiB segment cache and 4 MiB query budget. It asserts
 an RSS-growth limit from the initialized reader baseline separately from the
