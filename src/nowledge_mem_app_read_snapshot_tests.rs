@@ -18,6 +18,7 @@ use super::{
 };
 use crate::search::{SearchProjectionKind, SearchProjectionRow};
 use crate::{Database, DatabaseConfig, SearchIndex, Value};
+use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
 use std::collections::BTreeMap;
 
 fn snapshot_governor() -> hawdb_qos::RuntimeGovernor {
@@ -169,6 +170,122 @@ fn bounded_read_snapshot_coordinates_search_graph_and_relational_queries() {
     assert!(!encoded_evidence.contains("nearest"));
     assert!(!encoded_evidence.contains("thread-1"));
     assert!(!encoded_evidence.contains("App-owned relational payload"));
+}
+
+#[test]
+fn bounded_graph_read_snapshot_exposes_profiled_query_memory_evidence() {
+    let handle = app_read_handle();
+    let context = RuntimeTaskContext::default();
+    let report = handle
+        .with_bounded_graph_read_snapshot_context(
+            NowledgeMemReadSnapshotBudget {
+                max_rows: 2,
+                max_payload_bytes: 4096,
+            },
+            &context,
+            |snapshot| {
+                let query = snapshot.query_cypher_profiled(
+                    "MATCH (m:Memory) RETURN m.id AS id LIMIT 1",
+                    &BTreeMap::new(),
+                    1,
+                )?;
+                assert_eq!(query.output.rows.len(), 1);
+                let memory = &query.execution_profile.pipeline_memory_report;
+                assert!(memory.query_memory_budget_bytes > 0);
+                assert!(memory.query_memory_peak_bytes <= memory.query_memory_budget_bytes);
+                assert_eq!(memory.output_rows, 1);
+                Ok(snapshot.report())
+            },
+        )
+        .unwrap();
+
+    assert_eq!(report.cypher_statement_count, 1);
+    assert_eq!(report.output_rows, 1);
+    assert_eq!(report.remaining_rows, 1);
+}
+
+#[test]
+fn bounded_graph_read_snapshot_propagates_cancellation_without_leaking_admission() {
+    let handle = app_read_handle();
+    let governor = handle
+        .read_store()
+        .unwrap()
+        .graph()
+        .runtime_governor()
+        .clone();
+    let cancellation = RuntimeCancellationToken::new();
+    let context = RuntimeTaskContext::without_deadline(cancellation.clone());
+    let before = governor.snapshot();
+
+    let error = handle
+        .with_bounded_graph_read_snapshot_context(
+            NowledgeMemReadSnapshotBudget {
+                max_rows: 1,
+                max_payload_bytes: 4096,
+            },
+            &context,
+            |snapshot| {
+                assert!(cancellation.cancel());
+                snapshot
+                    .query_cypher_profiled(
+                        "MATCH (m:Memory) RETURN m.id AS id LIMIT 1",
+                        &BTreeMap::new(),
+                        1,
+                    )
+                    .map(|_| ())
+            },
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("cancelled"));
+    let after = governor.snapshot();
+    assert_eq!(after.admissions, before.admissions + 1);
+    assert_eq!(after.completions, before.completions + 1);
+    assert_eq!(after.active_foreground_tasks, 0);
+    assert_eq!(after.active_cpu_slots, 0);
+    assert_eq!(after.active_blocking_tasks, 0);
+    assert_eq!(after.admitted_memory_bytes, 0);
+}
+
+#[test]
+fn bounded_graph_read_snapshot_propagates_deadline_without_leaking_admission() {
+    let handle = app_read_handle();
+    let governor = handle
+        .read_store()
+        .unwrap()
+        .graph()
+        .runtime_governor()
+        .clone();
+    let context = RuntimeTaskContext::with_timeout(std::time::Duration::ZERO);
+    let before = governor.snapshot();
+
+    let error = handle
+        .with_bounded_graph_read_snapshot_context(
+            NowledgeMemReadSnapshotBudget {
+                max_rows: 1,
+                max_payload_bytes: 4096,
+            },
+            &context,
+            |snapshot| {
+                snapshot
+                    .query_cypher_profiled(
+                        "MATCH (m:Memory) RETURN m.id AS id LIMIT 1",
+                        &BTreeMap::new(),
+                        1,
+                    )
+                    .map(|_| ())
+            },
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("deadline"));
+    let after = governor.snapshot();
+    assert_eq!(after.admissions, before.admissions + 1);
+    assert_eq!(after.completions, before.completions + 1);
+    assert_eq!(after.active_foreground_tasks, 0);
+    assert_eq!(after.active_cpu_slots, 0);
+    assert_eq!(after.active_blocking_tasks, 0);
+    assert_eq!(after.admitted_memory_bytes, 0);
 }
 
 #[test]
