@@ -30,7 +30,11 @@ use std::path::Path;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 fn main() {
-    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    let mut arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    // Cargo appends this flag even for harness-free benchmark executables.
+    if arguments.last().is_some_and(|arg| arg == "--bench") {
+        arguments.pop();
+    }
     if arguments.first().is_some_and(|arg| arg == "--database") {
         assert_eq!(
             arguments.len(),
