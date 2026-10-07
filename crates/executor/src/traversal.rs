@@ -420,6 +420,62 @@ pub fn visit_bounded_expand_targets(
     task_context: Option<&RuntimeTaskContext>,
     consumer: &mut dyn FnMut(NodeRecord, usize) -> Result<ScanControl>,
 ) -> Result<ScanControl> {
+    visit_bounded_expand_targets_inner(
+        store,
+        ResolvedBoundedExpandSpec {
+            source: spec.source,
+            rel_type_id: Some(spec.rel_type_id),
+            target_label_ids: spec.target_label_ids,
+            min_hops: spec.min_hops,
+            max_hops: spec.max_hops,
+        },
+        memory,
+        task_context,
+        consumer,
+    )
+}
+
+#[derive(Clone, Copy)]
+struct ResolvedBoundedExpandSpec<'a> {
+    source: NodeId,
+    // None means this typed relationship does not exist, never a wildcard.
+    rel_type_id: Option<RelTypeId>,
+    target_label_ids: Option<&'a [LabelId]>,
+    min_hops: usize,
+    max_hops: usize,
+}
+
+pub(crate) fn visit_zero_hop_expand_target(
+    store: &dyn GraphExecutionRead,
+    source: NodeId,
+    target_label_ids: Option<&[LabelId]>,
+    max_hops: usize,
+    memory: AdjacencyReadMemory<'_>,
+    task_context: Option<&RuntimeTaskContext>,
+    consumer: &mut dyn FnMut(NodeRecord, usize) -> Result<ScanControl>,
+) -> Result<ScanControl> {
+    visit_bounded_expand_targets_inner(
+        store,
+        ResolvedBoundedExpandSpec {
+            source,
+            rel_type_id: None,
+            target_label_ids,
+            min_hops: 0,
+            max_hops,
+        },
+        memory,
+        task_context,
+        consumer,
+    )
+}
+
+fn visit_bounded_expand_targets_inner(
+    store: &dyn GraphExecutionRead,
+    spec: ResolvedBoundedExpandSpec<'_>,
+    memory: AdjacencyReadMemory<'_>,
+    task_context: Option<&RuntimeTaskContext>,
+    consumer: &mut dyn FnMut(NodeRecord, usize) -> Result<ScanControl>,
+) -> Result<ScanControl> {
     if spec.max_hops > MAX_STREAMING_EXPAND_RECURSION_DEPTH {
         return Err(HawDBError::Execution(format!(
             "AdjacencyExpandExec max_hops {} exceeds streaming recursion limit {MAX_STREAMING_EXPAND_RECURSION_DEPTH}",
@@ -440,7 +496,7 @@ pub fn visit_bounded_expand_targets(
 
     fn visit_depth(
         store: &dyn GraphExecutionRead,
-        spec: BoundedExpandSpec<'_>,
+        spec: ResolvedBoundedExpandSpec<'_>,
         current: NodeId,
         depth: usize,
         memory: AdjacencyReadMemory<'_>,
@@ -466,6 +522,9 @@ pub fn visit_bounded_expand_targets(
         if depth == spec.max_hops {
             return Ok(ScanControl::Continue);
         }
+        let Some(rel_type_id) = spec.rel_type_id else {
+            return Ok(ScanControl::Continue);
+        };
         let mut visit = |relationship: RelRecord| {
             visit_depth(
                 store,
@@ -479,7 +538,7 @@ pub fn visit_bounded_expand_targets(
         };
         store.visit_ordered_adjacent_relationships_owned(
             current,
-            Some(spec.rel_type_id),
+            Some(rel_type_id),
             AdjacencyDirection::Outgoing,
             memory,
             &mut visit,

@@ -65,6 +65,12 @@ frontend comparison. The source pin for `tests.rs` was reviewed after removing
 its obsolete rejection of `SHOW CURRENT BRANCH`. Existing corpus SQL, case IDs,
 parameter inventories, outcomes, and waivers are unchanged.
 
+The sqlparser 0.63 upgrade re-audits the `clause_tests.rs` source pin after
+updating AST constructors and adding rejection cases for new CREATE TABLE
+fields. Its SQL literals and generated source-contract inputs are unchanged;
+the original corpus provenance and expected outcomes remain intact. Additional
+upgrade-specific AST and SQL regressions live in `parser/compatibility_tests.rs`.
+
 The frozen inputs remain owned by
 `crates/qualification/fixtures/nowledge_content_store/`. Every named workload
 statement must appear exactly once with byte-identical SQL and dense production

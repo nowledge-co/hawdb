@@ -28,7 +28,7 @@ fn escaped_json_scratch_is_bounded_by_one_token_and_is_admitted_before_visiting(
             .with_memory_reservation(RuntimeMemoryReservation::new(budget, 0));
         let memory = BuildMemory::new(&task).unwrap();
         let mut visited = 0;
-        let result = visit_with_context(&source, "labels", &memory, &task, &mut |value| {
+        let result = visit_with_context(source.header(), "labels", &memory, &task, &mut |value| {
             assert_eq!(value, "A");
             visited += 1;
             Ok(())
@@ -48,7 +48,7 @@ fn cancellation_during_json_validation_never_selects_csv_fallback() {
     let source = document(0, &[("labels", r#"["first","second"] trailing"#)]);
     evidence::cancel_after(1, task.cancellation().clone());
     let mut visited = 0;
-    let result = visit_with_context(&source, "labels", &memory, &task, &mut |_| {
+    let result = visit_with_context(source.header(), "labels", &memory, &task, &mut |_| {
         visited += 1;
         Ok(())
     });
@@ -65,7 +65,7 @@ fn non_array_strings_use_csv_without_allocating_json_error_text() {
         RuntimeTaskContext::default().with_memory_reservation(RuntimeMemoryReservation::new(1, 0));
     let memory = BuildMemory::new(&task).unwrap();
     let mut visits = 0;
-    visit_with_context(&source, "labels", &memory, &task, &mut |value| {
+    visit_with_context(source.header(), "labels", &memory, &task, &mut |value| {
         assert_eq!(value, raw);
         visits += 1;
         Ok(())

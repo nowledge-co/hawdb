@@ -122,6 +122,7 @@ fn mutation_compaction_planning_does_not_copy_retained_runs() {
                 + entry
                     .retraction
                     .unique_terms
+                    .to_vec()
                     .iter()
                     .map(String::len)
                     .sum::<usize>()
@@ -148,8 +149,7 @@ fn mutation_compaction_planning_does_not_copy_retained_runs() {
 fn mutation_compaction_rejects_a_rewrite_that_cannot_reopen_with_its_budget() {
     let root = partial_mutation_root("mutation_compaction_reopen_budget");
     let reader = SearchOutOfCoreReader::open(&root).unwrap();
-    // Find an admitted limit for the two existing runs. Decoding one combined
-    // run needs a larger transient buffer despite removing one target entry.
+    // Find the bounded-header admission for the existing closure.
     let mut low = 1;
     let mut high = reader.config.max_mutation_working_bytes.get();
     while low < high {
@@ -168,7 +168,8 @@ fn mutation_compaction_rejects_a_rewrite_that_cannot_reopen_with_its_budget() {
         max_mutation_working_bytes: NonZeroU64::new(low).unwrap(),
         ..Default::default()
     };
-    let reader = SearchOutOfCoreReader::open_with_config(&root, config.clone()).unwrap();
+    let mut reader = SearchOutOfCoreReader::open_with_config(&root, config.clone()).unwrap();
+    reader.config.max_mutation_working_bytes = NonZeroU64::MIN;
     let before = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
     let error = SearchOutOfCoreGenerationWriter::compact_segments(
         &reader,
@@ -188,8 +189,8 @@ fn mutation_compaction_rejects_a_rewrite_that_cannot_reopen_with_its_budget() {
     let reopened = SearchOutOfCoreReader::open_with_config(&root, config).unwrap();
     assert_eq!(reopened.document_count(), 1);
     assert_eq!(reopened.manifest.mutation_runs.len(), 2);
-    // Raising the read limit permits the same partial compaction to publish.
-    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    // The original bounded budget also admits the combined streamed run.
+    let reader = reopened;
     SearchOutOfCoreGenerationWriter::compact_segments(
         &reader,
         policy(256 * 1024 * 1024),
@@ -236,7 +237,8 @@ fn compaction_rewrites_a_bounded_append_range_without_changing_reader_results() 
     .unwrap();
     assert_eq!(report.source_segment_count(), 2);
     assert!(report.source_bytes() > 0);
-    assert_eq!(report.source_read_metrics().hydrated_documents, 2);
+    assert_eq!(report.source_read_metrics().hydrated_documents, 0);
+    assert_eq!(report.source_read_metrics().streamed_documents, 2);
     assert_eq!(report.build().document_count, 4);
     assert_eq!(report.build().documents_digest, before_digest);
 

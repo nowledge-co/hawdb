@@ -8,6 +8,10 @@ that the proposed APIs, default changes, or qualification have shipped.
 Normative clauses below describe the proposed target contract. Existing public
 contracts remain in force until their implementation changes are reviewed.
 
+The additive streaming implementation and its retained default guards are
+tracked in the [delivery matrix](../STREAMED_DOCUMENT_LIFECYCLE.md). That matrix
+distinguishes implemented entrypoints from remaining qualification gates.
+
 The recommended target is a document body larger than its admitted operation
 memory, processed without truncation or a change to search semantics. This is
 stronger than admitting a larger owned `SearchDocument`. Source size, minimum
@@ -38,7 +42,7 @@ several implemented prerequisites.
 | Artifact construction | Shared leases, streamed encoders, immutable publication | Segment construction still retains `AdmittedDocument` values; remove the body-sized resident requirement |
 | Updates | Governed preparation, mutation segments, target-bound retractions | Source conversion and old-version hydration/reanalysis still materialize documents and contribution state |
 | Reading | Positioned, streaming segment decompression | Encoded document lines, decoded bodies, and owned public results remain document-sized |
-| Host resources | `SearchGenerationAdmission` retains a governor permit through cleanup | Select bounded execution buffers from one shared allowance and qualify constrained operation |
+| Host resources | `SearchGenerationAdmission` retains a governor permit through active work and immediate cleanup | Select bounded execution buffers from one shared allowance and qualify constrained operation |
 
 Supporting contracts are [generation ownership](../SEARCH_GENERATION_CONTEXT.md),
 [document frequency spill](../DOCUMENT_FREQUENCY_SPILL.md),
@@ -62,7 +66,9 @@ not establish support through the other boundaries.
    BM25 scores, and tie ordering MUST match the reference analyzer and scorer.
 3. Every operation MUST reserve owned working capacity before allocation and
    hold that reservation until its final owner releases the capacity. A host
-   permit MUST cover the complete operation, including failure cleanup.
+   permit MUST cover active work and immediate failure cleanup. Deferred cleanup
+   MUST release worker/I/O admission and native handles, retain separately
+   accounted ownership metadata and disk debt, and admit fresh retry workspace.
 4. Input, staged artifacts, and publication MUST bind the same document and
    source version. A failed document MUST NOT become a partially indexed one.
 5. Old readers MUST retain their complete generation through replacement,
@@ -97,6 +103,12 @@ it MUST NOT be silently disabled to make a size benchmark pass.
 The support claim MUST identify body size, largest identifier/analyzer unit,
 term policy, token count, metadata/embedding size, operation budget, spill budget,
 and supported lifecycle paths. Body size alone is not a capacity specification.
+
+Source bytes and weighted-token limits form one host-selected
+`SearchLexicalSourcePolicy`. The reader carries that policy into compaction,
+mutation reanalysis and later writes, including calls with default build options.
+Reopening still requires the host to supply the intended policy; persisted
+artifacts cannot select or widen reader admission.
 
 ## Embedded source and read contracts
 
@@ -192,7 +204,7 @@ through bounded reduction passes, never a reconstructed document-wide map.
 
 ## Resource ownership and adaptation
 
-All stages share the governor permit and the operation's existing memory
+All active stages share the governor permit and the operation's existing memory
 accounts. At every point, admitted live capacity MUST satisfy:
 
 ```text
@@ -239,6 +251,19 @@ commit, report cleanup pending without turning the commit into a failure.
 Best-effort `Drop` cannot claim successful deletion: the explicit cleanup path
 MUST report retained work and permit bounded retry after capacity returns. No
 uncounted fallback, implicit budget increase, or busy retry is allowed.
+
+Idle cleanup debt MUST NOT retain a completed operation's governor permit or
+project FD domain. Its path and ownership metadata MUST remain admitted by both
+the originating governor and its attached process-memory policy, in addition to
+the allocation ledger. A separate memory-only reservation can conservatively
+overlap active admission and MUST be acquired before private directory creation;
+failed admission leaves no new stage. Shared active owners retain their work
+resources until they finish. An active retry reacquires workspace and the current
+descriptor domain. Bounded opportunistic
+retry is part of subsequent same-root stage creation, including admitted
+background compaction. Permanent failures retain evidence. The current fixed
+registry's cross-root exhaustion boundary and safe post-crash ownership discovery
+remain explicit #392 qualification work, not permission to forget retained debt.
 
 Stage 1 prototypes MUST reproduce real exhaustion at scan, unlink, nested
 publication, and reopen boundaries with a competing owner holding capacity.

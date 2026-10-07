@@ -101,6 +101,9 @@ pub struct PreparedImmutableRootHandoff {
     pub root: SealedRoot,
     pub rotation: PreparedWalRotation,
     pub immutable_store_root: PathBuf,
+    // A prepared candidate can outlive the exclusive borrow of its writer.
+    // Keep maintenance from treating that writer as the only reachability pin.
+    _source_lease: Option<Arc<DatabaseDirectoryLease>>,
 }
 
 /// Inputs to storage-owned branch admission or closed-source sealing.
@@ -216,6 +219,43 @@ impl std::error::Error for BranchAdmissionError {
 }
 
 impl GraphStore {
+    /// Reclaims unreachable project objects while retaining this writable
+    /// runtime. Shared snapshots and prepared handoffs defer the sweep.
+    #[doc(hidden)]
+    pub fn reclaim_branch_storage(
+        &mut self,
+        limits: crate::branch_reclamation::BranchReclamationLimits,
+    ) -> Result<crate::branch_reclamation::BranchReclamationReport> {
+        limits.validate()?;
+        self.ensure_usable()?;
+        let durable = self.durable.as_ref().ok_or_else(|| {
+            HawDBError::Storage("branch reclamation requires persistent storage".into())
+        })?;
+        if durable.read_only {
+            return Err(HawDBError::Storage(
+                "read-only storage cannot reclaim branch objects".into(),
+            ));
+        }
+        let branch = durable.branch_runtime.as_ref().ok_or_else(|| {
+            HawDBError::Storage("branch reclamation requires an admitted project".into())
+        })?;
+        let lease = self.branch_lease.as_mut().ok_or_else(|| {
+            HawDBError::StorageIntegrity("admitted branch has no ownership lease".into())
+        })?;
+        // get_mut also excludes Weak owners that could acquire another pin.
+        // No snapshot can be created concurrently through this &mut receiver.
+        let Some(owner) = Arc::get_mut(lease) else {
+            return Ok(crate::branch_reclamation::BranchReclamationReport::deferred());
+        };
+        crate::branch_reclamation::reclaim_owned_project(
+            &branch.catalog_path,
+            &branch.immutable_store_root,
+            owner,
+            &branch.head,
+            limits,
+        )
+    }
+
     #[doc(hidden)]
     pub fn reserve_project_branch_admission_resources(
         files: &crate::file_descriptors::ProjectFileDescriptors,
@@ -313,7 +353,11 @@ impl GraphStore {
             || root.checkpoint_epoch != self.commit_epoch
             || durable.checkpoint_commit_epoch != self.commit_epoch
             || root.durable_manifest
-                != ObjectReference::for_bytes(ObjectKind::DurableManifest, 1, &manifest_bytes)
+                != ObjectReference::for_bytes(
+                    ObjectKind::DurableManifest,
+                    ObjectKind::DurableManifest.current_format_version(),
+                    &manifest_bytes,
+                )
             || !root.sealed_wals.is_empty()
         {
             return Err(HawDBError::StorageIntegrity(
@@ -1006,6 +1050,7 @@ impl GraphStore {
             root,
             rotation,
             immutable_store_root,
+            _source_lease: self.branch_lease.clone(),
         })
     }
 
@@ -1730,8 +1775,11 @@ fn publish_sealed_root(
         DurableManifest::decode(std::str::from_utf8(&manifest_bytes).map_err(|error| {
             HawDBError::Storage(format!("decode durable manifest bytes: {error}"))
         })?)?;
-    let durable_manifest =
-        ObjectReference::for_bytes(ObjectKind::DurableManifest, 1, &manifest_bytes);
+    let durable_manifest = ObjectReference::for_bytes(
+        ObjectKind::DurableManifest,
+        ObjectKind::DurableManifest.current_format_version(),
+        &manifest_bytes,
+    );
     objects
         .publish(durable_manifest, &manifest_bytes)
         .map_err(HawDBError::from_storage_error)?;
@@ -2463,6 +2511,98 @@ mod tests {
         assert_eq!(retried.store().node_count_for_label(None), 2);
     }
 
+    #[test]
+    fn admission_keeps_the_child_snapshot_while_its_parent_advances() {
+        for durability in [
+            DurabilityPolicy::SyncOnEveryWrite,
+            DurabilityPolicy::SyncOnCheckpoint,
+        ] {
+            let fixture = BranchFixture::new();
+            let mut source = fixture.admit(fixture.main, durability);
+            write_schema_and_graph(&mut source);
+            let (store, schema) = source.store_and_catalog_mut();
+            store.checkpoint(schema).unwrap();
+            let expected_schema = source
+                .store()
+                .relational_state()
+                .table_schema("messages")
+                .unwrap()
+                .clone();
+            let expected_epoch = source.store().commit_epoch();
+            source
+                .store_mut()
+                .seal_admitted_branch(expected_epoch)
+                .unwrap();
+            let source_head = *source.head();
+            let child = branch_id(2);
+            fixture.fork(&source, child, "child");
+            let catalog = branch_catalog::read_catalog(&fixture.catalog_path).unwrap();
+            let revision = catalog
+                .branches
+                .iter()
+                .find(|record| record.id == child)
+                .unwrap()
+                .metadata_revision;
+            let head_path = fixture.head_path(child);
+            let child_head = fs::read(&head_path).unwrap();
+            let mut advanced = false;
+            let admitted = GraphStore::admit_branch_from_head_with_revalidation(
+                BranchAdmissionRequest {
+                    catalog_path: &fixture.catalog_path,
+                    branch_id: child,
+                    expected_metadata_revision: revision,
+                    head_path: &head_path,
+                    immutable_store_root: &fixture.objects,
+                    durability,
+                    replay_config: WalReplayConfig::default(),
+                },
+                false,
+                false,
+                || {
+                    std::thread::scope(|scope| {
+                        scope.spawn(|| {
+                            write_row(&mut source, "source-only-during-admission");
+                            let (store, schema) = source.store_and_catalog_mut();
+                            store
+                                .create_node(schema, "SourceAfterChildRecovery", BTreeMap::new())
+                                .unwrap();
+                            store.checkpoint(schema).unwrap();
+                        });
+                    });
+                    advanced = true;
+                },
+                |runtime| fs::remove_dir_all(runtime).unwrap(),
+            )
+            .unwrap();
+            assert!(advanced);
+            assert_ne!(*source.head(), source_head);
+            assert!(source.store().commit_epoch() > expected_epoch);
+            assert_eq!(source.store().relational_state().row_count("messages"), 2);
+            assert_eq!(source.store().node_count_for_label(None), 4);
+            assert_eq!(admitted.store().commit_epoch(), expected_epoch);
+            assert_eq!(
+                admitted.store().relational_state().table_schema("messages"),
+                Some(&expected_schema)
+            );
+            assert_eq!(admitted.store().relational_state().row_count("messages"), 1);
+            assert_eq!(admitted.store().node_count_for_label(None), 3);
+            assert_eq!(fs::read(&head_path).unwrap(), child_head);
+            drop(admitted);
+            drop(source);
+            let child = fixture.admit(child, durability);
+            let source = fixture.admit(fixture.main, durability);
+            assert_eq!(child.store().commit_epoch(), expected_epoch);
+            assert_eq!(
+                child.store().relational_state().table_schema("messages"),
+                Some(&expected_schema)
+            );
+            assert_eq!(child.store().relational_state().row_count("messages"), 1);
+            assert_eq!(child.store().node_count_for_label(None), 3);
+            assert_eq!(source.store().relational_state().row_count("messages"), 2);
+            assert_eq!(source.store().node_count_for_label(None), 4);
+        }
+    }
+
     fn write_schema_and_graph(branch: &mut AdmittedBranchStore) {
         let table = RelationalTableSchema {
             name: "messages".into(),
@@ -3018,47 +3158,97 @@ mod tests {
     }
 
     #[test]
-    fn failed_checkpoint_head_publication_recovers_the_acknowledged_transaction() {
+    fn failed_branch_head_publication_recovers_the_acknowledged_transaction() {
+        #[derive(Debug)]
+        enum HeadPublication {
+            Checkpoint,
+            Seal,
+        }
+
         for durability in [
             DurabilityPolicy::SyncOnEveryWrite,
             DurabilityPolicy::SyncOnCheckpoint,
         ] {
-            let fixture = BranchFixture::new();
-            let mut branch = fixture.admit(fixture.main, durability);
-            write_schema_and_graph(&mut branch);
-            let expected_epoch = branch.store().commit_epoch();
-            let head_path = fixture.head_path(fixture.main);
-            let old_head = fs::read(&head_path).unwrap();
-            {
-                let _failure = crate::durability::fail_durable_replace_for_destination(
-                    head_path.file_name().unwrap(),
+            for publication in [HeadPublication::Checkpoint, HeadPublication::Seal] {
+                let fixture = BranchFixture::new();
+                let mut branch = fixture.admit(fixture.main, durability);
+                fixture.fork(&branch, branch_id(2), "child");
+                fixture.fork(&branch, branch_id(3), "sibling");
+                let other_histories = [branch_id(2), branch_id(3)].map(|id| {
+                    let head_path = fixture.head_path(id);
+                    let head = branch_head::read_branch_head(&head_path).unwrap();
+                    let wal_path = head_path.with_file_name(
+                        crate::artifact_files::wal_generation_file(head.active_wal.generation),
+                    );
+                    let head_bytes = fs::read(&head_path).unwrap();
+                    let wal_bytes = fs::read(&wal_path).unwrap();
+                    (head_path, head_bytes, wal_path, wal_bytes)
+                });
+                let other_catalog = fs::read(&fixture.catalog_path).unwrap();
+                let assert_other_histories = || {
+                    assert_eq!(fs::read(&fixture.catalog_path).unwrap(), other_catalog);
+                    for (head_path, head_bytes, wal_path, wal_bytes) in &other_histories {
+                        assert_eq!(&fs::read(head_path).unwrap(), head_bytes);
+                        assert_eq!(&fs::read(wal_path).unwrap(), wal_bytes);
+                    }
+                };
+                write_schema_and_graph(&mut branch);
+                let expected_epoch = branch.store().commit_epoch();
+                let head_path = fixture.head_path(fixture.main);
+                let old_head = fs::read(&head_path).unwrap();
+                {
+                    let _failure = crate::durability::fail_durable_replace_for_destination(
+                        head_path.file_name().unwrap(),
+                    );
+                    let failed = match publication {
+                        HeadPublication::Checkpoint => {
+                            let (store, catalog) = branch.store_and_catalog_mut();
+                            store.checkpoint(catalog).is_err()
+                        }
+                        HeadPublication::Seal => branch
+                            .store_mut()
+                            .seal_admitted_branch(expected_epoch)
+                            .is_err(),
+                    };
+                    assert!(failed, "{publication:?} head publication must fail");
+                }
+                assert_eq!(fs::read(&head_path).unwrap(), old_head);
+                assert_other_histories();
+                assert!(
+                    branch
+                        .store_mut()
+                        .seal_admitted_branch(expected_epoch)
+                        .is_err(),
+                    "uncertain handle fails closed"
                 );
+                let error = fixture
+                    .try_fork(&branch, branch_id(4), "poisoned-source")
+                    .unwrap_err();
+                assert!(error.to_string().contains("poisoned"), "{error}");
+                assert_other_histories();
+                drop(branch);
+                let mut branch = fixture.admit(fixture.main, durability);
+                assert_eq!(branch.store().commit_epoch(), expected_epoch);
+                assert_eq!(branch.store().node_count_for_label(None), 3);
+                assert_eq!(branch.store().relational_state().row_count("messages"), 1);
                 let (store, catalog) = branch.store_and_catalog_mut();
-                assert!(store.checkpoint(catalog).is_err());
+                store.checkpoint(catalog).unwrap();
+                drop(branch);
+                let branch = fixture.admit(fixture.main, durability);
+                assert_eq!(branch.store().commit_epoch(), expected_epoch);
+                assert_eq!(branch.store().relational_state().row_count("messages"), 1);
+                assert_other_histories();
+                for id in [branch_id(2), branch_id(3)] {
+                    let other = fixture.admit(id, durability);
+                    assert_eq!(other.store().node_count_for_label(None), 2);
+                    assert!(other
+                        .store()
+                        .relational_state()
+                        .table_schema("messages")
+                        .is_none());
+                }
+                assert_other_histories();
             }
-            assert_eq!(fs::read(&head_path).unwrap(), old_head);
-            assert!(
-                branch
-                    .store_mut()
-                    .seal_admitted_branch(expected_epoch)
-                    .is_err(),
-                "uncertain handle fails closed"
-            );
-            let error = fixture
-                .try_fork(&branch, branch_id(2), "poisoned-source")
-                .unwrap_err();
-            assert!(error.to_string().contains("poisoned"), "{error}");
-            drop(branch);
-            let mut branch = fixture.admit(fixture.main, durability);
-            assert_eq!(branch.store().commit_epoch(), expected_epoch);
-            assert_eq!(branch.store().node_count_for_label(None), 3);
-            assert_eq!(branch.store().relational_state().row_count("messages"), 1);
-            let (store, catalog) = branch.store_and_catalog_mut();
-            store.checkpoint(catalog).unwrap();
-            drop(branch);
-            let branch = fixture.admit(fixture.main, durability);
-            assert_eq!(branch.store().commit_epoch(), expected_epoch);
-            assert_eq!(branch.store().relational_state().row_count("messages"), 1);
         }
     }
 
@@ -3897,30 +4087,42 @@ mod tests {
             })
         ));
 
-        let deleting_child = remapped
-            .branches
-            .iter_mut()
-            .find(|branch| branch.id == child_id)
-            .expect("child catalog record before deletion");
-        deleting_child.metadata_revision = 3;
-        deleting_child.state = crate::branch_catalog::BranchState::Deleting;
-        remapped.revision = 3;
-        crate::branch_catalog::write_catalog(&catalog_path, &remapped)
-            .expect("publish deleting catalog revision");
-        assert!(matches!(
-            GraphStore::admit_branch_from_head(BranchAdmissionRequest {
-                catalog_path: &catalog_path,
-                branch_id: child_id,
-                expected_metadata_revision: 3,
-                head_path: &child_head_path,
-                immutable_store_root: &objects,
-                durability: DurabilityPolicy::default(),
-                replay_config: WalReplayConfig::default(),
-            }),
-            Err(BranchAdmissionError::InvalidState(
-                crate::branch_catalog::BranchState::Deleting
-            ))
-        ));
+        for (revision, state, outcome) in [
+            (
+                3,
+                crate::branch_catalog::BranchState::Creating,
+                crate::branch_catalog::CreateOutcome::Pending,
+            ),
+            (
+                4,
+                crate::branch_catalog::BranchState::Deleting,
+                crate::branch_catalog::CreateOutcome::Succeeded,
+            ),
+        ] {
+            let child = remapped
+                .branches
+                .iter_mut()
+                .find(|branch| branch.id == child_id)
+                .expect("child catalog record before lifecycle rejection");
+            child.metadata_revision = revision;
+            child.state = state;
+            child.create_outcome = outcome;
+            remapped.revision = revision;
+            crate::branch_catalog::write_catalog(&catalog_path, &remapped)
+                .expect("publish non-ready catalog revision");
+            assert!(matches!(
+                GraphStore::admit_branch_from_head(BranchAdmissionRequest {
+                    catalog_path: &catalog_path,
+                    branch_id: child_id,
+                    expected_metadata_revision: revision,
+                    head_path: &child_head_path,
+                    immutable_store_root: &objects,
+                    durability: DurabilityPolicy::default(),
+                    replay_config: WalReplayConfig::default(),
+                }),
+                Err(BranchAdmissionError::InvalidState(actual)) if actual == state
+            ));
+        }
 
         crate::branch_catalog::write_catalog(&catalog_path, &catalog)
             .expect("restore ready catalog before WAL corruption test");

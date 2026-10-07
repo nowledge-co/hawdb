@@ -24,13 +24,16 @@ pub use hawdb_evidence::{
     PRODUCTION_QUALIFICATION_POLICY_VERSION,
 };
 use hawdb_integrity::checksum_u64;
-use hawdb_optimizer::{
+use hawdb_optimizer_predicate::{
     normalize_search_enum_value, push_search_predicates, search_field_is_enum_like,
-    select_adaptive_vector_backend, AdaptiveVectorBackend, AdaptiveVectorBackendDecision,
-    AdaptiveVectorBackendInput, AdaptiveVectorBackendPolicy, SearchPredicate, SearchPredicateOp,
-    SearchPredicateSet, SearchScalarValue, SearchScanPredicateSupport, VectorCompressionPreference,
+    SearchPredicate, SearchPredicateOp, SearchPredicateSet, SearchScalarValue,
+    SearchScanPredicateSupport,
 };
-use hawdb_plan_cypher::{VectorBackendSelectionReason, VectorCandidateSource};
+use hawdb_optimizer_vector::{
+    select_adaptive_vector_backend, AdaptiveVectorBackend, AdaptiveVectorBackendDecision,
+    AdaptiveVectorBackendInput, AdaptiveVectorBackendPolicy, VectorCompressionPreference,
+};
+use hawdb_plan_core::{VectorBackendSelectionReason, VectorCandidateSource};
 use hawdb_qos::{
     BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy, LocalQosScheduler, LocalQosState,
     QosAdmission, WorkClass, WorkRequest,
@@ -199,13 +202,15 @@ pub use lexical_source_policy::SearchLexicalSourcePolicy;
 pub use lexical_term_policy::SearchLexicalTermPolicy;
 pub use out_of_core::{
     GovernedSearchGenerationUpdate, GovernedSearchGenerationWriter,
-    ScheduledSearchOutOfCoreSegmentCompactionReport, SearchGenerationAdmission,
-    SearchOutOfCoreConfig, SearchOutOfCoreGenerationBuildOptions,
+    ScheduledSearchOutOfCoreSegmentCompactionReport, SearchBodyReadOptions,
+    SearchGenerationAdmission, SearchOutOfCoreCandidate, SearchOutOfCoreConfig,
+    SearchOutOfCoreExecutionContext, SearchOutOfCoreGenerationBuildOptions,
     SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreGenerationUpdate,
     SearchOutOfCoreGenerationWriter, SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics,
-    SearchOutOfCoreOutput, SearchOutOfCoreReader, SearchOutOfCoreSegmentCompaction,
-    SearchOutOfCoreSegmentCompactionPolicy, SearchOutOfCoreSegmentCompactionReport,
-    SearchOutOfCoreSegmentCompactionStopReason,
+    SearchOutOfCoreMutationWriter, SearchOutOfCoreOutput, SearchOutOfCoreReader,
+    SearchOutOfCoreSegmentCompaction, SearchOutOfCoreSegmentCompactionPolicy,
+    SearchOutOfCoreSegmentCompactionReport, SearchOutOfCoreSegmentCompactionStopReason,
+    SearchStagingCleanupReport, SearchVerifiedBody,
 };
 // These are internal ownership seams. Hosts continue to use the embedded facade.
 #[doc(hidden)]
@@ -287,6 +292,25 @@ pub struct SearchDocument {
     pub content: String,
     pub embedding: Option<Vec<f32>>,
     pub metadata: BTreeMap<String, String>,
+}
+
+/// Bounded resident fields of a document whose body has separate ownership.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchDocumentHeader {
+    pub id: String,
+    pub title: String,
+    pub embedding: Option<Vec<f32>>,
+    pub metadata: BTreeMap<String, String>,
+}
+
+/// Identity checks for a one-shot UTF-8 body supplied by the host.
+///
+/// The host must pin its canonical source snapshot through capture. CRC32c
+/// detects accidental changes; it is not cryptographic source authentication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchDocumentBody {
+    pub bytes: u64,
+    pub expected_checksum: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -428,8 +452,8 @@ pub struct SearchMatchedSpan {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct SearchResultSet {
-    pub hits: Vec<SearchHit>,
+pub struct SearchResultSet<H = SearchHit> {
+    pub hits: Vec<H>,
     pub total_hits: usize,
     pub limit: usize,
     pub offset: usize,
@@ -450,16 +474,16 @@ pub struct SearchResultSet {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct SearchScoredCandidate {
-    id: String,
-    score: f64,
-    vector_score: f64,
-    text_score: f64,
-    rrf_score: f64,
-    vector_rrf_score: f64,
-    text_rrf_score: f64,
-    vector_rank: Option<usize>,
-    text_rank: Option<usize>,
+pub struct SearchScoredCandidate {
+    pub id: String,
+    pub score: f64,
+    pub vector_score: f64,
+    pub text_score: f64,
+    pub rrf_score: f64,
+    pub vector_rrf_score: f64,
+    pub text_rrf_score: f64,
+    pub vector_rank: Option<usize>,
+    pub text_rank: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5851,7 +5875,7 @@ impl SearchFilterSegmentSummary {
     fn values_may_match_not_in(
         &self,
         field: &str,
-        excluded_values: &BTreeSet<hawdb_optimizer::SearchScalarValue>,
+        excluded_values: &BTreeSet<hawdb_optimizer_predicate::SearchScalarValue>,
     ) -> bool {
         let present_count = self.present_counts.get(field).copied().unwrap_or_default();
         if present_count < self.document_count {
@@ -6139,7 +6163,7 @@ impl SearchSegmentDescriptorEntry {
     fn values_may_match_not_in(
         &self,
         field: &str,
-        excluded_values: &BTreeSet<hawdb_optimizer::SearchScalarValue>,
+        excluded_values: &BTreeSet<hawdb_optimizer_predicate::SearchScalarValue>,
     ) -> bool {
         let Some(summary) = self.metadata.get(field) else {
             return true;
@@ -6291,18 +6315,8 @@ fn search_document_matches_predicate(
 }
 
 fn search_document_field_value<'a>(document: &'a SearchDocument, key: &str) -> Option<&'a str> {
-    match key {
-        SEARCH_DOCUMENT_ID_FIELD => Some(document.id.as_str()),
-        "space_id" => Some(
-            document
-                .metadata
-                .get(key)
-                .map(String::as_str)
-                .filter(|value| !value.is_empty())
-                .unwrap_or(DEFAULT_SPACE_ID),
-        ),
-        _ => document.metadata.get(key).map(String::as_str),
-    }
+    use crate::document_encoding::HeaderSource;
+    document.header().field(key)
 }
 
 fn search_document_field_values<'a>(document: &'a SearchDocument, key: &str) -> Vec<Cow<'a, str>> {
@@ -7806,6 +7820,13 @@ fn parse_usize(input: &str, name: &str) -> Result<usize> {
 }
 
 #[cfg(test)]
+fn test_temp_dir() -> PathBuf {
+    // Bazel sandboxes can reuse PIDs while sharing the host TMPDIR.
+    // Use the per-action directory to keep fixture names independent.
+    std::env::var_os("TEST_TMPDIR").map_or_else(std::env::temp_dir, PathBuf::from)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -7814,7 +7835,7 @@ mod tests {
         use hawdb_storage::file_descriptors::{ProjectFileDescriptors, DEFAULT_MAX_OPEN_FILES};
 
         let sequence = QUARANTINE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
+        let root = crate::test_temp_dir().join(format!(
             "hawdb-search-fd-projects-{}-{sequence}",
             std::process::id()
         ));

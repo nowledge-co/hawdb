@@ -26,7 +26,7 @@ pub(super) fn record_inflated_bytes(bytes: u64) {
 
 fn test_dir() -> PathBuf {
     let sequence = CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let root = std::env::temp_dir().join(format!(
+    let root = crate::test_temp_dir().join(format!(
         "hawdb-streamed-hydration-{}-{sequence}",
         std::process::id()
     ));
@@ -81,7 +81,7 @@ fn hydration_retains_one_decoded_document_instead_of_the_segment() {
     fs::remove_dir_all(root).unwrap();
 }
 
-fn fixture(documents: &[SearchDocument]) -> (String, SearchSegmentDescriptorEntry) {
+pub(super) fn fixture(documents: &[SearchDocument]) -> (String, SearchSegmentDescriptorEntry) {
     let mut text = String::from("HAWDB_SEARCH_SEGMENT_V1\n");
     for document in documents {
         text.push_str(&crate::encode_search_document_line(document));
@@ -94,7 +94,7 @@ fn fixture(documents: &[SearchDocument]) -> (String, SearchSegmentDescriptorEntr
     (text, descriptor)
 }
 
-fn envelope(payload: &[u8], declared_len: usize, checksum: u64) -> Vec<u8> {
+pub(super) fn envelope(payload: &[u8], declared_len: usize, checksum: u64) -> Vec<u8> {
     let mut bytes = format!(
         "{}\ncodec\tzstd\nuncompressed_checksum\t{checksum}\ncompressed_checksum\t{}\nuncompressed_len\t{declared_len}\ncompressed_len\t{}\n\n",
         crate::SEARCH_COMPRESSION_HEADER, checksum_bytes(payload), payload.len(),
@@ -103,7 +103,7 @@ fn envelope(payload: &[u8], declared_len: usize, checksum: u64) -> Vec<u8> {
     bytes
 }
 
-fn compressed(text: &[u8]) -> Vec<u8> {
+pub(super) fn compressed(text: &[u8]) -> Vec<u8> {
     zstd::stream::encode_all(text, 1).unwrap()
 }
 
@@ -517,4 +517,182 @@ fn hydration_differential_smoke() {
 #[ignore = "explicit local hydration differential campaign"]
 fn hydration_differential_campaign() {
     differential_cases(512);
+}
+
+#[cfg(feature = "full-text-search")]
+fn assert_candidate_parity(
+    reader: &SearchOutOfCoreReader,
+    mode: SearchMode,
+    access_control: Option<&SearchAccessControlContext>,
+) {
+    let options = SearchQueryOptions {
+        limit: 3,
+        offset: 1,
+        rank_window: Some(8),
+        metadata_filters: BTreeMap::from([("space_id".into(), "team".into())]),
+        fusion_weights: Default::default(),
+        policy_epoch: None,
+    };
+    let embedding = [1.0, 2.0];
+    let execution = SearchOutOfCoreExecutionContext {
+        access_control,
+        ..Default::default()
+    };
+    let full = reader
+        .search_with_options_internal("graph", Some(&embedding), mode, options.clone(), execution)
+        .unwrap();
+    let candidates = reader
+        .search_candidates_with_context("graph", Some(&embedding), mode, options, execution)
+        .unwrap();
+    assert_eq!(candidates.result.total_hits, full.result.total_hits);
+    assert_eq!(
+        candidates.result.filtered_document_count,
+        full.result.filtered_document_count
+    );
+    assert_eq!(candidates.result.candidate_set, full.result.candidate_set);
+    assert_eq!(candidates.result.retrievers, full.result.retrievers);
+    assert_eq!(candidates.result.truncated, full.result.truncated);
+    assert_eq!(
+        candidates.result.truncation_reasons,
+        full.result.truncation_reasons
+    );
+    assert_eq!(
+        candidates.result.empty_reason_codes,
+        full.result.empty_reason_codes
+    );
+    assert_eq!(
+        candidates.result.projection_freshness,
+        full.result.projection_freshness
+    );
+    assert_eq!(candidates.result.hits.len(), full.result.hits.len());
+    assert_eq!(candidates.metrics.hydrated_bytes, 0);
+    assert_eq!(candidates.metrics.hydrated_documents, 0);
+    assert_eq!(candidates.metrics.hydration_segment_bytes_read, 0);
+    for (candidate, full) in candidates.result.hits.iter().zip(&full.result.hits) {
+        assert_eq!(
+            candidate.scores,
+            SearchScoredCandidate {
+                id: full.id.clone(),
+                score: full.score,
+                vector_score: full.vector_score,
+                text_score: full.text_score,
+                rrf_score: full.rrf_score,
+                vector_rrf_score: full.vector_rrf_score,
+                text_rrf_score: full.text_rrf_score,
+                vector_rank: full.vector_rank,
+                text_rank: full.text_rank,
+            }
+        );
+        assert_eq!(candidate.generation, reader.manifest.generation);
+        assert_eq!(
+            Some(candidate.content_segment_id),
+            reader.resolve_mutation_segment(&full.id).unwrap()
+        );
+    }
+}
+
+#[test]
+#[cfg(feature = "full-text-search")]
+fn candidate_modes_share_ranking_filters_ties_and_version_visibility() {
+    let root = test_dir();
+    let mut writer = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+    for number in 0..8 {
+        let mut source = document(number);
+        source.id = format!("memory:{number:04}");
+        source.title = "graph".into();
+        source.metadata.insert(
+            "space_id".into(),
+            if number == 7 { "private" } else { "team" }.into(),
+        );
+        writer.push(source).unwrap();
+    }
+    writer.finish().unwrap();
+    let old = SearchOutOfCoreReader::open(&root).unwrap();
+    let modes = [
+        SearchMode::Text,
+        #[cfg(feature = "vector-search")]
+        SearchMode::Vector,
+        #[cfg(feature = "vector-search")]
+        SearchMode::Hybrid,
+    ];
+    let check = |reader: &SearchOutOfCoreReader| {
+        for mode in modes {
+            assert_candidate_parity(reader, mode, None);
+            #[cfg(feature = "acl")]
+            assert_candidate_parity(
+                reader,
+                mode,
+                Some(&SearchAccessControlContext::visibility_scopes(
+                    1,
+                    "space_id",
+                    ["team"],
+                )),
+            );
+        }
+    };
+    check(&old);
+    SearchOutOfCoreGenerationWriter::prepare_delta(
+        &old,
+        crate::SearchProjectionDelta {
+            upserts: vec![crate::SearchProjectionRow {
+                kind: crate::SearchProjectionKind::Memory,
+                external_id: "0001".into(),
+                title: "graph replacement".into(),
+                body: "graph storage".into(),
+                embedding: Some(vec![2.0, 1.0]),
+                source_id: None,
+                metadata: BTreeMap::from([("space_id".into(), "team".into())]),
+            }],
+            deletes: vec!["memory:0002".into()],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
+    let current = SearchOutOfCoreReader::open(&root).unwrap();
+    check(&current);
+    check(&old);
+    drop(current);
+    drop(old);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[cfg(feature = "full-text-search")]
+fn candidates_succeed_when_owned_output_is_not_admitted() {
+    let root = test_dir();
+    let mut writer = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+    let mut source = document(0);
+    source.title = "graph".into();
+    writer.push(source).unwrap();
+    writer.finish().unwrap();
+    let reader = SearchOutOfCoreReader::open_with_config(
+        &root,
+        SearchOutOfCoreConfig {
+            max_hydrated_bytes: NonZeroU64::new(1).unwrap(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let options = SearchQueryOptions {
+        limit: 1,
+        offset: 0,
+        rank_window: None,
+        fusion_weights: Default::default(),
+        metadata_filters: BTreeMap::new(),
+        policy_epoch: None,
+    };
+    assert!(reader
+        .search_with_options("graph", None, SearchMode::Text, options.clone())
+        .is_err());
+    let candidates = reader
+        .search_candidates_with_options("graph", None, SearchMode::Text, options)
+        .unwrap();
+    assert_eq!(candidates.result.total_hits, 1);
+    assert_eq!(candidates.result.hits[0].scores.id, document(0).id);
+    assert_eq!(candidates.metrics.hydration_segment_bytes_read, 0);
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
 }

@@ -13,23 +13,25 @@ bitpacking = { version = "=0.9.3", default-features = false, features = ["bitpac
 fst = "=0.4.7"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 # Opaque analyzer capacity bounds are qualified against this dependency set.
-jieba-rs = "=0.10.3"
+jieba-rs = "=0.11.0"
 regex = { version = "=1.13.1", default-features = false }
-regex-automata = { version = "=0.4.16", default-features = false }
+regex-automata = { version = "=0.4.18", default-features = false }
 regex-syntax = { version = "=0.8.11", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 zstd = "0.13"
-hawdb-core = { path = "../core", version = "0.3.0" }
-hawdb-evidence = { path = "../evidence", version = "0.3.0" }
-hawdb-executor = { path = "../executor", version = "0.3.0" }
-hawdb-integrity = { path = "../integrity", version = "0.3.0" }
-hawdb-optimizer = { path = "../optimizer", version = "0.3.0" }
-hawdb-plan-cypher = { path = "../plan-cypher", version = "0.3.0" }
-hawdb-qos = { path = "../qos", version = "0.3.0" }
-hawdb-storage = { path = "../storage", version = "0.3.0" }
-hawdb-telemetry = { path = "../telemetry", version = "0.3.0" }
-hawdb-vector-projection = { path = "../vector-projection", version = "0.3.0", optional = true }
+hawdb-core = { path = "../core", version = "0.4.0" }
+hawdb-evidence = { path = "../evidence", version = "0.4.0" }
+hawdb-executor = { path = "../executor", version = "0.4.0" }
+hawdb-integrity = { path = "../integrity", version = "0.4.0" }
+hawdb-cascades = { path = "../cascades", version = "0.4.0" }
+hawdb-optimizer-predicate = { path = "../optimizer-predicate", version = "0.4.0" }
+hawdb-optimizer-vector = { path = "../optimizer-vector", version = "0.4.0" }
+hawdb-plan-core = { path = "../plan-core", version = "0.4.0" }
+hawdb-qos = { path = "../qos", version = "0.4.0" }
+hawdb-storage = { path = "../storage", version = "0.4.0" }
+hawdb-telemetry = { path = "../telemetry", version = "0.4.0" }
+hawdb-vector-projection = { path = "../vector-projection", version = "0.4.0", optional = true }
 
 [features]
 default = [
@@ -46,4 +48,4 @@ qualification = []
 vector-search = ["dep:hawdb-vector-projection", "hawdb-vector-projection/storage-io"]
 
 [dev-dependencies]
-hawdb-vector-projection = { path = "../vector-projection", version = "0.3.0" }
+hawdb-vector-projection = { path = "../vector-projection", version = "0.4.0" }

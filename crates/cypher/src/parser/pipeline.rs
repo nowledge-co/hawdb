@@ -767,22 +767,14 @@ mod migration_audit {
         let mut missing = BTreeMap::<&str, Vec<(String, String)>>::new();
         for line in include_str!("../../fixtures/migration_corpus_v1.jsonl").lines() {
             let case: serde_json::Value = serde_json::from_str(line).unwrap();
-            let query = case["query"].as_str().unwrap();
-            let Ok(statement) = crate::parse(query) else {
+            if case["parse"] != "accepted" {
                 continue;
-            };
+            }
+            let query = case["query"].as_str().unwrap();
+            let statement =
+                crate::parse(query).unwrap_or_else(|error| panic!("{}: {error}", case["id"]));
             let family = match statement {
-                Statement::MatchReturn(_) => "match_return",
-                Statement::MatchNodesReturn(_) => "match_nodes_return",
                 Statement::Pipeline(_) => "pipeline",
-                Statement::MatchOptionalRelationshipCountSum(_) => "optional_count_sum",
-                Statement::ShortestPathReturn(_) => "shortest_path",
-                Statement::MatchSet(_) | Statement::MatchSetReturn(_) => "match_set",
-                Statement::MatchDelete(_) => "match_delete",
-                Statement::MatchCreateRelationship(_) => "match_create_relationship",
-                Statement::MatchMergeRelationship(_) => "match_merge_relationship",
-                Statement::MatchExpandMergeRelationship(_)
-                | Statement::MatchExpandMatchMergeRelationship(_) => "match_expand_merge",
                 Statement::CreateNode(_) | Statement::CreateRelationship(_) => "create",
                 Statement::MergeNode(_) | Statement::MergeRelationship(_) => "merge",
                 Statement::VectorSearch(_)

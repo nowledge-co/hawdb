@@ -62,7 +62,7 @@ impl<'a> Control<'a> {
         }
     }
 
-    pub(super) fn check(self) -> Result<()> {
+    pub(crate) fn check(self) -> Result<()> {
         let Some(task) = self.task else {
             return Ok(());
         };

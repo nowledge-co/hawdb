@@ -113,6 +113,28 @@ impl<T: Serialize> PreparedEnvelope<'_, T> {
         self.checksum
     }
 
+    pub(crate) fn write_to(
+        &self,
+        output: &mut impl Write,
+        task: &RuntimeTaskContext,
+    ) -> Result<()> {
+        let mut checked = EnvelopeOutput {
+            output,
+            remaining: self.length,
+            digest: Crc32cHasher::new(),
+        };
+        serde_json::to_writer(CheckedWriter::new(&mut checked, Some(task)), &self.envelope)
+            .map_err(json_error)?;
+        checkpoint(task)?;
+        if checked.remaining != 0 || checked.digest.finish() != self.checksum {
+            return Err(HawDBError::Storage(format!(
+                "{} changed during streaming serialization",
+                self.name
+            )));
+        }
+        Ok(())
+    }
+
     pub(crate) fn encode(
         self,
         memory: &BuildMemory,
@@ -291,6 +313,26 @@ impl Write for AdmittedOutput<'_> {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+struct EnvelopeOutput<'a, W> {
+    output: &'a mut W,
+    remaining: usize,
+    digest: Crc32cHasher,
+}
+impl<W: Write> Write for EnvelopeOutput<'_, W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.remaining {
+            return Err(io::Error::other("JSON envelope exceeds admitted length"));
+        }
+        let count = self.output.write(bytes)?;
+        self.remaining -= count;
+        self.digest.update(&bytes[..count]);
+        Ok(count)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.output.flush()
     }
 }
 

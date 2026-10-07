@@ -35,8 +35,10 @@ _SEARCH_BASE_DEPS = [
     "//crates/evidence:hawdb_evidence",
     "//crates/executor:hawdb_executor",
     "//crates/integrity:hawdb_integrity",
-    "//crates/optimizer:hawdb_optimizer",
-    "//crates/plan-cypher:hawdb_plan_cypher",
+    "//crates/cascades:hawdb_cascades",
+    "//crates/optimizer-predicate:hawdb_optimizer_predicate",
+    "//crates/optimizer-vector:hawdb_optimizer_vector",
+    "//crates/plan-core:hawdb_plan_core",
     "//crates/qos:hawdb_qos",
     "//crates/storage:hawdb_storage",
     "//crates/telemetry:hawdb_telemetry",
@@ -121,6 +123,8 @@ rust_library(
 
 rust_test(
     name = "hawdb_search_tests",
+    # Streamed document lifecycle coverage includes 128 MiB fixtures.
+    timeout = "long",
     crate = ":hawdb_search",
     crate_features = _SEARCH_DEFAULT_FEATURES,
     edition = "2024",
@@ -456,9 +460,12 @@ rust_test(
 )
 
 # Keep optional-capability contracts executable without enabling every feature.
+# Non-FTS profiles also run the shared persistence/recovery suite. Their former
+# 300s deadlines expired locally; use 900s while issue #872 measures decomposition.
 [
     rust_test(
         name = "hawdb_search_%s_tests" % profile,
+        timeout = "long",
         crate_name = "hawdb_search",
         crate_root = "src/lib.rs",
         crate_features = features,

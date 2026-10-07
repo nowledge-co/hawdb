@@ -19,17 +19,17 @@ rayon = "1.11"
 roaring = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-hawdb-core = { path = "../core", version = "0.3.0" }
-hawdb-integrity = { path = "../integrity", version = "0.3.0" }
-hawdb-analytics = { path = "../analytics", version = "0.3.0" }
-hawdb-telemetry = { path = "../telemetry", version = "0.3.0" }
-hawdb-plan-cypher = { path = "../plan-cypher", version = "0.3.0" }
-hawdb-qos = { path = "../qos", version = "0.3.0" }
+hawdb-core = { path = "../core", version = "0.4.0" }
+hawdb-integrity = { path = "../integrity", version = "0.4.0" }
+hawdb-analytics = { path = "../analytics", version = "0.4.0" }
+hawdb-telemetry = { path = "../telemetry", version = "0.4.0" }
+hawdb-plan-cypher = { path = "../plan-cypher", version = "0.4.0" }
+hawdb-qos = { path = "../qos", version = "0.4.0" }
 zstd = "0.13"
 memmap2 = { version = "0.9.11", optional = true }
 
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 fs2 = "0.4.3"
 
-[target.'cfg(target_os = "linux")'.dev-dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"

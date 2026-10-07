@@ -339,10 +339,11 @@ fn resident_frequency_denial_stops_analysis_and_preserves_the_active_generation(
     initial.push(previous.clone()).unwrap();
     let generation = initial.finish().unwrap().generation;
     let before = published_files(&root);
+    let budget = 4 * 1024 * 1024;
     let mut writer = SearchOutOfCoreGenerationWriter::create_with_context(
         &root,
         Default::default(),
-        context(4 * 1024 * 1024),
+        context(budget),
     )
     .unwrap();
     let memory = writer.memory.clone();
@@ -353,10 +354,21 @@ fn resident_frequency_denial_stops_analysis_and_preserves_the_active_generation(
     assert!(!writer.needs_chinese_analyzer);
     crate::analyzer_stream::IDENTIFIER_VISITS.with(|visits| visits.set(0));
     let error = writer.finish().unwrap_err();
-    assert!(error.to_string().contains("query_memory_bytes"), "{error}");
+    // Both limits are equal; retained path sizes and allocation growth can
+    // make the account limit reject before the aggregate ledger limit.
+    assert!(
+        matches!(&error, HawDBError::Execution(message)
+            if message.contains("search build state (blocking_state)")
+                && (message.ends_with(&format!("exceeding query_memory_bytes {budget}"))
+                    || message.ends_with(&format!("exceeding its {budget}-byte budget")))),
+        "{error}"
+    );
     let visited = crate::analyzer_stream::IDENTIFIER_VISITS.with(|visits| visits.get());
     assert!(visited > 0 && visited < 4096, "analysis visits={visited}");
-    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
+    let snapshot = memory.ledger.snapshot();
+    assert_eq!(snapshot.budget_bytes, budget as usize);
+    assert!(snapshot.peak_bytes <= snapshot.budget_bytes);
+    assert_eq!(snapshot.used_bytes, 0);
     assert_eq!(stage_directories(&root), 0);
     assert_eq!(published_files(&root), before);
     let reader = crate::SearchOutOfCoreReader::open(&root).unwrap();

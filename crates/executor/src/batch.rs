@@ -194,7 +194,9 @@ impl OptionalDegreeSpec<'_> {
             &mut |batch| {
                 let mut output = Vec::with_capacity(batch.len());
                 for mut binding in batch {
-                    let degree = if !rel_type.is_empty() && rel_type_id.is_none() {
+                    let degree = if binding.values.get(source_variable) == Some(&Value::Null)
+                        || (!rel_type.is_empty() && rel_type_id.is_none())
+                    {
                         0
                     } else {
                         let source = binding.nodes.get(source_variable).ok_or_else(|| {

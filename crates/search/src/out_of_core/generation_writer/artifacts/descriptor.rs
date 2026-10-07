@@ -15,12 +15,10 @@
 use super::*;
 use crate::build_control::checkpoint;
 use crate::build_memory::{checked_add, checked_mul, MAP_ENTRY_BYTES, SET_ENTRY_BYTES};
-use crate::{
-    normalized_projection_kind, search_document_field_value, search_field_is_enum_like,
-    SearchSegmentFieldSummary,
-};
+use crate::document_encoding::{Header, HeaderSource};
+use crate::{normalized_projection_kind, search_field_is_enum_like, SearchSegmentFieldSummary};
 use hawdb_core::RuntimeTaskContext;
-use std::borrow::{Borrow, Cow};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 mod values;
@@ -32,7 +30,7 @@ pub(super) struct Admission<'a> {
 }
 
 #[cfg(test)]
-pub(super) fn build<T: Borrow<SearchDocument>>(
+pub(super) fn build<T: HeaderSource>(
     segment_id: u64,
     documents: &[T],
     fields: &BTreeSet<String>,
@@ -56,7 +54,7 @@ pub(super) fn build<T: Borrow<SearchDocument>>(
     )
 }
 
-pub(super) fn build_with_context<T: Borrow<SearchDocument>>(
+pub(super) fn build_with_context<T: HeaderSource>(
     segment_id: u64,
     documents: &[T],
     fields: &BTreeSet<String>,
@@ -76,10 +74,8 @@ pub(super) fn build_with_context<T: Borrow<SearchDocument>>(
     };
     let first = documents
         .first()
-        .map_or("", |document| document.borrow().id.as_str());
-    let last = documents
-        .last()
-        .map_or("", |document| document.borrow().id.as_str());
+        .map_or("", |document| document.header().id);
+    let last = documents.last().map_or("", |document| document.header().id);
     // Retain the existing descriptor and layout estimates. Charge each owned
     // component before inserting it instead of checking after segment I/O.
     budget.reserve(256 + 96)?;
@@ -103,7 +99,7 @@ pub(super) fn build_with_context<T: Borrow<SearchDocument>>(
             .insert(field.clone(), SearchSegmentFieldSummary::default());
     }
     for document in documents {
-        let document = document.borrow();
+        let document = document.header();
         for (field, summary) in &mut descriptor.metadata {
             let mut present = false;
             values::visit_with_context(document, field, memory, task, &mut |value| {

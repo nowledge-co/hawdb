@@ -18,8 +18,9 @@ use sqlparser::ast::Spanned;
 use sqlparser::ast::{
     BinaryOperator, Distinct, DuplicateTreatment, Expr, FunctionArg, FunctionArgExpr,
     FunctionArguments, GroupByExpr, Ident, JoinConstraint, JoinOperator, LimitClause, LockClause,
-    LockType, ObjectName, ObjectNamePart, OrderByKind, SelectItem as ParserSelectItem, SetExpr,
-    Statement as ParserStatement, TableAlias, TableFactor, Value as ParserValue, ValueWithSpan,
+    LockType, ObjectName, ObjectNamePart, OrderByKind, OrderBySort, SelectItem as ParserSelectItem,
+    SetExpr, Statement as ParserStatement, TableAlias, TableFactor, Value as ParserValue,
+    ValueWithSpan,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -30,6 +31,9 @@ mod schema;
 
 #[cfg(test)]
 mod clause_tests;
+
+#[cfg(test)]
+mod compatibility_tests;
 
 fn reject_unsupported_clauses(
     statement: &'static str,
@@ -245,6 +249,9 @@ fn lower_projection(items: &[ParserSelectItem]) -> Result<Vec<SelectProjection>>
             ParserSelectItem::QualifiedWildcard(_, _) => Err(HawDBError::Semantic(
                 "qualified wildcards are not supported".to_string(),
             )),
+            ParserSelectItem::ExprWithAliases { .. } => Err(HawDBError::Semantic(
+                "multiple projection aliases are not supported".to_string(),
+            )),
         })
         .collect()
 }
@@ -270,10 +277,7 @@ fn lower_order_by(order_by: Option<&sqlparser::ast::OrderBy>) -> Result<Vec<SqlO
         .map(|item| {
             Ok(SqlOrderItem {
                 expression: lower_expression(&item.expr, ExpressionPosition::Column)?,
-                direction: match item.options.asc {
-                    Some(false) => SqlOrderDirection::Desc,
-                    Some(true) | None => SqlOrderDirection::Asc,
-                },
+                direction: lower_order_direction(item.options.sort.as_ref())?,
                 nulls: match item.options.nulls_first {
                     Some(true) => SqlNullOrder::First,
                     Some(false) => SqlNullOrder::Last,
@@ -282,6 +286,16 @@ fn lower_order_by(order_by: Option<&sqlparser::ast::OrderBy>) -> Result<Vec<SqlO
             })
         })
         .collect()
+}
+
+fn lower_order_direction(sort: Option<&OrderBySort>) -> Result<SqlOrderDirection> {
+    match sort {
+        Some(OrderBySort::Desc) => Ok(SqlOrderDirection::Desc),
+        Some(OrderBySort::Asc) | None => Ok(SqlOrderDirection::Asc),
+        Some(OrderBySort::Using(_)) => Err(HawDBError::Semantic(
+            "ORDER BY USING is not supported".to_string(),
+        )),
+    }
 }
 
 fn lower_limit(limit_clause: Option<&LimitClause>) -> Result<Option<SqlBound>> {
@@ -409,7 +423,7 @@ pub(super) fn lower_expression(expr: &Expr, position: ExpressionPosition) -> Res
                 pattern,
                 *negated,
                 *any,
-                escape_char.as_ref(),
+                escape_char.as_deref(),
                 false,
                 having,
             )?,
@@ -424,7 +438,7 @@ pub(super) fn lower_expression(expr: &Expr, position: ExpressionPosition) -> Res
                 pattern,
                 *negated,
                 *any,
-                escape_char.as_ref(),
+                escape_char.as_deref(),
                 true,
                 having,
             )?,
@@ -465,7 +479,7 @@ fn lower_like_expression(
     pattern: &Expr,
     negated: bool,
     any: bool,
-    escape_char: Option<&ParserValue>,
+    escape_char: Option<&Expr>,
     case_insensitive: bool,
     having: bool,
 ) -> Result<ExprKind> {
@@ -497,11 +511,15 @@ fn lower_like_expression(
     })
 }
 
-fn lower_like_escape(escape_char: Option<&ParserValue>) -> Result<SqlLikeEscape> {
+fn lower_like_escape(escape_char: Option<&Expr>) -> Result<SqlLikeEscape> {
     let Some(escape_char) = escape_char else {
         return Ok(SqlLikeEscape::Character('\\'));
     };
-    let Some(escape) = escape_char.clone().into_string() else {
+    let escape = match escape_char {
+        Expr::Value(value) => value.value.clone().into_string(),
+        _ => None,
+    };
+    let Some(escape) = escape else {
         return Err(HawDBError::Semantic(
             "LIKE ESCAPE must be a string literal".to_string(),
         ));
@@ -556,6 +574,11 @@ fn lower_table_alias(alias: Option<&TableAlias>) -> Result<Option<String>> {
     if !alias.columns.is_empty() {
         return Err(HawDBError::Semantic(
             "PostgreSQL table column aliases are not supported".to_string(),
+        ));
+    }
+    if alias.at.is_some() {
+        return Err(HawDBError::Semantic(
+            "PostgreSQL table AT aliases are not supported".to_string(),
         ));
     }
     Ok(Some(normalize_ident(&alias.name)))

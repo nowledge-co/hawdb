@@ -9,8 +9,8 @@ use crate::pipeline::{
 use crate::predicate::{label_ids_for_pattern, node_matches_label_pattern};
 use crate::store::{AdjacencyReadMemory, GraphExecutionRead, ScanControl};
 use crate::traversal::{
-    visit_bounded_expand_targets, visit_one_hop_relationships_with_context, BoundedExpandSpec,
-    OneHopRelationshipSpec,
+    visit_bounded_expand_targets, visit_one_hop_relationships_with_context,
+    visit_zero_hop_expand_target, BoundedExpandSpec, OneHopRelationshipSpec,
 };
 use crate::{ExecutionLimit, QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease};
 use hawdb_core::{HawDBError, Result, Value};
@@ -35,6 +35,26 @@ pub(crate) fn stream_graph_match(
         return Err(HawDBError::Execution(
             "MATCH exceeds maximum pattern depth".to_string(),
         ));
+    }
+    // Validate before reading input so empty streams cannot bypass shape checks.
+    for step in &program.steps {
+        if let GraphMatchStep::Expand {
+            relationship,
+            rel_type,
+            properties,
+            direction,
+            min_hops,
+            max_hops,
+            ..
+        } = step
+            && (*min_hops != 1 || *max_hops != 1)
+            && (relationship.is_some()
+                || !properties.is_empty()
+                || *direction != hawdb_core::RelationshipDirection::Outgoing
+                || rel_type.is_empty())
+        {
+            return Err(HawDBError::Execution("bounded MATCH expansion requires an outgoing typed pattern without relationship bindings".to_string()));
+        }
     }
     if limit.is_reached(0) {
         return Ok(BatchControl::Stop);
@@ -287,6 +307,7 @@ impl MatchRuntime<'_> {
                 max_hops,
                 target,
             } => {
+                let bounded = *min_hops != 1 || *max_hops != 1;
                 let Some(source_node) = row.nodes.get(source) else {
                     if row.values.get(source) == Some(&Value::Null) {
                         return Ok(ScanControl::Continue);
@@ -299,19 +320,26 @@ impl MatchRuntime<'_> {
                     None
                 } else {
                     let Some(id) = self.context.catalog.rel_type_id(rel_type) else {
+                        if *min_hops == 0 {
+                            let labels = label_ids_for_pattern(self.context.catalog, &target.label);
+                            return visit_zero_hop_expand_target(
+                                self.store,
+                                source_node.id,
+                                labels.as_deref(),
+                                *max_hops,
+                                self.adjacency_memory(),
+                                self.context.task_context,
+                                &mut |node, _| {
+                                    self.visit_target(index, row, used, target, node, emit)
+                                },
+                            );
+                        }
                         return Ok(ScanControl::Continue);
                     };
                     Some(id)
                 };
                 let labels = label_ids_for_pattern(self.context.catalog, &target.label);
-                if *min_hops != 1 || *max_hops != 1 {
-                    if relationship.is_some()
-                        || !properties.is_empty()
-                        || *direction != hawdb_core::RelationshipDirection::Outgoing
-                        || rel_type_id.is_none()
-                    {
-                        return Err(HawDBError::Execution("bounded MATCH expansion requires an outgoing typed pattern without relationship bindings".to_string()));
-                    }
+                if bounded {
                     return visit_bounded_expand_targets(
                         self.store,
                         BoundedExpandSpec {

@@ -3,7 +3,7 @@
 `PlanCostBreakdown` stores candidate cardinality, raw logical work components,
 and one saturated scalar total. Cardinality remains independent of weights.
 The initial policy uses CPU = 1, random access = 2, sequential access = 1, and
-output = 1. The constants live in `hawdb-optimizer/src/cost.rs`.
+output = 1. The constants live in `crates/cascades/src/cost.rs`.
 
 These are planning units, not nanoseconds, bytes, physical pages or a portable
 hardware calibration. Random access has a modest locality penalty; this does
@@ -13,7 +13,9 @@ separate row-fetch accounting and rejection of non-covering paths with broad
 estimated fanout.
 They also show that sparse first/warm winners can differ. This initial policy
 does not resolve that context-dependent calibration or promise every selected
-path is faster. No runtime configuration or persisted setting is introduced.
+path is faster. No runtime configuration or persisted setting is introduced. The
+[current macOS qualification](RELATIONAL_ACCESS_COST_MACOS_20261007.md) records
+complete current-source results and the remaining cache/locality/skew boundary.
 
 ## Composition
 

@@ -108,6 +108,20 @@ pub(super) fn lower_create_table_statement(
             ("REFRESH_MODE", create.refresh_mode.is_some()),
             ("INITIALIZE", create.initialize.is_some()),
             ("REQUIRE USER", create.require_user),
+            ("UNLOGGED", create.unlogged),
+            ("SNAPSHOT", create.snapshot),
+            (
+                "WITH STORAGE LIFECYCLE POLICY",
+                create.with_storage_lifecycle_policy.is_some(),
+            ),
+            ("WITH CONNECTION", create.with_connection.is_some()),
+            ("DISTSTYLE", create.diststyle.is_some()),
+            ("DISTKEY", create.distkey.is_some()),
+            ("SORTKEY", create.sortkey.is_some()),
+            ("BACKUP", create.backup.is_some()),
+            ("MULTISET", create.multiset.is_some()),
+            ("FALLBACK", create.fallback.is_some()),
+            ("WITH DATA", create.with_data.is_some()),
         ],
     )?;
     Ok(SqlStatement::CreateTable(CreateTableStatement {
@@ -483,10 +497,7 @@ fn lower_index_order_item(column: &sqlparser::ast::IndexColumn) -> Result<SqlInd
     }
     Ok(SqlIndexColumn {
         column: lower_column_expr(&column.column.expr)?,
-        direction: match column.column.options.asc {
-            Some(false) => SqlOrderDirection::Desc,
-            Some(true) | None => SqlOrderDirection::Asc,
-        },
+        direction: super::lower_order_direction(column.column.options.sort.as_ref())?,
         nulls: match column.column.options.nulls_first {
             Some(true) => SqlNullOrder::First,
             Some(false) => SqlNullOrder::Last,

@@ -9,8 +9,8 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-opentelemetry = { version = "0.31", default-features = false, features = ["metrics"], optional = true }
-hawdb-qos = { path = "../qos", version = "0.3.0" }
+opentelemetry = { version = "0.33", default-features = false, features = ["metrics"], optional = true }
+hawdb-qos = { path = "../qos", version = "0.4.0" }
 
 [features]
 default = []

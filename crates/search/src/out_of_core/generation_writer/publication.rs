@@ -210,19 +210,21 @@ pub(super) fn publish_generation(
         analyzer_digest: u64,
         entries: &'a [crate::out_of_core::mutation_run::SearchMutationRunEntry],
     }
-    let mutation_bytes = mutation_entries
+    let mutation_body = mutation_entries
         .filter(|entries| !entries.is_empty())
-        .map(|entries| {
-            json::encode_with_context(
-                &MutationBody {
-                    format: crate::out_of_core::mutation_run::MUTATION_RUN_FORMAT,
-                    generation,
-                    analyzer_digest: mutation_analyzer_digest,
-                    entries,
-                },
+        .map(|entries| MutationBody {
+            format: crate::out_of_core::mutation_run::MUTATION_RUN_FORMAT,
+            generation,
+            analyzer_digest: mutation_analyzer_digest,
+            entries,
+        });
+    let mutation_bytes = mutation_body
+        .as_ref()
+        .map(|body| {
+            json::prepare(
+                body,
                 mutation_max_run_bytes,
-                memory,
-                task,
+                Some(task),
                 "search mutation run",
             )
         })
@@ -231,11 +233,8 @@ pub(super) fn publish_generation(
         .mutations
         .map(|mutation| &mutation.reopen_budget)
         .or_else(|| compaction_rewrite.map(|rewrite| &rewrite.reopen_budget));
-    if let (Some(budget), Some(encoded)) = (reopen_budget, &mutation_bytes) {
-        budget.admit_encoded_extension(
-            &encoded.bytes,
-            mutation_entries.map_or(0, |entries| entries.len()),
-        )?;
+    if let (Some(budget), Some(entries)) = (reopen_budget, mutation_entries) {
+        budget.admit_entries(entries)?;
     }
     let mut mutation_runs = Vec::new();
     let (mut segments, document_count, documents_digest, segment_id, level, compact_range) =
@@ -652,8 +651,8 @@ pub(super) fn publish_generation(
             mutation_runs.push(super::super::SearchOutOfCoreMutationRunManifest {
                 generation,
                 file: name.as_str().to_owned(),
-                len: encoded.bytes.len() as u64,
-                checksum: crate::checksum_bytes(&encoded.bytes),
+                len: encoded.len() as u64,
+                checksum: encoded.checksum(),
                 entry_count: entries.len(),
                 analyzer_digest: mutation_analyzer_digest,
             });
@@ -719,7 +718,7 @@ pub(super) fn publish_generation(
         bytes.checked_add(
             mutation_bytes
                 .as_ref()
-                .map_or(0, |encoded| encoded.bytes.len() as u64),
+                .map_or(0, |encoded| encoded.len() as u64),
         )
     })
     .ok_or_else(|| HawDBError::Storage("mutation generation size overflows".into()))?;
@@ -817,12 +816,20 @@ pub(super) fn publish_generation(
     if let (Some(name), Some(encoded)) = (&mutation_name, &mutation_bytes) {
         let staged = io.path(input.stage, name.as_ref())?;
         let published = io.path(input.root, name.as_ref())?;
-        io.write(&staged, &encoded.bytes)?;
+        let mut file = io.native(&[&staged], || {
+            hawdb_storage::file_io::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&*staged)
+        })??;
+        encoded.write_to(&mut file, task)?;
+        file.sync_all()?;
+        drop(file);
         io.link(&staged, &published)?;
         io.verify(
             &published,
-            encoded.bytes.len() as u64,
-            Some(crate::checksum_bytes(&encoded.bytes)),
+            encoded.len() as u64,
+            Some(encoded.checksum()),
             "mutation run",
         )?;
     }

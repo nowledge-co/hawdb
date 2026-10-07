@@ -18,12 +18,14 @@ use super::super::ast::*;
 use super::Parser;
 
 impl Parser<'_> {
-    pub(super) fn parse_call_statement(&mut self) -> Result<Statement> {
+    pub(super) fn parse_call_statement(&mut self, call_start: usize) -> Result<Statement> {
+        self.skip_ws();
+        let procedure_start = self.pos;
         let procedure = self.parse_ident()?;
         self.expect_char('(')?;
         let lower = procedure.to_ascii_lowercase();
         if lower == "vector_search" {
-            return self.parse_vector_search();
+            return self.parse_vector_search(call_start, procedure_start);
         }
         let graph_name = self.parse_string()?;
         if lower == "project_graph" {
@@ -79,23 +81,59 @@ impl Parser<'_> {
         Ok(VectorSearch { embedding, top_k })
     }
 
-    fn parse_vector_search(&mut self) -> Result<Statement> {
+    fn parse_vector_search(
+        &mut self,
+        call_start: usize,
+        procedure_start: usize,
+    ) -> Result<Statement> {
         let search = self.parse_vector_search_arguments()?;
+        let procedure_span = SourceSpan {
+            start: procedure_start,
+            end: self.pos,
+        };
         self.skip_ws();
         if self.consume_keyword("YIELD") {
-            self.skip_ws();
-            let id = self.parse_ident()?;
-            self.expect_char(',')?;
-            let score = self.parse_ident()?;
-            if !id.eq_ignore_ascii_case("id") || !score.eq_ignore_ascii_case("score") {
-                return Err(self.error("vector search YIELD must be id, score"));
+            let procedure =
+                AstNode::from_source(ProcedureCallKind::VectorSearch(search), procedure_span);
+            let mut yields = Vec::new();
+            for name in ["id", "score"] {
+                self.skip_ws();
+                let start = self.pos;
+                let parsed = self.parse_ident()?;
+                if !parsed.eq_ignore_ascii_case(name) {
+                    return Err(self.error("vector search YIELD must be id, score"));
+                }
+                yields.push(self.source_node(
+                    YieldItemKind {
+                        name: parsed,
+                        alias: None,
+                    },
+                    start,
+                ));
+                if name == "id" {
+                    self.expect_char(',')?;
+                }
             }
-            self.expect_keyword("MATCH")?;
-            let Statement::MatchReturn(mut query) = self.parse_match_statement()? else {
+            let call = self.source_node(ClauseKind::Call { procedure, yields }, call_start);
+            if !self.next_keyword_is("MATCH") {
                 return Err(self.error("vector search YIELD must feed a MATCH read query"));
-            };
-            query.vector_seed = Some(search);
-            return Ok(Statement::MatchReturn(query));
+            }
+            let mut query = self.parse_public_query_pipeline()?;
+            if !matches!(
+                query.clauses.last().map(|clause| &clause.kind),
+                Some(ClauseKind::Return(_))
+            ) || !query.clauses.iter().all(|clause| {
+                matches!(
+                    clause.kind,
+                    ClauseKind::Match { .. } | ClauseKind::With(_) | ClauseKind::Return(_)
+                )
+            }) {
+                return Err(self.error("vector search YIELD must feed a MATCH read query"));
+            }
+            query.clauses.insert(0, call);
+            return Ok(Statement::Pipeline(Box::new(
+                self.source_node(query.kind, call_start),
+            )));
         }
         if self.consume_keyword("RETURN") {
             self.skip_ws();

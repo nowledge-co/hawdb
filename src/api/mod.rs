@@ -99,6 +99,7 @@ mod runtime_cell;
 mod schema_guidance;
 mod search_projection_catch_up;
 mod search_projection_consumer;
+mod statement_shape;
 pub use search_projection_consumer::*;
 mod source_candidates;
 mod system_schema;
@@ -109,11 +110,16 @@ mod types;
 pub(crate) use hawdb_system_sql as system_sql;
 
 pub use branch_lifecycle::{
-    BranchCreateRequest, BranchInfo, BranchLifecycleError, BranchLifecycleState, BranchSelector,
+    BranchCreateRequest, BranchInfo, BranchLifecycleError, BranchLifecycleState,
+    BranchReclamationLimits, BranchReclamationReport, BranchSelector,
 };
 pub(crate) use hawdb_executor::runtime_admission::runtime_planning_request;
 #[cfg(feature = "tokio-runtime")]
 pub(crate) use hawdb_executor::runtime_admission::RuntimeAdmissionPlan;
+pub use hawdb_storage::branch_create_recovery::{
+    BranchCreateRecoveryEntry, BranchCreateRecoveryLimits, BranchCreateRecoveryReport,
+    BranchCreateRecoveryStatus,
+};
 pub(crate) use query_runtime::PreparedRuntimeQuery;
 #[cfg(feature = "tokio-runtime")]
 pub(crate) use query_runtime::RuntimePlanningSnapshot;
@@ -233,6 +239,7 @@ fn hawdb_lightning_initial_import_source_fingerprint_key(
 pub struct Database {
     runtime: runtime_cell::BranchRuntimeCell,
     project_root_path: Option<PathBuf>,
+    branch_create_recovery: Option<BranchCreateRecoveryReport>,
     durability: DurabilityPolicy,
     slow_query_log: Arc<SharedState<system_sql::SlowQueryLog>>,
     statement_summary: Arc<SharedState<system_sql::StatementSummary>>,
@@ -277,6 +284,8 @@ impl<T> SharedState<T> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatabaseConfig {
     pub read_only: bool,
+    /// Bounded pending-child recovery during a writable project open.
+    pub branch_create_recovery_limits: BranchCreateRecoveryLimits,
     pub max_read_result_rows: Option<usize>,
     pub max_read_result_payload_bytes: Option<usize>,
     pub execution_memory: executor::ExecutionMemoryConfig,
@@ -513,6 +522,7 @@ impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
             read_only: false,
+            branch_create_recovery_limits: BranchCreateRecoveryLimits::default(),
             max_read_result_rows: Some(DEFAULT_MAX_READ_RESULT_ROWS),
             max_read_result_payload_bytes: Some(DEFAULT_MAX_READ_RESULT_PAYLOAD_BYTES),
             execution_memory: executor::ExecutionMemoryConfig::default(),
@@ -951,6 +961,7 @@ impl Default for Database {
             derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
+            branch_create_recovery: None,
         }
     }
 }
@@ -1047,6 +1058,7 @@ impl Database {
             derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
+            branch_create_recovery: None,
         }
     }
 
@@ -1106,7 +1118,9 @@ impl Database {
     /// Data access lazily recovers default main; busy, damaged, or resource-
     /// rejected admission returns an error and can be retried. Catalog SQL and
     /// `USE BRANCH` can run before main is admitted. Successful metadata open
-    /// does not certify that the selected branch's data is ready.
+    /// does not certify that the selected branch's data is ready. Writable opens
+    /// also attempt bounded pending-child recovery; inspect
+    /// `branch_create_recovery_report` for retained, busy or unattempted receipts.
     ///
     /// The first writable open publishes the project's main branch from the
     /// complete legacy state. Read-only legacy opens do not adopt that layout.
@@ -1161,7 +1175,7 @@ impl Database {
             hawdb_storage::branch_project::ProjectManifest::Branch(_)
         ) {
             let metadata = hawdb_storage::branch_project::ProjectMetadata::from_files(files)?;
-            return Ok(Self::from_project_metadata(metadata, durability, config));
+            return Self::from_project_metadata(metadata, durability, config);
         }
         let replay_config = config.wal_replay_config();
         let mut store = if config.read_only {
@@ -1221,6 +1235,7 @@ impl Database {
             derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
+            branch_create_recovery: None,
         };
         if database.config.read_only {
             database.apply_engine_system_schema()?;
@@ -1289,20 +1304,25 @@ impl Database {
         let config = database.config.clone();
         drop(database);
         let metadata = hawdb_storage::branch_project::ProjectMetadata::from_files(files)?;
-        Ok(Self::from_project_metadata(metadata, durability, config))
+        Self::from_project_metadata(metadata, durability, config)
     }
 
     fn from_project_metadata(
         metadata: hawdb_storage::branch_project::ProjectMetadata,
         durability: DurabilityPolicy,
         config: DatabaseConfig,
-    ) -> Self {
+    ) -> Result<Self> {
+        let branch_create_recovery = if config.read_only {
+            None
+        } else {
+            Some(metadata.recover_pending_creates(config.branch_create_recovery_limits)?)
+        };
         let files = metadata.file_descriptors().clone();
         let selector = metadata.selector();
         let project_root_path = Some(files.root().to_path_buf());
         drop(metadata);
         let local_qos_scheduler = LocalQosScheduler::new(config.local_qos_policy);
-        Self {
+        Ok(Self {
             runtime: runtime_cell::BranchRuntimeCell::deferred(
                 runtime_cell::DeferredBranchAdmission {
                     files,
@@ -1328,7 +1348,8 @@ impl Database {
             derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
-        }
+            branch_create_recovery,
+        })
     }
 
     pub fn config(&self) -> &DatabaseConfig {
@@ -19976,31 +19997,13 @@ pub(crate) fn statement_kind(statement: &cypher::Statement) -> &'static str {
         }
         cypher::Statement::GraphAlgorithm(_) => "graph_algorithm",
         cypher::Statement::VectorSearch(_) => "vector_search",
-        cypher::Statement::MatchCreateRelationship(_) => "match_create_relationship",
-        cypher::Statement::MatchDelete(_) => "match_delete",
-        cypher::Statement::MatchExpandMatchMergeRelationship(_) => {
-            "match_expand_match_merge_relationship"
-        }
-        cypher::Statement::MatchExpandMergeRelationship(_) => "match_expand_merge_relationship",
-        cypher::Statement::MatchMergeRelationship(_) => "match_merge_relationship",
-        cypher::Statement::MatchNodesReturn(_) => "match_nodes_return",
-        cypher::Statement::MatchOptionalRelationshipCountSum(_) => {
-            "match_optional_relationship_count_sum"
-        }
-        cypher::Statement::MatchReturn(query) if query.vector_seed.is_some() => {
-            "vector_graph_search"
-        }
-        cypher::Statement::MatchReturn(_) => "match_return",
-        cypher::Statement::MatchSet(_) => "match_set",
-        cypher::Statement::MatchSetReturn(_) => "match_set_return",
-        cypher::Statement::Pipeline(_) => "pipeline",
+        cypher::Statement::Pipeline(query) => statement_shape::pipeline_statement_kind(query),
         cypher::Statement::MergeNode(_) => "merge_node",
         cypher::Statement::MergeRelationship(_) => "merge_relationship",
         cypher::Statement::UnwindMutation(_) => "unwind_mutation",
         cypher::Statement::ProjectGraph(_) => "project_graph",
         cypher::Statement::Rollback => "rollback",
         cypher::Statement::SetSystemVariable(_) => "set_system_variable",
-        cypher::Statement::ShortestPathReturn(_) => "shortest_path_return",
     }
 }
 
@@ -20622,9 +20625,16 @@ pub(super) fn execute_database_transaction_prepared_sql(
         } else {
             None
         };
-        return Ok(sql_query_result(QueryOutput {
-            rows: crate::relational_sql::format_append_explain(&plan, report.as_ref()).into(),
-        }));
+        return observability::admit_append_explain(
+            crate::relational_sql::format_append_explain(&plan, report.as_ref()),
+            &runtime.config,
+            QueryStreamOptions {
+                max_rows: runtime.config.max_read_result_rows,
+                max_payload_bytes: max_read_result_payload_bytes,
+            },
+            options.task_context,
+        )
+        .map(sql_query_result);
     }
     if matches!(
         prepared.statement(),
@@ -22405,9 +22415,15 @@ where
                 None
             };
             query_runtime::query_runtime_checkpoint(Some(task_context))?;
-            return Ok(QueryOutput {
-                rows: crate::relational_sql::format_append_explain(&plan, report.as_ref()).into(),
-            });
+            return observability::admit_append_explain(
+                crate::relational_sql::format_append_explain(&plan, report.as_ref()),
+                &self.config,
+                QueryStreamOptions {
+                    max_rows,
+                    max_payload_bytes,
+                },
+                Some(task_context),
+            );
         }
 
         self.execute_profiled_relational_sql(

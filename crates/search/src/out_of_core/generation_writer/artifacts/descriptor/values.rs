@@ -25,11 +25,11 @@ pub(super) fn visit(
 ) -> Result<()> {
     let task = RuntimeTaskContext::default();
     let memory = BuildMemory::new(&task)?;
-    visit_with_context(document, field, &memory, &task, visitor)
+    visit_with_context(document.header(), field, &memory, &task, visitor)
 }
 
 pub(super) fn visit_with_context(
-    document: &SearchDocument,
+    document: Header<'_>,
     field: &str,
     memory: &BuildMemory,
     task: &RuntimeTaskContext,
@@ -37,7 +37,7 @@ pub(super) fn visit_with_context(
 ) -> Result<()> {
     checkpoint(task)?;
     if field != "labels" && !field.starts_with("metadata.") {
-        if let Some(value) = search_document_field_value(document, field) {
+        if let Some(value) = document.field(field) {
             visitor(value)?;
         }
         return Ok(());

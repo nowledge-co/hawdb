@@ -46,7 +46,7 @@ struct Directory(PathBuf);
 impl Directory {
     fn new() -> Self {
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
+        let path = crate::test_temp_dir().join(format!(
             "hawdb-bounded-manifest-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)

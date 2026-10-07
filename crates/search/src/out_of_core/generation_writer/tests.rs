@@ -24,6 +24,7 @@ use crate::{
 #[cfg(feature = "vector-search")]
 use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod compaction;
@@ -892,7 +893,9 @@ fn bounded_delta_merge_publishes_without_full_document_residency() {
     .unwrap();
     assert_eq!(update.delta_report().after_document_count, 300);
     assert_eq!(update.delta_report().action, "incremental_mutation_publish");
-    assert!(update.source_read_metrics().peak_segment_document_bytes > 0);
+    assert_eq!(update.source_read_metrics().peak_segment_document_bytes, 0);
+    assert_eq!(update.source_read_metrics().streamed_documents, 1);
+    assert!(update.source_read_metrics().streamed_body_bytes > 0);
     let (_, build, _) = update.finish().unwrap();
     assert_eq!(build.resident_document_count, 0);
     assert_eq!(build.generation, old_reader.generation() + 1);
@@ -1343,13 +1346,15 @@ fn stage_directories(root: &Path) -> usize {
 }
 
 pub(super) fn test_dir(name: &str) -> PathBuf {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!(
-        "hawdb_search_{name}_{}_{}",
+    crate::test_temp_dir().join(format!(
+        "hawdb_search_{name}_{}_{}_{}",
         std::process::id(),
-        nanos
+        nanos,
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ))
 }

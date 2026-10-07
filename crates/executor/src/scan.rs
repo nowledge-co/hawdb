@@ -27,8 +27,8 @@ use crate::predicate::{
 };
 use crate::store::{AdjacencyReadMemory, GraphExecutionRead, ScanControl};
 use crate::traversal::{
-    visit_bounded_expand_targets, visit_one_hop_relationships_with_budget, BoundedExpandSpec,
-    OneHopRelationshipSpec,
+    visit_bounded_expand_targets, visit_one_hop_relationships_with_budget,
+    visit_zero_hop_expand_target, BoundedExpandSpec, OneHopRelationshipSpec,
 };
 use crate::{ExecutionLimit, QueryMemoryAccount};
 use hawdb_core::{
@@ -134,6 +134,9 @@ pub fn stream_expand_binding(
     consumer: &mut dyn FnMut(ExpandedBinding) -> Result<ScanControl>,
 ) -> Result<ScanControl> {
     runtime_checkpoint(task_context)?;
+    if has_null_expand_constraint(binding, &spec) {
+        return stream_unmatched_expand_binding(binding, &spec, memory.budget_bytes, consumer);
+    }
     let source = binding.nodes.get(spec.source_variable).ok_or_else(|| {
         HawDBError::Execution(format!(
             "missing variable '{}' during expand",
@@ -141,6 +144,10 @@ pub fn stream_expand_binding(
         ))
     })?;
     let bound_target_id = binding.nodes.get(spec.target_variable).map(|node| node.id);
+    let bound_relationship_id = spec
+        .rel_variable
+        .and_then(|name| binding.relationships.get(name))
+        .map(|relationship| relationship.id);
     let mut matched = false;
     let control = if rel_type_id.is_none()
         || spec.rel_variable.is_some()
@@ -162,7 +169,8 @@ pub fn stream_expand_binding(
             observer,
             &mut |relationship, target| {
                 runtime_checkpoint(task_context)?;
-                if bound_target_id.is_some_and(|node_id| node_id != target.id)
+                if bound_relationship_id.is_some_and(|id| id != relationship.id)
+                    || bound_target_id.is_some_and(|node_id| node_id != target.id)
                     || filters
                         .target_scan_filter
                         .is_some_and(|filter| !node_matches_property_filter(&target, filter))
@@ -207,25 +215,17 @@ pub fn stream_expand_binding(
             memory,
             task_context,
             &mut |target, hop| {
-                if bound_target_id.is_some_and(|node_id| node_id != target.id)
-                    || filters
-                        .target_scan_filter
-                        .is_some_and(|filter| !node_matches_property_filter(&target, filter))
-                {
-                    return Ok(ScanControl::Continue);
-                }
-                let mut nodes = binding.nodes.clone();
-                nodes.insert(spec.target_variable.to_string(), target.clone());
-                let expanded = ExpandedBinding {
-                    binding: Binding {
-                        values: binding.values.clone(),
-                        nodes,
-                        relationships: binding.relationships.clone(),
-                    },
-                    target_id: Some(target.id),
+                let Some(expanded) = expanded_node_binding(
+                    binding,
+                    &spec,
+                    filters,
+                    target,
                     hop,
+                    memory.budget_bytes,
+                )?
+                else {
+                    return Ok(ScanControl::Continue);
                 };
-                ensure_expanded_binding_fits(&expanded, memory.budget_bytes)?;
                 matched = true;
                 consumer(expanded)
             },
@@ -234,22 +234,145 @@ pub fn stream_expand_binding(
     if control == ScanControl::Stop {
         return Ok(ScanControl::Stop);
     }
-    if spec.optional && !matched {
-        let mut nodes = binding.nodes.clone();
-        nodes.insert(spec.target_variable.to_string(), null_lookup_node());
-        let expanded = ExpandedBinding {
-            binding: Binding {
-                values: binding.values.clone(),
-                nodes,
-                relationships: binding.relationships.clone(),
-            },
-            target_id: None,
-            hop: 0,
-        };
-        ensure_expanded_binding_fits(&expanded, memory.budget_bytes)?;
-        return consumer(expanded);
+    if !matched {
+        return stream_unmatched_expand_binding(binding, &spec, memory.budget_bytes, consumer);
     }
     Ok(ScanControl::Continue)
+}
+
+fn has_null_expand_constraint(binding: &Binding, spec: &AdjacencyExpandSpec<'_>) -> bool {
+    [
+        Some(spec.source_variable),
+        Some(spec.target_variable),
+        spec.rel_variable,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|name| binding.values.get(name) == Some(&Value::Null))
+}
+
+fn expanded_node_binding(
+    binding: &Binding,
+    spec: &AdjacencyExpandSpec<'_>,
+    filters: &AdjacencyExpandFilters<'_>,
+    target: NodeRecord,
+    hop: usize,
+    budget_bytes: usize,
+) -> Result<Option<ExpandedBinding>> {
+    if binding
+        .nodes
+        .get(spec.target_variable)
+        .is_some_and(|node| node.id != target.id)
+        || filters
+            .target_scan_filter
+            .is_some_and(|filter| !node_matches_property_filter(&target, filter))
+    {
+        return Ok(None);
+    }
+    let target_id = target.id;
+    let mut next = binding.clone();
+    next.nodes.insert(spec.target_variable.to_string(), target);
+    let expanded = ExpandedBinding {
+        binding: next,
+        target_id: Some(target_id),
+        hop,
+    };
+    ensure_expanded_binding_fits(&expanded, budget_bytes)?;
+    Ok(Some(expanded))
+}
+
+pub(crate) struct ZeroHopExpandContext<'a> {
+    pub(crate) store: &'a dyn GraphExecutionRead,
+    pub(crate) target_label_ids: Option<&'a [LabelId]>,
+    pub(crate) filters: &'a AdjacencyExpandFilters<'a>,
+    pub(crate) memory: AdjacencyReadMemory<'a>,
+    pub(crate) task_context: Option<&'a RuntimeTaskContext>,
+}
+
+pub(crate) fn stream_zero_hop_expand_binding(
+    binding: &Binding,
+    spec: &AdjacencyExpandSpec<'_>,
+    context: ZeroHopExpandContext<'_>,
+    consumer: &mut dyn FnMut(ExpandedBinding) -> Result<ScanControl>,
+) -> Result<ScanControl> {
+    runtime_checkpoint(context.task_context)?;
+    if spec.min_hops != 0 || has_null_expand_constraint(binding, spec) {
+        return stream_unmatched_expand_binding(
+            binding,
+            spec,
+            context.memory.budget_bytes,
+            consumer,
+        );
+    }
+    let source = binding.nodes.get(spec.source_variable).ok_or_else(|| {
+        HawDBError::Execution(format!(
+            "missing variable '{}' during expand",
+            spec.source_variable
+        ))
+    })?;
+    let mut matched = false;
+    let control = visit_zero_hop_expand_target(
+        context.store,
+        source.id,
+        context.target_label_ids,
+        spec.max_hops,
+        context.memory,
+        context.task_context,
+        &mut |target, hop| {
+            let Some(expanded) = expanded_node_binding(
+                binding,
+                spec,
+                context.filters,
+                target,
+                hop,
+                context.memory.budget_bytes,
+            )?
+            else {
+                return Ok(ScanControl::Continue);
+            };
+            matched = true;
+            consumer(expanded)
+        },
+    )?;
+    if control == ScanControl::Stop || matched {
+        return Ok(control);
+    }
+    stream_unmatched_expand_binding(binding, spec, context.memory.budget_bytes, consumer)
+}
+
+/// OPTIONAL extends only new variables; existing node/relationship bindings
+/// remain constraints on the pattern, even when the complete pattern misses.
+pub(crate) fn stream_unmatched_expand_binding(
+    binding: &Binding,
+    spec: &AdjacencyExpandSpec<'_>,
+    budget_bytes: usize,
+    consumer: &mut dyn FnMut(ExpandedBinding) -> Result<ScanControl>,
+) -> Result<ScanControl> {
+    if !spec.optional {
+        return Ok(ScanControl::Continue);
+    }
+    let mut next = binding.clone();
+    for name in std::iter::once(spec.target_variable).chain(spec.rel_variable) {
+        if !next.values.contains_key(name)
+            && !next.nodes.contains_key(name)
+            && !next.relationships.contains_key(name)
+        {
+            set_null_node_binding(&mut next, name);
+        }
+    }
+    let expanded = ExpandedBinding {
+        binding: next,
+        target_id: None,
+        hop: 0,
+    };
+    ensure_expanded_binding_fits(&expanded, budget_bytes)?;
+    consumer(expanded)
+}
+
+fn set_null_node_binding(binding: &mut Binding, variable: &str) {
+    binding.nodes.remove(variable);
+    binding.relationships.remove(variable);
+    binding.values.insert(variable.to_string(), Value::Null);
 }
 
 pub fn adjacency_exists(
@@ -909,14 +1032,15 @@ pub fn execute_node_column_lookup(
             }
             Ok(ScanControl::Continue)
         };
-        context.store.visit_nodes_owned(None, &mut visit)?;
+        if expected != &Value::Null {
+            context.store.visit_nodes_owned(None, &mut visit)?;
+        }
         if context.execution_limit.is_reached(output.len()) {
             return Ok(output);
         }
         if spec.optional && !matched {
             let mut next = binding;
-            next.nodes
-                .insert(spec.variable.to_string(), null_lookup_node());
+            set_null_node_binding(&mut next, spec.variable);
             push_bounded_operator_binding("NodeColumnLookupExec", &mut output, next, &mut tracker)?;
             if context.execution_limit.is_reached(output.len()) {
                 return Ok(output);
@@ -941,7 +1065,9 @@ fn execute_indexed_node_column_lookup(
                 spec.column
             ))
         })?;
-        lookup_values.insert(expected.clone());
+        if expected != &Value::Null {
+            lookup_values.insert(expected.clone());
+        }
     }
 
     let mut unique_candidate_ids = BTreeSet::new();
@@ -966,12 +1092,14 @@ fn execute_indexed_node_column_lookup(
                 ScanControl::Continue
             })
         };
-        context.store.visit_nodes_by_property_owned(
-            label_id,
-            spec.property,
-            std::slice::from_ref(&expected),
-            &mut visit,
-        )?;
+        if expected != Value::Null {
+            context.store.visit_nodes_by_property_owned(
+                label_id,
+                spec.property,
+                std::slice::from_ref(&expected),
+                &mut visit,
+            )?;
+        }
         if context.execution_limit.is_reached(output.len()) {
             record_node_column_lookup_report(
                 label_id,
@@ -986,8 +1114,7 @@ fn execute_indexed_node_column_lookup(
         }
         if spec.optional && !matched {
             let mut next = binding;
-            next.nodes
-                .insert(spec.variable.to_string(), null_lookup_node());
+            set_null_node_binding(&mut next, spec.variable);
             push_bounded_operator_binding("NodeColumnLookupExec", &mut output, next, &mut tracker)?;
             if context.execution_limit.is_reached(output.len()) {
                 record_node_column_lookup_report(
@@ -1056,6 +1183,9 @@ pub fn single_node_binding(variable: &str, node: NodeRecord) -> Binding {
     node_binding(variable, node)
 }
 
+/// Legacy placeholder constructor retained for source compatibility.
+/// It does not encode NULL identity. Nullable graph bindings use `Value::Null`
+/// in `Binding::values` and omit the node/relationship record.
 pub fn null_lookup_node() -> NodeRecord {
     NodeRecord {
         id: NodeId(0),

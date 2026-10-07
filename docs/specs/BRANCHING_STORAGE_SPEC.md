@@ -618,43 +618,77 @@ and rechecked before child file publication; it is not compared for equality to
 the parent's creation epoch. Admitted callers must seal their exact current
 revision before invoking the child-publication kernel.
 
-Catalog-backed GC holds metadata serialization through its sweep and reports
-`deferred_for_active_leases` whenever a runtime or snapshot owner may have
-unpublished candidates or older reader generations. This conservative policy
-retains the entire supplied object inventory and skips deleted-directory cleanup
-while any branch lease is active, including an otherwise idle open branch.
-A long-lived host can therefore defer reclamation indefinitely; this is an
-unresolved storage-growth limitation, not a bounded publication pause. The typed
-report exposes each deferred attempt, but there is no built-in duration counter,
-maintenance scheduler, or alert threshold. Repeatedly retrying GC does not resolve
-the limitation while the lease remains held.
+Catalog-backed GC holds metadata serialization through inventory, mark and
+sweep. `Database::reclaim_branch_storage` and the equivalent concurrent facade
+method provide a typed maintenance entry point for an admitted writer. The
+collector may exclude that writer's own OS lease only while an exclusive Rust
+borrow and a unique ownership `Arc` prove that no snapshot or prepared handoff
+shares it. It validates the selected head against both the catalog UUID/project
+and the writer's exact head before inventorying objects. A prepared immutable
+handoff retains an ownership clone until publication or abandonment.
+Pending, running, or failed host jobs return a typed `BranchBusy` error before
+maintenance starts. Their historical dependencies do not yet have independent
+root registrations; completion releases this conservative gate without changing
+the recorded job outcome.
 
-Concurrent reclamation is explicitly deferred to [#778](https://github.com/nowledge-co/hawdb/issues/778).
-The current snapshot clones the branch-level ownership lease; it does not register
-an independently enumerable historical sealed root with the project collector.
-The collector probes OS-visible ownership from catalog paths, so a process-local
-`has_uncommitted_candidate` flag cannot describe foreign publishers or readers.
-An inventory flag alone also cannot exclude a publisher starting between mark
-and sweep. Before narrowing this conservative guard, #778 must establish:
+An idle internal concurrent read publication is retired under writer/publication
+lock ordering before collection. Borrowed queries, explicit read transactions,
+checkpoint sources and transaction workspaces retain their original pins. Any
+remaining shared pin or unrelated branch lease, including a foreign process,
+returns `deferred_for_active_leases` without sweeping. Thus a long-lived idle
+main writer can reclaim storage; a perpetually active unrelated owner still
+requires a quiescent interval. This does not implement independent historical
+root registration or concurrent sweeping through foreign active publishers.
 
-- Candidate protection acquired before the first immutable-object publication
-  and held until durable head publication or conservative failed-attempt recovery,
-  synchronized with the collector across processes.
-- Exact historical-root retention for readers and jobs, including snapshots that
-  outlive their source runtime, with root discovery synchronized with sweep.
-- Revalidation at destructive boundaries and fail-closed handling of incomplete
-  ownership or root evidence; elapsed deferral time never authorizes deletion.
-- Regression evidence that an idle open branch permits unrelated orphan cleanup
-  while unpublished candidates, old snapshots, durable unleased branches, and
-  parent/sibling closures survive concurrent and interrupted maintenance.
+The inventory recognizes current immutable object versions and publisher staging
+names. Object-count and cumulative-byte limits cover both final objects and
+staging files; an incomplete, corrupt, unknown or over-budget inventory fails
+before deletion. Every durable non-deleted branch retains both its selected head and its
+creation baseline, even after head advancement and without an open handle. All
+candidate contents and reachable closures are validated before sweeping. Idle
+immutable cache descriptors are retired before unlink; an active cached read
+rejects collection. Project file-descriptor admission covers scan and cleanup.
 
-The existing `catalog_sweep_defers_for_publication_candidates_and_reader_leases`
-regression proves conservative candidate and old-snapshot retention, followed by
-reclamation after every lease is released. It does not prove progress while an
-unrelated branch remains open. Project FD accounting (#819), session integration
-(#775/#780), and deterministic power-loss qualification (#820) also remain open.
-Reopen and publication-failure tests are source-level recovery evidence, not a
-complete power-loss qualification or a Rust-to-TLA refinement proof.
+A leased `Creating/Pending` child need not have published its first head yet.
+Collection skips that owner's head and defers without sweeping; an absent head
+is not an integrity failure while creation is active. Unleased records still
+require complete, valid metadata before collection can proceed.
+
+A corrupt unleased pending head or immutable dependency blocks project-wide
+reclamation, even if other branches remain usable. Recovery retains that receipt
+and its evidence, while ordinary deletion rejects `Creating` records; there is
+currently no operator abandonment or quarantine transition. Repeated writable
+opens or explicit recovery retries revisit the receipt within the configured
+aggregate recovery budget. Hosts can identify its UUID through the existing
+`BranchCreateRecoveryReport`, but reclamation errors do not yet have a distinct
+pending-create blocker variant. The regression preserves the damaged head,
+catalog and otherwise collectible orphan across repeated recovery/GC attempts.
+[#778](https://github.com/nowledge-co/hawdb/issues/778) tracks typed blocker
+reporting and an explicitly authorized, revision-checked abandonment/quarantine
+protocol. Until that work is qualified, callers must retain the evidence rather
+than deleting or manually editing the pending receipt to resume GC.
+
+Deleted UUID directories move to `.reclaim-<uuid>` before recursive cleanup.
+Unix retains the original OS lease across that move. Windows refuses directory
+renames with open descendant handles: the collector closes its own handle for
+the atomic rename, then reacquires ownership at the retired path. A racing
+opener makes retirement fail while retaining the original directory. Catalog
+serialization remains held throughout both paths.
+The parent namespace is synchronized before deleting the
+retired contents, so delayed openers cannot acquire a replacement lock at the
+old UUID path. An interrupted retirement or cleanup is retried using the durable
+`Deleted` tombstone; live branches and catalog receipts are never removed.
+The typed report records reclaimed objects/bytes, directory and staging counts,
+conservative deferral, and metadata-lock duration. Hosts schedule maintenance;
+there is no TTL, automatic expiry, background thread or implicit startup sweep.
+
+The live-writer regressions cover reader and candidate deferral, bounded scans,
+corrupt inventory, an unrelated writer, and reopening parent/sibling/descendant
+state after deletion and collection. The native power-loss matrix invokes the
+production facade maintenance entry point with main still open. These tests
+remain bounded implementation evidence, not physical-device certification.
+Finer independent-job/historical-root registration and concurrent collection
+without quiescent ownership remain tracked by [#778](https://github.com/nowledge-co/hawdb/issues/778).
 
 ## On-disk compatibility and immutable objects
 
@@ -1140,6 +1174,20 @@ metrics are admission counts, not an exact process-wide native-handle census.
 This is a source-level conservation argument, not a machine-checked proof of
 the complete runtime.
 
+The subprocess-isolated `immutable_logical_files_do_not_retain_a_native_descriptor_per_alias`
+regression samples native descriptors on Unix and process executive handles via
+`GetProcessHandleCount` on Windows. It compares 128 logical aliases with one
+physical cache handle, then eviction, cold reopen and complete owner release.
+The Windows-only `windows_sharing_violation_returns_quota_and_native_handles_for_retry`
+regression holds one host-owned file with sharing disabled. Repeated admitted
+read/create attempts must return the native sharing error, preserve the file,
+return quota and leak no handle; releasing the host handle permits a complete
+read and returns the process count to baseline. These are bounded fixture
+measurements, not an ownership census of arbitrary host/native-library handles.
+Native Windows execution is required in addition to cross-target Clippy.
+Cross-project alias-probe isolation and additional namespace schedules remain
+tracked by [#819](https://github.com/nowledge-co/hawdb/issues/819).
+
 `USE BRANCH` retains a target reservation through recovery and facade validation.
 The current reservation covers three lock/WAL handles, the bounded shared read
 worker limit, and four catalog/publication temporaries. Nested admission borrows
@@ -1287,7 +1335,7 @@ selected head/WAL and candidate evidence. Generation reclamation follows a
 successful head handoff.
 
 Facade retries dispatch a matching pending receipt directly to
-`recover_create_from_head_file`. This recovery owns the child's UUID lease and
+the bounded `branch_create_recovery::recover_create_from_head_file`. This recovery owns the child's UUID lease and
 derives its WAL path from the child's head; it never resolves or seals the
 parent again. Parent advancement, deletion, directory loss, or human-name reuse
 cannot change the original reserved child's identity or captured revision.
@@ -1295,8 +1343,28 @@ Fingerprint conflicts reject before recovery, and SQL result admission uses the
 prospective completion revision before changing the catalog.
 An active creator already holds this lease before publishing `Creating`, so a
 retry cannot abort the creator between reservation and file publication.
-The ordinary opener does not yet scan pending receipts automatically; explicit
-recovery and matching request retries remain the implemented recovery entries.
+Writable ordinary opens also scan pending receipts through the same validator,
+without admitting main or consulting a parent's current runtime. Default
+`BranchCreateRecoveryLimits` admit 64 receipts, 10,000 dependency read passes,
+and 256 MiB of aggregate dependency bytes. Repeated reads consume the budget
+again; bounded catalog decoding retains its separate 16 MiB ceiling. Hosts can
+set these positive limits in `DatabaseConfig` and explicitly retry through
+`Database::recover_pending_branch_creates` with larger finite bounds.
+`ConcurrentDatabase` exposes the same retry and report through its writer
+coordinator without admitting main or retiring existing read publications.
+
+Recovery validates the exact head/WAL identity, sealed-root epoch/replay bounds,
+and every immutable closure object's length and content identity. It streams
+large objects, synchronizes the complete closure and head/WAL pair, then
+publishes `Ready`. A known missing head or private WAL publishes the same
+receipt's terminal abort. Busy leases, corrupt/ambiguous dependencies, I/O
+errors and exhausted budgets retain the pending receipt and its evidence.
+The typed `branch_create_recovery_report` distinguishes completed, aborted,
+busy, retained and unattempted receipts; incomplete recovery never makes a
+child ready or prevents metadata inspection and independent healthy-branch
+admission. Read-only opens skip repair and explicit recovery rejects writes.
+Catalog serialization rechecks pending state before creating a lease directory,
+so a stale recovery cannot recreate a reclaimed terminal branch.
 
 An unchanged checkpoint is identified by its exact durable-manifest reference
 and recovery boundary. Seal reuses the validated root's checkpoint references
@@ -1467,6 +1535,15 @@ reachable object remains fatal. The returned typed report counts retained
 inventory entries and reclaimed objects/bytes. Branch leases, pending catalog
 records, and directory cleanup still belong to the caller and must be included
 in the inventory/root snapshot before invoking this primitive.
+
+Object authentication uses a fixed 64 KiB streaming buffer for candidates and
+non-root dependencies. Sealed roots still use their bounded decoder to enumerate
+the closure. Inventory and publishers share the per-kind identity format version;
+verification does not synchronize objects or require write access. Recovery adds
+the required durability barriers and requests write access only on Windows, where
+`FlushFileBuffers` requires it. The metadata lease still covers the complete
+bounded inventory/mark/sweep, including digest I/O; streaming limits temporary
+payload memory but does not remove that serialization cost.
 
 ## Model and implementation qualification
 

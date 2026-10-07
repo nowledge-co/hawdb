@@ -240,18 +240,6 @@ impl PlannedReturns {
     }
 }
 
-pub(super) fn planned_sort_scope<'a>(
-    input: &LogicalPlan,
-    scope: &'a BTreeSet<String>,
-) -> &'a BTreeSet<String> {
-    if matches!(input, LogicalPlan::Aggregate { .. }) {
-        static EMPTY: std::sync::OnceLock<BTreeSet<String>> = std::sync::OnceLock::new();
-        EMPTY.get_or_init(BTreeSet::new)
-    } else {
-        scope
-    }
-}
-
 pub(super) fn plan_set_node_properties_return_mode(
     updated_variable: &str,
     returns: &[ReturnItem],
@@ -291,14 +279,6 @@ pub(super) fn plan_set_node_properties_return_mode(
         .map(|item| plan_projection(&scope, item, parameters))
         .collect::<Result<Vec<_>>>()?;
     Ok(SetNodePropertiesReturnMode::Project(projections))
-}
-
-pub(super) fn plan_return_items(
-    scope: &BTreeSet<String>,
-    items: &[ReturnItem],
-    parameters: &BTreeMap<String, Value>,
-) -> Result<PlannedReturns> {
-    plan_return_items_with_columns(scope, &BTreeSet::new(), items, parameters)
 }
 
 pub(super) fn plan_return_items_with_columns(
@@ -355,29 +335,6 @@ pub(super) fn plan_return_items_with_columns(
             .collect::<Result<Vec<_>>>()
             .map(PlannedReturns::Projections)
     }
-}
-
-pub(super) fn returns_are_count_only(items: &[ReturnItem]) -> bool {
-    !items.is_empty()
-        && items.iter().all(|item| {
-            matches!(
-                item.expression,
-                AstNode {
-                    kind: ReturnExpressionKind::Aggregate(AggregateExpression::CountAll),
-                    ..
-                } | AstNode {
-                    kind: ReturnExpressionKind::Aggregate(
-                        AggregateExpression::CountVariable { .. }
-                    ),
-                    ..
-                } | AstNode {
-                    kind: ReturnExpressionKind::Aggregate(
-                        AggregateExpression::CountProperty { .. }
-                    ),
-                    ..
-                }
-            )
-        })
 }
 
 pub(super) fn plan_projection(

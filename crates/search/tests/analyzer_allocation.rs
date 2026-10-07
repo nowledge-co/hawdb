@@ -25,11 +25,13 @@ use std::collections::BTreeMap;
 
 #[test]
 fn rejected_identifier_stops_before_collecting_all_parts_and_tokens() {
+    let temp_dir =
+        std::env::var_os("TEST_TMPDIR").map_or_else(std::env::temp_dir, std::path::PathBuf::from);
     let mut measurements = Vec::new();
     for repeats in [1024, 16384] {
         let source = "alphaBeta".repeat(repeats);
         let source_bytes = source.len();
-        let root = std::env::temp_dir().join(format!(
+        let root = temp_dir.join(format!(
             "hawdb-identifier-allocation-{}-{repeats}",
             std::process::id(),
         ));

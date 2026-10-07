@@ -14,6 +14,8 @@
 
 use super::*;
 
+mod strict_append;
+
 fn fixture() -> Database {
     let mut database = Database::new();
     database
