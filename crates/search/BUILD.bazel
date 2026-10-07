@@ -323,6 +323,8 @@ rust_test(
 
 rust_test(
     name = "hawdb_search_lexical_spill_fuzz_tests",
+    # The complete local campaign exceeded the inherited 300-second deadline.
+    timeout = "long",
     args = [
         "lexical_projection::spill_tests::fuzz::lexical_spill_admission_differential_campaign",
         "--exact",
