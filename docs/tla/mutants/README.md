@@ -18,6 +18,12 @@ The negative controls prove that the bounded models exercise these failures:
 - releasing a child reservation while a lease still owns its capacity;
 - invoking a public request consumer before complete result validation.
 
+The automatic-checkpoint controls also reject selection of a synchronized
+prefix after foreground writes advanced beyond it. That prefix must resume
+replay on the same pinned base before entering the selection gate. The
+`SelectedContainsCapturedPrefix` invariant reports the stale-selection control;
+the ordinary positive model additionally checks `CandidateBaseStaysPinned`.
+
 The per-key MVCC controls additionally reject skipped validation, either missing
 broad-barrier direction, premature history cleanup, ignored retained source
 snapshots, index reset with live transactions, unsafe current-epoch compaction,

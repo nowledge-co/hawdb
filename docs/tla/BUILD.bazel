@@ -78,6 +78,7 @@ _AUTOMATIC_CHECKPOINT_CONTROLS = [
     "ReclaimPinned",
     "RelaxedLossWitness",
     "SelectBeforeSync",
+    "SelectStalePrefix",
     "SplitTransaction",
 ]
 

@@ -410,6 +410,34 @@ impl Owner {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+        let owned = {
+            let mut state = self
+                .control
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let selected = state.selected.take();
+            if selected.is_some() {
+                // Disk authority has moved, but the old frontend has not
+                // adopted it. Discarding this handoff must fail closed.
+                self.control.failed.store(true, Ordering::Release);
+            }
+            let owned = (
+                state.latest.take(),
+                selected,
+                state.retired.take(),
+                state.task.take(),
+            );
+            state.phase = Phase::Idle;
+            state.report.preparing = false;
+            state.report.waiting_for_handoff = false;
+            self.control.changed.notify_all();
+            owned
+        };
+        // Joining the worker is insufficient when observers retain Control.
+        // Release COW snapshots, open locks and builders outside the gate;
+        // Selected/Retired retain admission until their storage is destroyed.
+        drop(owned);
     }
 }
 
@@ -974,6 +1002,112 @@ mod tests {
                 Some(&crate::Value::Int(id as i64 + 1))
             );
         }
+    }
+
+    #[test]
+    fn shutdown_releases_selected_checkpoint_before_control_drop() {
+        assert_shutdown_releases_owned_sources(true);
+    }
+
+    #[test]
+    fn shutdown_releases_parked_source_before_control_drop() {
+        assert_shutdown_releases_owned_sources(false);
+    }
+
+    fn assert_shutdown_releases_owned_sources(select: bool) {
+        let fixture = Fixture::new();
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&fixture.0, &mut catalog).unwrap();
+        store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                std::collections::BTreeMap::from([("id".into(), crate::Value::Int(41))]),
+            )
+            .unwrap();
+        let control = Arc::new(Control::default());
+        let governor = governor(if select { 512 * 1024 * 1024 } else { 1 });
+        let config = DatabaseConfig {
+            automatic_checkpoint_max_age: Duration::from_millis(20),
+            ..DatabaseConfig::default()
+        };
+        let mut owner = Owner::start(
+            Arc::clone(&control),
+            &store,
+            &catalog,
+            Arc::new(Mutex::new(ReaderPins::default())),
+            &config,
+            LocalQosScheduler::new(hawdb_qos::LocalQosPolicy::default()),
+            Some(governor.clone()),
+        )
+        .unwrap()
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let state = control.lock().unwrap();
+            if if select {
+                state.selected.is_some()
+            } else {
+                state.report.deferred_attempts > 0
+            } {
+                if select {
+                    assert_eq!(state.report.completed_checkpoints, 1);
+                    assert!(governor.snapshot().admitted_memory_bytes > 0);
+                } else {
+                    assert!(state.latest.is_some());
+                }
+                break;
+            }
+            drop(state);
+            assert!(
+                Instant::now() < deadline,
+                "owner did not reach the shutdown boundary"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        owner.stop();
+        assert_eq!(governor.snapshot().active_background_tasks, 0);
+        assert_eq!(governor.snapshot().active_background_io_slots, 0);
+        assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+        let state = control.lock().unwrap();
+        assert!(state.latest.is_none());
+        assert!(state.selected.is_none());
+        assert!(state.retired.is_none());
+        assert!(state.task.is_none());
+        drop(state);
+        if select {
+            // The discarded handoff already selected disk authority. An old
+            // frontend must never be allowed to append to its previous WAL.
+            assert!(control.ensure_healthy().is_err());
+        }
+        drop(store);
+        // Keeping the observer/control alive must not retain the open lock or
+        // require writable recovery before a read-only open can see the data.
+        let readonly = GraphStore::open_read_only_with_durability(
+            &fixture.0,
+            &mut catalog,
+            crate::DurabilityPolicy::default(),
+            hawdb_storage::config::RecoveryMode::Strict,
+        )
+        .unwrap();
+        assert_eq!(readonly.commit_epoch(), 1);
+        assert_eq!(readonly.node_count_for_label(None), 1);
+        assert_eq!(
+            readonly
+                .node_owned(hawdb_storage::NodeId(0))
+                .unwrap()
+                .unwrap()
+                .properties
+                .get("id"),
+            Some(&crate::Value::Int(41))
+        );
+        drop(readonly);
+        let recovered = GraphStore::open(&fixture.0, &mut catalog).unwrap();
+        assert_eq!(recovered.commit_epoch(), 1);
+        assert_eq!(recovered.node_count_for_label(None), 1);
+        drop(recovered);
+        drop(owner);
+        drop(control);
     }
 
     #[test]

@@ -11,17 +11,20 @@ EXTENDS Integers, Naturals, FiniteSets
 (* An uncertain selector fails closed without deleting either generation.  *)
 (* This abstracts checksums/atomic rename and does not prove Rust refinement*)
 (* or scheduler liveness, resource bounds, or a particular storage platform. *)
+(* A sealed prefix remains private while foreground writes advance.        *)
+(* Rechecking the complete writer identity either retries on the same base *)
+(* or enters the bounded selection gate; sealing itself does not freeze it.*)
 (***************************************************************************)
 
 CONSTANTS MaxCommit, DurabilityModes,
           SelectBeforeSync, DropSuffix, SplitTransaction, ReclaimPinned,
-          LeakLease
+          LeakLease, SelectStalePrefix
 
 ASSUME /\ MaxCommit \in Nat \ {0}
        /\ DurabilityModes \subseteq {"SyncOnEveryWrite", "SyncOnCheckpoint"}
        /\ DurabilityModes # {}
        /\ {SelectBeforeSync, DropSuffix, SplitTransaction,
-             ReclaimPinned, LeakLease} \subseteq BOOLEAN
+             ReclaimPinned, LeakLease, SelectStalePrefix} \subseteq BOOLEAN
 
 Generations == {0, 1}
 Epochs == 0..MaxCommit
@@ -129,17 +132,32 @@ ReplayOne ==
 SyncCandidate ==
     /\ live.mode = "running"
     /\ job.phase = "replaying"
-    /\ live.pending = 0
-    /\ job.end = live.epoch
+    /\ job.end <= live.epoch
     /\ disk' = [disk EXCEPT !.artifacts[1] = os.artifacts[1],
                             !.wals[1] = os.wals[1]]
-    /\ job' = [job EXCEPT !.phase = "ready"]
+    /\ job' = [job EXCEPT !.phase = "sealed"]
     /\ UNCHANGED <<live, os, observed, pin, lease>>
+
+ResumeReplay ==
+    /\ live.mode = "running"
+    /\ job.phase = "sealed"
+    /\ live.pending = 0
+    /\ job.end < live.epoch
+    /\ job' = [job EXCEPT !.phase = "replaying"]
+    /\ UNCHANGED <<live, disk, os, observed, pin, lease>>
+
+FreezeCompleteIdentity ==
+    /\ live.mode = "running"
+    /\ job.phase = "sealed"
+    /\ live.pending = 0
+    /\ (SelectStalePrefix \/ job.end = live.epoch)
+    /\ job' = [job EXCEPT !.phase = "ready"]
+    /\ UNCHANGED <<live, disk, os, observed, pin, lease>>
 
 BeginSelection ==
     /\ live.mode = "running"
     /\ live.pending = 0
-    /\ job.end = live.epoch
+    /\ (SelectStalePrefix \/ job.end = live.epoch)
     /\ (job.phase = "ready"
           \/ (SelectBeforeSync /\ job.phase = "replaying"))
     /\ job' = [job EXCEPT !.phase = "selecting", !.selection = live.epoch]
@@ -194,7 +212,7 @@ ReclaimOld ==
 
 Cancel ==
     /\ live.mode = "running"
-    /\ job.phase \in {"building", "replaying", "ready"}
+    /\ job.phase \in {"building", "replaying", "sealed", "ready"}
     /\ job' = [job EXCEPT !.phase = "cancelling"]
     /\ UNCHANGED <<live, disk, os, observed, pin, lease>>
 
@@ -241,6 +259,7 @@ Reopen ==
 
 Next == BeginWrite \/ (\E reply \in BOOLEAN : FinishWrite(reply))
         \/ Capture \/ BuildBase \/ ReplayOne \/ SyncCandidate
+        \/ ResumeReplay \/ FreezeCompleteIdentity
         \/ BeginSelection \/ (\E reply \in BOOLEAN : PersistSelector(reply))
         \/ Adopt \/ Retire \/ PinReader \/ ReleaseReader \/ ReclaimOld
         \/ Cancel \/ CleanupPrivate \/ PowerLoss \/ Reopen
@@ -257,7 +276,7 @@ TypeOK ==
                   present : SUBSET Generations]
     /\ os \in [wals : [Generations -> SUBSET Fragments],
                 artifacts : [Generations -> SUBSET Artifacts]]
-    /\ job \in [phase : {"idle", "building", "replaying", "ready",
+    /\ job \in [phase : {"idle", "building", "replaying", "sealed", "ready",
                          "selecting", "selected", "retiring", "done",
                          "cancelling", "cancelled", "crashed"},
                  base : Epochs, end : Epochs, selection : Epochs]
@@ -267,6 +286,9 @@ TypeOK ==
 
 SelectorReferencesSynchronizedClosure ==
     disk.status = "complete" => HasClosure(disk.head)
+
+CandidateBaseStaysPinned ==
+    1 \in disk.present => disk.base[1] = job.base
 
 SelectedContainsCapturedPrefix ==
     disk.head = 1 /\ disk.status = "complete" =>
@@ -293,7 +315,7 @@ PinnedGenerationIsRetained ==
 CancelledReleasesLease == job.phase = "cancelled" => ~lease
 CandidateOwnsLease ==
     live.mode = "running" /\
-        job.phase \in {"building", "replaying", "ready", "selecting",
+        job.phase \in {"building", "replaying", "sealed", "ready", "selecting",
                        "selected", "retiring", "cancelling"} => lease
 CancelledPreservesSelector ==
     job.phase \in {"cancelling", "cancelled"} => disk.head = 0

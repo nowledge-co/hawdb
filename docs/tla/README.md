@@ -118,7 +118,12 @@ two complete schema/data transactions and both durability policies. The base
 image is an independently defined transaction prefix. Foreground writes may
 advance after base capture; replay copies each later transaction into a private
 WAL before the checkpoint/catalog closure and suffix are synchronized and the
-selector is published. Frontend adoption precedes reclamation, and pinned
+prefix is sealed. Foreground writes remain enabled while that prefix is sealed.
+`ResumeReplay` extends the same pinned base if the writer advanced;
+`FreezeCompleteIdentity` enters the selection gate only when the complete
+sealed prefix matches the current writer and no transaction is pending.
+`CandidateBaseStaysPinned` checks that resealing never replaces the base.
+Frontend adoption precedes reclamation, and pinned
 readers retain their generation. Cancellation retains its lease until private
 artifact cleanup completes.
 
@@ -132,20 +137,30 @@ silently truncating acknowledged data. The model assumes correctly validated
 artifact identities and completed file/directory synchronization; it does not
 establish those filesystem/platform assumptions or refinement by the Rust code.
 
-The full configured safety graph and seven controls run through:
+The full configured safety graph and eight controls run through:
 
 ```bash
 bazel test //docs/tla:HawDBAutomaticCheckpoint_check \
   //docs/tla:automatic_checkpoint_controls --jobs=1 --test_output=errors
 ```
 
-Five controls omit a suffix transaction, select before synchronization, split
-a transaction, reclaim a pinned generation, or leak a cancelled job's lease.
+Six controls omit a suffix transaction, select before synchronization, select
+a synchronized but stale prefix, split a transaction, reclaim a pinned
+generation, or leak a cancelled job's lease.
 Two witness controls demonstrate permitted loss of relaxed acknowledged writes
 and recovery of synchronous commits whose response was lost. Each must produce
 its named invariant counterexample. These controls are also registered in the
 standalone mutant manifest. This bounded safety model does not prove scheduler
 liveness, build/publication time bounds, allocation accounting or p99 behavior.
+
+The Rust owner mirrors the new sealed-prefix transitions by calling
+`CheckpointCandidate::{catch_up_with_task_context,finish_catch_up}` outside the
+publication gate, retaining the same source digest and row/index builders,
+then comparing the captured and sealed `CheckpointSourceIdentity` values.
+Its publication gate prevents another writer until selector publication and
+handoff. The focused multi-prefix and real group-flush tests exercise this
+correspondence; this action mapping is not a completed Rust refinement proof
+or evidence that a filesystem meets the modeled synchronization assumptions.
 
 `HawDBStorageDurability.tla` models the default `SyncOnEveryWrite` path. A WAL
 batch becomes a durable commit decision at the WAL sync boundary. Applying that

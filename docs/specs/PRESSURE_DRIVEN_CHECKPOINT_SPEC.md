@@ -222,6 +222,21 @@ in-flight WAL sync groups and joins at handle closure. Focused native Cargo
 tests exercise idle facade/concurrent/Tokio progress, old reader retention,
 manual checkpoint coordination and governor denial/restoration.
 
+Shutdown now takes parked sources, unadopted selected checkpoints, retired
+state and task ownership after joining the worker. It releases them outside
+the publication mutex, with selected/retired admission retained until storage
+and builder destruction completes. Retaining a report/control observer cannot
+keep those sources, open locks or admitted background resources alive. If disk
+authority was selected but never adopted, discarding that handoff fails the
+old frontend closed; immutable recovery evidence remains on disk.
+Two actual-owner regressions keep the control alive across stop, check all
+background task/I/O/memory reservations are released, and directly open
+read-only before writable recovery with the complete committed property.
+Both unchanged regressions fail against the former join-only implementation:
+the selected case retains a background task and the denied case retains its
+parked source. These cuts do not establish the full shutdown/fault matrix or
+complete retained-resource accounting.
+
 Explicit branch reclamation suspends the owner and releases its parked internal
 source after preparation/retirement is idle. The source's branch/snapshot leases
 must not permanently defer reclamation once external candidates and readers
