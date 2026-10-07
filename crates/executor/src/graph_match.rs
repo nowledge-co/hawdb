@@ -287,6 +287,16 @@ impl MatchRuntime<'_> {
                 max_hops,
                 target,
             } => {
+                let bounded = *min_hops != 1 || *max_hops != 1;
+                // Missing types must not bypass the same shape checks as known types.
+                if bounded
+                    && (relationship.is_some()
+                        || !properties.is_empty()
+                        || *direction != hawdb_core::RelationshipDirection::Outgoing
+                        || rel_type.is_empty())
+                {
+                    return Err(HawDBError::Execution("bounded MATCH expansion requires an outgoing typed pattern without relationship bindings".to_string()));
+                }
                 let Some(source_node) = row.nodes.get(source) else {
                     if row.values.get(source) == Some(&Value::Null) {
                         return Ok(ScanControl::Continue);
@@ -299,11 +309,7 @@ impl MatchRuntime<'_> {
                     None
                 } else {
                     let Some(id) = self.context.catalog.rel_type_id(rel_type) else {
-                        if *min_hops == 0
-                            && relationship.is_none()
-                            && properties.is_empty()
-                            && *direction == hawdb_core::RelationshipDirection::Outgoing
-                        {
+                        if *min_hops == 0 {
                             let labels = label_ids_for_pattern(self.context.catalog, &target.label);
                             return visit_zero_hop_expand_target(
                                 self.store,
@@ -322,14 +328,7 @@ impl MatchRuntime<'_> {
                     Some(id)
                 };
                 let labels = label_ids_for_pattern(self.context.catalog, &target.label);
-                if *min_hops != 1 || *max_hops != 1 {
-                    if relationship.is_some()
-                        || !properties.is_empty()
-                        || *direction != hawdb_core::RelationshipDirection::Outgoing
-                        || rel_type_id.is_none()
-                    {
-                        return Err(HawDBError::Execution("bounded MATCH expansion requires an outgoing typed pattern without relationship bindings".to_string()));
-                    }
+                if bounded {
                     return visit_bounded_expand_targets(
                         self.store,
                         BoundedExpandSpec {
