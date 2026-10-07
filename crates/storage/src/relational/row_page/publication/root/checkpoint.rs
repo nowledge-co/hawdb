@@ -132,3 +132,6 @@ pub(in crate::relational::row_page::publication) use reader::{
     read_descriptor, validate_descriptor,
 };
 mod reader;
+
+mod schema;
+pub(in crate::relational::row_page::publication) use schema::{clone_schema, same_schema};

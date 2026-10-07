@@ -92,43 +92,70 @@ fn publish(
     mode: usize,
     work: Option<&CheckpointWorkContext>,
 ) -> Result<RelationalRowPagePublicationReport, RelationalRowPagePublicationError> {
+    publish_at(directory, base, mode, 2, work)
+}
+
+fn publish_at(
+    directory: &std::path::Path,
+    base: &RelationalRowPageRootReader,
+    mode: usize,
+    generation: u64,
+    work: Option<&CheckpointWorkContext>,
+) -> Result<RelationalRowPagePublicationReport, RelationalRowPagePublicationError> {
+    let mut deltas = deltas();
+    for delta in &mut deltas {
+        for page in &mut delta.dirty_pages {
+            page.generation = generation;
+        }
+    }
     let mut publisher = RelationalRowPagePublisher::new(config());
     if let Some(work) = work {
         publisher = publisher.with_work_context(work);
     }
     let request = RelationalRowPageGenerationRequest {
         directory,
-        generation: 2,
+        generation,
         source_commit_epoch: 11,
         base: Some(base),
-        expected_previous_generation: Some(1),
+        expected_previous_generation: Some(base.manifest().generation),
         overflow_root: None,
     };
     match mode {
-        0 => publisher.persist_generation(request, deltas()),
+        0 => publisher.persist_generation(request, deltas),
         1 => publisher.persist_generation_compacting(
             request,
-            deltas(),
+            deltas,
             RelationalRowPageRewriteConfig {
                 max_live_ratio_percent: 100,
                 ..RelationalRowPageRewriteConfig::default()
             },
             &hawdb_core::RuntimeTaskContext::default(),
         ),
-        2 => publisher.publish(directory, 2, 11, Some(1), deltas()),
+        2 => publisher.publish(
+            directory,
+            generation,
+            11,
+            Some(base.manifest().generation),
+            deltas,
+        ),
         _ => unreachable!(),
     }
 }
 
 fn verify(directory: &std::path::Path, mode: usize) {
-    let reader = RelationalRowPageRootReader::open_generation(directory, 2, config()).unwrap();
+    verify_at(directory, mode, 2)
+}
+
+fn verify_at(directory: &std::path::Path, mode: usize, generation: u64) {
+    let reader =
+        RelationalRowPageRootReader::open_generation(directory, generation, config()).unwrap();
     reader.scrub_physical_pages().unwrap();
     assert_eq!(reader.manifest().root_page_count, 2);
     let descriptors = collect_descriptors(&reader, "documents");
     assert_eq!(page_id_values(&descriptors), vec![1, 2]);
     assert_eq!(
         physical_generations(&descriptors),
-        vec![2, if mode == 1 { 2 } else { 1 }]
+        vec![generation, if mode == 1 { generation } else { 1 }]
     );
     let expected = deltas()
         .remove(0)
@@ -185,7 +212,7 @@ fn checkpoint_units_row_page_publisher_preserves_complete_artifacts_in_every_mod
 }
 
 #[test]
-fn checkpoint_units_row_page_publisher_cancel_every_actual_cpu_and_io_unit_retries_without_selection(
+fn checkpoint_units_row_page_publisher_cancel_every_actual_cpu_and_io_unit_retains_publication_and_retries(
 ) {
     for mode in 0..3 {
         let baseline_directory = unique_test_dir("page-unit-count");
@@ -202,6 +229,10 @@ fn checkpoint_units_row_page_publisher_cancel_every_actual_cpu_and_io_unit_retri
         let units = baseline.completed.load(Ordering::SeqCst);
         let waves = baseline.io_waves.load(Ordering::SeqCst);
         baseline.assert_released(&local);
+        let expected: Vec<_> = names(2)
+            .iter()
+            .map(|name| fs::read(baseline_directory.join(name)).unwrap())
+            .collect();
         fs::remove_dir_all(baseline_directory).unwrap();
         for io in [false, true] {
             let count = if io { waves } else { units };
@@ -221,15 +252,51 @@ fn checkpoint_units_row_page_publisher_cancel_every_actual_cpu_and_io_unit_retri
                     "{result:?}"
                 );
                 probe.assert_released(&local);
-                assert_eq!(authority(&directory), before);
-                for name in names(2).iter().take(4) {
-                    assert!(!directory.join(name).exists());
+                let after = authority(&directory);
+                assert_eq!(&after[..4], &before[..4]);
+                let selected = RelationalRowPageRootReader::open_latest(&directory, config())
+                    .unwrap()
+                    .unwrap();
+                match selected.manifest().generation {
+                    1 => assert_eq!(after, before),
+                    2 => {
+                        assert_eq!(mode, 2);
+                        assert_eq!(after[4], expected[4]);
+                        verify(&directory, mode);
+                    }
+                    generation => panic!("unexpected selected generation {generation}"),
+                }
+                let mut published = 0;
+                let mut missing = false;
+                for (index, name) in names(2).iter().take(4).enumerate() {
+                    if directory.join(name).exists() {
+                        assert!(!missing, "publication is not an immutable prefix");
+                        assert_eq!(fs::read(directory.join(name)).unwrap(), expected[index]);
+                        published += 1;
+                    } else {
+                        missing = true;
+                    }
+                }
+                if published == 4 {
+                    verify(&directory, mode);
                 }
                 assert_no_temporary_files(&directory);
+                let retry_generation = if published == 0 { 2 } else { 3 };
                 let retry = Arc::new(CheckpointWorkProbe::default());
-                publish(&directory, &base, mode, Some(&retry.context(local.clone()))).unwrap();
+                publish_at(
+                    &directory,
+                    &selected,
+                    mode,
+                    retry_generation,
+                    Some(&retry.context(local.clone())),
+                )
+                .unwrap();
                 retry.assert_released(&local);
-                verify(&directory, mode);
+                verify_at(&directory, mode, retry_generation);
+                for (index, name) in names(2).iter().take(published).enumerate() {
+                    assert_eq!(fs::read(directory.join(name)).unwrap(), expected[index]);
+                }
+                assert_eq!(&authority(&directory)[..4], &before[..4]);
                 assert_no_temporary_files(&directory);
                 fs::remove_dir_all(directory).unwrap();
             }
@@ -258,4 +325,94 @@ fn checkpoint_units_row_page_publisher_cancel_every_actual_cpu_and_io_unit_retri
         verify(&directory, mode);
         fs::remove_dir_all(directory).unwrap();
     }
+}
+
+#[test]
+fn checkpoint_units_row_publication_defers_contended_lock_preserves_authority_and_retries() {
+    for mode in 0..3 {
+        let directory = unique_test_dir("admitted-row-lock");
+        let base = setup(&directory, config());
+        let before = authority(&directory);
+        let held = super::super::publisher::acquire_publication_lock(&directory).unwrap();
+        let local = scheduler();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        let work = probe.context(local.clone());
+        let error = publish(&directory, &base, mode, Some(&work)).unwrap_err();
+        assert!(
+            error.to_string().contains("publication lock is busy"),
+            "{error:?}"
+        );
+        probe.assert_released(&local);
+        assert_eq!(authority(&directory), before);
+        for name in names(2).iter().take(4) {
+            assert!(!directory.join(name).exists());
+        }
+        assert_no_temporary_files(&directory);
+        drop(held);
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        publish(&directory, &base, mode, Some(&retry.context(local.clone()))).unwrap();
+        retry.assert_released(&local);
+        verify(&directory, mode);
+        assert_no_temporary_files(&directory);
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn checkpoint_units_row_publication_lost_selector_reply_recovers_all_files_and_values_and_retries()
+{
+    let ordinary = unique_test_dir("row-selector-reply-reference");
+    let ordinary_base = setup(&ordinary, config());
+    let local = scheduler();
+    let baseline = Arc::new(CheckpointWorkProbe::default());
+    publish(
+        &ordinary,
+        &ordinary_base,
+        2,
+        Some(&baseline.context(local.clone())),
+    )
+    .unwrap();
+    let units = baseline.completed.load(Ordering::SeqCst);
+    baseline.assert_released(&local);
+    let expected: Vec<_> = names(2)
+        .iter()
+        .map(|name| fs::read(ordinary.join(name)).unwrap())
+        .collect();
+    verify(&ordinary, 2);
+    let directory = unique_test_dir("row-selector-lost-reply");
+    let base = setup(&directory, config());
+    let before = authority(&directory);
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    probe.cancel_after.store(units, Ordering::SeqCst);
+    let error = publish(&directory, &base, 2, Some(&probe.context(local.clone()))).unwrap_err();
+    assert!(error.to_string().contains("stopped"), "{error:?}");
+    probe.assert_released(&local);
+    for (index, name) in names(2).iter().enumerate() {
+        assert_eq!(fs::read(directory.join(name)).unwrap(), expected[index]);
+    }
+    assert_eq!(&authority(&directory)[..4], &before[..4]);
+    let selected = RelationalRowPageRootReader::open_latest(&directory, config())
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.manifest().generation, 2);
+    verify(&directory, 2);
+    assert_no_temporary_files(&directory);
+    let retry = Arc::new(CheckpointWorkProbe::default());
+    publish_at(
+        &directory,
+        &selected,
+        2,
+        3,
+        Some(&retry.context(local.clone())),
+    )
+    .unwrap();
+    retry.assert_released(&local);
+    verify_at(&directory, 2, 3);
+    assert_eq!(&authority(&directory)[..4], &before[..4]);
+    for (index, name) in names(2).iter().take(4).enumerate() {
+        assert_eq!(fs::read(directory.join(name)).unwrap(), expected[index]);
+    }
+    assert_no_temporary_files(&directory);
+    fs::remove_dir_all(ordinary).unwrap();
+    fs::remove_dir_all(directory).unwrap();
 }

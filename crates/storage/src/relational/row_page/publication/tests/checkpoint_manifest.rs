@@ -77,7 +77,7 @@ fn empty_manifest(count: usize) -> RelationalRowPageRootManifest {
     }
 }
 
-fn schema() -> RelationalTableSchema {
+pub(super) fn schema() -> RelationalTableSchema {
     let mut schema = crate::relational::row_page::test_row_page_schema("documents", 1025);
     let defaults = [
         (

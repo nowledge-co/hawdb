@@ -56,6 +56,7 @@ pub(in crate::relational::overflow::publication) fn io<T>(
     };
     let unit = work.start_unit().map_err(work_error)?;
     let wave = work.io_wave().map_err(work_error)?;
+    work.checkpoint().map_err(work_error)?;
     let result = operation()?;
     drop(wave);
     unit.finish();

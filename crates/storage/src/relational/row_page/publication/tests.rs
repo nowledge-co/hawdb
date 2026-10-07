@@ -1695,3 +1695,6 @@ mod checkpoint_root;
 
 #[path = "tests/checkpoint_manifest.rs"]
 mod checkpoint_manifest;
+
+#[path = "tests/checkpoint_preflight.rs"]
+mod checkpoint_preflight;

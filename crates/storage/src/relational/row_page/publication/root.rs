@@ -348,22 +348,33 @@ pub(super) fn write_root_artifacts(
         if let Some(unit) = unit {
             unit.finish();
         }
-        let schema = match (
+        let schema_source = match (
             base_table,
             delta.as_ref().and_then(|delta| delta.schema.as_ref()),
         ) {
-            (Some(base_table), Some(schema)) if base_table.schema != *schema => {
-                return Err(RelationalRowPagePublicationError::Admission(format!(
-                    "table {table_name} schema changed during incremental row-page publication"
-                )));
+            (Some(base_table), Some(schema)) => {
+                let same = match &writer.work {
+                    Some(work) => checkpoint::same_schema(&base_table.schema, schema, work)?,
+                    None => base_table.schema == *schema,
+                };
+                if !same {
+                    return Err(RelationalRowPagePublicationError::Admission(format!(
+                        "table {table_name} schema changed during incremental row-page publication"
+                    )));
+                }
+                &base_table.schema
             }
-            (Some(base_table), _) => base_table.schema.clone(),
-            (None, Some(schema)) => schema.clone(),
+            (Some(base_table), _) => &base_table.schema,
+            (None, Some(schema)) => schema,
             (None, None) => {
                 return Err(RelationalRowPagePublicationError::Admission(format!(
                     "new row-page table {table_name} is missing its schema"
                 )));
             }
+        };
+        let schema = match &writer.work {
+            Some(work) => checkpoint::clone_schema(schema_source, work)?,
+            None => schema_source.clone(),
         };
         let schema_digest = match (base_table, delta.as_ref()) {
             (Some(base_table), Some(delta)) if base_table.schema_digest != delta.schema_digest => {

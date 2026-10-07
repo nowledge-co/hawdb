@@ -31,6 +31,126 @@ fn all_base(directory: &Path, fixture: &Fixture) -> RelationalOverflowRootReader
 }
 
 #[test]
+fn checkpoint_units_overflow_reference_lookup_verifies_all_1025_values_and_preserves_metadata_errors(
+) {
+    let fixture = (0u32..1025)
+        .map(|ordinal| {
+            let bytes = ordinal.to_le_bytes().to_vec();
+            (
+                encoded_input(RelationalScalarType::Bytea, &bytes).0,
+                RelationalValue::Bytea(bytes),
+            )
+        })
+        .collect::<Fixture>();
+    let directory = unique_test_dir("lookup-all-values");
+    let reader = all_base(&directory, &fixture);
+    let before = authority(&directory);
+    let local = scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let work = probe.context(local.clone());
+    for (input, expected) in &fixture {
+        assert!(reader
+            .contains_with_work_context(input.reference(), &work)
+            .unwrap());
+        assert_eq!(
+            reader
+                .hydrate(
+                    input.reference(),
+                    &mut RelationalHydrationBudget::default(),
+                    None
+                )
+                .unwrap(),
+            *expected
+        );
+    }
+    let absent = encoded_input(RelationalScalarType::Bytea, b"absent from this generation").0;
+    assert!(!reader
+        .contains_with_work_context(absent.reference(), &work)
+        .unwrap());
+    let mut changed = *fixture[0].0.reference();
+    changed.scalar_type = RelationalScalarType::Text;
+    let expected = reader.contains(&changed).unwrap_err();
+    let actual = reader
+        .contains_with_work_context(&changed, &work)
+        .unwrap_err();
+    assert_eq!(actual.to_string(), expected.to_string());
+    probe.assert_released(&local);
+    assert_eq!(authority(&directory), before);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn checkpoint_units_overflow_reference_lookup_cancels_every_cpu_io_unit_denial_and_full_retry() {
+    let directory = unique_test_dir("lookup-cancel-retry");
+    let fixture = fixture();
+    let reader = all_base(&directory, &fixture);
+    let before = authority(&directory);
+    let local = scheduler();
+    for (input, expected) in &fixture {
+        let baseline = Arc::new(CheckpointWorkProbe::default());
+        assert!(reader
+            .contains_with_work_context(input.reference(), &baseline.context(local.clone()))
+            .unwrap());
+        let units = baseline.completed.load(Ordering::SeqCst);
+        let waves = baseline.io_waves.load(Ordering::SeqCst);
+        baseline.assert_released(&local);
+        for io in [false, true] {
+            for limit in 1..=if io { waves } else { units } {
+                let probe = Arc::new(CheckpointWorkProbe::default());
+                if io {
+                    probe.cancel_on_io_wave.store(limit, Ordering::SeqCst);
+                } else {
+                    probe.cancel_after.store(limit, Ordering::SeqCst);
+                }
+                let error = reader
+                    .contains_with_work_context(input.reference(), &probe.context(local.clone()))
+                    .unwrap_err();
+                assert!(error.to_string().contains("stopped"), "{error:?}");
+                probe.assert_released(&local);
+                assert_eq!(authority(&directory), before);
+                let retry = Arc::new(CheckpointWorkProbe::default());
+                assert!(reader
+                    .contains_with_work_context(input.reference(), &retry.context(local.clone()))
+                    .unwrap());
+                retry.assert_released(&local);
+                assert_eq!(
+                    reader
+                        .hydrate(
+                            input.reference(),
+                            &mut RelationalHydrationBudget::default(),
+                            None
+                        )
+                        .unwrap(),
+                    *expected
+                );
+            }
+        }
+    }
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let work = probe.context(local.clone());
+    let held = local
+        .try_start(WorkRequest::background(WorkClass::Mutation, 1))
+        .unwrap();
+    let error = reader
+        .contains_with_work_context(fixture[0].0.reference(), &work)
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("admission deferred"),
+        "{error:?}"
+    );
+    assert_eq!(probe.completed.load(Ordering::SeqCst), 0);
+    drop(held);
+    probe.assert_released(&local);
+    assert_eq!(authority(&directory), before);
+    let retry = Arc::new(CheckpointWorkProbe::default());
+    assert!(reader
+        .contains_with_work_context(fixture[0].0.reference(), &retry.context(local.clone()))
+        .unwrap());
+    retry.assert_released(&local);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn checkpoint_units_overflow_encoded_reads_match_complete_bytes_and_each_unit_cancellation() {
     let directory = unique_test_dir("encoded-read-units");
     let fixture = fixture();

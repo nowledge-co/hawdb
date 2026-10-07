@@ -617,6 +617,42 @@ retention/drop and shared hard disk/FD/cleanup bounds remain open. These control
 are insufficient to enable production per-unit admission or close the whole
 issue's resource, lifecycle, power-loss/platform and release-performance gates.
 
+Actual row-page file creation, capped 64 KiB manifest/selector writes, file
+synchronization, immutable publication and latest selection now acquire separate
+CPU/I/O controls. An admitted publisher defers on a contended publication lock
+instead of blocking. Publication completes its existing synchronization barrier
+once started; cancellation after rename retains the complete immutable prefix,
+and cancellation after latest selection may lose the response while the complete
+generation remains selected. Every actual CPU and I/O cancellation point in all
+three publication modes verifies the selected authority, complete retained bytes,
+recoverable complete generations, exclusive temporary cleanup and full retry
+with a fresh generation whenever immutable evidence already exists. Separate
+regressions cover lock contention and loss of the selector response, then reopen
+and compare all rows and physical generation ownership. Initial reader opening,
+manifest decoding/revalidation, schema clone/equality, preflight scans/sorting,
+relocation reads/decoding, retained capacities, allocator/drop costs and shared
+hard disk/FD/cleanup-debt bounds require separate qualification. These file
+controls do not enable production per-unit admission or qualify the whole
+lifecycle, modeled power-loss/platform behavior or release performance.
+
+Row-page preparation also binds schema validation/digests, borrowed schema
+equality and schema copying, deletion inventory, dirty-page checks and overflow
+reference discovery to the admitted task. Schema equality retains the ordinary
+total-order semantics for float defaults, including NaN payloads and negative
+zero. An in-place heap sorts dirty-page bounds through capped comparisons and
+fixed-size swaps; equal bounds still fail the existing overlap check. Root
+resource preflight accounts each table/page entry separately. Overflow closure
+lookup admits each fixed 120-byte descriptor read and search step without
+hydrating values or holding a lease across nested work. Reference regressions
+compare all 1025 schema entries and sorted pages, scalar/default values and
+every field's negative control, rejection diagnostic priority and absence of
+candidate artifacts, actual cancellation/denial/full retry, and all 1025
+referenced values. These controls do not bound map/string comparisons, vector
+capacities, allocator/reallocation/destruction, initial opening/decoding,
+relocation, or the shared retention/disk/FD/cleanup ledger. The complete publisher
+and physical recovery suites remain separate from codec/sort fixtures; default
+availability, lifecycle/model/platform and release-performance gates stay open.
+
 Actual automatic row-page preparation now binds page encoding and writes to
 the admitted checkpoint task. Ordered primary keys, each scalar/value directory
 entry, row/page directory entry, variable payload/bound copies and integrity

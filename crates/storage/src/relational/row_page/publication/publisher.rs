@@ -34,6 +34,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+pub(super) mod checkpoint;
+
 pub struct RelationalRowPagePublisher {
     config: RelationalRowPagePublicationConfig,
     work: Option<crate::background::CheckpointWorkContext>,
@@ -204,11 +206,13 @@ impl RelationalRowPagePublisher {
             self.config,
             self.work.as_ref(),
         )?;
-        require_schema_source(base, &deltas)?;
-        fs::create_dir_all(directory).map_err(durability("create row-page directory"))?;
-        let _lock = acquire_publication_lock(directory)?;
+        require_schema_source(base, &deltas, self.work.as_ref())?;
+        checkpoint::io(self.work.as_ref(), || {
+            fs::create_dir_all(directory).map_err(durability("create row-page directory"))
+        })?;
+        let _lock = checkpoint::lock(directory, self.work.as_ref())?;
         let paths = PublicationPaths::new(directory, generation);
-        paths.require_fresh_generation()?;
+        paths.require_fresh_generation(self.work.as_ref())?;
 
         let base_generation = base.map(|reader| reader.manifest.generation);
         if (select_latest || base.is_some()) && base_generation != expected_previous_generation {
@@ -244,7 +248,7 @@ impl RelationalRowPagePublisher {
                 )));
             }
         }
-        preflight_root_resources(base, &deltas, self.config)?;
+        preflight_root_resources(base, &deltas, self.config, self.work.as_ref())?;
 
         // Cleanup drops before the publication lock and owns only exclusive creates.
         let mut temporary = OwnedTemporaryArtifacts::default();
@@ -272,9 +276,12 @@ impl RelationalRowPagePublisher {
             RelationalRowPagePublicationPhase::CandidateStarted,
         )?;
 
-        let page_file = build
-            .temporary
-            .create(&build.paths.page_tmp, "create row-page artifact")?;
+        let page_file = checkpoint::create(
+            build.temporary,
+            &build.paths.page_tmp,
+            "create row-page artifact",
+            self.work.as_ref(),
+        )?;
         let mut pages = root::PageArtifactWriter::new(page_file, self.config.page_limits)
             .with_work_context(self.work.as_ref());
         let mut dirty_page_count = 0u64;
@@ -289,13 +296,18 @@ impl RelationalRowPagePublisher {
         }
         let root = root::write_root_artifacts(
             root::RootBuildRequest {
-                descriptor_file: build.temporary.create(
+                descriptor_file: checkpoint::create(
+                    build.temporary,
                     &build.paths.descriptor_tmp,
                     "create row-page root descriptors",
+                    self.work.as_ref(),
                 )?,
-                key_file: build
-                    .temporary
-                    .create(&build.paths.key_tmp, "create row-page root keys")?,
+                key_file: checkpoint::create(
+                    build.temporary,
+                    &build.paths.key_tmp,
+                    "create row-page root keys",
+                    self.work.as_ref(),
+                )?,
                 base: build.base,
                 deltas: build.deltas,
                 generation: build.generation,
@@ -345,26 +357,32 @@ impl RelationalRowPagePublisher {
                 .map_err(root::checkpoint::work_error)?,
             None => integrity_digest(&encoded_manifest),
         };
-        write_synced(
+        checkpoint::write_synced(
             build.temporary,
             &build.paths.generation_manifest_tmp,
             &encoded_manifest,
+            self.work.as_ref(),
         )?;
 
-        durable_publish_immutable(&build.paths.page_tmp, &build.paths.page)?;
+        checkpoint::publish(&build.paths.page_tmp, &build.paths.page, self.work.as_ref())?;
         maybe_stop(
             build.stop_after,
             RelationalRowPagePublicationPhase::CandidatePagesDurable,
         )?;
-        durable_publish_immutable(&build.paths.descriptor_tmp, &build.paths.descriptor)?;
-        durable_publish_immutable(&build.paths.key_tmp, &build.paths.key)?;
+        checkpoint::publish(
+            &build.paths.descriptor_tmp,
+            &build.paths.descriptor,
+            self.work.as_ref(),
+        )?;
+        checkpoint::publish(&build.paths.key_tmp, &build.paths.key, self.work.as_ref())?;
         maybe_stop(
             build.stop_after,
             RelationalRowPagePublicationPhase::CandidateRootDurable,
         )?;
-        durable_publish_immutable(
+        checkpoint::publish(
             &build.paths.generation_manifest_tmp,
             &build.paths.generation_manifest,
+            self.work.as_ref(),
         )?;
         maybe_stop(
             build.stop_after,
@@ -387,16 +405,17 @@ impl RelationalRowPagePublisher {
             RelationalRowPagePublicationPhase::BaseRevalidated,
         )?;
         if build.select_latest {
-            write_synced(
+            checkpoint::write_synced(
                 build.temporary,
                 &build.paths.latest_manifest_tmp,
                 &encoded_manifest,
+                self.work.as_ref(),
             )?;
-            durable_replace_file(
+            checkpoint::select(
                 &build.paths.latest_manifest_tmp,
                 &build.paths.latest_manifest,
-            )
-            .map_err(durability("publish latest row-page manifest"))?;
+                self.work.as_ref(),
+            )?;
         }
 
         Ok(RelationalRowPagePublicationReport {
@@ -432,8 +451,12 @@ impl RelationalRowPagePublisher {
 fn require_schema_source(
     base: Option<&RelationalRowPageRootReader>,
     deltas: &BTreeMap<String, PreparedTableDelta>,
+    work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<(), RelationalRowPagePublicationError> {
     for delta in deltas.values() {
+        if let Some(work) = work {
+            work.checkpoint().map_err(root::checkpoint::work_error)?;
+        }
         let base_schema = base.and_then(|reader| {
             reader
                 .manifest()
@@ -449,14 +472,23 @@ fn require_schema_source(
                     delta.table
                 )));
             }
-            (Some(base_schema), Some(schema)) if base_schema != schema => {
-                return Err(RelationalRowPagePublicationError::Admission(format!(
-                    "table {} schema changed during incremental row-page publication",
-                    delta.table
-                )));
+            (Some(base_schema), Some(schema)) => {
+                let same = match work {
+                    Some(work) => root::checkpoint::same_schema(base_schema, schema, work)?,
+                    None => base_schema == schema,
+                };
+                if !same {
+                    return Err(RelationalRowPagePublicationError::Admission(format!(
+                        "table {} schema changed during incremental row-page publication",
+                        delta.table
+                    )));
+                }
             }
             _ => {}
         }
+    }
+    if let Some(work) = work {
+        work.checkpoint().map_err(root::checkpoint::work_error)?;
     }
     Ok(())
 }
@@ -518,8 +550,12 @@ fn preflight_deltas(
     work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<BTreeMap<String, PreparedTableDelta>, RelationalRowPagePublicationError> {
     let dirty_page_count = deltas.iter().try_fold(0usize, |count, delta| {
-        count.checked_add(delta.dirty_pages.len()).ok_or_else(|| {
-            RelationalRowPagePublicationError::Admission("dirty page count overflow".to_string())
+        checkpoint::cpu(work, || {
+            count.checked_add(delta.dirty_pages.len()).ok_or_else(|| {
+                RelationalRowPagePublicationError::Admission(
+                    "dirty page count overflow".to_string(),
+                )
+            })
         })
     })?;
     if dirty_page_count > config.max_dirty_pages.get() {
@@ -552,20 +588,34 @@ fn preflight_deltas(
     let mut prepared = BTreeMap::new();
     let mut overflow_references = BTreeSet::<RelationalOverflowRef>::new();
     for delta in deltas {
-        validate_table_name(&delta.table, config)?;
-        if prepared.contains_key(&delta.table) {
-            return Err(RelationalRowPagePublicationError::Admission(format!(
-                "publication contains duplicate table delta {}",
-                delta.table
-            )));
-        }
+        checkpoint::cpu(work, || {
+            validate_table_name(&delta.table, config)?;
+            if prepared.contains_key(&delta.table) {
+                return Err(RelationalRowPagePublicationError::Admission(format!(
+                    "publication contains duplicate table delta {}",
+                    delta.table
+                )));
+            }
+            Ok(())
+        })?;
         if let Some(schema) = &delta.schema {
-            crate::relational::codec::validate_relational_table_schema_codec_shape(
-                schema,
-                config.page_limits.max_columns.get(),
-            )
+            match work {
+                Some(work) => crate::relational::codec::validate_relational_table_schema_codec_shape_with_work_context(
+                    schema, config.page_limits.max_columns.get(), work,
+                ),
+                None => crate::relational::codec::validate_relational_table_schema_codec_shape(
+                    schema, config.page_limits.max_columns.get(),
+                ),
+            }
             .map_err(|error| RelationalRowPagePublicationError::Admission(error.to_string()))?;
-            if schema.name != delta.table {
+            let names_equal = match work {
+                Some(work) => {
+                    root::checkpoint::compare(schema.name.as_bytes(), delta.table.as_bytes(), work)?
+                        .is_eq()
+                }
+                None => schema.name == delta.table,
+            };
+            if !names_equal {
                 return Err(RelationalRowPagePublicationError::Admission(format!(
                     "row-page schema name {} differs from table {}",
                     schema.name, delta.table
@@ -579,8 +629,15 @@ fn preflight_deltas(
                     delta.column_count
                 )));
             }
-            let digest = crate::relational::index_shadow::relational_schema_digest(schema)
-                .map_err(|error| RelationalRowPagePublicationError::Admission(error.to_string()))?;
+            let digest = match work {
+                Some(work) => {
+                    crate::relational::index_shadow::relational_schema_digest_with_work_context(
+                        schema, work,
+                    )
+                }
+                None => crate::relational::index_shadow::relational_schema_digest(schema),
+            }
+            .map_err(|error| RelationalRowPagePublicationError::Admission(error.to_string()))?;
             if digest != delta.schema_digest {
                 return Err(RelationalRowPagePublicationError::Admission(format!(
                     "row-page schema digest differs from table {}",
@@ -589,81 +646,90 @@ fn preflight_deltas(
             }
         }
         let deleted_count = delta.deleted_page_ids.len();
-        let deleted_page_ids = delta.deleted_page_ids.into_iter().collect::<BTreeSet<_>>();
+        let mut deleted_page_ids = BTreeSet::new();
+        for page_id in delta.deleted_page_ids {
+            checkpoint::cpu(work, || {
+                deleted_page_ids.insert(page_id);
+                Ok(())
+            })?;
+        }
         if deleted_page_ids.len() != deleted_count {
             return Err(RelationalRowPagePublicationError::Admission(format!(
                 "table {} contains duplicate deleted page ids",
                 delta.table
             )));
         }
-        if let Some(page_id) = deleted_page_ids
-            .iter()
-            .find(|page_id| page_id.get() >= delta.next_page_id.get())
-        {
-            return Err(RelationalRowPagePublicationError::Admission(format!(
-                "table {} deleted page id {} is not below next page id {}",
-                delta.table,
-                page_id.get(),
-                delta.next_page_id
-            )));
+        for page_id in &deleted_page_ids {
+            let invalid = checkpoint::cpu(work, || Ok(page_id.get() >= delta.next_page_id.get()))?;
+            if invalid {
+                return Err(RelationalRowPagePublicationError::Admission(format!(
+                    "table {} deleted page id {} is not below next page id {}",
+                    delta.table,
+                    page_id.get(),
+                    delta.next_page_id
+                )));
+            }
         }
         let mut seen_page_ids = BTreeSet::new();
         let mut dirty_pages = Vec::with_capacity(delta.dirty_pages.len());
         for page in delta.dirty_pages {
-            if page.page_id.get() >= delta.next_page_id.get() {
-                return Err(RelationalRowPagePublicationError::Admission(format!(
-                    "table {} page id {} is not below next page id {}",
-                    delta.table,
-                    page.page_id.get(),
-                    delta.next_page_id
-                )));
-            }
-            if page.generation != generation || page.source_commit_epoch != source_commit_epoch {
-                return Err(RelationalRowPagePublicationError::Admission(format!(
+            checkpoint::cpu(work, || {
+                if page.page_id.get() >= delta.next_page_id.get() {
+                    return Err(RelationalRowPagePublicationError::Admission(format!(
+                        "table {} page id {} is not below next page id {}",
+                        delta.table,
+                        page.page_id.get(),
+                        delta.next_page_id
+                    )));
+                }
+                if page.generation != generation || page.source_commit_epoch != source_commit_epoch
+                {
+                    return Err(RelationalRowPagePublicationError::Admission(format!(
                     "dirty page {} identifies generation/epoch {}/{}, expected {generation}/{source_commit_epoch}",
                     page.page_id.get(), page.generation, page.source_commit_epoch
                 )));
-            }
-            if page.schema_digest != delta.schema_digest {
-                return Err(RelationalRowPagePublicationError::Admission(format!(
-                    "dirty page {} schema digest differs from table {}",
-                    page.page_id.get(),
-                    delta.table
-                )));
-            }
-            if page.column_count != delta.column_count.get() as usize {
-                return Err(RelationalRowPagePublicationError::Admission(format!(
-                    "dirty page {} contains {} columns, expected {} for table {}",
-                    page.page_id.get(),
-                    page.column_count,
-                    delta.column_count,
-                    delta.table
-                )));
-            }
-            if !seen_page_ids.insert(page.page_id) {
-                return Err(RelationalRowPagePublicationError::Admission(format!(
-                    "table {} contains duplicate dirty page id {}",
-                    delta.table,
-                    page.page_id.get()
-                )));
-            }
-            if deleted_page_ids.contains(&page.page_id) {
-                return Err(RelationalRowPagePublicationError::Admission(format!(
-                    "table {} both replaces and deletes page {}",
-                    delta.table,
-                    page.page_id.get()
-                )));
-            }
-            for reference in page
-                .rows
-                .iter()
-                .flat_map(|entry| entry.row.values())
-                .filter_map(|value| match value {
-                    RelationalValue::Overflow(reference) => Some(*reference),
-                    _ => None,
-                })
-            {
-                overflow_references.insert(reference);
+                }
+                if page.schema_digest != delta.schema_digest {
+                    return Err(RelationalRowPagePublicationError::Admission(format!(
+                        "dirty page {} schema digest differs from table {}",
+                        page.page_id.get(),
+                        delta.table
+                    )));
+                }
+                if page.column_count != delta.column_count.get() as usize {
+                    return Err(RelationalRowPagePublicationError::Admission(format!(
+                        "dirty page {} contains {} columns, expected {} for table {}",
+                        page.page_id.get(),
+                        page.column_count,
+                        delta.column_count,
+                        delta.table
+                    )));
+                }
+                if !seen_page_ids.insert(page.page_id) {
+                    return Err(RelationalRowPagePublicationError::Admission(format!(
+                        "table {} contains duplicate dirty page id {}",
+                        delta.table,
+                        page.page_id.get()
+                    )));
+                }
+                if deleted_page_ids.contains(&page.page_id) {
+                    return Err(RelationalRowPagePublicationError::Admission(format!(
+                        "table {} both replaces and deletes page {}",
+                        delta.table,
+                        page.page_id.get()
+                    )));
+                }
+                Ok(())
+            })?;
+            for entry in &page.rows {
+                for value in entry.row.values() {
+                    checkpoint::cpu(work, || {
+                        if let RelationalValue::Overflow(reference) = value {
+                            overflow_references.insert(*reference);
+                        }
+                        Ok(())
+                    })?;
+                }
             }
             dirty_pages.push(match work {
                 Some(work) => root::prepare_dirty_page_with_work_context(
@@ -674,31 +740,42 @@ fn preflight_deltas(
                 None => root::prepare_dirty_page(page, config.page_limits)?,
             });
         }
-        dirty_pages.sort_by(|left, right| {
-            left.descriptor
-                .lower_bound
-                .cmp(&right.descriptor.lower_bound)
-        });
-        if dirty_pages.windows(2).any(|pair| {
-            pair[0].descriptor.upper_bound.as_slice() >= pair[1].descriptor.lower_bound.as_slice()
-        }) {
-            return Err(RelationalRowPagePublicationError::Admission(format!(
-                "table {} dirty page bounds overlap or are unordered",
-                delta.table
-            )));
+        checkpoint::sort_dirty_pages(&mut dirty_pages, work)?;
+        for pair in dirty_pages.windows(2) {
+            let ordering = match work {
+                Some(work) => root::checkpoint::compare(
+                    &pair[0].descriptor.upper_bound,
+                    &pair[1].descriptor.lower_bound,
+                    work,
+                )?,
+                None => pair[0]
+                    .descriptor
+                    .upper_bound
+                    .cmp(&pair[1].descriptor.lower_bound),
+            };
+            if !ordering.is_lt() {
+                return Err(RelationalRowPagePublicationError::Admission(format!(
+                    "table {} dirty page bounds overlap or are unordered",
+                    delta.table
+                )));
+            }
         }
-        prepared.insert(
-            delta.table.clone(),
-            PreparedTableDelta {
-                table: delta.table,
-                schema: delta.schema,
-                schema_digest: delta.schema_digest,
-                column_count: delta.column_count,
-                next_page_id: delta.next_page_id,
-                dirty_pages,
-                deleted_page_ids,
-            },
-        );
+        let table_name = clone_table_name(&delta.table, work)?;
+        checkpoint::cpu(work, || {
+            prepared.insert(
+                table_name,
+                PreparedTableDelta {
+                    table: delta.table,
+                    schema: delta.schema,
+                    schema_digest: delta.schema_digest,
+                    column_count: delta.column_count,
+                    next_page_id: delta.next_page_id,
+                    dirty_pages,
+                    deleted_page_ids,
+                },
+            );
+            Ok(())
+        })?;
     }
     if !overflow_references.is_empty() {
         let overflow_root = overflow_root.ok_or_else(|| {
@@ -708,10 +785,12 @@ fn preflight_deltas(
             )
         })?;
         for reference in overflow_references {
-            if !overflow_root
-                .contains(&reference)
-                .map_err(overflow_dependency_error)?
-            {
+            let contains = match work {
+                Some(work) => overflow_root.contains_with_work_context(&reference, work),
+                None => overflow_root.contains(&reference),
+            }
+            .map_err(overflow_dependency_error)?;
+            if !contains {
                 return Err(RelationalRowPagePublicationError::Admission(format!(
                     "row page references missing overflow extent {}",
                     reference.digest
@@ -774,16 +853,19 @@ fn preflight_root_resources(
     base: Option<&RelationalRowPageRootReader>,
     deltas: &BTreeMap<String, PreparedTableDelta>,
     config: RelationalRowPagePublicationConfig,
+    work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<(), RelationalRowPagePublicationError> {
     let base_page_count = base.map_or(0, |reader| reader.manifest.root_page_count);
     let dirty_page_count = deltas.values().try_fold(0u64, |count, delta| {
-        count
-            .checked_add(delta.dirty_pages.len() as u64)
-            .ok_or_else(|| {
-                RelationalRowPagePublicationError::Admission(
-                    "row-page root pre-admission count overflow".to_string(),
-                )
-            })
+        checkpoint::cpu(work, || {
+            count
+                .checked_add(delta.dirty_pages.len() as u64)
+                .ok_or_else(|| {
+                    RelationalRowPagePublicationError::Admission(
+                        "row-page root pre-admission count overflow".to_string(),
+                    )
+                })
+        })
     })?;
     let root_page_upper_bound = base_page_count
         .checked_add(dirty_page_count)
@@ -805,14 +887,18 @@ fn preflight_root_resources(
             .dirty_pages
             .iter()
             .try_fold(table_bytes, |bytes, page| {
-                bytes
-                    .checked_add(page.descriptor.lower_bound.len() as u64)
-                    .and_then(|bytes| bytes.checked_add(page.descriptor.upper_bound.len() as u64))
-                    .ok_or_else(|| {
-                        RelationalRowPagePublicationError::Admission(
-                            "row-page root key pre-admission overflow".to_string(),
-                        )
-                    })
+                checkpoint::cpu(work, || {
+                    bytes
+                        .checked_add(page.descriptor.lower_bound.len() as u64)
+                        .and_then(|bytes| {
+                            bytes.checked_add(page.descriptor.upper_bound.len() as u64)
+                        })
+                        .ok_or_else(|| {
+                            RelationalRowPagePublicationError::Admission(
+                                "row-page root key pre-admission overflow".to_string(),
+                            )
+                        })
+                })
             })
     })?;
     let root_key_upper_bound = base_key_bytes.checked_add(dirty_key_bytes).ok_or_else(|| {
@@ -829,9 +915,21 @@ fn preflight_root_resources(
 
     let mut table_names = BTreeSet::new();
     if let Some(base) = base {
-        table_names.extend(base.manifest.tables.iter().map(|table| table.table.clone()));
+        for table in &base.manifest.tables {
+            let name = clone_table_name(&table.table, work)?;
+            checkpoint::cpu(work, || {
+                table_names.insert(name);
+                Ok(())
+            })?;
+        }
     }
-    table_names.extend(deltas.keys().cloned());
+    for table in deltas.keys() {
+        let name = clone_table_name(table, work)?;
+        checkpoint::cpu(work, || {
+            table_names.insert(name);
+            Ok(())
+        })?;
+    }
     if table_names.len() > config.max_tables.get() {
         return Err(RelationalRowPagePublicationError::Admission(format!(
             "row-page root may contain {} tables, exceeding limit {}",
@@ -864,8 +962,11 @@ fn preflight_root_resources(
         let mut upper_len = base_table.map_or(0, |table| table.upper_bound.len());
         if let Some(delta) = delta {
             for page in &delta.dirty_pages {
-                lower_len = lower_len.max(page.descriptor.lower_bound.len());
-                upper_len = upper_len.max(page.descriptor.upper_bound.len());
+                checkpoint::cpu(work, || {
+                    lower_len = lower_len.max(page.descriptor.lower_bound.len());
+                    upper_len = upper_len.max(page.descriptor.upper_bound.len());
+                    Ok(())
+                })?;
             }
         }
         manifest_upper_bound = manifest_upper_bound
@@ -885,7 +986,21 @@ fn preflight_root_resources(
             config.max_manifest_bytes
         )));
     }
+    if let Some(work) = work {
+        work.checkpoint().map_err(root::checkpoint::work_error)?;
+    }
     Ok(())
+}
+
+fn clone_table_name(
+    name: &str,
+    work: Option<&crate::background::CheckpointWorkContext>,
+) -> Result<String, RelationalRowPagePublicationError> {
+    match work {
+        Some(work) => crate::relational::codec::clone_string_with_work_context(name, work)
+            .map_err(|error| RelationalRowPagePublicationError::Admission(error.to_string())),
+        None => Ok(name.to_owned()),
+    }
 }
 
 fn validate_table_name(
@@ -1032,19 +1147,25 @@ impl PublicationPaths {
         }
     }
 
-    fn require_fresh_generation(&self) -> Result<(), RelationalRowPagePublicationError> {
+    fn require_fresh_generation(
+        &self,
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Result<(), RelationalRowPagePublicationError> {
         for path in [
             &self.page,
             &self.descriptor,
             &self.key,
             &self.generation_manifest,
         ] {
-            if path.exists() {
-                return Err(RelationalRowPagePublicationError::Admission(format!(
-                    "row-page generation artifact {} already exists",
-                    path.display()
-                )));
-            }
+            checkpoint::io(work, || {
+                if path.exists() {
+                    return Err(RelationalRowPagePublicationError::Admission(format!(
+                        "row-page generation artifact {} already exists",
+                        path.display()
+                    )));
+                }
+                Ok(())
+            })?;
         }
         Ok(())
     }

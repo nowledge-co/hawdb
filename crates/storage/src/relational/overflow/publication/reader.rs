@@ -137,32 +137,55 @@ impl RelationalOverflowRootReader {
         Ok(self.find_descriptor(reference)?.is_some())
     }
 
+    pub(crate) fn contains_with_work_context(
+        &self,
+        reference: &RelationalOverflowRef,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<bool, RelationalOverflowPublicationError> {
+        Ok(self.find_descriptor_inner(reference, Some(work))?.is_some())
+    }
+
     pub fn find_descriptor(
         &self,
         reference: &RelationalOverflowRef,
     ) -> Result<Option<RelationalOverflowExtentDescriptor>, RelationalOverflowPublicationError>
     {
-        let mut descriptors = File::open(self.descriptor_path())
-            .map_err(durability("open overflow descriptor artifact"))?;
+        self.find_descriptor_inner(reference, None)
+    }
+
+    fn find_descriptor_inner(
+        &self,
+        reference: &RelationalOverflowRef,
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Result<Option<RelationalOverflowExtentDescriptor>, RelationalOverflowPublicationError>
+    {
+        use super::publisher::checkpoint::{check, cpu, io};
+        let mut descriptors = io(work, || {
+            File::open(self.descriptor_path())
+                .map_err(durability("open overflow descriptor artifact"))
+        })?;
         let mut lower = 0u64;
         let mut upper = self.manifest.extent_count;
         while lower < upper {
             let middle = lower + (upper - lower) / 2;
-            let descriptor = self.read_descriptor_from(&mut descriptors, middle)?;
-            if descriptor.reference.digest < reference.digest {
-                lower = middle.checked_add(1).ok_or_else(|| {
-                    RelationalOverflowPublicationError::Corrupt(
-                        "overflow descriptor search overflow".to_string(),
-                    )
-                })?;
-            } else {
-                upper = middle;
-            }
+            let descriptor = io(work, || self.read_descriptor_from(&mut descriptors, middle))?;
+            cpu(work, || {
+                if descriptor.reference.digest < reference.digest {
+                    lower = middle.checked_add(1).ok_or_else(|| {
+                        RelationalOverflowPublicationError::Corrupt(
+                            "overflow descriptor search overflow".to_string(),
+                        )
+                    })?;
+                } else {
+                    upper = middle;
+                }
+                Ok(())
+            })?;
         }
         if lower == self.manifest.extent_count {
             return Ok(None);
         }
-        let descriptor = self.read_descriptor_from(&mut descriptors, lower)?;
+        let descriptor = io(work, || self.read_descriptor_from(&mut descriptors, lower))?;
         if descriptor.reference.digest != reference.digest {
             return Ok(None);
         }
@@ -172,6 +195,7 @@ impl RelationalOverflowRootReader {
                 reference.digest
             )));
         }
+        check(work)?;
         Ok(Some(descriptor))
     }
 
