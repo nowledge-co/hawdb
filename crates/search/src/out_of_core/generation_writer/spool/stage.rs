@@ -285,7 +285,7 @@ impl Ticket {
                     ));
                 }
                 #[cfg(test)]
-                evidence::before_unlink(&path);
+                evidence::before_unlink(&path)?;
                 fs::remove_file(path)?;
             }
         }
@@ -607,6 +607,44 @@ pub(super) mod evidence {
         resume: Receiver<()>,
     }
     static HOOK: Mutex<Option<Hook>> = Mutex::new(None);
+    struct UnlinkFailure {
+        path: PathBuf,
+        attempts: usize,
+    }
+    static UNLINK_FAILURE: Mutex<Option<UnlinkFailure>> = Mutex::new(None);
+
+    pub(in crate::out_of_core) struct UnlinkFailureGuard {
+        path: PathBuf,
+    }
+    impl UnlinkFailureGuard {
+        pub(in crate::out_of_core) fn attempts(&self) -> usize {
+            let failure = UNLINK_FAILURE.lock().unwrap();
+            let failure = failure.as_ref().expect("installed unlink failure");
+            assert_eq!(failure.path, self.path);
+            failure.attempts
+        }
+    }
+    impl Drop for UnlinkFailureGuard {
+        fn drop(&mut self) {
+            let mut failure = UNLINK_FAILURE.lock().unwrap();
+            if failure
+                .as_ref()
+                .is_some_and(|failure| failure.path == self.path)
+            {
+                failure.take();
+            }
+        }
+    }
+    pub(in crate::out_of_core) fn fail_unlink(path: &Path) -> UnlinkFailureGuard {
+        let path = std::fs::canonicalize(path).unwrap();
+        let mut failure = UNLINK_FAILURE.lock().unwrap();
+        assert!(failure.is_none());
+        *failure = Some(UnlinkFailure {
+            path: path.clone(),
+            attempts: 0,
+        });
+        UnlinkFailureGuard { path }
+    }
     pub(in crate::out_of_core) fn install(
         root: PathBuf,
         started: Sender<()>,
@@ -618,7 +656,7 @@ pub(super) mod evidence {
             resume,
         });
     }
-    pub(super) fn before_unlink(path: &Path) {
+    pub(super) fn before_unlink(path: &Path) -> std::io::Result<()> {
         let hook = {
             let mut hook = HOOK.lock().unwrap();
             if hook
@@ -634,5 +672,13 @@ pub(super) mod evidence {
             hook.started.send(()).unwrap();
             hook.resume.recv().unwrap();
         }
+        let mut failure = UNLINK_FAILURE.lock().unwrap();
+        if let Some(failure) = failure.as_mut()
+            && failure.path == path
+        {
+            failure.attempts += 1;
+            return Err(std::io::ErrorKind::PermissionDenied.into());
+        }
+        Ok(())
     }
 }
