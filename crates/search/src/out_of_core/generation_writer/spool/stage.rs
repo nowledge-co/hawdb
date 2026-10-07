@@ -18,59 +18,91 @@ use super::*;
 use crate::build_memory::{directory, path::OwnedPath};
 use hawdb_executor::QueryMemoryLease;
 use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-// Admission happens before any private directory exists. Retention needs no
-// allocation during Drop, cancellation, unwind, or descriptor exhaustion.
-const MAX_OWNERS: usize = 256;
-static OWNERS: Mutex<[Slot; MAX_OWNERS]> = Mutex::new([const { Slot::Vacant }; MAX_OWNERS]);
-static NEXT_RETRY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+// Bound each canonical root independently. Every map entry is pre-admitted;
+// retention needs no allocation during Drop or descriptor exhaustion.
+const MAX_ROOT_OWNERS: usize = 256;
+static OWNERS: Mutex<BTreeMap<u64, Owner>> = Mutex::new(BTreeMap::new());
+static NEXT_OWNER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static NEXT_RETRY_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 const AUTOMATIC_RETRY_STAGES: usize = 4;
 const AUTOMATIC_CLEANUP_BATCHES: usize = 4;
 // Bound the three shared ledger accounts retained by path and metadata leases.
 const CLEANUP_ACCOUNT_METADATA_BYTES: usize = 4096;
 
 enum Slot {
-    Vacant,
     Active,
     Pending(Ticket),
 }
 
+struct Owner {
+    root: OwnedPath,
+    slot: Slot,
+    last_retry: u64,
+    _memory: QueryMemoryLease,
+    _host_memory: Option<hawdb_qos::RuntimeRetainedMemory>,
+}
+
 struct Registration {
-    index: usize,
+    index: u64,
 }
 impl Registration {
-    fn acquire() -> Result<Self> {
+    fn acquire(owner: Owner) -> Result<Self> {
         let mut owners = OWNERS.lock().unwrap_or_else(|error| error.into_inner());
-        let index = owners
-            .iter()
-            .position(|slot| matches!(slot, Slot::Vacant))
-            .ok_or_else(|| {
-                HawDBError::Execution(
-                    "search private-stage cleanup owner capacity exhausted".into(),
-                )
-            })?;
-        owners[index] = Slot::Active;
+        if owners
+            .values()
+            .filter(|entry| *entry.root == *owner.root)
+            .count()
+            >= MAX_ROOT_OWNERS
+        {
+            return Err(HawDBError::Execution(
+                "search private-stage cleanup owner capacity exhausted".into(),
+            ));
+        }
+        let index = NEXT_OWNER
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |index| {
+                index.checked_add(1)
+            })
+            .map_err(|_| HawDBError::Execution("search cleanup owner identity exhausted".into()))?;
+        owners.insert(index, owner);
         Ok(Self { index })
     }
     fn retain(self, ticket: Ticket) {
-        OWNERS.lock().unwrap_or_else(|error| error.into_inner())[self.index] =
-            Slot::Pending(ticket);
+        OWNERS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_mut(&self.index)
+            .expect("registered cleanup owner")
+            .slot = Slot::Pending(ticket);
     }
 }
 impl Drop for Registration {
     fn drop(&mut self) {
-        let mut owners = OWNERS.lock().unwrap_or_else(|error| error.into_inner());
-        if matches!(owners[self.index], Slot::Active) {
-            owners[self.index] = Slot::Vacant;
-        }
+        let removed = {
+            let mut owners = OWNERS.lock().unwrap_or_else(|error| error.into_inner());
+            if owners
+                .get(&self.index)
+                .is_some_and(|owner| matches!(owner.slot, Slot::Active))
+            {
+                let removed = owners.remove(&self.index);
+                // BTreeMap may retain an empty root allocation after removal.
+                // Release it before the final owner's admission disappears.
+                if owners.is_empty() {
+                    *owners = BTreeMap::new();
+                }
+                removed
+            } else {
+                None
+            }
+        };
+        drop(removed);
     }
 }
 
 struct Ticket {
     value: Box<TicketFields>,
-    _memory: QueryMemoryLease,
-    _host_memory: Option<hawdb_qos::RuntimeRetainedMemory>,
 }
 impl std::ops::Deref for Ticket {
     type Target = TicketFields;
@@ -131,10 +163,12 @@ pub(in crate::out_of_core) fn retry_staging_cleanup(
     let (pending, exact) = {
         let owners = OWNERS.lock().unwrap_or_else(|error| error.into_inner());
         (
-            owners.iter().any(|slot| matches!(slot, Slot::Pending(_))),
             owners
-                .iter()
-                .any(|slot| matches!(slot, Slot::Pending(ticket) if ticket.matches_root(&root))),
+                .values()
+                .any(|owner| matches!(owner.slot, Slot::Pending(_))),
+            owners.values().any(
+                |owner| matches!(&owner.slot, Slot::Pending(ticket) if ticket.matches_root(&root)),
+            ),
         )
     };
     if !pending {
@@ -156,16 +190,48 @@ fn retry_registered(
     task: &RuntimeTaskContext,
 ) -> Result<SearchStagingCleanupReport> {
     let mut report = SearchStagingCleanupReport::default();
-    let start = NEXT_RETRY.load(Ordering::Relaxed);
-    for offset in 0..MAX_OWNERS {
-        let index = (start + offset) % MAX_OWNERS;
+    checkpoint(task)?;
+    let _selection_memory = memory
+        .spool
+        .reserve(std::mem::size_of::<[(u64, u64); MAX_ROOT_OWNERS]>())?;
+    let mut selected = [(0, 0); MAX_ROOT_OWNERS];
+    let mut count = 0;
+    {
+        let owners = OWNERS.lock().unwrap_or_else(|error| error.into_inner());
+        for (&index, owner) in owners.iter() {
+            if matches!(&owner.slot, Slot::Pending(ticket) if ticket.matches_root(root)) {
+                if count == MAX_ROOT_OWNERS {
+                    return Err(HawDBError::Execution(
+                        "search cleanup root inventory exceeds owner capacity".into(),
+                    ));
+                }
+                selected[count] = (owner.last_retry, index);
+                count += 1;
+            }
+        }
+    }
+    // Foreign roots cannot reset this root's progress. Sort only admitted
+    // identities, with no allocation or permanently retained root index.
+    selected[..count].sort_unstable();
+    for &(last_retry, index) in &selected[..count] {
+        if report.attempted_stages == max_attempts {
+            break;
+        }
         let ticket = {
             let mut owners = OWNERS.lock().unwrap_or_else(|error| error.into_inner());
-            match &owners[index] {
-                Slot::Pending(ticket)
-                    if ticket.matches_root(root) && report.attempted_stages < max_attempts =>
+            match owners.get_mut(&index) {
+                Some(owner)
+                    if owner.last_retry == last_retry
+                        && matches!(&owner.slot, Slot::Pending(ticket) if ticket.matches_root(root)) =>
                 {
-                    match std::mem::replace(&mut owners[index], Slot::Active) {
+                    owner.last_retry = NEXT_RETRY_SEQUENCE
+                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |sequence| {
+                            sequence.checked_add(1)
+                        })
+                        .map_err(|_| {
+                            HawDBError::Execution("search cleanup retry identity exhausted".into())
+                        })?;
+                    match std::mem::replace(&mut owner.slot, Slot::Active) {
                         Slot::Pending(ticket) => Some(ticket),
                         _ => unreachable!(),
                     }
@@ -173,9 +239,10 @@ fn retry_registered(
                 _ => None,
             }
         };
-        if let Some(mut ticket) = ticket {
+        if let Some(ticket) = ticket {
             let registration = Registration { index };
-            NEXT_RETRY.store((index + 1) % MAX_OWNERS, Ordering::Relaxed);
+            // Unwind must release the ticket before its owner admission.
+            let mut ticket = ticket;
             let workspace = (|| {
                 checkpoint(task)?;
                 memory
@@ -212,8 +279,8 @@ fn retry_registered(
         }
     }
     let owners = OWNERS.lock().unwrap_or_else(|error| error.into_inner());
-    for slot in owners.iter() {
-        if let Slot::Pending(ticket) = slot
+    for owner in owners.values() {
+        if let Slot::Pending(ticket) = &owner.slot
             && ticket.matches_root(root)
         {
             report.pending_stages += 1;
@@ -222,7 +289,8 @@ fn retry_registered(
                 .saturating_add(ticket.disk_reservation);
             report.retained_memory_bytes = report
                 .retained_memory_bytes
-                .saturating_add(ticket._memory.bytes())
+                .saturating_add(owner._memory.bytes())
+                .saturating_add(owner.root.retained_bytes())
                 .saturating_add(ticket.path.retained_bytes())
                 .saturating_add(ticket.source_root.retained_bytes());
             match &ticket.error {
@@ -285,7 +353,7 @@ impl Ticket {
                     ));
                 }
                 #[cfg(test)]
-                evidence::before_unlink(&path);
+                evidence::before_unlink(&path)?;
                 fs::remove_file(path)?;
             }
         }
@@ -318,7 +386,6 @@ impl StageDirectory {
             memory,
             task,
         )?;
-        let registration = Registration::acquire()?;
         for _ in 0..64 {
             checkpoint(task)?;
             let _name_memory = memory.retained.reserve(3 * 128)?;
@@ -342,14 +409,21 @@ impl StageDirectory {
             let cleanup = memory
                 .spool
                 .reserve(directory::stage_removal_bytes(&path)?)?;
-            let metadata = memory
-                .retained
-                .reserve(std::mem::size_of::<TicketFields>() + CLEANUP_ACCOUNT_METADATA_BYTES)?;
+            let metadata = memory.retained.reserve(
+                std::mem::size_of::<TicketFields>()
+                    + std::mem::size_of::<Owner>()
+                    + crate::build_memory::MAP_ENTRY_BYTES
+                    + CLEANUP_ACCOUNT_METADATA_BYTES,
+            )?;
             let ticket_path = OwnedPath::copy(&path, memory, task)?;
+            let owner_root = OwnedPath::copy(&root, memory, task)?;
             let retained_bytes = crate::build_memory::checked_add(
                 metadata.bytes(),
                 crate::build_memory::checked_add(
-                    ticket_path.retained_bytes(),
+                    crate::build_memory::checked_add(
+                        ticket_path.retained_bytes(),
+                        owner_root.retained_bytes(),
+                    )?,
                     source_root.retained_bytes(),
                 )?,
             )?;
@@ -362,6 +436,13 @@ impl StageDirectory {
                         .map_err(|error| HawDBError::Execution(error.to_string()))
                 })
                 .transpose()?;
+            let registration = Registration::acquire(Owner {
+                root: owner_root,
+                slot: Slot::Active,
+                last_retry: 0,
+                _memory: metadata,
+                _host_memory: host_memory,
+            })?;
             let created = super::super::io::GenerationIo::new(memory, task)
                 .native(&[&path], || fs::create_dir(&path))?;
             match created {
@@ -376,8 +457,6 @@ impl StageDirectory {
                                 disk_reservation: 0,
                                 error: None,
                             }),
-                            _memory: metadata,
-                            _host_memory: host_memory,
                         }),
                         cleanup_memory: Some(cleanup),
                         project: Some(project),
@@ -411,16 +490,24 @@ impl StageDirectory {
 
 impl StageDirectory {
     pub(in crate::out_of_core) fn cleanup(&mut self) -> bool {
-        let Some(mut ticket) = self.ticket.take() else {
+        let Some(ticket) = self.ticket.take() else {
             return false;
         };
         let registration = self.registration.take().expect("registered private stage");
-        let pending = if let Err(error) = ticket.remove() {
-            ticket.error = Some(error.into());
-            registration.retain(ticket);
-            true
-        } else {
-            false
+        // Keep owner admission alive while ticket allocations unwind.
+        let mut ticket = ticket;
+        let pending = match ticket.remove() {
+            Err(error) => {
+                ticket.error = Some(error.into());
+                registration.retain(ticket);
+                true
+            }
+            Ok(()) => {
+                // Owner admission must outlive its ticket's allocations.
+                drop(ticket);
+                drop(registration);
+                false
+            }
         };
         // Idle debt owns only its accounted metadata and disk reservation.
         // Retries acquire fresh workspace and the current project FD domain.
@@ -540,9 +627,14 @@ mod tests {
         drop(stage);
         drop(held);
         drop(project);
-        let registrations = (0..MAX_OWNERS - 1)
-            .map(|_| Registration::acquire().unwrap())
+        let registrations = (0..MAX_ROOT_OWNERS)
+            .map(|_| StageDirectory::create(&target, &memory, &task).unwrap())
             .collect::<Vec<_>>();
+        let target_paths = fs::read_dir(&target)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(target_paths.len(), MAX_ROOT_OWNERS);
 
         let error = StageDirectory::create(&target, &memory, &task)
             .err()
@@ -550,7 +642,13 @@ mod tests {
         assert!(error
             .to_string()
             .contains("cleanup owner capacity exhausted"));
-        assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+        assert_eq!(
+            fs::read_dir(&target)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect::<std::collections::BTreeSet<_>>(),
+            target_paths
+        );
         assert_eq!(fs::read(path.join("retained")).unwrap(), b"evidence");
         let reopened = ProjectFileDescriptors::acquire_existing(&foreign, 8).unwrap();
         assert_eq!(
@@ -607,6 +705,44 @@ pub(super) mod evidence {
         resume: Receiver<()>,
     }
     static HOOK: Mutex<Option<Hook>> = Mutex::new(None);
+    struct UnlinkFailure {
+        path: PathBuf,
+        attempts: usize,
+    }
+    static UNLINK_FAILURE: Mutex<Option<UnlinkFailure>> = Mutex::new(None);
+
+    pub(in crate::out_of_core) struct UnlinkFailureGuard {
+        path: PathBuf,
+    }
+    impl UnlinkFailureGuard {
+        pub(in crate::out_of_core) fn attempts(&self) -> usize {
+            let failure = UNLINK_FAILURE.lock().unwrap();
+            let failure = failure.as_ref().expect("installed unlink failure");
+            assert_eq!(failure.path, self.path);
+            failure.attempts
+        }
+    }
+    impl Drop for UnlinkFailureGuard {
+        fn drop(&mut self) {
+            let mut failure = UNLINK_FAILURE.lock().unwrap();
+            if failure
+                .as_ref()
+                .is_some_and(|failure| failure.path == self.path)
+            {
+                failure.take();
+            }
+        }
+    }
+    pub(in crate::out_of_core) fn fail_unlink(path: &Path) -> UnlinkFailureGuard {
+        let path = std::fs::canonicalize(path).unwrap();
+        let mut failure = UNLINK_FAILURE.lock().unwrap();
+        assert!(failure.is_none());
+        *failure = Some(UnlinkFailure {
+            path: path.clone(),
+            attempts: 0,
+        });
+        UnlinkFailureGuard { path }
+    }
     pub(in crate::out_of_core) fn install(
         root: PathBuf,
         started: Sender<()>,
@@ -618,7 +754,7 @@ pub(super) mod evidence {
             resume,
         });
     }
-    pub(super) fn before_unlink(path: &Path) {
+    pub(super) fn before_unlink(path: &Path) -> std::io::Result<()> {
         let hook = {
             let mut hook = HOOK.lock().unwrap();
             if hook
@@ -634,5 +770,13 @@ pub(super) mod evidence {
             hook.started.send(()).unwrap();
             hook.resume.recv().unwrap();
         }
+        let mut failure = UNLINK_FAILURE.lock().unwrap();
+        if let Some(failure) = failure.as_mut()
+            && failure.path == path
+        {
+            failure.attempts += 1;
+            return Err(std::io::ErrorKind::PermissionDenied.into());
+        }
+        Ok(())
     }
 }

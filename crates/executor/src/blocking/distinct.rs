@@ -161,18 +161,71 @@ impl<'a> DistinctOperator<'a> {
         emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Result<BatchControl> {
         runtime_checkpoint(self.task_context)?;
+        if execution_limit.output_rows == Some(0)
+            || (self.runs.is_empty() && self.distinct.is_empty())
+        {
+            let spilled_rows = if self.runs.is_empty() {
+                0
+            } else {
+                self.input_rows as usize
+            };
+            self.record_memory_report(spilled_rows, self.tracker.peak_bytes);
+            return Ok(BatchControl::Continue);
+        }
         if self.runs.is_empty() {
             self.record_memory_report(0, self.tracker.peak_bytes);
-            let mut selected = self.distinct.into_values().collect::<Vec<_>>();
+            let mut selected = std::mem::take(&mut self.distinct)
+                .into_values()
+                .collect::<Vec<_>>();
             selected.sort_by_key(|(ordinal, _)| *ordinal);
-            return emit_binding_iterator(
-                selected
-                    .into_iter()
-                    .take(execution_limit.output_rows.unwrap_or(usize::MAX))
-                    .map(|(_, binding)| binding),
-                self.memory.batch_rows.get(),
-                emit,
+            selected.truncate(execution_limit.output_rows.unwrap_or(usize::MAX));
+            let schemas = std::mem::take(&mut self.schemas);
+            drop(schemas);
+            // Keys and discarded payloads are gone, but the complete selection
+            // buffer remains live until its iterator is destroyed.
+            let retained_bytes = selected.iter().fold(
+                std::mem::size_of_val(&selected).saturating_add(
+                    selected
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<(u64, Binding)>()),
+                ),
+                |bytes, (_, binding)| {
+                    bytes.saturating_add(
+                        binding_memory_bytes(binding) - std::mem::size_of::<Binding>(),
+                    )
+                },
             );
+            if retained_bytes > self.tracker.used_bytes {
+                self.tracker
+                    .try_charge(retained_bytes - self.tracker.used_bytes)?;
+            } else {
+                self.tracker
+                    .release(self.tracker.used_bytes - retained_bytes);
+            }
+            let mut output = self.output_batch();
+            let mut rows = selected.into_iter();
+            while let Some((_, binding)) = rows.next() {
+                runtime_checkpoint(self.task_context)?;
+                let source_bytes =
+                    binding_memory_bytes(&binding).saturating_sub(std::mem::size_of::<Binding>());
+                if output.transfer_from(&mut self.tracker, source_bytes, binding, emit)?
+                    == BatchControl::Stop
+                {
+                    return Ok(BatchControl::Stop);
+                }
+                // A full terminal batch must release the remaining buffer
+                // before the downstream operator admits its output.
+                if rows.as_slice().is_empty() {
+                    break;
+                }
+                if output.is_full() && output.emit(emit)? == BatchControl::Stop {
+                    return Ok(BatchControl::Stop);
+                }
+            }
+            drop(rows);
+            self.tracker.reset();
+            runtime_checkpoint(self.task_context)?;
+            return output.emit(emit);
         }
         if !self.distinct.is_empty() {
             self.spill_current_run()?;
@@ -195,19 +248,35 @@ impl<'a> DistinctOperator<'a> {
             self.input_rows as usize,
             peak_tracked_bytes.load(std::sync::atomic::Ordering::Relaxed),
         );
+        let output = self.output_batch();
+        let run = self
+            .runs
+            .pop()
+            .expect("compaction retains one distinct run");
         emit_distinct_run(
-            self.runs
-                .first()
-                .expect("compaction retains one distinct run"),
+            run,
             DistinctRunExecutionContext {
                 memory_budget: self.memory.blocking_operator_bytes,
                 spill_budget: &self.spill_budget,
                 blocking_account: &self.blocking_account,
-                batch_rows: self.memory.batch_rows.get(),
+                output,
                 execution_limit,
                 task_context: self.task_context,
             },
             emit,
+        )
+    }
+
+    fn output_batch(&self) -> AccountedBindingBatch {
+        AccountedBindingBatch::with_account(
+            "DistinctExec",
+            self.memory.batch_rows.get(),
+            self.memory.batch_payload_bytes,
+            self.blocking_account.sibling(
+                QueryMemoryClass::PipelineBatch,
+                "DistinctExec output batch",
+                self.memory.batch_payload_bytes,
+            ),
         )
     }
 
@@ -461,13 +530,13 @@ struct DistinctRunExecutionContext<'a> {
     memory_budget: NonZeroUsize,
     spill_budget: &'a SpillBudgetTracker,
     blocking_account: &'a QueryMemoryAccount,
-    batch_rows: usize,
+    output: AccountedBindingBatch,
     execution_limit: ExecutionLimit,
     task_context: Option<&'a RuntimeTaskContext>,
 }
 
 fn emit_distinct_run(
-    run: &spill::SpillRun,
+    run: spill::SpillRun,
     context: DistinctRunExecutionContext<'_>,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
@@ -475,23 +544,19 @@ fn emit_distinct_run(
         memory_budget,
         spill_budget,
         blocking_account,
-        batch_rows,
+        mut output,
         execution_limit,
         task_context,
     } = context;
     let mut reader = run.reader()?;
-    let mut output = Vec::with_capacity(batch_rows);
     let mut tracker = OperatorMemoryTracker::with_account(memory_budget, blocking_account.clone());
     let mut emitted = 0usize;
-    while let Some(record) = reader.read_binding_record(memory_budget.get(), spill_budget)? {
+    loop {
         runtime_checkpoint(task_context)?;
-        if !output.is_empty()
-            && tracker.would_exceed(record.decoded_binding_bytes())
-            && emit_accounted_distinct_batch(&mut output, &mut tracker, batch_rows, emit)?
-                == BatchControl::Stop
-        {
-            return Ok(BatchControl::Stop);
-        }
+        let Some(record) = reader.read_binding_record(memory_budget.get(), spill_budget)? else {
+            break;
+        };
+        output.check_row_size(record.decoded_binding_bytes())?;
         let binding = record.try_map(
             "DistinctExec output",
             memory_budget.get(),
@@ -499,36 +564,27 @@ fn emit_distinct_run(
             |_, binding| Ok(binding),
             binding_memory_bytes,
         )?;
-        output.push(binding);
-        emitted = emitted.saturating_add(1);
-        if output.len() == batch_rows
-            && emit_accounted_distinct_batch(&mut output, &mut tracker, batch_rows, emit)?
-                == BatchControl::Stop
-        {
+        let source_bytes = binding_memory_bytes(&binding);
+        if output.transfer_from(&mut tracker, source_bytes, binding, emit)? == BatchControl::Stop {
             return Ok(BatchControl::Stop);
         }
+        emitted = emitted.saturating_add(1);
         if execution_limit.is_reached(emitted) {
             break;
         }
+        if output.is_full() {
+            if reader.is_exhausted()? {
+                break;
+            }
+            if output.emit(emit)? == BatchControl::Stop {
+                return Ok(BatchControl::Stop);
+            }
+        }
     }
-    if !output.is_empty()
-        && emit_accounted_distinct_batch(&mut output, &mut tracker, batch_rows, emit)?
-            == BatchControl::Stop
-    {
-        return Ok(BatchControl::Stop);
-    }
-    Ok(BatchControl::Continue)
-}
-
-fn emit_accounted_distinct_batch(
-    batch: &mut BindingBatch,
-    tracker: &mut OperatorMemoryTracker,
-    batch_rows: usize,
-    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
-) -> Result<BatchControl> {
-    let outgoing = std::mem::replace(batch, Vec::with_capacity(batch_rows));
-    tracker.reset();
-    emit(outgoing)
+    drop(reader);
+    drop(run);
+    runtime_checkpoint(task_context)?;
+    output.emit(emit)
 }
 
 fn distinct_key_memory_bytes(key: &DistinctKey) -> usize {
@@ -538,6 +594,9 @@ fn distinct_key_memory_bytes(key: &DistinctKey) -> usize {
         }),
     )
 }
+
+#[cfg(test)]
+mod output_tests;
 
 #[cfg(test)]
 mod tests {

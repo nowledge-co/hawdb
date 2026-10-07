@@ -172,3 +172,46 @@ fn validate_endpoint_predicates<'a>(
 fn unsupported(message: &str) -> HawDBError {
     HawDBError::Semantic(message.to_string())
 }
+
+pub(super) fn endpoint_id_value(
+    predicate: Option<&PropertyPredicate>,
+    variable: &str,
+    parameters: &BTreeMap<String, Value>,
+    endpoint_name: &str,
+) -> Result<Value> {
+    let Some(predicate) = predicate else {
+        return Err(HawDBError::Semantic(format!(
+            "ALL SHORTEST path reads require {endpoint_name} id predicate"
+        )));
+    };
+    find_endpoint_id_value(predicate, variable, parameters)?.ok_or_else(|| {
+        HawDBError::Semantic(format!(
+            "ALL SHORTEST path reads require {endpoint_name} id equality on '{variable}.id'"
+        ))
+    })
+}
+
+pub(super) fn find_endpoint_id_value(
+    predicate: &PropertyPredicate,
+    variable: &str,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Option<Value>> {
+    match predicate {
+        PropertyPredicate::And(predicates) => {
+            for predicate in predicates {
+                if let Some(value) = find_endpoint_id_value(predicate, variable, parameters)? {
+                    return Ok(Some(value));
+                }
+            }
+            Ok(None)
+        }
+        PropertyPredicate::Eq {
+            variable: predicate_variable,
+            property,
+            value,
+        } if predicate_variable == variable && property == "id" => {
+            Ok(Some(bind_value(value, parameters)?))
+        }
+        _ => Ok(None),
+    }
+}

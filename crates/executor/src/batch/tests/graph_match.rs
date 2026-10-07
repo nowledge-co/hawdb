@@ -1,5 +1,5 @@
 use super::*;
-use hawdb_plan_cypher::LogicalPlan;
+use hawdb_plan_cypher::{GraphMatchStep, LogicalPlan};
 
 // The oracle lowers the generic operators directly, independently of optimizer fast paths.
 fn lower(plan: LogicalPlan) -> PhysicalPlan {
@@ -149,6 +149,126 @@ fn optional_null_import_never_matches_real_node_zero() {
     assert!(rows.is_empty());
     let rows = execute("MATCH (n:Memory) OPTIONAL MATCH (n)-[:ABSENT]->(m:Memory) WITH m AS kept OPTIONAL MATCH (kept)-[:MENTIONS]->(target:Memory) RETURN COUNT(target) AS count").unwrap();
     assert_eq!(rows[0].values["count"], Value::Int(0));
+}
+
+fn unsupported_bounded_match_is_independent_of_input_and_relationship_type(
+    configure: impl Fn(&mut GraphMatchStep),
+) {
+    for rel_type in ["ABSENT", "MENTIONS"] {
+        for query in [
+            format!("MATCH (n:Memory)-[:{rel_type}*0..1]->(m:Memory) RETURN m"),
+            format!("MATCH (seed:Missing) WITH seed AS n MATCH (n)-[:{rel_type}*0..1]->(m:Memory) RETURN m"),
+        ] {
+            let mut plan =
+                lower(hawdb_plan_cypher::plan_pipeline_query(&query, &BTreeMap::new()).unwrap());
+            let PhysicalPlan::ProjectExec { input, .. } = &mut plan else {
+                panic!("expected projection");
+            };
+            let PhysicalPlan::GraphMatchExec { program, .. } = input.as_mut() else {
+                panic!("expected generic MATCH");
+            };
+            configure(
+                program
+                    .steps
+                    .iter_mut()
+                    .find(|step| matches!(step, GraphMatchStep::Expand { .. }))
+                    .expect("expected expansion"),
+            );
+            with_context(None, |context| {
+                let empty = store::ReadFixture::default();
+                for (graph, store) in [
+                    ("populated", context.store),
+                    ("empty", &empty as &dyn crate::store::GraphExecutionRead),
+                ] {
+                    let context = BatchReadContext { store, ..context };
+                    let result = execute_binding_batches(
+                        &plan,
+                        context,
+                        ExecutionLimit::unlimited(),
+                        &mut |_| panic!("unsupported bounded MATCH emitted a row"),
+                    );
+                    assert!(
+                        matches!(result, Err(HawDBError::Execution(ref message))
+                            if message.contains("bounded MATCH expansion requires an outgoing typed pattern without relationship bindings")),
+                        "graph={graph}, query={query}: {result:?}"
+                    );
+                }
+            });
+        }
+    }
+}
+
+#[test]
+fn bounded_match_direction_rejection_is_independent_of_relationship_type() {
+    for unsupported in [
+        RelationshipDirection::Incoming,
+        RelationshipDirection::Undirected,
+    ] {
+        unsupported_bounded_match_is_independent_of_input_and_relationship_type(|step| {
+            let GraphMatchStep::Expand { direction, .. } = step else {
+                panic!("expected expansion");
+            };
+            *direction = unsupported;
+        });
+    }
+}
+
+#[test]
+fn bounded_match_property_rejection_is_independent_of_relationship_type() {
+    unsupported_bounded_match_is_independent_of_input_and_relationship_type(|step| {
+        let GraphMatchStep::Expand { properties, .. } = step else {
+            panic!("expected expansion");
+        };
+        properties.insert("weight".into(), Value::Int(10));
+    });
+}
+
+#[test]
+fn bounded_match_relationship_binding_rejection_is_independent_of_relationship_type() {
+    unsupported_bounded_match_is_independent_of_input_and_relationship_type(|step| {
+        let GraphMatchStep::Expand { relationship, .. } = step else {
+            panic!("expected expansion");
+        };
+        *relationship = Some("edge".into());
+    });
+}
+
+#[test]
+fn bounded_match_untyped_rejection_is_independent_of_input() {
+    unsupported_bounded_match_is_independent_of_input_and_relationship_type(|step| {
+        let GraphMatchStep::Expand { rel_type, .. } = step else {
+            panic!("expected expansion");
+        };
+        rel_type.clear();
+    });
+}
+
+#[test]
+fn valid_bounded_match_preserves_empty_input() {
+    for rel_type in ["ABSENT", "MENTIONS"] {
+        let query = format!(
+            "MATCH (seed:Missing) WITH seed AS n MATCH (n)-[:{rel_type}*0..1]->(m:Memory) RETURN m"
+        );
+        assert!(execute(&query).unwrap().is_empty());
+        let plan = lower(
+            hawdb_plan_cypher::plan_pipeline_query(
+                &format!("MATCH (n:Memory)-[:{rel_type}*0..1]->(m:Memory) RETURN m"),
+                &BTreeMap::new(),
+            )
+            .unwrap(),
+        );
+        with_context(None, |context| {
+            let empty = store::ReadFixture::default();
+            let context = BatchReadContext {
+                store: &empty,
+                ..context
+            };
+            execute_binding_batches(&plan, context, ExecutionLimit::unlimited(), &mut |_| {
+                panic!("empty bounded MATCH emitted a row")
+            })
+            .unwrap();
+        });
+    }
 }
 
 #[test]
@@ -406,6 +526,125 @@ fn consecutive_optional_clauses_preserve_cartesian_multiplicity() {
             let plan =
                 lower(hawdb_plan_cypher::plan_pipeline_query(&query, &BTreeMap::new()).unwrap());
             assert_eq!(run(&plan), Value::Int(expected));
+        }
+    });
+}
+
+#[test]
+fn optional_degree_preserves_nullable_graph_match_rows_without_traversing_zero() {
+    for (source, expected) in [("m", [0, 0]), ("n", [1, 0])] {
+        let input = lower(
+            hawdb_plan_cypher::plan_pipeline_query(
+                "MATCH (n:Memory) OPTIONAL MATCH (n)-[:ABSENT]->(m:Memory) RETURN n.id AS id, m",
+                &BTreeMap::new(),
+            )
+            .unwrap(),
+        );
+        let plan = PhysicalPlan::OptionalDegreeExec {
+            source_variable: source.into(),
+            rel_type: "MENTIONS".into(),
+            rel_properties: BTreeMap::new(),
+            direction: hawdb_core::RelationshipDirection::Outgoing,
+            target_label: "Memory".into(),
+            target_properties: BTreeMap::new(),
+            alias: "links".into(),
+            input: Box::new(input),
+        };
+        let mut rows = with_context(None, |context| {
+            let mut rows = Vec::new();
+            execute_binding_batches(&plan, context, ExecutionLimit::unlimited(), &mut |batch| {
+                rows.extend(batch);
+                Ok(BatchControl::Continue)
+            })?;
+            Ok::<_, HawDBError>(rows)
+        })
+        .unwrap();
+        rows.sort_by_key(|row| row.values["id"].clone());
+        assert_eq!(rows.len(), 2);
+        for (index, row) in rows.iter().enumerate() {
+            assert_eq!(row.values["id"], Value::Int(index as i64 + 1));
+            assert_eq!(row.values["m"], Value::Null);
+            assert!(!row.nodes.contains_key("m"));
+            assert_eq!(row.values["links"], Value::Int(expected[index]));
+        }
+    }
+}
+
+#[test]
+fn native_expand_preserves_bound_relationship_identity() {
+    with_context(None, |context| {
+        let rel_type = context.catalog.rel_type_id("MENTIONS").unwrap();
+        let store = store::ReadFixture {
+            nodes: (0..2)
+                .map(|id| context.store.node_owned(NodeId(id)).unwrap().unwrap())
+                .collect(),
+            relationships: (0..2)
+                .map(|id| hawdb_storage::RelRecord {
+                    id: hawdb_storage::RelId(id),
+                    source: NodeId(0),
+                    target: NodeId(1),
+                    rel_type,
+                    properties: BTreeMap::new(),
+                })
+                .collect(),
+            ..store::ReadFixture::default()
+        };
+        let context = BatchReadContext {
+            store: &store,
+            ..context
+        };
+        for (rel_type, label, optional) in [
+            ("MENTIONS", "Memory", true),
+            ("MENTIONS", "Missing", true),
+            ("ABSENT", "Memory", true),
+            ("MENTIONS", "Missing", false),
+        ] {
+            let input = lower(
+                hawdb_plan_cypher::plan_pipeline_query(
+                    "MATCH (n:Memory)-[edge:MENTIONS]->(old:Memory) RETURN n, edge",
+                    &BTreeMap::new(),
+                )
+                .unwrap(),
+            );
+            let plan = PhysicalPlan::AdjacencyExpandExec {
+                source_variable: "n".into(),
+                source_label: "Memory".into(),
+                rel_variable: Some("edge".into()),
+                rel_type: rel_type.into(),
+                rel_properties: BTreeMap::new(),
+                direction: hawdb_core::RelationshipDirection::Outgoing,
+                target_variable: "candidate".into(),
+                target_label: label.into(),
+                min_hops: 1,
+                max_hops: 1,
+                optional,
+                graph_budget: None,
+                input: Box::new(input),
+            };
+            let mut rows = Vec::new();
+            execute_binding_batches(&plan, context, ExecutionLimit::unlimited(), &mut |batch| {
+                rows.extend(batch);
+                Ok(BatchControl::Continue)
+            })
+            .unwrap();
+            if !optional {
+                assert!(rows.is_empty());
+                continue;
+            }
+            assert_eq!(rows.len(), 2, "{rel_type}, {label}");
+            rows.sort_by_key(|row| row.relationships["edge"].id);
+            for (id, row) in rows.iter().enumerate() {
+                assert_eq!(
+                    row.relationships["edge"].id,
+                    hawdb_storage::RelId(id as u64)
+                );
+                if rel_type == "MENTIONS" && label == "Memory" {
+                    assert_eq!(row.nodes["candidate"].id, NodeId(1));
+                } else {
+                    assert_eq!(row.values["candidate"], Value::Null);
+                    assert!(!row.nodes.contains_key("candidate"));
+                }
+            }
         }
     });
 }

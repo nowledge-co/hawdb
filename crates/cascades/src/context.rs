@@ -12,7 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::OptimizerConfig;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptimizerConfig {
+    pub max_groups: usize,
+}
+
+impl Default for OptimizerConfig {
+    fn default() -> Self {
+        Self { max_groups: 128 }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryFamily {

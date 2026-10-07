@@ -656,12 +656,23 @@ fn required_runtime_capability(
             Some(hawdb_core::RuntimeCapability::FullTextSearch)
         }
         cypher::Statement::VectorSearch(_) => Some(hawdb_core::RuntimeCapability::VectorSearch),
-        cypher::Statement::MatchReturn(query) if query.vector_seed.is_some() => {
-            Some(hawdb_core::RuntimeCapability::VectorSearch)
-        }
         cypher::Statement::ProjectGraph(_) | cypher::Statement::GraphAlgorithm(_) => {
             Some(hawdb_core::RuntimeCapability::GraphAnalytics)
         }
+        cypher::Statement::Pipeline(query) => query.clauses.iter().find_map(|clause| {
+            let cypher::ClauseKind::Call { procedure, .. } = &clause.kind else {
+                return None;
+            };
+            Some(match &procedure.kind {
+                cypher::ProcedureCallKind::VectorSearch(_) => {
+                    hawdb_core::RuntimeCapability::VectorSearch
+                }
+                cypher::ProcedureCallKind::GraphAlgorithm { .. }
+                | cypher::ProcedureCallKind::ProjectGraph { .. } => {
+                    hawdb_core::RuntimeCapability::GraphAnalytics
+                }
+            })
+        }),
         _ => None,
     }
 }
@@ -737,8 +748,6 @@ fn access_control_node_predicate(
 
 pub(super) fn statement_uses_plan_cache(statement: &cypher::Statement) -> bool {
     match statement_body(statement) {
-        cypher::Statement::MatchReturn(query) => query.vector_seed.is_none(),
-
         cypher::Statement::Pipeline(query) => {
             // Preserve legacy cache boundaries when queries move to clause ASTs.
             // Eligibility is not a substitute for semantic binding validation.
@@ -760,10 +769,7 @@ pub(super) fn statement_uses_plan_cache(statement: &cypher::Statement) -> bool {
                 })
         }
 
-        cypher::Statement::ShortestPathReturn(_)
-        | cypher::Statement::MatchNodesReturn(_)
-        | cypher::Statement::MatchOptionalRelationshipCountSum(_)
-        | cypher::Statement::GraphAlgorithm(_) => true,
+        cypher::Statement::GraphAlgorithm(_) => true,
         _ => false,
     }
 }

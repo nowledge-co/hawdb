@@ -18,27 +18,6 @@ use super::super::ast::*;
 use super::Parser;
 
 impl Parser<'_> {
-    pub(super) fn parse_return_items(&mut self) -> Result<Vec<ReturnItem>> {
-        let mut items = Vec::new();
-        loop {
-            self.skip_ws();
-            let item_start = self.pos;
-            let expression = self.parse_return_atom()?;
-            let expression = self.source_node(expression, item_start);
-            let alias = if self.consume_keyword("AS") {
-                Some(self.parse_ident()?)
-            } else {
-                None
-            };
-            items.push(self.source_node(ReturnItemKind { expression, alias }, item_start));
-            self.skip_ws();
-            if !self.consume_char(',') {
-                break;
-            }
-        }
-        Ok(items)
-    }
-
     pub(super) fn parse_return_atom(&mut self) -> Result<ReturnExpressionKind> {
         Ok(if self.consume_aggregate_function_name("COUNT") {
             self.expect_char('(')?;

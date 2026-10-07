@@ -16,6 +16,7 @@ rust_library(
     aliases = aliases(),
     deps = all_crate_deps(normal = True) + [
         "//crates/core:hawdb_core",
+        "//crates/plan-core:hawdb_plan_core",
         "//crates/cypher:hawdb_cypher",
         "//crates/ddl:hawdb_ddl",
         "//crates/expression:hawdb_expression",

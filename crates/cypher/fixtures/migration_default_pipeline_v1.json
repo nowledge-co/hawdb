@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "frozen_corpus": "migration_corpus_v1.jsonl",
+  "parser_stage_changes": {
+    "mem-0344": {
+      "prior_parse": "rejected",
+      "parse": "accepted",
+      "empty_parameters_error": "semantic error: missing parameter '$memory_id'",
+      "supplied_parameters": "accepted",
+      "reason": "The general grammar retains the OPTIONAL MATCH relationship predicate; binding requires the memory id. Runtime coverage proves filtering and null extension."
+    },
+    "mem-0361": {
+      "prior_parse": "rejected",
+      "parse": "accepted",
+      "empty_parameters_error": "semantic error: mutation requires one bound MATCH pattern",
+      "supplied_parameters": "rejected",
+      "reason": "The grammar retains multiple patterns and SET assignments; the bounded atomic mutation binder rejects this shape before any writes."
+    }
+  },
+  "logical_plan_representations": {
+    "probe-0040": "Limit { offset: 0, limit: Some(2), input: Sort { items: [SortItem { key: Column(\"mention_count\"), direction: Desc }, SortItem { key: Column(\"e.name\"), direction: Asc }], input: Project { items: [Projection { expression: Property { variable: \"e\", property: \"id\" }, name: \"e.id\" }, Projection { expression: Property { variable: \"e\", property: \"name\" }, name: \"e.name\" }, Projection { expression: Property { variable: \"e\", property: \"updated_at\" }, name: \"e.updated_at\" }, Projection { expression: Column(\"mention_count\"), name: \"mention_count\" }], input: Filter { predicate: Or([ExpressionCompare { expression: Column(\"mention_count\"), op: Lt, value: Literal(Int(2)) }, And([ExpressionEq { expression: Column(\"mention_count\"), value: Literal(Int(2)) }, PropertyCompare { variable: \"e\", property: \"name\", op: Gt, value: String(\"fixture-id\") }])]), input: OptionalDegree { source_variable: \"e\", rel_type: \"MENTIONS\", rel_properties: {}, direction: Incoming, target_label: \"Memory\", target_properties: {}, alias: \"mention_count\", input: Filter { predicate: And([PropertyIsNotNull { variable: \"e\", property: \"name\" }, PropertyIsNotNull { variable: \"e\", property: \"id\" }]), input: NodeScan { variable: \"e\", label: \"Entity\" } } } } } } }",
+    "probe-0042": "Limit { offset: 0, limit: Some(2), input: Sort { items: [SortItem { key: Column(\"memory_count\"), direction: Desc }], input: Project { items: [Projection { expression: Property { variable: \"c\", property: \"name\" }, name: \"c.name\" }, Projection { expression: Column(\"memory_count\"), name: \"memory_count\" }, Projection { expression: Property { variable: \"c\", property: \"description\" }, name: \"c.description\" }], input: NodeColumnLookup { variable: \"c\", label: \"Community\", property: \"community_id\", column: \"community_id\", optional: true, input: Aggregate { group_keys: [Projection { expression: Property { variable: \"e\", property: \"community_id\" }, name: \"community_id\" }], items: [Aggregation { function: Count, target: Variable(\"m\"), distinct: true, name: \"memory_count\" }], input: Filter { predicate: And([PropertyIn { variable: \"m\", property: \"space_id\", values: [String(\"fixture-id\")] }, PropertyIsNotNull { variable: \"e\", property: \"community_id\" }]), input: Expand { source_variable: \"m\", source_label: \"Memory\", rel_variable: None, rel_type: \"MENTIONS\", rel_properties: {}, direction: Outgoing, target_variable: \"e\", target_label: \"Entity\", min_hops: 1, max_hops: 1, optional: false, input: NodeScan { variable: \"m\", label: \"Memory\" } } } } } } } }"
+  },
+  "representation_reasons": {
+    "probe-0040": "Equivalent scalar/property keyset comparisons retain the optional count and ordering.",
+    "probe-0042": "The infallible RETURN projection remains below Sort; final LIMIT remains after the optional lookup."
+  }
+}
