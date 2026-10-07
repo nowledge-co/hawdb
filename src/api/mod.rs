@@ -100,6 +100,7 @@ mod runtime_cell;
 mod schema_guidance;
 mod search_projection_catch_up;
 mod search_projection_consumer;
+mod statement_shape;
 pub use search_projection_consumer::*;
 mod source_candidates;
 mod system_schema;
@@ -20011,31 +20012,13 @@ pub(crate) fn statement_kind(statement: &cypher::Statement) -> &'static str {
         }
         cypher::Statement::GraphAlgorithm(_) => "graph_algorithm",
         cypher::Statement::VectorSearch(_) => "vector_search",
-        cypher::Statement::MatchCreateRelationship(_) => "match_create_relationship",
-        cypher::Statement::MatchDelete(_) => "match_delete",
-        cypher::Statement::MatchExpandMatchMergeRelationship(_) => {
-            "match_expand_match_merge_relationship"
-        }
-        cypher::Statement::MatchExpandMergeRelationship(_) => "match_expand_merge_relationship",
-        cypher::Statement::MatchMergeRelationship(_) => "match_merge_relationship",
-        cypher::Statement::MatchNodesReturn(_) => "match_nodes_return",
-        cypher::Statement::MatchOptionalRelationshipCountSum(_) => {
-            "match_optional_relationship_count_sum"
-        }
-        cypher::Statement::MatchReturn(query) if query.vector_seed.is_some() => {
-            "vector_graph_search"
-        }
-        cypher::Statement::MatchReturn(_) => "match_return",
-        cypher::Statement::MatchSet(_) => "match_set",
-        cypher::Statement::MatchSetReturn(_) => "match_set_return",
-        cypher::Statement::Pipeline(_) => "pipeline",
+        cypher::Statement::Pipeline(query) => statement_shape::pipeline_statement_kind(query),
         cypher::Statement::MergeNode(_) => "merge_node",
         cypher::Statement::MergeRelationship(_) => "merge_relationship",
         cypher::Statement::UnwindMutation(_) => "unwind_mutation",
         cypher::Statement::ProjectGraph(_) => "project_graph",
         cypher::Statement::Rollback => "rollback",
         cypher::Statement::SetSystemVariable(_) => "set_system_variable",
-        cypher::Statement::ShortestPathReturn(_) => "shortest_path_return",
     }
 }
 

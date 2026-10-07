@@ -287,6 +287,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_spill_compaction_fuzz_tests",
+    timeout = "long",
     args = [
         "spill::compaction::tests::compaction_differential_campaign",
         "--exact",

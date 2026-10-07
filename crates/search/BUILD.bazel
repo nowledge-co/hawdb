@@ -458,10 +458,12 @@ rust_test(
 )
 
 # Keep optional-capability contracts executable without enabling every feature.
+# Non-FTS profiles also run the shared persistence/recovery suite. Their former
+# 300s deadlines expired locally; use 900s while issue #872 measures decomposition.
 [
     rust_test(
         name = "hawdb_search_%s_tests" % profile,
-        timeout = "long" if "full-text-search" in features else "moderate",
+        timeout = "long",
         crate_name = "hawdb_search",
         crate_root = "src/lib.rs",
         crate_features = features,

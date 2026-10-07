@@ -31,9 +31,7 @@ pub enum Statement {
     Explain(Box<Explain>),
     /// A bounded row source followed by one mutation clause.
     ///
-    /// The ordered-clause pipeline remains opt-in while it is being migrated.
-    /// `UNWIND` is its first public statement entrypoint because its row source
-    /// must be planned and admitted as one atomic mutation batch.
+    /// The row source and mutation are planned and admitted as one atomic batch.
     UnwindMutation(Box<QueryPipeline>),
     Commit,
     CreateNodeLabel(String),
@@ -58,18 +56,8 @@ pub enum Statement {
     CreateRelationship(CreateRelationship),
     MergeNode(MergeNode),
     MergeRelationship(CreateRelationship),
+    /// Ordered MATCH, WITH, RETURN and mutation clauses with their source spans.
     Pipeline(Box<QueryPipeline>),
-    MatchReturn(Box<MatchReturn>),
-    ShortestPathReturn(Box<ShortestPathReturn>),
-    MatchNodesReturn(MatchNodesReturn),
-    MatchSet(MatchSet),
-    MatchSetReturn(MatchSetReturn),
-    MatchOptionalRelationshipCountSum(MatchOptionalRelationshipCountSum),
-    MatchDelete(MatchDelete),
-    MatchCreateRelationship(MatchCreateRelationship),
-    MatchMergeRelationship(MatchMergeRelationship),
-    MatchExpandMergeRelationship(MatchExpandMergeRelationship),
-    MatchExpandMatchMergeRelationship(MatchExpandMatchMergeRelationship),
     SetSystemVariable(SetSystemVariable),
     Rollback,
 }
@@ -187,63 +175,12 @@ pub struct MergeNode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MatchReturn {
-    pub vector_seed: Option<VectorSearch>,
-    pub variable: String,
-    pub label: String,
-    pub properties: BTreeMap<String, ValueExpression>,
-    pub expand: Option<RelationshipExpand>,
-    pub post_match_expand: Option<PostMatchRelationshipExpand>,
-    pub optional_expand: Option<OptionalRelationshipExpand>,
-    pub optional_with: Option<OptionalWithAggregate>,
-    pub collect_with: Option<WithCollect>,
-    pub distinct_with: Option<WithDistinctProjection>,
-    pub with_projection: Option<WithProjection>,
-    pub with_order_by: Vec<OrderItem>,
-    pub with_offset: Option<ValueExpression>,
-    pub with_limit: Option<ValueExpression>,
-    pub aggregate_with: Option<WithAggregateProjection>,
-    pub aggregate_with_filter: Option<WithAliasFilter>,
-    pub post_with_match: Option<PostWithNodeLookup>,
-    pub predicate: Option<PropertyPredicate>,
-    pub distinct: bool,
-    pub returns: Vec<ReturnItem>,
-    pub order_by: Vec<OrderItem>,
-    pub offset: Option<ValueExpression>,
-    pub limit: Option<ValueExpression>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PostWithNodeLookup {
     pub variable: String,
     pub label: String,
     pub property: String,
     pub column: String,
     pub optional: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShortestPathReturn {
-    pub path_variable: String,
-    pub source_variable: String,
-    pub source_label: String,
-    pub source_properties: BTreeMap<String, ValueExpression>,
-    pub rel_variable: Option<String>,
-    pub rel_type: String,
-    pub direction: RelationshipDirection,
-    pub target_variable: String,
-    pub target_label: String,
-    pub target_properties: BTreeMap<String, ValueExpression>,
-    pub min_hops: usize,
-    pub max_hops: usize,
-    pub predicate: Option<PropertyPredicate>,
-    pub returns: Vec<ShortestPathReturnItem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShortestPathReturnItem {
-    pub expression: ShortestPathReturnExpression,
-    pub alias: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,213 +192,6 @@ pub enum ShortestPathReturnExpression {
     Length {
         path_variable: String,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OptionalRelationshipExpand {
-    pub source_variable: String,
-    pub source_label: String,
-    pub expand: RelationshipExpand,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PostMatchRelationshipExpand {
-    pub source_variable: String,
-    pub source_label: String,
-    pub source_properties: BTreeMap<String, ValueExpression>,
-    pub expand: RelationshipExpand,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OptionalWithAggregate {
-    pub group_variable: String,
-    pub count_variable: String,
-    pub distinct: bool,
-    pub alias: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WithCollect {
-    pub group_variable: String,
-    pub collect_variable: String,
-    pub collect_property: String,
-    pub distinct: bool,
-    pub alias: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WithDistinctProjection {
-    pub items: Vec<ReturnItem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WithProjection {
-    pub items: Vec<ReturnItem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WithAggregateProjection {
-    pub items: Vec<ReturnItem>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WithAliasFilterOp {
-    Eq,
-    Ne,
-    Lt,
-    Lte,
-    Gt,
-    Gte,
-    Contains,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WithAliasFilterExpression {
-    Column(String),
-    Property { variable: String, property: String },
-    Value(ValueExpression),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WithAliasFilter {
-    And(Vec<WithAliasFilter>),
-    Or(Vec<WithAliasFilter>),
-    Comparison {
-        left: WithAliasFilterExpression,
-        op: WithAliasFilterOp,
-        right: WithAliasFilterExpression,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MatchNodesReturn {
-    pub left_variable: String,
-    pub left_label: String,
-    pub left_properties: BTreeMap<String, ValueExpression>,
-    pub right_variable: String,
-    pub right_label: String,
-    pub right_properties: BTreeMap<String, ValueExpression>,
-    pub predicate: Option<PropertyPredicate>,
-    pub returns: Vec<ReturnItem>,
-    pub limit: Option<ValueExpression>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MatchSet {
-    pub variable: String,
-    pub label: String,
-    pub properties: BTreeMap<String, ValueExpression>,
-    pub expand: Option<RelationshipExpand>,
-    pub predicate: Option<PropertyPredicate>,
-    pub sets: Vec<SetProperty>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MatchSetReturn {
-    pub update: MatchSet,
-    pub returns: Vec<ReturnItem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MatchOptionalRelationshipCountSum {
-    pub variable: String,
-    pub label: String,
-    pub properties: BTreeMap<String, ValueExpression>,
-    pub legs: Vec<OptionalRelationshipCountLeg>,
-    pub output: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OptionalRelationshipCountLeg {
-    pub relationship_variable: String,
-    pub rel_type: String,
-    pub direction: RelationshipDirection,
-    pub distinct: bool,
-    pub filter: Option<OptionalRelationshipCountFilter>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OptionalRelationshipCountFilter {
-    PropertyNotEqOrEmpty {
-        property: String,
-        value: ValueExpression,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MatchDelete {
-    pub variable: String,
-    pub label: String,
-    pub properties: BTreeMap<String, ValueExpression>,
-    pub expand: Option<RelationshipExpand>,
-    pub predicate: Option<PropertyPredicate>,
-    pub delete_variable: String,
-    pub detach: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MatchCreateRelationship {
-    pub source_variable: String,
-    pub source_label: String,
-    pub source_properties: BTreeMap<String, ValueExpression>,
-    pub target_variable: String,
-    pub target_label: String,
-    pub target_properties: BTreeMap<String, ValueExpression>,
-    pub predicate: Option<PropertyPredicate>,
-    pub create_source_variable: String,
-    pub rel_type: String,
-    pub rel_properties: BTreeMap<String, ValueExpression>,
-    pub create_target_variable: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MatchMergeRelationship {
-    pub source_variable: String,
-    pub source_label: String,
-    pub source_properties: BTreeMap<String, ValueExpression>,
-    pub target_variable: String,
-    pub target_label: String,
-    pub target_properties: BTreeMap<String, ValueExpression>,
-    pub predicate: Option<PropertyPredicate>,
-    pub merge_source_variable: String,
-    pub rel_variable: Option<String>,
-    pub rel_type: String,
-    pub rel_properties: BTreeMap<String, ValueExpression>,
-    pub merge_target_variable: String,
-    pub on_create_sets: Vec<SetProperty>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MatchExpandMergeRelationship {
-    pub source_variable: String,
-    pub source_label: String,
-    pub source_properties: BTreeMap<String, ValueExpression>,
-    pub expand: RelationshipExpand,
-    pub predicate: Option<PropertyPredicate>,
-    pub merge_source_variable: String,
-    pub rel_variable: Option<String>,
-    pub rel_type: String,
-    pub rel_properties: BTreeMap<String, ValueExpression>,
-    pub merge_target_variable: String,
-    pub on_create_sets: Vec<SetProperty>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MatchExpandMatchMergeRelationship {
-    pub source_variable: String,
-    pub source_label: String,
-    pub source_properties: BTreeMap<String, ValueExpression>,
-    pub expand: RelationshipExpand,
-    pub matched_target_variable: String,
-    pub matched_target_label: String,
-    pub matched_target_properties: BTreeMap<String, ValueExpression>,
-    pub predicate: Option<PropertyPredicate>,
-    pub merge_source_variable: String,
-    pub rel_variable: Option<String>,
-    pub rel_type: String,
-    pub rel_properties: BTreeMap<String, ValueExpression>,
-    pub merge_target_variable: String,
-    pub on_create_sets: Vec<SetProperty>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -504,19 +234,6 @@ pub enum SetValueExpression {
         default: ValueExpression,
         value: ValueExpression,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RelationshipExpand {
-    pub variable: Option<String>,
-    pub rel_type: String,
-    pub properties: BTreeMap<String, ValueExpression>,
-    pub direction: RelationshipDirection,
-    pub target_variable: String,
-    pub target_label: String,
-    pub target_properties: BTreeMap<String, ValueExpression>,
-    pub min_hops: usize,
-    pub max_hops: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

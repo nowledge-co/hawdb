@@ -13,13 +13,20 @@
 // limitations under the License.
 
 use crate::{
-    parse, AstNode, OrderExpression, ReturnExpressionKind, ScalarExpressionKind, SourceSpan,
-    Statement, ValueExpressionKind,
+    parse, AstNode, ClauseKind, OrderExpression, ProjectionClause, QueryPipeline,
+    ReturnExpressionKind, ScalarExpressionKind, SourceSpan, Statement, ValueExpressionKind,
 };
 
 fn assert_text<T>(node: &AstNode<T>, query: &str, text: &str) {
     let span = node.span.expect("parsed node must have source provenance");
     assert_eq!(span.text(query), Some(text), "wrong span: {span:?}");
+}
+
+fn returned(query: &QueryPipeline) -> &ProjectionClause {
+    let ClauseKind::Return(projection) = &query.clauses.last().unwrap().kind else {
+        panic!("expected a concluding RETURN clause");
+    };
+    projection
 }
 
 #[test]
@@ -30,10 +37,10 @@ fn nested_projection_spans_use_original_utf8_byte_offsets() {
     let Statement::Explain(explain) = parse(query).unwrap() else {
         panic!("expected EXPLAIN");
     };
-    let Statement::MatchReturn(parsed) = explain.statement else {
+    let Statement::Pipeline(parsed) = explain.statement else {
         panic!("expected MATCH");
     };
-    let item = &parsed.returns[0];
+    let item = &returned(&parsed).items[0];
     assert_text(
         item,
         query,
@@ -74,10 +81,10 @@ fn nested_projection_spans_use_original_utf8_byte_offsets() {
             end: offset + 9
         })
     );
-    assert_text(&parsed.returns[1], query, "count(m) AS total");
-    assert_text(&parsed.returns[1].expression, query, "count(m)");
-    assert_text(&parsed.order_by[0], query, "left(label, 2) DESC");
-    let OrderExpression::Value(order) = &parsed.order_by[0].expression else {
+    assert_text(&returned(&parsed).items[1], query, "count(m) AS total");
+    assert_text(&returned(&parsed).items[1].expression, query, "count(m)");
+    assert_text(&returned(&parsed).order_by[0], query, "left(label, 2) DESC");
+    let OrderExpression::Value(order) = &returned(&parsed).order_by[0].expression else {
         panic!("expected scalar ordering expression");
     };
     assert_text(order, query, "left(label, 2)");
@@ -91,10 +98,10 @@ fn nested_projection_spans_use_original_utf8_byte_offsets() {
 #[test]
 fn syntax_equality_preserves_distinct_source_locations() {
     let query = "MATCH (m:Memory) RETURN coalesce($value, $value)";
-    let Statement::MatchReturn(parsed) = parse(query).unwrap() else {
+    let Statement::Pipeline(parsed) = parse(query).unwrap() else {
         panic!("expected MATCH");
     };
-    let ReturnExpressionKind::Value(value) = &parsed.returns[0].expression.kind else {
+    let ReturnExpressionKind::Value(value) = &returned(&parsed).items[0].expression.kind else {
         panic!("expected scalar projection");
     };
     let ScalarExpressionKind::Coalesce(arguments) = &value.kind else {
@@ -130,13 +137,12 @@ fn with_items_retain_group_aggregate_and_alias_boundaries() {
         ),
     ] {
         let query = format!("MATCH (m:Memory) WITH {with} RETURN 1");
-        let Statement::MatchReturn(parsed) = parse(&query).unwrap() else {
+        let Statement::Pipeline(parsed) = parse(&query).unwrap() else {
             panic!("expected MATCH");
         };
-        let projection = parsed
-            .aggregate_with
-            .as_ref()
-            .expect("expected aggregate WITH");
+        let ClauseKind::With(projection) = &parsed.clauses[1].kind else {
+            panic!("expected an aggregate WITH clause");
+        };
         assert_eq!(projection.items.len(), items.len());
         let mut offset = query.find("WITH ").unwrap() + 5;
         for (item, text) in projection.items.iter().zip(items) {
@@ -157,24 +163,30 @@ fn with_items_retain_group_aggregate_and_alias_boundaries() {
 #[test]
 fn property_comparisons_and_backtracking_keep_local_spans() {
     let query = "MATCH (m:Memory) WHERE m.id = m.other RETURN m.id";
-    let Statement::MatchReturn(parsed) = parse(query).unwrap() else {
+    let Statement::Pipeline(parsed) = parse(query).unwrap() else {
         panic!("expected MATCH");
     };
-    let crate::PropertyPredicate::ExpressionEq { expression, value } = parsed.predicate.unwrap()
+    let ClauseKind::Match {
+        predicate: Some(predicate),
+        ..
+    } = &parsed.clauses[0].kind
     else {
+        panic!("expected a MATCH predicate");
+    };
+    let crate::PropertyPredicate::ExpressionEq { expression, value } = &predicate.kind else {
         panic!("expected property comparison");
     };
-    assert_text(&expression, query, "m.id");
-    assert_text(&value, query, "m.other");
+    assert_text(expression, query, "m.id");
+    assert_text(value, query, "m.other");
 
     let query = "MATCH (e:Entity) OPTIONAL MATCH (:Memory)-[r:MENTIONS]->(e) \
                  RETURN e.id, count(r) AS total";
-    let Statement::MatchReturn(parsed) = parse(query).unwrap() else {
+    let Statement::Pipeline(parsed) = parse(query).unwrap() else {
         panic!("expected fallback MATCH");
     };
-    assert_text(&parsed.returns[0], query, "e.id");
-    assert_text(&parsed.returns[1].expression, query, "count(r)");
-    assert_text(&parsed.returns[1], query, "count(r) AS total");
+    assert_text(&returned(&parsed).items[0], query, "e.id");
+    assert_text(&returned(&parsed).items[1].expression, query, "count(r)");
+    assert_text(&returned(&parsed).items[1], query, "count(r) AS total");
 }
 
 #[test]
@@ -220,10 +232,10 @@ fn hints_mutation_values_and_case_branches_keep_their_own_ranges() {
 
     let query = "MATCH (m:Memory) RETURN CASE WHEN m.id = $value THEN 1 \
                  WHEN m.id = $other THEN 2 ELSE 3 END AS rank";
-    let Statement::MatchReturn(parsed) = parse(query).unwrap() else {
+    let Statement::Pipeline(parsed) = parse(query).unwrap() else {
         panic!("expected MATCH");
     };
-    let ReturnExpressionKind::Value(value) = &parsed.returns[0].expression.kind else {
+    let ReturnExpressionKind::Value(value) = &returned(&parsed).items[0].expression.kind else {
         panic!("expected scalar projection");
     };
     assert_text(
@@ -237,6 +249,7 @@ fn hints_mutation_values_and_case_branches_keep_their_own_ranges() {
     else {
         panic!("expected CASE branches");
     };
+    assert_eq!(branches.len(), 2);
     assert_text(&branches[0].0, query, "$value");
     assert_text(&branches[0].1, query, "1");
     assert_text(&branches[1].0, query, "$other");
@@ -247,10 +260,10 @@ fn hints_mutation_values_and_case_branches_keep_their_own_ranges() {
 #[test]
 fn general_case_preserves_branch_and_nested_condition_ranges() {
     let query = "MATCH (n:Item) RETURN CASE WHEN NOT (n.x = $x OR n.y IS NULL) THEN lower(n.name) WHEN n.z CONTAINS 'a' THEN CASE n.id WHEN 1 THEN 'one' END ELSE 'caf\u{e9}' END AS result";
-    let Statement::MatchReturn(parsed) = parse(query).unwrap() else {
+    let Statement::Pipeline(parsed) = parse(query).unwrap() else {
         panic!("expected MATCH");
     };
-    let ReturnExpressionKind::Value(value) = &parsed.returns[0].expression.kind else {
+    let ReturnExpressionKind::Value(value) = &returned(&parsed).items[0].expression.kind else {
         panic!("expected scalar");
     };
     let ScalarExpressionKind::Case {
@@ -306,10 +319,11 @@ fn general_case_bounds_boolean_chain_depth_and_rejects_incomplete_branches() {
 #[test]
 fn generic_case_keeps_null_tests_and_timestamp_values_as_source_nodes() {
     let query = "MATCH (n:Item) RETURN CASE WHEN n.id IS NOT NULL THEN CURRENT_TIMESTAMP() ELSE CAST($fallback AS TIMESTAMP) END";
-    let Statement::MatchReturn(parsed) = parse(query).unwrap() else {
+    let Statement::Pipeline(parsed) = parse(query).unwrap() else {
         panic!("expected MATCH");
     };
-    let ReturnExpressionKind::Value(expression) = &parsed.returns[0].expression.kind else {
+    let ReturnExpressionKind::Value(expression) = &returned(&parsed).items[0].expression.kind
+    else {
         panic!("expected scalar");
     };
     let ScalarExpressionKind::Case {
@@ -336,4 +350,30 @@ fn generic_case_keeps_null_tests_and_timestamp_values_as_source_nodes() {
         query,
         "CAST($fallback AS TIMESTAMP)",
     );
+}
+
+#[test]
+fn vector_seed_pipeline_retains_call_and_utf8_match_spans() {
+    let query = " \n CALL vector_search($embedding, topK := 20) YIELD id, score \n MATCH (m:Memory) WHERE m.title = '图谱' RETURN m.id, score ";
+    let Statement::Pipeline(parsed) = parse(query).unwrap() else {
+        panic!("expected a vector-seeded pipeline");
+    };
+    assert_text(&parsed, query, query.trim());
+    assert_text(
+        &parsed.clauses[0],
+        query,
+        "CALL vector_search($embedding, topK := 20) YIELD id, score",
+    );
+    let ClauseKind::Call { procedure, yields } = &parsed.clauses[0].kind else {
+        panic!("expected a procedure call");
+    };
+    assert_text(procedure, query, "vector_search($embedding, topK := 20)");
+    assert_text(&yields[0], query, "id");
+    assert_text(&yields[1], query, "score");
+    assert_text(
+        &parsed.clauses[1],
+        query,
+        "MATCH (m:Memory) WHERE m.title = '图谱'",
+    );
+    assert_text(&parsed.clauses[2], query, "RETURN m.id, score");
 }

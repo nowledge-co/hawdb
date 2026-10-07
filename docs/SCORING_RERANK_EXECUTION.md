@@ -145,10 +145,10 @@ VectorSeedScan resource contract and a synthetic stored graph. An independent
 ranking/score-bit oracle covers hop0/1/2, a late winner, complete input, K1 versus
 seed admission8, public alias replacement, two expansions, optional missing,
 unsupported lookup, descriptor identity, EXPLAIN and marker non-leakage. Both
-legacy ordinary and multi-stage pipeline query results must agree. Current
-main selects the ordered parser for two WITH clauses; post-MATCH projections
-exercise this supported public entrypoint. Default parser migration remains
-owned by https://github.com/nowledge-co/hawdb/issues/158. This is controlled
+ordinary and multi-stage query results must agree. The default parser migration
+in https://github.com/nowledge-co/hawdb/pull/868 now sends both forms through the
+clause pipeline; the same scoring, provenance and parity guards qualify that
+integration. Post-MATCH projections exercise the public entrypoint. This is controlled
 producer/engine graph evidence, not RaBitQ retrieval, browser or Mem route proof.
 
 ## Host-scoring escape hatch
@@ -248,7 +248,7 @@ unchanged test budgets are:
 | Ranking, resident/spill, caps, cancellation and dispatch | `//crates/executor:hawdb_executor_tests` (unit member `hawdb_executor_unit_tests`) | `ci/skein-bazel-test-crates` | unit default medium, 300 s |
 | Vector producer lineage, reserved-expression policy and scope admission | `//crates/plan-cypher:hawdb_plan_cypher_tests` | `ci/skein-bazel-test-crates` | default medium, 300 s |
 | Template and parameter binding | `//crates/plan-cache:hawdb_plan_cache_tests` | `ci/skein-bazel-test-crates` | default medium, 300 s |
-| Ordinary request, EXPLAIN, cache and default-capability behavior | `//:hawdb_unit_fast_tests` | `ci/skein-bazel-test-root` | existing large, 900 s |
+| Ordinary request, EXPLAIN, cache and default-capability behavior | `//:hawdb_unit_fast_tests` | `ci/skein-bazel-test-root` | existing large, eternal (3600 s), inherited from main |
 | The same request guards with actual ACL capability | `//:hawdb_storage_crash_recovery_tests` | opt-in manual target, local-only evidence here | existing large, 900 s |
 
 The BUILD source globs and unit-suite registration discover these tests; no CI
@@ -276,14 +276,14 @@ qualified on the resident path, while larger windows prove the spill comparator.
 Minimal WASM compilation covers portable guards, but it does not prove browser
 runtime, filesystem behavior, or a Mem query route.
 
-An independently existing DISTINCT output analogue remains tracked by
-[issue #880](https://github.com/nowledge-co/hawdb/issues/880). Its resident and
-spill emitters do not enforce the transfer payload cap or use independent
-output ownership. SQL directly consumes these kernels; Graph prepared dispatch
-independently re-bounds transport payload. This correction does not claim the
-DISTINCT kernel or all blocking operators are repaired. The owned follow-up
-requires actual resident/spill RED/GREEN, complete DISTINCT semantics, parent
-caps, stop/error/cancellation and downstream admission with ledger/run release.
+The DISTINCT output analogue in
+[issue #880](https://github.com/nowledge-co/hawdb/issues/880) was independently
+fixed by [PR #883](https://github.com/nowledge-co/hawdb/pull/883), now included
+from main. Its resident and spill emitters enforce transfer payload caps and
+independent output ownership through the shared batch contract. SQL consumes
+these kernels; Graph prepared dispatch also bounds transport payload. This
+integration retains those guards and separately verifies the executor and
+relational owners. It does not claim every blocking operator is repaired.
 
 The vector producer additions register six actual facade queries and three
 initial physical-policy guards; the scope correction adds three facade guards
