@@ -33,6 +33,127 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn foreign_root_retries_do_not_reset_bounded_cleanup_progress() {
+    const CHILD: &str = "HAWDB_ROOT_CLEANUP_PROGRESS_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                concat!(
+                    module_path!(),
+                    "::foreign_root_retries_do_not_reset_bounded_cleanup_progress"
+                )
+                .strip_prefix("hawdb_search::")
+                .unwrap(),
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
+        return;
+    }
+
+    fn retain(root: &Path, count: usize) -> Vec<PathBuf> {
+        let mut writers = Vec::new();
+        let mut paths = Vec::new();
+        for index in 0..count {
+            let mut writer = crate::SearchOutOfCoreGenerationWriter::create_with_context(
+                root,
+                Default::default(),
+                RuntimeTaskContext::default()
+                    .with_memory_reservation(RuntimeMemoryReservation::new(16 * 1024 * 1024, 0)),
+            )
+            .unwrap();
+            writer
+                .push(crate::SearchDocument {
+                    id: index.to_string(),
+                    title: String::new(),
+                    content: "retained cleanup evidence".into(),
+                    embedding: None,
+                    metadata: Default::default(),
+                })
+                .unwrap();
+            let path = fs::read_dir(root)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| {
+                    !paths.contains(path)
+                        && path
+                            .extension()
+                            .is_some_and(|extension| extension == "stage")
+                })
+                .unwrap();
+            let unexpected = path.join("unexpected");
+            fs::create_dir(&unexpected).unwrap();
+            fs::write(unexpected.join("evidence"), b"retained").unwrap();
+            paths.push(path);
+            // Keep every stage active until the root's inventory is complete,
+            // so automatic retries cannot advance its initial ordering.
+            writers.push(writer);
+        }
+        drop(writers);
+        paths
+    }
+
+    let fixture = Fixture::new();
+    let root = fixture.0.join("root");
+    let foreign = fixture.0.join("foreign");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir(&foreign).unwrap();
+    let paths = retain(&root, 8);
+    let foreign_paths = retain(&foreign, 1);
+    let first = crate::SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&root, 4).unwrap();
+    assert_eq!(first.attempted_stages, 4);
+    assert_eq!(first.pending_stages, 8);
+    assert_eq!(first.blocked_stages, 8);
+    assert_eq!(first.removed_stages, 0);
+
+    // Only the fixture owns these injections. The first four remain blocked.
+    for path in &paths[4..] {
+        fs::remove_file(path.join("unexpected/evidence")).unwrap();
+        fs::remove_dir(path.join("unexpected")).unwrap();
+    }
+    for _ in 0..3 {
+        let report =
+            crate::SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&foreign, 1).unwrap();
+        assert_eq!(report.attempted_stages, 1);
+        assert_eq!(report.pending_stages, 1);
+        assert_eq!(report.blocked_stages, 1);
+        assert_eq!(report.removed_stages, 0);
+    }
+    let resumed = crate::SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&root, 4).unwrap();
+    assert_eq!(resumed.attempted_stages, 4);
+    assert_eq!(resumed.removed_stages, 4);
+    assert_eq!(resumed.pending_stages, 4);
+    for path in &paths[4..] {
+        assert!(!path.exists());
+    }
+    for path in paths[..4].iter().chain(&foreign_paths) {
+        assert_eq!(
+            fs::read(path.join("unexpected/evidence")).unwrap(),
+            b"retained"
+        );
+        fs::remove_file(path.join("unexpected/evidence")).unwrap();
+        fs::remove_dir(path.join("unexpected")).unwrap();
+    }
+    for (root, count) in [(&root, 4), (&foreign, 1)] {
+        let report =
+            crate::SearchOutOfCoreGenerationWriter::retry_staging_cleanup(root, count).unwrap();
+        assert_eq!(report.removed_stages, count);
+        assert_eq!(report.pending_stages, 0);
+        assert_eq!(report.reserved_disk_bytes, 0);
+        assert_eq!(report.retained_memory_bytes, 0);
+    }
+}
+
+#[test]
 fn retained_stages_do_not_exhaust_an_unrelated_root() {
     const CHILD: &str = "HAWDB_ROOT_CLEANUP_ISOLATION_CHILD";
     if std::env::var_os(CHILD).is_none() {

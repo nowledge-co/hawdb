@@ -90,8 +90,11 @@ their owner reservation; retained debt holds neither active task slots nor a
 project FD domain.
 
 Automatic retry remains root-scoped: at most four stages and four flat batches
-per stage. Explicit retry snapshots at most 256 ticket identities in admitted
-workspace and preserves the caller-error disposition if it cannot start cleanup.
+per stage. Each owner retains its checked retry sequence. A fixed, admitted 4-KiB
+snapshot sorts at most 256 identities by their last selection, so retries in another
+root cannot reset progress. Concurrent callers skip entries selected since their
+snapshot. There is no separately retained root cursor. Explicit retry preserves
+the caller-error disposition if it cannot start cleanup.
 The process registry still scans admitted owner metadata for lookup and reporting;
 this change does not establish a constant lookup cost as total debt grows.
 
@@ -103,6 +106,12 @@ preservation of every injected evidence file. Only fixture-owned injections are
 removed before a successful retry releases all debt. Existing regressions retain
 the sub-8-KiB allowance for their small-path fixtures, caller-failure attribution,
 bounded retries, cancellation and unwind behavior.
+
+A separate public-API subprocess regression keeps eight stages in one root and
+one permanently blocked stage in another. After a four-stage bounded attempt and
+three foreign-root retries, the next four-stage attempt removes the later,
+fixture-unblocked stages while preserving the first four and foreign evidence.
+Fixture-owned injections are then removed and both roots release all debt.
 
 This is a partial repair for [#867](https://github.com/nowledge-co/hawdb/issues/867).
 Persistent failures can still fill their own root's capacity. Operator remediation,

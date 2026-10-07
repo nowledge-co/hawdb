@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 const MAX_ROOT_OWNERS: usize = 256;
 static OWNERS: Mutex<BTreeMap<u64, Owner>> = Mutex::new(BTreeMap::new());
 static NEXT_OWNER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static NEXT_RETRY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static NEXT_RETRY_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 const AUTOMATIC_RETRY_STAGES: usize = 4;
 const AUTOMATIC_CLEANUP_BATCHES: usize = 4;
 // Bound the three shared ledger accounts retained by path and metadata leases.
@@ -40,6 +40,7 @@ enum Slot {
 struct Owner {
     root: OwnedPath,
     slot: Slot,
+    last_retry: u64,
     _memory: QueryMemoryLease,
     _host_memory: Option<hawdb_qos::RuntimeRetainedMemory>,
 }
@@ -192,8 +193,8 @@ fn retry_registered(
     checkpoint(task)?;
     let _selection_memory = memory
         .spool
-        .reserve(std::mem::size_of::<[u64; MAX_ROOT_OWNERS]>())?;
-    let mut selected = [0; MAX_ROOT_OWNERS];
+        .reserve(std::mem::size_of::<[(u64, u64); MAX_ROOT_OWNERS]>())?;
+    let mut selected = [(0, 0); MAX_ROOT_OWNERS];
     let mut count = 0;
     {
         let owners = OWNERS.lock().unwrap_or_else(|error| error.into_inner());
@@ -204,25 +205,32 @@ fn retry_registered(
                         "search cleanup root inventory exceeds owner capacity".into(),
                     ));
                 }
-                selected[count] = index;
+                selected[count] = (owner.last_retry, index);
                 count += 1;
             }
         }
     }
-    let next_retry = NEXT_RETRY.load(Ordering::Relaxed);
-    let start = selected[..count]
-        .iter()
-        .position(|index| *index >= next_retry)
-        .unwrap_or(0);
-    for offset in 0..count {
+    // Foreign roots cannot reset this root's progress. Sort only admitted
+    // identities, with no allocation or permanently retained root index.
+    selected[..count].sort_unstable();
+    for &(last_retry, index) in &selected[..count] {
         if report.attempted_stages == max_attempts {
             break;
         }
-        let index = selected[(start + offset) % count];
         let ticket = {
             let mut owners = OWNERS.lock().unwrap_or_else(|error| error.into_inner());
             match owners.get_mut(&index) {
-                Some(owner) if matches!(&owner.slot, Slot::Pending(ticket) if ticket.matches_root(root)) => {
+                Some(owner)
+                    if owner.last_retry == last_retry
+                        && matches!(&owner.slot, Slot::Pending(ticket) if ticket.matches_root(root)) =>
+                {
+                    owner.last_retry = NEXT_RETRY_SEQUENCE
+                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |sequence| {
+                            sequence.checked_add(1)
+                        })
+                        .map_err(|_| {
+                            HawDBError::Execution("search cleanup retry identity exhausted".into())
+                        })?;
                     match std::mem::replace(&mut owner.slot, Slot::Active) {
                         Slot::Pending(ticket) => Some(ticket),
                         _ => unreachable!(),
@@ -235,7 +243,6 @@ fn retry_registered(
             let registration = Registration { index };
             // Unwind must release the ticket before its owner admission.
             let mut ticket = ticket;
-            NEXT_RETRY.store(index.saturating_add(1), Ordering::Relaxed);
             let workspace = (|| {
                 checkpoint(task)?;
                 memory
@@ -432,6 +439,7 @@ impl StageDirectory {
             let registration = Registration::acquire(Owner {
                 root: owner_root,
                 slot: Slot::Active,
+                last_retry: 0,
                 _memory: metadata,
                 _host_memory: host_memory,
             })?;
