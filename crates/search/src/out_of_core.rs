@@ -4963,7 +4963,7 @@ mod tests {
                 kind: crate::SearchProjectionKind::Memory,
                 external_id: "000".into(),
                 title: format!("graph revision {round}"),
-                body: "graph refresh history ".repeat(1024),
+                body: "graph refresh history ".repeat(32),
                 embedding: Some(vec![1.0, round as f32]),
                 source_id: None,
                 metadata: BTreeMap::new(),

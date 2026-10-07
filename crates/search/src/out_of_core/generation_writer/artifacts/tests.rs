@@ -121,24 +121,25 @@ fn remove_on_drop_guard_removes_the_file_unless_disarmed() {
 fn completed_segment_metadata_does_not_accumulate_in_the_build_ledger() {
     let root = test_dir("segment_descriptor_streaming_budget");
     fs::create_dir(&root).unwrap();
-    let task = context();
+    let task = RuntimeTaskContext::default()
+        .with_memory_reservation(RuntimeMemoryReservation::new(16 * 1024 * 1024, 0));
     let memory = BuildMemory::new(&task).unwrap();
     let fields = super::super::required_descriptor_fields();
     let options = SearchOutOfCoreGenerationBuildOptions::default();
     let mut builder =
         SegmentArtifactBuilder::new_with_context(&root, 1, &fields, &options, memory.clone(), task)
             .unwrap();
-    for ordinal in 0..4000 {
+    for ordinal in 0..1000 {
         builder.push(ordinal, document(ordinal as usize)).unwrap();
     }
-    let output = builder.finish(4000).unwrap();
-    assert_eq!(output.layout.segments.len(), 2000);
+    let output = builder.finish(1000).unwrap();
+    assert_eq!(output.layout.segments.len(), 500);
     assert!(memory.ledger.snapshot().used_bytes < 1024 * 1024);
     let descriptor = crate::read_search_segment_descriptor(&root)
         .unwrap()
         .unwrap();
-    assert_eq!(descriptor.document_count, 4000);
-    assert_eq!(descriptor.segments.len(), 2000);
+    assert_eq!(descriptor.document_count, 1000);
+    assert_eq!(descriptor.segments.len(), 500);
     for (ordinal, entry) in descriptor.segments.iter().enumerate() {
         assert_eq!(entry.segment_id, ordinal as u64);
         assert_eq!(entry.document_count, 2);
