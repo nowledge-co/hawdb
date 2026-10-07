@@ -98,6 +98,22 @@ fn checkpoint_units_projected_graph_publication_cancels_at_every_io_and_retries(
                 std::fs::read(&temporary).unwrap(),
                 b"previous writer evidence"
             );
+            let conflict = Arc::new(CheckpointWorkProbe::default());
+            assert!(fixture
+                .durable()
+                .write_projected_graph_artifacts_to_with_work_context(
+                    &path,
+                    &body,
+                    &conflict.context(local.clone()),
+                )
+                .is_err());
+            conflict.assert_released(&local);
+            assert_eq!(
+                std::fs::read(&temporary).unwrap(),
+                b"previous writer evidence"
+            );
+            // This fixture owns the evidence and removes it before a clean retry.
+            std::fs::remove_file(&temporary).unwrap();
         } else {
             assert!(!temporary.exists());
         }
@@ -335,4 +351,186 @@ fn checkpoint_sidecar_reservation_survives_competing_owner_after_first_replaceme
     );
     held.lock().unwrap().clear();
     assert_eq!(fixture.project.metrics().open, baseline);
+}
+
+#[test]
+fn checkpoint_units_metadata_publication_cancels_every_io_preserves_evidence_and_retries() {
+    use crate::background::CheckpointWorkProbe;
+    use hawdb_core::{BasicGraphStatistics, GraphStatistics};
+    use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+    let scheduler = || {
+        LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(4),
+            ..LocalQosPolicy::default()
+        })
+    };
+    let mut random = 31u64;
+    let fingerprint = (0..131073)
+        .map(|_| {
+            random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+            char::from(b'!' + ((random >> 32) % 90) as u8)
+        })
+        .collect::<String>();
+    let mut catalog = Catalog::default();
+    let label = catalog.get_or_create_label("Memory");
+    let statistics = crate::statistics::graph_statistics_from_basic(
+        BasicGraphStatistics {
+            computed_at_commit_epoch: 41,
+            node_count: 31,
+            label_counts: BTreeMap::from([(label, 31)]),
+            ..BasicGraphStatistics::default()
+        },
+        false,
+    );
+    let projected = BTreeMap::new();
+    let changes = Vec::new();
+    let image = || CheckpointImage {
+        catalog: &catalog,
+        commit_epoch: 41,
+        next_node_id: 31,
+        next_rel_id: 0,
+        search_projection_change_log_start_epoch: 41,
+        search_projection_graph_changes: &changes,
+        statistics: &statistics,
+        projected_graphs: &projected,
+        initial_import_source_fingerprint: Some(&fingerprint),
+        search_projection_database_identity: None,
+        relational_checkpoint: None,
+    };
+    let ordinary = crate::checkpoint::encode_checkpoint_body(&image(), 17).unwrap();
+    let expected_text = format!(
+        "{ordinary}checksum\t{}\n",
+        crate::store::checksum_bytes(ordinary.as_bytes())
+    );
+    let baseline = Fixture::new();
+    let local = scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let metadata = baseline
+        .durable()
+        .write_checkpoint(image(), 17, changes.iter(), &probe.context(local.clone()))
+        .unwrap();
+    let path = baseline.root.join(checkpoint_generation_file(17));
+    let expected = std::fs::read(&path).unwrap();
+    assert_eq!(metadata, DurableArtifactMetadata::for_bytes(&expected));
+    assert_eq!(
+        crate::store::read_durable_text(&path, "controlled checkpoint").unwrap(),
+        expected_text
+    );
+    let waves = probe.io_waves.load(Ordering::SeqCst);
+    let units = probe.completed.load(Ordering::SeqCst);
+    assert!(waves >= 5);
+    probe.assert_released(&local);
+    for wave in 1..=waves {
+        let fixture = Fixture::new();
+        let path = fixture.root.join(checkpoint_generation_file(17));
+        let temporary = path.with_extension("hawdb.tmp");
+        if wave == 1 {
+            std::fs::write(&temporary, b"previous checkpoint evidence").unwrap();
+        }
+        let local = scheduler();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_on_io_wave.store(wave, Ordering::SeqCst);
+        let error = fixture
+            .durable()
+            .write_checkpoint(image(), 17, changes.iter(), &probe.context(local.clone()))
+            .unwrap_err();
+        assert_eq!(
+            error,
+            hawdb_core::HawDBError::Storage(
+                "checkpoint build I/O stopped: runtime I/O wave stopped: cancelled".into()
+            )
+        );
+        assert_eq!(probe.io_waves.load(Ordering::SeqCst), wave);
+        probe.assert_released(&local);
+        assert_eq!(
+            std::fs::read(fixture.durable().manifest_path()).unwrap(),
+            fixture.manifest
+        );
+        assert_eq!(read_sidecars(&fixture.root), fixture.old);
+        assert!(!path.exists());
+        if wave == 1 {
+            assert_eq!(
+                std::fs::read(&temporary).unwrap(),
+                b"previous checkpoint evidence"
+            );
+            let conflict = Arc::new(CheckpointWorkProbe::default());
+            assert!(fixture
+                .durable()
+                .write_checkpoint(
+                    image(),
+                    17,
+                    changes.iter(),
+                    &conflict.context(local.clone())
+                )
+                .is_err());
+            conflict.assert_released(&local);
+            assert_eq!(
+                std::fs::read(&temporary).unwrap(),
+                b"previous checkpoint evidence"
+            );
+            std::fs::remove_file(&temporary).unwrap();
+        } else {
+            assert!(!temporary.exists());
+        }
+        let retry = Arc::new(CheckpointWorkProbe::default());
+        let actual = fixture
+            .durable()
+            .write_checkpoint(image(), 17, changes.iter(), &retry.context(local.clone()))
+            .unwrap();
+        retry.assert_released(&local);
+        assert!(!temporary.exists());
+        assert_eq!(actual, metadata);
+        assert_eq!(std::fs::read(&path).unwrap(), expected);
+        assert_eq!(
+            crate::store::read_durable_text(&path, "checkpoint retry").unwrap(),
+            expected_text
+        );
+        let mut recovered_catalog = Catalog::default();
+        let mut decoded = crate::checkpoint::DecodedCheckpoint::default();
+        crate::checkpoint::parse_checkpoint(&ordinary, &mut recovered_catalog, &mut decoded)
+            .unwrap();
+        assert_eq!(
+            decoded.initial_import_source_fingerprint.as_deref(),
+            Some(fingerprint.as_str())
+        );
+        assert_eq!(
+            decoded.checkpoint_statistics,
+            GraphStatistics {
+                advanced_statistics_complete: false,
+                ..statistics.clone()
+            }
+        );
+        assert_eq!(fixture.project.metrics().reserved, 0);
+    }
+    // Cancellation after the complete rename is a lost response, not rollback.
+    let fixture = Fixture::new();
+    let local = scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    probe.cancel_after.store(units, Ordering::SeqCst);
+    let error = fixture
+        .durable()
+        .write_checkpoint(image(), 17, changes.iter(), &probe.context(local.clone()))
+        .unwrap_err();
+    assert_eq!(
+        error,
+        hawdb_core::HawDBError::Storage("checkpoint build stopped: cancelled".into())
+    );
+    probe.assert_released(&local);
+    let path = fixture.root.join(checkpoint_generation_file(17));
+    assert_eq!(std::fs::read(&path).unwrap(), expected);
+    assert_eq!(
+        std::fs::read(fixture.durable().manifest_path()).unwrap(),
+        fixture.manifest
+    );
+    let retry = Arc::new(CheckpointWorkProbe::default());
+    assert_eq!(
+        fixture
+            .durable()
+            .write_checkpoint(image(), 17, changes.iter(), &retry.context(local.clone()))
+            .unwrap(),
+        metadata
+    );
+    retry.assert_released(&local);
+    assert_eq!(std::fs::read(&path).unwrap(), expected);
 }

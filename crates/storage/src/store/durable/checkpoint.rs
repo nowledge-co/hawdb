@@ -25,12 +25,12 @@ use crate::file_io::{self as fs, File};
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checkpoint_generation_file, checkpoint_publish_failpoint,
-    checksum_bytes, encode_durable_text, file_checksum,
-    property_projection_artifact_generation_file, property_projection_manifest_generation_file,
-    property_spill_artifact_generation_file, property_spill_manifest_generation_file,
-    read_durable_text_bytes_with_limit, relational_checkpoint_generation_file,
-    remove_source_scan_artifacts, safe_reclaim_commit_epoch, source_scan, sync_parent_dir,
-    verify_integrity, wal_generation_file, CheckpointPublishStage, PROJECTED_GRAPHS_FILE,
+    file_checksum, property_projection_artifact_generation_file,
+    property_projection_manifest_generation_file, property_spill_artifact_generation_file,
+    property_spill_manifest_generation_file, read_durable_text_bytes_with_limit,
+    relational_checkpoint_generation_file, remove_source_scan_artifacts, safe_reclaim_commit_epoch,
+    source_scan, sync_parent_dir, verify_integrity, wal_generation_file, CheckpointPublishStage,
+    PROJECTED_GRAPHS_FILE,
 };
 use hawdb_storage::{
     cache::ManifestGeneration,
@@ -40,7 +40,6 @@ use hawdb_storage::{
     relational::{encode_relational_checkpoint_to_writer, RelationalDecodeLimits, RelationalState},
     scan::FileSegmentRangeReader,
 };
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -134,22 +133,32 @@ impl DurableStore {
         image: CheckpointImage<'_>,
         generation: u64,
         changes: impl Iterator<Item = &'a SearchProjectionGraphChange> + Clone,
+        work: &crate::background::CheckpointWorkContext,
     ) -> Result<DurableArtifactMetadata> {
-        let data = hawdb_storage::checkpoint::encode_checkpoint_body_with_changes(
-            &image, generation, changes,
+        let mut data = hawdb_storage::checkpoint::encode_checkpoint_body_with_work_context(
+            &image, generation, changes, work,
         )?;
-        let checksum = checksum_bytes(data.as_bytes());
-        let data = format!("{data}checksum\t{checksum}\n");
+        let checksum = work
+            .checksum(data.as_bytes())
+            .map_err(HawDBError::from_storage_error)?;
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        data.push_str(&format!("checksum\t{checksum}\n"));
+        unit.finish();
         let checkpoint_path = self.root_path.join(checkpoint_generation_file(generation));
-        let tmp_path = checkpoint_path.with_extension("hawdb.tmp");
-        let encoded = encode_durable_text(&data, DurableCompression::default())?;
-        let metadata = DurableArtifactMetadata::for_bytes(&encoded);
-        {
-            let mut file = File::create(&tmp_path)?;
-            file.write_all(&encoded)?;
-            file.sync_all()?;
-        }
-        durable_replace_file(&tmp_path, &checkpoint_path)?;
+        let encoded = crate::text::envelope::encode_durable_text_with_work_context(
+            &data,
+            DurableCompression::default(),
+            work,
+        )?;
+        let digest = work
+            .integrity(&encoded)
+            .map_err(HawDBError::from_storage_error)?;
+        let metadata = DurableArtifactMetadata {
+            encoded_len: encoded.len() as u64,
+            encoded_checksum: digest.crc32c.as_u64(),
+            encoded_sha256: digest.sha256,
+        };
+        super::artifacts::publish_checkpoint_metadata(&checkpoint_path, &encoded, work)?;
         Ok(metadata)
     }
 

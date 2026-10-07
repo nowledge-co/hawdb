@@ -80,7 +80,7 @@ impl Drop for CheckpointMetadataTemporaryPath {
     }
 }
 
-fn publish_checkpoint_metadata(
+pub(super) fn publish_checkpoint_metadata(
     path: &Path,
     encoded: &[u8],
     work: &crate::background::CheckpointWorkContext,
@@ -90,7 +90,10 @@ fn publish_checkpoint_metadata(
     let mut file = {
         let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
         let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
-        let file = File::create(&tmp_path)?;
+        let file = File::options()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)?;
         temporary_path.0 = Some(tmp_path.clone());
         unit.finish();
         file

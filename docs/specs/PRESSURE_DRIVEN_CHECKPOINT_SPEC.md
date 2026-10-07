@@ -458,6 +458,21 @@ directory copies, individual DDL detachment, DTO serialization, allocations and
 final-owner destruction still lack complete byte/time bounds and resource
 accounting. These changes do not qualify the entire candidate or commit p99.
 
+The checkpoint V1 text path now validates borrowed search changes in bounded
+ordering runs and encodes individual catalog/statistics fields, vector values
+and captured keys with cooperative work. Hex conversion emits at most 64 KiB
+per unit; formatted fields copy at most 64 KiB through a UTF-8-safe sink without
+allocating a complete formatted line. The ordinary encoder remains an
+independent complete-byte and validation-order oracle. Body/envelope checksums,
+compression, digest calculation and metadata file writes consume controlled
+chunks. The shared metadata publisher exclusively creates its temporary file
+and arms cleanup only after successful creation. Tests cancel every actual I/O
+wave, preserve unowned evidence and old manifest/sidecars, and retry the complete
+decoded image. A cancelled reply after complete rename retains the published
+private artifact. Complete output/intermediate buffers, reallocations, recursive
+value depth, individual relational-key codecs and cleanup debt still need hard
+resource/time bounds. This does not establish whole-candidate admission safety.
+
 `HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
 two schema/data transactions under both durability policies. Its complete
 configured safety graph passed TLC (34,275 distinct states). Five deliberately

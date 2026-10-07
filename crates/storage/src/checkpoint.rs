@@ -40,6 +40,9 @@ use hawdb_core::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+mod controlled;
+pub(crate) use controlled::encode_checkpoint_body_with_work_context;
+
 pub const CHECKPOINT_HEADER_V1: &str = "HAWDB_CHECKPOINT_V1";
 
 pub struct CheckpointImage<'a> {

@@ -1104,6 +1104,7 @@ impl GraphStore {
                 },
                 generation,
                 self.search_projection_graph_changes.iter().map(Arc::as_ref),
+                work,
             )?;
             work.checkpoint().map_err(HawDBError::from_storage_error)?;
             checkpoint_publish_failpoint(CheckpointPublishStage::CheckpointPersisted)?;
