@@ -234,3 +234,312 @@ fn default_pipeline_multi_with_retains_bounded_optional_results_and_cache() {
     }
     assert_eq!(db.plan_cache_stats().unwrap().entries, 3);
 }
+
+#[test]
+fn default_pipeline_optional_null_source_does_not_traverse_real_node_zero() {
+    let mut db = optional_endpoint_fixture();
+    for with in ["", "WITH candidate ", "WITH candidate WITH candidate "] {
+        let query = format!(
+            "MATCH (seed:Item {{id: 'isolated'}}) \
+ OPTIONAL MATCH (seed)-[:REL]->(middle) \
+ MATCH (middle)-[:REL]->(candidate:Item) {with}RETURN candidate.id AS id"
+        );
+        let rows = db.query(&query).unwrap().rows;
+        assert!(
+            rows.is_empty(),
+            "NULL source must not traverse real node0; WITH variant {with:?}: {rows:?}"
+        );
+    }
+}
+
+#[test]
+fn default_pipeline_unknown_relationship_optional_preserves_null_row() {
+    let mut db = optional_endpoint_fixture();
+    for with in ["", "WITH candidate ", "WITH candidate WITH candidate "] {
+        let query = format!(
+            "MATCH (seed:Item {{id: 'isolated'}}) \
+ OPTIONAL MATCH (seed)-[:ABSENT]->(candidate:Item) {with}RETURN candidate.id AS id"
+        );
+        assert_eq!(
+            db.query(&query).unwrap().rows,
+            vec![BTreeMap::from([("id".to_string(), Value::Null)])],
+            "unknown type must NULL extend; WITH variant {with:?}"
+        );
+    }
+}
+
+#[test]
+fn default_pipeline_null_transition_optional_chain_preserves_null_and_real_zero() {
+    let mut db = optional_endpoint_fixture();
+    for with in ["", "WITH candidate ", "WITH candidate WITH candidate "] {
+        let query = format!("MATCH (seed:Item {{id: 'isolated'}}) OPTIONAL MATCH (seed)-[:REL]->(middle) OPTIONAL MATCH (middle)-[edge:REL]->(candidate:Item) {with}RETURN candidate.id AS id");
+        assert_eq!(
+            db.query(&query).unwrap().rows,
+            vec![BTreeMap::from([("id".to_string(), Value::Null)])],
+            "{with:?}"
+        );
+        let zero = format!("MATCH (seed:Item {{id: 'source'}}) MATCH (seed)-[:REL*0..1]->(candidate:Item) {with}RETURN candidate.id AS id ORDER BY id");
+        assert_eq!(
+            db.query(&zero)
+                .unwrap()
+                .rows
+                .iter()
+                .map(|r| r["id"].clone())
+                .collect::<Vec<_>>(),
+            vec![
+                Value::String("bad".into()),
+                Value::String("good".into()),
+                Value::String("source".into())
+            ]
+        );
+    }
+}
+
+#[test]
+fn default_pipeline_null_transition_mixed_graph_match_and_expand() {
+    let mut db = optional_endpoint_fixture();
+    for query in [
+        "MATCH (seed:Item {id: 'isolated'}) OPTIONAL MATCH (seed)-[:REL]->(middle) MATCH (middle)-[:REL]->(candidate:Item), (other:Item {id: 'good'}) RETURN candidate.id AS id",
+        "MATCH (seed:Item {id: 'isolated'}) OPTIONAL MATCH (seed)-[:REL]->(middle:Item {keep: true}) MATCH (middle)-[:REL]->(candidate:Item) RETURN candidate.id AS id",
+    ] {
+        assert!(db.query(query).unwrap().rows.is_empty(), "{query}");
+    }
+}
+
+fn optional_column_null_transition(indexed: bool) {
+    let mut db = optional_endpoint_fixture();
+    db.query("CREATE (:Item {id: 'null-key', match_key: null})")
+        .unwrap();
+    if indexed {
+        db.query("CREATE INDEX ON :Item(id)").unwrap();
+        db.query("CREATE INDEX ON :Item(match_key)").unwrap();
+    }
+    let missing = "MATCH (seed:Item {id: 'isolated'}) WITH 'missing' AS key OPTIONAL MATCH (middle:Item) WHERE middle.id = key MATCH (middle)-[:REL]->(candidate:Item) RETURN candidate.id AS id";
+    assert!(
+        db.query(missing).unwrap().rows.is_empty(),
+        "indexed={indexed}"
+    );
+}
+
+#[test]
+fn default_pipeline_null_transition_column_lookup_fallback() {
+    optional_column_null_transition(false);
+}
+
+#[test]
+fn default_pipeline_null_transition_column_lookup_indexed() {
+    optional_column_null_transition(true);
+}
+
+fn scalar_with_reintroduced_target(optional: bool) {
+    let mut db = optional_endpoint_fixture();
+    let optional = if optional { "OPTIONAL " } else { "" };
+    let query = format!("MATCH (a:Item {{id: 'source'}})-[:REL]->(target:Item) WITH a.id AS key MATCH (a:Item) WHERE a.id = key {optional}MATCH (a)-[:REL]->(target:Item) RETURN target.id AS id ORDER BY id");
+    assert_eq!(
+        db.query(&query)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| r["id"].clone())
+            .collect::<Vec<_>>(),
+        vec![
+            Value::String("bad".into()),
+            Value::String("bad".into()),
+            Value::String("good".into()),
+            Value::String("good".into())
+        ],
+        "{optional:?}"
+    );
+    let query = "MATCH (a:Item {id: 'source'})-[:REL]->(target:Item) WITH a.id AS key MATCH (a:Item) WHERE a.id = key OPTIONAL MATCH (a)-[:ABSENT]->(target:Item) RETURN target.id AS id";
+    assert_eq!(
+        db.query(query).unwrap().rows,
+        vec![BTreeMap::from([("id".to_string(), Value::Null)]); 2]
+    );
+}
+
+#[test]
+fn default_pipeline_null_transition_scalar_with_required_reintroduction() {
+    scalar_with_reintroduced_target(false);
+}
+
+#[test]
+fn default_pipeline_null_transition_scalar_with_optional_reintroduction() {
+    scalar_with_reintroduced_target(true);
+}
+
+#[test]
+fn default_pipeline_optional_review_global_count_forward_reintroduction() {
+    let mut db = optional_endpoint_fixture();
+    let query = "MATCH (a:Item {id: 'source'})-[:REL]->(target:Item) WITH a.id AS key MATCH (a:Item) WHERE a.id = key OPTIONAL MATCH (a)-[:REL]->(target:Item) RETURN COUNT(target) AS count";
+    assert_eq!(
+        db.query(query).unwrap().rows,
+        vec![BTreeMap::from([("count".into(), Value::Int(4))])]
+    );
+}
+
+#[test]
+fn default_pipeline_optional_review_global_count_reverse_reintroduction() {
+    let mut db = optional_endpoint_fixture();
+    let query = "MATCH (target:Item)-[edge:REL]->(a:Item {id: 'bad'}) WITH a.id AS key MATCH (a:Item) WHERE a.id = key OPTIONAL MATCH (target:Item)-[edge:REL]->(a) RETURN COUNT(edge) AS count";
+    assert_eq!(
+        db.query(query).unwrap().rows,
+        vec![BTreeMap::from([("count".into(), Value::Int(4))])]
+    );
+}
+
+fn global_optional_bound_relationship_count(reverse: bool, missing: bool) {
+    let mut db = optional_endpoint_fixture();
+    let rel_type = if missing { "ABSENT" } else { "REL" };
+    let query = if reverse {
+        format!("MATCH (old:Item)-[edge:REL]->(a:Item {{id: 'bad'}}) OPTIONAL MATCH (target:Item)-[edge:{rel_type}]->(a) RETURN COUNT(edge) AS count")
+    } else {
+        let counted = if missing { "edge" } else { "target" };
+        format!("MATCH (a:Item {{id: 'source'}})-[edge:REL]->(old:Item) OPTIONAL MATCH (a)-[edge:{rel_type}]->(target:Item) RETURN COUNT({counted}) AS count")
+    };
+    assert_eq!(
+        db.query(&query).unwrap().rows,
+        vec![BTreeMap::from([("count".into(), Value::Int(2))])],
+        "reverse={reverse}, missing={missing}"
+    );
+}
+
+#[test]
+fn default_pipeline_optional_review_global_count_bound_relationship_forward() {
+    global_optional_bound_relationship_count(false, false);
+}
+
+#[test]
+fn default_pipeline_optional_review_global_count_bound_relationship_reverse() {
+    global_optional_bound_relationship_count(true, false);
+}
+
+#[test]
+fn default_pipeline_optional_review_global_count_missing_bound_relationship_forward() {
+    global_optional_bound_relationship_count(false, true);
+}
+
+#[test]
+fn default_pipeline_optional_review_global_count_missing_bound_relationship_reverse() {
+    global_optional_bound_relationship_count(true, true);
+}
+
+#[test]
+fn default_pipeline_optional_review_unknown_type_required_zero_hop() {
+    let mut db = optional_endpoint_fixture();
+    for with in ["", "WITH candidate ", "WITH candidate WITH candidate "] {
+        let query = format!("MATCH (seed:Item {{id: 'isolated'}}) MATCH (seed)-[:ABSENT*0..1]->(candidate:Item) {with}RETURN candidate.id AS id");
+        assert_eq!(
+            db.query(&query).unwrap().rows,
+            vec![BTreeMap::from([(
+                "id".into(),
+                Value::String("isolated".into())
+            )])],
+            "{with:?}"
+        );
+        let positive = format!("MATCH (seed:Item {{id: 'isolated'}}) MATCH (seed)-[:ABSENT]->(candidate:Item) {with}RETURN candidate.id AS id");
+        assert!(db.query(&positive).unwrap().rows.is_empty(), "{with:?}");
+    }
+}
+
+#[test]
+fn default_pipeline_optional_review_unknown_type_optional_zero_hop() {
+    let mut db = optional_endpoint_fixture();
+    let query = "MATCH (seed:Item {id: 'isolated'}) OPTIONAL MATCH (seed)-[:ABSENT*0..1]->(candidate:Item) WITH candidate WITH candidate RETURN candidate.id AS id";
+    assert_eq!(
+        db.query(query).unwrap().rows,
+        vec![BTreeMap::from([(
+            "id".into(),
+            Value::String("isolated".into())
+        )])]
+    );
+}
+
+fn bound_source_label_fixture() -> Database {
+    let mut db = optional_endpoint_fixture();
+    db.query("CREATE (:Other {id: 'other'})").unwrap();
+    db
+}
+
+#[test]
+fn default_pipeline_bound_source_label_required_preserves_constraint() {
+    let mut db = bound_source_label_fixture();
+    for label in ["Other", "Missing"] {
+        for with in ["", "WITH candidate ", "WITH candidate WITH candidate "] {
+            let query = format!("MATCH (seed:Item {{id: 'source'}}) MATCH (seed:{label})-[:REL]->(candidate:Item) {with}RETURN candidate.id AS id");
+            assert!(
+                db.query(&query).unwrap().rows.is_empty(),
+                "label={label}, WITH={with:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn default_pipeline_bound_source_label_optional_preserves_null_row() {
+    let mut db = bound_source_label_fixture();
+    for label in ["Other", "Missing"] {
+        for with in ["", "WITH candidate ", "WITH candidate WITH candidate "] {
+            let query = format!("MATCH (seed:Item {{id: 'source'}}) OPTIONAL MATCH (seed:{label})-[:REL]->(candidate:Item) {with}RETURN candidate.id AS id");
+            assert_eq!(
+                db.query(&query).unwrap().rows,
+                vec![BTreeMap::from([("id".into(), Value::Null)])],
+                "label={label}, WITH={with:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn default_pipeline_bound_source_label_forward_global_count() {
+    let mut db = bound_source_label_fixture();
+    for label in ["Other", "Missing"] {
+        for with in ["", "WITH candidate ", "WITH candidate WITH candidate "] {
+            let query = format!("MATCH (seed:Item {{id: 'source'}}) OPTIONAL MATCH (seed:{label})-[:REL]->(candidate:Item) {with}RETURN COUNT(candidate) AS count");
+            assert_eq!(
+                db.query(&query).unwrap().rows,
+                vec![BTreeMap::from([("count".into(), Value::Int(0))])],
+                "label={label}, WITH={with:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn default_pipeline_bound_source_label_reverse_global_count() {
+    let mut db = bound_source_label_fixture();
+    for label in ["Other", "Missing"] {
+        for with in ["", "WITH edge ", "WITH edge WITH edge "] {
+            let query = format!("MATCH (seed:Item {{id: 'bad'}}) OPTIONAL MATCH (candidate:Item)-[edge:REL]->(seed:{label}) {with}RETURN COUNT(edge) AS count");
+            assert_eq!(
+                db.query(&query).unwrap().rows,
+                vec![BTreeMap::from([("count".into(), Value::Int(0))])],
+                "label={label}, WITH={with:?}"
+            );
+        }
+    }
+}
+
+fn optional_null_key_lookup(indexed: bool) {
+    let mut db = optional_endpoint_fixture();
+    db.query("CREATE (:Item {id: 'null-key', match_key: null})")
+        .unwrap();
+    if indexed {
+        db.query("CREATE INDEX ON :Item(match_key)").unwrap();
+    }
+    let query = "MATCH (seed:Item {id: 'isolated'}) OPTIONAL MATCH (seed)-[:REL]->(middle) WITH middle.id AS key OPTIONAL MATCH (candidate:Item) WHERE candidate.match_key = key RETURN candidate.id AS id";
+    assert_eq!(
+        db.query(query).unwrap().rows,
+        vec![BTreeMap::from([("id".to_string(), Value::Null)])],
+        "NULL lookup key must never equal a NULL property; indexed={indexed}"
+    );
+}
+
+#[test]
+fn default_pipeline_nullable_key_lookup_fallback_does_not_match_null_property() {
+    optional_null_key_lookup(false);
+}
+
+#[test]
+fn default_pipeline_nullable_key_lookup_indexed_does_not_match_null_property() {
+    optional_null_key_lookup(true);
+}

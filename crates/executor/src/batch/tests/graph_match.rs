@@ -409,3 +409,122 @@ fn consecutive_optional_clauses_preserve_cartesian_multiplicity() {
         }
     });
 }
+
+#[test]
+fn optional_degree_preserves_nullable_graph_match_rows_without_traversing_zero() {
+    for (source, expected) in [("m", [0, 0]), ("n", [1, 0])] {
+        let input = lower(
+            hawdb_plan_cypher::plan_pipeline_query(
+                "MATCH (n:Memory) OPTIONAL MATCH (n)-[:ABSENT]->(m:Memory) RETURN n.id AS id, m",
+                &BTreeMap::new(),
+            )
+            .unwrap(),
+        );
+        let plan = PhysicalPlan::OptionalDegreeExec {
+            source_variable: source.into(),
+            rel_type: "MENTIONS".into(),
+            rel_properties: BTreeMap::new(),
+            direction: hawdb_core::RelationshipDirection::Outgoing,
+            target_label: "Memory".into(),
+            target_properties: BTreeMap::new(),
+            alias: "links".into(),
+            input: Box::new(input),
+        };
+        let mut rows = with_context(None, |context| {
+            let mut rows = Vec::new();
+            execute_binding_batches(&plan, context, ExecutionLimit::unlimited(), &mut |batch| {
+                rows.extend(batch);
+                Ok(BatchControl::Continue)
+            })?;
+            Ok::<_, HawDBError>(rows)
+        })
+        .unwrap();
+        rows.sort_by_key(|row| row.values["id"].clone());
+        assert_eq!(rows.len(), 2);
+        for (index, row) in rows.iter().enumerate() {
+            assert_eq!(row.values["id"], Value::Int(index as i64 + 1));
+            assert_eq!(row.values["m"], Value::Null);
+            assert!(!row.nodes.contains_key("m"));
+            assert_eq!(row.values["links"], Value::Int(expected[index]));
+        }
+    }
+}
+
+#[test]
+fn native_expand_preserves_bound_relationship_identity() {
+    with_context(None, |context| {
+        let rel_type = context.catalog.rel_type_id("MENTIONS").unwrap();
+        let store = store::ReadFixture {
+            nodes: (0..2)
+                .map(|id| context.store.node_owned(NodeId(id)).unwrap().unwrap())
+                .collect(),
+            relationships: (0..2)
+                .map(|id| hawdb_storage::RelRecord {
+                    id: hawdb_storage::RelId(id),
+                    source: NodeId(0),
+                    target: NodeId(1),
+                    rel_type,
+                    properties: BTreeMap::new(),
+                })
+                .collect(),
+            ..store::ReadFixture::default()
+        };
+        let context = BatchReadContext {
+            store: &store,
+            ..context
+        };
+        for (rel_type, label, optional) in [
+            ("MENTIONS", "Memory", true),
+            ("MENTIONS", "Missing", true),
+            ("ABSENT", "Memory", true),
+            ("MENTIONS", "Missing", false),
+        ] {
+            let input = lower(
+                hawdb_plan_cypher::plan_pipeline_query(
+                    "MATCH (n:Memory)-[edge:MENTIONS]->(old:Memory) RETURN n, edge",
+                    &BTreeMap::new(),
+                )
+                .unwrap(),
+            );
+            let plan = PhysicalPlan::AdjacencyExpandExec {
+                source_variable: "n".into(),
+                source_label: "Memory".into(),
+                rel_variable: Some("edge".into()),
+                rel_type: rel_type.into(),
+                rel_properties: BTreeMap::new(),
+                direction: hawdb_core::RelationshipDirection::Outgoing,
+                target_variable: "candidate".into(),
+                target_label: label.into(),
+                min_hops: 1,
+                max_hops: 1,
+                optional,
+                graph_budget: None,
+                input: Box::new(input),
+            };
+            let mut rows = Vec::new();
+            execute_binding_batches(&plan, context, ExecutionLimit::unlimited(), &mut |batch| {
+                rows.extend(batch);
+                Ok(BatchControl::Continue)
+            })
+            .unwrap();
+            if !optional {
+                assert!(rows.is_empty());
+                continue;
+            }
+            assert_eq!(rows.len(), 2, "{rel_type}, {label}");
+            rows.sort_by_key(|row| row.relationships["edge"].id);
+            for (id, row) in rows.iter().enumerate() {
+                assert_eq!(
+                    row.relationships["edge"].id,
+                    hawdb_storage::RelId(id as u64)
+                );
+                if rel_type == "MENTIONS" && label == "Memory" {
+                    assert_eq!(row.nodes["candidate"].id, NodeId(1));
+                } else {
+                    assert_eq!(row.values["candidate"], Value::Null);
+                    assert!(!row.nodes.contains_key("candidate"));
+                }
+            }
+        }
+    });
+}
