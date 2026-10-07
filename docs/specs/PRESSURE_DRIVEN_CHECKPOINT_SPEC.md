@@ -635,6 +635,27 @@ allocator/capacity costs, final-owner destruction, disk/FD/cleanup debt and the
 shared hard resource ledger remain incomplete; these primitives do not qualify
 whole-candidate resources, production per-unit admission or release performance.
 
+Ordinary and metadata-only checkpoint overflow-input collection now consume the
+admitted work context in the actual automatic preparation path. Empty tables,
+empty dirty-page lists, rows and each scalar field have separate boundaries;
+fixed-digest collection preserves conflict/reachability diagnostics and sorted,
+deduplicated input bytes. Inline inputs retain their existing shared ownership,
+while file-backed inputs with a selected base remain references without I/O.
+First-generation materialization uses the captured-identity private reader,
+bypasses serving caches, and preserves read-before-accumulated-byte-admission
+ordering. A reserved output vector avoids growing-buffer recopy during reads;
+detached shared bytes initialize at most 64 KiB per unit in a private uninitialized
+Arc and convert only after every byte is initialized. Cancellation drops the
+private representation before it can be exposed. Targeted tests compare all
+1025 ordinary/delta inputs, shared inline pointers, conflict/closure/source
+errors, every actual collection/copy/read unit and I/O cancellation, full retry,
+all file bytes and unchanged serving-cache pins/counters. Private reads can
+surface physical failures hidden by an ordinary cache hit. Map allocation and
+mutation, complete retained capacities, allocator latency, destruction and
+shared memory/disk/FD/debt accounting remain incomplete; these boundaries still
+do not authorize production per-unit admission or a whole-candidate resource
+or release-performance claim.
+
 `HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
 two schema/data transactions under both durability policies. Its complete
 configured safety graph passed TLC (34,275 distinct states). Five deliberately

@@ -104,7 +104,12 @@ impl FileSegmentRangeReader {
             },
             |file| file.as_ref(),
         );
-        let mut payload = Vec::new();
+        let mut payload = {
+            let unit = work.start_unit()?;
+            let payload = Vec::with_capacity(length);
+            unit.finish();
+            payload
+        };
         let mut scratch = {
             let unit = work.start_unit()?;
             let scratch = vec![0; length.min(64 * 1024)];

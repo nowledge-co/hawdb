@@ -949,7 +949,7 @@ impl GraphStore {
                 })?;
                 let overflow_inputs = self
                     .relational_state
-                    .overflow_delta_generation_inputs(&row_plan.deltas)
+                    .overflow_delta_generation_inputs_with_work_context(&row_plan.deltas, work)
                     .map_err(HawDBError::from_storage_error)?;
                 overflow_publisher
                     .persist_generation_retaining_base(
@@ -964,9 +964,10 @@ impl GraphStore {
             } else {
                 let overflow_inputs = self
                     .relational_state
-                    .overflow_generation_inputs(
+                    .overflow_generation_inputs_with_work_context(
                         previous_overflow.is_some(),
                         max_materialized_overflow_bytes,
+                        work,
                     )
                     .map_err(HawDBError::from_storage_error)?;
                 overflow_publisher

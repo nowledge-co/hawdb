@@ -4063,6 +4063,21 @@ impl RelationalState {
             .collect()
     }
 
+    #[doc(hidden)]
+    pub fn overflow_generation_inputs_with_work_context(
+        &self,
+        has_base_generation: bool,
+        max_materialized_bytes: usize,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Vec<RelationalOverflowExtentInput>, RelationalError> {
+        overflow::checkpoint::generation_inputs(
+            self,
+            has_base_generation,
+            max_materialized_bytes,
+            work,
+        )
+    }
+
     /// Collects only overflow references carried by bounded dirty row pages.
     ///
     /// The caller must publish these inputs with base retention enabled. A
@@ -4110,6 +4125,15 @@ impl RelationalState {
                 },
             )
             .collect()
+    }
+
+    #[doc(hidden)]
+    pub fn overflow_delta_generation_inputs_with_work_context(
+        &self,
+        deltas: &[RelationalRowPageTableDelta],
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Vec<RelationalOverflowExtentInput>, RelationalError> {
+        overflow::checkpoint::delta_inputs(self, deltas, work)
     }
 }
 

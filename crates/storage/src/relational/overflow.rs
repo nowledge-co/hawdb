@@ -20,6 +20,7 @@ use hawdb_integrity::Sha256Digest;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+pub(super) mod checkpoint;
 mod envelope;
 mod exact;
 mod publication;
