@@ -616,17 +616,24 @@ fn needs_headroom(state: &State) -> bool {
     let Some(debt) = state.debt else {
         return false;
     };
-    let Some(limit) = debt.max_wal_bytes else {
-        return false;
-    };
     let reserve = debt
         .max_wal_record_bytes
-        .and_then(|bytes| u64::try_from(bytes).ok())
-        .unwrap_or(limit);
+        .and_then(|bytes| u64::try_from(bytes).ok());
+    [
+        (debt.wal_bytes, debt.max_wal_bytes),
+        (debt.delta_bytes, debt.max_delta_bytes),
+    ]
+    .into_iter()
+    .any(|(bytes, limit)| {
+        limit.is_some_and(|limit| near_limit(bytes, limit, reserve.unwrap_or(limit)))
+    })
+}
+
+fn near_limit(bytes: u64, limit: u64, reserve: u64) -> bool {
     let defer = (u128::from(limit)
         * u128::from(hawdb_storage::pressure::STORAGE_PRESSURE_DEFER_RATIO_PER_MILLION)
         / 1_000_000) as u64;
-    debt.wal_bytes >= defer.saturating_sub(reserve)
+    bytes >= defer.saturating_sub(reserve)
 }
 
 fn due(source: &Source, max_age: Duration) -> bool {
@@ -634,10 +641,19 @@ fn due(source: &Source, max_age: Duration) -> bool {
         if debt.read_only || debt.commit_epoch <= debt.checkpoint_commit_epoch {
             return false;
         }
-        debt.max_wal_bytes.is_some_and(|limit| {
-            u128::from(debt.wal_bytes) * 1_000_000
-                >= u128::from(limit)
-                    * u128::from(hawdb_storage::pressure::STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION)
+        [
+            (debt.wal_bytes, debt.max_wal_bytes),
+            (debt.delta_bytes, debt.max_delta_bytes),
+        ]
+        .into_iter()
+        .any(|(bytes, limit)| {
+            limit.is_some_and(|limit| {
+                u128::from(bytes) * 1_000_000
+                    >= u128::from(limit)
+                        * u128::from(
+                            hawdb_storage::pressure::STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION,
+                        )
+            })
         }) || u128::from(debt.wal_age_millis) >= max_age.as_millis()
     })
 }
@@ -921,6 +937,105 @@ mod tests {
                 "n.id".into(),
                 crate::Value::String("reclamation-age".into()),
             )])]
+        );
+    }
+
+    #[test]
+    fn delta_pressure_uses_the_exact_soft_boundary_without_wal_or_age_pressure() {
+        for (text_bytes, expected) in [(34, false), (35, true), (36, true)] {
+            let fixture = Fixture::new();
+            let mut catalog = Catalog::default();
+            let mut store = GraphStore::open_with_durability_and_replay_config(
+                &fixture.0,
+                &mut catalog,
+                hawdb_storage::config::DurabilityPolicy::default(),
+                hawdb_storage::config::WalReplayConfig {
+                    residency_mode: hawdb_storage::config::StorageResidencyMode::OutOfCore,
+                    max_out_of_core_delta_bytes: Some(10_000),
+                    ..hawdb_storage::config::WalReplayConfig::default()
+                },
+            )
+            .unwrap();
+            store
+                .create_node(&mut catalog, "Memory", std::collections::BTreeMap::new())
+                .unwrap();
+            store.checkpoint(&catalog).unwrap();
+            for _ in 0..192 {
+                store
+                    .create_node(&mut catalog, "Memory", std::collections::BTreeMap::new())
+                    .unwrap();
+            }
+            store
+                .create_node(
+                    &mut catalog,
+                    "Memory",
+                    std::collections::BTreeMap::from([(
+                        "p".into(),
+                        crate::Value::String("x".repeat(text_bytes)),
+                    )]),
+                )
+                .unwrap();
+            let debt = store.checkpoint_debt_snapshot().unwrap();
+            assert_eq!(debt.delta_bytes, 6965 + text_bytes as u64);
+            assert_eq!(debt.max_delta_bytes, Some(10_000));
+            assert!(u128::from(debt.wal_bytes) * 10 < u128::from(debt.max_wal_bytes.unwrap()) * 7);
+            assert_eq!(
+                due(
+                    &Source::capture(&store, &catalog),
+                    Duration::from_secs(3600)
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn delta_pressure_sustains_generations_and_preserves_all_values_after_reopen() {
+        let fixture = Fixture::new();
+        let config = DatabaseConfig {
+            automatic_checkpoint_max_age: Duration::from_secs(3600),
+            storage_residency_mode: hawdb_storage::config::StorageResidencyMode::OutOfCore,
+            max_out_of_core_delta_bytes: Some(16 * 1024),
+            ..DatabaseConfig::default()
+        };
+        let mut db = Database::open_with_config(&fixture.0, config).unwrap();
+        // Establish the initial canonical base before the sustained workload.
+        db.checkpoint().unwrap();
+        for id in 0..320 {
+            db.query_with_params(
+                "CREATE (:Memory {id: $id, body: $body})",
+                &std::collections::BTreeMap::from([
+                    ("id".into(), crate::Value::Int(id)),
+                    ("body".into(), crate::Value::String("b".repeat(512))),
+                ]),
+            )
+            .unwrap();
+        }
+        let report = db.automatic_checkpoint_report().unwrap().unwrap();
+        assert!(
+            report.completed_checkpoints >= 2,
+            "delta pressure must rotate generations: {report:?}"
+        );
+        let expected = db
+            .query("MATCH (n:Memory) RETURN n.id AS id, n.body AS body ORDER BY id")
+            .unwrap()
+            .rows;
+        assert_eq!(expected.len(), 320);
+        for (id, row) in expected.iter().enumerate() {
+            assert_eq!(row.get("id"), Some(&crate::Value::Int(id as i64)));
+            assert_eq!(
+                row.get("body"),
+                Some(&crate::Value::String("b".repeat(512)))
+            );
+        }
+        drop(db);
+        let mut reopened = Database::open(&fixture.0).unwrap();
+        assert_eq!(
+            reopened
+                .query("MATCH (n:Memory) RETURN n.id AS id, n.body AS body ORDER BY id")
+                .unwrap()
+                .rows,
+            expected
         );
     }
 

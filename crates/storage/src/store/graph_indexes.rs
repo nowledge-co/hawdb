@@ -906,11 +906,15 @@ impl GraphStore {
                 continue;
             };
             let map_key = (index.label_id, key);
-            if let Some(ids) = self.composite_property_index.get_mut(&map_key) {
-                ids.remove(&node.id);
-                if ids.is_empty() {
-                    self.composite_property_index.remove(&map_key);
-                }
+            let empty = self
+                .composite_property_index
+                .get_mut(&map_key)
+                .is_some_and(|mut ids| {
+                    ids.remove(&node.id);
+                    ids.is_empty()
+                });
+            if empty {
+                self.composite_property_index.remove(&map_key);
             }
         }
     }
@@ -1079,11 +1083,15 @@ impl GraphStore {
             };
             for token in full_text_index_tokens(value) {
                 let map_key = (index.label_id, index.property.clone(), token);
-                if let Some(ids) = self.full_text_property_index.get_mut(&map_key) {
-                    ids.remove(&node.id);
-                    if ids.is_empty() {
-                        self.full_text_property_index.remove(&map_key);
-                    }
+                let empty =
+                    self.full_text_property_index
+                        .get_mut(&map_key)
+                        .is_some_and(|mut ids| {
+                            ids.remove(&node.id);
+                            ids.is_empty()
+                        });
+                if empty {
+                    self.full_text_property_index.remove(&map_key);
                 }
             }
         }
@@ -1340,11 +1348,15 @@ impl GraphStore {
     pub(super) fn remove_relationship_from_property_index(&mut self, relationship: &RelRecord) {
         for (property, value) in &relationship.properties {
             let key = (relationship.rel_type, property.clone(), value.clone());
-            if let Some(ids) = self.relationship_property_index.get_mut(&key) {
-                ids.remove(&relationship.id);
-                if ids.is_empty() {
-                    self.relationship_property_index.remove(&key);
-                }
+            let empty = self
+                .relationship_property_index
+                .get_mut(&key)
+                .is_some_and(|mut ids| {
+                    ids.remove(&relationship.id);
+                    ids.is_empty()
+                });
+            if empty {
+                self.relationship_property_index.remove(&key);
             }
         }
     }

@@ -247,7 +247,7 @@ impl GraphStore {
                 AdjacencyDirection::Outgoing => &mut self.outgoing,
                 AdjacencyDirection::Incoming => &mut self.incoming,
             };
-            let Some(posting) = adjacency.get_mut(&candidate.key) else {
+            let Some(mut posting) = adjacency.get_mut(&candidate.key) else {
                 continue;
             };
             if !posting.needs_consolidation() || !posting.consolidate() {
@@ -313,22 +313,24 @@ impl GraphStore {
             self.remove_node_from_composite_property_indexes(catalog, &node);
             self.remove_node_from_full_text_property_indexes(catalog, &node);
         }
-        let Some(node) = self.nodes.get_mut(&id) else {
+        let Some(mut node) = self.nodes.get_mut(&id) else {
             return;
         };
         let old_value = node.properties.insert(property.clone(), value.clone());
         let labels = node.labels.clone();
+        drop(node);
         self.nodes.rebalance_key(&id);
         // Shadow dirty tracking: a property write dirties the primary table.
         self.mark_columnar_node_dirty(&labels);
         for label_id in labels {
             if let Some(old_value) = &old_value {
                 let key = (label_id, property.clone(), old_value.clone());
-                if let Some(ids) = self.property_index.get_mut(&key) {
+                let empty = self.property_index.get_mut(&key).is_some_and(|mut ids| {
                     ids.remove(&id);
-                    if ids.is_empty() {
-                        self.property_index.remove(&key);
-                    }
+                    ids.is_empty()
+                });
+                if empty {
+                    self.property_index.remove(&key);
                 }
             }
             if catalog.has_scalar_property_index(label_id, &property) {
@@ -349,23 +351,28 @@ impl GraphStore {
         property: String,
         value: Value,
     ) {
-        let Some(relationship) = self.relationships.get_mut(&id) else {
+        let Some(mut relationship) = self.relationships.get_mut(&id) else {
             return;
         };
         let rel_type = relationship.rel_type;
         let old_value = relationship
             .properties
             .insert(property.clone(), value.clone());
+        drop(relationship);
         self.relationships.rebalance_key(&id);
         // Shadow dirty tracking: a property write dirties the type's table.
         self.mark_columnar_relationship_dirty(rel_type);
         if let Some(old_value) = old_value {
             let key = (rel_type, property.clone(), old_value);
-            if let Some(ids) = self.relationship_property_index.get_mut(&key) {
-                ids.remove(&id);
-                if ids.is_empty() {
-                    self.relationship_property_index.remove(&key);
-                }
+            let empty = self
+                .relationship_property_index
+                .get_mut(&key)
+                .is_some_and(|mut ids| {
+                    ids.remove(&id);
+                    ids.is_empty()
+                });
+            if empty {
+                self.relationship_property_index.remove(&key);
             }
         }
         self.relationship_property_index
@@ -386,24 +393,26 @@ impl GraphStore {
 
     fn remove_relationship_from_adjacency(&mut self, relationship: &RelRecord) {
         let outgoing_key = (relationship.source, relationship.rel_type);
-        if let Some(ids) = self.outgoing.get_mut(&outgoing_key) {
+        let empty = self.outgoing.get_mut(&outgoing_key).is_some_and(|mut ids| {
             ids.remove(&OrderedAdjacencyEntry {
                 neighbor_id: relationship.target,
                 relationship_id: relationship.id,
             });
-            if ids.is_empty() {
-                self.outgoing.remove(&outgoing_key);
-            }
+            ids.is_empty()
+        });
+        if empty {
+            self.outgoing.remove(&outgoing_key);
         }
         let incoming_key = (relationship.target, relationship.rel_type);
-        if let Some(ids) = self.incoming.get_mut(&incoming_key) {
+        let empty = self.incoming.get_mut(&incoming_key).is_some_and(|mut ids| {
             ids.remove(&OrderedAdjacencyEntry {
                 neighbor_id: relationship.source,
                 relationship_id: relationship.id,
             });
-            if ids.is_empty() {
-                self.incoming.remove(&incoming_key);
-            }
+            ids.is_empty()
+        });
+        if empty {
+            self.incoming.remove(&incoming_key);
         }
     }
 
@@ -419,11 +428,12 @@ impl GraphStore {
         for label_id in node.labels {
             for (property, value) in &node.properties {
                 let key = (label_id, property.clone(), value.clone());
-                if let Some(ids) = self.property_index.get_mut(&key) {
+                let empty = self.property_index.get_mut(&key).is_some_and(|mut ids| {
                     ids.remove(&id);
-                    if ids.is_empty() {
-                        self.property_index.remove(&key);
-                    }
+                    ids.is_empty()
+                });
+                if empty {
+                    self.property_index.remove(&key);
                 }
             }
         }
@@ -471,7 +481,7 @@ impl GraphStore {
 
     fn record_node_index_sample_updates(&mut self, affected_indexes: Vec<IndexId>) {
         for index_id in affected_indexes {
-            if let Some(sample) = self.checkpoint_statistics.index_samples.get_mut(&index_id) {
+            if let Some(mut sample) = self.checkpoint_statistics.index_samples.get_mut(&index_id) {
                 sample.updates_since_sample = sample.updates_since_sample.saturating_add(1);
             }
         }

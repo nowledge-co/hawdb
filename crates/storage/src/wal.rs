@@ -1005,7 +1005,7 @@ pub fn apply_wal_op_to_snapshot(
             property,
             value,
         } => {
-            if let Some(node) = nodes.get_mut(id) {
+            if let Some(mut node) = nodes.get_mut(id) {
                 node.properties.insert(property.clone(), value.clone());
             }
         }
@@ -1014,7 +1014,7 @@ pub fn apply_wal_op_to_snapshot(
             property,
             value,
         } => {
-            if let Some(relationship) = relationships.get_mut(id) {
+            if let Some(mut relationship) = relationships.get_mut(id) {
                 relationship
                     .properties
                     .insert(property.clone(), value.clone());

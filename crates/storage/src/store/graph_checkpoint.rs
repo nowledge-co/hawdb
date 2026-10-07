@@ -1655,6 +1655,27 @@ impl GraphStore {
     }
 
     pub(super) fn estimated_delta_resident_bytes(&self) -> u64 {
+        let tombstones = self
+            .node_tombstones
+            .len()
+            .saturating_add(self.relationship_tombstones.len()) as u64;
+        [
+            self.nodes.delta_pressure_bytes(),
+            self.relationships.delta_pressure_bytes(),
+            self.outgoing.delta_pressure_bytes(),
+            self.incoming.delta_pressure_bytes(),
+            self.property_index.delta_pressure_bytes(),
+            self.composite_property_index.delta_pressure_bytes(),
+            self.full_text_property_index.delta_pressure_bytes(),
+            self.relationship_property_index.delta_pressure_bytes(),
+            tombstones.saturating_mul(32),
+        ]
+        .into_iter()
+        .fold(0u64, u64::saturating_add)
+    }
+
+    #[cfg(test)]
+    pub(super) fn estimated_delta_resident_bytes_reference(&self) -> u64 {
         let record_bytes = self
             .nodes
             .values()

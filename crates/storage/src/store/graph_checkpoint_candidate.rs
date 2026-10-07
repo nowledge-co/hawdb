@@ -34,7 +34,7 @@ pub struct CheckpointSourceIdentity {
     branch_head: Option<crate::branch_head::BranchHead>,
 }
 
-/// Constant-time WAL scheduling signals. Reading these does not enumerate
+/// Constant-time WAL/delta scheduling signals. Reading these does not enumerate
 /// generations, walk graph records, or probe the filesystem.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +46,8 @@ pub struct CheckpointDebtSnapshot {
     pub wal_age_millis: u64,
     pub max_wal_bytes: Option<u64>,
     pub max_wal_record_bytes: Option<usize>,
+    pub delta_bytes: u64,
+    pub max_delta_bytes: Option<u64>,
     pub read_only: bool,
     pub wal_sync_group_active: bool,
 }
@@ -135,6 +137,16 @@ impl GraphStore {
             },
             max_wal_bytes: durable.max_wal_bytes,
             max_wal_record_bytes: durable.max_wal_record_bytes(),
+            delta_bytes: if self.canonical_base_out_of_core {
+                self.estimated_delta_resident_bytes()
+            } else {
+                0
+            },
+            max_delta_bytes: if self.canonical_base_out_of_core {
+                self.max_out_of_core_delta_bytes
+            } else {
+                None
+            },
             read_only: durable.read_only,
             wal_sync_group_active: durable.wal_sync_group_active(),
         })

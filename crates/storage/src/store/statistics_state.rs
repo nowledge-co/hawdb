@@ -158,11 +158,13 @@ pub(super) fn decrement_statistic_counter<K: Ord + Clone + crate::cow::CowPageWe
     counters: &mut CowSegmentedMap<K, u64>,
     key: &K,
 ) {
-    let Some(count) = counters.get_mut(key) else {
+    let Some(mut count) = counters.get_mut(key) else {
         return;
     };
     *count = count.saturating_sub(1);
-    if *count == 0 {
+    let empty = *count == 0;
+    drop(count);
+    if empty {
         counters.remove(key);
     }
 }

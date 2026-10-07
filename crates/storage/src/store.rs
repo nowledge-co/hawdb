@@ -4910,6 +4910,192 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_delta_pressure_matches_full_scan_through_mutations_and_reopen() {
+        fn verify(store: &GraphStore) {
+            assert_eq!(
+                store.estimated_delta_resident_bytes(),
+                store.estimated_delta_resident_bytes_reference()
+            );
+        }
+        for mode in [
+            StorageResidencyMode::Materialized,
+            StorageResidencyMode::OutOfCore,
+        ] {
+            let path = unique_test_dir("checkpoint_delta_pressure");
+            let config = WalReplayConfig {
+                residency_mode: mode,
+                ..WalReplayConfig::default()
+            };
+            let mut catalog = Catalog::default();
+            let mut store = GraphStore::open_with_durability_and_replay_config(
+                &path,
+                &mut catalog,
+                DurabilityPolicy::default(),
+                config,
+            )
+            .unwrap();
+            store
+                .create_property_index(&mut catalog, "Memory", "id")
+                .unwrap();
+            store
+                .create_composite_property_index(
+                    &mut catalog,
+                    "Memory",
+                    &["id".into(), "body".into()],
+                )
+                .unwrap();
+            store
+                .create_full_text_property_index(&mut catalog, "Memory", "body")
+                .unwrap();
+            let mut ids = Vec::new();
+            for id in 0..1057 {
+                ids.push(
+                    store
+                        .create_node(
+                            &mut catalog,
+                            "Memory",
+                            properties([
+                                ("id", Value::Int(id)),
+                                ("body", Value::String(format!("alpha beta {id}"))),
+                                (
+                                    "detail",
+                                    Value::Map(BTreeMap::from([(
+                                        "flags".into(),
+                                        Value::List(vec![
+                                            Value::Null,
+                                            Value::Bool(true),
+                                            Value::List(vec![Value::String("雪".repeat(8))]),
+                                        ]),
+                                    )])),
+                                ),
+                            ]),
+                        )
+                        .unwrap(),
+                );
+                verify(&store);
+            }
+            for target in ids.iter().take(130).skip(1) {
+                store
+                    .create_relationship(
+                        &mut catalog,
+                        ids[0],
+                        *target,
+                        "LINK",
+                        properties([("rank", Value::Int(1))]),
+                    )
+                    .unwrap();
+                verify(&store);
+            }
+            let old = store.snapshot();
+            let old_pressure = old.estimated_delta_resident_bytes();
+            for id in 0..17 {
+                store
+                    .set_node_property(
+                        &mut catalog,
+                        "Memory",
+                        Some(&PropertyFilter::Eq {
+                            property: "id".into(),
+                            value: Value::Int(id),
+                        }),
+                        "body",
+                        Value::String(format!("gamma beta {id}")),
+                    )
+                    .unwrap();
+                verify(&store);
+                assert_eq!(old.estimated_delta_resident_bytes(), old_pressure);
+            }
+            store
+                .set_relationship_property(
+                    &mut catalog,
+                    RelationshipPropertyUpdate {
+                        source_label: "Memory".into(),
+                        filter: None,
+                        rel_type: "LINK".into(),
+                        target_label: "Memory".into(),
+                        target_filter: None,
+                        rel_filter: None,
+                        property: "rank".into(),
+                        value: Value::Int(2),
+                    },
+                )
+                .unwrap();
+            verify(&store);
+            store
+                .delete_nodes(
+                    &mut catalog,
+                    "Memory",
+                    Some(&PropertyFilter::Eq {
+                        property: "id".into(),
+                        value: Value::Int(1),
+                    }),
+                    true,
+                )
+                .unwrap();
+            verify(&store);
+            store.checkpoint(&catalog).unwrap();
+            verify(&store);
+            if mode == StorageResidencyMode::OutOfCore {
+                assert_eq!(store.checkpoint_debt_snapshot().unwrap().delta_bytes, 0);
+            }
+            store
+                .set_node_property(
+                    &mut catalog,
+                    "Memory",
+                    Some(&PropertyFilter::Eq {
+                        property: "id".into(),
+                        value: Value::Int(2),
+                    }),
+                    "body",
+                    Value::String("suffix gamma".into()),
+                )
+                .unwrap();
+            verify(&store);
+            let expected_nodes = store
+                .node_records_owned()
+                .collect::<hawdb_core::Result<Vec<_>>>()
+                .unwrap();
+            let expected_relationships = store
+                .relationship_records_owned()
+                .collect::<hawdb_core::Result<Vec<_>>>()
+                .unwrap();
+            drop(old);
+            drop(store);
+            let reopened = GraphStore::open_with_durability_and_replay_config(
+                &path,
+                &mut catalog,
+                DurabilityPolicy::default(),
+                config,
+            )
+            .unwrap();
+            verify(&reopened);
+            assert_eq!(
+                reopened
+                    .node_records_owned()
+                    .collect::<hawdb_core::Result<Vec<_>>>()
+                    .unwrap(),
+                expected_nodes
+            );
+            assert_eq!(
+                reopened
+                    .relationship_records_owned()
+                    .collect::<hawdb_core::Result<Vec<_>>>()
+                    .unwrap(),
+                expected_relationships
+            );
+            if mode == StorageResidencyMode::OutOfCore {
+                let debt = reopened.checkpoint_debt_snapshot().unwrap();
+                assert_eq!(
+                    debt.delta_bytes,
+                    reopened.estimated_delta_resident_bytes_reference()
+                );
+                assert!(debt.delta_bytes > 0);
+            }
+            drop(reopened);
+            fs::remove_dir_all(path).unwrap();
+        }
+    }
+
+    #[test]
     fn durable_append_evaluates_delta_and_integrity_pressure_before_wal_write() {
         let path = unique_test_dir("wal_full_pressure_signals");
         let mut catalog = Catalog::default();

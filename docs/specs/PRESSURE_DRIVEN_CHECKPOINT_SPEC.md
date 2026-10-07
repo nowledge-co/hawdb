@@ -827,19 +827,61 @@ retained bytes after execution closes, shared process-policy retention,
 replacement overlap, allocator failure and every actual growth/copy cancellation
 with full retry. Actual manifest opening rejects its encoded-buffer allocation
 one byte below the required capacity, then retries with all decoded metadata and
-all five source files unchanged. Strict workspace Clippy passes. Supported
-profiles, complete checkpoint/storage/lifecycle and required fuzz qualification
-of this memory source are still pending. Only explicit lease users are tracked:
+all five source files unchanged. The preceding allocation-controller source
+(`a13a3f563a403c31315b4d1ea218283d213076fd`, tree
+`0b6a8fb9c429db2118db0f56f57b59e9ec56c4ac`) passed strict workspace,
+minimal-native and WASM Clippy, 162 checkpoint-unit tests, five publication
+tests, seven candidate tests, nine owner tests, 59 relational publication
+tests and the full storage harness (1205 passed, 29 ignored). Its original
+mandatory 96-target fuzz command had one original-limit timeout; the unchanged
+full-command retry passed all 96. Original logs and failure/retry receipts remain
+retained. These are scoped source checks, not full issue qualification.
+Only explicit lease users are tracked:
 remaining schema/value/manifest output buffers, maps, graph/append builders,
 pinned source/state ownership, disk/FD and cleanup debt still require binding
 and qualification. This does not authorize production per-unit admission or
 establish any whole-candidate memory, platform or release-performance bound.
 
+Checkpoint debt now reads the existing graph-delta estimate in constant time.
+Segmented COW maps maintain the same record, adjacency and posting weights
+through bulk construction, insert/replacement, removal and exclusive mutation
+guards. Snapshots copy the aggregate with their immutable page directory;
+checkpoint/replay generations own their own aggregate. An internal `u128` sum
+preserves exact subtraction after a public `u64` estimate saturates. Guard and
+retain cleanup also reconcile weights during unwinding, including empty pages
+in a partially retained directory. `get_mut` and `entry_or_default` now return
+a mutable guard rather than a bare mutable reference; callers release that
+guard before another mutation of the same map. Weight implementations must be
+stable under shared borrowing and must not panic. This changes a storage-internal
+API without changing the facade's host mutation contract or a persistent format.
+
+The automatic owner consumes either WAL or out-of-core delta debt at the exact
+70% soft threshold, alongside the existing monotonic age. The estimate is enabled
+only with an out-of-core canonical base and its configured delta cap. Reads do
+not hydrate records or enumerate map pages. Changed values still incur their
+existing logical-value estimate on mutation; this is not a hard allocation or
+latency bound. Preparing-phase backpressure checks both limits using the existing
+90% threshold and maximum-WAL-record reserve. That reserve is conservative for
+the tested small-node stream, but is not yet a proven delta expansion bound for
+base hydration, index fanout or multi-operation transactions. It does not
+establish default sustained-write availability or the final handoff latency gate.
+
+Four focused storage regressions pass: a 1057-entry mutation/snapshot sequence
+with instrumented nonhydrating reads, saturated-total recovery, partial retain
+and mutation unwinding, and ordinary persistent mutation/checkpoint/reopen parity
+against the independent preceding full-scan estimate in both residency modes.
+Two focused owner regressions pass: exact 6999/7000/7001-byte boundaries with a
+10,000-byte delta cap independently of WAL/age pressure, and 320 complete
+512-byte values across multiple automatic generations and normal reopen with
+a configured 16 KiB delta cap. These configurations are explicit fixtures, not
+default-resource qualification. Broad COW/storage, supported-profile and
+mandatory fuzz qualification of this delta-pressure source remain required.
+
 The current whole-candidate operation estimate can exceed the default local
 QoS operation limit on a large database. Remaining bounded cancellable build
 units and builder-specific memory/retention accounting remain required; the
 provisional whole-candidate memory estimate also omits append-state retention
-and compaction allowances. Delta pressure,
+and compaction allowances. Full delta-pressure resource/availability coverage,
 columnar-shadow parity, the full cancellation/fault/model/platform matrix and
 paired release performance qualification are also incomplete. Whole-candidate
 memory estimates and narrow idle tests do not prove these requirements.
