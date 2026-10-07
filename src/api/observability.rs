@@ -49,6 +49,49 @@ pub(super) fn sql_statement_kind(statement: &SqlStatement) -> &'static str {
     }
 }
 
+pub(super) fn admit_append_explain(
+    rows: Vec<executor::Row>,
+    config: &super::DatabaseConfig,
+    options: QueryStreamOptions,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
+) -> Result<QueryOutput> {
+    use hawdb_executor::memory::{enforced_query_memory_budget, enforced_result_memory_budget};
+    use hawdb_executor::result_delivery::{
+        ConsumerMemoryMode, OutputLimits, QueryOutputAccumulator,
+    };
+
+    super::query_runtime::query_runtime_checkpoint(task_context)?;
+    let ledger = hawdb_executor::QueryMemoryLedger::new(enforced_query_memory_budget(
+        &config.execution_memory,
+        task_context,
+    )?);
+    let result_budget = enforced_result_memory_budget(&config.execution_memory, task_context)?;
+    let mut output = hawdb_executor::QueryRowsBuilder::with_row_capacity(rows.len());
+    {
+        let mut consumer = |row| output.push_named_row(row);
+        let mut accumulator = QueryOutputAccumulator::new(
+            OutputLimits {
+                max_rows: options.max_rows,
+                max_payload_bytes: options.max_payload_bytes,
+            },
+            result_budget,
+            &ledger,
+            ConsumerMemoryMode::Retained,
+            &mut consumer,
+        )?;
+        // Diagnostic rows have their own admission after ANALYZE's data read.
+        // Keep the complete report private until every row has been admitted.
+        for row in rows {
+            super::query_runtime::query_runtime_checkpoint(task_context)?;
+            accumulator.emit(hawdb_executor::binding::Binding::values(row))?;
+        }
+        super::query_runtime::query_runtime_checkpoint(task_context)?;
+    }
+    Ok(QueryOutput {
+        rows: output.finish(),
+    })
+}
+
 // A snapshot read can finish recording after releasing the commit sequencer.
 // Only the existing bounded observation containers and configured sink are shared.
 pub(super) struct StatementRecorder {
@@ -420,9 +463,15 @@ impl Database {
                 } else {
                     None
                 };
-                return Ok(QueryOutput {
-                    rows: format_append_explain(&plan, report.as_ref()).into(),
-                });
+                return admit_append_explain(
+                    format_append_explain(&plan, report.as_ref()),
+                    &self.config,
+                    QueryStreamOptions {
+                        max_rows,
+                        max_payload_bytes,
+                    },
+                    None,
+                );
             }
 
             if matches!(

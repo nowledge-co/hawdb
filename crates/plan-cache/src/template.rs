@@ -1018,7 +1018,7 @@ mod tests {
     };
     use hawdb_core::Value;
     use hawdb_cypher as cypher;
-    use hawdb_optimizer::{CascadesOptimizer, OptimizerCatalog};
+    use hawdb_optimizer_graph::{CascadesOptimizer, OptimizerCatalog};
     use hawdb_plan_cypher::{
         CompositeRangeSeek, ExactPropertySeekBranch, LogicalPlanRoot, NodeProjectionAccess,
         PhysicalPlan,

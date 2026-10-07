@@ -13,16 +13,16 @@
 // limitations under the License.
 
 use hawdb_cypher::parse;
-use hawdb_optimizer::{
-    plan_vector_search, CascadesOptimizer, LogicalPlanRoot, OptimizerCatalog,
-    OptimizerCatalogIndexes, OptimizerCatalogStatistics, OptimizerConfig, OptimizerContext,
-    QueryFamily, ResourceHints,
+use hawdb_optimizer_graph::{
+    CascadesOptimizer, LogicalPlanRoot, OptimizerCatalog, OptimizerCatalogIndexes,
+    OptimizerCatalogStatistics, OptimizerConfig, OptimizerContext, QueryFamily, ResourceHints,
 };
+use hawdb_optimizer_vector::plan_vector_search;
 use hawdb_plan_cypher::{plan, VectorCandidateSource, VectorSearchLogicalPlan};
 
 const QUERY: &str = "MATCH (m:Memory) WHERE m.id = 7 RETURN m.title AS title";
-const EXPECTED: &str = include_str!("golden/indexed_memory_lookup.golden");
-const VECTOR_EXPECTED: &str = include_str!("golden/filtered_vector_pipeline.golden");
+const EXPECTED: &str = include_str!("testdata/indexed_memory_lookup.golden");
+const VECTOR_EXPECTED: &str = include_str!("testdata/filtered_vector_pipeline.golden");
 
 #[test]
 fn indexed_memory_lookup_matches_planner_golden() {
@@ -99,7 +99,7 @@ fn render_planner_golden(
     logical: &hawdb_plan_cypher::LogicalPlan,
     lowering_input: &hawdb_plan_cypher::LogicalPlan,
     physical: &hawdb_plan_cypher::PhysicalPlan,
-    trace: &hawdb_optimizer::OptimizerTrace,
+    trace: &hawdb_optimizer_graph::OptimizerTrace,
 ) -> String {
     let stages = trace
         .stage_events

@@ -1,0 +1,11 @@
+[package]
+name = "hawdb-plan-core"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]

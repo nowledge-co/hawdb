@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::search::{RuleEvent, RuleOutcome};
+use hawdb_cascades::{RuleEvent, RuleOutcome};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 

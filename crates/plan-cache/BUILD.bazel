@@ -27,7 +27,7 @@ rust_test(
     crate = ":hawdb_plan_cache",
     edition = "2024",
     aliases = aliases(normal_dev = True, proc_macro_dev = True),
-    deps = all_crate_deps(normal_dev = True) + ["//crates/optimizer:hawdb_optimizer"],
+    deps = all_crate_deps(normal_dev = True) + ["//crates/optimizer-graph:hawdb_optimizer_graph"],
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
@@ -47,7 +47,7 @@ rust_test(
     deps = all_crate_deps(normal = True, normal_dev = True) + [
         "//crates/core:hawdb_core",
         "//crates/cypher:hawdb_cypher",
-        "//crates/optimizer:hawdb_optimizer",
+        "//crates/optimizer-graph:hawdb_optimizer_graph",
         "//crates/plan-cypher:hawdb_plan_cypher",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
