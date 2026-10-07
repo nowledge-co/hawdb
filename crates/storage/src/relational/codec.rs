@@ -706,6 +706,7 @@ fn decode_relational_checkpoint_from_decoder<I: DecodeInput>(
     storage: OverflowDecodeStorage,
     index_load: RelationalCheckpointIndexLoad,
 ) -> Result<RelationalCheckpoint, RelationalError> {
+    let work = decoder.input.checkpoint_work_context().cloned();
     let table_count = decoder.count(limits.max_tables, "checkpoint tables")?;
     let mut state = RelationalState::default();
     for _ in 0..table_count {
@@ -716,13 +717,28 @@ fn decode_relational_checkpoint_from_decoder<I: DecodeInput>(
                 "checkpoint has a duplicate or mismatched table {name}"
             )));
         }
-        validate_table_schema(&schema)?;
+        let positions = if let Some(work) = &work {
+            Some(checkpoint::validate_table_schema_with_work_context(
+                &schema, work,
+            )?)
+        } else {
+            validate_table_schema(&schema)?;
+            None
+        };
         let row_count = decoder.row_count()?;
-        let primary_key = column_positions(&schema, &schema.primary_key)?;
+        let primary_key = if let (Some(work), Some(positions)) = (&work, &positions) {
+            checkpoint::primary_key_positions_with_work_context(&schema, positions, work)?
+        } else {
+            column_positions(&schema, &schema.primary_key)?
+        };
         let mut rows = BTreeMap::new();
         for _ in 0..row_count {
             let row = decoder.row()?;
-            validate_row(&schema, &row)?;
+            if let Some(work) = &work {
+                checkpoint::validate_row_with_work_context(&schema, &row, work)?;
+            } else {
+                validate_row(&schema, &row)?;
+            }
             let key = super::row_key(&row, &primary_key);
             if rows.insert(key, row).is_some() {
                 return Err(RelationalError::Corruption(format!(
@@ -1373,6 +1389,9 @@ impl Encoder {
 }
 
 trait DecodeInput {
+    fn checkpoint_work_context(&self) -> Option<&crate::background::CheckpointWorkContext> {
+        None
+    }
     fn len(&self) -> usize;
     fn position(&self) -> usize;
     fn read_exact(&mut self, output: &mut [u8]) -> Result<(), RelationalError>;

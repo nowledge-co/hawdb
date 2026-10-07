@@ -67,6 +67,10 @@ impl<'a> CheckpointFileInput<'a> {
 }
 
 impl DecodeInput for CheckpointFileInput<'_> {
+    fn checkpoint_work_context(&self) -> Option<&CheckpointWorkContext> {
+        Some(self.work)
+    }
+
     fn len(&self) -> usize {
         self.inner.payload_len
     }

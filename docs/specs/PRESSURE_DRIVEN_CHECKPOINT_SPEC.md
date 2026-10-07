@@ -505,6 +505,18 @@ Read-ahead may discover a physical I/O failure before an earlier malformed
 payload field; both paths must fail closed. Input control does not establish
 a complete mount cancellation, memory or time bound.
 
+The controlled relational parser now validates schema columns/defaults,
+primary/unique/foreign/index metadata and row scalar types under separate work
+boundaries. A borrowed name/position map preserves first-error precedence and
+avoids repeated linear column lookups or cloning column names. Ordinary decode,
+schema and row validators remain independent references. Complete 1025-column
+positions, all row scalar variants, 23 schema-error and six row-error priorities,
+representative/final cancellation and admission denial/retry have focused
+coverage. Variable-width comparisons/diagnostics, parser allocation and UTF-8
+validation, primary-key cloning, row-page construction, index/foreign-key and
+closure traversal, retained maps and drop still need byte/time accounting and
+controls. These validation boundaries do not qualify full mount resources.
+
 `HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
 two schema/data transactions under both durability policies. Its complete
 configured safety graph passed TLC (34,275 distinct states). Five deliberately
