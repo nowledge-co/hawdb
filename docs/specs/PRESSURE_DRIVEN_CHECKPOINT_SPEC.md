@@ -576,6 +576,21 @@ sorting, publication I/O, temporary-file ownership and cleanup debt still need
 their own controls and hard resource accounting. This is validation coverage,
 not whole-publisher memory/time, power-loss or production admission qualification.
 
+Overflow publishers now create each temporary artifact exclusively and record
+cleanup ownership only after that create succeeds. Cleanup runs before the
+serialized publication lock is released and never removes an unowned temporary
+or a renamed immutable artifact. A non-selecting candidate also retains an
+interrupted latest-selector temporary rather than deleting unrelated evidence.
+An existing temporary causes an explicit creation failure when that path is
+required. Already renamed generation artifacts survive a later selector-create
+failure. Ordinary and controlled publication share this ownership rule; input
+validation still has an independent ordinary decoder reference. Targeted tests
+cover every temporary stage in all three candidate modes plus latest selection,
+both validation paths, base-authority bytes, unpublished cleanup, complete
+retained generation recovery and retry, and QoS denial before claiming evidence.
+Cleanup failures leave disk evidence, but shared maintenance-debt accounting,
+retry, disk/FD admission and bounded publication I/O remain incomplete.
+
 `HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
 two schema/data transactions under both durability policies. Its complete
 configured safety graph passed TLC (34,275 distinct states). Five deliberately

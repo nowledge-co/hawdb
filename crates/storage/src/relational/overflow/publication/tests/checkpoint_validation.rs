@@ -120,6 +120,7 @@ fn candidate(
                 )
                 .map(|report| report.publication)
         }
+        3 => publisher.publish(directory, 2, 11, Some(1), inputs),
         _ => unreachable!(),
     }
 }
@@ -270,5 +271,108 @@ fn checkpoint_units_overflow_publication_validation_cancellation_and_denial_pres
             retry.assert_released(&local);
             fs::remove_dir_all(directory).unwrap();
         }
+    }
+}
+
+#[test]
+fn checkpoint_units_overflow_publication_preserves_unowned_temporaries_in_every_mode() {
+    let fixture = fixture();
+    for controlled in [false, true] {
+        for mode in 0..4 {
+            for stage in 0..4 {
+                let directory = unique_test_dir("unowned-evidence");
+                setup(&directory, &fixture);
+                let before = authority(&directory);
+                let names = [
+                    relational_overflow_extent_file(2),
+                    relational_overflow_descriptor_file(2),
+                    relational_overflow_manifest_generation_file(2),
+                    RELATIONAL_OVERFLOW_MANIFEST_FILE.into(),
+                ];
+                let evidence = directory.join(&names[stage]).with_extension("hawdb.tmp");
+                let bytes = b"interrupted candidate evidence: preserve all bytes";
+                fs::write(&evidence, bytes).unwrap();
+                let local = scheduler();
+                let probe = Arc::new(CheckpointWorkProbe::default());
+                let work = controlled.then(|| probe.context(local.clone()));
+                let result = candidate(&directory, &fixture, mode, work.as_ref());
+                if stage == 3 && mode != 3 {
+                    result.unwrap();
+                } else {
+                    let error = result.unwrap_err();
+                    assert!(
+                        matches!(error, RelationalOverflowPublicationError::Durability(_)),
+                        "{error:?}"
+                    );
+                }
+                assert_eq!(fs::read(&evidence).unwrap(), bytes);
+                assert_eq!(authority(&directory), before);
+                let remaining = fs::read_dir(&directory)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .filter(|path| path.extension() == Some(std::ffi::OsStr::new("tmp")))
+                    .collect::<Vec<_>>();
+                assert_eq!(remaining, vec![evidence.clone()]);
+                for name in names.iter().take(3) {
+                    assert_eq!(directory.join(name).exists(), stage == 3);
+                }
+                probe.assert_released(&local);
+                // The test owns this fixture file; the publisher never did.
+                fs::remove_file(&evidence).unwrap();
+                if stage == 3 {
+                    verify(&directory, &fixture, mode);
+                } else {
+                    let retry = Arc::new(CheckpointWorkProbe::default());
+                    candidate(
+                        &directory,
+                        &fixture,
+                        mode,
+                        Some(&retry.context(local.clone())),
+                    )
+                    .unwrap();
+                    verify(&directory, &fixture, mode);
+                    retry.assert_released(&local);
+                }
+                fs::remove_dir_all(directory).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn checkpoint_units_overflow_publication_denial_never_claims_existing_evidence() {
+    let fixture = fixture();
+    for mode in 0..4 {
+        let directory = unique_test_dir("unowned-denied");
+        setup(&directory, &fixture);
+        let before = authority(&directory);
+        let evidence = directory
+            .join(relational_overflow_extent_file(2))
+            .with_extension("hawdb.tmp");
+        fs::write(&evidence, b"prior unpublished data").unwrap();
+        let local = scheduler();
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        let work = probe.context(local.clone());
+        let held = local
+            .try_start(WorkRequest::background(WorkClass::Mutation, 1))
+            .unwrap();
+        let error = candidate(&directory, &fixture, mode, Some(&work)).unwrap_err();
+        assert!(
+            error.to_string().contains("admission deferred"),
+            "{error:?}"
+        );
+        assert_eq!(probe.completed.load(Ordering::SeqCst), 0);
+        drop(held);
+        probe.assert_released(&local);
+        assert_eq!(fs::read(&evidence).unwrap(), b"prior unpublished data");
+        assert_eq!(authority(&directory), before);
+        for name in [
+            relational_overflow_extent_file(2),
+            relational_overflow_descriptor_file(2),
+            relational_overflow_manifest_generation_file(2),
+        ] {
+            assert!(!directory.join(name).exists());
+        }
+        fs::remove_dir_all(directory).unwrap();
     }
 }

@@ -171,8 +171,8 @@ impl RelationalOverflowPublisher {
         fs::create_dir_all(directory).map_err(durability("create overflow directory"))?;
         let _lock = acquire_publication_lock(directory)?;
         let paths = PublicationPaths::new(directory, generation);
-        paths.remove_temps()?;
         paths.require_fresh_generation()?;
+        let mut temporary = OwnedTemporaryArtifacts::default();
         validate_base_identity(
             generation,
             source_commit_epoch,
@@ -193,33 +193,35 @@ impl RelationalOverflowPublisher {
 
         let result = (|| {
             maybe_stop(None, RelationalOverflowPublicationPhase::CandidateStarted)?;
-            let artifacts = write_exact_artifacts(ExactArtifactWrite {
-                extent_path: &paths.extent_tmp,
-                descriptor_path: &paths.descriptor_tmp,
-                base,
-                references,
-                resolve_new: &mut resolve_new,
-                generation,
-                config: self.config,
-                task,
-                work: self.validation_work.as_ref(),
-            })?;
+            let artifacts = write_exact_artifacts(
+                ExactArtifactWrite {
+                    extent_path: &paths.extent_tmp,
+                    descriptor_path: &paths.descriptor_tmp,
+                    base,
+                    references,
+                    resolve_new: &mut resolve_new,
+                    generation,
+                    config: self.config,
+                    task,
+                    work: self.validation_work.as_ref(),
+                },
+                &mut temporary,
+            )?;
             task.checkpoint()
                 .map_err(RelationalOverflowPublicationError::Stopped)?;
-            self.finish_candidate_publication(PublicationCommit {
-                paths: &paths,
-                generation,
-                source_commit_epoch,
-                expected_previous_generation: Some(expected_previous_generation),
-                artifacts,
-                select_latest: false,
-                stop_after: None,
-            })
+            self.finish_candidate_publication(
+                PublicationCommit {
+                    paths: &paths,
+                    generation,
+                    source_commit_epoch,
+                    expected_previous_generation: Some(expected_previous_generation),
+                    artifacts,
+                    select_latest: false,
+                    stop_after: None,
+                },
+                &mut temporary,
+            )
         })();
-        // Success has durably renamed every candidate; only failure leaves temporary files.
-        if result.is_err() {
-            let _ = paths.remove_temps();
-        }
         result.map(|publication| RelationalOverflowExactPublicationReport {
             publication,
             copied_base_extent_count: preflight.copied_base_extent_count,
@@ -273,8 +275,8 @@ impl RelationalOverflowPublisher {
         fs::create_dir_all(directory).map_err(durability("create overflow directory"))?;
         let _lock = acquire_publication_lock(directory)?;
         let paths = PublicationPaths::new(directory, generation);
-        paths.remove_temps()?;
         paths.require_fresh_generation()?;
+        let mut temporary = OwnedTemporaryArtifacts::default();
 
         validate_base_identity(
             generation,
@@ -291,47 +293,55 @@ impl RelationalOverflowPublisher {
             self.validation_work.as_ref(),
         )?;
 
-        let result = self.build_and_publish(PublicationBuild {
-            paths: &paths,
-            base,
-            generation,
-            source_commit_epoch,
-            expected_previous_generation,
-            extents: &extents,
-            retain_unmentioned_base,
-            select_latest,
-            stop_after,
-        });
-        // Success has durably renamed every candidate; only failure leaves temporary files.
-        if result.is_err() {
-            let _ = paths.remove_temps();
-        }
-        result
+        self.build_and_publish(
+            PublicationBuild {
+                paths: &paths,
+                base,
+                generation,
+                source_commit_epoch,
+                expected_previous_generation,
+                extents: &extents,
+                retain_unmentioned_base,
+                select_latest,
+                stop_after,
+            },
+            &mut temporary,
+        )
     }
 
     fn build_and_publish(
         &self,
         build: PublicationBuild<'_>,
+        temporary: &mut OwnedTemporaryArtifacts,
     ) -> Result<RelationalOverflowPublicationReport, RelationalOverflowPublicationError> {
         maybe_stop(
             build.stop_after,
             RelationalOverflowPublicationPhase::CandidateStarted,
         )?;
-        let artifacts = write_artifacts(&build, self.config, self.validation_work.as_ref())?;
-        self.finish_candidate_publication(PublicationCommit {
-            paths: build.paths,
-            generation: build.generation,
-            source_commit_epoch: build.source_commit_epoch,
-            expected_previous_generation: build.expected_previous_generation,
-            artifacts,
-            select_latest: build.select_latest,
-            stop_after: build.stop_after,
-        })
+        let artifacts = write_artifacts(
+            &build,
+            self.config,
+            self.validation_work.as_ref(),
+            temporary,
+        )?;
+        self.finish_candidate_publication(
+            PublicationCommit {
+                paths: build.paths,
+                generation: build.generation,
+                source_commit_epoch: build.source_commit_epoch,
+                expected_previous_generation: build.expected_previous_generation,
+                artifacts,
+                select_latest: build.select_latest,
+                stop_after: build.stop_after,
+            },
+            temporary,
+        )
     }
 
     fn finish_candidate_publication(
         &self,
         build: PublicationCommit<'_>,
+        temporary: &mut OwnedTemporaryArtifacts,
     ) -> Result<RelationalOverflowPublicationReport, RelationalOverflowPublicationError> {
         let PublicationCommit {
             paths,
@@ -353,7 +363,7 @@ impl RelationalOverflowPublisher {
             root_set_digest: artifacts.root_set_digest,
         };
         let encoded_manifest = manifest::encode_manifest(&manifest, self.config)?;
-        write_synced(&paths.generation_manifest_tmp, &encoded_manifest)?;
+        write_synced(&paths.generation_manifest_tmp, &encoded_manifest, temporary)?;
 
         durable_publish_immutable(&paths.extent_tmp, &paths.extent)?;
         maybe_stop(
@@ -387,7 +397,7 @@ impl RelationalOverflowPublisher {
             RelationalOverflowPublicationPhase::BaseRevalidated,
         )?;
         if select_latest {
-            write_synced(&paths.latest_manifest_tmp, &encoded_manifest)?;
+            write_synced(&paths.latest_manifest_tmp, &encoded_manifest, temporary)?;
             durable_replace_file(&paths.latest_manifest_tmp, &paths.latest_manifest)
                 .map_err(durability("publish latest overflow manifest"))?;
         }
@@ -633,6 +643,7 @@ struct ExactArtifactWrite<'a> {
 
 fn write_exact_artifacts(
     request: ExactArtifactWrite<'_>,
+    temporary: &mut OwnedTemporaryArtifacts,
 ) -> Result<WrittenArtifacts, RelationalOverflowPublicationError> {
     let ExactArtifactWrite {
         extent_path,
@@ -645,7 +656,14 @@ fn write_exact_artifacts(
         task,
         work,
     } = request;
-    let mut writer = ArtifactWriter::new(extent_path, descriptor_path, generation, config, work)?;
+    let mut writer = ArtifactWriter::new(
+        extent_path,
+        descriptor_path,
+        generation,
+        config,
+        work,
+        temporary,
+    )?;
     let mut base_file = File::open(base.descriptor_path())
         .map_err(durability("open base overflow descriptor artifact"))?;
     let mut base_ordinal = 0u64;
@@ -699,6 +717,7 @@ fn write_artifacts(
     build: &PublicationBuild<'_>,
     config: RelationalOverflowPublicationConfig,
     work: Option<&CheckpointWorkContext>,
+    temporary: &mut OwnedTemporaryArtifacts,
 ) -> Result<WrittenArtifacts, RelationalOverflowPublicationError> {
     let base = build.base;
     let inputs = build.extents;
@@ -709,6 +728,7 @@ fn write_artifacts(
         build.generation,
         config,
         work,
+        temporary,
     )?;
     let mut base_file = base
         .map(|reader| {
@@ -801,12 +821,12 @@ impl<'a> ArtifactWriter<'a> {
         generation: u64,
         config: RelationalOverflowPublicationConfig,
         work: Option<&'a CheckpointWorkContext>,
+        temporary: &mut OwnedTemporaryArtifacts,
     ) -> Result<Self, RelationalOverflowPublicationError> {
         Ok(Self {
-            extent_file: File::create(extent_path)
-                .map_err(durability("create overflow extent candidate"))?,
-            descriptor_file: File::create(descriptor_path)
-                .map_err(durability("create overflow descriptor candidate"))?,
+            extent_file: temporary.create(extent_path, "create overflow extent candidate")?,
+            descriptor_file: temporary
+                .create(descriptor_path, "create overflow descriptor candidate")?,
             extent_hasher: IntegrityHasher::new(),
             descriptor_hasher: IntegrityHasher::new(),
             root_hasher: IntegrityHasher::new(),
@@ -1208,8 +1228,12 @@ fn acquire_publication_lock(directory: &Path) -> Result<File, RelationalOverflow
     Ok(lock)
 }
 
-fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), RelationalOverflowPublicationError> {
-    let mut file = File::create(path).map_err(durability("create overflow candidate"))?;
+fn write_synced(
+    path: &Path,
+    bytes: &[u8],
+    temporary: &mut OwnedTemporaryArtifacts,
+) -> Result<(), RelationalOverflowPublicationError> {
+    let mut file = temporary.create(path, "create overflow candidate")?;
     file.write_all(bytes)
         .map_err(durability("write overflow candidate"))?;
     file.sync_all()
@@ -1241,6 +1265,50 @@ fn maybe_stop(
     Ok(())
 }
 
+// Declared after the publication lock, so cleanup finishes before releasing
+// serialization. Only successful exclusive creates confer cleanup ownership.
+// Renamed immutable files are never removed. Cleanup failure leaves evidence;
+// accounting and retrying that retained debt remains a separate requirement.
+#[derive(Default)]
+struct OwnedTemporaryArtifacts {
+    paths: Vec<PathBuf>,
+}
+
+impl OwnedTemporaryArtifacts {
+    fn create(
+        &mut self,
+        path: &Path,
+        context: &'static str,
+    ) -> Result<File, RelationalOverflowPublicationError> {
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(durability(context))?;
+        self.paths.push(path.to_path_buf());
+        Ok(file)
+    }
+}
+
+impl Drop for OwnedTemporaryArtifacts {
+    fn drop(&mut self) {
+        let mut removed = false;
+        for path in &self.paths {
+            if fs::remove_file(path).is_ok() {
+                removed = true;
+            }
+        }
+        if let Some(directory) = self
+            .paths
+            .first()
+            .filter(|_| removed)
+            .and_then(|path| path.parent())
+        {
+            let _ = sync_directory(directory);
+        }
+    }
+}
+
 struct PublicationPaths {
     extent: PathBuf,
     extent_tmp: PathBuf,
@@ -1269,29 +1337,6 @@ impl PublicationPaths {
             generation_manifest,
             latest_manifest,
         }
-    }
-
-    fn remove_temps(&self) -> Result<(), RelationalOverflowPublicationError> {
-        for path in [
-            &self.extent_tmp,
-            &self.descriptor_tmp,
-            &self.generation_manifest_tmp,
-            &self.latest_manifest_tmp,
-        ] {
-            match fs::remove_file(path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(durability("remove stale overflow candidate")(error)),
-            }
-        }
-        sync_directory(
-            self.latest_manifest
-                .parent()
-                .expect("publication paths have a directory"),
-        )
-        .map_err(durability(
-            "sync overflow directory after candidate cleanup",
-        ))
     }
 
     fn require_fresh_generation(&self) -> Result<(), RelationalOverflowPublicationError> {
