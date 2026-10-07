@@ -231,6 +231,7 @@ pub struct SearchOutOfCoreGenerationWriter {
     metadata_field_bytes: u64,
     expected_active_generation: Option<u64>,
     active_manifest_update: Option<ActiveManifestUpdate>,
+    cleanup_reuse: Option<super::reuse::ValidatedArtifacts>,
     mutations: Option<delta::mutation::Prepared>,
     poisoned: bool,
     needs_chinese_analyzer: bool,
@@ -433,6 +434,7 @@ impl SearchOutOfCoreGenerationWriter {
             metadata_field_bytes,
             expected_active_generation: None,
             active_manifest_update: None,
+            cleanup_reuse: None,
             mutations: None,
             poisoned: false,
             needs_chinese_analyzer: false,
@@ -757,8 +759,11 @@ impl SearchOutOfCoreGenerationWriter {
             &self.memory,
         );
         let cleanup_generations = if self.active_manifest_update.is_some() {
-            match super::published_artifact_generations(&self.root, &self.options.analyzer_lexicon)
-            {
+            match super::published_artifact_generations_with_reuse(
+                &self.root,
+                &self.options.analyzer_lexicon,
+                self.cleanup_reuse.as_ref(),
+            ) {
                 Ok(Some(retained)) => SearchProjectionGenerations {
                     lexical: Some(lexical_generation),
                     out_of_core: Some(retained.active_generation),

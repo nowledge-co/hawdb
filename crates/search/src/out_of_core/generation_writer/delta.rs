@@ -111,6 +111,9 @@ impl SearchOutOfCoreGenerationUpdate {
         // Keep dimension-only identity even when this batch has no vectors.
         writer.embedding_dimension = reader.manifest.embedding_dimension;
         writer.expected_active_generation = Some(reader.generation());
+        writer.cleanup_reuse = Some(super::super::reuse::ValidatedArtifacts::capture(
+            reader, &memory, &task,
+        )?);
         // Only globally ordered new IDs use the append fast path. An arbitrary
         // new ID (including a UUID between existing IDs) publishes independent
         // content through the same target-bound mutation boundary as an edit.

@@ -188,6 +188,29 @@ cache or persistent trust record. Artifacts must remain immutable while pinned.
 Regressed heads or changed identities at the same generation fail closed, and
 the Mem maintenance adapter detaches its serving reader after a refresh error.
 
+Incremental and compaction writers also retain an operation-local view of the
+validated input closure for post-publication cleanup discovery. The operation
+ledger admits copied manifest references and segment-handle slots before their
+allocation; descriptor/layout metadata and immutable files remain shared. The
+view survives dropping the original reader and is released with the writer.
+Cleanup rereads the durable checksummed head, validates new files and runs, and
+checks the complete closure under the inherited reader limits. Reuse requires
+the same content/run references and global embedding identity as reader refresh.
+Regressed or changed same-generation heads and missing referenced files fail
+validation, retain artifacts and request cleanup retry. Ordinary cleanup without
+an input view and ordinary fresh opens still validate the entire closure.
+This removes a second resident copy of corpus metadata during writer cleanup;
+manifest/run decoding and complete closure checks still depend on history size.
+
+A [same-snapshot macOS diagnostic](benchmarks/search_incremental_cleanup_macos_2026_10_08.json)
+records one changed-document publication against a complete 327,749-document,
+384-dimensional snapshot. Writer-local reuse reduces the measured lifetime RSS
+peak from 283,525,120 to 152,453,120 bytes with identical 47,302 published artifact
+bytes under the same 256 MiB reservation. The old result exceeds admission.
+The report retains source hashes, the typed prototype, configuration, process
+counters and measurement limits. This is diagnostic evidence; full-build and
+sustained scale acceptance remain pending.
+
 In `Preferred` mode, only a typed compressed-search resource-budget error
 restarts exact scalar scoring with the same visibility, candidate set and task
 context. Reports include `compressed_vector_budget_exceeded`; `Required`
@@ -326,8 +349,10 @@ starting the next range. Final descriptor output validates the spool length and
 checksum, streams the existing V3 grammar, and synchronizes the complete output
 before publication. The descriptor's cumulative admission and encoded-file limit
 remain enforced; the spool does not weaken the operation memory ledger. Layout
-metadata remains separately admitted. The many-range regression completes 2000
-ranges under a 32 MiB operation budget and verifies all persisted ID summaries.
+metadata remains separately admitted. The many-range regression completes 500
+ranges for 1,000 documents under a 16 MiB operation budget and verifies every
+persisted ID summary. The pre-streaming implementation fails this exact fixture
+at document 310 after retaining 155 completed ranges.
 
 The benchmark replaces K existing documents with changed text and embeddings
 before measuring its K-document delete checkpoint. It records replacement

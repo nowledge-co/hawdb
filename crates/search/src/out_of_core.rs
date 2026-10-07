@@ -60,6 +60,7 @@ mod verified_body;
 pub use verified_body::{SearchBodyReadOptions, SearchVerifiedBody};
 pub(crate) mod mutation_run;
 mod publish_lease;
+mod reuse;
 mod vector_serving;
 pub use generation_writer::{
     GovernedSearchGenerationUpdate, GovernedSearchGenerationWriter,
@@ -1109,7 +1110,7 @@ impl SearchOutOfCoreReader {
             self.lexical_term_policy,
             self.lexical_source_policy,
             manifest,
-            Some(self),
+            Some(reuse::View::from_reader(self)),
         )?;
         let report = closure.refresh;
         self.manifest = closure.manifest;
@@ -2776,7 +2777,7 @@ fn load_artifact_closure_for_manifest(
     lexical_term_policy: SearchLexicalTermPolicy,
     lexical_source_policy: SearchLexicalSourcePolicy,
     manifest: SearchOutOfCoreManifestBody,
-    previous: Option<&SearchOutOfCoreReader>,
+    previous: Option<reuse::View<'_>>,
 ) -> Result<LoadedArtifactClosure> {
     let previous = previous.filter(|reader| {
         reader.manifest.embedding_dimension == manifest.embedding_dimension
@@ -2921,17 +2922,44 @@ pub(super) fn published_artifact_generations(
     root: &Path,
     analyzer_lexicon: &SearchAnalyzerLexicon,
 ) -> Result<Option<PublishedArtifactGenerations>> {
+    published_artifact_generations_with_reuse(root, analyzer_lexicon, None)
+}
+
+fn published_artifact_generations_with_reuse(
+    root: &Path,
+    analyzer_lexicon: &SearchAnalyzerLexicon,
+    previous: Option<&reuse::ValidatedArtifacts>,
+) -> Result<Option<PublishedArtifactGenerations>> {
     let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
     if !fs::try_exists(&manifest_path)? {
         return Ok(None);
     }
-    let (manifest, _segments, _visibility) = load_artifact_closure(
+    let manifest_bytes = read_bounded_file(&manifest_path, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
+    let manifest = SearchOutOfCoreManifestBody::decode(&manifest_bytes)?;
+    let view = previous.map(reuse::ValidatedArtifacts::view);
+    if let Some(view) = view
+        && (manifest.generation < view.manifest.generation
+            || (manifest.generation == view.manifest.generation && &manifest != view.manifest))
+    {
+        return Err(HawDBError::Storage(
+            "search cleanup head regressed or changed an existing generation".into(),
+        ));
+    }
+    let default_config = SearchOutOfCoreConfig::default();
+    let closure = load_artifact_closure_for_manifest(
         root,
-        &SearchOutOfCoreConfig::default(),
+        previous.map_or(&default_config, |previous| &previous.config),
         analyzer_lexicon,
-        SearchLexicalTermPolicy::default(),
-        SearchLexicalSourcePolicy::default(),
+        previous.map_or(SearchLexicalTermPolicy::default(), |previous| {
+            previous.term_policy
+        }),
+        previous.map_or(SearchLexicalSourcePolicy::default(), |previous| {
+            previous.source_policy
+        }),
+        manifest,
+        view,
     )?;
+    let manifest = &closure.manifest;
     let mut lexical_generations = BTreeSet::new();
     let mut out_of_core_generations = BTreeSet::new();
     let mut rabitq_generations = BTreeSet::new();
