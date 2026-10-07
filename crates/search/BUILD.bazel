@@ -133,6 +133,56 @@ rust_test(
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
+# Reuse production libraries where their exact feature set already exists.
+# The other two lifecycle profiles need only a private test dependency.
+[
+    rust_library(
+        name = "hawdb_search_lifecycle_%s" % profile,
+        testonly = True,
+        crate_name = "hawdb_search",
+        crate_root = "src/lib.rs",
+        crate_features = features,
+        srcs = glob(["src/**/*.rs"]) + ["tests/support/live_allocation.rs"],
+        edition = "2024",
+        aliases = aliases(),
+        deps = _SEARCH_BASE_DEPS + (_SEARCH_VECTOR_DEPS if "vector-search" in features else []),
+        proc_macro_deps = all_crate_deps(proc_macro = True),
+        visibility = ["//visibility:private"],
+    )
+    for profile, features in {
+        "text_background": ["full-text-search", "background-maintenance"],
+        "text_vector": ["full-text-search", "vector-search"],
+    }.items()
+]
+
+# Keep every original FTS profile's complete 32-MiB lifecycle under its own
+# unchanged 900-second deadline, compiled from the public fixture and helpers.
+[
+    rust_test(
+        name = "hawdb_search_streamed_lifecycle_tests" if profile == "default" else "hawdb_search_%s_streamed_lifecycle_tests" % profile,
+        timeout = "long",
+        crate_features = settings[0],
+        crate_root = "tests/streamed_document_lifecycle.rs",
+        srcs = [
+            "src/out_of_core/verified_body/fixtures.rs",
+            "tests/streamed_document_lifecycle.rs",
+        ],
+        edition = "2024",
+        deps = [
+            settings[1],
+            "//crates/core:hawdb_core",
+            "//crates/storage:hawdb_storage",
+        ],
+    )
+    for profile, settings in {
+        "default": (_SEARCH_DEFAULT_FEATURES, ":hawdb_search"),
+        "acl": (_SEARCH_DEFAULT_FEATURES + ["acl"], ":hawdb_search_acl"),
+        "text_only": (["full-text-search"], ":hawdb_search_graph_text"),
+        "text_background": (["full-text-search", "background-maintenance"], ":hawdb_search_lifecycle_text_background"),
+        "text_vector": (["full-text-search", "vector-search"], ":hawdb_search_lifecycle_text_vector"),
+    }.items()
+]
+
 rust_test(
     name = "hawdb_search_projection_evidence_fuzz_tests",
     args = [
