@@ -18,6 +18,8 @@ use super::*;
 use crate::background::{CheckpointWorkContext, CheckpointWorkError};
 use std::io::Write;
 
+pub(super) mod validation;
+
 pub(crate) fn encode_overflow_envelope_with_work_context(
     scalar_type: RelationalScalarType,
     raw: &[u8],

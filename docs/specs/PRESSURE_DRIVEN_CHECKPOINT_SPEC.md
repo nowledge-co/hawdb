@@ -558,6 +558,24 @@ comparisons, final-owner destruction and source/candidate/retention accounting
 still need the shared hard resource ledger and release RSS/latency evidence.
 These controls do not qualify whole-candidate memory/time or production QoS.
 
+Overflow publication-input validation now streams RAW payloads and Zstd
+output through 64 KiB blocks, hashes the borrowed complete envelope in blocks,
+and retains only CRC32C state plus up to three incomplete UTF-8 bytes. It does
+not construct and discard a complete hydrated value. Header, digest, admission,
+decompression/declared-length, checksum and global UTF-8 diagnostic precedence
+matches the independent ordinary decoder; caller hydration budget is committed
+only after complete validation and a final cancellation check. The checkpoint
+publisher binds validation to its existing admitted task in ordinary, retaining
+base and exact-reference publication modes. Ordinary publisher callers retain
+their independent decoder path. Focused tests compare both codecs/scalar types,
+complete generation artifacts and every reachable value in all three modes,
+corruption/budget/UTF-8 diagnostics, cancellation at each actual validation unit,
+and publication cancellation/denial with unchanged base authority and full retry.
+Zstd workspace/internal execution, retained input buffers, descriptor reads,
+sorting, publication I/O, temporary-file ownership and cleanup debt still need
+their own controls and hard resource accounting. This is validation coverage,
+not whole-publisher memory/time, power-loss or production admission qualification.
+
 `HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
 two schema/data transactions under both durability policies. Its complete
 configured safety graph passed TLC (34,275 distinct states). Five deliberately

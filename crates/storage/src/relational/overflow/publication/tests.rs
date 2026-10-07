@@ -24,6 +24,9 @@ use std::io::{Seek, SeekFrom, Write};
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+#[path = "tests/checkpoint_validation.rs"]
+mod checkpoint_validation;
 use std::sync::Arc;
 
 static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
