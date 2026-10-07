@@ -973,6 +973,24 @@ cut, file publication and complete ordinary diagnostics. Allocator latency,
 remaining builders/maps/source ownership and disk/FD/cleanup debt, full profiles,
 regressions/fuzz and paired release performance remain qualification gates.
 
+The controlled schema digest now admits its 64 KiB escaped text/binary scratch
+before fallible allocation, initializes it in bounded units and retains its
+lease through the final terminator. Scalar defaults admit a fixed 32-byte
+capacity before fallible allocation and use the unchanged ordinary codec; the
+buffer drops before its lease. Null, boolean, integer, floating-point and UUID
+encodings cannot grow that capacity. Unsupported overflow defaults retain the
+ordinary diagnostic even when the available memory cannot admit a scalar buffer.
+Borrowed schema fields and the ordinary identity bytes remain unchanged.
+
+Two actual-governor regressions fail against the former untracked scratch and
+scalar Vecs and pass with identical bodies after correction. Five focused tests
+cover one-byte scratch shortfall, every actual cancellation unit and full retry
+on the same reservation, critical-memory-pressure recovery without readmission,
+all scalar forms, empty and multi-chunk binary values, Unicode/zero escaping,
+source identity and unsupported-default diagnostics. Source schema/map ownership,
+allocator metadata/latency, other output buffers and complete candidate resources
+still need separate qualification. These tests do not qualify the full issue.
+
 The row-page publisher's complete cancellation matrix repeatedly recreated and
 synchronized the identical durable source for every CPU/I/O cut. Two full
 current-main commands and one unchanged isolated diagnostic reached the existing
@@ -983,8 +1001,16 @@ opening the base. Every candidate/cancellation/retry still executes its real
 barriers, every CPU/I/O cut and all three modes remain, and every prior assertion
 is retained. Added assertions compare each case's starting authority and the
 unchanged shared source after every case. Required qualification still uses the
-original deadlines, budgets, jobs and complete commands; the new fixture has not
-yet passed that complete gate merely because the other focused tests are green.
+original deadlines, budgets, jobs and complete commands. The complete combined
+source tree `735343c6287105eaf91648f8a9249fc6339ed1bd` passed the unchanged full
+storage command (1240 passed, 29 ignored), owner/concurrent/graph/pipeline/cascades
+regressions, all 96 actually executed mandatory fuzz targets, formatting,
+all-file hooks and minimal-native/browser-WASM Clippy. These results precede the
+schema scratch/scalar correction above, which requires its own final-source
+qualification. The first combined-tree storage run observed an overflow
+publication lock-busy failure; its unchanged isolated case and full-command
+retry passed. Original log/XML hashes are retained and the contention cause
+remains unproven. No whole-issue completion follows from the retry.
 The first linked-source fixture omitted creation of the case directory and
 failed before the first candidate attempt; its full logs/XML remain archived.
 The revised fixture creates that namespace before linking/synchronizing the base.

@@ -13,10 +13,14 @@
 // limitations under the License.
 
 //! Hash the existing schema wire identity without retaining a full encoding.
-//! Schema/map allocations, comparisons and destruction need separate accounting.
+//! Scratch capacity is admitted before allocation and retained through hashing.
+//! Source schema/map ownership and allocator latency need separate accounting.
 
 use super::*;
-use crate::background::{CheckpointWorkContext, CheckpointWorkError};
+use crate::background::{CheckpointBytes, CheckpointWorkContext, CheckpointWorkError};
+
+#[cfg(test)]
+mod tests;
 
 fn work_error(error: CheckpointWorkError) -> RelationalIndexShadowError {
     RelationalIndexShadowError::Admission(error.to_string())
@@ -118,30 +122,67 @@ impl SchemaDigest<'_> {
         };
         if let Some((tag, bytes)) = variable {
             self.update(&[tag])?;
-            let unit = self.work.start_unit().map_err(work_error)?;
-            let mut escaped = Vec::with_capacity(64 * 1024);
-            unit.finish();
+            let mut escaped = CheckpointBytes::zeroed(64 * 1024, self.work).map_err(work_error)?;
             // Zero escaping expands at most twofold. Each output/hash remains
             // at most 64 KiB, including an input made entirely of zero bytes.
             for block in bytes.chunks(32 * 1024) {
                 let unit = self.work.start_unit().map_err(work_error)?;
-                escaped.clear();
+                let scratch = escaped.as_mut_slice();
+                let mut length = 0;
                 for byte in block {
                     if *byte == 0 {
-                        escaped.extend_from_slice(&[0, 255]);
+                        scratch[length..length + 2].copy_from_slice(&[0, 255]);
+                        length += 2;
                     } else {
-                        escaped.push(*byte);
+                        scratch[length] = *byte;
+                        length += 1;
                     }
                 }
-                self.hasher.update(&escaped);
+                self.hasher.update(&scratch[..length]);
                 unit.finish();
             }
             self.update(&[0, 0])
         } else {
             let unit = self.work.start_unit().map_err(work_error)?;
-            let mut encoded = Vec::with_capacity(32);
+            // These exhaustively listed scalar encodings write at most 17
+            // bytes through the unchanged ordinary codec. Variable encodings
+            // use the bounded escaped scratch path above; no Vec can grow.
+            match value {
+                RelationalValue::Null
+                | RelationalValue::Boolean(_)
+                | RelationalValue::BigInt(_)
+                | RelationalValue::DoublePrecision(_)
+                | RelationalValue::Uuid(_) => {}
+                RelationalValue::Overflow(_) => {
+                    return Err(crate::relational::ordered_key::OrderedRelationalKeyError::UnsupportedOverflow.into());
+                }
+                RelationalValue::Text(_) | RelationalValue::Bytea(_) => {
+                    unreachable!("variable default uses escaped scratch")
+                }
+            }
+            let memory = self.work.reserve_memory(32).map_err(work_error)?;
+            let mut encoded = Vec::new();
+            encoded.try_reserve_exact(32).map_err(|error| {
+                work_error(self.work.record_failure(CheckpointWorkError::Allocation {
+                    bytes: 32,
+                    reason: error.to_string(),
+                }))
+            })?;
+            if encoded.capacity() != 32 {
+                return Err(work_error(self.work.record_failure(
+                    CheckpointWorkError::Allocation {
+                        bytes: 32,
+                        reason: format!(
+                            "allocator granted {} scalar bytes beyond admitted capacity 32",
+                            encoded.capacity()
+                        ),
+                    },
+                )));
+            }
             encode_ordered_relational_value(&mut encoded, value)?;
             self.hasher.update(&encoded);
+            drop(encoded);
+            drop(memory);
             unit.finish();
             self.work.checkpoint().map_err(work_error)
         }

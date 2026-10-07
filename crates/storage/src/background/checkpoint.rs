@@ -86,7 +86,7 @@ impl CheckpointWorkContext {
         }
     }
 
-    fn record_failure(&self, error: CheckpointWorkError) -> CheckpointWorkError {
+    pub(crate) fn record_failure(&self, error: CheckpointWorkError) -> CheckpointWorkError {
         if let Some(recorded) = &self.recorded_failure {
             let mut first = recorded
                 .lock()
@@ -124,7 +124,7 @@ impl CheckpointWorkContext {
             .map_err(|error| self.record_failure(error))
     }
 
-    fn reserve_memory(
+    pub(crate) fn reserve_memory(
         &self,
         bytes: usize,
     ) -> Result<Option<Box<dyn RuntimeMemoryPermit>>, CheckpointWorkError> {
