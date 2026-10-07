@@ -343,3 +343,54 @@ fn vector_graph_legacy_expansion_matches_pipeline_ranked_output() {
         .keys()
         .all(|name| !name.starts_with(hawdb_plan_cypher::SCORING_PROVENANCE_PREFIX))));
 }
+
+#[test]
+fn vector_graph_rejects_reintroduced_seed_scope_before_external_execution() {
+    let database = fixture();
+    let query = "CALL vector_search($embedding, topK := 8) YIELD id AS seed_id \
+ MATCH (seed:Memory) WHERE seed.id = seed_id WITH 1 AS x WITH x \
+ MATCH (seed:Memory)-[:LINK]->(candidate:Memory) RETURN candidate.id AS id";
+    let mut seeds = Seeds::new(vec![("a", 0.2)]);
+    assert!(matches!(
+        run(&database, query, &program(8), &mut seeds),
+        Err(HawDBError::Semantic(_))
+    ));
+    assert_eq!(seeds.calls, 0);
+}
+
+#[test]
+fn vector_graph_rejects_reintroduced_middle_scope_before_external_execution() {
+    let database = fixture();
+    let query = "CALL vector_search($embedding, topK := 8) YIELD id AS seed_id \
+ MATCH (seed:Memory) WHERE seed.id = seed_id MATCH (seed)-[:LINK]->(middle:Memory) \
+ WITH 1 AS x WITH x MATCH (middle:Memory)-[:LINK]->(candidate:Memory) RETURN candidate.id AS id";
+    let mut seeds = Seeds::new(vec![("a", 0.2)]);
+    assert!(matches!(
+        run(&database, query, &program(8), &mut seeds),
+        Err(HawDBError::Semantic(_))
+    ));
+    assert_eq!(seeds.calls, 0);
+}
+
+#[test]
+fn vector_graph_rejects_reintroduced_seed_node_and_optional_scope() {
+    let database = fixture();
+    for (continuation, candidate) in [
+        ("MATCH (seed:Memory) RETURN seed.id AS id", "seed"),
+        (
+            "OPTIONAL MATCH (seed:Memory)-[:LINK]->(candidate:Memory) RETURN candidate.id AS id",
+            "candidate",
+        ),
+    ] {
+        let query = format!("CALL vector_search($embedding, topK := 8) YIELD id AS seed_id MATCH (seed:Memory) WHERE seed.id = seed_id WITH 1 AS x WITH x {continuation}");
+        let scoring = program(8)
+            .with_vector_graph_input("seed", candidate)
+            .unwrap();
+        let mut seeds = Seeds::new(vec![("a", 0.2)]);
+        assert!(matches!(
+            run(&database, &query, &scoring, &mut seeds),
+            Err(HawDBError::Semantic(_))
+        ));
+        assert_eq!(seeds.calls, 0);
+    }
+}

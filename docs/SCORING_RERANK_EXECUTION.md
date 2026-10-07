@@ -216,6 +216,11 @@ core oracle.
 | EXPLAIN final report budgets | Frozen `cd0c59d` fails eight unchanged API guards, one per Database/snapshot × EXPLAIN/ANALYZE × row/payload limit; ANALYZE K=0 isolates the final report | Common final report admission; original unbounded report succeeds, oversized report fails; inner ANALYZE data limits remain |
 | Session EXPLAIN final report budgets | Four additional unchanged session API guards fail the original direct report return, separately crossing EXPLAIN/ANALYZE and configured rows/payload; an empty inner read isolates the report | The same report admission for inactive sessions, preserving inner ANALYZE limits and active-transaction rejection |
 | Cached candidate-window admission | A precise production mutation changes only the cache key's window flag; the unchanged guard fails after an allowed template is cached | Reject the undeclared candidate window both before and after cached explicit-window execution |
+| Genuine vector/graph producer provenance | Independent production mutations of original seed similarity, GraphMatch bounded hop, cumulative hop, canonical properties, projection transfer and public annotation stripping fail unchanged actual stored-graph queries; real internal NodeId0 failed before its correction | Complete independent ID/score-bit oracle, legacy/pipeline parity, downstream K1 with upstream admission8, missing optional hop and absent public annotations |
+| Declared vector producer policy and identity | Separate mutations of unrelated-scan, duplicate-alias, reserved-annotation and collapsing-source admission and typed descriptor identity fail their existing guards | Actual pre-external query rejection where applicable; independent physical policy/identity assertions, not ANN or runtime vector cache-hit proof |
+| Graph scope reintroduction | Old producer checkpoint admits actual queries that drop seed or middle scope then MATCH the same variable name; unchanged guards fail | Reject before external execution; retain valid connected traversal, node-only/optional analogue and whole query ranking |
+| Reserved scalar references | Old producer checkpoint admits specialized/nested private column projections and private filter/order expressions; unchanged physical-policy guards fail | Exhaustive binding-name checks through projection, filter, MATCH predicate, Sort and TopN; literal data and ordinary public references remain valid |
+
 
 Focused replay/verification uses the existing executor and plan-cache unit owners:
 
@@ -241,6 +246,7 @@ unchanged test budgets are:
 | --- | --- | --- | --- |
 | Typed program shape, missing/finite policy and scalar parity | `//crates/core:hawdb_core_tests` | `ci/skein-bazel-test-crates` | default medium, 300 s |
 | Ranking, resident/spill, caps, cancellation and dispatch | `//crates/executor:hawdb_executor_tests` (unit member `hawdb_executor_unit_tests`) | `ci/skein-bazel-test-crates` | unit default medium, 300 s |
+| Vector producer lineage, reserved-expression policy and scope admission | `//crates/plan-cypher:hawdb_plan_cypher_tests` | `ci/skein-bazel-test-crates` | default medium, 300 s |
 | Template and parameter binding | `//crates/plan-cache:hawdb_plan_cache_tests` | `ci/skein-bazel-test-crates` | default medium, 300 s |
 | Ordinary request, EXPLAIN, cache and default-capability behavior | `//:hawdb_unit_fast_tests` | `ci/skein-bazel-test-root` | existing large, 900 s |
 | The same request guards with actual ACL capability | `//:hawdb_storage_crash_recovery_tests` | opt-in manual target, local-only evidence here | existing large, 900 s |
@@ -278,3 +284,14 @@ independently re-bounds transport payload. This correction does not claim the
 DISTINCT kernel or all blocking operators are repaired. The owned follow-up
 requires actual resident/spill RED/GREEN, complete DISTINCT semantics, parent
 caps, stop/error/cancellation and downstream admission with ledger/run release.
+
+The vector producer additions register six actual facade queries and three
+initial physical-policy guards; the scope correction adds three facade guards
+and four physical-policy guards. Their distinct evidence boundaries are listed
+above. Each belongs to the existing root or plan-cypher owner, with unchanged
+budgets. The initial default focused root group of 85 and ACL group of 79 ran in 8.04 and
+10.68 seconds; three policy guards ran in 0.00 seconds. Correction measurements and exact-source
+results belong in its final qualification packet. These are local observations,
+not an incremental CI timing claim. Current parser selection and hidden
+normalization qualification remain separate from the actual public
+legacy/pipeline parity oracle.
