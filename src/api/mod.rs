@@ -4340,6 +4340,18 @@ impl Database {
         batch: SearchProjectionChangeBatch,
         relational: SearchProjectionRelationalDelta,
     ) -> Result<SearchProjectionDeltaReport> {
+        let delta = self.build_search_projection_change_delta(batch, relational)?;
+        search_index.apply_projection_delta(delta)
+    }
+
+    /// Builds the complete graph-and-host delta without publishing its watermark.
+    /// Both full-residency and incremental persistence must pass this same
+    /// relational coverage and source-epoch proof before applying a batch.
+    pub fn build_search_projection_change_delta(
+        &self,
+        batch: SearchProjectionChangeBatch,
+        relational: SearchProjectionRelationalDelta,
+    ) -> Result<SearchProjectionDelta> {
         let expected_primary_key_count = batch
             .relational_primary_key_changes()
             .iter()
@@ -4370,7 +4382,7 @@ impl Database {
         graph.deletes.extend(deletes);
         graph.max_operations = max_operations;
         graph.source_graph_commit_epoch = complete_through_commit_epoch;
-        search_index.apply_projection_delta(graph)
+        Ok(graph)
     }
 
     pub fn apply_background_search_projection_delta(

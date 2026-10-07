@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use super::*;
+#[cfg(feature = "full-text-search")]
+use crate::{SearchMode, SearchQueryOptions};
 use crate::{
     SearchOutOfCoreReader, SearchProjectionDelta, SearchProjectionKind, SearchProjectionRow,
 };
@@ -260,6 +262,223 @@ fn compaction_rewrites_a_bounded_append_range_without_changing_reader_results() 
     assert_eq!(reader.hydrate_documents(&ids).unwrap().documents, before);
     drop(compacted);
     drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[cfg(feature = "full-text-search")]
+fn overlapping_compaction_preserves_exact_scores_and_pinned_readers() {
+    let root = test_dir("overlapping_compaction");
+    let reference_root = test_dir("overlapping_compaction_reference");
+    let mut writer = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+    for number in [0, 2, 4, 6] {
+        writer.push(appended_row(number).into_document()).unwrap();
+    }
+    writer.finish().unwrap();
+    append(&root, 1);
+    append(&root, 3);
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let mut replacement = appended_row(2);
+    replacement.body = "replacement compaction exact corpus statistics".into();
+    SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![replacement.clone()],
+            deletes: vec![appended_row(4).into_document().id],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let mut reference =
+        SearchOutOfCoreGenerationWriter::create(&reference_root, Default::default()).unwrap();
+    for number in [0, 1, 2, 3, 6] {
+        reference
+            .push(
+                if number == 2 {
+                    replacement.clone()
+                } else {
+                    appended_row(number)
+                }
+                .into_document(),
+            )
+            .unwrap();
+    }
+    reference.finish().unwrap();
+    let reference = SearchOutOfCoreReader::open(&reference_root).unwrap();
+    let compare = |candidate: &SearchOutOfCoreReader| {
+        let modes = [
+            SearchMode::Text,
+            #[cfg(feature = "vector-search")]
+            SearchMode::Vector,
+            #[cfg(feature = "vector-search")]
+            SearchMode::Hybrid,
+        ];
+        for mode in modes {
+            let options = SearchQueryOptions {
+                limit: 10,
+                offset: 0,
+                rank_window: None,
+                fusion_weights: Default::default(),
+                metadata_filters: Default::default(),
+                policy_epoch: None,
+            };
+            let expected = reference
+                .search_with_options(
+                    "compaction replacement",
+                    Some(&[1.0, 2.5]),
+                    mode,
+                    options.clone(),
+                )
+                .unwrap();
+            let actual = candidate
+                .search_with_options("compaction replacement", Some(&[1.0, 2.5]), mode, options)
+                .unwrap();
+            assert_eq!(actual.result.hits, expected.result.hits);
+            assert_eq!(actual.result.total_hits, expected.result.total_hits);
+        }
+    };
+    compare(&reader);
+    for expected_segments in [3, 2, 1] {
+        let current = SearchOutOfCoreReader::open(&root).unwrap();
+        let report = SearchOutOfCoreGenerationWriter::compact_segments(
+            &current,
+            policy(256 * 1024 * 1024),
+            Default::default(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(report.source_read_metrics().hydrated_documents, 0);
+        let after = SearchOutOfCoreReader::open(&root).unwrap();
+        assert_eq!(after.manifest.segments.len(), expected_segments);
+        compare(&after);
+        compare(&reader);
+    }
+    let after = SearchOutOfCoreReader::open(&root).unwrap();
+    assert!(after.manifest.mutation_runs.is_empty());
+    drop(reader);
+    drop(reference);
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(reference_root).unwrap();
+}
+
+#[test]
+fn overlapping_compaction_spool_budget_failure_preserves_the_manifest() {
+    let root = test_dir("overlapping_compaction_spool_budget");
+    let mut writer = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+    for number in [0, 2] {
+        writer.push(appended_row(number).into_document()).unwrap();
+    }
+    writer.finish().unwrap();
+    append(&root, 1);
+    let before = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let error = SearchOutOfCoreGenerationWriter::compact_segments(
+        &reader,
+        policy(256 * 1024 * 1024),
+        SearchOutOfCoreGenerationBuildOptions {
+            max_spool_bytes: NonZeroU64::new(8).unwrap(),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("compaction input spool exceeds admission"),
+        "{error}"
+    );
+    assert_eq!(
+        fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),
+        before
+    );
+    assert_eq!(stage_directories(&root), 0);
+    assert_eq!(
+        SearchOutOfCoreReader::open(&root).unwrap().document_count(),
+        3
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn overlapping_compaction_streams_a_body_larger_than_its_memory_reservation() {
+    use crate::{SearchDocumentBody, SearchDocumentHeader, SearchLexicalSourcePolicy};
+    use hawdb_core::RuntimeMemoryReservation;
+    use std::io::Read;
+
+    let root = test_dir("overlapping_compaction_large_body");
+    let body_bytes = 32 * 1024 * 1024;
+    let options = SearchOutOfCoreGenerationBuildOptions {
+        max_record_bytes: NonZeroU64::new(128 * 1024 * 1024).unwrap(),
+        lexical_max_document_source_bytes: NonZeroU64::new(64 * 1024 * 1024).unwrap(),
+        ..Default::default()
+    };
+    let mut writer = SearchOutOfCoreGenerationWriter::create(&root, options.clone()).unwrap();
+    writer
+        .push_reader(
+            SearchDocumentHeader {
+                id: "memory:000000".into(),
+                title: "large source".into(),
+                embedding: None,
+                metadata: Default::default(),
+            },
+            std::io::Cursor::new(b"bounded content ")
+                .chain(std::io::repeat(b' ').take(body_bytes - 16)),
+            SearchDocumentBody {
+                bytes: body_bytes,
+                expected_checksum: None,
+            },
+        )
+        .unwrap();
+    let mut last = appended_row(2);
+    last.embedding = None;
+    writer.push(last.into_document()).unwrap();
+    writer.finish().unwrap();
+    let mut reader = SearchOutOfCoreReader::open(&root).unwrap();
+    reader.set_lexical_source_policy(
+        SearchLexicalSourcePolicy::new(options.lexical_max_document_source_bytes).unwrap(),
+    );
+    let mut inserted = appended_row(1);
+    inserted.embedding = None;
+    SearchOutOfCoreGenerationWriter::prepare_delta(
+        &reader,
+        SearchProjectionDelta {
+            upserts: vec![inserted],
+            ..Default::default()
+        },
+        options.clone(),
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
+    let mut reader = SearchOutOfCoreReader::open(&root).unwrap();
+    reader.set_lexical_source_policy(
+        SearchLexicalSourcePolicy::new(options.lexical_max_document_source_bytes).unwrap(),
+    );
+    let task = RuntimeTaskContext::default()
+        .with_memory_reservation(RuntimeMemoryReservation::new(16 * 1024 * 1024, 0));
+    let report = SearchOutOfCoreGenerationWriter::compact_segments_with_context(
+        &reader,
+        policy(256 * 1024 * 1024),
+        options,
+        task,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(report.source_read_metrics().hydrated_documents, 0);
+    assert_eq!(report.source_read_metrics().streamed_documents, 3);
+    assert!(report.source_read_metrics().streamed_body_bytes >= body_bytes);
+    assert_eq!(
+        SearchOutOfCoreReader::open(&root)
+            .unwrap()
+            .manifest
+            .segments
+            .len(),
+        1
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -628,6 +847,7 @@ fn staged_compaction_rejects_a_newer_active_generation() {
     let active = fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap();
 
     let error = staged.finish().unwrap_err();
+    assert!(matches!(&error, HawDBError::TransactionConflict { .. }));
     assert!(error.to_string().contains("base changed"), "{error}");
     assert_eq!(
         fs::read(root.join(OUT_OF_CORE_MANIFEST_FILE)).unwrap(),

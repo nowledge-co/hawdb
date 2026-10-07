@@ -1025,9 +1025,33 @@ impl SearchOutOfCoreReader {
         self.manifest.source_graph_commit_epoch
     }
 
-    pub(super) fn can_append_after(&self, first_document_id: &str) -> Result<bool> {
+    pub(super) fn can_append_after(
+        &self,
+        first_document_id: &str,
+        memory: &crate::build_memory::BuildMemory,
+        task: &hawdb_core::RuntimeTaskContext,
+    ) -> Result<bool> {
+        let mut generations = Vec::new();
+        let mut generation_memory = memory.retained.reserve(0)?;
+        crate::build_memory::reserve_capacity(
+            &mut generations,
+            self.manifest.segments.len(),
+            &mut generation_memory,
+        )?;
+        for segment in &self.manifest.segments {
+            crate::build_control::checkpoint(task)?;
+            generations.push(segment.generation);
+        }
+        generations.sort_unstable();
+        if generations.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(HawDBError::Storage(
+                "search generation contains duplicate document content artifacts".into(),
+            ));
+        }
         let mut previous_last_document_id = None;
+        let mut ordered = true;
         for artifact in &self.segments {
+            crate::build_control::checkpoint(task)?;
             let descriptor_first = artifact.descriptor.segments.first();
             let descriptor_last = artifact.descriptor.segments.last();
             let lexical_bounds = artifact.lexical_projection.document_id_bounds();
@@ -1047,15 +1071,15 @@ impl SearchOutOfCoreReader {
                 if previous_last_document_id
                     .is_some_and(|previous| previous >= segment.first_document_id.as_str())
                 {
-                    return Err(HawDBError::Storage(
-                        "search generation update requires manifest artifacts with globally ordered, non-overlapping document ranges"
-                            .to_string(),
-                    ));
+                    ordered = false;
                 }
                 previous_last_document_id = Some(segment.last_document_id.as_str());
             }
         }
-        Ok(previous_last_document_id.is_none_or(|previous| previous < first_document_id))
+        Ok(
+            ordered
+                && previous_last_document_id.is_none_or(|previous| previous < first_document_id),
+        )
     }
 
     pub fn import_source_graph_commit_epoch(&self) -> Option<u64> {
@@ -2676,6 +2700,30 @@ pub(super) struct PublishedArtifactGenerations {
     pub(super) lexical_generations: BTreeSet<u64>,
     pub(super) out_of_core_generations: BTreeSet<u64>,
     pub(super) rabitq_generations: BTreeSet<u64>,
+}
+
+pub(super) fn validate_resident_snapshot_identity(index: &SearchIndex, root: &Path) -> Result<()> {
+    let path = root.join(OUT_OF_CORE_MANIFEST_FILE);
+    if !fs::try_exists(&path)? {
+        return Ok(());
+    }
+    let bytes = read_bounded_file(&path, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
+    let manifest = SearchOutOfCoreManifestBody::decode(&bytes)?;
+    let embedding = index.embedding_manifest.as_ref();
+    if manifest.document_count != index.documents.len()
+        || manifest.documents_digest != lexical_documents_digest(&index.documents)
+        || manifest.source_graph_commit_epoch != index.source_graph_commit_epoch
+        || manifest.import_source_graph_commit_epoch != index.import_source_graph_commit_epoch
+        || manifest.embedding_dimension != index.embedding_dimension
+        || manifest.embedding_model.as_deref() != embedding.map(|identity| identity.model.as_str())
+        || manifest.embedding_version.as_deref()
+            != embedding.and_then(|identity| identity.version.as_deref())
+    {
+        return Err(HawDBError::Storage(
+            "resident search snapshot does not match the published immutable projection; use incremental maintenance or rebuild from the authoritative source".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn published_artifact_generations(
@@ -4339,7 +4387,7 @@ mod tests {
         .unwrap_err();
         assert!(error
             .to_string()
-            .contains("globally ordered, non-overlapping document ranges"));
+            .contains("duplicate document content artifacts"));
         assert_eq!(fs::read(&manifest_path).unwrap(), bytes);
         fs::remove_dir_all(path).unwrap();
     }

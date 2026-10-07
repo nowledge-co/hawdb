@@ -142,9 +142,10 @@ fn append_delta_publishes_a_second_artifact_without_hydrating_the_base() {
 }
 
 #[test]
-fn non_append_update_retains_the_ordered_base_hydration_path() {
+fn interleaved_insert_reuses_content_without_hydrating_the_base() {
     let root = Fixture::new();
     let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    let base = reader.manifest.segments.clone();
     let update = SearchOutOfCoreGenerationWriter::prepare_delta(
         &reader,
         SearchProjectionDelta {
@@ -154,16 +155,57 @@ fn non_append_update_retains_the_ordered_base_hydration_path() {
         Default::default(),
     )
     .unwrap();
-    assert_eq!(update.delta_report().action, "bounded_generation_update");
-    assert_eq!(update.source_read_metrics().hydrated_documents, 3);
+    assert_eq!(update.delta_report().action, "incremental_mutation_publish");
+    assert_eq!(update.source_read_metrics().hydrated_documents, 0);
+    assert_eq!(update.source_read_metrics().streamed_documents, 0);
+    assert_eq!(update.source_read_metrics().segment_bytes_read, 0);
     let (report, build, _) = update.finish().unwrap();
     assert_eq!(report.after_document_count, 4);
     assert_eq!(build.document_count, 4);
     let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(reader.manifest.segments.len(), 2);
+    assert_eq!(
+        serde_json::to_value(&reader.manifest.segments[0]).unwrap(),
+        serde_json::to_value(&base[0]).unwrap()
+    );
     let ids = ["a", "b", "c", "e"].map(|id| format!("memory:{id}"));
     assert_eq!(
         reader.hydrate_documents(&ids).unwrap().documents,
         ["a", "b", "c", "e"].map(|id| row(id).into_document())
+    );
+}
+
+#[test]
+fn successive_interleaved_inserts_and_epoch_only_updates_never_read_base_payloads() {
+    let root = Fixture::new();
+    for (upserts, epoch) in [(vec![row("b")], 11), (vec![row("d")], 12), (Vec::new(), 13)] {
+        let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+        let before = reader.document_count();
+        let count = upserts.len();
+        let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+            &reader,
+            SearchProjectionDelta {
+                upserts,
+                source_graph_commit_epoch: Some(epoch),
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(update.source_read_metrics().segment_bytes_read, 0);
+        assert_eq!(update.source_read_metrics().streamed_documents, 0);
+        let (report, _, _) = update.finish().unwrap();
+        assert_eq!(report.after_document_count, before + count);
+        let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+        assert_eq!(reader.source_graph_commit_epoch(), Some(epoch));
+        assert!(reader.manifest.mutation_runs.is_empty());
+    }
+    let reader = SearchOutOfCoreReader::open(&root.0).unwrap();
+    assert_eq!(reader.manifest.segments.len(), 3);
+    let ids = ["a", "b", "c", "d", "e"].map(|id| format!("memory:{id}"));
+    assert_eq!(
+        reader.hydrate_documents(&ids).unwrap().documents,
+        ["a", "b", "c", "d", "e"].map(|id| row(id).into_document())
     );
 }
 

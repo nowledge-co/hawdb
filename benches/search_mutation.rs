@@ -19,8 +19,9 @@
 //! corpus-shaped count and `HAWDB_SEARCH_MUTATION_BENCH_TOUCHES` controls K.
 
 use hawdb::{
-    SearchDocument, SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationWriter,
-    SearchOutOfCoreReader, SearchProjectionDelta, SearchProjectionKind, SearchProjectionRow,
+    RuntimeMemoryReservation, RuntimeTaskContext, SearchDocument,
+    SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationWriter, SearchOutOfCoreReader,
+    SearchProjectionDelta, SearchProjectionKind, SearchProjectionRow,
 };
 use hawdb_qos::{ProcessMemoryProfile, ProcessMemorySnapshot};
 use serde_json::json;
@@ -41,6 +42,15 @@ fn main() {
     let document_count = env_usize("HAWDB_SEARCH_MUTATION_BENCH_DOCUMENTS", DEFAULT_DOCUMENTS);
     let touches = env_usize("HAWDB_SEARCH_MUTATION_BENCH_TOUCHES", DEFAULT_TOUCHES);
     let sustained_rounds = env_usize("HAWDB_SEARCH_MUTATION_BENCH_ROUNDS", 0);
+    let content_bytes = env_usize("HAWDB_SEARCH_MUTATION_BENCH_CONTENT_BYTES", CONTENT_BYTES);
+    let memory_budget = env_usize(
+        "HAWDB_SEARCH_MUTATION_BENCH_MEMORY_BYTES",
+        256 * 1024 * 1024,
+    ) as u64;
+    let task = || {
+        RuntimeTaskContext::default()
+            .with_memory_reservation(RuntimeMemoryReservation::new(memory_budget, 0))
+    };
     assert!(document_count > 0, "document count must be positive");
     assert!(
         touches > 0 && touches <= document_count,
@@ -55,20 +65,20 @@ fn main() {
             .unwrap_or_default()
             .as_nanos()
     ));
-    let content = "bounded-search-mutation ".repeat(CONTENT_BYTES / 24 + 1);
-    let documents = (0..document_count)
-        .map(|ordinal| document(ordinal, &content))
-        .collect::<Vec<_>>();
+    assert!(content_bytes > 0);
+    let mut content = "bounded-search-mutation ".repeat(content_bytes / 24 + 1);
+    content.truncate(content_bytes);
 
     let full_started = Instant::now();
-    let mut initial = SearchOutOfCoreGenerationWriter::create(
+    let mut initial = SearchOutOfCoreGenerationWriter::create_with_context(
         &root,
         SearchOutOfCoreGenerationBuildOptions::default(),
+        task(),
     )
     .expect("initial generation writer must open");
-    for document in &documents {
+    for ordinal in 0..document_count {
         initial
-            .push(document.clone())
+            .push(document(ordinal, &content))
             .expect("initial document must be admitted");
     }
     let initial_report = initial.finish().expect("initial generation must publish");
@@ -82,13 +92,14 @@ fn main() {
     };
     if sustained_rounds > 0 {
         for seed in 0..SUSTAINED_SEED_SEGMENTS {
-            let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+            let update = SearchOutOfCoreGenerationWriter::prepare_delta_with_context(
                 &reader,
                 SearchProjectionDelta {
                     upserts: vec![projection_row(document_count + seed, &content)],
                     ..Default::default()
                 },
                 Default::default(),
+                task(),
             )
             .expect("sustained seed must prepare");
             update.finish().expect("sustained seed must publish");
@@ -98,17 +109,18 @@ fn main() {
     }
     let sustained_document_count = document_count + sustained_seed_segments;
     let deletes = (document_count - touches..document_count)
-        .map(|ordinal| format!("memory:{ordinal:016x}"))
+        .map(|ordinal| format!("memory:{:016x}", ordinal * 2))
         .collect();
     let memory_before = ProcessMemorySnapshot::capture().ok();
     let mutation_started = Instant::now();
-    let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+    let update = SearchOutOfCoreGenerationWriter::prepare_delta_with_context(
         &reader,
         SearchProjectionDelta {
             deletes,
             ..Default::default()
         },
         Default::default(),
+        task(),
     )
     .expect("mutation update must prepare");
     let (delta, mutation_report, source_reads) = update.finish().expect("mutation must publish");
@@ -135,20 +147,26 @@ fn main() {
     if sustained_rounds > 0 {
         let mut current = reopened;
         for round in 0..sustained_rounds {
-            let replacement_ordinal = round % document_count;
-            let appended_ordinal = document_count + SUSTAINED_SEED_SEGMENTS + round;
+            let replacement_ordinal = if document_count > touches {
+                round % (document_count - touches)
+            } else {
+                document_count + round % SUSTAINED_SEED_SEGMENTS
+            };
+            // Even IDs belong to the base and seeds; odd IDs model UUID inserts
+            // into the middle of already persisted document ranges.
+            let inserted_id = format!("{:016x}", round * 2 + 1);
+            let mut inserted = projection_row(0, &content);
+            inserted.external_id = inserted_id;
             let before_memory = ProcessMemorySnapshot::capture().ok();
             let started = Instant::now();
-            let update = SearchOutOfCoreGenerationWriter::prepare_delta(
+            let update = SearchOutOfCoreGenerationWriter::prepare_delta_with_context(
                 &current,
                 SearchProjectionDelta {
-                    upserts: vec![
-                        projection_row(replacement_ordinal, &content),
-                        projection_row(appended_ordinal, &content),
-                    ],
+                    upserts: vec![projection_row(replacement_ordinal, &content), inserted],
                     ..Default::default()
                 },
                 Default::default(),
+                task(),
             )
             .expect("sustained mutation must prepare");
             let (delta, report, source_reads) =
@@ -159,10 +177,11 @@ fn main() {
             let policy = hawdb::SearchOutOfCoreSegmentCompactionPolicy::default()
                 .with_level_zero_target_bytes(NonZeroU64::new(8 * 1024).unwrap())
                 .expect("sustained compaction policy must be valid");
-            let compacted = SearchOutOfCoreGenerationWriter::compact_segments(
+            let compacted = SearchOutOfCoreGenerationWriter::compact_segments_with_context(
                 &updated,
                 policy,
                 Default::default(),
+                task(),
             )
             .expect("sustained compaction must run");
             drop(updated);
@@ -186,9 +205,13 @@ fn main() {
                 "source_segment_bytes_read": source_reads.segment_bytes_read,
                 "source_hydrated_documents": source_reads.hydrated_documents,
                 "compaction_published": compacted.is_some(),
+                "compaction_artifact_bytes": compacted.as_ref().map_or(0, |report| report.build().generation_bytes),
+                "compaction_source_bytes": compacted.as_ref().map_or(0, |report| report.source_bytes()),
                 "document_count": after.document_count(),
                 "steady_resident_growth_bytes": memory
                     .map(|profile| profile.steady_resident_growth_bytes),
+                "steady_resident_bytes": memory.map(|profile| profile.steady_resident_bytes),
+                "lifetime_peak_resident_bytes": memory.map(|profile| profile.peak_resident_bytes),
                 "lifetime_peak_resident_growth_bytes": memory
                     .map(|profile| profile.lifetime_peak_resident_growth_bytes),
             }));
@@ -202,7 +225,9 @@ fn main() {
         json!({
             "document_count": document_count,
             "touches": touches,
-            "content_bytes_per_document": CONTENT_BYTES,
+            "content_bytes_per_document": content_bytes,
+            "logical_corpus_body_bytes": document_count as u64 * content_bytes as u64,
+            "build_memory_budget_bytes": memory_budget,
             "full_generation_bytes": initial_report.generation_bytes,
             "mutation_checkpoint_bytes": mutation_report.generation_bytes,
             "mutation_to_full_write_ratio": mutation_report.generation_bytes as f64
@@ -212,6 +237,8 @@ fn main() {
             "source_segment_bytes_read": source_reads.segment_bytes_read,
             "source_hydrated_documents": source_reads.hydrated_documents,
             "steady_resident_growth_bytes": memory.map(|profile| profile.steady_resident_growth_bytes),
+            "steady_resident_bytes": memory.map(|profile| profile.steady_resident_bytes),
+            "lifetime_peak_resident_bytes": memory.map(|profile| profile.peak_resident_bytes),
             "lifetime_peak_resident_growth_bytes": memory
                 .map(|profile| profile.lifetime_peak_resident_growth_bytes),
             "sustained_rounds": sustained,
@@ -230,9 +257,9 @@ fn env_usize(name: &str, default: usize) -> usize {
 
 fn document(ordinal: usize, content: &str) -> SearchDocument {
     SearchDocument {
-        id: format!("memory:{ordinal:016x}"),
+        id: format!("memory:{:016x}", ordinal * 2),
         title: format!("Document {ordinal}"),
-        content: content[..CONTENT_BYTES].to_string(),
+        content: content.to_string(),
         embedding: None,
         metadata: BTreeMap::from([
             ("kind".to_string(), "memory".to_string()),
@@ -244,7 +271,7 @@ fn document(ordinal: usize, content: &str) -> SearchDocument {
 fn projection_row(ordinal: usize, content: &str) -> SearchProjectionRow {
     SearchProjectionRow {
         kind: SearchProjectionKind::Memory,
-        external_id: format!("{ordinal:016x}"),
+        external_id: format!("{:016x}", ordinal * 2),
         title: format!("Document {ordinal}"),
         body: content.to_string(),
         embedding: None,

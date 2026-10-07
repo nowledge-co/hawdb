@@ -67,6 +67,7 @@ use crate::{
     },
 };
 use hawdb_core::RuntimeTaskContext;
+mod incremental_search;
 use hawdb_optimizer::AdaptiveVectorBackendPolicy;
 use hawdb_qos::{
     IoConcurrencyBudget, RuntimeGovernor, RuntimeGovernorConfig, RuntimeGovernorSnapshot,
@@ -100,6 +101,7 @@ pub use hawdb_readiness::slow_query::{
     NowledgeMemSlowQueryRecord, NowledgeMemSlowQueryReport, NOWLEDGE_MEM_SLOW_QUERY_REPORT_PROTOCOL,
 };
 pub use hawdb_readiness::{NowledgeMemReadinessAreaMap, NowledgeMemReadinessAreaSummary};
+pub use incremental_search::NowledgeMemIncrementalSearchMaintenanceOptions;
 
 #[cfg(test)]
 mod slow_query_facade_tests {
@@ -255,6 +257,7 @@ pub struct NowledgeMemQualifiedOutOfCoreSearchOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NowledgeMemSearchProjectionOpenMode {
     FullResidencyMaintenance,
+    IncrementalMaintenance(Box<NowledgeMemIncrementalSearchMaintenanceOptions>),
     QualifiedOutOfCore(Box<NowledgeMemQualifiedOutOfCoreSearchOptions>),
 }
 
@@ -264,6 +267,9 @@ impl NowledgeMemSearchProjectionOpenMode {
             Self::FullResidencyMaintenance => {
                 NowledgeMemSearchProjectionRole::FullResidencyMaintenance
             }
+            Self::IncrementalMaintenance(_) => {
+                NowledgeMemSearchProjectionRole::IncrementalMaintenance
+            }
             Self::QualifiedOutOfCore(_) => NowledgeMemSearchProjectionRole::QualifiedOutOfCore,
         }
     }
@@ -272,6 +278,7 @@ impl NowledgeMemSearchProjectionOpenMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NowledgeMemSearchProjectionRole {
     FullResidencyMaintenance,
+    IncrementalMaintenance,
     QualifiedOutOfCore,
 }
 
@@ -279,6 +286,7 @@ impl NowledgeMemSearchProjectionRole {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::FullResidencyMaintenance => "full_residency_maintenance",
+            Self::IncrementalMaintenance => "incremental_maintenance",
             Self::QualifiedOutOfCore => "qualified_out_of_core",
         }
     }
@@ -408,6 +416,19 @@ impl NowledgeMemOpenOptions {
             self.search_projection_path.as_ref(),
             &self.search_projection_open_mode,
         ) {
+            (None, NowledgeMemSearchProjectionOpenMode::IncrementalMaintenance(_)) => {
+                return Err(HawDBError::Semantic(
+                    "incremental search maintenance requires search_projection_path".into(),
+                ));
+            }
+            (Some(_), NowledgeMemSearchProjectionOpenMode::IncrementalMaintenance(options)) => {
+                options.validate()?;
+                if self.search_range_read_config.is_some() {
+                    return Err(HawDBError::Semantic(
+                        "incremental search maintenance uses its typed reader configuration".into(),
+                    ));
+                }
+            }
             (None, NowledgeMemSearchProjectionOpenMode::QualifiedOutOfCore(_)) => {
                 return Err(HawDBError::Semantic(
                     "qualified out-of-core search requires search_projection_path".to_string(),
@@ -1668,6 +1689,7 @@ pub struct NowledgeMemSearchProjection {
 #[derive(Debug)]
 pub struct NowledgeMemOutOfCoreSearchProjection {
     reader: SearchOutOfCoreReader,
+    maintenance: Option<(PathBuf, NowledgeMemIncrementalSearchMaintenanceOptions)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1697,12 +1719,14 @@ impl NowledgeMemOutOfCoreSearchProjection {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Ok(Self {
             reader: SearchOutOfCoreReader::open(path)?,
+            maintenance: None,
         })
     }
 
     pub fn open_with_config(path: impl AsRef<Path>, config: SearchOutOfCoreConfig) -> Result<Self> {
         Ok(Self {
             reader: SearchOutOfCoreReader::open_with_config(path, config)?,
+            maintenance: None,
         })
     }
 
@@ -2918,9 +2942,17 @@ impl NowledgeMemEmbeddedStoreHandle {
         &self,
         delta: SearchProjectionDelta,
     ) -> Result<SearchProjectionDeltaReport> {
-        let _permit = self.admit_typed_maintenance(search_projection_delta_bytes(&delta), 1)?;
-        self.write_store()?
-            .apply_search_projection_delta_and_checkpoint(delta)
+        let permit =
+            self.admit_search_projection_maintenance(search_projection_delta_bytes(&delta))?;
+        let mut store = self.write_store()?;
+        if store.incremental_search_enabled() {
+            store.apply_incremental_search_delta(
+                delta,
+                permit.bind_task_context(RuntimeTaskContext::default()),
+            )
+        } else {
+            store.apply_search_projection_delta_and_checkpoint(delta)
+        }
     }
 
     /// Applies one externally materialized import batch, records its immutable
@@ -3343,14 +3375,24 @@ impl NowledgeMemEmbeddedStoreHandle {
             .saturating_mul(max_batches);
         let estimated_input_bytes =
             estimated_operations.saturating_mul(SEARCH_PROJECTION_CHANGEFEED_OPERATION_BYTES);
-        let _permit = self.admit_typed_maintenance(estimated_input_bytes, 1)?;
-        self.write_store()?
-            .catch_up_search_projection_with_batch_hydrator(
+        let permit = self.admit_search_projection_maintenance(estimated_input_bytes)?;
+        let mut store = self.write_store()?;
+        if store.incremental_search_enabled() {
+            store.catch_up_incremental_search_with_batch_hydrator(
+                max_change_operations_per_batch,
+                max_projection_operations_per_batch,
+                max_batches,
+                batch_hydrator,
+                permit.bind_task_context(RuntimeTaskContext::default()),
+            )
+        } else {
+            store.catch_up_search_projection_with_batch_hydrator(
                 max_change_operations_per_batch,
                 max_projection_operations_per_batch,
                 max_batches,
                 batch_hydrator,
             )
+        }
     }
 
     pub fn search_projection_changefeed_readiness(
@@ -3752,6 +3794,21 @@ impl NowledgeMemEmbeddedStore {
                 report.search_projection_opened = true;
                 Ok((Self::new(graph, Some(projection)), report))
             }
+            NowledgeMemSearchProjectionOpenMode::IncrementalMaintenance(maintenance) => {
+                let projection = NowledgeMemOutOfCoreSearchProjection::open_incremental(
+                    path,
+                    (**maintenance).clone(),
+                )?;
+                report.search_projection_opened = true;
+                Ok((
+                    Self::new_with_out_of_core_search(
+                        graph,
+                        projection,
+                        options.retrieval_projection_advisor.clone(),
+                    ),
+                    report,
+                ))
+            }
             NowledgeMemSearchProjectionOpenMode::QualifiedOutOfCore(qualified) => {
                 let graph_commit_epoch = graph.database().commit_epoch()?;
                 if graph_commit_epoch != qualified.expected_identity.canonical_graph_commit_epoch {
@@ -3815,6 +3872,14 @@ impl NowledgeMemEmbeddedStore {
         &mut self,
         delta: SearchProjectionDelta,
     ) -> Result<SearchProjectionDeltaReport> {
+        if self.incremental_search_enabled() {
+            let permit =
+                self.admit_incremental_search_maintenance(search_projection_delta_bytes(&delta))?;
+            return self.apply_incremental_search_delta(
+                delta,
+                permit.bind_task_context(RuntimeTaskContext::default()),
+            );
+        }
         let projection = require_search_projection_mut(&mut self.search_projection)?;
         let report = projection.index_mut().apply_projection_delta(delta)?;
         projection.index().checkpoint()?;
@@ -4041,6 +4106,21 @@ impl NowledgeMemEmbeddedStore {
         require_restart_recoverable: bool,
         max_operations: Option<usize>,
     ) -> Result<SearchProjectionChangefeedReadiness> {
+        if self.incremental_search_enabled() {
+            let freshness = self.search_projection_freshness().ok_or_else(|| {
+                HawDBError::Storage("incremental search reader is detached".into())
+            })?;
+            return Ok(self
+                .graph
+                .database()
+                .search_projection_changefeed_status()?
+                .readiness_after(
+                    freshness.source_graph_commit_epoch,
+                    freshness.durable_source_graph_commit_epoch,
+                    require_restart_recoverable,
+                    max_operations,
+                ));
+        }
         let search_projection = self.require_search_projection()?;
         self.graph
             .database()
@@ -4140,6 +4220,21 @@ impl NowledgeMemEmbeddedStore {
             &SearchProjectionChangeBatch,
         ) -> Result<SearchProjectionRelationalDelta>,
     {
+        if self.incremental_search_enabled() {
+            let operations = max_change_operations_per_batch
+                .max(max_projection_operations_per_batch)
+                .saturating_mul(max_batches);
+            let permit = self.admit_incremental_search_maintenance(
+                operations.saturating_mul(SEARCH_PROJECTION_CHANGEFEED_OPERATION_BYTES),
+            )?;
+            return self.catch_up_incremental_search_with_batch_hydrator(
+                max_change_operations_per_batch,
+                max_projection_operations_per_batch,
+                max_batches,
+                batch_hydrator,
+                permit.bind_task_context(RuntimeTaskContext::default()),
+            );
+        }
         let Self {
             graph,
             search_projection,
@@ -12307,6 +12402,264 @@ mod tests {
                 })
                 .unwrap();
         }
+    }
+
+    fn incremental_maintenance_fixture(
+        name: &str,
+        maintenance: super::NowledgeMemIncrementalSearchMaintenanceOptions,
+    ) -> (
+        std::path::PathBuf,
+        NowledgeMemEmbeddedStoreHandle,
+        super::NowledgeMemOpenOptions,
+    ) {
+        let root = unique_nowledge_mem_test_dir(name);
+        let search_path = root.join("search");
+        let mut index = SearchIndex::open(&search_path).unwrap();
+        for id in ["a", "z"] {
+            index
+                .upsert_projection_row(SearchProjectionRow {
+                    kind: SearchProjectionKind::Memory,
+                    external_id: id.into(),
+                    title: id.into(),
+                    body: format!("bootstrap {id}"),
+                    embedding: None,
+                    source_id: None,
+                    metadata: BTreeMap::new(),
+                })
+                .unwrap();
+        }
+        index.checkpoint().unwrap();
+        drop(index);
+        let options = super::NowledgeMemOpenOptions::with_search_projection(
+            root.join("graph"),
+            search_path,
+            NowledgeMemGraphMode::WritableCutover,
+        )
+        .with_incremental_search_maintenance(maintenance);
+        let (handle, report) =
+            NowledgeMemEmbeddedStoreHandle::open_with_options(options.clone()).unwrap();
+        assert_eq!(
+            report.search_projection_role,
+            Some(super::NowledgeMemSearchProjectionRole::IncrementalMaintenance)
+        );
+        assert!(!report.search_production_qualification_bound);
+        (root, handle, options)
+    }
+
+    #[test]
+    fn incremental_maintenance_preserves_bootstrap_artifacts_and_reopens_deltas() {
+        let (root, handle, options) =
+            incremental_maintenance_fixture("incremental_maintenance_reopen", Default::default());
+        let search_path = root.join("search");
+        let pinned = crate::SearchOutOfCoreReader::open(&search_path).unwrap();
+        let old_generation = pinned.generation();
+        handle
+            .query_with_report("CREATE (:Memory {id: 'm', title: 'Inserted'})")
+            .unwrap();
+        let catch_up = handle
+            .catch_up_search_projection_with_batch_hydrator(4, 4, 1, |_, _| {
+                Ok(SearchProjectionRelationalDelta::default())
+            })
+            .unwrap();
+        assert!(catch_up.complete);
+        assert_eq!(catch_up.end_applied_epoch, catch_up.end_durable_epoch);
+        let update = handle
+            .apply_search_projection_delta_and_checkpoint(SearchProjectionDelta {
+                upserts: vec![SearchProjectionRow {
+                    kind: SearchProjectionKind::Memory,
+                    external_id: "m".into(),
+                    title: "Inserted".into(),
+                    body: "durable external embedding".into(),
+                    embedding: Some(vec![0.25, 0.75]),
+                    source_id: None,
+                    metadata: BTreeMap::new(),
+                }],
+                max_operations: Some(1),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(update.action, "incremental_mutation_publish");
+        let resident_error = SearchIndex::open(&search_path).unwrap_err();
+        assert!(resident_error
+            .to_string()
+            .contains("resident search snapshot"));
+        assert_eq!(pinned.generation(), old_generation);
+        assert_eq!(pinned.document_count(), 2);
+        assert!(pinned.hydrate_documents(&["memory:m".into()]).is_err());
+        let snapshot = handle.runtime_governor_snapshot().unwrap();
+        assert_eq!(snapshot.admissions, snapshot.completions);
+        drop(handle);
+        let (reopened, _) = NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap();
+        let rows = reopened
+            .search_projection_documents(&["memory:m".into()], 1)
+            .unwrap();
+        assert_eq!(rows[0].content, "durable external embedding");
+        assert_eq!(rows[0].embedding, Some(vec![0.25, 0.75]));
+        assert_eq!(
+            reopened
+                .runtime_status()
+                .unwrap()
+                .projection_freshness
+                .unwrap()
+                .durable_source_graph_commit_epoch,
+            catch_up.end_durable_epoch
+        );
+        drop(reopened);
+        drop(pinned);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "background-maintenance")]
+    fn incremental_maintenance_compaction_honors_qos_and_cancellation_before_retry() {
+        use crate::search::SearchOutOfCoreSegmentCompactionStopReason;
+
+        let (root, handle, options) = incremental_maintenance_fixture(
+            "incremental_maintenance_compaction",
+            Default::default(),
+        );
+        let search_path = root.join("search");
+        handle
+            .query_with_report("CREATE (:Memory {id: 'm', title: 'Inserted'})")
+            .unwrap();
+        let catch_up = handle
+            .catch_up_search_projection_with_batch_hydrator(4, 4, 1, |_, _| {
+                Ok(SearchProjectionRelationalDelta::default())
+            })
+            .unwrap();
+        let pinned = crate::SearchOutOfCoreReader::open(&search_path).unwrap();
+        let manifest = search_path.join("search_projection.out_of_core.manifest.hawdb");
+        let before = std::fs::read(&manifest).unwrap();
+        let deferred = handle
+            .compact_search_projection_segments_with_context(
+                Default::default(),
+                hawdb_qos::BackgroundWorkHint {
+                    tenant_budget_remaining_operations: Some(1),
+                    ..Default::default()
+                },
+                Default::default(),
+            )
+            .unwrap();
+        assert!(matches!(
+            deferred.stop_reason(),
+            SearchOutOfCoreSegmentCompactionStopReason::Deferred(_)
+        ));
+        assert_eq!(std::fs::read(&manifest).unwrap(), before);
+        let cancellation = crate::RuntimeCancellationToken::new();
+        cancellation.cancel();
+        let error = handle
+            .compact_search_projection_segments_with_context(
+                Default::default(),
+                Default::default(),
+                crate::RuntimeTaskContext::without_deadline(cancellation),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("cancel"), "{error}");
+        assert_eq!(std::fs::read(&manifest).unwrap(), before);
+        let completed = handle
+            .compact_search_projection_segments_with_context(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            completed.stop_reason(),
+            SearchOutOfCoreSegmentCompactionStopReason::Completed
+        );
+        assert_eq!(completed.compaction().unwrap().source_segment_count(), 2);
+        let documents = handle
+            .search_projection_documents(
+                &["memory:a".into(), "memory:m".into(), "memory:z".into()],
+                3,
+            )
+            .unwrap();
+        assert_eq!(
+            pinned
+                .hydrate_documents(&["memory:m".into()])
+                .unwrap()
+                .documents[0]
+                .title,
+            "Inserted"
+        );
+        assert_eq!(pinned.document_count(), 3);
+        assert_eq!(
+            handle
+                .runtime_status()
+                .unwrap()
+                .projection_freshness
+                .unwrap()
+                .durable_source_graph_commit_epoch,
+            catch_up.end_durable_epoch
+        );
+        let governor = handle.runtime_governor_snapshot().unwrap();
+        assert_eq!(governor.admissions, governor.completions);
+        drop(handle);
+        let (reopened, _) = NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap();
+        assert_eq!(
+            reopened
+                .search_projection_documents(
+                    &["memory:a".into(), "memory:m".into(), "memory:z".into()],
+                    3
+                )
+                .unwrap(),
+            documents
+        );
+        drop(reopened);
+        drop(pinned);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn incremental_maintenance_budget_failure_does_not_advance_the_watermark() {
+        let maintenance = super::NowledgeMemIncrementalSearchMaintenanceOptions {
+            working_memory_bytes: std::num::NonZeroU64::new(1).unwrap(),
+            ..Default::default()
+        };
+        let (root, handle, options) =
+            incremental_maintenance_fixture("incremental_maintenance_budget", maintenance);
+        let manifest = root.join("search/search_projection.out_of_core.manifest.hawdb");
+        let before = std::fs::read(&manifest).unwrap();
+        handle
+            .query_with_report("CREATE (:Memory {id: 'm', title: 'Rejected'})")
+            .unwrap();
+        let error = handle
+            .catch_up_search_projection_with_batch_hydrator(4, 4, 1, |_, _| {
+                Ok(SearchProjectionRelationalDelta::default())
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("memory"), "{error}");
+        assert_eq!(std::fs::read(&manifest).unwrap(), before);
+        let freshness = handle
+            .runtime_status()
+            .unwrap()
+            .projection_freshness
+            .unwrap();
+        assert_eq!(freshness.source_graph_commit_epoch, None);
+        assert_eq!(freshness.durable_source_graph_commit_epoch, None);
+        drop(handle);
+        let (reopened, _) = NowledgeMemEmbeddedStoreHandle::open_with_options(options).unwrap();
+        assert!(reopened
+            .search_projection_documents(&["memory:m".into()], 1)
+            .is_err());
+        drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn incremental_maintenance_rejects_missing_bootstrap_without_recreating_it() {
+        let root = unique_nowledge_mem_test_dir("incremental_missing_bootstrap");
+        let options = super::NowledgeMemOpenOptions::with_search_projection(
+            root.join("graph"),
+            root.join("search"),
+            NowledgeMemGraphMode::WritableCutover,
+        )
+        .with_incremental_search_maintenance(Default::default());
+        assert!(NowledgeMemEmbeddedStoreHandle::open_with_options(options).is_err());
+        assert!(!root
+            .join("search/search_projection.out_of_core.manifest.hawdb")
+            .exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn persisted_nowledge_projection_evidence_index(name: &str) -> SearchIndex {

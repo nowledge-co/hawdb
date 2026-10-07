@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use crate::build_control::{checkpoint, CheckedWriter};
-use crate::build_memory::{AdmittedDocument, BuildMemory, SPOOL_BUFFER_BYTES};
+#[cfg(test)]
+use crate::build_memory::AdmittedDocument;
+use crate::build_memory::{BuildMemory, SPOOL_BUFFER_BYTES};
 #[cfg(test)]
 use crate::checksum_bytes;
 use crate::document_encoding::DocumentEncoding;
@@ -23,7 +25,9 @@ use crate::SearchDocument;
 use hawdb_core::RuntimeTaskContext;
 use hawdb_integrity::Crc32cHasher;
 use hawdb_storage::file_io::{self as fs, File};
-use std::io::{self, BufReader, Read, Write};
+#[cfg(test)]
+use std::io::BufReader;
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -97,8 +101,9 @@ mod write_tests;
 
 mod decoding;
 mod records;
-pub(super) use records::SpoolRecord;
+pub(super) use records::{SpoolCursor, SpoolRecord};
 
+#[cfg(test)]
 pub(super) fn decode_line_admitted(
     line: &[u8],
     ordinal: usize,
@@ -301,6 +306,10 @@ pub(crate) mod read_evidence {
 
     pub(super) fn track<R: Read>(file: R) -> TrackedFile<R> {
         observe(|state| state.opens += 1);
+        TrackedFile(file)
+    }
+
+    pub(super) fn track_reads<R: Read>(file: R) -> TrackedFile<R> {
         TrackedFile(file)
     }
 
