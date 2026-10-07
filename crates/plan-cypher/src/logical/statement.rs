@@ -111,12 +111,16 @@ pub fn plan_with_params(
             name: project.name.clone(),
             node_labels: project.node_labels.clone(),
             rel_types: project.rel_types.clone(),
+            relationship_predicates: bind_projected_relationship_predicates(
+                &project.relationship_predicates,
+            )?,
         }),
         Statement::GraphAlgorithm(algorithm) => Ok(LogicalPlan::GraphAlgorithm {
             algorithm: plan_graph_algorithm_kind(algorithm.algorithm),
             graph_name: algorithm.graph_name.clone(),
             options: bind_graph_algorithm_options(&algorithm.options, parameters)?,
             score_column: algorithm.score_column.clone(),
+            return_node_identity: algorithm.return_node_identity,
             node_visibility_predicate: None,
         }),
         Statement::VectorSearch(search) => bind_vector_seed(search, parameters, false),

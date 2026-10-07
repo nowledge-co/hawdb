@@ -82,7 +82,7 @@ fn storage_owned_projected_artifact_preserves_structural_corruption_fallback() {
     // reaches the storage-owned structural decoder rather than an outer gate.
     for (from, to) in [
         ("HAWDB_PROJECTED_GRAPHS_V1", "HAWDB_PROJECTED_GRAPHS_V0"),
-        ("artifact_version\t1", "artifact_version\t2"),
+        ("artifact_version\t2", "artifact_version\t3"),
         ("\t2\t1\n", "\t3\t1\n"),
         ("csr_offsets\t0,1,1", "csr_offsets\t1,1,1"),
         ("csc_sources\t0\n", "csc_sources\t2\n"),
@@ -418,7 +418,7 @@ fn checkpoint_writes_projected_graph_artifacts() {
     let artifact =
         read_test_durable_text(&active_storage_root(&path).join("projected_graphs.hawdb")).unwrap();
     assert!(artifact.contains("HAWDB_PROJECTED_GRAPHS_V1\n"));
-    assert!(artifact.contains("artifact_version\t1\n"));
+    assert!(artifact.contains("artifact_version\t2\n"));
     assert!(artifact.contains(&format!("projection_epoch\t{projection_epoch}\n")));
     assert!(artifact.contains("commit_epoch\t4\n"));
     assert!(artifact.contains("graph\t456e746974794f6e6c794772617068"));

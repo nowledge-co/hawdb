@@ -28,14 +28,15 @@ impl Parser<'_> {
         let graph_name = self.parse_string()?;
         if lower == "project_graph" {
             self.expect_char(',')?;
-            let node_labels = self.parse_string_list()?;
+            let node_labels = self.parse_project_graph_node_labels()?;
             self.expect_char(',')?;
-            let rel_types = self.parse_project_graph_rel_types()?;
+            let (rel_types, relationship_predicates) = self.parse_project_graph_rel_types()?;
             self.skip_procedure_args_tail()?;
             return Ok(Statement::ProjectGraph(ProjectGraph {
                 name: graph_name,
                 node_labels,
                 rel_types,
+                relationship_predicates,
             }));
         }
 
@@ -45,12 +46,13 @@ impl Parser<'_> {
             _ => return Err(self.error("unsupported procedure")),
         };
         let options = self.parse_graph_algorithm_options()?;
-        let score_column = self.parse_algorithm_return_clause(algorithm)?;
+        let (score_column, return_node_identity) = self.parse_algorithm_return_clause(algorithm)?;
         Ok(Statement::GraphAlgorithm(GraphAlgorithm {
             algorithm,
             graph_name,
             options,
             score_column,
+            return_node_identity,
         }))
     }
 
@@ -123,26 +125,66 @@ impl Parser<'_> {
         Ok(values)
     }
 
-    pub(super) fn parse_project_graph_rel_types(&mut self) -> Result<Vec<String>> {
+    pub(super) fn parse_project_graph_node_labels(&mut self) -> Result<Vec<String>> {
         self.skip_ws();
         if self.peek_char() == Some('[') {
             return self.parse_string_list();
         }
         self.expect_char('{')?;
-        let mut values = Vec::new();
+        let mut labels = Vec::new();
         loop {
             self.skip_ws();
             if self.consume_char('}') {
                 break;
             }
-            values.push(self.parse_string()?);
+            labels.push(self.parse_string()?);
             self.expect_char(':')?;
-            self.skip_procedure_option_value()?;
+            self.skip_ws();
+            let predicate = self.parse_string()?;
+            if !predicate.trim().is_empty() {
+                return Err(self.error("projected node predicates are not supported"));
+            }
             if self.consume_separator_or_end(',', '}')? {
                 break;
             }
         }
-        Ok(values)
+        Ok(labels)
+    }
+
+    pub(super) fn parse_project_graph_rel_types(
+        &mut self,
+    ) -> Result<(
+        Vec<String>,
+        std::collections::BTreeMap<String, PropertyPredicate>,
+    )> {
+        self.skip_ws();
+        if self.peek_char() == Some('[') {
+            return self
+                .parse_string_list()
+                .map(|rel_types| (rel_types, std::collections::BTreeMap::new()));
+        }
+        self.expect_char('{')?;
+        let mut values = Vec::new();
+        let mut predicates = std::collections::BTreeMap::new();
+        loop {
+            self.skip_ws();
+            if self.consume_char('}') {
+                break;
+            }
+            let rel_type = self.parse_string()?;
+            self.expect_char(':')?;
+            self.skip_ws();
+            let filter = self.parse_string()?;
+            if !filter.trim().is_empty() {
+                let predicate = parse_projected_relationship_predicate(&filter)?;
+                predicates.insert(rel_type.clone(), predicate);
+            }
+            values.push(rel_type);
+            if self.consume_separator_or_end(',', '}')? {
+                break;
+            }
+        }
+        Ok((values, predicates))
     }
 
     pub(super) fn parse_graph_algorithm_options(&mut self) -> Result<GraphAlgorithmOptions> {
@@ -150,6 +192,9 @@ impl Parser<'_> {
             damping: None,
             max_iterations: None,
             max_levels: None,
+            tolerance: None,
+            normalize_initial: None,
+            resolution: None,
         };
         loop {
             self.skip_ws();
@@ -166,10 +211,19 @@ impl Parser<'_> {
                 options.damping = Some(self.parse_value()?);
             } else if normalized == "maxiterations" || normalized == "iterations" {
                 options.max_iterations = Some(self.parse_value()?);
-            } else if normalized == "maxlevels" || normalized == "levels" {
+            } else if matches!(
+                normalized.as_str(),
+                "maxlevels" | "levels" | "maxphases" | "phases"
+            ) {
                 options.max_levels = Some(self.parse_value()?);
+            } else if normalized == "tolerance" {
+                options.tolerance = Some(self.parse_value()?);
+            } else if normalized == "normalizeinitial" {
+                options.normalize_initial = Some(self.parse_value()?);
+            } else if normalized == "resolution" {
+                options.resolution = Some(self.parse_value()?);
             } else {
-                self.skip_procedure_option_value()?;
+                return Err(self.error("unsupported graph algorithm option"));
             }
         }
         Ok(options)
@@ -235,12 +289,15 @@ impl Parser<'_> {
     pub(super) fn parse_algorithm_return_clause(
         &mut self,
         algorithm: GraphAlgorithmKind,
-    ) -> Result<String> {
+    ) -> Result<(String, bool)> {
         if !self.consume_keyword("RETURN") {
-            return Ok(match algorithm {
-                GraphAlgorithmKind::PageRank => "pagerank_score".to_string(),
-                GraphAlgorithmKind::Louvain => "louvain_id".to_string(),
-            });
+            return Ok((
+                match algorithm {
+                    GraphAlgorithmKind::PageRank => "pagerank_score".to_string(),
+                    GraphAlgorithmKind::Louvain => "louvain_id".to_string(),
+                },
+                false,
+            ));
         }
         self.skip_ws();
         let first = self.parse_ident()?;
@@ -250,6 +307,19 @@ impl Parser<'_> {
         self.expect_char(',')?;
         let mut second = self.parse_ident()?;
         self.skip_ws();
+        let return_node_identity = second.eq_ignore_ascii_case("node_id");
+        if return_node_identity {
+            self.expect_char(',')?;
+            self.skip_ws();
+            let label = self.parse_ident()?;
+            if !label.eq_ignore_ascii_case("node_label") {
+                return Err(self.error("expected node_label after node_id"));
+            }
+            self.expect_char(',')?;
+            self.skip_ws();
+            second = self.parse_ident()?;
+            self.skip_ws();
+        }
         if matches!(algorithm, GraphAlgorithmKind::Louvain)
             && second.eq_ignore_ascii_case("level")
             && self.consume_char(',')
@@ -263,11 +333,43 @@ impl Parser<'_> {
         };
         if matches!(algorithm, GraphAlgorithmKind::PageRank) && second.eq_ignore_ascii_case("rank")
         {
-            return Ok(second);
+            return Ok((second, return_node_identity));
         }
         if !second.eq_ignore_ascii_case(expected) {
             return Err(self.error("unexpected procedure RETURN column"));
         }
-        Ok(second)
+        Ok((second, return_node_identity))
+    }
+}
+
+fn parse_projected_relationship_predicate(input: &str) -> Result<PropertyPredicate> {
+    let mut parser = Parser::new(input);
+    let predicate = parser.parse_property_predicate()?;
+    parser.expect_eof()?;
+    validate_projected_relationship_predicate(&predicate)?;
+    Ok(predicate)
+}
+
+fn validate_projected_relationship_predicate(predicate: &PropertyPredicate) -> Result<()> {
+    match predicate {
+        PropertyPredicate::And(predicates) if !predicates.is_empty() => {
+            for predicate in predicates {
+                validate_projected_relationship_predicate(predicate)?;
+            }
+            Ok(())
+        }
+        PropertyPredicate::Eq {
+            variable, value, ..
+        } if variable == "r" && matches!(&value.kind, ValueExpressionKind::Literal(_)) => Ok(()),
+        PropertyPredicate::Compare {
+            variable,
+            op: ComparisonOp::Gte,
+            value,
+            ..
+        } if variable == "r" && matches!(&value.kind, ValueExpressionKind::Literal(_)) => Ok(()),
+        _ => Err(hawdb_core::HawDBError::Semantic(
+            "projected relationship predicates support only literal r.property comparisons joined by AND"
+                .to_string(),
+        )),
     }
 }

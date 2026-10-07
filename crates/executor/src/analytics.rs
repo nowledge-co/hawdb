@@ -14,7 +14,7 @@
 
 //! Internal graph algorithm execution over storage-neutral reads.
 
-use crate::binding::Binding;
+use crate::binding::{node_memory_bytes, Binding};
 use crate::expression::property_filter_from_predicate;
 use crate::kernel::{push_bounded_operator_binding, OperatorMemoryTracker};
 use crate::observer::QueryExecutionObserver;
@@ -28,7 +28,7 @@ use hawdb_analytics::{
 };
 use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
 use hawdb_plan_cypher::{GraphAlgorithmKind, Predicate};
-use hawdb_storage::{NodeRecord, RelRecord};
+use hawdb_storage::{NodeId, NodeRecord, RelRecord};
 use std::collections::BTreeMap;
 
 /// Borrows the existing query/store seams without owning admission or catalog mutation.
@@ -47,7 +47,15 @@ pub struct GraphAlgorithmSpec<'a> {
     pub graph_name: &'a str,
     pub options: &'a hawdb_plan_cypher::GraphAlgorithmOptions,
     pub score_column: &'a str,
+    pub return_node_identity: bool,
     pub node_visibility_predicate: &'a Option<Predicate>,
+}
+
+pub struct ProjectedGraphFilters<'a> {
+    pub node_labels: &'a [String],
+    pub rel_types: &'a [String],
+    pub relationship_predicates:
+        &'a BTreeMap<String, hawdb_storage::projection::ProjectedRelationshipPredicate>,
 }
 
 impl GraphAlgorithmSpec<'_> {
@@ -62,6 +70,7 @@ impl GraphAlgorithmSpec<'_> {
             graph_name,
             options,
             score_column,
+            return_node_identity,
             node_visibility_predicate,
         } = self;
         let Some(definition) = context.store.projected_graph_definition(graph_name) else {
@@ -79,21 +88,27 @@ impl GraphAlgorithmSpec<'_> {
         };
         let budget = ProjectionMemoryBudget::new(context.memory.blocking_operator_bytes);
         let graph = if let Some(filter) = node_visibility_filter.as_ref() {
-            try_projected_graph_with_node_filter(
+            try_projected_graph_with_filters(
                 context.catalog,
                 context.store,
-                &definition.node_labels,
-                &definition.rel_types,
+                ProjectedGraphFilters {
+                    node_labels: &definition.node_labels,
+                    rel_types: &definition.rel_types,
+                    relationship_predicates: &definition.relationship_predicates,
+                },
                 |node| node_matches_property_filter(node, filter),
                 layout,
                 budget,
             )
         } else {
-            try_projected_graph_with_node_filter(
+            try_projected_graph_with_filters(
                 context.catalog,
                 context.store,
-                &definition.node_labels,
-                &definition.rel_types,
+                ProjectedGraphFilters {
+                    node_labels: &definition.node_labels,
+                    rel_types: &definition.rel_types,
+                    relationship_predicates: &definition.relationship_predicates,
+                },
                 |_| true,
                 layout,
                 budget,
@@ -124,13 +139,31 @@ impl GraphAlgorithmSpec<'_> {
             let mut bindings = Vec::new();
             match algorithm {
                 GraphAlgorithmKind::PageRank => {
+                    let damping = options
+                        .damping
+                        .unwrap_or_else(|| PageRankOptions::default().damping);
+                    if !damping.is_finite() || !(0.0..1.0).contains(&damping) {
+                        return Err(HawDBError::Semantic(
+                            "PageRank damping must be finite and in [0, 1)".to_string(),
+                        ));
+                    }
+                    let tolerance = options
+                        .tolerance
+                        .unwrap_or_else(|| PageRankOptions::default().tolerance);
+                    if !tolerance.is_finite() || tolerance < 0.0 {
+                        return Err(HawDBError::Semantic(
+                            "PageRank tolerance must be finite and non-negative".to_string(),
+                        ));
+                    }
                     let options = PageRankOptions {
                         iterations: options
                             .max_iterations
                             .unwrap_or_else(|| PageRankOptions::default().iterations),
-                        damping: options
-                            .damping
-                            .unwrap_or_else(|| PageRankOptions::default().damping),
+                        damping,
+                        tolerance,
+                        normalize_initial: options
+                            .normalize_initial
+                            .unwrap_or_else(|| PageRankOptions::default().normalize_initial),
                     };
                     let estimate = graph.page_rank_memory_estimate();
                     charge_graph_algorithm_memory(
@@ -150,23 +183,47 @@ impl GraphAlgorithmSpec<'_> {
                         result_bytes,
                     )?;
                     for score in scores.into_iter().take(output_limit) {
-                        push_bounded_operator_binding(
+                        let mut values = BTreeMap::from([
+                            ("node".to_string(), Value::Int(score.node.0 as i64)),
+                            (score_column.to_owned(), Value::Float(score.score)),
+                        ]);
+                        let hydration_bytes = if return_node_identity {
+                            append_node_identity(
+                                &mut values,
+                                context.catalog,
+                                context.store,
+                                score.node,
+                                &definition.node_labels,
+                                "PageRank",
+                                &mut tracker,
+                            )?
+                        } else {
+                            0
+                        };
+                        let push_result = push_bounded_operator_binding(
                             "GraphAlgorithm",
                             &mut bindings,
                             Binding {
-                                values: BTreeMap::from([
-                                    ("node".to_string(), Value::Int(score.node.0 as i64)),
-                                    (score_column.to_owned(), Value::Float(score.score)),
-                                ]),
+                                values,
                                 nodes: BTreeMap::new(),
                                 relationships: BTreeMap::new(),
                             },
                             &mut tracker,
-                        )?;
+                        );
+                        tracker.release(hydration_bytes);
+                        push_result?;
                     }
                     tracker.release(result_bytes);
                 }
                 GraphAlgorithmKind::Louvain => {
+                    let resolution = options
+                        .resolution
+                        .unwrap_or_else(|| LouvainOptions::default().resolution);
+                    if !resolution.is_finite() || resolution <= 0.0 {
+                        return Err(HawDBError::Semantic(
+                            "Louvain resolution must be finite and greater than 0".to_string(),
+                        ));
+                    }
                     let options = LouvainOptions {
                         max_iterations: options
                             .max_iterations
@@ -174,6 +231,7 @@ impl GraphAlgorithmSpec<'_> {
                         max_levels: options
                             .max_levels
                             .unwrap_or_else(|| LouvainOptions::default().max_levels),
+                        resolution,
                     };
                     let estimate = graph.louvain_memory_estimate(options);
                     charge_graph_algorithm_memory(
@@ -197,23 +255,39 @@ impl GraphAlgorithmSpec<'_> {
                         result_bytes,
                     )?;
                     for assignment in assignments.into_iter().take(output_limit) {
-                        push_bounded_operator_binding(
+                        let mut values = BTreeMap::from([
+                            ("node".to_string(), Value::Int(assignment.node.0 as i64)),
+                            ("level".to_string(), Value::Int(assignment.level as i64)),
+                            (
+                                "louvain_id".to_string(),
+                                Value::Int(assignment.community.0 as i64),
+                            ),
+                        ]);
+                        let hydration_bytes = if return_node_identity {
+                            append_node_identity(
+                                &mut values,
+                                context.catalog,
+                                context.store,
+                                assignment.node,
+                                &definition.node_labels,
+                                "Louvain",
+                                &mut tracker,
+                            )?
+                        } else {
+                            0
+                        };
+                        let push_result = push_bounded_operator_binding(
                             "GraphAlgorithm",
                             &mut bindings,
                             Binding {
-                                values: BTreeMap::from([
-                                    ("node".to_string(), Value::Int(assignment.node.0 as i64)),
-                                    ("level".to_string(), Value::Int(assignment.level as i64)),
-                                    (
-                                        "louvain_id".to_string(),
-                                        Value::Int(assignment.community.0 as i64),
-                                    ),
-                                ]),
+                                values,
                                 nodes: BTreeMap::new(),
                                 relationships: BTreeMap::new(),
                             },
                             &mut tracker,
-                        )?;
+                        );
+                        tracker.release(hydration_bytes);
+                        push_result?;
                     }
                     tracker.release(result_bytes);
                 }
@@ -230,6 +304,49 @@ impl GraphAlgorithmSpec<'_> {
         let bindings = execution_result?;
         emit_owned_binding_batches(bindings, context.memory.batch_rows.get(), emit)
     }
+}
+
+fn append_node_identity(
+    values: &mut BTreeMap<String, Value>,
+    catalog: &Catalog,
+    store: &dyn GraphExecutionRead,
+    node_id: NodeId,
+    preferred_labels: &[String],
+    algorithm: &'static str,
+    tracker: &mut OperatorMemoryTracker,
+) -> Result<usize> {
+    let node = store.node_owned(node_id)?.ok_or_else(|| {
+        HawDBError::Execution(format!(
+            "graph algorithm result references missing node {}",
+            node_id.0
+        ))
+    })?;
+    let hydration_bytes = node_memory_bytes(&node);
+    charge_graph_algorithm_memory(
+        algorithm,
+        "node identity hydration",
+        tracker,
+        hydration_bytes,
+    )?;
+    let external_id = node.properties.get("id").cloned().unwrap_or(Value::Null);
+    let label = preferred_labels
+        .iter()
+        .find(|label| {
+            catalog
+                .label_id(label)
+                .is_some_and(|label_id| node.labels.contains(&label_id))
+        })
+        .cloned()
+        .or_else(|| {
+            node.labels
+                .iter()
+                .find_map(|label_id| catalog.label_name(*label_id).map(str::to_string))
+        })
+        .map(Value::String)
+        .unwrap_or(Value::Null);
+    values.insert("node_id".to_string(), external_id);
+    values.insert("node_label".to_string(), label);
+    Ok(hydration_bytes)
 }
 
 fn charge_graph_algorithm_memory(
@@ -285,6 +402,34 @@ pub fn try_projected_graph_with_node_filter(
     layout: ProjectionLayout,
     budget: ProjectionMemoryBudget,
 ) -> Result<ProjectedGraph> {
+    let relationship_predicates = BTreeMap::new();
+    try_projected_graph_with_filters(
+        catalog,
+        store,
+        ProjectedGraphFilters {
+            node_labels,
+            rel_types,
+            relationship_predicates: &relationship_predicates,
+        },
+        include_node,
+        layout,
+        budget,
+    )
+}
+
+pub fn try_projected_graph_with_filters(
+    catalog: &Catalog,
+    store: &dyn GraphExecutionRead,
+    filters: ProjectedGraphFilters<'_>,
+    include_node: impl Fn(&NodeRecord) -> bool,
+    layout: ProjectionLayout,
+    budget: ProjectionMemoryBudget,
+) -> Result<ProjectedGraph> {
+    let ProjectedGraphFilters {
+        node_labels,
+        rel_types,
+        relationship_predicates,
+    } = filters;
     let source = GraphExecutionProjectionSource(store);
     if node_labels.is_empty() && rel_types.is_empty() {
         return ProjectedGraph::try_from_store_with_node_filter_and_layout(
@@ -314,6 +459,14 @@ pub fn try_projected_graph_with_node_filter(
         .iter()
         .filter_map(|rel_type| catalog.rel_type_id(rel_type))
         .collect::<Vec<_>>();
+    let relationship_filters = relationship_predicates
+        .iter()
+        .filter_map(|(rel_type, predicate)| {
+            catalog
+                .rel_type_id(rel_type)
+                .map(|rel_type_id| (rel_type_id, predicate))
+        })
+        .collect::<BTreeMap<_, _>>();
     if !rel_types.is_empty() && rel_type_ids.is_empty() {
         if label_ids.is_empty() {
             return ProjectedGraph::try_from_store_without_edges_with_node_filter_and_layout(
@@ -333,15 +486,68 @@ pub fn try_projected_graph_with_node_filter(
         )
         .map_err(|error| HawDBError::Execution(error.to_string()));
     }
-    ProjectedGraph::try_from_store_labels_and_rel_types_with_node_filter_and_layout(
+    ProjectedGraph::try_from_store_labels_and_rel_types_with_filters_and_layout(
         &source,
         &label_ids,
         &rel_type_ids,
         include_node,
+        |relationship| {
+            relationship_filters
+                .get(&relationship.rel_type)
+                .is_none_or(|predicate| predicate.matches(&relationship.properties))
+        },
         layout,
         budget,
     )
     .map_err(|error| HawDBError::Execution(error.to_string()))
+}
+
+pub fn bind_projected_relationship_predicates(
+    predicates: &BTreeMap<String, Predicate>,
+) -> Result<BTreeMap<String, hawdb_storage::projection::ProjectedRelationshipPredicate>> {
+    predicates
+        .iter()
+        .map(|(rel_type, predicate)| {
+            bind_projected_relationship_predicate(predicate)
+                .map(|predicate| (rel_type.clone(), predicate))
+        })
+        .collect()
+}
+
+fn bind_projected_relationship_predicate(
+    predicate: &Predicate,
+) -> Result<hawdb_storage::projection::ProjectedRelationshipPredicate> {
+    use hawdb_plan_cypher::ComparisonOp;
+    use hawdb_storage::projection::ProjectedRelationshipPredicate;
+
+    match predicate {
+        Predicate::And(predicates) if !predicates.is_empty() => predicates
+            .iter()
+            .map(bind_projected_relationship_predicate)
+            .collect::<Result<Vec<_>>>()
+            .map(ProjectedRelationshipPredicate::And),
+        Predicate::PropertyEq {
+            variable,
+            property,
+            value,
+        } if variable == "r" => Ok(ProjectedRelationshipPredicate::Eq {
+            property: property.clone(),
+            value: value.clone(),
+        }),
+        Predicate::PropertyCompare {
+            variable,
+            property,
+            op: ComparisonOp::Gte,
+            value,
+        } if variable == "r" => Ok(ProjectedRelationshipPredicate::Gte {
+            property: property.clone(),
+            value: value.clone(),
+        }),
+        _ => Err(HawDBError::Semantic(
+            "projected relationship predicates support only literal r.property comparisons joined by AND"
+                .to_string(),
+        )),
+    }
 }
 
 struct GraphExecutionProjectionSource<'a>(&'a dyn GraphExecutionRead);

@@ -64,7 +64,10 @@ impl Fixture {
             .map(|(id, labels, visible)| NodeRecord {
                 id: NodeId(id),
                 labels: labels.into_iter().collect(),
-                properties: BTreeMap::from([("visible".to_string(), Value::Bool(visible))]),
+                properties: BTreeMap::from([
+                    ("id".to_string(), Value::String(format!("node-{id}"))),
+                    ("visible".to_string(), Value::Bool(visible)),
+                ]),
             })
             .collect(),
             relationships: [
@@ -87,6 +90,7 @@ impl Fixture {
             definition: Some(ProjectedGraphDefinition {
                 node_labels: vec![],
                 rel_types: vec![],
+                relationship_predicates: BTreeMap::new(),
             }),
             node_scans: Cell::new(0),
             node_visits: Cell::new(0),
@@ -218,6 +222,7 @@ struct RunOptions {
     memory: ExecutionMemoryConfig,
     output_rows: Option<usize>,
     score_column: String,
+    return_node_identity: bool,
     exit: Exit,
 }
 
@@ -229,6 +234,7 @@ impl Default for RunOptions {
                 damping: Some(0.75),
                 max_iterations: Some(3),
                 max_levels: Some(2),
+                ..GraphAlgorithmOptions::default()
             },
             predicate: None,
             memory: ExecutionMemoryConfig {
@@ -239,6 +245,7 @@ impl Default for RunOptions {
             },
             output_rows: None,
             score_column: "score".to_string(),
+            return_node_identity: false,
             exit: Exit::Complete,
         }
     }
@@ -262,6 +269,7 @@ fn run(fixture: &Fixture, options: &RunOptions, task: Option<&RuntimeTaskContext
         graph_name: "graph",
         options: &options.options,
         score_column: &options.score_column,
+        return_node_identity: options.return_node_identity,
         node_visibility_predicate: &options.predicate,
     }
     .stream(
@@ -316,6 +324,7 @@ fn unknown_projection_names_remain_empty_instead_of_becoming_wildcards() {
             fixture.definition = Some(ProjectedGraphDefinition {
                 node_labels: labels.iter().map(|name| name.to_string()).collect(),
                 rel_types: kinds.iter().map(|name| name.to_string()).collect(),
+                relationship_predicates: BTreeMap::new(),
             });
             let definition = fixture.definition.as_ref().unwrap();
             for layout in [
@@ -465,6 +474,7 @@ fn definition_predicate_and_cancellation_keep_existing_precedence() {
     fixture.definition = Some(ProjectedGraphDefinition {
         node_labels: vec![],
         rel_types: vec![],
+        relationship_predicates: BTreeMap::new(),
     });
     let output = run(&fixture, &options, Some(&task));
     assert!(output
@@ -523,4 +533,91 @@ fn projection_scratch_and_binding_admission_fail_without_partial_rows() {
         assert!(output.batches.is_empty());
         assert_eq!(output.reports.blocking_memory.len(), reports);
     }
+}
+
+#[test]
+fn algorithm_options_fail_closed_and_identity_columns_are_bounded() {
+    let mut fixture = Fixture::new();
+    for (algorithm, options, expected) in [
+        (
+            GraphAlgorithmKind::PageRank,
+            GraphAlgorithmOptions {
+                damping: Some(1.0),
+                ..GraphAlgorithmOptions::default()
+            },
+            "PageRank damping must be finite and in [0, 1)",
+        ),
+        (
+            GraphAlgorithmKind::PageRank,
+            GraphAlgorithmOptions {
+                tolerance: Some(-1.0),
+                ..GraphAlgorithmOptions::default()
+            },
+            "PageRank tolerance must be finite and non-negative",
+        ),
+        (
+            GraphAlgorithmKind::Louvain,
+            GraphAlgorithmOptions {
+                resolution: Some(0.0),
+                ..GraphAlgorithmOptions::default()
+            },
+            "Louvain resolution must be finite and greater than 0",
+        ),
+    ] {
+        let output = run(
+            &fixture,
+            &RunOptions {
+                algorithm,
+                options,
+                ..RunOptions::default()
+            },
+            None,
+        );
+        assert!(output.result.unwrap_err().to_string().contains(expected));
+        assert!(output.batches.is_empty());
+    }
+
+    let output = run(
+        &fixture,
+        &RunOptions {
+            return_node_identity: true,
+            output_rows: Some(2),
+            ..RunOptions::default()
+        },
+        None,
+    );
+    assert_eq!(output.result.unwrap(), BatchControl::Continue);
+    let rows = output.batches.into_iter().flatten().collect::<Vec<_>>();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| {
+        matches!(row.values["node_id"], Value::String(_))
+            && matches!(row.values["node_label"], Value::String(_))
+    }));
+
+    fixture.nodes[0]
+        .properties
+        .insert("payload".to_string(), Value::String("x".repeat(16 * 1024)));
+    let baseline_options = RunOptions {
+        output_rows: Some(1),
+        ..RunOptions::default()
+    };
+    let baseline = run(&fixture, &baseline_options, None);
+    assert_eq!(baseline.result.unwrap(), BatchControl::Continue);
+    let baseline_peak = baseline.reports.blocking_memory[0].peak_tracked_bytes;
+    let bounded = run(
+        &fixture,
+        &RunOptions {
+            memory: ExecutionMemoryConfig {
+                blocking_operator_bytes: nz(baseline_peak),
+                ..RunOptions::default().memory
+            },
+            output_rows: Some(1),
+            return_node_identity: true,
+            ..RunOptions::default()
+        },
+        None,
+    );
+    let error = bounded.result.unwrap_err().to_string();
+    assert!(error.contains("node identity hydration"), "{error}");
+    assert!(bounded.batches.is_empty());
 }

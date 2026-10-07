@@ -202,6 +202,7 @@ impl PhysicalPlan {
                 name,
                 node_labels,
                 rel_types,
+                relationship_predicates,
             } => {
                 output.push_str("ProjectGraph(");
                 write_identifier(output, name);
@@ -209,6 +210,15 @@ impl PhysicalPlan {
                 write_identifier_list(output, node_labels);
                 output.push_str(":rels=");
                 write_identifier_list(output, rel_types);
+                output.push_str(":rel_filters=");
+                for (index, (rel_type, predicate)) in relationship_predicates.iter().enumerate() {
+                    if index > 0 {
+                        output.push(',');
+                    }
+                    write_identifier(output, rel_type);
+                    output.push('=');
+                    write_predicate(output, predicate);
+                }
                 output.push(')');
             }
             PhysicalPlan::GraphAlgorithm {
@@ -216,6 +226,7 @@ impl PhysicalPlan {
                 graph_name,
                 options,
                 score_column,
+                return_node_identity,
                 node_visibility_predicate,
             } => {
                 output.push_str("GraphAlgorithm(");
@@ -233,8 +244,30 @@ impl PhysicalPlan {
                 if let Some(iterations) = options.max_iterations {
                     output.push_str(&iterations.to_string());
                 }
+                output.push_str(":levels=");
+                if let Some(levels) = options.max_levels {
+                    output.push_str(&levels.to_string());
+                }
+                output.push_str(":tolerance=");
+                if let Some(tolerance) = options.tolerance {
+                    output.push_str(&tolerance.to_bits().to_string());
+                }
+                output.push_str(":normalize_initial=");
+                if let Some(normalize_initial) = options.normalize_initial {
+                    output.push_str(if normalize_initial { "true" } else { "false" });
+                }
+                output.push_str(":resolution=");
+                if let Some(resolution) = options.resolution {
+                    output.push_str(&resolution.to_bits().to_string());
+                }
                 output.push_str(":score=");
                 write_identifier(output, score_column);
+                output.push_str(":node_identity=");
+                output.push_str(if *return_node_identity {
+                    "true"
+                } else {
+                    "false"
+                });
                 output.push_str(":node_visibility=");
                 write_optional_predicate(output, node_visibility_predicate.as_ref());
                 output.push(')');

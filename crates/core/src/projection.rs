@@ -161,6 +161,8 @@ impl ProjectionMemoryAdmissionError {
 pub struct PageRankOptions {
     pub iterations: usize,
     pub damping: f64,
+    pub tolerance: f64,
+    pub normalize_initial: bool,
 }
 
 impl Default for PageRankOptions {
@@ -168,6 +170,8 @@ impl Default for PageRankOptions {
         Self {
             iterations: 20,
             damping: 0.85,
+            tolerance: 0.0,
+            normalize_initial: true,
         }
     }
 }
@@ -178,10 +182,11 @@ pub struct PageRankScore {
     pub score: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LouvainOptions {
     pub max_iterations: usize,
     pub max_levels: usize,
+    pub resolution: f64,
 }
 
 impl Default for LouvainOptions {
@@ -189,6 +194,7 @@ impl Default for LouvainOptions {
         Self {
             max_iterations: 20,
             max_levels: 1,
+            resolution: 1.0,
         }
     }
 }

@@ -203,6 +203,29 @@ impl ProjectedGraph {
     where
         S: ProjectionSource + ?Sized,
     {
+        Self::try_from_store_labels_and_rel_types_with_filters_and_layout(
+            store,
+            labels,
+            rel_types,
+            include_node,
+            |_| true,
+            layout,
+            budget,
+        )
+    }
+
+    pub fn try_from_store_labels_and_rel_types_with_filters_and_layout<S>(
+        store: &S,
+        labels: &[LabelId],
+        rel_types: &[RelTypeId],
+        include_node: impl Fn(&NodeRecord) -> bool,
+        include_relationship: impl Fn(&RelRecord) -> bool,
+        layout: ProjectionLayout,
+        budget: ProjectionMemoryBudget,
+    ) -> std::result::Result<Self, ProjectionMemoryAdmissionError>
+    where
+        S: ProjectionSource + ?Sized,
+    {
         let labels = labels.iter().copied().collect::<BTreeSet<_>>();
         let nodes = collect_projected_node_ids(store, layout, budget, |node| {
             (labels.is_empty() || node.labels.iter().any(|label| labels.contains(label)))
@@ -212,7 +235,10 @@ impl ProjectedGraph {
         Self::try_from_nodes_and_relationships(
             store,
             nodes,
-            move |relationship| rel_types.is_empty() || rel_types.contains(&relationship.rel_type),
+            move |relationship| {
+                (rel_types.is_empty() || rel_types.contains(&relationship.rel_type))
+                    && include_relationship(relationship)
+            },
             layout,
             budget,
         )
@@ -541,7 +567,12 @@ impl ProjectedGraph {
         }
 
         let damping = options.damping.clamp(0.0, 1.0);
-        let mut ranks = vec![1.0 / node_count as f64; node_count];
+        let initial_rank = if options.normalize_initial {
+            1.0 / node_count as f64
+        } else {
+            1.0
+        };
+        let mut ranks = vec![initial_rank; node_count];
         for _ in 0..options.iterations {
             algorithm_checkpoint(task_context)?;
             let mut dangling = 0.0;
@@ -551,7 +582,7 @@ impl ProjectedGraph {
                     dangling += rank;
                 }
             }
-            let mut next = vec![(1.0 - damping) / node_count as f64; node_count];
+            let mut next = vec![(1.0 - damping) * initial_rank; node_count];
             let dangling_share = damping * dangling / node_count as f64;
             for score in &mut next {
                 *score += dangling_share;
@@ -569,7 +600,15 @@ impl ProjectedGraph {
                     next[target] += contribution;
                 }
             }
+            let difference = ranks
+                .iter()
+                .zip(&next)
+                .map(|(current, next)| (current - next).abs())
+                .sum::<f64>();
             ranks = next;
+            if difference < options.tolerance {
+                break;
+            }
         }
 
         let mut scores = self
@@ -738,7 +777,8 @@ impl ProjectedGraph {
                     }
                     let links_to_candidate = links_to_candidate as f64;
                     let gain = links_to_candidate
-                        - (node_degree * community_degrees[candidate] / total_degree);
+                        - options.resolution
+                            * (node_degree * community_degrees[candidate] / total_degree);
                     match gain.total_cmp(&best_gain) {
                         Ordering::Greater => {
                             best = candidate;
@@ -1459,6 +1499,74 @@ mod tests {
     }
 
     #[test]
+    fn page_rank_honors_initial_normalization_and_tolerance() {
+        assert_eq!(PageRankOptions::default().tolerance, 0.0);
+        let edgeless = ProjectedGraph::from_parts(
+            vec![NodeId(0), NodeId(1)],
+            vec![0, 0, 0],
+            vec![],
+            vec![0, 0, 0],
+            vec![],
+        )
+        .unwrap();
+        let normalized = edgeless.page_rank(PageRankOptions {
+            iterations: 1,
+            damping: 0.85,
+            tolerance: 0.0,
+            normalize_initial: true,
+        });
+        let unnormalized = edgeless.page_rank(PageRankOptions {
+            iterations: 1,
+            damping: 0.85,
+            tolerance: 0.0,
+            normalize_initial: false,
+        });
+        assert!(normalized.iter().all(|score| score.score == 0.5));
+        assert!(unnormalized.iter().all(|score| score.score == 1.0));
+
+        let directed = ProjectedGraph::from_parts(
+            vec![NodeId(0), NodeId(1)],
+            vec![0, 1, 1],
+            vec![1],
+            vec![0, 0, 1],
+            vec![0],
+        )
+        .unwrap();
+        let early = directed.page_rank(PageRankOptions {
+            iterations: 20,
+            damping: 0.85,
+            tolerance: f64::MAX,
+            normalize_initial: true,
+        });
+        let converged = directed.page_rank(PageRankOptions {
+            tolerance: 0.0,
+            ..PageRankOptions::default()
+        });
+        let clamped = directed.page_rank(PageRankOptions {
+            iterations: 1,
+            damping: 2.0,
+            tolerance: 0.0,
+            normalize_initial: true,
+        });
+        let unit_damping = directed.page_rank(PageRankOptions {
+            iterations: 1,
+            damping: 1.0,
+            tolerance: 0.0,
+            normalize_initial: true,
+        });
+        let source_score = |scores: &[super::PageRankScore]| {
+            scores
+                .iter()
+                .find(|score| score.node == NodeId(0))
+                .unwrap()
+                .score
+        };
+        assert!((source_score(&early) - 0.2875).abs() < 1e-12);
+        assert!((source_score(&early) - source_score(&converged)).abs() > 0.01);
+        assert_eq!(clamped, unit_damping);
+    }
+
+    #[test]
     fn louvain_groups_disconnected_pairs_deterministically() {
         let mut catalog = Catalog::default();
         let mut store = GraphStore::in_memory();
@@ -1493,6 +1601,37 @@ mod tests {
         assert_eq!(communities[&c], c);
         assert_eq!(communities[&d], c);
         assert_ne!(communities[&a], communities[&c]);
+    }
+
+    #[test]
+    fn louvain_honors_resolution() {
+        let graph = ProjectedGraph::from_parts(
+            vec![NodeId(0), NodeId(1)],
+            vec![0, 1, 1],
+            vec![1],
+            vec![0, 0, 1],
+            vec![0],
+        )
+        .unwrap();
+        let communities = |resolution| {
+            graph
+                .louvain_communities(LouvainOptions {
+                    max_iterations: 20,
+                    max_levels: 1,
+                    resolution,
+                })
+                .into_iter()
+                .map(|assignment| (assignment.node, assignment.community))
+                .collect::<BTreeMap<_, _>>()
+        };
+
+        let default_resolution = communities(1.0);
+        assert_eq!(
+            default_resolution[&NodeId(0)],
+            default_resolution[&NodeId(1)]
+        );
+        let high_resolution = communities(3.0);
+        assert_ne!(high_resolution[&NodeId(0)], high_resolution[&NodeId(1)]);
     }
 
     #[test]
@@ -1551,6 +1690,7 @@ mod tests {
         let assignments = graph.hierarchical_louvain_communities(LouvainOptions {
             max_iterations: 20,
             max_levels: 2,
+            resolution: 1.0,
         });
 
         assert_eq!(assignments.len(), 8);
@@ -1577,10 +1717,12 @@ mod tests {
         let louvain_one_level = graph.louvain_memory_estimate(LouvainOptions {
             max_iterations: 2,
             max_levels: 1,
+            resolution: 1.0,
         });
         let louvain_two_levels = graph.louvain_memory_estimate(LouvainOptions {
             max_iterations: 2,
             max_levels: 2,
+            resolution: 1.0,
         });
 
         assert_eq!(

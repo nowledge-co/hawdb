@@ -694,12 +694,14 @@ impl GraphStore {
                 name,
                 node_labels,
                 rel_types,
+                relationship_predicates,
             } => {
                 self.apply_project_graph_definition(
                     name,
                     ProjectedGraphDefinition {
                         node_labels,
                         rel_types,
+                        relationship_predicates,
                     },
                 );
             }

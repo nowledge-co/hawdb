@@ -24,6 +24,7 @@ use crate::parser::MAX_CYPHER_INPUT_BYTES;
 use crate::ScalarBinaryOp;
 use crate::{AstNode, ReturnExpressionKind, ScalarExpressionKind, ValueExpressionKind};
 use hawdb_core::Value;
+use std::collections::BTreeMap;
 
 mod backtracking;
 mod migration_corpus;
@@ -694,6 +695,7 @@ fn parses_graph_algorithm_calls() {
             name: "EntityGraph".to_string(),
             node_labels: vec!["Entity".to_string()],
             rel_types: vec!["RELATES_TO".to_string()],
+            relationship_predicates: BTreeMap::new(),
         })
     );
     assert_eq!(
@@ -708,8 +710,10 @@ fn parses_graph_algorithm_calls() {
                 damping: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Float(0.85)))),
                 max_iterations: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(20)))),
                 max_levels: None,
+                ..GraphAlgorithmOptions::default()
             },
             score_column: "pagerank_score".to_string(),
+            return_node_identity: false,
         })
     );
     assert_eq!(
@@ -725,6 +729,16 @@ fn parses_graph_algorithm_calls() {
                 "MENTIONS".to_string(),
                 "MEMORY_RELATES_TO".to_string(),
             ],
+            relationship_predicates: BTreeMap::from([(
+                "MEMORY_RELATES_TO".to_string(),
+                PropertyPredicate::Eq {
+                    variable: "r".to_string(),
+                    property: "status".to_string(),
+                    value: AstNode::synthetic(ValueExpressionKind::Literal(Value::String(
+                        "active".to_string(),
+                    ))),
+                },
+            )]),
         })
     );
     assert_eq!(
@@ -739,8 +753,16 @@ fn parses_graph_algorithm_calls() {
                 damping: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Float(0.85)))),
                 max_iterations: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(20)))),
                 max_levels: None,
+                tolerance: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Float(
+                    0.0000001,
+                )))),
+                normalize_initial: Some(AstNode::synthetic(ValueExpressionKind::Literal(
+                    Value::Bool(true),
+                ))),
+                resolution: None,
             },
             score_column: "rank".to_string(),
+            return_node_identity: false,
         })
     );
     assert_eq!(
@@ -755,8 +777,10 @@ fn parses_graph_algorithm_calls() {
                 max_levels: Some(AstNode::synthetic(ValueExpressionKind::Literal(
                     Value::Int(2)
                 ))),
+                ..GraphAlgorithmOptions::default()
             },
             score_column: "louvain_id".to_string(),
+            return_node_identity: false,
         })
     );
     assert_eq!(
@@ -769,10 +793,65 @@ fn parses_graph_algorithm_calls() {
                 damping: Some(AstNode::synthetic(ValueExpressionKind::Parameter("damping".to_string()))),
                 max_iterations: Some(AstNode::synthetic(ValueExpressionKind::Parameter("iterations".to_string()))),
                 max_levels: None,
+                ..GraphAlgorithmOptions::default()
             },
             score_column: "pagerank_score".to_string(),
+            return_node_identity: false,
         })
     );
+
+    let Statement::GraphAlgorithm(identity) =
+        parse("CALL page_rank('UnifiedGraph') RETURN node, node_id, node_label, rank").unwrap()
+    else {
+        panic!("expected graph algorithm");
+    };
+    assert!(identity.return_node_identity);
+    assert_eq!(identity.score_column, "rank");
+
+    let Statement::ProjectGraph(project) = parse(
+        "CALL PROJECT_GRAPH('EntityTopicGraph', {'Entity': ''}, {'RELATES_TO': 'r.confidence >= 0.7 AND r.strength >= 0.5'})",
+    )
+    .unwrap()
+    else {
+        panic!("expected projected graph");
+    };
+    assert_eq!(project.node_labels, vec!["Entity"]);
+    assert_eq!(project.rel_types, vec!["RELATES_TO"]);
+    assert!(matches!(
+        project.relationship_predicates.get("RELATES_TO"),
+        Some(PropertyPredicate::And(predicates)) if predicates.len() == 2
+    ));
+
+    let Statement::GraphAlgorithm(algorithm) = parse(
+        "CALL louvain('EntityTopicGraph', maxPhases := 20, maxIterations := 12, resolution := 0.8) RETURN node, louvain_id",
+    )
+    .unwrap()
+    else {
+        panic!("expected graph algorithm");
+    };
+    assert_eq!(
+        algorithm.options.max_levels,
+        Some(AstNode::synthetic(ValueExpressionKind::Literal(
+            Value::Int(20)
+        )))
+    );
+    assert_eq!(
+        algorithm.options.resolution,
+        Some(AstNode::synthetic(ValueExpressionKind::Literal(
+            Value::Float(0.8)
+        )))
+    );
+
+    assert!(
+        parse("CALL PROJECT_GRAPH('g', ['Entity'], {'RELATES_TO': 'r.confidence < 0.7'})")
+            .unwrap_err()
+            .to_string()
+            .contains("support only literal r.property comparisons")
+    );
+    assert!(parse("CALL page_rank('g', unsupported := 1)")
+        .unwrap_err()
+        .to_string()
+        .contains("unsupported graph algorithm option"));
 }
 
 #[test]

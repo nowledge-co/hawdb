@@ -83,6 +83,7 @@ fn generated_fixture(rng: &mut Rng, ordinal: usize) -> Fixture {
             .iter()
             .map(|name| name.to_string())
             .collect(),
+        relationship_predicates: BTreeMap::new(),
     });
     fixture
 }
@@ -183,6 +184,14 @@ fn expected_rows(graph: &ProjectedGraph, options: &RunOptions) -> (Vec<Binding>,
                     .options
                     .max_iterations
                     .unwrap_or(PageRankOptions::default().iterations),
+                tolerance: options
+                    .options
+                    .tolerance
+                    .unwrap_or(PageRankOptions::default().tolerance),
+                normalize_initial: options
+                    .options
+                    .normalize_initial
+                    .unwrap_or(PageRankOptions::default().normalize_initial),
             };
             let scores = graph.page_rank_with_context(settings, None).unwrap();
             let bytes = scores.len() * std::mem::size_of::<hawdb_analytics::PageRankScore>() * 2;
@@ -211,6 +220,10 @@ fn expected_rows(graph: &ProjectedGraph, options: &RunOptions) -> (Vec<Binding>,
                     .options
                     .max_levels
                     .unwrap_or(LouvainOptions::default().max_levels),
+                resolution: options
+                    .options
+                    .resolution
+                    .unwrap_or(LouvainOptions::default().resolution),
             };
             let assignments = graph
                 .hierarchical_louvain_communities_with_context(settings, None)
@@ -241,16 +254,77 @@ fn expected_rows(graph: &ProjectedGraph, options: &RunOptions) -> (Vec<Binding>,
     (rows, result_bytes, scratch)
 }
 
+fn graph_algorithm_option_error(options: &RunOptions) -> Option<&'static str> {
+    match options.algorithm {
+        GraphAlgorithmKind::PageRank => {
+            let damping = options
+                .options
+                .damping
+                .unwrap_or(PageRankOptions::default().damping);
+            if !damping.is_finite() || !(0.0..1.0).contains(&damping) {
+                return Some("PageRank damping must be finite and in [0, 1)");
+            }
+            let tolerance = options
+                .options
+                .tolerance
+                .unwrap_or(PageRankOptions::default().tolerance);
+            if !tolerance.is_finite() || tolerance < 0.0 {
+                return Some("PageRank tolerance must be finite and non-negative");
+            }
+            None
+        }
+        GraphAlgorithmKind::Louvain => {
+            let resolution = options
+                .options
+                .resolution
+                .unwrap_or(LouvainOptions::default().resolution);
+            (!resolution.is_finite() || resolution <= 0.0)
+                .then_some("Louvain resolution must be finite and greater than 0")
+        }
+    }
+}
+
 fn check_stream(fixture: &Fixture, options: &RunOptions, only_visible: bool, identity: &str) {
     let layout = match options.algorithm {
         GraphAlgorithmKind::PageRank => ProjectionLayout::Outgoing,
         GraphAlgorithmKind::Louvain => ProjectionLayout::Undirected,
     };
     let graph = reference_graph(fixture, only_visible, layout);
+    let projection = graph.memory_estimate().estimated_bytes;
+    if let Some(message) = graph_algorithm_option_error(options) {
+        let output = run(fixture, options, None);
+        assert!(
+            matches!(output.result, Err(HawDBError::Semantic(ref actual)) if actual == message),
+            "{identity}"
+        );
+        assert_eq!(output.peak_bytes, projection, "{identity}");
+        assert_eq!(
+            output.reports.blocking_memory,
+            vec![crate::BlockingOperatorMemoryReport {
+                operator: "GraphAlgorithm".to_string(),
+                budget_bytes: options.memory.blocking_operator_bytes.get(),
+                peak_tracked_bytes: projection,
+                input_rows: graph.node_count(),
+                candidate_rows: 0,
+                replay_rows: 0,
+                repartitions: 0,
+                max_spill_bytes: options.memory.max_spill_bytes.get(),
+                max_spill_runs: options.memory.max_spill_runs.get(),
+                spilled_bytes: 0,
+                spill_run_count: 0,
+                spilled_rows: 0,
+            }],
+            "{identity}"
+        );
+        assert!(
+            output.batches.is_empty() && output.live_bytes.is_empty(),
+            "{identity}"
+        );
+        return;
+    }
     let (mut expected, result_bytes, scratch) = expected_rows(&graph, options);
     expected.truncate(options.output_rows.unwrap_or(usize::MAX));
     let binding_bytes: usize = expected.iter().map(binding_memory_bytes).sum();
-    let projection = graph.memory_estimate().estimated_bytes;
     let peak = projection + scratch.max(result_bytes + binding_bytes);
     let expected_report = crate::BlockingOperatorMemoryReport {
         operator: "GraphAlgorithm".to_string(),
@@ -345,6 +419,12 @@ fn campaign(seeds: u64) {
                         options.options.max_iterations =
                             [None, Some(0), Some(1), Some(3)][rng.index(4)];
                         options.options.max_levels = [None, Some(1), Some(2)][rng.index(3)];
+                        options.options.tolerance =
+                            [None, Some(0.0), Some(1e-7), Some(-1.0), Some(f64::NAN)][rng.index(5)];
+                        options.options.normalize_initial =
+                            [None, Some(false), Some(true)][rng.index(3)];
+                        options.options.resolution =
+                            [None, Some(1.0), Some(0.5), Some(0.0), Some(f64::NAN)][rng.index(5)];
                         let identity = format!("seed={seed} graph={ordinal} algorithm={algorithm:?} limit={limit:?} exit={exit:?}");
                         check_stream(&fixture, &options, only_visible, &identity);
                         executions += 1;

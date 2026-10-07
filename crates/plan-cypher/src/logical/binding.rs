@@ -41,7 +41,35 @@ pub(super) fn bind_graph_algorithm_options(
             .as_ref()
             .map(|value| bind_non_negative_usize(value, parameters, "maxLevels"))
             .transpose()?,
+        tolerance: options
+            .tolerance
+            .as_ref()
+            .map(|value| bind_optional_f64(value, parameters, "tolerance"))
+            .transpose()?,
+        normalize_initial: options
+            .normalize_initial
+            .as_ref()
+            .map(|value| bind_bool(value, parameters, "normalizeInitial"))
+            .transpose()?,
+        resolution: options
+            .resolution
+            .as_ref()
+            .map(|value| bind_optional_f64(value, parameters, "resolution"))
+            .transpose()?,
     })
+}
+
+pub(super) fn bind_projected_relationship_predicates(
+    predicates: &BTreeMap<String, PropertyPredicate>,
+) -> Result<BTreeMap<String, Predicate>> {
+    let scope = BTreeSet::from(["r".to_string()]);
+    predicates
+        .iter()
+        .map(|(rel_type, predicate)| {
+            plan_predicate(predicate, &scope, &BTreeMap::new())
+                .map(|predicate| (rel_type.clone(), predicate))
+        })
+        .collect()
 }
 
 pub(super) fn bind_vector_embedding(

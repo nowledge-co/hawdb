@@ -167,6 +167,19 @@ pub(super) fn bind_optional_f64(
     }
 }
 
+pub(super) fn bind_bool(
+    expression: &ValueExpression,
+    parameters: &BTreeMap<String, Value>,
+    name: &str,
+) -> Result<bool> {
+    match bind_value(expression, parameters)? {
+        Value::Bool(value) => Ok(value),
+        value => Err(HawDBError::Semantic(format!(
+            "{name} must be a boolean, got {value:?}"
+        ))),
+    }
+}
+
 pub(super) enum PlannedReturns {
     Projections(Vec<Projection>),
     Aggregations {

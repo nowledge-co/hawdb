@@ -291,6 +291,7 @@ impl Fixture {
             .page_rank(PageRankOptions {
                 damping: 0.5,
                 iterations: 3,
+                ..PageRankOptions::default()
             })
             .into_iter()
             .map(|score| {
@@ -304,6 +305,7 @@ impl Fixture {
             .hierarchical_louvain_communities(LouvainOptions {
                 max_iterations: 3,
                 max_levels: 2,
+                ..LouvainOptions::default()
             })
             .into_iter()
             .map(|row| {

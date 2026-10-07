@@ -52,12 +52,13 @@ pub enum ProcedureCallKind {
     GraphAlgorithm {
         algorithm: GraphAlgorithmKind,
         graph_name: String,
-        options: GraphAlgorithmOptions,
+        options: Box<GraphAlgorithmOptions>,
     },
     ProjectGraph {
         name: String,
         node_labels: Vec<String>,
         rel_types: Vec<String>,
+        relationship_predicates: BTreeMap<String, PropertyPredicate>,
     },
 }
 
