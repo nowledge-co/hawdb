@@ -1689,3 +1689,6 @@ mod ownership;
 
 #[path = "tests/checkpoint_page.rs"]
 mod checkpoint_page;
+
+#[path = "tests/checkpoint_root.rs"]
+mod checkpoint_root;

@@ -490,6 +490,70 @@ impl RelationalRowPageRootReader {
         Ok(())
     }
 
+    pub(super) fn visit_table_pages_with_work_context<F>(
+        &self,
+        table: &str,
+        work: &crate::background::CheckpointWorkContext,
+        mut visitor: F,
+    ) -> Result<(), RelationalRowPagePublicationError>
+    where
+        F: FnMut(&RelationalRowPageRootDescriptor) -> Result<(), RelationalRowPagePublicationError>,
+    {
+        let unit = work.start_unit().map_err(root::checkpoint::work_error)?;
+        let table_root = self.table_root(table)?;
+        unit.finish();
+        let unit = work.start_unit().map_err(root::checkpoint::work_error)?;
+        let wave = work.io_wave().map_err(root::checkpoint::work_error)?;
+        let mut descriptors = File::open(self.descriptor_path())
+            .map_err(durability("open row-page root descriptor artifact"))?;
+        drop(wave);
+        unit.finish();
+        let unit = work.start_unit().map_err(root::checkpoint::work_error)?;
+        let wave = work.io_wave().map_err(root::checkpoint::work_error)?;
+        let mut keys =
+            File::open(self.key_path()).map_err(durability("open row-page root key artifact"))?;
+        drop(wave);
+        unit.finish();
+        let mut previous_upper: Option<Vec<u8>> = None;
+        for offset in 0..table_root.page_count {
+            let unit = work.start_unit().map_err(root::checkpoint::work_error)?;
+            let ordinal = table_root
+                .first_descriptor
+                .checked_add(offset)
+                .ok_or_else(|| {
+                    RelationalRowPagePublicationError::Corrupt(
+                        "row-page descriptor ordinal overflow".to_string(),
+                    )
+                })?;
+            unit.finish();
+            let descriptor = root::checkpoint::read_descriptor(
+                &mut descriptors,
+                &mut keys,
+                ordinal,
+                &self.manifest,
+                self.config,
+                work,
+            )?;
+            if previous_upper
+                .as_ref()
+                .map(|upper| root::checkpoint::compare(upper, &descriptor.lower_bound, work))
+                .transpose()?
+                .is_some_and(|ordering| ordering != std::cmp::Ordering::Less)
+            {
+                return Err(RelationalRowPagePublicationError::Corrupt(format!(
+                    "table {table} row-page bounds overlap or are unordered"
+                )));
+            }
+            previous_upper = Some(root::checkpoint::clone_bytes(
+                &descriptor.upper_bound,
+                work,
+            )?);
+            // No read, CPU or I/O lease crosses the callback into nested writers.
+            visitor(&descriptor)?;
+        }
+        work.checkpoint().map_err(root::checkpoint::work_error)
+    }
+
     pub fn table_root(
         &self,
         table: &str,

@@ -15,7 +15,9 @@
 use super::*;
 use crate::background::{CheckpointWorkContext, CheckpointWorkError};
 
-pub(super) fn work_error(error: CheckpointWorkError) -> RelationalRowPagePublicationError {
+pub(in crate::relational::row_page::publication) fn work_error(
+    error: CheckpointWorkError,
+) -> RelationalRowPagePublicationError {
     RelationalRowPagePublicationError::Admission(error.to_string())
 }
 
@@ -41,12 +43,58 @@ pub(super) fn write_slot(
     bytes: &[u8],
     work: &CheckpointWorkContext,
 ) -> Result<(), RelationalRowPagePublicationError> {
+    write_bytes(writer, hasher, bytes, "write row-page slot", work)
+}
+
+pub(super) fn finish(
+    writer: &mut BufWriter<File>,
+    work: &CheckpointWorkContext,
+) -> Result<(), RelationalRowPagePublicationError> {
+    flush(writer, "flush row-page artifact", work)?;
+    sync(writer, "sync row-page artifact", work)
+}
+
+pub(in crate::relational::row_page::publication) fn compare(
+    left: &[u8],
+    right: &[u8],
+    work: &CheckpointWorkContext,
+) -> Result<std::cmp::Ordering, RelationalRowPagePublicationError> {
+    crate::relational::row_page::checkpoint::compare(left, right, work).map_err(Into::into)
+}
+
+pub(in crate::relational::row_page::publication) fn clone_bytes(
+    bytes: &[u8],
+    work: &CheckpointWorkContext,
+) -> Result<Vec<u8>, RelationalRowPagePublicationError> {
+    let mut output = Vec::new();
+    crate::relational::row_page::checkpoint::append(&mut output, bytes, work)?;
+    Ok(output)
+}
+
+pub(super) fn hash(
+    hasher: &mut IntegrityHasher,
+    bytes: &[u8],
+    work: &CheckpointWorkContext,
+) -> Result<(), RelationalRowPagePublicationError> {
+    for block in bytes.chunks(64 * 1024) {
+        let unit = work.start_unit().map_err(work_error)?;
+        hasher.update(block);
+        unit.finish();
+    }
+    work.checkpoint().map_err(work_error)
+}
+
+pub(super) fn write_bytes(
+    writer: &mut BufWriter<File>,
+    hasher: &mut IntegrityHasher,
+    bytes: &[u8],
+    operation: &'static str,
+    work: &CheckpointWorkContext,
+) -> Result<(), RelationalRowPagePublicationError> {
     for block in bytes.chunks(64 * 1024) {
         let unit = work.start_unit().map_err(work_error)?;
         let wave = work.io_wave().map_err(work_error)?;
-        writer
-            .write_all(block)
-            .map_err(durability("write row-page slot"))?;
+        writer.write_all(block).map_err(durability(operation))?;
         hasher.update(block);
         drop(wave);
         unit.finish();
@@ -54,24 +102,33 @@ pub(super) fn write_slot(
     work.checkpoint().map_err(work_error)
 }
 
-pub(super) fn finish(
+pub(super) fn flush(
     writer: &mut BufWriter<File>,
+    operation: &'static str,
     work: &CheckpointWorkContext,
 ) -> Result<(), RelationalRowPagePublicationError> {
     let unit = work.start_unit().map_err(work_error)?;
     let wave = work.io_wave().map_err(work_error)?;
-    writer
-        .flush()
-        .map_err(durability("flush row-page artifact"))?;
-    drop(wave);
-    unit.finish();
-    let unit = work.start_unit().map_err(work_error)?;
-    let wave = work.io_wave().map_err(work_error)?;
-    writer
-        .get_ref()
-        .sync_all()
-        .map_err(durability("sync row-page artifact"))?;
+    writer.flush().map_err(durability(operation))?;
     drop(wave);
     unit.finish();
     work.checkpoint().map_err(work_error)
 }
+
+pub(super) fn sync(
+    writer: &BufWriter<File>,
+    operation: &'static str,
+    work: &CheckpointWorkContext,
+) -> Result<(), RelationalRowPagePublicationError> {
+    let unit = work.start_unit().map_err(work_error)?;
+    let wave = work.io_wave().map_err(work_error)?;
+    writer.get_ref().sync_all().map_err(durability(operation))?;
+    drop(wave);
+    unit.finish();
+    work.checkpoint().map_err(work_error)
+}
+
+pub(in crate::relational::row_page::publication) use reader::{
+    read_descriptor, validate_descriptor,
+};
+mod reader;

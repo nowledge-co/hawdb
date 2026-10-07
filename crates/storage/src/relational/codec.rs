@@ -40,7 +40,7 @@ use std::sync::Arc;
 
 mod checkpoint;
 pub(crate) use checkpoint::{
-    decode_relational_checkpoint_file_with_work_context,
+    clone_string_with_work_context, decode_relational_checkpoint_file_with_work_context,
     encode_relational_checkpoint_with_work_context,
     encode_relational_row_payload_with_work_context, CheckpointOutputIo,
 };

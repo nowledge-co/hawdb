@@ -40,7 +40,7 @@ pub(super) fn ordered_key(
     })
 }
 
-fn compare(
+pub(super) fn compare(
     left: &[u8],
     right: &[u8],
     work: &CheckpointWorkContext,

@@ -576,6 +576,28 @@ sorting, publication I/O, temporary-file ownership and cleanup debt still need
 their own controls and hard resource accounting. This is validation coverage,
 not whole-publisher memory/time, power-loss or production admission qualification.
 
+Actual row-root construction now shares the same admitted task. Visit each
+base descriptor through controlled fixed-record and 64 KiB key reads, complete
+binding CRC/SHA validation, capped comparisons and copies; release every CPU and
+I/O lease before nested callbacks. Root inventory/merge bookkeeping processes
+individual entries, transfers the deletion set instead of cloning it, and
+compacts fixed-size generation accounting one entry at a time. Root key and
+136-byte descriptor writes and artifact integrity, flush and sync use separate
+controls. Binding integrity remains generation/ordinal/prefix/lower/upper exact,
+and ordinary root readers/writers remain the complete-byte/error references.
+Targeted regressions build all 1025 pages through three ordinary publications
+under the unchanged default 512 MiB dirty-publication budget, then compare all
+1025 descriptors and their complete page values,
+callback re-entry, each actual CPU/I/O cancellation and denial/retry, twelve
+corruption/range/truncation cases, wide common-prefix key reads/hash/comparisons,
+and complete incremental artifacts/all 1024 survivors and physical occupancy.
+Schema clone/equality, initial reader opening, relocation page reads/decoding,
+preflight sort/closure scans and manifest/selector publication remain separate
+work. Collection comparisons/allocations, retained capacities, destruction,
+disk/FD/cleanup debt and shared hard resource bounds remain incomplete. This
+partial binding does not authorize production per-unit admission or prove the
+whole-candidate resource, fault/platform or release-performance requirements.
+
 Actual automatic row-page preparation now binds page encoding and writes to
 the admitted checkpoint task. Ordered primary keys, each scalar/value directory
 entry, row/page directory entry, variable payload/bound copies and integrity

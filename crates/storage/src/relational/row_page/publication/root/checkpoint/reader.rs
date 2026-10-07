@@ -12,18 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::ROOT_DESCRIPTOR_BINDING_OFFSET;
+use super::super::{codec::WireDescriptor, ROOT_DESCRIPTOR_BINDING_OFFSET, ROOT_DESCRIPTOR_BYTES};
+use super::{work_error, CheckpointWorkContext};
 use crate::file_io::File;
 use crate::relational::row_page::publication::{
     durability, RelationalRowPagePublicationConfig, RelationalRowPagePublicationError,
     RelationalRowPageRootDescriptor, RelationalRowPageRootManifest, RelationalRowPageSlotIntegrity,
 };
 use crate::relational::RelationalRowPageId;
-use hawdb_integrity::{IntegrityHasher, Sha256Digest};
+use hawdb_integrity::IntegrityHasher;
 use std::io::{Read, Seek, SeekFrom};
 use std::num::NonZeroU64;
-
-pub(in crate::relational::row_page::publication) const ROOT_DESCRIPTOR_BYTES: usize = 136;
 
 pub(in crate::relational::row_page::publication) fn read_descriptor(
     descriptors: &mut File,
@@ -31,7 +30,9 @@ pub(in crate::relational::row_page::publication) fn read_descriptor(
     ordinal: u64,
     manifest: &RelationalRowPageRootManifest,
     config: RelationalRowPagePublicationConfig,
+    work: &CheckpointWorkContext,
 ) -> Result<RelationalRowPageRootDescriptor, RelationalRowPagePublicationError> {
+    let unit = work.start_unit().map_err(work_error)?;
     if ordinal >= manifest.root_page_count {
         return Err(RelationalRowPagePublicationError::Corrupt(format!(
             "row-page descriptor ordinal {ordinal} exceeds root page count {}",
@@ -45,14 +46,23 @@ pub(in crate::relational::row_page::publication) fn read_descriptor(
                 "row-page descriptor offset overflow".to_string(),
             )
         })?;
-    descriptors
-        .seek(SeekFrom::Start(descriptor_offset))
-        .map_err(durability("seek row-page root descriptor"))?;
+    unit.finish();
+    seek(
+        descriptors,
+        descriptor_offset,
+        "seek row-page root descriptor",
+        work,
+    )?;
     let mut encoded = [0u8; ROOT_DESCRIPTOR_BYTES];
-    descriptors
-        .read_exact(&mut encoded)
-        .map_err(durability("read row-page root descriptor"))?;
+    read(
+        descriptors,
+        &mut encoded,
+        "read row-page root descriptor",
+        work,
+    )?;
+    let unit = work.start_unit().map_err(work_error)?;
     let wire = WireDescriptor::decode(&encoded);
+    unit.finish();
     let lower_bound = read_key(
         keys,
         wire.lower_offset,
@@ -60,6 +70,7 @@ pub(in crate::relational::row_page::publication) fn read_descriptor(
         manifest.root_key_artifact.encoded_len,
         config,
         "lower",
+        work,
     )?;
     let upper_bound = read_key(
         keys,
@@ -68,13 +79,19 @@ pub(in crate::relational::row_page::publication) fn read_descriptor(
         manifest.root_key_artifact.encoded_len,
         config,
         "upper",
+        work,
     )?;
     let mut hasher = IntegrityHasher::new();
-    hasher.update(&manifest.generation.to_le_bytes());
-    hasher.update(&ordinal.to_le_bytes());
-    hasher.update(&encoded[..ROOT_DESCRIPTOR_BINDING_OFFSET]);
-    hasher.update(&lower_bound);
-    hasher.update(&upper_bound);
+    super::hash(&mut hasher, &manifest.generation.to_le_bytes(), work)?;
+    super::hash(&mut hasher, &ordinal.to_le_bytes(), work)?;
+    super::hash(
+        &mut hasher,
+        &encoded[..ROOT_DESCRIPTOR_BINDING_OFFSET],
+        work,
+    )?;
+    super::hash(&mut hasher, &lower_bound, work)?;
+    super::hash(&mut hasher, &upper_bound, work)?;
+    let unit = work.start_unit().map_err(work_error)?;
     let digest = hasher.finish();
     if digest.crc32c.get() != wire.binding_crc32c || digest.sha256 != wire.binding_sha256 {
         return Err(RelationalRowPagePublicationError::Corrupt(
@@ -101,12 +118,15 @@ pub(in crate::relational::row_page::publication) fn read_descriptor(
             slot_sha256: wire.slot_sha256,
         },
     };
+    unit.finish();
     validate_descriptor(
         &descriptor,
         manifest.generation,
         manifest.source_commit_epoch,
         config,
+        work,
     )?;
+    let unit = work.start_unit().map_err(work_error)?;
     let index = manifest
         .physical_generations
         .binary_search_by_key(&descriptor.physical_generation, |entry| entry.generation)
@@ -122,6 +142,8 @@ pub(in crate::relational::row_page::publication) fn read_descriptor(
             descriptor.physical_slot, descriptor.physical_generation, allocated_pages
         )));
     }
+    unit.finish();
+    work.checkpoint().map_err(work_error)?;
     Ok(descriptor)
 }
 
@@ -132,7 +154,9 @@ fn read_key(
     artifact_len: u64,
     config: RelationalRowPagePublicationConfig,
     bound: &str,
+    work: &CheckpointWorkContext,
 ) -> Result<Vec<u8>, RelationalRowPagePublicationError> {
+    let unit = work.start_unit().map_err(work_error)?;
     let len = len as usize;
     if len == 0 || len > config.page_limits.max_key_bytes.get() {
         return Err(RelationalRowPagePublicationError::Corrupt(format!(
@@ -147,20 +171,26 @@ fn read_key(
             "row-page {bound} key exceeds its artifact"
         )));
     }
-    let mut bytes = vec![0; len];
-    file.seek(SeekFrom::Start(offset))
-        .map_err(durability("seek row-page root key"))?;
-    file.read_exact(&mut bytes)
-        .map_err(durability("read row-page root key"))?;
+    let mut bytes = Vec::with_capacity(len);
+    unit.finish();
+    while bytes.len() < len {
+        let unit = work.start_unit().map_err(work_error)?;
+        bytes.resize((bytes.len() + 64 * 1024).min(len), 0);
+        unit.finish();
+    }
+    seek(file, offset, "seek row-page root key", work)?;
+    read(file, &mut bytes, "read row-page root key", work)?;
     Ok(bytes)
 }
 
-pub(super) fn validate_descriptor(
+pub(in crate::relational::row_page::publication) fn validate_descriptor(
     descriptor: &RelationalRowPageRootDescriptor,
     root_generation: u64,
     root_epoch: u64,
     config: RelationalRowPagePublicationConfig,
+    work: &CheckpointWorkContext,
 ) -> Result<(), RelationalRowPagePublicationError> {
+    let unit = work.start_unit().map_err(work_error)?;
     if descriptor.physical_generation == 0 || descriptor.physical_generation > root_generation {
         return Err(RelationalRowPagePublicationError::Corrupt(format!(
             "row-page descriptor physical generation {} is outside 1..={root_generation}",
@@ -189,9 +219,12 @@ pub(super) fn validate_descriptor(
             descriptor.slot_integrity.encoded_len
         )));
     }
+    unit.finish();
+    let ordering = super::compare(&descriptor.lower_bound, &descriptor.upper_bound, work)?;
+    let unit = work.start_unit().map_err(work_error)?;
     if descriptor.lower_bound.is_empty()
         || descriptor.upper_bound.is_empty()
-        || descriptor.lower_bound > descriptor.upper_bound
+        || ordering == std::cmp::Ordering::Greater
         || descriptor.lower_bound.len() > config.page_limits.max_key_bytes.get()
         || descriptor.upper_bound.len() > config.page_limits.max_key_bytes.get()
     {
@@ -199,79 +232,36 @@ pub(super) fn validate_descriptor(
             "row-page descriptor has invalid key bounds".to_string(),
         ));
     }
-    Ok(())
+    unit.finish();
+    work.checkpoint().map_err(work_error)
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct WireDescriptor {
-    pub logical_page_id: u64,
-    pub physical_generation: u64,
-    pub physical_slot: u64,
-    pub source_commit_epoch: u64,
-    pub row_count: u32,
-    pub encoded_len: u32,
-    pub lower_offset: u64,
-    pub lower_len: u32,
-    pub upper_offset: u64,
-    pub upper_len: u32,
-    pub slot_crc32c: u32,
-    pub slot_sha256: Sha256Digest,
-    pub binding_crc32c: u32,
-    pub binding_sha256: Sha256Digest,
+fn seek(
+    file: &mut File,
+    offset: u64,
+    operation: &'static str,
+    work: &CheckpointWorkContext,
+) -> Result<(), RelationalRowPagePublicationError> {
+    let unit = work.start_unit().map_err(work_error)?;
+    let wave = work.io_wave().map_err(work_error)?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(durability(operation))?;
+    drop(wave);
+    unit.finish();
+    work.checkpoint().map_err(work_error)
 }
-
-impl WireDescriptor {
-    pub(super) fn encode(self) -> [u8; ROOT_DESCRIPTOR_BYTES] {
-        let mut encoded = [0u8; ROOT_DESCRIPTOR_BYTES];
-        encoded[0..8].copy_from_slice(&self.logical_page_id.to_le_bytes());
-        encoded[8..16].copy_from_slice(&self.physical_generation.to_le_bytes());
-        encoded[16..24].copy_from_slice(&self.physical_slot.to_le_bytes());
-        encoded[24..32].copy_from_slice(&self.source_commit_epoch.to_le_bytes());
-        encoded[32..36].copy_from_slice(&self.row_count.to_le_bytes());
-        encoded[36..40].copy_from_slice(&self.encoded_len.to_le_bytes());
-        encoded[40..48].copy_from_slice(&self.lower_offset.to_le_bytes());
-        encoded[48..52].copy_from_slice(&self.lower_len.to_le_bytes());
-        encoded[52..60].copy_from_slice(&self.upper_offset.to_le_bytes());
-        encoded[60..64].copy_from_slice(&self.upper_len.to_le_bytes());
-        encoded[64..68].copy_from_slice(&self.slot_crc32c.to_le_bytes());
-        encoded[68..100].copy_from_slice(self.slot_sha256.as_bytes());
-        encoded[100..104].copy_from_slice(&self.binding_crc32c.to_le_bytes());
-        encoded[104..136].copy_from_slice(self.binding_sha256.as_bytes());
-        encoded
+fn read(
+    file: &mut File,
+    bytes: &mut [u8],
+    operation: &'static str,
+    work: &CheckpointWorkContext,
+) -> Result<(), RelationalRowPagePublicationError> {
+    for block in bytes.chunks_mut(64 * 1024) {
+        let unit = work.start_unit().map_err(work_error)?;
+        let wave = work.io_wave().map_err(work_error)?;
+        file.read_exact(block).map_err(durability(operation))?;
+        drop(wave);
+        unit.finish();
     }
-
-    pub(super) fn decode(encoded: &[u8; ROOT_DESCRIPTOR_BYTES]) -> Self {
-        Self {
-            logical_page_id: read_u64(&encoded[0..8]),
-            physical_generation: read_u64(&encoded[8..16]),
-            physical_slot: read_u64(&encoded[16..24]),
-            source_commit_epoch: read_u64(&encoded[24..32]),
-            row_count: read_u32(&encoded[32..36]),
-            encoded_len: read_u32(&encoded[36..40]),
-            lower_offset: read_u64(&encoded[40..48]),
-            lower_len: read_u32(&encoded[48..52]),
-            upper_offset: read_u64(&encoded[52..60]),
-            upper_len: read_u32(&encoded[60..64]),
-            slot_crc32c: read_u32(&encoded[64..68]),
-            slot_sha256: Sha256Digest::from_bytes(
-                encoded[68..100]
-                    .try_into()
-                    .expect("slot digest length was checked"),
-            ),
-            binding_crc32c: read_u32(&encoded[100..104]),
-            binding_sha256: Sha256Digest::from_bytes(
-                encoded[104..136]
-                    .try_into()
-                    .expect("binding digest length was checked"),
-            ),
-        }
-    }
-}
-
-fn read_u32(encoded: &[u8]) -> u32 {
-    u32::from_le_bytes(encoded.try_into().expect("u32 field has a fixed length"))
-}
-
-fn read_u64(encoded: &[u8]) -> u64 {
-    u64::from_le_bytes(encoded.try_into().expect("u64 field has a fixed length"))
+    work.checkpoint().map_err(work_error)
 }
