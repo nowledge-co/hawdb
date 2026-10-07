@@ -18,6 +18,9 @@ use hawdb_qos::{LocalQosPolicy, LocalQosScheduler, WorkClass, WorkRequest};
 use std::path::Path;
 use std::sync::Arc;
 
+#[path = "checkpoint_publication.rs"]
+mod operations;
+
 fn scheduler() -> LocalQosScheduler {
     LocalQosScheduler::new(LocalQosPolicy {
         max_background_operations: Some(1),
@@ -74,22 +77,34 @@ fn candidate(
     mode: usize,
     work: Option<&CheckpointWorkContext>,
 ) -> Result<RelationalOverflowPublicationReport, RelationalOverflowPublicationError> {
+    candidate_generation(directory, fixture, mode, work, 2)
+}
+
+fn candidate_generation(
+    directory: &Path,
+    fixture: &Fixture,
+    mode: usize,
+    work: Option<&CheckpointWorkContext>,
+    generation: u64,
+) -> Result<RelationalOverflowPublicationReport, RelationalOverflowPublicationError> {
     let config = RelationalOverflowPublicationConfig::default();
     let mut publisher = RelationalOverflowPublisher::new(config);
     if let Some(work) = work {
-        publisher = publisher.with_checkpoint_validation(work);
+        publisher = publisher.with_work_context(work);
     }
     let base = RelationalOverflowRootReader::open_latest(directory, config)
         .unwrap()
         .unwrap();
     let inputs = [0, 2, 3].map(|index| fixture[index].0.clone()).to_vec();
     match mode {
-        0 => publisher.persist_generation(directory, 2, 11, Some(&base), Some(1), inputs),
-        1 => publisher.persist_generation_retaining_base(directory, 2, 11, &base, 1, inputs),
+        0 => publisher.persist_generation(directory, generation, 11, Some(&base), Some(1), inputs),
+        1 => {
+            publisher.persist_generation_retaining_base(directory, generation, 11, &base, 1, inputs)
+        }
         2 => {
             let mut references = RelationalOverflowReferenceSetBuilder::new(
                 directory,
-                2,
+                generation,
                 RelationalOverflowReferenceSortConfig::default(),
             )
             .unwrap();
@@ -101,7 +116,7 @@ fn candidate(
                 .persist_generation_exact_references(
                     RelationalOverflowExactGenerationRequest {
                         directory,
-                        generation: 2,
+                        generation,
                         source_commit_epoch: 11,
                         base: &base,
                         expected_previous_generation: 1,
@@ -120,7 +135,7 @@ fn candidate(
                 )
                 .map(|report| report.publication)
         }
-        3 => publisher.publish(directory, 2, 11, Some(1), inputs),
+        3 => publisher.publish(directory, generation, 11, Some(1), inputs),
         _ => unreachable!(),
     }
 }
@@ -138,9 +153,13 @@ fn authority(directory: &Path) -> Vec<Vec<u8>> {
 }
 
 fn verify(directory: &Path, fixture: &Fixture, mode: usize) {
+    verify_generation(directory, fixture, mode, 2)
+}
+
+fn verify_generation(directory: &Path, fixture: &Fixture, mode: usize, generation: u64) {
     let reader = RelationalOverflowRootReader::open_generation(
         directory,
-        2,
+        generation,
         RelationalOverflowPublicationConfig::default(),
     )
     .unwrap();
@@ -250,24 +269,24 @@ fn checkpoint_units_overflow_publication_validation_cancellation_and_denial_pres
             drop(held);
             probe.assert_released(&local);
             assert_eq!(authority(&directory), before);
-            assert!(!directory
+            if directory
                 .join(relational_overflow_manifest_generation_file(2))
-                .exists());
-            assert!(!directory.join(relational_overflow_extent_file(2)).exists());
-            assert!(!directory
-                .join(relational_overflow_descriptor_file(2))
-                .exists());
+                .exists()
+            {
+                verify(&directory, &fixture, mode);
+            }
             assert_no_temporary_files(&directory);
             let retry = Arc::new(CheckpointWorkProbe::default());
-            candidate(
+            candidate_generation(
                 &directory,
                 &fixture,
                 mode,
                 Some(&retry.context(local.clone())),
+                3,
             )
             .unwrap();
             assert_eq!(authority(&directory), before);
-            verify(&directory, &fixture, mode);
+            verify_generation(&directory, &fixture, mode, 3);
             retry.assert_released(&local);
             fs::remove_dir_all(directory).unwrap();
         }

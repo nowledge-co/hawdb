@@ -591,6 +591,29 @@ retained generation recovery and retry, and QoS denial before claiming evidence.
 Cleanup failures leave disk evidence, but shared maintenance-debt accounting,
 retry, disk/FD admission and bounded publication I/O remain incomplete.
 
+Overflow publication now binds input ordering, fixed descriptor traversal,
+artifact construction and publication to the checkpoint work context. Controlled
+ordering uses an in-place heap with at most three fixed digest comparisons and
+one input-record swap per primitive, avoiding an entire sorted-output buffer.
+Descriptor reads/encoding, exclusive file creation, 64 KiB writes and integrity,
+file synchronization and immutable publication acquire individual CPU/I/O
+boundaries; waves end before nested validation/builders. A controlled publisher
+defers on a busy publication lock instead of entering a blocking lock wait.
+Latest-selector reads admit the ordinary size budget, reject malformed lengths,
+and read/validate the fixed 208-byte manifest through controlled operations;
+physical read-error priority can differ from the ordinary decoder while both
+fail closed. A cancellation after rename retains published private evidence;
+retry uses a fresh generation. Cancellation after a completed latest selection
+can lose the response while the complete result remains selected and recoverable.
+Targeted regressions compare complete bytes/all 1025 values, first-duplicate
+diagnostics, sort cancellation, every actual I/O wave in all three candidate
+modes, unchanged base authority, cleanup and complete fresh-generation retry,
+and completed selection after a lost reply. Exact-compaction reference-source
+traversal and encoded-extent hydration still need controls. Retained inputs,
+allocator/capacity costs, final-owner destruction, disk/FD/cleanup debt and the
+shared hard resource ledger remain incomplete; these primitives do not qualify
+whole-candidate resources, production per-unit admission or release performance.
+
 `HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
 two schema/data transactions under both durability policies. Its complete
 configured safety graph passed TLC (34,275 distinct states). Five deliberately

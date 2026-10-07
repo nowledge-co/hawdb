@@ -912,7 +912,7 @@ impl GraphStore {
                 ));
             }
             let overflow_publisher = RelationalOverflowPublisher::new(overflow_publication_config)
-                .with_checkpoint_validation(work);
+                .with_work_context(work);
             let mut copied_base_extent_count = 0u64;
             let mut introduced_extent_count = 0u64;
             let relational_overflow_report = if let Some(exact) = exact_overflow.as_ref() {

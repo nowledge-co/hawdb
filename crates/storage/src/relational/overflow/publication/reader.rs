@@ -40,6 +40,24 @@ pub struct RelationalOverflowRootReader {
 }
 
 impl RelationalOverflowRootReader {
+    pub(super) fn open_latest_with_work_context(
+        directory: &Path,
+        config: RelationalOverflowPublicationConfig,
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Result<Option<Self>, RelationalOverflowPublicationError> {
+        let Some(work) = work else {
+            return Self::open_latest(directory, config);
+        };
+        let path = directory.join(RELATIONAL_OVERFLOW_MANIFEST_FILE);
+        manifest::read_manifest_if_exists_with_work_context(&path, config, Some(work))?
+            .map(|manifest| {
+                super::publisher::checkpoint::io(Some(work), || {
+                    Self::from_manifest(directory, manifest, config)
+                })
+            })
+            .transpose()
+    }
+
     pub fn open_latest(
         directory: &Path,
         config: RelationalOverflowPublicationConfig,
