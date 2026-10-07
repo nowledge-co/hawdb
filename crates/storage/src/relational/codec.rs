@@ -712,10 +712,17 @@ fn decode_relational_checkpoint_from_decoder<I: DecodeInput>(
     for _ in 0..table_count {
         let name = decoder.string()?;
         let schema = decoder.table_schema()?;
+        let unit = work
+            .as_ref()
+            .map(|work| work.start_unit().map_err(checkpoint::work_error))
+            .transpose()?;
         if name != schema.name || state.schemas.contains_key(&name) {
             return Err(RelationalError::Corruption(format!(
                 "checkpoint has a duplicate or mismatched table {name}"
             )));
+        }
+        if let Some(unit) = unit {
+            unit.finish();
         }
         let positions = if let Some(work) = &work {
             Some(checkpoint::validate_table_schema_with_work_context(
@@ -739,27 +746,59 @@ fn decode_relational_checkpoint_from_decoder<I: DecodeInput>(
             } else {
                 validate_row(&schema, &row)?;
             }
-            let key = super::row_key(&row, &primary_key);
+            let key = if let Some(work) = &work {
+                checkpoint::row_key_with_work_context(&row, &primary_key, work)?
+            } else {
+                super::row_key(&row, &primary_key)
+            };
+            let unit = work
+                .as_ref()
+                .map(|work| work.start_unit().map_err(checkpoint::work_error))
+                .transpose()?;
             if rows.insert(key, row).is_some() {
                 return Err(RelationalError::Corruption(format!(
                     "checkpoint table {name} contains duplicate primary keys"
                 )));
             }
+            if let Some(unit) = unit {
+                unit.finish();
+            }
         }
-        state.schemas.insert(name.clone(), Arc::new(schema));
+        let rows = if let Some(work) = &work {
+            checkpoint::row_pages_with_work_context(rows, work)?
+        } else {
+            super::RelationalRowPages::from_map(rows)
+        };
+        let schema_name = if let Some(work) = &work {
+            checkpoint::clone_string_with_work_context(&name, work)?
+        } else {
+            name.clone()
+        };
+        let unit = work
+            .as_ref()
+            .map(|work| work.start_unit().map_err(checkpoint::work_error))
+            .transpose()?;
+        state.schemas.insert(schema_name, Arc::new(schema));
         state.segments.insert(
             name,
             Arc::new(RelationalTableSegment {
-                rows: super::RelationalRowPages::from_map(rows),
+                rows,
                 indexes: BTreeMap::new(),
             }),
         );
+        if let Some(unit) = unit {
+            unit.finish();
+        }
     }
     let overflow_count =
         decoder.count(limits.max_overflow_segments, "checkpoint overflow segments")?;
     for ordinal in 0..overflow_count {
         let digest = decoder.sha256()?;
         let overflow = decoder.overflow_segment()?;
+        let unit = work
+            .as_ref()
+            .map(|work| work.start_unit().map_err(checkpoint::work_error))
+            .transpose()?;
         if overflow.digest.sha256 != digest {
             return Err(RelationalError::Corruption(format!(
                 "checkpoint overflow segment {digest} has an invalid digest"
@@ -809,18 +848,41 @@ fn decode_relational_checkpoint_from_decoder<I: DecodeInput>(
                 "checkpoint contains duplicate overflow segment {digest}"
             )));
         }
+        if let Some(unit) = unit {
+            unit.finish();
+        }
     }
     decoder.finish()?;
-    validate_checkpoint_overflow_reachability(&state)?;
+    if let Some(work) = &work {
+        checkpoint::validate_reachability(&state, work)?;
+    } else {
+        validate_checkpoint_overflow_reachability(&state)?;
+    }
     if index_load == RelationalCheckpointIndexLoad::MaterializedPostings {
-        let table_names = state.schemas.keys().cloned().collect::<Vec<_>>();
-        for table in table_names {
-            rebuild_indexes(&mut state, &table)?;
+        if let Some(work) = &work {
+            for table in state.schemas.keys() {
+                checkpoint::rebuild_indexes_with_work_context(
+                    &state.schemas,
+                    &mut state.segments,
+                    table,
+                    work,
+                )?;
+            }
+        } else {
+            let table_names = state.schemas.keys().cloned().collect::<Vec<_>>();
+            for table in table_names {
+                rebuild_indexes(&mut state, &table)?;
+            }
         }
     } else {
         state.materialized_index_postings_resident = false;
     }
-    validate_foreign_keys(&state)?;
+    if let Some(work) = &work {
+        checkpoint::validate_foreign_keys_with_work_context(&state, work)?;
+        work.checkpoint().map_err(checkpoint::work_error)?;
+    } else {
+        validate_foreign_keys(&state)?;
+    }
     Ok(RelationalCheckpoint { epoch, state })
 }
 

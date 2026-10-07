@@ -14,6 +14,13 @@
 
 //! Borrowed row payload encoding for a cooperatively admitted checkpoint.
 
+mod runtime;
+pub(super) use runtime::{
+    clone_string as clone_string_with_work_context,
+    rebuild_indexes as rebuild_indexes_with_work_context, row_key as row_key_with_work_context,
+    row_pages as row_pages_with_work_context,
+    validate_foreign_keys as validate_foreign_keys_with_work_context,
+};
 mod mount;
 pub(crate) use mount::decode_relational_checkpoint_file_with_work_context;
 mod validation;
@@ -40,7 +47,7 @@ pub(crate) fn encode_relational_row_payload_with_work_context(
     Ok(encoder.finish())
 }
 
-fn work_error(error: CheckpointWorkError) -> RelationalError {
+pub(super) fn work_error(error: CheckpointWorkError) -> RelationalError {
     RelationalError::Admission(error.to_string())
 }
 
@@ -219,7 +226,7 @@ fn table_schema_with_work_context(
     work.checkpoint().map_err(work_error)
 }
 
-fn validate_reachability(
+pub(super) fn validate_reachability(
     state: &RelationalState,
     work: &CheckpointWorkContext,
 ) -> Result<(), RelationalError> {

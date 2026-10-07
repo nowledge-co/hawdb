@@ -517,6 +517,24 @@ validation, primary-key cloning, row-page construction, index/foreign-key and
 closure traversal, retained maps and drop still need byte/time accounting and
 controls. These validation boundaries do not qualify full mount resources.
 
+Private relational reconstruction now clones primary/index keys through
+64 KiB UTF-8/binary copy boundaries, moves owned rows and postings into capped
+pages, borrows index definitions, and traverses overflow closure and foreign
+keys under separate work boundaries. It avoids collecting all table names and
+avoids detaching/cloning a complete existing index segment before replacement.
+Ordinary decoding and index/foreign-key builders remain independent references.
+Focused coverage compares all 1025 parent and child rows, every unique/declared/
+foreign-support posting, more than one index and posting page, row byte/page
+boundaries, forward/backward ranges and exclusive bounds, nullable unique/FK
+semantics, and primary/unique/declared FK targets in both index load modes.
+Diagnostic priority, representative/final cancellation, admission denial,
+source retention and full retry have targeted coverage. Bulk posting page
+boundaries may differ from the ordinary incremental builder while preserving
+ordered logical contents and existing page caps. Whole decoder buffers and
+UTF-8 validation, map comparisons, allocation/reallocation, directory retention
+and final-owner destruction still need hard byte/time accounting. These
+controls do not qualify whole-candidate memory, time or production admission.
+
 `HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
 two schema/data transactions under both durability policies. Its complete
 configured safety graph passed TLC (34,275 distinct states). Five deliberately
