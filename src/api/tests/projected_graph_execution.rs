@@ -16,6 +16,7 @@ use super::*;
 use crate::StorageResidencyMode;
 
 mod differential;
+mod streaming_parity;
 
 #[test]
 fn projected_graph_admission_rejections_preserve_definition_epoch_and_wal() {
