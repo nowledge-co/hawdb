@@ -36,6 +36,26 @@ pub(crate) fn stream_graph_match(
             "MATCH exceeds maximum pattern depth".to_string(),
         ));
     }
+    // Validate before reading input so empty streams cannot bypass shape checks.
+    for step in &program.steps {
+        if let GraphMatchStep::Expand {
+            relationship,
+            rel_type,
+            properties,
+            direction,
+            min_hops,
+            max_hops,
+            ..
+        } = step
+            && (*min_hops != 1 || *max_hops != 1)
+            && (relationship.is_some()
+                || !properties.is_empty()
+                || *direction != hawdb_core::RelationshipDirection::Outgoing
+                || rel_type.is_empty())
+        {
+            return Err(HawDBError::Execution("bounded MATCH expansion requires an outgoing typed pattern without relationship bindings".to_string()));
+        }
+    }
     if limit.is_reached(0) {
         return Ok(BatchControl::Stop);
     }
@@ -288,15 +308,6 @@ impl MatchRuntime<'_> {
                 target,
             } => {
                 let bounded = *min_hops != 1 || *max_hops != 1;
-                // Missing types must not bypass the same shape checks as known types.
-                if bounded
-                    && (relationship.is_some()
-                        || !properties.is_empty()
-                        || *direction != hawdb_core::RelationshipDirection::Outgoing
-                        || rel_type.is_empty())
-                {
-                    return Err(HawDBError::Execution("bounded MATCH expansion requires an outgoing typed pattern without relationship bindings".to_string()));
-                }
                 let Some(source_node) = row.nodes.get(source) else {
                     if row.values.get(source) == Some(&Value::Null) {
                         return Ok(ScanControl::Continue);
