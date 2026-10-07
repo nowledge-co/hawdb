@@ -77,6 +77,10 @@ pub struct CheckpointCandidate {
     // Destruction of old COW maps may scale with the dataset. The job drops
     // this owner after releasing the writer publication barrier.
     retired_store: Option<GraphStore>,
+    retired_recovery_builders: Option<(
+        Option<crate::relational::RelationalRowDeltaBuilder>,
+        Option<crate::relational::RelationalIndexRecoveryBuilder>,
+    )>,
 }
 
 impl std::fmt::Debug for CheckpointCandidate {
@@ -260,6 +264,7 @@ impl GraphStore {
             failed: false,
             retain_artifacts: false,
             retired_store: None,
+            retired_recovery_builders: None,
         };
         let store = candidate.store.as_mut().expect("candidate owns a runtime");
         work.checkpoint().map_err(HawDBError::from_storage_error)?;
@@ -474,6 +479,12 @@ impl GraphStore {
             .store
             .take()
             .expect("published candidate owns its runtime");
+        // These maps may contain many sealed run descriptors. Move their
+        // ownership out of the serving store; the job drops them off the gate.
+        candidate.retired_recovery_builders = Some((
+            next.relational_row_pages.recovery_builder.take(),
+            next.relational_index_shadow.recovery_builder.take(),
+        ));
         // Recovery reconstructs values, not foreground conflict history or
         // consumer acknowledgments. Preserve the exact live ownership state.
         next.inherit_live_checkpoint_ownership(self);
@@ -513,9 +524,9 @@ impl CheckpointCandidate {
         self.store.as_ref().map_or(0, GraphStore::commit_epoch)
     }
 
-    /// Finishes bounded row/index recovery and pins serving readers outside
-    /// the writer gate. The owner freezes new commits before the final capture
-    /// and keeps them frozen until publication; no later catch-up is permitted.
+    /// Seals this complete prefix and pins its serving readers outside the
+    /// writer gate. Later catch-up extends the same pinned checkpoint base;
+    /// its builders and source digest remain available for another seal.
     pub fn finish_catch_up(&mut self) -> Result<()> {
         if self.failed {
             return Err(HawDBError::Storage(
@@ -529,7 +540,7 @@ impl CheckpointCandidate {
             let prepared = self.prepared.as_ref().ok_or_else(|| {
                 HawDBError::Storage("checkpoint candidate has no prepared base".into())
             })?;
-            let source = self.recovery_source.take().ok_or_else(|| {
+            let source = self.recovery_source.as_ref().ok_or_else(|| {
                 HawDBError::StorageIntegrity("checkpoint replay source is missing".into())
             })?;
             let replayed = usize::try_from(self.captured_next_lsn - prepared.source_next_lsn)
@@ -632,12 +643,25 @@ impl CheckpointCandidate {
     ) -> Result<CheckpointWalTail> {
         source.ensure_usable()?;
         replay_checkpoint(task)?;
-        if self.replay_finalized {
-            return Err(HawDBError::Storage(
-                "checkpoint candidate replay is finalized".into(),
-            ));
-        }
         self.validate_source(source)?;
+        let durable = source.durable.as_ref().expect("validated durable source");
+        if durable.next_lsn == self.captured_next_lsn {
+            return Ok(CheckpointWalTail {
+                captured_commit_epoch: source.commit_epoch,
+                captured_next_lsn: self.captured_next_lsn,
+                captured_wal_generation: durable.wal_generation,
+                captured_wal_bytes: self.captured_wal_bytes,
+                candidate_wal_bytes: self.candidate_wal_bytes,
+                entries: self.captured_next_lsn
+                    - self
+                        .prepared
+                        .as_ref()
+                        .expect("validated base")
+                        .source_next_lsn,
+            });
+        }
+        self.replay_finalized = false;
+        self.recovery_selectors = [None, None];
         let result = self.catch_up_inner(source, task);
         if result.is_err() {
             self.failed = true;

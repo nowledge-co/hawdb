@@ -572,7 +572,7 @@ impl GraphStore {
 
     pub(super) fn finish_private_wal_recovery(
         &mut self,
-        source: RelationalRecoverySourceBuilder,
+        source: &RelationalRecoverySourceBuilder,
         replayed_entries: usize,
     ) -> Result<[Option<crate::relational::PreparedRelationalRecoverySelector>; 2]> {
         let identity = if replayed_entries == 0 {
@@ -580,7 +580,7 @@ impl GraphStore {
         } else {
             Some(
                 source
-                    .finish()
+                    .prefix_identity()
                     .map_err(|reason| HawDBError::Storage(reason.to_string()))?,
             )
         };

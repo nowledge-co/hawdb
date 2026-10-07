@@ -59,6 +59,14 @@ pub fn relational_row_delta_manifest_generation_file(
     format!("relational-row-delta-{base_generation}-{delta_generation}.manifest.hawdb")
 }
 
+pub(crate) fn relational_row_delta_prefix_file(
+    base_generation: u64,
+    delta_generation: u64,
+    visible_commit_epoch: u64,
+) -> String {
+    format!("relational-row-delta-{base_generation}-{delta_generation}-{visible_commit_epoch}.prefix.hawdb")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelationalRowDeltaConfig {
     pub max_dirty_entries: NonZeroUsize,

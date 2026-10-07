@@ -65,6 +65,14 @@ pub(crate) fn relational_index_recovery_manifest_generation_file(
     format!("relational-index-recovery-{base_generation}-{delta_generation}.manifest.hawdb")
 }
 
+pub(crate) fn relational_index_recovery_prefix_file(
+    base_generation: u64,
+    delta_generation: u64,
+    recovered_commit_epoch: u64,
+) -> String {
+    format!("relational-index-recovery-{base_generation}-{delta_generation}-{recovered_commit_epoch}.prefix.hawdb")
+}
+
 pub const RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE: &str =
     "relational-index-recovery.manifest.hawdb";
 pub const DEFAULT_RELATIONAL_INDEX_RECOVERY_DIRTY_ENTRIES: usize = 100_000;
@@ -672,15 +680,17 @@ impl RelationalIndexRecoveryBuilder {
         recovered_commit_epoch: u64,
         recovery_source: RelationalRecoverySourceIdentity,
     ) -> Result<RelationalIndexRecoveryReport, RelationalIndexShadowError> {
-        self.finish_inner(recovered_commit_epoch, recovery_source, true)
+        self.finish_inner(recovered_commit_epoch, recovery_source, true, false)
     }
 
-    pub(crate) fn finish_private_with_recovery_source(
-        self,
+    pub(crate) fn seal_private_with_recovery_source(
+        &mut self,
         recovered_commit_epoch: u64,
         recovery_source: RelationalRecoverySourceIdentity,
     ) -> Result<RelationalIndexRecoveryReport, RelationalIndexShadowError> {
-        self.finish_inner(recovered_commit_epoch, recovery_source, false)
+        self.flush()?;
+        self.clone()
+            .finish_inner(recovered_commit_epoch, recovery_source, false, true)
     }
 
     fn finish_inner(
@@ -688,6 +698,7 @@ impl RelationalIndexRecoveryBuilder {
         recovered_commit_epoch: u64,
         recovery_source: RelationalRecoverySourceIdentity,
         select_latest: bool,
+        private_prefix: bool,
     ) -> Result<RelationalIndexRecoveryReport, RelationalIndexShadowError> {
         if recovered_commit_epoch < self.base_commit_epoch {
             return Err(RelationalIndexShadowError::Corrupt(format!(
@@ -718,12 +729,19 @@ impl RelationalIndexRecoveryBuilder {
                 )
             })?;
         } else {
-            let manifest_path =
-                self.directory
-                    .join(relational_index_recovery_manifest_generation_file(
-                        manifest.base_generation,
-                        manifest.delta_generation,
-                    ));
+            let filename = if private_prefix {
+                relational_index_recovery_prefix_file(
+                    manifest.base_generation,
+                    manifest.delta_generation,
+                    recovered_commit_epoch,
+                )
+            } else {
+                relational_index_recovery_manifest_generation_file(
+                    manifest.base_generation,
+                    manifest.delta_generation,
+                )
+            };
+            let manifest_path = self.directory.join(filename);
             let mut file = OpenOptions::new()
                 .write(true)
                 .create_new(true)

@@ -59,7 +59,6 @@ pub use demand_read::{
     DEFAULT_RELATIONAL_INDEX_READ_PAGES, DEFAULT_RELATIONAL_INDEX_READ_ROWS,
     DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT,
 };
-pub(crate) use recovery::relational_index_recovery_manifest_generation_file;
 pub use recovery::{
     relational_index_recovery_delta_file, RelationalIndexRecoveryBuilder,
     RelationalIndexRecoveryConfig, RelationalIndexRecoveryManifest,
@@ -68,6 +67,9 @@ pub use recovery::{
     DEFAULT_RELATIONAL_INDEX_RECOVERY_DIRTY_ENTRIES,
     DEFAULT_RELATIONAL_INDEX_RECOVERY_MANIFEST_BYTES, DEFAULT_RELATIONAL_INDEX_RECOVERY_PAGES,
     RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE,
+};
+pub(crate) use recovery::{
+    relational_index_recovery_manifest_generation_file, relational_index_recovery_prefix_file,
 };
 
 const MANIFEST_MAGIC: &[u8; 8] = b"SKRIDXM1";

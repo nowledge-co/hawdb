@@ -37,6 +37,29 @@ pub struct AutomaticCheckpointReport {
     pub failed_attempts: u64,
 }
 
+#[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+#[derive(Debug)]
+struct PrefixSealProbe {
+    sealed: std::sync::mpsc::Sender<u64>,
+    resume: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+#[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+impl PrefixSealProbe {
+    fn observe(&self, epoch: u64) -> Result<()> {
+        self.sealed.send(epoch).map_err(|error| {
+            HawDBError::Execution(format!("checkpoint seal observer stopped: {error}"))
+        })?;
+        self.resume
+            .lock()
+            .map_err(|_| Control::poisoned())?
+            .recv_timeout(Duration::from_secs(15))
+            .map_err(|error| {
+                HawDBError::Execution(format!("checkpoint seal observer stopped: {error}"))
+            })
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct Source {
     store: GraphStore,
@@ -115,6 +138,8 @@ pub(super) struct State {
     task: Option<RuntimeTaskContext>,
     governor: Option<RuntimeGovernor>,
     report: AutomaticCheckpointReport,
+    #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+    prefix_seal_probe: Option<Arc<PrefixSealProbe>>,
 }
 
 #[derive(Debug, Default)]
@@ -477,100 +502,95 @@ fn run(
             }
         };
         let admitted_task = admission.runtime.bind_task_context(task.clone());
-        // Amortize a captured suffix without freezing the writer. The final
-        // pass then covers only writes that arrived during this replay, rather
-        // than every write that arrived during the database-sized base build.
-        let first_tail = {
-            let mut state = control
-                .state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if !state.sync_group_active {
-                state.latest.take()
-            } else {
-                None
-            }
-        };
-        let catch_up = if let Some(latest) = first_tail {
-            source = latest;
-            candidate
-                .catch_up_with_task_context(&source.store, &admitted_task)
-                .map(|_| ())
-        } else {
-            Ok(())
-        };
-        let (may_publish, final_source) = {
-            let mut state = control
-                .state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if catch_up.is_ok()
-                && !state.stopping
-                && state.suspensions == 0
-                && task.checkpoint().is_ok()
-            {
-                // Existing unacknowledged sync groups must finish; mutable
-                // admission stops admitting new groups once this one flushes.
-                state.phase = Phase::Draining;
-                while state.sync_group_active
-                    && !state.stopping
-                    && state.suspensions == 0
-                    && task.checkpoint().is_ok()
-                {
-                    state = control
-                        .changed
-                        .wait(state)
-                        .unwrap_or_else(|error| error.into_inner());
+        // Seal and mount each captured prefix while writes remain admitted.
+        // A writer that advances during sealing supplies another suffix for
+        // this same candidate; it never causes a database-sized base restart.
+        let mut expected = None;
+        let result = (|| -> Result<()> {
+            loop {
+                let latest = {
+                    let mut state = control.lock()?;
+                    if state.stopping || state.suspensions != 0 {
+                        return Err(HawDBError::Storage(
+                            "checkpoint candidate cancelled before selection".into(),
+                        ));
+                    }
+                    if state.sync_group_active {
+                        None
+                    } else {
+                        state.latest.take()
+                    }
+                };
+                if let Some(latest) = latest {
+                    source = latest;
                 }
-            }
-            if state.stopping
-                || state.suspensions != 0
-                || state.sync_group_active
-                || task.checkpoint().is_err()
-                || catch_up.is_err()
-            {
-                (false, None)
-            } else {
-                state.phase = Phase::Finalizing;
-                (true, state.latest.take())
-            }
-        };
-        if let Some(latest) = final_source {
-            source = latest;
-        }
-        let result = if may_publish {
-            candidate
-                .catch_up_with_task_context(&source.store, &admitted_task)
-                .and_then(|_| candidate.finish_catch_up())
-        } else {
-            Err(HawDBError::Storage(
-                "checkpoint candidate cancelled before selection".into(),
-            ))
-        };
-        let expected = source.store.checkpoint_source_identity();
-        let result = result.and_then(|_| {
-            // Acquire the admitted I/O wave before taking the publication
-            // lock, so a saturated pool can be cancelled by the manual owner.
-            let _publication_wave = admitted_task
-                .acquire_io_wave(std::num::NonZeroUsize::MIN)
-                .map_err(|reason| {
-                    HawDBError::Execution(format!("checkpoint selector I/O stopped: {reason}"))
+                candidate.catch_up_with_task_context(&source.store, &admitted_task)?;
+                candidate.finish_catch_up()?;
+                #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+                {
+                    let probe = control.lock()?.prefix_seal_probe.clone();
+                    if let Some(probe) = probe {
+                        probe.observe(candidate.commit_epoch())?;
+                    }
+                }
+                task.checkpoint().map_err(|reason| {
+                    HawDBError::Execution(format!("checkpoint prefix sealing stopped: {reason}"))
                 })?;
-            let state = control.lock()?;
-            if state.stopping || state.suspensions != 0 || task.checkpoint().is_err() {
-                return Err(HawDBError::Storage(
-                    "checkpoint cancelled before selector publication".into(),
-                ));
+                // Admission waits occur before the writer barrier. The final
+                // barrier only compares a sealed identity and publishes it.
+                let _publication_wave = admitted_task
+                    .acquire_io_wave(std::num::NonZeroUsize::MIN)
+                    .map_err(|reason| {
+                        HawDBError::Execution(format!("checkpoint selector I/O stopped: {reason}"))
+                    })?;
+                let mut state = control.lock()?;
+                state.phase = Phase::Draining;
+                if state.sync_group_active {
+                    // A foreground flush may need the same I/O pool. Never
+                    // retain its capacity while waiting for that flush.
+                    drop(_publication_wave);
+                    while state.sync_group_active
+                        && !state.stopping
+                        && state.suspensions == 0
+                        && task.checkpoint().is_ok()
+                    {
+                        state = control
+                            .changed
+                            .wait(state)
+                            .unwrap_or_else(|error| error.into_inner());
+                    }
+                    state.phase = Phase::Preparing;
+                    control.changed.notify_all();
+                    drop(state);
+                    continue;
+                }
+                if state.stopping || state.suspensions != 0 || task.checkpoint().is_err() {
+                    return Err(HawDBError::Storage(
+                        "checkpoint cancelled before selector publication".into(),
+                    ));
+                }
+                if state.latest.as_ref().is_some_and(|latest| {
+                    latest.store.checkpoint_source_identity()
+                        != source.store.checkpoint_source_identity()
+                }) {
+                    let latest = state.latest.take().expect("advanced source exists");
+                    state.phase = Phase::Preparing;
+                    control.changed.notify_all();
+                    drop(state);
+                    drop(_publication_wave);
+                    source = latest;
+                    continue;
+                }
+                state.phase = Phase::Finalizing;
+                let oldest = pins.lock().map_err(|_| Control::poisoned())?.oldest_epoch();
+                expected = source.store.checkpoint_source_identity();
+                let result = source
+                    .store
+                    .publish_checkpoint_candidate_deferred_reclamation(&mut candidate, oldest);
+                drop(state);
+                return result.map(|_| ());
             }
-            // The finalization barrier has prevented another complete source
-            // from being installed. Selection does not scan or reclaim files.
-            let oldest = pins.lock().map_err(|_| Control::poisoned())?.oldest_epoch();
-            let result = source
-                .store
-                .publish_checkpoint_candidate_deferred_reclamation(&mut candidate, oldest);
-            drop(state);
-            result.map(|_| ())
-        });
+        })();
         if result.is_ok() {
             let mut state = control
                 .state
@@ -811,6 +831,149 @@ mod tests {
         drop(state);
         drop(retired);
         assert_eq!(retired_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn sealed_prefixes_keep_writes_admitted_and_release_io_before_group_drain() {
+        let fixture = Fixture::new();
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&fixture.0, &mut catalog).unwrap();
+        let properties =
+            |id| std::collections::BTreeMap::from([("id".into(), crate::Value::Int(id))]);
+        store
+            .create_node(&mut catalog, "Memory", properties(1))
+            .unwrap();
+        let control = Arc::new(Control::default());
+        let (sealed_tx, sealed_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        control.lock().unwrap().prefix_seal_probe = Some(Arc::new(PrefixSealProbe {
+            sealed: sealed_tx,
+            resume: Mutex::new(resume_rx),
+        }));
+        let config = DatabaseConfig {
+            automatic_checkpoint_max_age: Duration::from_millis(20),
+            ..DatabaseConfig::default()
+        };
+        let governor = RuntimeGovernor::detect(
+            hawdb_qos::RuntimeGovernorConfig {
+                memory_budget_bytes: Some(512 * 1024 * 1024),
+                ..hawdb_qos::RuntimeGovernorConfig::shared_host()
+            },
+            hawdb_qos::IoConcurrencyBudget::new(1, 1),
+        );
+        governor.pin_resources();
+        let mut owner = Owner::start(
+            Arc::clone(&control),
+            &store,
+            &catalog,
+            Arc::new(Mutex::new(ReaderPins::default())),
+            &config,
+            LocalQosScheduler::new(hawdb_qos::LocalQosPolicy::default()),
+            Some(governor.clone()),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(sealed_rx.recv_timeout(Duration::from_secs(15)).unwrap(), 1);
+        let base = fixture.0.join("checkpoint.1.hawdb");
+        let base_bytes = std::fs::read(&base).unwrap();
+        {
+            let mut state = control.lock_frontend().unwrap();
+            assert_eq!(state.phase, Phase::Preparing);
+            assert!(store.begin_wal_sync_group().unwrap());
+            store
+                .create_node(&mut catalog, "Memory", properties(2))
+                .unwrap();
+            let retired = control.submit(&mut state, &store, &catalog);
+            assert!(state.sync_group_active);
+            drop(state);
+            drop(retired);
+        }
+        resume_tx.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let state = control.lock().unwrap();
+            if state.phase == Phase::Draining && state.sync_group_active {
+                assert_eq!(governor.snapshot().active_background_io_slots, 0);
+                break;
+            }
+            drop(state);
+            assert!(
+                Instant::now() < deadline,
+                "worker did not drain the actual sync group"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        {
+            let _foreground_io = governor
+                .try_admit(RuntimeWorkRequest::io(
+                    hawdb_qos::RuntimeWorkPriority::Foreground,
+                    1,
+                    0,
+                ))
+                .unwrap();
+            let mut state = control.lock_frontend().unwrap();
+            store.finish_wal_sync_group().unwrap();
+            let retired = control.submit(&mut state, &store, &catalog);
+            drop(state);
+            drop(retired);
+        }
+        assert_eq!(sealed_rx.recv_timeout(Duration::from_secs(15)).unwrap(), 2);
+        {
+            let mut state = control.lock_frontend().unwrap();
+            assert_eq!(state.phase, Phase::Preparing);
+            store
+                .create_node(&mut catalog, "Memory", properties(3))
+                .unwrap();
+            let retired = control.submit(&mut state, &store, &catalog);
+            drop(state);
+            drop(retired);
+        }
+        resume_tx.send(()).unwrap();
+        assert_eq!(sealed_rx.recv_timeout(Duration::from_secs(15)).unwrap(), 3);
+        assert_eq!(std::fs::read(&base).unwrap(), base_bytes);
+        control.lock().unwrap().prefix_seal_probe = None;
+        resume_tx.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let state = control.lock().unwrap();
+            if state.selected.is_some() {
+                assert_eq!(state.report.completed_checkpoints, 1);
+                break;
+            }
+            drop(state);
+            assert!(
+                Instant::now() < deadline,
+                "worker did not select the sealed prefix"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut state = control.lock_frontend().unwrap();
+        control.adopt(&mut state, &mut store).unwrap();
+        assert_eq!(store.commit_epoch(), 3);
+        assert_eq!(store.node_count_for_label(None), 3);
+        let retired = control.submit(&mut state, &store, &catalog);
+        drop(state);
+        drop(retired);
+        owner.stop();
+        assert_eq!(governor.snapshot().active_background_tasks, 0);
+        assert_eq!(governor.snapshot().active_background_io_slots, 0);
+        assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+        drop(owner);
+        drop(control);
+        drop(store);
+        let recovered = GraphStore::open(&fixture.0, &mut catalog).unwrap();
+        assert_eq!(recovered.commit_epoch(), 3);
+        for id in 0..3 {
+            assert_eq!(
+                recovered
+                    .node_owned(hawdb_storage::NodeId(id))
+                    .unwrap()
+                    .unwrap()
+                    .properties
+                    .get("id"),
+                Some(&crate::Value::Int(id as i64 + 1))
+            );
+        }
     }
 
     #[test]

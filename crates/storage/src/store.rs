@@ -9191,6 +9191,214 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_candidate_seals_multiple_prefixes_on_the_same_base() {
+        use crate::config::RelationalIndexMode;
+        use crate::relational::{
+            RelationalHydrationBudget, RelationalKey, RelationalRowPageSnapshotReadLimits,
+        };
+        for mode in [
+            RelationalIndexMode::Shadow,
+            RelationalIndexMode::Authoritative,
+        ] {
+            for durability in [
+                DurabilityPolicy::SyncOnEveryWrite,
+                DurabilityPolicy::SyncOnCheckpoint,
+            ] {
+                let path = unique_test_dir("checkpoint_candidate_multiple_prefixes");
+                let replay = WalReplayConfig {
+                    residency_mode: StorageResidencyMode::OutOfCore,
+                    relational_index_mode: mode,
+                    ..WalReplayConfig::default()
+                };
+                let mut catalog = Catalog::default();
+                let mut store = GraphStore::open_with_durability_and_replay_config(
+                    &path,
+                    &mut catalog,
+                    durability,
+                    WalReplayConfig {
+                        relational_index_mode: RelationalIndexMode::Shadow,
+                        ..replay
+                    },
+                )
+                .unwrap();
+                let row = |id: usize| {
+                    RelationalRow::new(vec![
+                        RelationalValue::Text(id.to_string()),
+                        RelationalValue::Text(format!("sealed complete row {id}: 雪")),
+                    ])
+                };
+                store
+                    .commit_relational_transaction(
+                        &mut catalog,
+                        RelationalTransaction {
+                            writes: vec![RelationalWrite::CreateTable(RelationalTableSchema {
+                                name: "documents".into(),
+                                columns: ["id", "body"]
+                                    .into_iter()
+                                    .map(|name| RelationalColumnSchema {
+                                        name: name.into(),
+                                        scalar_type: RelationalScalarType::Text,
+                                        nullable: false,
+                                        default: None,
+                                    })
+                                    .collect(),
+                                primary_key: vec!["id".into()],
+                                unique_constraints: Vec::new(),
+                                foreign_keys: Vec::new(),
+                                indexes: Vec::new(),
+                            })],
+                        },
+                    )
+                    .unwrap();
+                store.checkpoint(&catalog).unwrap();
+                drop(store);
+                let mut store = GraphStore::open_with_durability_and_replay_config(
+                    &path,
+                    &mut catalog,
+                    durability,
+                    replay,
+                )
+                .unwrap();
+                let source = store.checkpoint_source();
+                let base_epoch = source.commit_epoch();
+                let generation = source
+                    .durable
+                    .as_ref()
+                    .unwrap()
+                    .next_checkpoint_generation()
+                    .unwrap();
+                let mut candidate = source
+                    .prepare_checkpoint_candidate(&catalog)
+                    .unwrap()
+                    .unwrap();
+                drop(source);
+                let base_path = path.join(super::checkpoint_generation_file(generation));
+                let base_bytes = fs::read(&base_path).unwrap();
+                let manifest_before = fs::read(path.join(MANIFEST_FILE)).unwrap();
+                let mut previous_wal = Vec::new();
+                let check = |store: &GraphStore, count: usize| {
+                    assert_eq!(store.commit_epoch(), base_epoch + 2 * count as u64);
+                    assert_eq!(store.node_count_for_label(None), count);
+                    store
+                        .validate_authoritative_relational_index_open()
+                        .unwrap();
+                    let reader = store
+                        .open_relational_row_snapshot_reader()
+                        .unwrap()
+                        .unwrap();
+                    let mut hydration = RelationalHydrationBudget::default();
+                    for id in 0..count {
+                        assert_eq!(
+                            store
+                                .node_owned(NodeId(id as u64))
+                                .unwrap()
+                                .unwrap()
+                                .properties
+                                .get("id"),
+                            Some(&Value::Int(id as i64))
+                        );
+                        let key = RelationalKey(vec![RelationalValue::Text(id.to_string())]);
+                        let (actual, report) = reader
+                            .point_projected(
+                                "documents",
+                                &key,
+                                &[0, 1],
+                                RelationalRowPageSnapshotReadLimits::default(),
+                                &mut hydration,
+                                &hawdb_core::RuntimeTaskContext::default(),
+                            )
+                            .unwrap();
+                        let actual = actual
+                            .unwrap()
+                            .fields
+                            .into_iter()
+                            .map(|field| field.value)
+                            .collect::<Vec<_>>();
+                        assert_eq!(actual.as_slice(), row(id).values());
+                        assert_eq!(report.identity.visible_commit_epoch, store.commit_epoch());
+                        let mut postings = Vec::new();
+                        store
+                            .visit_relational_index_read_view_prefix(
+                                "documents",
+                                crate::relational::RELATIONAL_PRIMARY_INDEX_NAME,
+                                &key,
+                                crate::relational::RelationalIndexReadLimits::default(),
+                                |posting| {
+                                    postings.push(posting.clone());
+                                    true
+                                },
+                            )
+                            .unwrap()
+                            .unwrap();
+                        assert_eq!(postings, vec![key]);
+                    }
+                };
+                for id in 0..4 {
+                    store
+                        .commit_relational_transaction(
+                            &mut catalog,
+                            RelationalTransaction {
+                                writes: vec![RelationalWrite::Insert {
+                                    table: "documents".into(),
+                                    mode: RelationalInsertMode::Error,
+                                    rows: vec![row(id)],
+                                }],
+                            },
+                        )
+                        .unwrap();
+                    store
+                        .create_node(
+                            &mut catalog,
+                            "Memory",
+                            properties([("id", Value::Int(id as i64))]),
+                        )
+                        .unwrap();
+                    let captured = store.checkpoint_source();
+                    let tail = candidate.catch_up(&captured).unwrap();
+                    assert_eq!(tail.entries, 2 * (id + 1) as u64);
+                    candidate.finish_catch_up().unwrap();
+                    candidate.finish_catch_up().unwrap();
+                    assert_eq!(candidate.catch_up(&captured).unwrap(), tail);
+                    drop(captured);
+                    assert_eq!(candidate.commit_epoch(), base_epoch + tail.entries);
+                    assert_eq!(fs::read(&base_path).unwrap(), base_bytes);
+                    assert_eq!(fs::read(path.join(MANIFEST_FILE)).unwrap(), manifest_before);
+                    let wal = fs::read(path.join(super::wal_generation_file(generation))).unwrap();
+                    assert!(wal.starts_with(&previous_wal));
+                    assert!(wal.len() > previous_wal.len());
+                    previous_wal = wal;
+                }
+                store
+                    .publish_checkpoint_candidate_deferred_reclamation(&mut candidate, None)
+                    .unwrap();
+                assert!(store.relational_row_pages.recovery_builder.is_none());
+                assert!(store.relational_index_shadow.recovery_builder.is_none());
+                check(&store, 4);
+                drop(candidate);
+                drop(store);
+                let read_only = GraphStore::open_read_only_with_durability_and_replay_config(
+                    &path,
+                    &mut catalog,
+                    durability,
+                    replay,
+                )
+                .unwrap();
+                check(&read_only, 4);
+                drop(read_only);
+                let recovered = GraphStore::open_with_durability_and_replay_config(
+                    &path,
+                    &mut catalog,
+                    durability,
+                    replay,
+                )
+                .unwrap();
+                check(&recovered, 4);
+                drop(recovered);
+                fs::remove_dir_all(path).unwrap();
+            }
+        }
+    }
+    #[test]
     fn checkpoint_candidate_private_recovery_publishes_complete_selectors() {
         for mode in [
             crate::config::RelationalIndexMode::Shadow,
@@ -10817,11 +11025,10 @@ mod tests {
             assert_eq!(worker.durable.as_ref().unwrap().checkpoint_epoch, 0);
             candidate.finish_catch_up().unwrap();
             candidate.finish_catch_up().unwrap();
-            assert!(candidate
-                .catch_up(&worker)
-                .unwrap_err()
-                .to_string()
-                .contains("finalized"));
+            let sealed_tail = candidate.catch_up(&worker).unwrap();
+            assert_eq!(sealed_tail.captured_commit_epoch, worker.commit_epoch());
+            assert_eq!(sealed_tail.entries, 1);
+            candidate.finish_catch_up().unwrap();
             worker
                 .publish_checkpoint_candidate_deferred_reclamation(&mut candidate, Some(1))
                 .unwrap();

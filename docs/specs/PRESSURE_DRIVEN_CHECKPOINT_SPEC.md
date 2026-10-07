@@ -149,17 +149,22 @@ reframes/replays captured WAL intervals, revalidates the final writer identity,
 and selects a legacy manifest or admitted branch head. It preserves current
 conflict history, consumer acknowledgments and shared fatal-state ownership.
 The strict ordinary prepared-checkpoint path retains its stale-source guard.
-Private suffix finalization builds immutable row/index recovery generations
-and mounts them by their exact generation and WAL fence. It does not replace
+Private suffix finalization seals immutable row/index recovery prefixes
+and mounts them by their exact prefix manifest and WAL fence. It does not replace
 the shared recovery selectors used by ordinary opens. It prepares exclusively
 owned selector hard links in the same directory, then selects them only inside
 the authoritative publication attempt. Cancellation removes owned unselected
 links and preserves existing selectors; an uncertain publication retains the
 immutable closure and fails the live writer closed. This relies on same-volume
 hard links and the existing rename/directory synchronization assumptions.
-The ordinary recovery publication and reader paths remain independently usable.
-This selector boundary does not bound final replay, reader construction, total
-memory/disk retention, or the final foreground pause.
+Each seal flushes the retained builder before cloning its manifest descriptors,
+so later suffixes extend run/page ordinals without rewriting a pinned prefix.
+The contiguous source digest can seal a prefix without consuming its hash
+state. Only the selected prefix receives the ordinary immutable-generation
+alias. The ordinary recovery publication and reader paths remain independently
+usable. These prefixes do not establish total memory/disk retention or a
+foreground pause bound; descriptor cloning, old prefix files and reader mounts
+still need complete admission and cleanup accounting.
 
 Focused regressions cover multiple catch-up passes, writes after a capture,
 historical snapshots, both durability policies, legacy residency modes,
@@ -173,14 +178,37 @@ identity for worker handoff. Selected-runtime adoption validates store identity,
 commit epoch, WAL generation and LSN, restores the actual frontend pin/conflict
 ownership, and returns the old runtime for destruction outside the gate. This
 prevents a worker's captured pin from becoming a permanent writer watermark.
-Replay finalization can run before selector publication; the deferred-reclamation
+Replay finalization runs before selector publication; the deferred-reclamation
 entry requires it and leaves generation scanning/version pruning out of that
-entry. A publication owner must freeze new commits through this finalization
-and selection interval. The owner now serializes captured sources, selector
+entry. The automatic owner seals and mounts captured prefixes while new commits
+remain admitted. It drains existing sync groups and compares the complete
+writer identity with the sealed prefix. If that identity advanced, it resumes
+background catch-up on the same pinned base rather than replaying or mounting
+under the final gate. A publication I/O wave is acquired outside the gate and
+released before waiting for an existing foreground sync group. After that
+group finishes, the same candidate seals its new complete prefix and retries.
+The owner serializes captured sources, selector
 publication, frontend handoff and off-gate retirement. Manual checkpoint
 sources retain a suspension through preparation and selection; branch
 switching/sealing, backup, row-page and overflow compaction coordinate with
 the same owner.
+
+Focused multi-prefix coverage retains the same immutable base bytes through
+four graph/relational suffixes in both durability policies and both Shadow and
+Authoritative index modes. It checks idempotent seals, contiguous candidate WAL
+growth, complete graph properties, every relational value and primary-key
+posting, and direct read-only recovery before writable recovery. The same test
+fails against the prior consuming finalizer. The source-digest test compares
+each reusable prefix identity with a fresh consuming digest of the complete
+same prefix. These controls do not qualify the full lifecycle campaign,
+columnar parity, hard resource ledger, or release foreground performance.
+An owner regression parks three actual sealed prefixes, admits intervening
+foreground writes, drains a real WAL sync group with one I/O slot, preserves
+the same immutable base, adopts the complete prefix and checks ordinary reopen.
+It verifies that the background I/O wave is released before waiting for that
+group. A deliberately wrong runtime retaining that wave fails the same test
+with one active background I/O slot instead of zero; its first log is preserved
+and the original source is restored before ordinary qualification.
 
 Off-gate retirement publishes its complete reclamation receipt through shared
 durable runtime state. The serving frontend observes failed deletions and their

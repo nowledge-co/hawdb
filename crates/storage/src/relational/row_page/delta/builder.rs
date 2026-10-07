@@ -43,7 +43,14 @@ enum RowRootSelection {
     CanonicalCheckpoint,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
+enum DeltaSelection {
+    Latest,
+    PrivateGeneration,
+    PrivatePrefix,
+}
+
+#[derive(Debug, Clone)]
 pub struct RelationalRowDeltaBuilder {
     directory: PathBuf,
     base: RelationalRowDeltaBaseBinding,
@@ -361,25 +368,26 @@ impl RelationalRowDeltaBuilder {
             recovery_source,
             overflow_root,
             final_state,
-            true,
+            DeltaSelection::Latest,
         )
     }
 
-    /// Completes an immutable recovery generation without selecting it for
-    /// ordinary opens. The checkpoint owner publishes the selector later.
-    pub(crate) fn finish_private_with_state(
-        self,
+    pub(crate) fn seal_private_with_state(
+        &mut self,
         expected_visible_commit_epoch: u64,
         recovery_source: RelationalRecoverySourceIdentity,
         overflow_root: Option<&RelationalOverflowRootReader>,
         final_state: &RelationalState,
     ) -> Result<RelationalRowDeltaReport, RelationalRowDeltaError> {
-        self.finish_with_state_inner(
+        // Flush the live builder first. Cloning dirty entries before flushing
+        // would reuse run ordinals and overwrite an already pinned prefix.
+        self.flush()?;
+        self.clone().finish_with_state_inner(
             expected_visible_commit_epoch,
             recovery_source,
             overflow_root,
             final_state,
-            false,
+            DeltaSelection::PrivatePrefix,
         )
     }
 
@@ -389,7 +397,7 @@ impl RelationalRowDeltaBuilder {
         recovery_source: RelationalRecoverySourceIdentity,
         overflow_root: Option<&RelationalOverflowRootReader>,
         final_state: &RelationalState,
-        select_latest: bool,
+        selection: DeltaSelection,
     ) -> Result<RelationalRowDeltaReport, RelationalRowDeltaError> {
         let final_tables = table_metadata_for_state(final_state)?;
         if final_tables.len() != self.tables.len()
@@ -410,7 +418,7 @@ impl RelationalRowDeltaBuilder {
             });
         }
         self.tables = final_tables;
-        if select_latest {
+        if matches!(selection, DeltaSelection::Latest) {
             self.finish_inner(
                 expected_visible_commit_epoch,
                 recovery_source,
@@ -418,12 +426,12 @@ impl RelationalRowDeltaBuilder {
                 None,
             )
         } else {
-            self.finish_selected_inner(
+            self.finish_selection_inner(
                 expected_visible_commit_epoch,
                 recovery_source,
                 overflow_root,
                 None,
-                false,
+                selection,
             )
         }
     }
@@ -445,13 +453,35 @@ impl RelationalRowDeltaBuilder {
     }
 
     pub(super) fn finish_selected_inner(
-        mut self,
+        self,
         expected_visible_commit_epoch: u64,
         recovery_source: RelationalRecoverySourceIdentity,
         overflow_root: Option<&RelationalOverflowRootReader>,
         stop_after: Option<RelationalRowDeltaPublicationPhase>,
         select_latest: bool,
     ) -> Result<RelationalRowDeltaReport, RelationalRowDeltaError> {
+        self.finish_selection_inner(
+            expected_visible_commit_epoch,
+            recovery_source,
+            overflow_root,
+            stop_after,
+            if select_latest {
+                DeltaSelection::Latest
+            } else {
+                DeltaSelection::PrivateGeneration
+            },
+        )
+    }
+
+    fn finish_selection_inner(
+        mut self,
+        expected_visible_commit_epoch: u64,
+        recovery_source: RelationalRecoverySourceIdentity,
+        overflow_root: Option<&RelationalOverflowRootReader>,
+        stop_after: Option<RelationalRowDeltaPublicationPhase>,
+        selection: DeltaSelection,
+    ) -> Result<RelationalRowDeltaReport, RelationalRowDeltaError> {
+        let select_latest = matches!(selection, DeltaSelection::Latest);
         self.require_available()?;
         if self.visible_commit_epoch != expected_visible_commit_epoch {
             return Err(RelationalRowDeltaError::Corrupt(format!(
@@ -498,12 +528,19 @@ impl RelationalRowDeltaBuilder {
             overflow_root,
         )?;
         let encoded_manifest = codec::encode_manifest(&manifest, self.config)?;
-        let generation_manifest =
-            self.directory
-                .join(relational_row_delta_manifest_generation_file(
-                    manifest.base.generation,
-                    manifest.delta_generation,
-                ));
+        let filename = if matches!(selection, DeltaSelection::PrivatePrefix) {
+            super::relational_row_delta_prefix_file(
+                manifest.base.generation,
+                manifest.delta_generation,
+                manifest.visible_commit_epoch,
+            )
+        } else {
+            relational_row_delta_manifest_generation_file(
+                manifest.base.generation,
+                manifest.delta_generation,
+            )
+        };
+        let generation_manifest = self.directory.join(filename);
         if select_latest {
             let generation_tmp = generation_manifest.with_extension("hawdb.tmp");
             remove_if_exists(&generation_tmp)?;

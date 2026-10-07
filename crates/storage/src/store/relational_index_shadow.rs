@@ -443,7 +443,7 @@ impl GraphStore {
         &mut self,
         recovery_source: Option<RelationalRecoverySourceIdentity>,
     ) -> super::Result<Option<crate::relational::PreparedRelationalRecoverySelector>> {
-        let Some(builder) = self.relational_index_shadow.recovery_builder.take() else {
+        let Some(builder) = self.relational_index_shadow.recovery_builder.as_mut() else {
             return Ok(None);
         };
         if self.commit_epoch == builder.base_commit_epoch() {
@@ -453,19 +453,18 @@ impl GraphStore {
             HawDBError::StorageIntegrity("private index recovery source is missing".into())
         })?;
         let report = builder
-            .finish_private_with_recovery_source(self.commit_epoch, recovery_source)
+            .seal_private_with_recovery_source(self.commit_epoch, recovery_source)
             .map_err(|error| HawDBError::Storage(format!("private index recovery: {error}")))?;
         let root = self
             .durable
             .as_ref()
             .expect("index recovery requires durability")
             .root_path();
-        let immutable = root.join(
-            crate::relational::relational_index_recovery_manifest_generation_file(
-                report.base_generation,
-                report.delta_generation,
-            ),
-        );
+        let immutable = root.join(crate::relational::relational_index_recovery_prefix_file(
+            report.base_generation,
+            report.delta_generation,
+            report.recovered_commit_epoch,
+        ));
         let view = self
             .open_recovered_relational_index_view_inner(
                 report.recovered_commit_epoch,
@@ -477,7 +476,16 @@ impl GraphStore {
             &immutable,
             root.join(crate::relational::RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE),
         )
-        .map_err(|error| HawDBError::Storage(format!("prepare private index selector: {error}")))?;
+        .map_err(|error| HawDBError::Storage(format!("prepare private index selector: {error}")))?
+        .with_generation_alias(
+            immutable.clone(),
+            root.join(
+                crate::relational::relational_index_recovery_manifest_generation_file(
+                    report.base_generation,
+                    report.delta_generation,
+                ),
+            ),
+        );
         self.relational_index_shadow.read_view = Some(view);
         self.relational_index_shadow.recovery_status =
             RelationalIndexShadowRecoveryStatus::WalRecovered {

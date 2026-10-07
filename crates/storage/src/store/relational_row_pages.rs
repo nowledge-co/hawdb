@@ -975,6 +975,7 @@ impl GraphStore {
             expected_visible_commit_epoch,
             expected_recovery_source,
             None,
+            None,
         )
     }
 
@@ -983,6 +984,7 @@ impl GraphStore {
         expected_visible_commit_epoch: u64,
         expected_recovery_source: RelationalRecoverySourceIdentity,
         generation: Option<crate::relational::RelationalRowDeltaGeneration>,
+        prefix: Option<&std::path::Path>,
     ) -> Result<
         (
             Arc<RelationalRowPageReadView>,
@@ -1007,15 +1009,23 @@ impl GraphStore {
             })?;
         let fence =
             RelationalRecoveryFence::new(expected_visible_commit_epoch, expected_recovery_source);
-        let delta = match generation {
-            Some(generation) => RelationalRowDeltaReader::open_generation_with_recovery_fence(
-                durable.root_path(),
-                generation,
+        let delta = match (prefix, generation) {
+            (Some(path), _) => RelationalRowDeltaReader::open_private_prefix_with_recovery_fence(
+                path,
                 &base,
                 fence,
                 self.relational_row_pages.delta_config,
             )?,
-            None => RelationalRowDeltaReader::open_latest_with_recovery_fence(
+            (None, Some(generation)) => {
+                RelationalRowDeltaReader::open_generation_with_recovery_fence(
+                    durable.root_path(),
+                    generation,
+                    &base,
+                    fence,
+                    self.relational_row_pages.delta_config,
+                )?
+            }
+            (None, None) => RelationalRowDeltaReader::open_latest_with_recovery_fence(
                 durable.root_path(),
                 &base,
                 fence,
@@ -1039,7 +1049,7 @@ impl GraphStore {
         &mut self,
         recovery_source: Option<RelationalRecoverySourceIdentity>,
     ) -> super::Result<Option<crate::relational::PreparedRelationalRecoverySelector>> {
-        let Some(builder) = self.relational_row_pages.recovery_builder.take() else {
+        let Some(builder) = self.relational_row_pages.recovery_builder.as_mut() else {
             return Ok(None);
         };
         if self.commit_epoch == builder.base_commit_epoch() {
@@ -1049,7 +1059,7 @@ impl GraphStore {
             super::HawDBError::StorageIntegrity("private row recovery source is missing".into())
         })?;
         let report = builder
-            .finish_private_with_state(
+            .seal_private_with_state(
                 self.commit_epoch,
                 recovery_source,
                 None,
@@ -1058,33 +1068,42 @@ impl GraphStore {
             .map_err(|error| {
                 super::HawDBError::Storage(format!("private row recovery: {error}"))
             })?;
-        let (view, _) = self
-            .open_relational_row_delta_generation(
-                self.commit_epoch,
-                recovery_source,
-                Some(report.generation),
-            )
-            .map_err(|error| {
-                super::HawDBError::Storage(format!("pin private row recovery: {error}"))
-            })?;
         let root = self
             .durable
             .as_ref()
             .expect("row recovery requires durability")
             .root_path();
-        let immutable = root.join(
-            crate::relational::relational_row_delta_manifest_generation_file(
-                report.generation.base_generation,
-                report.generation.delta_generation,
-            ),
-        );
+        let immutable = root.join(crate::relational::relational_row_delta_prefix_file(
+            report.generation.base_generation,
+            report.generation.delta_generation,
+            report.visible_commit_epoch,
+        ));
+        let (view, _) = self
+            .open_relational_row_delta_generation(
+                self.commit_epoch,
+                recovery_source,
+                None,
+                Some(&immutable),
+            )
+            .map_err(|error| {
+                super::HawDBError::Storage(format!("pin private row recovery: {error}"))
+            })?;
         let selector = crate::relational::PreparedRelationalRecoverySelector::prepare(
             &immutable,
             root.join(crate::relational::RELATIONAL_ROW_DELTA_MANIFEST_FILE),
         )
         .map_err(|error| {
             super::HawDBError::Storage(format!("prepare private row selector: {error}"))
-        })?;
+        })?
+        .with_generation_alias(
+            immutable.clone(),
+            root.join(
+                crate::relational::relational_row_delta_manifest_generation_file(
+                    report.generation.base_generation,
+                    report.generation.delta_generation,
+                ),
+            ),
+        );
         self.relational_row_pages.read_view = Some(view);
         self.relational_row_pages.recovery_status = RelationalRowPageRecoveryStatus::WalRecovered {
             base_generation: report.generation.base_generation,

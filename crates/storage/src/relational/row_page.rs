@@ -39,6 +39,7 @@ mod snapshot;
 mod state;
 mod value;
 
+pub(crate) use delta::relational_row_delta_prefix_file;
 pub use delta::{
     relational_row_delta_manifest_generation_file, relational_row_delta_run_file,
     RelationalRowDeltaBaseBinding, RelationalRowDeltaBuilder, RelationalRowDeltaConfig,

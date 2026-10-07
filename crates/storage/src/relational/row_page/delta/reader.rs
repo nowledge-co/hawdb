@@ -145,6 +145,24 @@ impl RelationalRowDeltaReader {
         )
     }
 
+    pub(crate) fn open_private_prefix_with_recovery_fence(
+        path: &Path,
+        expected_base: &RelationalRowPageRootReader,
+        expected_recovery: RelationalRecoveryFence,
+        config: RelationalRowDeltaConfig,
+    ) -> Result<Self, RelationalRowDeltaError> {
+        let directory = path.parent().ok_or_else(|| {
+            RelationalRowDeltaError::Admission("private row prefix has no directory".into())
+        })?;
+        Self::from_manifest(
+            directory,
+            codec::read_manifest(path, config)?,
+            expected_base,
+            expected_recovery,
+            config,
+        )
+    }
+
     fn from_manifest(
         directory: &Path,
         manifest: RelationalRowDeltaManifest,

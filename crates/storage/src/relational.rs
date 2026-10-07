@@ -57,7 +57,6 @@ pub use compaction::{
     RelationalRowPageCompactionConfig, RelationalRowPageCompactionReport,
 };
 pub use constraints::RelationalConstraintIndex;
-pub(crate) use index_shadow::relational_index_recovery_manifest_generation_file;
 pub use index_shadow::{
     relational_index_recovery_delta_file, relational_index_shadow_artifact_file,
     relational_index_shadow_manifest_generation_file, RelationalIndexArtifactMetadata,
@@ -80,6 +79,9 @@ pub use index_shadow::{
     DEFAULT_RELATIONAL_INDEX_SORT_MEMORY_BYTES, DEFAULT_RELATIONAL_INDEX_SORT_MERGE_FAN_IN,
     DEFAULT_RELATIONAL_INDEX_SORT_RUNS, DEFAULT_RELATIONAL_INDEX_SORT_SPILL_BYTES,
     RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE, RELATIONAL_INDEX_SHADOW_MANIFEST_FILE,
+};
+pub(crate) use index_shadow::{
+    relational_index_recovery_manifest_generation_file, relational_index_recovery_prefix_file,
 };
 pub use overflow::{
     relational_overflow_descriptor_file, relational_overflow_extent_file,
@@ -104,6 +106,7 @@ pub(crate) use recovery::{PreparedRelationalRecoverySelector, RELATIONAL_RECOVER
 pub use recovery::{
     RelationalRecoveryFence, RelationalRecoverySourceBuilder, RelationalRecoverySourceIdentity,
 };
+pub(crate) use row_page::relational_row_delta_prefix_file;
 pub use row_page::{
     relational_row_delta_manifest_generation_file, relational_row_delta_run_file,
     relational_row_page_artifact_file, relational_row_page_manifest_generation_file,

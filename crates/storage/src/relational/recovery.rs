@@ -23,6 +23,7 @@ pub(crate) struct PreparedRelationalRecoverySelector {
     temporary: PathBuf,
     destination: PathBuf,
     cleanup_on_drop: bool,
+    generation_alias: Option<(PathBuf, PathBuf)>,
 }
 
 impl PreparedRelationalRecoverySelector {
@@ -33,6 +34,7 @@ impl PreparedRelationalRecoverySelector {
             temporary,
             destination,
             cleanup_on_drop: true,
+            generation_alias: None,
         };
         crate::durability::sync_directory(
             immutable.parent().expect("recovery manifest has a parent"),
@@ -45,7 +47,18 @@ impl PreparedRelationalRecoverySelector {
         // Neither the selector nor its remaining temporary evidence is then
         // safe to remove as an ordinary abandoned private candidate.
         self.cleanup_on_drop = false;
+        if let Some((source, alias)) = &self.generation_alias {
+            crate::file_io::hard_link(source, alias)?;
+            crate::durability::sync_directory(
+                alias.parent().expect("generation alias has a parent"),
+            )?;
+        }
         crate::durability::durable_replace_file(&self.temporary, &self.destination)
+    }
+
+    pub(crate) fn with_generation_alias(mut self, source: PathBuf, alias: PathBuf) -> Self {
+        self.generation_alias = Some((source, alias));
+        self
     }
 }
 
@@ -314,11 +327,52 @@ impl RelationalRecoverySourceBuilder {
         identity.validate()?;
         Ok(identity)
     }
+
+    /// Capture the current complete prefix without consuming the rolling
+    /// sequence hash. Later suffix records extend the same pinned base.
+    pub(crate) fn prefix_identity(&self) -> Result<RelationalRecoverySourceIdentity, &'static str> {
+        let mut hasher = self.hasher.clone();
+        hasher.update(&self.next_lsn.to_le_bytes());
+        let identity = RelationalRecoverySourceIdentity {
+            wal_generation: self.wal_generation,
+            start_lsn: self.start_lsn,
+            end_lsn: self.next_lsn,
+            record_sequence_sha256: hasher.finish().sha256,
+        };
+        identity.validate()?;
+        Ok(identity)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_source_sealed_prefix_keeps_the_same_contiguous_sequence() {
+        let mut rolling = RelationalRecoverySourceBuilder::new(7, 41);
+        let records = [(41, 3, [1; 32]), (42, 5, [2; 32]), (43, 7, [3; 32])];
+        assert!(rolling.prefix_identity().is_err());
+        for (end, &(lsn, bytes, digest)) in records.iter().enumerate() {
+            rolling
+                .record(lsn, bytes, Sha256Digest::from_bytes(digest))
+                .unwrap();
+            let sealed = rolling.prefix_identity().unwrap();
+            assert_eq!(sealed, rolling.prefix_identity().unwrap());
+            let mut ordinary = RelationalRecoverySourceBuilder::new(7, 41);
+            for &(lsn, bytes, digest) in &records[..=end] {
+                ordinary
+                    .record(lsn, bytes, Sha256Digest::from_bytes(digest))
+                    .unwrap();
+            }
+            assert_eq!(sealed, ordinary.finish().unwrap());
+            assert_eq!(sealed.end_lsn, lsn + 1);
+        }
+        assert_eq!(
+            rolling.prefix_identity().unwrap(),
+            rolling.finish().unwrap()
+        );
+    }
 
     #[test]
     fn recovery_source_binds_record_order_and_payload() {
