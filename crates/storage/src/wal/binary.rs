@@ -108,6 +108,9 @@ use hawdb_core::{PropertyType, SchemaObjectState, TableKind};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+mod checkpoint;
+pub(crate) use checkpoint::encode_binary_wal_record_with_work_context;
+
 const RECORD_KIND_SINGLE: u8 = 0;
 const RECORD_KIND_BATCH: u8 = 1;
 
@@ -1183,7 +1186,7 @@ mod tests {
     /// One WalOp sample per variant. The match is exhaustive on purpose:
     /// adding a WalOp variant without extending the binary codec (and this
     /// list) fails to compile here.
-    fn sample_ops() -> Vec<WalOp> {
+    pub(super) fn sample_ops() -> Vec<WalOp> {
         let mut samples = Vec::new();
         // Compile-time exhaustiveness pin: every variant must be listed.
         let pin = |op: &WalOp| match op {

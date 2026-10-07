@@ -3457,8 +3457,17 @@ fn wire_corrupt(error: hawdb_core::error::HawDBError) -> CanonicalSegmentError {
 /// materializing any bytes — the streaming writers use it for
 /// length-delimited framing.
 fn encoded_value_len(value: &Value, depth: usize) -> Result<u64, CanonicalSegmentError> {
+    encoded_value_len_with_work(value, depth, None)
+}
+
+fn encoded_value_len_with_work(
+    value: &Value,
+    depth: usize,
+    work: Option<&CheckpointWorkContext>,
+) -> Result<u64, CanonicalSegmentError> {
     ensure_depth(depth)?;
-    Ok(match value {
+    let mut unit = work.map(CheckpointWorkContext::start_unit).transpose()?;
+    let length = match value {
         Value::Null => 1,
         Value::Bool(_) => 2,
         Value::Int(_) | Value::Float(_) => 9,
@@ -3473,28 +3482,55 @@ fn encoded_value_len(value: &Value, depth: usize) -> Result<u64, CanonicalSegmen
         Value::Uuid(_) => 17,
         Value::List(values) => {
             u32_len(values.len(), "value list")?;
+            // Finish collection metadata before descending. Nested values
+            // have their own permits, including under a one-operation limit.
+            if let Some(unit) = unit.take() {
+                unit.finish();
+            }
             let mut total = 1u64 + 4;
             for value in values {
-                total = total.saturating_add(encoded_value_len(value, depth.saturating_add(1))?);
+                total = total.saturating_add(encoded_value_len_with_work(
+                    value,
+                    depth.saturating_add(1),
+                    work,
+                )?);
             }
             total
         }
         Value::Map(entries) => {
             u32_len(entries.len(), "property map")?;
+            if let Some(unit) = unit.take() {
+                unit.finish();
+            }
             let mut total = 1u64 + 4;
             for (key, value) in entries {
+                let unit = work.map(CheckpointWorkContext::start_unit).transpose()?;
                 u32_len(key.len(), "string")?;
-                total = total
-                    .saturating_add(4 + key.len() as u64)
-                    .saturating_add(encoded_value_len(value, depth.saturating_add(2))?);
+                if let Some(unit) = unit {
+                    unit.finish();
+                }
+                total = total.saturating_add(4 + key.len() as u64).saturating_add(
+                    encoded_value_len_with_work(value, depth.saturating_add(2), work)?,
+                );
             }
             total
         }
-    })
+    };
+    if let Some(unit) = unit {
+        unit.finish();
+    }
+    Ok(length)
 }
 
 pub(crate) fn validate_property_value(value: &Value) -> Result<(), CanonicalSegmentError> {
     encoded_value_len(value, 1).map(|_| ())
+}
+
+pub(crate) fn validate_property_value_with_work_context(
+    value: &Value,
+    work: &CheckpointWorkContext,
+) -> Result<(), CanonicalSegmentError> {
+    encoded_value_len_with_work(value, 1, Some(work)).map(|_| ())
 }
 
 /// Streams one value's canonical tagged encoding into `out` without an

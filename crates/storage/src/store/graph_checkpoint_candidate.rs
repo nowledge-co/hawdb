@@ -752,7 +752,9 @@ impl CheckpointCandidate {
                 let epoch = store.commit_epoch.checked_add(1).ok_or_else(|| {
                     HawDBError::StorageIntegrity("checkpoint suffix epoch overflow".into())
                 })?;
-                let payload = encode_binary_wal_record(&entry, epoch)?;
+                let payload = crate::wal::binary::encode_binary_wal_record_with_work_context(
+                    &entry, epoch, &work,
+                )?;
                 let framed = crate::wal::frame::frame_binary_wal_record_with_work_context(
                     prepared.generation,
                     &payload,
@@ -776,12 +778,15 @@ impl CheckpointCandidate {
                 }
                 drop(framed);
                 replay_checkpoint(task)?;
-                let digest = hawdb_integrity::integrity_digest(&payload);
+                let digest = work
+                    .integrity(&payload)
+                    .map_err(HawDBError::from_storage_error)?;
                 self.recovery_source
                     .as_mut()
                     .expect("candidate recovery is not finalized")
                     .record(entry.lsn, payload.len() as u64, digest.sha256)
                     .map_err(|reason| HawDBError::StorageIntegrity(reason.into()))?;
+                drop(payload);
                 store.apply_replayed_wal_transaction(catalog, entry.op)?;
                 expected_lsn = expected_lsn.checked_add(1).ok_or_else(|| {
                     HawDBError::StorageIntegrity("checkpoint suffix LSN overflow".into())

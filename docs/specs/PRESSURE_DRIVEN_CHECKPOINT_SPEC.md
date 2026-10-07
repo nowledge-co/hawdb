@@ -1010,11 +1010,36 @@ every actual framing cancellation unit with full retries on the same reservation
 A counting adapter delegates to the actual governor's I/O controller: every
 large-suffix I/O cut preserves source WAL/manifest identity and fully retries on
 the same admission, with no residual memory or I/O slots. The adapter's first
-compile failure remains archived separately. Full supported-profile/regression/
-fuzz qualification is still required for this source. Payload decoding/encoding,
+compile failure remains archived separately. The framing correction's exact
+committed tree `e35c14c3e7ca48a25c666e159112e667b22376ab` passed strict workspace,
+minimal native and WASM profiles, 31 related tests, the complete storage suite
+(1250 passed, 29 ignored), owner/concurrent/graph/pipeline/cascades regressions
+and all 96 required fuzz tests, actually executed without cached results.
+Those checks qualify that correction rather than the complete issue. Payload decoding,
 replayed graph/schema/append state, source retention and final sealing still have
 their own resource/work-control gaps; framed output alone does not authorize
 production per-unit admission or establish whole-candidate bounds.
+
+Checkpoint suffix payload encoding now counts its exact wire length without
+allocating nested operation, property or value buffers. It admits the complete
+output before fallible allocation and writes borrowed fields directly, with
+bounded validation, metadata and 64 KiB byte-copy units. Counting visits each
+nested message once; emission may recount its descendants to write their length
+prefixes, so traversal work scales with the bounded value depth rather than
+exponentially. The ordinary encoder remains an independent complete-byte
+reference. Canonical depth/length limits and invalid-value diagnostic priority
+remain unchanged. The payload retains its allocation lease while framed output
+coexists, hashes in bounded units, and drops before applying replayed state.
+
+A genuine candidate regression demonstrates the previous unaccounted overlap:
+a reservation sufficient for the complete framed output incorrectly succeeds
+while its simultaneously live encoded payload is uncharged. The identical
+regression now rejects without changing source WAL/manifest identity and fully
+retries from the same pinned base before ordinary publication/reopen. Further
+focused and supported-profile/full-regression/fuzz qualification remains
+required for this follow-up. Decoded cursor values and replayed/retained runtime
+ownership are separate gaps; this payload correction does not remove the
+whole-candidate local-operation limit or qualify default sustained progress.
 
 The row-page publisher's complete cancellation matrix repeatedly recreated and
 synchronized the identical durable source for every CPU/I/O cut. Two full

@@ -351,3 +351,131 @@ fn checkpoint_units_wal_framing_actual_suffix_cancels_every_io_wave_and_retries_
     drop(recovered);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn checkpoint_units_wal_payload_actual_suffix_denies_unaccounted_overlap_and_fully_retries() {
+    let directory = std::env::temp_dir().join(format!(
+        "hawdb-checkpoint-wal-payload-{}",
+        hawdb_core::generate_uuidv7().unwrap()
+    ));
+    let mut catalog = Catalog::default();
+    let mut store = GraphStore::open(&directory, &mut catalog).unwrap();
+    store
+        .create_node(
+            &mut catalog,
+            "Memory",
+            BTreeMap::from([("id".into(), Value::Int(1))]),
+        )
+        .unwrap();
+    let source = store.checkpoint_source();
+    let source_catalog = catalog.clone();
+    let source_identity = source.checkpoint_source_identity();
+    let mut candidate = source
+        .prepare_checkpoint_candidate(&source_catalog)
+        .unwrap()
+        .unwrap();
+    store
+        .create_node(
+            &mut catalog,
+            "Memory",
+            BTreeMap::from([
+                ("id".into(), Value::Int(2)),
+                ("payload".into(), Value::String("\0界🙂".repeat(30_000))),
+            ]),
+        )
+        .unwrap();
+    let identity = store.checkpoint_source_identity();
+    let durable = store.durable.as_ref().unwrap();
+    let wal_path = durable.wal_path.clone();
+    let manifest_path = durable.manifest_path().to_path_buf();
+    let wal = std::fs::read(&wal_path).unwrap();
+    let manifest = std::fs::read(&manifest_path).unwrap();
+    let expected = store
+        .node_records_owned()
+        .collect::<crate::Result<Vec<_>>>()
+        .unwrap();
+
+    let mut cursor = match WalRecordCursor::open(&wal_path, None).unwrap() {
+        WalOpenOutcome::Cursor(cursor) => cursor,
+        _ => panic!("the complete source WAL must have a valid header"),
+    };
+    let mut last = None;
+    loop {
+        match cursor.next().unwrap() {
+            WalCursorEvent::Entry { entry, .. } => last = Some(entry),
+            WalCursorEvent::Eof => break,
+            _ => panic!("complete source must contain only committed records"),
+        }
+    }
+    drop(cursor);
+    let payload = encode_binary_wal_record(&last.unwrap(), store.commit_epoch()).unwrap();
+    let ordinary = frame_binary_wal_record(
+        candidate.prepared.as_ref().unwrap().generation,
+        &payload,
+        candidate.candidate_wal_bytes - WAL_BINARY_FILE_HEADER_BYTES as u64,
+    );
+    // The complete framed output fits, but its simultaneously live encoded
+    // payload also needs admission. The old encoder leaves that copy uncharged.
+    let ceiling = ordinary.len() as u64 + 24;
+    let denied = governor(ceiling);
+    let permit = denied
+        .try_admit(RuntimeWorkRequest::background_maintenance(ceiling).with_io_wave_slots(1))
+        .unwrap();
+    let task = permit.bind_task_context(RuntimeTaskContext::default());
+    let result = candidate.catch_up_with_task_context(&store, &task);
+    assert!(
+        result.is_err(),
+        "the encoded payload and framed suffix must both be admitted before allocation"
+    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("remaining reservation"));
+    assert_eq!(store.checkpoint_source_identity(), identity);
+    assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+    assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
+    store.ensure_usable().unwrap();
+    drop(candidate);
+    drop(task);
+    drop(permit);
+    let closed = denied.snapshot();
+    assert_eq!(closed.active_background_io_slots, 0);
+    assert_eq!(closed.active_cpu_slots, 0);
+    assert_eq!(closed.active_background_tasks, 0);
+    assert_eq!(closed.admitted_memory_bytes, 0);
+
+    // Recreate the same pinned base and replay the full suffix. Ordinary
+    // publication and reopen are the complete-result references.
+    let mut candidate = source
+        .prepare_checkpoint_candidate(&source_catalog)
+        .unwrap()
+        .unwrap();
+    let allowed = governor(2 * 1024 * 1024);
+    let permit = allowed
+        .try_admit(
+            RuntimeWorkRequest::background_maintenance(2 * 1024 * 1024).with_io_wave_slots(1),
+        )
+        .unwrap();
+    let task = permit.bind_task_context(RuntimeTaskContext::default());
+    candidate.catch_up_with_task_context(&store, &task).unwrap();
+    store
+        .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
+        .unwrap();
+    drop(candidate);
+    drop(task);
+    drop(permit);
+    assert_eq!(allowed.snapshot().admitted_memory_bytes, 0);
+    assert_eq!(source.checkpoint_source_identity(), source_identity);
+    drop(source);
+    drop(store);
+    let recovered = GraphStore::open(&directory, &mut catalog).unwrap();
+    assert_eq!(
+        recovered
+            .node_records_owned()
+            .collect::<crate::Result<Vec<_>>>()
+            .unwrap(),
+        expected
+    );
+    drop(recovered);
+    std::fs::remove_dir_all(directory).unwrap();
+}
