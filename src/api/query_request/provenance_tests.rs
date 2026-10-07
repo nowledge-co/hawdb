@@ -394,3 +394,105 @@ fn vector_graph_rejects_reintroduced_seed_node_and_optional_scope() {
         assert_eq!(seeds.calls, 0);
     }
 }
+
+fn similarity_program() -> ScoringRequest {
+    ScoringRequest::new(
+        ScoringProgram::new(
+            ScoringCombination::WeightedSum,
+            MissingScoringFeature::Reject,
+            ScoringSpec {
+                terms: vec![ScoringTerm {
+                    weight: 1.0,
+                    feature: ScoreFeature::SearchScore,
+                }],
+                decay: vec![],
+            },
+        )
+        .unwrap(),
+        "score",
+        8,
+    )
+    .unwrap()
+    .with_vector_graph_input("seed", "candidate")
+    .unwrap()
+}
+
+#[test]
+fn vector_graph_optional_null_source_does_not_traverse_real_node_zero() {
+    let database = fixture();
+    for with in ["", "WITH candidate ", "WITH candidate WITH candidate "] {
+        let query = format!(
+            "CALL vector_search($embedding, topK := 8) YIELD id, score \
+ MATCH (seed:Memory) \
+ OPTIONAL MATCH (seed)-[:LINK]->(middle) \
+ MATCH (middle)-[:LINK]->(candidate:Memory) {with}RETURN candidate.id AS id"
+        );
+        let rows = run(
+            &database,
+            &query,
+            &similarity_program(),
+            &mut Seeds::new(vec![("lonely", 0.7)]),
+        )
+        .unwrap();
+        assert!(
+            rows.is_empty(),
+            "NULL source must not traverse the real node 0; WITH variant {with:?}: {rows:?}"
+        );
+    }
+}
+
+#[test]
+fn vector_graph_unknown_relationship_optional_preserves_null_row() {
+    let database = fixture();
+    for with in ["", "WITH candidate ", "WITH candidate WITH candidate "] {
+        let query = format!(
+            "CALL vector_search($embedding, topK := 8) YIELD id, score \
+ MATCH (seed:Memory) \
+ OPTIONAL MATCH (seed)-[:ABSENT]->(candidate:Memory) {with}RETURN candidate.id AS id"
+        );
+        let rows = run(
+            &database,
+            &query,
+            &similarity_program(),
+            &mut Seeds::new(vec![("lonely", 0.7)]),
+        )
+        .unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "unknown OPTIONAL type must NULL extend; WITH variant {with:?}"
+        );
+        assert_eq!(rows[0]["id"], Value::Null);
+        assert_eq!(score(&rows[0]).to_bits(), 0.7f64.to_bits());
+    }
+}
+
+#[test]
+fn vector_graph_unknown_relationship_zero_hop_preserves_actual_score() {
+    let database = fixture();
+    for with in ["", "WITH candidate ", "WITH candidate WITH candidate "] {
+        let query = format!(
+            "CALL vector_search($embedding, topK := 8) YIELD id, score \
+ MATCH (seed:Memory) \
+ MATCH (seed)-[:ABSENT*0..1]->(candidate:Memory) {with}RETURN candidate.id AS id"
+        );
+        let mut seeds = Seeds::new(vec![("lonely", 0.7)]);
+        let rows = run(&database, &query, &program(8), &mut seeds).unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "unknown type must retain the actual zero-hop candidate; WITH variant {with:?}"
+        );
+        assert_eq!(rows[0]["id"], Value::String("lonely".into()));
+        assert_eq!(
+            score(&rows[0]).to_bits(),
+            0.7f64.to_bits(),
+            "zero observed hops must retain the genuine seed score; WITH variant {with:?}"
+        );
+        assert!(rows[0]
+            .keys()
+            .all(|name| !name.starts_with(hawdb_plan_cypher::SCORING_PROVENANCE_PREFIX)));
+        assert_eq!(seeds.calls, 1);
+        assert_eq!(seeds.admitted_rows, [8]);
+    }
+}

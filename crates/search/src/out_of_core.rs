@@ -2378,7 +2378,7 @@ impl SearchOutOfCoreReader {
 
     fn build_candidate_set(
         &self,
-        predicates: &hawdb_optimizer::SearchPredicateSet,
+        predicates: &hawdb_optimizer_predicate::SearchPredicateSet,
         report: &mut SearchPredicatePushdownReport,
         metrics: &mut SearchOutOfCoreMetrics,
     ) -> Result<CandidateSet> {

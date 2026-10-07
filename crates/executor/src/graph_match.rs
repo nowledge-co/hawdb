@@ -9,8 +9,8 @@ use crate::pipeline::{
 use crate::predicate::{label_ids_for_pattern, node_matches_label_pattern};
 use crate::store::{AdjacencyReadMemory, GraphExecutionRead, ScanControl};
 use crate::traversal::{
-    visit_bounded_expand_targets, visit_one_hop_relationships_with_context, BoundedExpandSpec,
-    OneHopRelationshipSpec,
+    visit_bounded_expand_targets, visit_one_hop_relationships_with_context,
+    visit_zero_hop_expand_target, BoundedExpandSpec, OneHopRelationshipSpec,
 };
 use crate::{ExecutionLimit, QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease};
 use hawdb_core::{HawDBError, Result, Value};
@@ -302,6 +302,24 @@ impl MatchRuntime<'_> {
                     None
                 } else {
                     let Some(id) = self.context.catalog.rel_type_id(rel_type) else {
+                        if *min_hops == 0
+                            && relationship.is_none()
+                            && properties.is_empty()
+                            && *direction == hawdb_core::RelationshipDirection::Outgoing
+                        {
+                            let labels = label_ids_for_pattern(self.context.catalog, &target.label);
+                            return visit_zero_hop_expand_target(
+                                self.store,
+                                source_node.id,
+                                labels.as_deref(),
+                                *max_hops,
+                                self.adjacency_memory(),
+                                self.context.task_context,
+                                &mut |node, hop| {
+                                    self.visit_target(index, row, used, target, (node, hop), emit)
+                                },
+                            );
+                        }
                         return Ok(ScanControl::Continue);
                     };
                     Some(id)

@@ -12,38 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod cardinality_defaults;
-pub mod context;
-pub mod cost {
-    pub use hawdb_cascades::cost::*;
-}
-pub mod graph;
-pub mod logical;
-pub mod memo {
-    pub use hawdb_cascades::memo::*;
-}
-pub mod operator;
-pub mod predicate;
-pub mod properties {
-    pub use hawdb_cascades::properties::*;
-}
-pub mod relational;
-pub mod relational_join;
-mod relational_join_cost;
-pub mod relational_join_hypergraph;
-pub mod relational_join_rewrite;
-pub mod relational_planning;
-pub mod relational_profile;
-pub mod relational_sargability;
-pub mod rule {
-    pub use hawdb_cascades::rule::*;
-}
-pub mod search;
-pub mod stage {
-    pub use hawdb_cascades::stage::*;
-}
-pub mod trace;
-pub mod vector;
+//! Compatibility facade over the framework and domain-owned optimizer families.
+
+pub use hawdb_cascades::{context, cost, memo, properties, rule, stage};
+pub use hawdb_optimizer_graph::{graph, logical, operator, search, trace};
+pub use hawdb_optimizer_predicate::predicate;
+pub use hawdb_optimizer_relational::{
+    relational, relational_join, relational_join_hypergraph, relational_join_rewrite,
+    relational_planning, relational_profile, relational_sargability,
+};
+pub use hawdb_optimizer_vector::vector;
 
 pub use context::{
     ExplainMode, OptimizerContext, QueryFamily, ResourceHints, StatementClass, TraceSink,
@@ -55,10 +33,15 @@ pub use graph::{
     OptimizerCatalogIndexes, OptimizerCatalogStatistics, OptimizerIndexStatistics, PhysicalPhase,
     PhysicalPlanRoot, PlanPhase, PlanPhaseKind,
 };
-pub use hawdb_plan_cypher::PhysicalPlanNode as PlanNode;
-pub use hawdb_plan_cypher::{
+pub use hawdb_optimizer_graph::PhysicalPlanNode as PlanNode;
+pub use hawdb_optimizer_graph::{
     plan_class_counts, plan_operator_counts, visit_plan, visit_plan_with_ids, PhysicalOperatorId,
     PhysicalPlanClass, PhysicalPlanKind, PhysicalPlanNode, PlanChildren,
+};
+pub use hawdb_optimizer_relational::{
+    estimate_relational_access_cost, estimate_relational_access_path_cost,
+    estimate_relational_join_cost, estimate_relational_probe_join_cost, RelationalJoinCardinality,
+    RelationalJoinRightInput, RelationalJoinSelectivity,
 };
 pub use logical::{LogicalPlanClass, LogicalPlanKind, LogicalPlanNode};
 pub use memo::{GroupId, Memo, MemoGroup};
@@ -81,11 +64,6 @@ pub use relational_join::{
     RelationalJoinAccessApplicability, RelationalJoinAccessPath, RelationalJoinEnumerationConfig,
     RelationalJoinEnumerationError, RelationalJoinGraph, RelationalJoinPlan,
     RelationalJoinPredicate, RelationalJoinPredicateId, RelationalJoinRelation, RelationalJoinStep,
-};
-pub use relational_join_cost::{
-    estimate_relational_access_cost, estimate_relational_access_path_cost,
-    estimate_relational_join_cost, estimate_relational_probe_join_cost, RelationalJoinCardinality,
-    RelationalJoinRightInput, RelationalJoinSelectivity,
 };
 pub use relational_join_hypergraph::{
     enumerate_relational_csg_cmp_joins, enumerate_relational_csg_cmp_joins_with_implementations,

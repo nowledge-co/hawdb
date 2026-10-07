@@ -547,6 +547,7 @@ pub(super) fn stream_adjacency_expand_batches(
     } = context;
     let PhysicalPlan::AdjacencyExpandExec {
         source_variable,
+        source_label,
         rel_variable,
         rel_type,
         rel_properties,
@@ -578,19 +579,21 @@ pub(super) fn stream_adjacency_expand_batches(
     let rel_type_id = if rel_type.is_empty() {
         None
     } else {
-        let Some(rel_type_id) = catalog.rel_type_id(rel_type) else {
-            record_graph_expansion_state(
-                context.observer,
-                &graph_expansion,
-                rel_type,
-                *min_hops,
-                *max_hops,
-                0,
-            );
-            return Ok(BatchControl::Continue);
-        };
-        Some(rel_type_id)
+        catalog.rel_type_id(rel_type)
     };
+    let unknown_relationship_type = !rel_type.is_empty() && rel_type_id.is_none();
+    if unknown_relationship_type && !optional && *min_hops != 0 {
+        record_graph_expansion_state(
+            context.observer,
+            &graph_expansion,
+            rel_type,
+            *min_hops,
+            *max_hops,
+            0,
+        );
+        return Ok(BatchControl::Continue);
+    }
+    let source_label_ids = label_ids_for_pattern(catalog, source_label);
     let target_label_ids = label_ids_for_pattern(catalog, target_label);
     let batch_rows = memory.batch_rows.get();
     let batch_payload_bytes = memory.batch_payload_bytes.get();
@@ -611,73 +614,103 @@ pub(super) fn stream_adjacency_expand_batches(
             for binding in batch {
                 runtime_checkpoint(context.task_context)?;
                 graph_expansion.record_seed();
-                let expand_control = stream_expand_binding(
-                    &binding,
-                    AdjacencyExpandSpec {
-                        source_variable,
-                        rel_variable: rel_variable.as_deref(),
-                        rel_properties,
-                        direction: *direction,
-                        target_variable,
-                        min_hops: *min_hops,
-                        max_hops: *max_hops,
-                        optional: *optional,
-                    },
-                    rel_type_id,
-                    target_label_ids.as_deref(),
-                    &filters,
-                    store,
-                    crate::store::AdjacencyReadMemory {
-                        budget_bytes: memory.blocking_operator_bytes.get(),
-                        account: Some(&adjacency_account),
-                    },
-                    context.task_context,
-                    context.observer,
-                    &mut |mut candidate| {
-                        runtime_checkpoint(context.task_context)?;
-                        if context.observer.vector_graph_scoring_input().is_some() {
-                            crate::scoring::advance_vector_hop(
-                                &mut candidate.binding,
-                                candidate.hop,
-                                candidate.target_id.is_some(),
-                            )?;
-                        }
-                        let candidate_bytes = binding_memory_bytes(&candidate.binding);
-                        if candidate_bytes > batch_payload_bytes {
-                            return Err(HawDBError::Execution(format!(
+                let spec = AdjacencyExpandSpec {
+                    source_variable,
+                    rel_variable: rel_variable.as_deref(),
+                    rel_properties,
+                    direction: *direction,
+                    target_variable,
+                    min_hops: *min_hops,
+                    max_hops: *max_hops,
+                    optional: *optional,
+                };
+                let mut visit_candidate = |mut candidate: crate::scan::ExpandedBinding| {
+                    runtime_checkpoint(context.task_context)?;
+                    if context.observer.vector_graph_scoring_input().is_some() {
+                        crate::scoring::advance_vector_hop(
+                            &mut candidate.binding,
+                            candidate.hop,
+                            candidate.target_id.is_some(),
+                        )?;
+                    }
+                    let candidate_bytes = binding_memory_bytes(&candidate.binding);
+                    if candidate_bytes > batch_payload_bytes {
+                        return Err(HawDBError::Execution(format!(
                                 "intermediate row uses {candidate_bytes} bytes, exceeding batch_payload_bytes {batch_payload_bytes}"
                             )));
-                        }
-                        if !output.is_empty()
-                            && (output.len() == batch_rows
-                                || output_bytes.saturating_add(candidate_bytes)
-                                    > batch_payload_bytes)
-                        {
-                            let emitted =
-                                std::mem::replace(&mut output, Vec::with_capacity(batch_rows));
-                            output_lease.reset();
-                            if emit(emitted)? == BatchControl::Stop {
-                                return Ok(crate::store::ScanControl::Stop);
-                            }
-                            output_bytes = 0;
-                        }
-                        if !graph_expansion.try_admit(
-                            &candidate.binding,
-                            candidate.target_id,
-                            candidate.hop,
-                        )? {
+                    }
+                    if !output.is_empty()
+                        && (output.len() == batch_rows
+                            || output_bytes.saturating_add(candidate_bytes) > batch_payload_bytes)
+                    {
+                        let emitted =
+                            std::mem::replace(&mut output, Vec::with_capacity(batch_rows));
+                        output_lease.reset();
+                        if emit(emitted)? == BatchControl::Stop {
                             return Ok(crate::store::ScanControl::Stop);
                         }
-                        output_lease.grow(candidate_bytes)?;
-                        output_bytes = output_bytes.saturating_add(candidate_bytes);
-                        output.push(candidate.binding);
-                        if execution_limit.is_reached(graph_expansion.returned_count()) {
-                            Ok(crate::store::ScanControl::Stop)
-                        } else {
-                            Ok(crate::store::ScanControl::Continue)
-                        }
-                    },
-                )?;
+                        output_bytes = 0;
+                    }
+                    if !graph_expansion.try_admit(
+                        &candidate.binding,
+                        candidate.target_id,
+                        candidate.hop,
+                    )? {
+                        return Ok(crate::store::ScanControl::Stop);
+                    }
+                    output_lease.grow(candidate_bytes)?;
+                    output_bytes = output_bytes.saturating_add(candidate_bytes);
+                    output.push(candidate.binding);
+                    if execution_limit.is_reached(graph_expansion.returned_count()) {
+                        Ok(crate::store::ScanControl::Stop)
+                    } else {
+                        Ok(crate::store::ScanControl::Continue)
+                    }
+                };
+                let source_label_mismatch =
+                    binding.nodes.get(source_variable).is_some_and(|node| {
+                        !node_matches_label_pattern(node, source_label_ids.as_deref())
+                    });
+                let expand_control = if source_label_mismatch {
+                    crate::scan::stream_unmatched_expand_binding(
+                        &binding,
+                        &spec,
+                        memory.blocking_operator_bytes.get(),
+                        &mut visit_candidate,
+                    )?
+                } else if unknown_relationship_type {
+                    crate::scan::stream_zero_hop_expand_binding(
+                        &binding,
+                        &spec,
+                        crate::scan::ZeroHopExpandContext {
+                            store,
+                            target_label_ids: target_label_ids.as_deref(),
+                            filters: &filters,
+                            memory: crate::store::AdjacencyReadMemory {
+                                budget_bytes: memory.blocking_operator_bytes.get(),
+                                account: Some(&adjacency_account),
+                            },
+                            task_context: context.task_context,
+                        },
+                        &mut visit_candidate,
+                    )?
+                } else {
+                    stream_expand_binding(
+                        &binding,
+                        spec,
+                        rel_type_id,
+                        target_label_ids.as_deref(),
+                        &filters,
+                        store,
+                        crate::store::AdjacencyReadMemory {
+                            budget_bytes: memory.blocking_operator_bytes.get(),
+                            account: Some(&adjacency_account),
+                        },
+                        context.task_context,
+                        context.observer,
+                        &mut visit_candidate,
+                    )?
+                };
                 if expand_control == crate::store::ScanControl::Stop {
                     return Ok(BatchControl::Stop);
                 }

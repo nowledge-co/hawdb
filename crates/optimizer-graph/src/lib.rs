@@ -1,0 +1,75 @@
+// Copyright 2026 Nowledge
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Graph catalog, costing, rewrites, lowering, and typed trace ownership.
+
+mod cardinality_defaults;
+pub mod context;
+pub mod cost {
+    pub use hawdb_cascades::cost::*;
+}
+pub mod graph;
+pub mod logical;
+pub mod memo {
+    pub use hawdb_cascades::memo::*;
+}
+pub mod operator;
+pub mod properties {
+    pub use hawdb_cascades::properties::*;
+}
+pub mod rule {
+    pub use hawdb_cascades::rule::*;
+}
+pub mod search;
+pub mod stage {
+    pub use hawdb_cascades::stage::*;
+}
+pub mod trace;
+
+use hawdb_optimizer_vector::plan_vector_search;
+
+pub use context::{
+    ExplainMode, OptimizerContext, QueryFamily, ResourceHints, StatementClass, TraceSink,
+};
+pub use cost::{PlanCost, PlanCostBreakdown};
+pub use graph::{
+    CascadesOptimizer, FastPathPhysicalPhase, FastPathPhysicalPlanRoot, LogicalPhase,
+    LogicalPlanRoot, LoweringReadyLogicalPlanRoot, LoweringReadyPhase, OptimizerCatalog,
+    OptimizerCatalogIndexes, OptimizerCatalogStatistics, OptimizerIndexStatistics, PhysicalPhase,
+    PhysicalPlanRoot, PlanPhase, PlanPhaseKind,
+};
+pub use hawdb_plan_cypher::PhysicalPlanNode as PlanNode;
+pub use hawdb_plan_cypher::{
+    plan_class_counts, plan_operator_counts, visit_plan, visit_plan_with_ids, PhysicalOperatorId,
+    PhysicalPlanClass, PhysicalPlanKind, PhysicalPlanNode, PlanChildren,
+};
+pub use logical::{LogicalPlanClass, LogicalPlanKind, LogicalPlanNode};
+pub use memo::{GroupId, Memo, MemoGroup};
+pub use properties::{
+    Distribution, MemoryBudgetClass, PhysicalProperties, RequiredProperties, ScanPruningSupport,
+    VectorPrecision,
+};
+pub use rule::{
+    apply_rule_batch, AppliedRule, OptimizerRule, RuleApplication, RuleBatch, RuleId, RuleKind,
+    RulePromise,
+};
+pub use search::{
+    OptimizationSearchReport, OptimizerSearchDirective, OptimizerSearchDirectiveError, RuleEvent,
+    RuleOutcome, SearchMode, SelectedPlanTrace,
+};
+pub use stage::{
+    ApplyOrder, OptimizationPipeline, OptimizationStage, PipelineExecution, RuleStage,
+    StageRuleBatch, StageStats, StageTrace,
+};
+pub use trace::{OperatorCardinalityEstimate, OptimizerConfig, OptimizerTrace};

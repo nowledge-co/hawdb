@@ -220,6 +220,9 @@ core oracle.
 | Declared vector producer policy and identity | Separate mutations of unrelated-scan, duplicate-alias, reserved-annotation and collapsing-source admission and typed descriptor identity fail their existing guards | Actual pre-external query rejection where applicable; independent physical policy/identity assertions, not ANN or runtime vector cache-hit proof |
 | Graph scope reintroduction | Old producer checkpoint admits actual queries that drop seed or middle scope then MATCH the same variable name; unchanged guards fail | Reject before external execution; retain valid connected traversal, node-only/optional analogue and whole query ranking |
 | Reserved scalar references | Old producer checkpoint admits specialized/nested private column projections and private filter/order expressions; unchanged physical-policy guards fail | Exhaustive binding-name checks through projection, filter, MATCH predicate, Sort and TopN; literal data and ordinary public references remain valid |
+| Scored OPTIONAL NULL source | Frozen scoring checkpoint `38cff412` traverses a real node from an unmatched OPTIONAL; the unchanged public guard fails | Required traversal after NULL yields no rows across zero/one/two WITH stages, using SearchScore alone so missing-hop rejection cannot hide an incorrect graph result |
+| Scored unknown-type OPTIONAL | Frozen scoring checkpoint `38cff412` drops the unmatched row; the unchanged public guard fails | One NULL candidate row retains the genuine seed score across zero/one/two WITH stages |
+| Scored unknown-type zero hop | Changing only GraphMatch's unknown-type zero-hop callback to report hop1 produces score0.35 instead of0.7; the unchanged actual query guard fails at two WITH stages | The real seed candidate and canonical property, genuine similarity, observed hop0, unchanged upstream admission8 and absence of public annotations across native and generic paths |
 
 
 Focused replay/verification uses the existing executor and plan-cache unit owners:
@@ -287,8 +290,13 @@ relational owners. It does not claim every blocking operator is repaired.
 
 The vector producer additions register six actual facade queries and three
 initial physical-policy guards; the scope correction adds three facade guards
-and four physical-policy guards. Their distinct evidence boundaries are listed
-above. Each belongs to the existing root or plan-cypher owner, with unchanged
+and four physical-policy guards. The OPTIONAL integration adds two facade guards
+for NULL-source and unknown-type row preservation, plus one scored unknown-type
+zero-hop guard. The latter executes all zero/one/two WITH variants with a strict
+similarity/property/hop program; its default-feature execution took 0.03 seconds.
+The two NULL guards together took 0.01 seconds in the integrated focused replay.
+Their distinct evidence boundaries are listed above. Each belongs to the
+existing root or plan-cypher owner, with unchanged
 budgets. The initial default focused root group of 85 and ACL group of 79 ran in 8.04 and
 10.68 seconds; three policy guards ran in 0.00 seconds. Correction measurements and exact-source
 results belong in its final qualification packet. These are local observations,
