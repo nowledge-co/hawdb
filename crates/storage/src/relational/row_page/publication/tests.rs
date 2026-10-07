@@ -1698,3 +1698,6 @@ mod checkpoint_manifest;
 
 #[path = "tests/checkpoint_preflight.rs"]
 mod checkpoint_preflight;
+
+#[path = "tests/checkpoint_reader.rs"]
+mod checkpoint_reader;

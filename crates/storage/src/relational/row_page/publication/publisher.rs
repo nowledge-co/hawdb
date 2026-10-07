@@ -153,7 +153,11 @@ impl RelationalRowPagePublisher {
         deltas: Vec<RelationalRowPageTableDelta>,
         controls: PublicationControls<'_>,
     ) -> Result<RelationalRowPagePublicationReport, RelationalRowPagePublicationError> {
-        let base = RelationalRowPageRootReader::open_latest(directory, self.config)?;
+        let base = RelationalRowPageRootReader::open_latest_with_work_context(
+            directory,
+            self.config,
+            self.work.as_ref(),
+        )?;
         self.persist_generation_inner(
             GenerationPublication {
                 directory,
@@ -390,9 +394,12 @@ impl RelationalRowPagePublisher {
         )?;
 
         if build.select_latest {
-            let actual_previous =
-                manifest::read_manifest_if_exists(&build.paths.latest_manifest, self.config)?
-                    .map(|manifest| manifest.generation);
+            let actual_previous = manifest::read_manifest_if_exists_with_work_context(
+                &build.paths.latest_manifest,
+                self.config,
+                self.work.as_ref(),
+            )?
+            .map(|manifest| manifest.generation);
             if actual_previous != build.expected_previous_generation {
                 return Err(RelationalRowPagePublicationError::StaleGeneration {
                     expected_previous: build.expected_previous_generation,

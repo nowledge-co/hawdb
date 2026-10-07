@@ -878,7 +878,9 @@ impl GraphStore {
                 .transpose()?;
             let previous_row = previous_overflow
                 .as_ref()
-                .map(|overflow| durable.open_bound_relational_row_pages(overflow))
+                .map(|overflow| {
+                    durable.open_bound_relational_row_pages_with_work_context(overflow, Some(work))
+                })
                 .transpose()?;
             let previous_allocated_pages = previous_row.as_ref().map_or(0, |reader| {
                 reader
@@ -1059,10 +1061,11 @@ impl GraphStore {
                 .as_ref()
                 .map(|compaction| {
                     let root =
-                        hawdb_storage::relational::RelationalRowPageRootReader::open_generation(
+                        hawdb_storage::relational::RelationalRowPageRootReader::open_generation_with_work_context(
                             durable.root_path(),
                             generation,
                             row_publication_config,
+                            Some(work),
                         )
                         .map_err(row_compaction_publication_error)?;
                     Ok::<_, HawDBError>(RelationalRowPageCompactionReport {

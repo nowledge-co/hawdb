@@ -38,7 +38,7 @@ fn metadata(len: u64) -> RelationalRowPageArtifactMetadata {
     }
 }
 
-fn empty_manifest(count: usize) -> RelationalRowPageRootManifest {
+pub(super) fn empty_manifest(count: usize) -> RelationalRowPageRootManifest {
     let tables: Vec<_> = (0..count)
         .map(|ordinal| {
             let table = format!("documents-{ordinal:04}");

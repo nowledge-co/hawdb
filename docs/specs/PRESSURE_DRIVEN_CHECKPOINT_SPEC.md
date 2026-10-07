@@ -611,8 +611,8 @@ forms, wide Unicode/zero fields, all actual encoding/escape/hash cancellation
 points, admission denial with unchanged source and full retry, and 24 invalid
 metadata/schema/budget diagnostic cases. These synthetic metadata fixtures do
 not qualify physical page recovery; complete publisher/recovery suites provide
-separate evidence. Initial opening/decoding, schema clone/equality and collection
-comparisons, preflight scans/sorting, publication and selector I/O, allocator/
+separate evidence. Preparation, publication and reader controls are described
+separately below. Collection comparisons, relocation/page validation, allocator/
 retention/drop and shared hard disk/FD/cleanup bounds remain open. These controls
 are insufficient to enable production per-unit admission or close the whole
 issue's resource, lifecycle, power-loss/platform and release-performance gates.
@@ -628,9 +628,9 @@ three publication modes verifies the selected authority, complete retained bytes
 recoverable complete generations, exclusive temporary cleanup and full retry
 with a fresh generation whenever immutable evidence already exists. Separate
 regressions cover lock contention and loss of the selector response, then reopen
-and compare all rows and physical generation ownership. Initial reader opening,
-manifest decoding/revalidation, schema clone/equality, preflight scans/sorting,
-relocation reads/decoding, retained capacities, allocator/drop costs and shared
+and compare all rows and physical generation ownership. Preparation and reader
+controls are described separately below. Relocation reads/decoding, retained
+capacities, allocator/drop costs and shared
 hard disk/FD/cleanup-debt bounds require separate qualification. These file
 controls do not enable production per-unit admission or qualify the whole
 lifecycle, modeled power-loss/platform behavior or release performance.
@@ -648,10 +648,33 @@ compare all 1025 schema entries and sorted pages, scalar/default values and
 every field's negative control, rejection diagnostic priority and absence of
 candidate artifacts, actual cancellation/denial/full retry, and all 1025
 referenced values. These controls do not bound map/string comparisons, vector
-capacities, allocator/reallocation/destruction, initial opening/decoding,
-relocation, or the shared retention/disk/FD/cleanup ledger. The complete publisher
+capacities, allocator/reallocation/destruction, relocation, or the shared
+retention/disk/FD/cleanup ledger. Reader controls are described separately below.
+The complete publisher
 and physical recovery suites remain separate from codec/sort fixtures; default
 availability, lifecycle/model/platform and release-performance gates stay open.
+
+Row-root reader opening and decoding bind to the admitted task. Latest, generation-specific
+and canonically bound manifest opens now pass the checkpoint task through file
+inspection, capped reads, complete integrity, table/schema decoding and artifact
+length inspection. Borrowed schema decoding reuses the ordinary field decoder
+with controlled 64 KiB reads and schema validation. UTF-8 decoding carries at
+most three scalar bytes across blocks and retains global error offsets. The
+automatic preparation path uses these controls for its captured row-page base
+and private compaction report; ordinary recovery readers remain independent
+references. New metadata fixtures exercise complete values, corruption and
+binding diagnostics, cancellation and denial with unchanged source/full retry.
+Nested schema-shape and digest validation retain typed work failures through
+the existing codec diagnostics: cancellation and QoS denial abort with admission
+errors, while ordinary invalid metadata retains its original corruption class.
+All eight reader fixtures and the complete 58-test row publication suite pass.
+Synthetic metadata does not prove
+physical page recovery; complete publisher/recovery suites provide separate
+evidence. Full manifest/schema buffers, actual capacities, allocator/drop,
+relocation/page-view decoding and
+shared memory/disk/FD/cleanup bounds remain open. This does not enable production
+per-unit admission or complete any whole-issue lifecycle, platform or benchmark
+gate.
 
 Actual automatic row-page preparation now binds page encoding and writes to
 the admitted checkpoint task. Ordered primary keys, each scalar/value directory
@@ -665,9 +688,9 @@ remain independent complete-byte and diagnostic references. Tests cover all
 complete artifact parity in all three modes, each actual encoding/writing CPU
 and I/O cancellation, denial, unchanged source authority and full retry.
 Allocation and growing-buffer recopy during reservation, actual retained
-capacities and destruction remain incomplete. Schema validation/digests, page
-view validation, descriptor merging/sorting, relocation reads, root/selector
-I/O and cleanup debt still need their own controls and shared hard resources.
+capacities and destruction remain incomplete. Schema/digest, descriptor
+merge/sort and publication controls are described above. Page-view validation,
+relocation reads and cleanup debt still need controls and shared hard resources.
 This partial binding does not authorize production per-unit admission or claim
 whole-publisher memory/time, power-loss or release performance qualification.
 

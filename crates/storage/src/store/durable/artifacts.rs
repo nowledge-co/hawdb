@@ -528,15 +528,24 @@ impl DurableStore {
         &self,
         overflow_root: &hawdb_storage::relational::RelationalOverflowRootReader,
     ) -> Result<hawdb_storage::relational::RelationalRowPageRootReader> {
+        self.open_bound_relational_row_pages_with_work_context(overflow_root, None)
+    }
+
+    pub(in crate::store) fn open_bound_relational_row_pages_with_work_context(
+        &self,
+        overflow_root: &hawdb_storage::relational::RelationalOverflowRootReader,
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Result<hawdb_storage::relational::RelationalRowPageRootReader> {
         let binding = self.relational_row_generation_artifacts.ok_or_else(|| {
             HawDBError::Storage(
                 "published checkpoint has no relational row-page generation binding".to_string(),
             )
         })?;
-        let reader = hawdb_storage::relational::RelationalRowPageRootReader::open_bound_generation(
+        let reader = hawdb_storage::relational::RelationalRowPageRootReader::open_bound_generation_with_work_context(
             &self.root_path,
             binding,
             hawdb_storage::relational::RelationalRowPagePublicationConfig::default(),
+            work,
         )
         .map_err(HawDBError::from_storage_error)?;
         let manifest = reader.manifest();

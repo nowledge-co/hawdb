@@ -19,6 +19,7 @@ use std::fmt::Debug;
 mod checkpoint;
 #[cfg(test)]
 pub(crate) use checkpoint::tests::CheckpointWorkProbe;
+pub(crate) use checkpoint::CheckpointOperationError;
 pub(crate) use checkpoint::CheckpointWorkUnit;
 #[doc(hidden)]
 pub use checkpoint::{CheckpointWorkContext, CheckpointWorkError};

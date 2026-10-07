@@ -21,6 +21,7 @@ use hawdb_qos::{LocalQosPermit, LocalQosScheduler, QosAdmission, WorkClass, Work
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex};
 
 /// The task already admitted by the owner, optionally with per-unit local QoS.
 /// This never creates a governor or reserves the owner's memory a second time.
@@ -31,6 +32,7 @@ use std::num::NonZeroUsize;
 pub struct CheckpointWorkContext {
     task: RuntimeTaskContext,
     scheduler: Option<LocalQosScheduler>,
+    recorded_failure: Option<Arc<Mutex<Option<CheckpointWorkError>>>>,
 }
 
 impl CheckpointWorkContext {
@@ -38,6 +40,7 @@ impl CheckpointWorkContext {
         Self {
             task,
             scheduler: None,
+            recorded_failure: None,
         }
     }
 
@@ -47,7 +50,44 @@ impl CheckpointWorkContext {
     }
 
     pub fn checkpoint(&self) -> Result<(), CheckpointWorkError> {
-        self.task.checkpoint().map_err(CheckpointWorkError::Stopped)
+        self.task
+            .checkpoint()
+            .map_err(CheckpointWorkError::Stopped)
+            .map_err(|error| self.record_failure(error))
+    }
+
+    /// Preserve typed work failures through an existing codec's string errors.
+    /// Ordinary operation errors retain their original diagnostic and class.
+    pub(crate) fn classify<T, E>(
+        &self,
+        operation: impl FnOnce(&Self) -> Result<T, E>,
+    ) -> Result<T, CheckpointOperationError<E>> {
+        let unit = self.start_unit().map_err(CheckpointOperationError::Work)?;
+        let recorded = Arc::new(Mutex::new(None));
+        let mut scoped = self.clone();
+        scoped.recorded_failure = Some(recorded.clone());
+        unit.finish();
+        let result = operation(&scoped);
+        let failure = recorded
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        match failure {
+            Some(error) => Err(CheckpointOperationError::Work(error)),
+            None => result.map_err(CheckpointOperationError::Operation),
+        }
+    }
+
+    fn record_failure(&self, error: CheckpointWorkError) -> CheckpointWorkError {
+        if let Some(recorded) = &self.recorded_failure {
+            let mut first = recorded
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if first.is_none() {
+                *first = Some(error.clone());
+            }
+        }
+        error
     }
 
     pub(crate) fn start_unit(&self) -> Result<CheckpointWorkUnit, CheckpointWorkError> {
@@ -59,6 +99,7 @@ impl CheckpointWorkContext {
                 scheduler
                     .try_start(WorkRequest::background(WorkClass::Mutation, 1))
                     .map_err(CheckpointWorkError::Admission)
+                    .map_err(|error| self.record_failure(error))
             })
             .transpose()?;
         // A telemetry callback can cancel while admission is being recorded.
@@ -72,6 +113,7 @@ impl CheckpointWorkContext {
         self.task
             .acquire_io_wave(NonZeroUsize::MIN)
             .map_err(CheckpointWorkError::Io)
+            .map_err(|error| self.record_failure(error))
     }
 
     /// Hash a borrowed metadata buffer in bounded units without copying it.
@@ -148,11 +190,16 @@ impl CheckpointWorkUnit {
 }
 
 #[doc(hidden)]
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckpointWorkError {
     Stopped(RuntimeCancellationReason),
     Admission(QosAdmission),
     Io(RuntimeIoWaveError),
+}
+
+pub(crate) enum CheckpointOperationError<E> {
+    Work(CheckpointWorkError),
+    Operation(E),
 }
 
 impl Display for CheckpointWorkError {

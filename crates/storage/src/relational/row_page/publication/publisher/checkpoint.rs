@@ -99,7 +99,7 @@ fn sift(
     work.checkpoint().map_err(root::checkpoint::work_error)
 }
 
-pub(super) fn io<T>(
+pub(in crate::relational::row_page::publication) fn io<T>(
     work: Option<&CheckpointWorkContext>,
     operation: impl FnOnce() -> Result<T, RelationalRowPagePublicationError>,
 ) -> Result<T, RelationalRowPagePublicationError> {
