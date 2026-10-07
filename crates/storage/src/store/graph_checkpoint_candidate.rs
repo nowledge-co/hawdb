@@ -20,6 +20,10 @@ use super::*;
 use crate::relational::RelationalRecoverySourceBuilder;
 use std::io::Write;
 
+#[cfg(test)]
+#[path = "graph_checkpoint_candidate/tests.rs"]
+mod checkpoint_wal_frame_tests;
+
 /// Identity of the complete foreground prefix from which a worker publishes.
 /// Opaque fields prevent a facade caller from manufacturing a partial receipt.
 #[doc(hidden)]
@@ -98,9 +102,10 @@ impl std::fmt::Debug for CheckpointCandidate {
 }
 
 impl GraphStore {
-    /// Conservative reservation for the current whole-candidate builder.
-    /// This is deliberately not clipped to available host memory. Bounded
-    /// per-chunk admission will replace whole-dataset work admission separately.
+    /// Provisional reservation estimate for the current whole-candidate builder.
+    /// This is not a complete bound for source/candidate/retained allocations.
+    /// It is deliberately not clipped to available host memory; explicit
+    /// allocation leases and bounded work still require full qualification.
     #[doc(hidden)]
     pub fn checkpoint_candidate_admission_bytes(&self) -> Result<u64> {
         self.estimated_logical_record_bytes()
@@ -674,6 +679,7 @@ impl CheckpointCandidate {
         source: &GraphStore,
         task: &RuntimeTaskContext,
     ) -> Result<CheckpointWalTail> {
+        let work = crate::background::CheckpointWorkContext::new(task.clone());
         let original = source.durable.as_ref().expect("validated durable source");
         let prepared = self
             .prepared
@@ -747,11 +753,13 @@ impl CheckpointCandidate {
                     HawDBError::StorageIntegrity("checkpoint suffix epoch overflow".into())
                 })?;
                 let payload = encode_binary_wal_record(&entry, epoch)?;
-                let framed = frame_binary_wal_record(
+                let framed = crate::wal::frame::frame_binary_wal_record_with_work_context(
                     prepared.generation,
                     &payload,
                     bytes - WAL_BINARY_FILE_HEADER_BYTES as u64,
-                );
+                    &work,
+                )
+                .map_err(HawDBError::from_storage_error)?;
                 bytes = bytes.checked_add(framed.len() as u64).ok_or_else(|| {
                     HawDBError::Storage("checkpoint suffix bytes overflow".into())
                 })?;
@@ -760,9 +768,13 @@ impl CheckpointCandidate {
                         "checkpoint suffix exceeds its WAL budget".into(),
                     ));
                 }
-                let write_wave = replay_io_wave(task)?;
-                output.write_all(&framed)?;
-                drop(write_wave);
+                for block in framed.chunks(64 * 1024) {
+                    replay_checkpoint(task)?;
+                    let write_wave = replay_io_wave(task)?;
+                    output.write_all(block)?;
+                    drop(write_wave);
+                }
+                drop(framed);
                 replay_checkpoint(task)?;
                 let digest = hawdb_integrity::integrity_digest(&payload);
                 self.recovery_source

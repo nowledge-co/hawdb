@@ -68,6 +68,9 @@
 use hawdb_core::{HawDBError, Result};
 use std::io::Read;
 
+mod checkpoint;
+pub(crate) use checkpoint::frame_binary_wal_record_with_work_context;
+
 pub const WAL_BINARY_MAGIC: &[u8; 8] = b"SKWALB01";
 pub const WAL_BLOCK_BYTES: usize = 32 * 1024;
 pub const WAL_FRAGMENT_HEADER_BYTES: usize = 15;

@@ -991,6 +991,31 @@ source identity and unsupported-default diagnostics. Source schema/map ownership
 allocator metadata/latency, other output buffers and complete candidate resources
 still need separate qualification. These tests do not qualify the full issue.
 
+Private checkpoint WAL catch-up now admits the complete framed output capacity
+before fallible allocation. A constant-time length calculation includes every
+fragment header, the first-block boundary and any zero trailer, including empty
+first fragments. Per-block CRC and separate bounded append units preserve the
+ordinary framing bytes without nested local permits. Output retains its memory
+lease through actual writes, which release their I/O wave between 64 KiB blocks,
+then drops before replay hashing and graph application. The ordinary encoder
+and reader remain independent full-byte/recovery references.
+
+A real candidate regression fails against the former untracked framed Vec: a
+one-byte admitted task still replays a large captured suffix. Its identical body
+passes after correction, rejects without modifying old authority and fully
+retries from the same pinned base before ordinary publication/reopen. Five
+focused tests cover all 32,768 block positions, fragment/generation/empty-record
+boundaries, exact one-byte denial, retained output after execution closes and
+every actual framing cancellation unit with full retries on the same reservation.
+A counting adapter delegates to the actual governor's I/O controller: every
+large-suffix I/O cut preserves source WAL/manifest identity and fully retries on
+the same admission, with no residual memory or I/O slots. The adapter's first
+compile failure remains archived separately. Full supported-profile/regression/
+fuzz qualification is still required for this source. Payload decoding/encoding,
+replayed graph/schema/append state, source retention and final sealing still have
+their own resource/work-control gaps; framed output alone does not authorize
+production per-unit admission or establish whole-candidate bounds.
+
 The row-page publisher's complete cancellation matrix repeatedly recreated and
 synchronized the identical durable source for every CPU/I/O cut. Two full
 current-main commands and one unchanged isolated diagnostic reached the existing
