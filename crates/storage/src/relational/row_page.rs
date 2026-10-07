@@ -28,6 +28,7 @@ use std::fmt;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::ops::Range;
 
+mod checkpoint;
 mod delta;
 mod demand;
 mod live;

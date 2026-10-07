@@ -29,6 +29,7 @@ use hawdb_integrity::{IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufWriter, Write};
 
+mod checkpoint;
 mod codec;
 
 pub(super) use codec::{read_descriptor, ROOT_DESCRIPTOR_BYTES};
@@ -49,14 +50,36 @@ pub(super) fn prepare_dirty_page(
     page: ImmutableRelationalRowPage,
     limits: RelationalRowPageLimits,
 ) -> Result<PreparedDirtyPage, RelationalRowPagePublicationError> {
+    prepare_dirty_page_with_work_context(page, limits, None)
+}
+
+pub(super) fn prepare_dirty_page_with_work_context(
+    page: ImmutableRelationalRowPage,
+    limits: RelationalRowPageLimits,
+    work: Option<&crate::background::CheckpointWorkContext>,
+) -> Result<PreparedDirtyPage, RelationalRowPagePublicationError> {
+    if let Some(work) = work {
+        work.checkpoint().map_err(checkpoint::work_error)?;
+    }
     let first = page.rows.first().ok_or_else(|| {
         RelationalRowPagePublicationError::Admission("dirty row page contains no rows".to_string())
     })?;
     let last = page.rows.last().expect("dirty page has a first row");
-    let lower_bound = encode_ordered_relational_key(&first.primary_key).map_err(|error| {
+    let encode_key = |key: &crate::relational::RelationalKey| match work {
+        Some(work) => {
+            crate::relational::row_page::checkpoint::ordered_key(key, work).map_err(|error| {
+                match error {
+                    crate::relational::RelationalRowPageError::Admission(message)
+                    | crate::relational::RelationalRowPageError::Corrupt(message) => message,
+                }
+            })
+        }
+        None => encode_ordered_relational_key(key).map_err(|error| error.to_string()),
+    };
+    let lower_bound = encode_key(&first.primary_key).map_err(|error| {
         RelationalRowPagePublicationError::Admission(format!("dirty row-page lower bound: {error}"))
     })?;
-    let upper_bound = encode_ordered_relational_key(&last.primary_key).map_err(|error| {
+    let upper_bound = encode_key(&last.primary_key).map_err(|error| {
         RelationalRowPagePublicationError::Admission(format!("dirty row-page upper bound: {error}"))
     })?;
     if lower_bound.len() > limits.max_key_bytes.get()
@@ -94,6 +117,7 @@ pub(super) struct PageArtifactWriter {
     hasher: IntegrityHasher,
     page_count: u64,
     limits: RelationalRowPageLimits,
+    work: Option<crate::background::CheckpointWorkContext>,
 }
 
 impl PageArtifactWriter {
@@ -103,7 +127,16 @@ impl PageArtifactWriter {
             hasher: IntegrityHasher::new(),
             page_count: 0,
             limits,
+            work: None,
         }
+    }
+
+    pub(super) fn with_work_context(
+        mut self,
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Self {
+        self.work = work.cloned();
+        self
     }
 
     pub(super) fn write(
@@ -120,7 +153,12 @@ impl PageArtifactWriter {
                     "row-page artifact length overflow".to_string(),
                 )
             })?;
-        let mut encoded_slot = page.page.encode(self.limits)?;
+        let mut encoded_slot = match &self.work {
+            Some(work) => {
+                crate::relational::row_page::checkpoint::encode(&page.page, self.limits, work)?
+            }
+            None => page.page.encode(self.limits)?,
+        };
         let encoded_page_len = u32::try_from(encoded_slot.len()).map_err(|_| {
             RelationalRowPagePublicationError::Admission(
                 "encoded row page length does not fit in u32".to_string(),
@@ -139,12 +177,26 @@ impl PageArtifactWriter {
                 page.descriptor.logical_page_id.get()
             )));
         }
-        encoded_slot.resize(self.limits.max_page_bytes.get(), 0);
-        let slot_digest = digest_bytes(&encoded_slot);
-        self.writer
-            .write_all(&encoded_slot)
-            .map_err(durability("write row-page slot"))?;
-        self.hasher.update(&encoded_slot);
+        let slot_digest = if let Some(work) = &self.work {
+            checkpoint::pad_slot(&mut encoded_slot, self.limits.max_page_bytes.get(), work)?;
+            let digest = work
+                .integrity(&encoded_slot)
+                .map_err(checkpoint::work_error)?;
+            checkpoint::write_slot(&mut self.writer, &mut self.hasher, &encoded_slot, work)?;
+            RelationalRowPageArtifactMetadata {
+                encoded_len: encoded_slot.len() as u64,
+                encoded_crc32c: digest.crc32c.get(),
+                encoded_sha256: digest.sha256,
+            }
+        } else {
+            encoded_slot.resize(self.limits.max_page_bytes.get(), 0);
+            let digest = digest_bytes(&encoded_slot);
+            self.writer
+                .write_all(&encoded_slot)
+                .map_err(durability("write row-page slot"))?;
+            self.hasher.update(&encoded_slot);
+            digest
+        };
         page.descriptor.physical_slot = self.page_count;
         page.descriptor.slot_integrity = RelationalRowPageSlotIntegrity {
             encoded_len: encoded_page_len,
@@ -158,13 +210,17 @@ impl PageArtifactWriter {
     pub(super) fn finish(
         mut self,
     ) -> Result<(RelationalRowPageArtifactMetadata, u64), RelationalRowPagePublicationError> {
-        self.writer
-            .flush()
-            .map_err(durability("flush row-page artifact"))?;
-        self.writer
-            .get_ref()
-            .sync_all()
-            .map_err(durability("sync row-page artifact"))?;
+        if let Some(work) = &self.work {
+            checkpoint::finish(&mut self.writer, work)?;
+        } else {
+            self.writer
+                .flush()
+                .map_err(durability("flush row-page artifact"))?;
+            self.writer
+                .get_ref()
+                .sync_all()
+                .map_err(durability("sync row-page artifact"))?;
+        }
         let encoded_len = self.page_count * self.limits.max_page_bytes.get() as u64;
         let digest = self.hasher.finish();
         Ok((
@@ -514,7 +570,11 @@ impl RootWriter<'_> {
         }
         let mut page = base.read_page(descriptor)?;
         page.generation = self.generation;
-        let mut page = prepare_dirty_page(page, self.config.page_limits)?;
+        let mut page = prepare_dirty_page_with_work_context(
+            page,
+            self.config.page_limits,
+            self.pages.work.as_ref(),
+        )?;
         self.pages.write(&mut page)?;
         self.write_descriptor(&page.descriptor, bounds)?;
         self.relocated_page_count = next_count;

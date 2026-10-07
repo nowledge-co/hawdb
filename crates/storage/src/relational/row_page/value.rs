@@ -68,7 +68,7 @@ pub(super) fn encode_row(
     Ok(encoded)
 }
 
-fn encode_value(
+pub(super) fn encode_value(
     encoded: &mut Vec<u8>,
     value: &RelationalValue,
     limits: RelationalRowPageLimits,
@@ -468,7 +468,7 @@ fn validate_overflow_shape(
     Ok(())
 }
 
-fn validate_inline_value_len(
+pub(super) fn validate_inline_value_len(
     length: usize,
     limits: RelationalRowPageLimits,
 ) -> Result<(), RelationalRowPageError> {

@@ -1037,7 +1037,8 @@ impl GraphStore {
                     .map(|binding| binding.generation),
                 overflow_root: Some(&relational_overflow_root),
             };
-            let row_publisher = RelationalRowPagePublisher::new(row_publication_config);
+            let row_publisher =
+                RelationalRowPagePublisher::new(row_publication_config).with_work_context(work);
             let relational_row_report = match row_compaction.as_ref() {
                 Some(compaction) => {
                     row_compaction_checkpoint(compaction.task)?;

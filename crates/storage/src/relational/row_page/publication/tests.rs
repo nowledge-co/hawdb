@@ -1686,3 +1686,6 @@ fn assert_no_temporary_files(directory: &std::path::Path) {
 
 #[path = "tests/ownership.rs"]
 mod ownership;
+
+#[path = "tests/checkpoint_page.rs"]
+mod checkpoint_page;

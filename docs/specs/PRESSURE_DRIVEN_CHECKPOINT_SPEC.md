@@ -576,6 +576,24 @@ sorting, publication I/O, temporary-file ownership and cleanup debt still need
 their own controls and hard resource accounting. This is validation coverage,
 not whole-publisher memory/time, power-loss or production admission qualification.
 
+Actual automatic row-page preparation now binds page encoding and writes to
+the admitted checkpoint task. Ordered primary keys, each scalar/value directory
+entry, row/page directory entry, variable payload/bound copies and integrity
+hashing have separate controls, with at most 64 KiB per copy/hash unit. Full slot
+padding initializes in blocks after one reservation; page I/O and its artifact
+hashing, flush and sync use separately released I/O waves. Dirty-page bounds
+also use controlled keys, including relocated pages. The ordinary encoder/writer
+remain independent complete-byte and diagnostic references. Tests cover all
+1025 rows/columns, every scalar type, wide Unicode/zero bytes/common-prefix keys,
+complete artifact parity in all three modes, each actual encoding/writing CPU
+and I/O cancellation, denial, unchanged source authority and full retry.
+Allocation and growing-buffer recopy during reservation, actual retained
+capacities and destruction remain incomplete. Schema validation/digests, page
+view validation, descriptor merging/sorting, relocation reads, root/selector
+I/O and cleanup debt still need their own controls and shared hard resources.
+This partial binding does not authorize production per-unit admission or claim
+whole-publisher memory/time, power-loss or release performance qualification.
+
 Row-page publishers now exclusively create and own their five temporary
 artifacts, cleaning only successful creates before releasing their publication
 lock. Writers receive the already owned files rather than reopening/truncating

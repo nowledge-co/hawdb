@@ -36,11 +36,18 @@ use std::path::{Path, PathBuf};
 
 pub struct RelationalRowPagePublisher {
     config: RelationalRowPagePublicationConfig,
+    work: Option<crate::background::CheckpointWorkContext>,
 }
 
 impl RelationalRowPagePublisher {
     pub const fn new(config: RelationalRowPagePublicationConfig) -> Self {
-        Self { config }
+        Self { config, work: None }
+    }
+
+    #[doc(hidden)]
+    pub fn with_work_context(mut self, work: &crate::background::CheckpointWorkContext) -> Self {
+        self.work = Some(work.clone());
+        self
     }
 
     pub fn publish(
@@ -195,6 +202,7 @@ impl RelationalRowPagePublisher {
             source_commit_epoch,
             overflow_root,
             self.config,
+            self.work.as_ref(),
         )?;
         require_schema_source(base, &deltas)?;
         fs::create_dir_all(directory).map_err(durability("create row-page directory"))?;
@@ -267,7 +275,8 @@ impl RelationalRowPagePublisher {
         let page_file = build
             .temporary
             .create(&build.paths.page_tmp, "create row-page artifact")?;
-        let mut pages = root::PageArtifactWriter::new(page_file, self.config.page_limits);
+        let mut pages = root::PageArtifactWriter::new(page_file, self.config.page_limits)
+            .with_work_context(self.work.as_ref());
         let mut dirty_page_count = 0u64;
         for delta in build.deltas.values_mut() {
             for page in &mut delta.dirty_pages {
@@ -494,6 +503,7 @@ fn preflight_deltas(
     source_commit_epoch: u64,
     overflow_root: Option<&RelationalOverflowRootReader>,
     config: RelationalRowPagePublicationConfig,
+    work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<BTreeMap<String, PreparedTableDelta>, RelationalRowPagePublicationError> {
     let dirty_page_count = deltas.iter().try_fold(0usize, |count, delta| {
         count.checked_add(delta.dirty_pages.len()).ok_or_else(|| {
@@ -643,7 +653,14 @@ fn preflight_deltas(
             {
                 overflow_references.insert(reference);
             }
-            dirty_pages.push(root::prepare_dirty_page(page, config.page_limits)?);
+            dirty_pages.push(match work {
+                Some(work) => root::prepare_dirty_page_with_work_context(
+                    page,
+                    config.page_limits,
+                    Some(work),
+                )?,
+                None => root::prepare_dirty_page(page, config.page_limits)?,
+            });
         }
         dirty_pages.sort_by(|left, right| {
             left.descriptor
