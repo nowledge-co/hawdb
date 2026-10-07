@@ -3158,47 +3158,97 @@ mod tests {
     }
 
     #[test]
-    fn failed_checkpoint_head_publication_recovers_the_acknowledged_transaction() {
+    fn failed_branch_head_publication_recovers_the_acknowledged_transaction() {
+        #[derive(Debug)]
+        enum HeadPublication {
+            Checkpoint,
+            Seal,
+        }
+
         for durability in [
             DurabilityPolicy::SyncOnEveryWrite,
             DurabilityPolicy::SyncOnCheckpoint,
         ] {
-            let fixture = BranchFixture::new();
-            let mut branch = fixture.admit(fixture.main, durability);
-            write_schema_and_graph(&mut branch);
-            let expected_epoch = branch.store().commit_epoch();
-            let head_path = fixture.head_path(fixture.main);
-            let old_head = fs::read(&head_path).unwrap();
-            {
-                let _failure = crate::durability::fail_durable_replace_for_destination(
-                    head_path.file_name().unwrap(),
+            for publication in [HeadPublication::Checkpoint, HeadPublication::Seal] {
+                let fixture = BranchFixture::new();
+                let mut branch = fixture.admit(fixture.main, durability);
+                fixture.fork(&branch, branch_id(2), "child");
+                fixture.fork(&branch, branch_id(3), "sibling");
+                let other_histories = [branch_id(2), branch_id(3)].map(|id| {
+                    let head_path = fixture.head_path(id);
+                    let head = branch_head::read_branch_head(&head_path).unwrap();
+                    let wal_path = head_path.with_file_name(
+                        crate::artifact_files::wal_generation_file(head.active_wal.generation),
+                    );
+                    let head_bytes = fs::read(&head_path).unwrap();
+                    let wal_bytes = fs::read(&wal_path).unwrap();
+                    (head_path, head_bytes, wal_path, wal_bytes)
+                });
+                let other_catalog = fs::read(&fixture.catalog_path).unwrap();
+                let assert_other_histories = || {
+                    assert_eq!(fs::read(&fixture.catalog_path).unwrap(), other_catalog);
+                    for (head_path, head_bytes, wal_path, wal_bytes) in &other_histories {
+                        assert_eq!(&fs::read(head_path).unwrap(), head_bytes);
+                        assert_eq!(&fs::read(wal_path).unwrap(), wal_bytes);
+                    }
+                };
+                write_schema_and_graph(&mut branch);
+                let expected_epoch = branch.store().commit_epoch();
+                let head_path = fixture.head_path(fixture.main);
+                let old_head = fs::read(&head_path).unwrap();
+                {
+                    let _failure = crate::durability::fail_durable_replace_for_destination(
+                        head_path.file_name().unwrap(),
+                    );
+                    let failed = match publication {
+                        HeadPublication::Checkpoint => {
+                            let (store, catalog) = branch.store_and_catalog_mut();
+                            store.checkpoint(catalog).is_err()
+                        }
+                        HeadPublication::Seal => branch
+                            .store_mut()
+                            .seal_admitted_branch(expected_epoch)
+                            .is_err(),
+                    };
+                    assert!(failed, "{publication:?} head publication must fail");
+                }
+                assert_eq!(fs::read(&head_path).unwrap(), old_head);
+                assert_other_histories();
+                assert!(
+                    branch
+                        .store_mut()
+                        .seal_admitted_branch(expected_epoch)
+                        .is_err(),
+                    "uncertain handle fails closed"
                 );
+                let error = fixture
+                    .try_fork(&branch, branch_id(4), "poisoned-source")
+                    .unwrap_err();
+                assert!(error.to_string().contains("poisoned"), "{error}");
+                assert_other_histories();
+                drop(branch);
+                let mut branch = fixture.admit(fixture.main, durability);
+                assert_eq!(branch.store().commit_epoch(), expected_epoch);
+                assert_eq!(branch.store().node_count_for_label(None), 3);
+                assert_eq!(branch.store().relational_state().row_count("messages"), 1);
                 let (store, catalog) = branch.store_and_catalog_mut();
-                assert!(store.checkpoint(catalog).is_err());
+                store.checkpoint(catalog).unwrap();
+                drop(branch);
+                let branch = fixture.admit(fixture.main, durability);
+                assert_eq!(branch.store().commit_epoch(), expected_epoch);
+                assert_eq!(branch.store().relational_state().row_count("messages"), 1);
+                assert_other_histories();
+                for id in [branch_id(2), branch_id(3)] {
+                    let other = fixture.admit(id, durability);
+                    assert_eq!(other.store().node_count_for_label(None), 2);
+                    assert!(other
+                        .store()
+                        .relational_state()
+                        .table_schema("messages")
+                        .is_none());
+                }
+                assert_other_histories();
             }
-            assert_eq!(fs::read(&head_path).unwrap(), old_head);
-            assert!(
-                branch
-                    .store_mut()
-                    .seal_admitted_branch(expected_epoch)
-                    .is_err(),
-                "uncertain handle fails closed"
-            );
-            let error = fixture
-                .try_fork(&branch, branch_id(2), "poisoned-source")
-                .unwrap_err();
-            assert!(error.to_string().contains("poisoned"), "{error}");
-            drop(branch);
-            let mut branch = fixture.admit(fixture.main, durability);
-            assert_eq!(branch.store().commit_epoch(), expected_epoch);
-            assert_eq!(branch.store().node_count_for_label(None), 3);
-            assert_eq!(branch.store().relational_state().row_count("messages"), 1);
-            let (store, catalog) = branch.store_and_catalog_mut();
-            store.checkpoint(catalog).unwrap();
-            drop(branch);
-            let branch = fixture.admit(fixture.main, durability);
-            assert_eq!(branch.store().commit_epoch(), expected_epoch);
-            assert_eq!(branch.store().relational_state().row_count("messages"), 1);
         }
     }
 

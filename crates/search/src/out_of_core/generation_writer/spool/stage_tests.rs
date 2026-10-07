@@ -689,3 +689,168 @@ fn cleanup_retry_resolves_root_aliases_and_preserves_active_stages() {
     drop(active);
     assert_eq!(project.metrics().open, 0);
 }
+
+#[test]
+fn persistent_unlink_failure_preserves_generation_and_releases_work_resources() {
+    const CHILD: &str = "HAWDB_CLEANUP_UNLINK_FAILURE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                concat!(
+                    module_path!(),
+                    "::persistent_unlink_failure_preserves_generation_and_releases_work_resources"
+                )
+                .strip_prefix("hawdb_search::")
+                .unwrap(),
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
+        return;
+    }
+    use crate::{
+        SearchGenerationAdmission, SearchOutOfCoreGenerationWriter, SearchOutOfCoreReader,
+    };
+    use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+
+    fn document(id: &str) -> crate::SearchDocument {
+        crate::SearchDocument {
+            id: id.into(),
+            title: String::new(),
+            content: format!("published {id}"),
+            embedding: None,
+            metadata: Default::default(),
+        }
+    }
+
+    fn assert_idle(governor: &hawdb_qos::RuntimeGovernor, retained_bytes: usize) {
+        let snapshot = governor.snapshot();
+        assert_eq!(snapshot.active_background_tasks, 0);
+        assert_eq!(snapshot.active_blocking_tasks, 0);
+        assert_eq!(snapshot.active_cpu_slots, 0);
+        assert_eq!(snapshot.active_background_io_slots, 0);
+        assert_eq!(
+            snapshot.admitted_memory_bytes,
+            u64::try_from(retained_bytes).unwrap()
+        );
+    }
+
+    let fixture = Fixture::new();
+    let previous = document("previous");
+    let mut initial =
+        SearchOutOfCoreGenerationWriter::create(&fixture.0, Default::default()).unwrap();
+    initial.push(previous.clone()).unwrap();
+    let initial = initial.finish().unwrap();
+    let manifest = fixture
+        .0
+        .join(crate::out_of_core::OUT_OF_CORE_MANIFEST_FILE);
+    let before = fs::read(&manifest).unwrap();
+    let project = ProjectFileDescriptors::acquire_existing(&fixture.0, 4).unwrap();
+    let governor = hawdb_qos::RuntimeGovernor::detect(
+        hawdb_qos::RuntimeGovernorConfig {
+            memory_budget_bytes: Some(64 * 1024 * 1024),
+            background_task_limit: std::num::NonZeroUsize::new(1),
+            ..Default::default()
+        },
+        hawdb_qos::IoConcurrencyBudget::new(2, 1),
+    );
+    let request = hawdb_qos::RuntimeWorkRequest::background_maintenance(16 * 1024 * 1024)
+        .with_io_slots(1)
+        .with_blocking(true);
+    let admission = SearchGenerationAdmission::acquire(&governor, request).unwrap();
+    let mut writer = admission
+        .create_writer(&fixture.0, Default::default())
+        .unwrap();
+    writer.writer_mut().push(document("unpublished")).unwrap();
+    let active = governor.snapshot();
+    assert_eq!(active.active_background_tasks, 1);
+    assert_eq!(active.active_blocking_tasks, 1);
+    assert_eq!(active.active_cpu_slots, 1);
+    assert_eq!(active.active_background_io_slots, 1);
+    let path = fs::read_dir(&fixture.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "stage")
+        })
+        .unwrap();
+    let evidence = path.join("unlink-failure.evidence");
+    fs::write(&evidence, b"retained private evidence").unwrap();
+    let fault = stage::evidence::fail_unlink(&evidence);
+    drop(writer);
+    assert_eq!(fault.attempts(), 1);
+    assert_eq!(project.metrics().open, 0);
+    assert_eq!(project.metrics().reserved, 0);
+    drop(project);
+
+    let reopened = ProjectFileDescriptors::acquire_existing(&fixture.0, 8).unwrap();
+    let debt = SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&fixture.0, 0).unwrap();
+    assert_eq!(debt.pending_stages, 1);
+    assert_eq!(debt.blocked_stages, 1);
+    assert_eq!(debt.descriptor_denials, 0);
+    assert!(debt.reserved_disk_bytes > 0);
+    assert!(debt.retained_memory_bytes > 0);
+    assert!(debt.retained_memory_bytes < 8192);
+    for _ in 0..3 {
+        let report = SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&fixture.0, 1).unwrap();
+        assert_eq!(report.attempted_stages, 1);
+        assert_eq!(report.removed_stages, 0);
+        assert_eq!(report.pending_stages, 1);
+        assert_eq!(report.blocked_stages, 1);
+        assert_eq!(report.descriptor_denials, 0);
+        assert_eq!(report.retained_memory_bytes, debt.retained_memory_bytes);
+        assert_eq!(report.reserved_disk_bytes, debt.reserved_disk_bytes);
+        assert_idle(&governor, debt.retained_memory_bytes);
+        assert_eq!(fs::read(&evidence).unwrap(), b"retained private evidence");
+        assert_eq!(fs::read(&manifest).unwrap(), before);
+        let reader = SearchOutOfCoreReader::open(&fixture.0).unwrap();
+        assert_eq!(reader.generation(), initial.generation);
+        assert_eq!(
+            reader
+                .hydrate_documents(std::slice::from_ref(&previous.id))
+                .unwrap()
+                .documents,
+            vec![previous.clone()]
+        );
+    }
+    assert_eq!(fault.attempts(), 4);
+    let admission = SearchGenerationAdmission::acquire(&governor, request).unwrap();
+    let fresh = document("fresh");
+    let mut writer = admission
+        .create_writer(&fixture.0, Default::default())
+        .unwrap();
+    writer.writer_mut().push(fresh.clone()).unwrap();
+    writer.finish().unwrap();
+    assert_eq!(fault.attempts(), 5);
+    assert_idle(&governor, debt.retained_memory_bytes);
+    assert_eq!(fs::read(&evidence).unwrap(), b"retained private evidence");
+    drop(fault);
+    let report = SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&fixture.0, 1).unwrap();
+    assert_eq!(report.attempted_stages, 1);
+    assert_eq!(report.removed_stages, 1);
+    assert_eq!(report.pending_stages, 0);
+    assert_eq!(report.retained_memory_bytes, 0);
+    assert_eq!(report.reserved_disk_bytes, 0);
+    assert_idle(&governor, 0);
+    assert!(!path.exists());
+    assert_eq!(
+        SearchOutOfCoreReader::open(&fixture.0)
+            .unwrap()
+            .hydrate_documents(std::slice::from_ref(&fresh.id))
+            .unwrap()
+            .documents,
+        vec![fresh]
+    );
+    assert_eq!(reopened.metrics().open, 0);
+    assert_eq!(reopened.metrics().reserved, 0);
+}

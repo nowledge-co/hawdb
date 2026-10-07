@@ -130,6 +130,25 @@ immediately after publication. They require successful committed generation
 reports, complete reopen/hydration, no remaining stage and later cleanup progress.
 The phase hooks exist only in test builds.
 
+The public writer regression
+`persistent_unlink_failure_preserves_generation_and_releases_work_resources`
+injects `PermissionDenied` for one regular private-stage file immediately before
+counted unlink. The test-only guard keeps the same error active through Drop,
+three explicit retries and the next writer's automatic retry. It verifies intact
+evidence and the previously published generation, exact retained host charging,
+release of actually occupied CPU/background/blocking/I/O slots, reuse of the
+sole background task slot, and close/reopen from four to eight FDs.
+A later successful publication and retry release all stage debt without manual
+stage deletion. Negative controls dropping retained charging or keeping the old
+FD domain fail the same test.
+
+This deterministic error injection qualifies cleanup ownership and error paths;
+it does not measure native permission failures, OS handle counts or physical
+power-loss behavior. Operator remediation, maintenance/reopen coordination,
+process registry pressure and Windows alias isolation remain in
+[#867](https://github.com/nowledge-co/hawdb/issues/867) and
+[#819](https://github.com/nowledge-co/hawdb/issues/819).
+
 Allocation probes initialize fixed ledger metadata before measuring payloads.
 They measure requested Rust live capacity, not allocator overhead, native libc
 allocations or process RSS. Native scratch follows the audited pinned platform

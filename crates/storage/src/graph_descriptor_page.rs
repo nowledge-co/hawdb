@@ -23,6 +23,9 @@ use hawdb_integrity::{Crc32c, IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::fmt::{self, Display, Formatter};
 use std::num::{NonZeroU64, NonZeroUsize};
 
+mod view;
+pub(crate) use view::{encode_verified_view, GraphDescriptorPageView};
+
 const PAGE_MAGIC: &[u8; 8] = b"SKGDPG01";
 const PAGE_VERSION: u16 = 1;
 pub(crate) const GRAPH_DESCRIPTOR_PAGE_HEADER_BYTES: usize = 84;
@@ -325,6 +328,8 @@ impl ImmutableGraphDescriptorPage {
             )));
         }
         let payload = &encoded[PAGE_HEADER_BYTES..];
+        #[cfg(test)]
+        crate::cache::record_page_integrity_check();
         let mut hasher = IntegrityHasher::new();
         hasher.update(&encoded[..48]);
         hasher.update(payload);

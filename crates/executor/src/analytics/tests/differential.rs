@@ -266,6 +266,36 @@ fn check_stream(fixture: &Fixture, options: &RunOptions, only_visible: bool, ide
         spill_run_count: 0,
         spilled_rows: 0,
     };
+    let streamed = super::streaming::run_external(fixture, options, None);
+    let actual_streamed: Vec<_> = streamed.batches.into_iter().flatten().collect();
+    let expected_streamed = if options.exit == Exit::Complete {
+        expected.clone()
+    } else {
+        expected
+            .iter()
+            .take(options.memory.batch_rows.get())
+            .cloned()
+            .collect()
+    };
+    assert_eq!(actual_streamed, expected_streamed, "streaming {identity}");
+    if !expected.is_empty() && options.exit == Exit::Error {
+        assert!(streamed.result.is_err(), "streaming {identity}");
+    } else {
+        assert_eq!(
+            streamed.result.unwrap(),
+            if !expected.is_empty() && options.exit == Exit::Stop {
+                BatchControl::Stop
+            } else {
+                BatchControl::Continue
+            },
+            "streaming {identity}"
+        );
+    }
+    assert!(streamed
+        .reports
+        .blocking_memory
+        .iter()
+        .all(|report| report.peak_tracked_bytes <= report.budget_bytes));
     let output = run(fixture, options, None);
     assert_eq!(
         output.reports.blocking_memory,

@@ -100,7 +100,11 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
 /// A predicate-free optional one-hop MATCH over an existing source binding has
 /// the same null-extending behavior as one optional Expand.
 fn chained_optional_match(program: &GraphMatchProgram, input: LogicalPlan) -> Option<LogicalPlan> {
-    if !program.optional || !program.imports.is_empty() || program.predicate.is_some() {
+    if !program.optional
+        || !program.imports.is_empty()
+        || program.predicate.is_some()
+        || !introduced_bindings_are_disjoint(program, &input)
+    {
         return None;
     }
     let [GraphMatchStep::Node(source), GraphMatchStep::Expand {
@@ -124,11 +128,7 @@ fn chained_optional_match(program: &GraphMatchProgram, input: LogicalPlan) -> Op
     {
         return None;
     }
-    let mut introduced = BTreeSet::from([target.variable.as_str()]);
-    if let Some(relationship) = relationship {
-        introduced.insert(relationship);
-    }
-    (introduced == program.introduced.iter().map(String::as_str).collect()).then(|| {
+    introduces_expand_bindings(program, &target.variable, relationship.as_deref()).then(|| {
         LogicalPlan::Expand {
             source_variable: source.variable.clone(),
             source_label: source.label.clone(),
@@ -146,10 +146,20 @@ fn chained_optional_match(program: &GraphMatchProgram, input: LogicalPlan) -> Op
     })
 }
 
+fn introduces_expand_bindings(
+    program: &GraphMatchProgram,
+    target: &str,
+    relationship: Option<&str>,
+) -> bool {
+    let mut introduced = BTreeSet::from([target]);
+    introduced.extend(relationship);
+    introduced == program.introduced.iter().map(String::as_str).collect()
+}
+
 /// A single-node MATCH constrained by an existing scalar can use the bounded
 /// column lookup operator instead of scanning every node and filtering it.
 fn column_node_lookup(program: &GraphMatchProgram, input: LogicalPlan) -> Option<LogicalPlan> {
-    if !program.imports.is_empty() {
+    if !program.imports.is_empty() || !introduced_bindings_are_disjoint(program, &input) {
         return None;
     }
     let [GraphMatchStep::Node(node)] = program.steps.as_slice() else {
@@ -196,6 +206,85 @@ fn independent_nodes(program: &GraphMatchProgram, input: Option<&LogicalPlan>) -
     // Projection may retain stale native bindings after dropping their logical scope.
     // Only combine with inputs whose actual native bindings are fully known here.
     input.is_none_or(|input| disjoint_node_input(input, &variables))
+}
+
+// Project retains native nodes and relationships after their logical variables
+// leave scope. Native operators cannot clear logically introduced bindings;
+// keep GraphMatch's explicit scope transition unless absence is proven here.
+fn introduced_bindings_are_disjoint(program: &GraphMatchProgram, input: &LogicalPlan) -> bool {
+    let variables = program.introduced.iter().map(String::as_str).collect();
+    disjoint_native_bindings(input, &variables, 0)
+}
+
+fn disjoint_native_bindings(input: &LogicalPlan, variables: &BTreeSet<&str>, depth: usize) -> bool {
+    if depth >= 256 {
+        return false;
+    }
+    let next = depth + 1;
+    match input {
+        LogicalPlan::NodeScan { variable, .. } => !variables.contains(variable.as_str()),
+        LogicalPlan::VectorSeed { .. } => true,
+        // Aggregate constructs fresh value-only bindings, including its spill
+        // paths. No native entity binding survives from the input.
+        LogicalPlan::Aggregate { .. } => true,
+        LogicalPlan::Filter { input, .. }
+        | LogicalPlan::Project { input, .. }
+        | LogicalPlan::Sort { input, .. }
+        | LogicalPlan::Limit { input, .. }
+        | LogicalPlan::Distinct { input }
+        | LogicalPlan::OptionalDegree { input, .. } => {
+            disjoint_native_bindings(input, variables, next)
+        }
+        LogicalPlan::NodeColumnLookup {
+            variable, input, ..
+        } => {
+            !variables.contains(variable.as_str())
+                && disjoint_native_bindings(input, variables, next)
+        }
+        LogicalPlan::Expand {
+            source_variable,
+            target_variable,
+            rel_variable,
+            input,
+            ..
+        } => {
+            !variables.contains(source_variable.as_str())
+                && !variables.contains(target_variable.as_str())
+                && rel_variable
+                    .as_ref()
+                    .is_none_or(|name| !variables.contains(name.as_str()))
+                && disjoint_native_bindings(input, variables, next)
+        }
+        LogicalPlan::NodeCartesianProduct { left, right } => {
+            disjoint_native_bindings(left, variables, next)
+                && disjoint_native_bindings(right, variables, next)
+        }
+        LogicalPlan::GraphMatch { program, input } => {
+            program
+                .imports
+                .iter()
+                .all(|import| !variables.contains(import.variable.as_str()))
+                && program.steps.iter().all(|step| match step {
+                    GraphMatchStep::Node(node) => !variables.contains(node.variable.as_str()),
+                    GraphMatchStep::Expand {
+                        source,
+                        relationship,
+                        target,
+                        ..
+                    } => {
+                        !variables.contains(source.as_str())
+                            && !variables.contains(target.variable.as_str())
+                            && relationship
+                                .as_ref()
+                                .is_none_or(|name| !variables.contains(name.as_str()))
+                    }
+                })
+                && input
+                    .as_ref()
+                    .is_none_or(|input| disjoint_native_bindings(input, variables, next))
+        }
+        _ => false,
+    }
 }
 
 fn disjoint_node_input(input: &LogicalPlan, variables: &BTreeSet<&str>) -> bool {
@@ -248,7 +337,10 @@ fn node_product(program: GraphMatchProgram, mut input: Option<LogicalPlan>) -> L
 /// binder can validate scope; the conventional plan represents that clause as
 /// one more `Expand` over the prior input.
 fn chained_match(program: &GraphMatchProgram, input: &LogicalPlan) -> Option<LogicalPlan> {
-    if program.optional || !program.imports.is_empty() {
+    if program.optional
+        || !program.imports.is_empty()
+        || !introduced_bindings_are_disjoint(program, input)
+    {
         return None;
     }
     let [GraphMatchStep::Node(source), GraphMatchStep::Expand {
@@ -268,11 +360,7 @@ fn chained_match(program: &GraphMatchProgram, input: &LogicalPlan) -> Option<Log
         return None;
     }
 
-    let mut introduced = BTreeSet::from([target.variable.as_str()]);
-    if let Some(relationship) = relationship {
-        introduced.insert(relationship);
-    }
-    if introduced != program.introduced.iter().map(String::as_str).collect() {
+    if !introduces_expand_bindings(program, &target.variable, relationship.as_deref()) {
         return None;
     }
 
@@ -378,7 +466,9 @@ fn lower_optional_count_match(items: &[Aggregation], input: &LogicalPlan) -> Opt
     {
         let counts_relationship = rel_variable.as_deref() == Some(counted);
         let counts_target = target_variable == counted;
-        if counts_relationship || counts_target {
+        if (counts_relationship || counts_target)
+            && disjoint_native_bindings(input, &BTreeSet::from([counted.as_str()]), 0)
+        {
             return Some(LogicalPlan::Expand {
                 source_variable: source_variable.clone(),
                 source_label: source_label.clone(),
@@ -402,7 +492,11 @@ fn lower_optional_count_match(items: &[Aggregation], input: &LogicalPlan) -> Opt
     else {
         return None;
     };
-    if !program.optional || !program.imports.is_empty() || program.predicate.is_some() {
+    if !program.optional
+        || !program.imports.is_empty()
+        || program.predicate.is_some()
+        || !introduced_bindings_are_disjoint(program, input)
+    {
         return None;
     }
     let [GraphMatchStep::Node(first), GraphMatchStep::Expand {
@@ -436,6 +530,7 @@ fn lower_optional_count_match(items: &[Aggregation], input: &LogicalPlan) -> Opt
         && !first_is_introduced
         && target_is_introduced
         && (counts_relationship || counts_target)
+        && introduces_expand_bindings(program, &target.variable, relationship.as_deref())
     {
         return Some(LogicalPlan::Expand {
             source_variable: first.variable.clone(),
@@ -456,6 +551,7 @@ fn lower_optional_count_match(items: &[Aggregation], input: &LogicalPlan) -> Opt
         && first_is_introduced
         && !target_is_introduced
         && counts_relationship
+        && introduces_expand_bindings(program, &first.variable, relationship.as_deref())
     {
         return Some(LogicalPlan::Expand {
             source_variable: target.variable.clone(),
