@@ -25,6 +25,87 @@ fn scheduler() -> LocalQosScheduler {
     })
 }
 
+#[test]
+fn checkpoint_units_memory_manifest_open_denies_before_payload_allocation_preserves_source_and_retries(
+) {
+    use hawdb_qos::{
+        IoConcurrencyBudget, RuntimeGovernor, RuntimeGovernorConfig, RuntimeMemorySnapshot,
+        RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeWorkRequest,
+    };
+    let (directory, expected) = metadata_directory(3, false);
+    let names = [
+        RELATIONAL_ROW_PAGE_MANIFEST_FILE.into(),
+        relational_row_page_manifest_generation_file(1),
+        relational_row_page_artifact_file(1),
+        relational_row_page_root_descriptor_file(1),
+        relational_row_page_root_key_file(1),
+    ];
+    let before = names
+        .iter()
+        .map(|name| fs::read(directory.join(name)).unwrap())
+        .collect::<Vec<_>>();
+    let payload_bytes = before[0].len() as u64;
+    let governor = RuntimeGovernor::new(
+        RuntimeGovernorConfig {
+            memory_budget_bytes: Some(payload_bytes * 4 + 128),
+            background_task_limit: Some(NonZeroUsize::MIN),
+            ..RuntimeGovernorConfig::shared_host()
+        },
+        RuntimeResourceSnapshot::from_parts(
+            RuntimeResourceBudget::from_limits(NonZeroUsize::MIN, None, None),
+            RuntimeMemorySnapshot::from_limits(Some(1 << 30), Some(1 << 30), None, None, None),
+        ),
+        IoConcurrencyBudget::new(2, 1),
+    );
+    let denied = governor
+        .try_admit(
+            RuntimeWorkRequest::background_maintenance(payload_bytes + 23).with_io_wave_slots(1),
+        )
+        .unwrap();
+    let work = crate::background::CheckpointWorkContext::new(
+        denied.bind_task_context(hawdb_core::RuntimeTaskContext::default()),
+    );
+    let error = RelationalRowPageRootReader::open_latest_with_work_context(
+        &directory,
+        RelationalRowPagePublicationConfig::default(),
+        Some(&work),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, RelationalRowPagePublicationError::Admission(_))
+            && error.to_string().contains("memory admission deferred"),
+        "{error:?}"
+    );
+    drop(denied);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+    let admitted = governor
+        .try_admit(
+            RuntimeWorkRequest::background_maintenance(payload_bytes + 24).with_io_wave_slots(1),
+        )
+        .unwrap();
+    let work = crate::background::CheckpointWorkContext::new(
+        admitted.bind_task_context(hawdb_core::RuntimeTaskContext::default()),
+    );
+    let reader = RelationalRowPageRootReader::open_latest_with_work_context(
+        &directory,
+        RelationalRowPagePublicationConfig::default(),
+        Some(&work),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(reader.manifest(), &expected);
+    drop(reader);
+    drop(admitted);
+    let idle = governor.snapshot();
+    assert_eq!(idle.admitted_memory_bytes, 0);
+    assert_eq!(idle.active_cpu_slots, 0);
+    assert_eq!(idle.active_background_io_slots, 0);
+    for (name, bytes) in names.iter().zip(before) {
+        assert_eq!(fs::read(directory.join(name)).unwrap(), bytes);
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
 fn metadata_directory(count: usize, wide: bool) -> (PathBuf, RelationalRowPageRootManifest) {
     let mut root = super::checkpoint_manifest::empty_manifest(count);
     if wide {

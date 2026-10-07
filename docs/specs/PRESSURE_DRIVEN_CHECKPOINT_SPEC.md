@@ -799,6 +799,42 @@ detect incomplete/corrupt artifacts. This is bounded protocol evidence, not
 Rust refinement, a platform synchronization proof, liveness or runtime fault
 campaign coverage. See `docs/tla/README.md` for exact commands and assumptions.
 
+Background maintenance now carries a shared allocation controller through task
+clones and children. Explicit allocations charge their requested capacity and
+the concrete ownership lease before allocation; a smaller task ceiling does not
+reset the shared ledger. Critical memory pressure rejects new allocations.
+Closing execution rejects future allocations and releases CPU/task/I/O slots,
+while the complete original governor and process-memory reservations survive
+until the last actual allocation lease drops. This deliberately conservative
+retention does not readmit execution or create another memory reservation.
+Foreground admissions retain their existing controller construction path.
+The facade exports the typed memory-controller, lease and error contracts.
+
+Controlled manifest reads use a private byte buffer that reserves its actual
+capacity before fallible allocation and rejects allocator overgrant. Growth
+reserves the complete replacement while the old buffer remains charged, copies
+in 64 KiB units and destroys old bytes before releasing their lease. Failed
+appends restore the original byte length; all copied source bytes survive
+cancellation and a complete retry without leaking either capacity. Existing
+metadata/file-size limits and source bytes remain unchanged. The encoded input
+buffer holds its lease through decode and releases it after its bytes die.
+Allocator bookkeeping/rounding and allocation/destruction latency remain stated
+platform assumptions requiring RSS and release measurement evidence.
+
+The complete 92-test QoS suite and five storage memory tests pass, covering
+shared/narrowed/concurrent capacity, cancellation, critical-pressure recovery,
+retained bytes after execution closes, shared process-policy retention,
+replacement overlap, allocator failure and every actual growth/copy cancellation
+with full retry. Actual manifest opening rejects its encoded-buffer allocation
+one byte below the required capacity, then retries with all decoded metadata and
+all five source files unchanged. Strict workspace Clippy passes. Supported
+profiles, complete checkpoint/storage/lifecycle and required fuzz qualification
+of this memory source are still pending. Only explicit lease users are tracked:
+remaining schema/value/manifest output buffers, maps, graph/append builders,
+pinned source/state ownership, disk/FD and cleanup debt still require binding
+and qualification. This does not authorize production per-unit admission or
+establish any whole-candidate memory, platform or release-performance bound.
+
 The current whole-candidate operation estimate can exceed the default local
 QoS operation limit on a large database. Remaining bounded cancellable build
 units and builder-specific memory/retention accounting remain required; the

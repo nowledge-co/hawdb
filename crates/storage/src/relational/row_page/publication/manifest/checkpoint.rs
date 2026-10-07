@@ -23,7 +23,7 @@ pub(super) fn read_encoded(
     path: &Path,
     config: RelationalRowPagePublicationConfig,
     work: &CheckpointWorkContext,
-) -> Result<Vec<u8>, RelationalRowPagePublicationError> {
+) -> Result<crate::background::CheckpointBytes, RelationalRowPagePublicationError> {
     use super::super::publisher::checkpoint::io;
     let max_bytes = config.max_manifest_bytes.get();
     let max_bytes_u64 = u64::try_from(max_bytes).map_err(|_| {
@@ -54,9 +54,10 @@ pub(super) fn read_encoded(
         )
     })?;
     let unit = work.start_unit().map_err(work_error)?;
-    let mut encoded = Vec::with_capacity(capacity);
     let mut buffer = [0; 64 * 1024];
     unit.finish();
+    let mut encoded =
+        crate::background::CheckpointBytes::new(capacity, work).map_err(work_error)?;
     let mut file = file.take(read_limit);
     loop {
         let length = match io(Some(work), || Ok(file.read(&mut buffer)))? {
@@ -67,7 +68,9 @@ pub(super) fn read_encoded(
         if length == 0 {
             break;
         }
-        append(&mut encoded, &buffer[..length], work)?;
+        encoded
+            .append(&buffer[..length], work)
+            .map_err(work_error)?;
     }
     if encoded.len() > max_bytes {
         return Err(RelationalRowPagePublicationError::Admission(format!(

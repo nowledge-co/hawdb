@@ -239,6 +239,9 @@ impl Error for RuntimeIoWaveError {
     }
 }
 
+mod memory;
+pub use memory::{RuntimeMemoryController, RuntimeMemoryError, RuntimeMemoryPermit};
+
 #[derive(Debug, Clone)]
 pub struct RuntimeTaskContext {
     cancellation: RuntimeCancellationToken,
@@ -246,6 +249,7 @@ pub struct RuntimeTaskContext {
     admitted_parallelism: NonZeroUsize,
     executor_thread_limit: Option<NonZeroUsize>,
     memory_reservation: Option<RuntimeMemoryReservation>,
+    memory_controller: Option<Arc<dyn RuntimeMemoryController>>,
     io_wave_controller: Option<Arc<dyn RuntimeIoWaveController>>,
 }
 
@@ -296,6 +300,7 @@ impl RuntimeTaskContext {
             admitted_parallelism: NonZeroUsize::MIN,
             executor_thread_limit: None,
             memory_reservation: None,
+            memory_controller: None,
             io_wave_controller: None,
         }
     }
@@ -322,6 +327,7 @@ impl RuntimeTaskContext {
             admitted_parallelism: self.admitted_parallelism,
             executor_thread_limit: self.executor_thread_limit,
             memory_reservation: self.memory_reservation,
+            memory_controller: self.memory_controller.clone(),
             io_wave_controller: self.io_wave_controller.clone(),
         }
     }
@@ -367,6 +373,40 @@ impl RuntimeTaskContext {
 
     pub fn memory_reservation(&self) -> Option<RuntimeMemoryReservation> {
         self.memory_reservation
+    }
+
+    /// Binds actual allocation ownership to an already admitted task.
+    pub fn with_memory_controller(mut self, controller: Arc<dyn RuntimeMemoryController>) -> Self {
+        self.memory_controller = Some(controller);
+        self
+    }
+
+    /// Reserve before allocating and retain the returned lease until destruction.
+    /// Clones and children share their controller. Ungoverned contexts return
+    /// `None`; a supplied static ceiling still limits an individual allocation.
+    pub fn reserve_working_memory(
+        &self,
+        bytes: u64,
+    ) -> Result<Option<Box<dyn RuntimeMemoryPermit>>, RuntimeMemoryError> {
+        self.checkpoint().map_err(RuntimeMemoryError::Stopped)?;
+        if let Some(reservation) = self.memory_reservation
+            && bytes > reservation.memory_bytes()
+        {
+            return Err(RuntimeMemoryError::ReservationExceeded {
+                requested_bytes: bytes,
+                available_bytes: reservation.memory_bytes(),
+            });
+        }
+        self.memory_controller
+            .as_ref()
+            .map(|controller| {
+                controller.reserve(
+                    bytes,
+                    self.memory_reservation
+                        .map_or(u64::MAX, RuntimeMemoryReservation::memory_bytes),
+                )
+            })
+            .transpose()
     }
 
     /// Binds the controller owned by a successful runtime admission.

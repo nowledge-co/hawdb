@@ -15,13 +15,17 @@
 //! Cooperative admission for actual bounded checkpoint builder operations.
 
 use hawdb_core::{
-    RuntimeCancellationReason, RuntimeIoWaveError, RuntimeIoWavePermit, RuntimeTaskContext,
+    RuntimeCancellationReason, RuntimeIoWaveError, RuntimeIoWavePermit, RuntimeMemoryError,
+    RuntimeMemoryPermit, RuntimeTaskContext,
 };
 use hawdb_qos::{LocalQosPermit, LocalQosScheduler, QosAdmission, WorkClass, WorkRequest};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
+
+mod buffer;
+pub(crate) use buffer::CheckpointBytes;
 
 /// The task already admitted by the owner, optionally with per-unit local QoS.
 /// This never creates a governor or reserves the owner's memory a second time.
@@ -116,6 +120,22 @@ impl CheckpointWorkContext {
             .map_err(|error| self.record_failure(error))
     }
 
+    fn reserve_memory(
+        &self,
+        bytes: usize,
+    ) -> Result<Option<Box<dyn RuntimeMemoryPermit>>, CheckpointWorkError> {
+        let bytes = u64::try_from(bytes).map_err(|_| {
+            CheckpointWorkError::Memory(RuntimeMemoryError::ReservationExceeded {
+                requested_bytes: u64::MAX,
+                available_bytes: 0,
+            })
+        })?;
+        self.task
+            .reserve_working_memory(bytes)
+            .map_err(CheckpointWorkError::Memory)
+            .map_err(|error| self.record_failure(error))
+    }
+
     /// Hash a borrowed metadata buffer in bounded units without copying it.
     pub(crate) fn integrity(
         &self,
@@ -195,6 +215,8 @@ pub enum CheckpointWorkError {
     Stopped(RuntimeCancellationReason),
     Admission(QosAdmission),
     Io(RuntimeIoWaveError),
+    Memory(RuntimeMemoryError),
+    Allocation { bytes: u64, reason: String },
 }
 
 pub(crate) enum CheckpointOperationError<E> {
@@ -210,6 +232,13 @@ impl Display for CheckpointWorkError {
                 write!(formatter, "checkpoint unit admission deferred: {reason:?}")
             }
             Self::Io(error) => write!(formatter, "checkpoint build I/O stopped: {error}"),
+            Self::Memory(error) => {
+                write!(formatter, "checkpoint memory admission deferred: {error}")
+            }
+            Self::Allocation { bytes, reason } => write!(
+                formatter,
+                "checkpoint allocation of {bytes} bytes failed: {reason}"
+            ),
         }
     }
 }
@@ -220,6 +249,8 @@ impl Error for CheckpointWorkError {
             Self::Stopped(reason) => Some(reason),
             Self::Io(error) => Some(error),
             Self::Admission(_) => None,
+            Self::Memory(error) => Some(error),
+            Self::Allocation { .. } => None,
         }
     }
 }

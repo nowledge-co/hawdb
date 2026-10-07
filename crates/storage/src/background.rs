@@ -20,7 +20,7 @@ mod checkpoint;
 #[cfg(test)]
 pub(crate) use checkpoint::tests::CheckpointWorkProbe;
 pub(crate) use checkpoint::CheckpointOperationError;
-pub(crate) use checkpoint::CheckpointWorkUnit;
+pub(crate) use checkpoint::{CheckpointBytes, CheckpointWorkUnit};
 #[doc(hidden)]
 pub use checkpoint::{CheckpointWorkContext, CheckpointWorkError};
 
