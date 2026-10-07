@@ -1693,6 +1693,9 @@ impl<I: DecodeInput> Decoder<I> {
     }
 
     fn bounded_bytes(&mut self, max: usize, context: &str) -> Result<Vec<u8>, RelationalError> {
+        if let Some(work) = self.input.checkpoint_work_context().cloned() {
+            return checkpoint::decode_bytes_with_work_context(self, max, context, &work);
+        }
         let len = usize::try_from(self.u64()?).map_err(|_| {
             RelationalError::Corruption(format!("decoded {context} length overflows usize"))
         })?;
@@ -1707,6 +1710,9 @@ impl<I: DecodeInput> Decoder<I> {
     }
 
     fn string(&mut self) -> Result<String, RelationalError> {
+        if let Some(work) = self.input.checkpoint_work_context().cloned() {
+            return checkpoint::decode_string_with_work_context(self, &work);
+        }
         let bytes = self.bounded_bytes(self.limits.max_value_bytes, "string")?;
         self.value_bytes = self.value_bytes.checked_add(bytes.len()).ok_or_else(|| {
             RelationalError::Admission("decoded value byte count overflow".to_string())
@@ -1737,20 +1743,38 @@ impl<I: DecodeInput> Decoder<I> {
             )));
         }
         let payload_offset = self.input.position();
+        let work = self.input.checkpoint_work_context().cloned();
+        let unit = work
+            .as_ref()
+            .map(|work| work.start_unit().map_err(checkpoint::work_error))
+            .transpose()?;
         let mut bytes = self.retain_overflow_bytes.then(|| Vec::with_capacity(len));
+        if let Some(unit) = unit {
+            unit.finish();
+        }
         let mut hasher = IntegrityHasher::new();
         let mut remaining = len;
         let mut chunk = [0_u8; 64 * 1024];
         while remaining != 0 {
             let chunk_len = remaining.min(chunk.len());
             self.input.read_exact(&mut chunk[..chunk_len])?;
+            let unit = work
+                .as_ref()
+                .map(|work| work.start_unit().map_err(checkpoint::work_error))
+                .transpose()?;
             hasher.update(&chunk[..chunk_len]);
             if let Some(bytes) = &mut bytes {
                 bytes.extend_from_slice(&chunk[..chunk_len]);
             }
             remaining -= chunk_len;
+            if let Some(unit) = unit {
+                unit.finish();
+            }
         }
         self.overflow_bytes += len;
+        if let Some(work) = work {
+            work.checkpoint().map_err(checkpoint::work_error)?;
+        }
         Ok(DecodedOverflowSegment {
             payload_offset,
             len,
@@ -1759,9 +1783,30 @@ impl<I: DecodeInput> Decoder<I> {
         })
     }
 
+    fn repeated<T>(
+        &mut self,
+        count: usize,
+        mut decode: impl FnMut(&mut Self) -> Result<T, RelationalError>,
+    ) -> Result<Vec<T>, RelationalError> {
+        let Some(work) = self.input.checkpoint_work_context().cloned() else {
+            return (0..count).map(|_| decode(self)).collect();
+        };
+        let unit = work.start_unit().map_err(checkpoint::work_error)?;
+        let mut values = Vec::with_capacity(count);
+        unit.finish();
+        for _ in 0..count {
+            let value = decode(self)?;
+            let unit = work.start_unit().map_err(checkpoint::work_error)?;
+            values.push(value);
+            unit.finish();
+        }
+        work.checkpoint().map_err(checkpoint::work_error)?;
+        Ok(values)
+    }
+
     fn string_list(&mut self) -> Result<Vec<String>, RelationalError> {
         let count = self.count(self.limits.max_values, "string list")?;
-        (0..count).map(|_| self.string()).collect()
+        self.repeated(count, Self::string)
     }
 
     fn scalar_type(&mut self) -> Result<RelationalScalarType, RelationalError> {
@@ -1854,10 +1899,16 @@ impl<I: DecodeInput> Decoder<I> {
             self.limits.max_values.saturating_sub(self.values),
             "row values",
         )?;
-        let values = (0..count)
-            .map(|_| self.value())
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(RelationalRow::new(values))
+        let values = self.repeated(count, Self::value)?;
+        if let Some(work) = self.input.checkpoint_work_context().cloned() {
+            let unit = work.start_unit().map_err(checkpoint::work_error)?;
+            let row = RelationalRow::from_checkpoint_values(values);
+            unit.finish();
+            work.checkpoint().map_err(checkpoint::work_error)?;
+            Ok(row)
+        } else {
+            Ok(RelationalRow::new(values))
+        }
     }
 
     fn key(&mut self) -> Result<RelationalKey, RelationalError> {
@@ -1865,41 +1916,49 @@ impl<I: DecodeInput> Decoder<I> {
             self.limits.max_values.saturating_sub(self.values),
             "key values",
         )?;
-        let values = (0..value_count)
-            .map(|_| self.value())
-            .collect::<Result<_, _>>()?;
+        let values = self.repeated(value_count, Self::value)?;
         Ok(RelationalKey(values))
     }
 
     fn table_schema(&mut self) -> Result<RelationalTableSchema, RelationalError> {
         let name = self.string()?;
         let column_count = self.count(self.limits.max_values, "table columns")?;
-        let mut columns = Vec::with_capacity(column_count);
-        for _ in 0..column_count {
-            let name = self.string()?;
-            let scalar_type = self.scalar_type()?;
-            let nullable = self.boolean("column nullable")?;
-            let default = self.column_default()?;
-            columns.push(RelationalColumnSchema {
-                name,
-                scalar_type,
-                nullable,
-                default,
-            });
-        }
+        let columns = if self.input.checkpoint_work_context().is_some() {
+            self.repeated(column_count, |decoder| {
+                let name = decoder.string()?;
+                let scalar_type = decoder.scalar_type()?;
+                let nullable = decoder.boolean("column nullable")?;
+                let default = decoder.column_default()?;
+                Ok(RelationalColumnSchema {
+                    name,
+                    scalar_type,
+                    nullable,
+                    default,
+                })
+            })?
+        } else {
+            let mut columns = Vec::with_capacity(column_count);
+            for _ in 0..column_count {
+                let name = self.string()?;
+                let scalar_type = self.scalar_type()?;
+                let nullable = self.boolean("column nullable")?;
+                let default = self.column_default()?;
+                columns.push(RelationalColumnSchema {
+                    name,
+                    scalar_type,
+                    nullable,
+                    default,
+                });
+            }
+            columns
+        };
         let primary_key = self.string_list()?;
         let unique_count = self.count(self.limits.max_values, "unique constraints")?;
-        let unique_constraints = (0..unique_count)
-            .map(|_| self.string_list())
-            .collect::<Result<_, _>>()?;
+        let unique_constraints = self.repeated(unique_count, Self::string_list)?;
         let foreign_key_count = self.count(self.limits.max_values, "foreign keys")?;
-        let foreign_keys = (0..foreign_key_count)
-            .map(|_| self.foreign_key())
-            .collect::<Result<_, _>>()?;
+        let foreign_keys = self.repeated(foreign_key_count, Self::foreign_key)?;
         let index_count = self.count(self.limits.max_values, "indexes")?;
-        let indexes = (0..index_count)
-            .map(|_| self.index())
-            .collect::<Result<_, _>>()?;
+        let indexes = self.repeated(index_count, Self::index)?;
         Ok(RelationalTableSchema {
             name,
             columns,

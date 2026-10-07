@@ -104,7 +104,8 @@ pub(crate) fn row_pages(
     let mut page_bytes = 0usize;
     for (key, row) in rows {
         let mut entry_bytes = std::mem::size_of::<RelationalKey>()
-            .saturating_add(std::mem::size_of::<RelationalRow>());
+            .saturating_add(std::mem::size_of::<RelationalRow>())
+            .saturating_add(std::mem::size_of::<Vec<RelationalValue>>());
         // Keep the ordinary estimator's exact summation order and page boundaries.
         for values in [&key.0[..], row.values()] {
             let mut payload_bytes = 0usize;

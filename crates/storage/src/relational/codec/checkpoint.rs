@@ -14,6 +14,10 @@
 
 //! Borrowed row payload encoding for a cooperatively admitted checkpoint.
 
+mod decode;
+pub(super) use decode::{
+    bytes as decode_bytes_with_work_context, string as decode_string_with_work_context,
+};
 mod runtime;
 pub(super) use runtime::{
     clone_string as clone_string_with_work_context,

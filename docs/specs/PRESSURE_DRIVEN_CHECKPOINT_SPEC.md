@@ -535,6 +535,29 @@ UTF-8 validation, map comparisons, allocation/reallocation, directory retention
 and final-owner destruction still need hard byte/time accounting. These
 controls do not qualify whole-candidate memory, time or production admission.
 
+Private relational field decoding now reads/initializes binary values and
+validates/copies UTF-8 through 64 KiB blocks. Up to three incomplete scalar
+bytes carry across blocks; the first UTF-8 failure retains the ordinary global
+byte offset. Whole-field truncation is checked before payload reads, and an
+invalid string still consumes its complete field before cumulative byte-budget
+validation and UTF-8 reporting, preserving ordinary error precedence. Nested
+schema/key/row vectors use separate capacity and per-entry push boundaries;
+overflow payload hashing and optional retention have per-block controls.
+Private row construction shares the decoded owned values vector directly,
+without an Arc-slice allocation and complete array copy. Normal construction
+shrinks host-supplied spare capacity first. Logical values, slice access,
+snapshot sharing and COW isolation remain unchanged. The extra owned-vector
+header changes resident row overhead; both page estimators now include it.
+Focused coverage compares complete fields and a 1025-column schema/row against
+the independent ordinary decoder, valid and invalid split scalars, global UTF-8
+offsets, byte-budget/truncation/input-failure precedence, every overflow hash
+unit, representative/final cancellation, admission denial and full retry.
+Pointer identity verifies owned vector transfer and retained snapshots verify
+COW isolation. Capacity allocation, actual retained capacities, collection
+comparisons, final-owner destruction and source/candidate/retention accounting
+still need the shared hard resource ledger and release RSS/latency evidence.
+These controls do not qualify whole-candidate memory/time or production QoS.
+
 `HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
 two schema/data transactions under both durability policies. Its complete
 configured safety graph passed TLC (34,275 distinct states). Five deliberately

@@ -710,7 +710,7 @@ pub fn decode_relational_primary_key(encoded: &[u8]) -> Result<RelationalKey, Re
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationalRow {
-    values: Arc<[RelationalValue]>,
+    values: Arc<Vec<RelationalValue>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1256,9 +1256,19 @@ impl RelationalIndexChangeCapture {
 }
 
 impl RelationalRow {
-    pub fn new(values: Vec<RelationalValue>) -> Self {
+    pub fn new(mut values: Vec<RelationalValue>) -> Self {
+        // Do not retain arbitrary spare capacity supplied by a host caller.
+        // Private decoding already constructs the vector at its admitted size.
+        values.shrink_to_fit();
+        Self::from_checkpoint_values(values)
+    }
+
+    fn from_checkpoint_values(values: Vec<RelationalValue>) -> Self {
+        // Share the owned vector without an Arc-slice allocation and complete
+        // value-array copy. The vector's actual retained capacity still needs
+        // accounting in the checkpoint resource ledger.
         Self {
-            values: Arc::from(values),
+            values: Arc::new(values),
         }
     }
 
@@ -1419,6 +1429,7 @@ impl RelationalRowPages {
 fn relational_row_entry_bytes(key: &RelationalKey, row: &RelationalRow) -> usize {
     std::mem::size_of::<RelationalKey>()
         .saturating_add(std::mem::size_of::<RelationalRow>())
+        .saturating_add(std::mem::size_of::<Vec<RelationalValue>>())
         .saturating_add(
             key.0
                 .iter()
