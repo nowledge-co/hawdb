@@ -1105,8 +1105,18 @@ impl<'a> RelationalRowRuntime<'a> {
 
     fn remaining_limits(&self) -> Result<RelationalRowPageSnapshotReadLimits> {
         let [pages, bytes, rows, overlay_entries, overlay_bytes] = self.remaining_budget()?;
+        // The attached owner retains true zero and admits each actual action.
+        // Legacy NonZero per-call envelopes cannot encode that zero: a floor
+        // of one lets a point miss or overlay-only read select its source, but
+        // the owner still rejects any exhausted resource before consuming it.
+        let attached_owner = self.backend.is_some();
         let remaining = |limit: NonZeroUsize, available: usize, name: &str| {
-            NonZeroUsize::new(available).ok_or_else(|| {
+            let envelope = if attached_owner {
+                available.max(1)
+            } else {
+                available
+            };
+            NonZeroUsize::new(envelope).ok_or_else(|| {
                 HawDBError::Execution(format!(
                     "relational row {name} budget is exhausted at {}",
                     limit.get()

@@ -26,6 +26,7 @@ mod fixtures;
 mod inflight_budget;
 mod mixed_budget;
 mod query_cost_contexts;
+mod unused_budget;
 use fixtures::{apply, fields, key, state, Fixture};
 
 const SHAPES: [(&str, &[usize], &[usize]); 6] = [

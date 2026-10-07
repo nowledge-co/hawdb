@@ -1961,6 +1961,12 @@ Failed row hydration retains the row admission without claiming row emission.
 Mixed-source preflight intersects reported-work allowance with the shared
 owner's actual remaining admission, including failed work and earlier cap
 tightening; output row counts cannot substitute for that remaining allowance.
+Exhaustion rejects only an action that consumes that resource: an overlay-only
+point may consume no row-root page/slot bytes, a base-only point may consume no
+overlay allowance, and an absent point may consume no row. Attached snapshot
+readers retain true zero in the shared owner; their legacy nonzero per-call
+limits are only an envelope, and cannot turn unused exhaustion into a global
+stop or authorize an action beyond the shared cap.
 Projection frames retain their existing row/payload/record bounds and share
 the statement row/byte envelope. Their reported frame count is not a row-root
 demand page, so it does not consume the demand-reader page allowance.
