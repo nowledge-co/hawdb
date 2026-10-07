@@ -444,7 +444,7 @@ impl RelationalRowDeltaBuilder {
         )
     }
 
-    fn finish_selected_inner(
+    pub(super) fn finish_selected_inner(
         mut self,
         expected_visible_commit_epoch: u64,
         recovery_source: RelationalRecoverySourceIdentity,
@@ -504,10 +504,27 @@ impl RelationalRowDeltaBuilder {
                     manifest.base.generation,
                     manifest.delta_generation,
                 ));
-        let generation_tmp = generation_manifest.with_extension("hawdb.tmp");
-        remove_if_exists(&generation_tmp)?;
-        write_synced(&generation_tmp, &encoded_manifest)?;
-        durable_publish_immutable(&generation_tmp, &generation_manifest)?;
+        if select_latest {
+            let generation_tmp = generation_manifest.with_extension("hawdb.tmp");
+            remove_if_exists(&generation_tmp)?;
+            write_synced(&generation_tmp, &encoded_manifest)?;
+            durable_publish_immutable(&generation_tmp, &generation_manifest)?;
+        } else {
+            // This generation is unselected until its enclosing checkpoint
+            // publishes. Exclusive creation protects both existing immutable
+            // evidence and unrelated temporary files in this directory.
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&generation_manifest)
+                .map_err(durability("create private row recovery manifest"))?;
+            file.write_all(&encoded_manifest)
+                .map_err(durability("write private row recovery manifest"))?;
+            file.sync_all()
+                .map_err(durability("sync private row recovery manifest"))?;
+            sync_directory(&self.directory)
+                .map_err(durability("sync private row recovery directory"))?;
+        }
         maybe_stop(
             stop_after,
             RelationalRowDeltaPublicationPhase::CandidateManifestDurable,

@@ -129,6 +129,45 @@ mod selector_tests {
         assert_eq!(fs::read(&immutable).unwrap(), b"new complete generation");
         fs::remove_dir_all(directory).unwrap();
     }
+
+    #[test]
+    fn private_selector_failed_preparation_removes_only_its_owned_link() {
+        let directory = directory();
+        let immutable = directory.join("generation.manifest.hawdb");
+        let temporary = immutable.with_extension("hawdb.select.tmp");
+        let latest = directory.join("latest.manifest.hawdb");
+        fs::write(&immutable, b"new complete generation").unwrap();
+        fs::write(&latest, b"old selected generation").unwrap();
+        let failure = crate::durability::fail_sync_directory_for(&directory);
+        assert!(PreparedRelationalRecoverySelector::prepare(&immutable, latest.clone()).is_err());
+        drop(failure);
+        assert!(!temporary.exists());
+        assert_eq!(fs::read(&latest).unwrap(), b"old selected generation");
+        assert_eq!(fs::read(&immutable).unwrap(), b"new complete generation");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn private_selector_lost_sync_reply_keeps_selected_complete_generation() {
+        let directory = directory();
+        let immutable = directory.join("generation.manifest.hawdb");
+        let latest = directory.join("latest.manifest.hawdb");
+        fs::write(&immutable, b"new complete generation").unwrap();
+        fs::write(&latest, b"old selected generation").unwrap();
+        let mut selector =
+            PreparedRelationalRecoverySelector::prepare(&immutable, latest.clone()).unwrap();
+        let temporary = selector.temporary.clone();
+        let failure = crate::durability::fail_sync_directory_for(&directory);
+        assert!(selector.publish().is_err());
+        drop(failure);
+        drop(selector);
+        // A failed reply after rename does not imply rollback. Keep the
+        // complete selected bytes and immutable dependency for recovery.
+        assert!(!temporary.exists());
+        assert_eq!(fs::read(&latest).unwrap(), b"new complete generation");
+        assert_eq!(fs::read(&immutable).unwrap(), b"new complete generation");
+        fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 const RECOVERY_SOURCE_DOMAIN: &[u8] = b"HAWDB_RELATIONAL_RECOVERY_SOURCE_V1\0";
