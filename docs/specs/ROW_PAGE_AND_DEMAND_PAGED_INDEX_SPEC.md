@@ -1967,6 +1967,10 @@ overlay allowance, and an absent point may consume no row. Attached snapshot
 readers retain true zero in the shared owner; their legacy nonzero per-call
 limits are only an envelope, and cannot turn unused exhaustion into a global
 stop or authorize an action beyond the shared cap.
+An attached batch keeps its configured per-call input-key window; spending
+decoded-row allowance does not shrink that window. Missing keys do not consume
+row admission, and every selected row still passes the cumulative owner before
+decode. Standalone batch readers retain their existing per-call bounds.
 Projection frames retain their existing row/payload/record bounds and share
 the statement row/byte envelope. Their reported frame count is not a row-root
 demand page, so it does not consume the demand-reader page allowance.

@@ -601,7 +601,11 @@ impl<'a> RelationalRowRuntime<'a> {
                 Ok(rows)
             }
             Some(reader) => {
-                let remaining = self.remaining_limits()?;
+                let mut remaining = self.remaining_limits()?;
+                // The batch key window is a configured input bound, not
+                // remaining decoded rows. Actual selected rows still require
+                // admission by the attached shared owner before decoding.
+                remaining.demand.max_rows = self.limits.demand.max_rows;
                 let mut hydration = self.hydration.borrow_mut();
                 let (mut rows, report) = reader
                     .points_projected_fields(

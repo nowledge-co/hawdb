@@ -227,3 +227,83 @@ fn exhausted_rows_allow_absent_point_without_refund() {
     );
     fixture.remove();
 }
+
+#[test]
+fn exhausted_rows_allow_absent_batch_within_input_window() {
+    let fixture = Fixture::new();
+    let task = RuntimeTaskContext::default();
+    let mut runtime = fixture.runtime(1, "SELECT id FROM docs", &task);
+    runtime.limits.demand.max_rows = NonZeroUsize::new(2).unwrap();
+    for id in 0..2 {
+        assert_eq!(
+            runtime
+                .read_point("docs", &key(id))
+                .unwrap()
+                .unwrap()
+                .row
+                .primary_key,
+            key(id)
+        );
+    }
+    let reader = runtime.backend.as_ref().unwrap();
+    let before = reader.cumulative_read_report().unwrap();
+    assert_eq!(before.admitted_rows, 2);
+    assert!(runtime
+        .read_points("docs", &[key(99), key(100)])
+        .unwrap()
+        .is_empty());
+    let mut after_misses = before;
+    after_misses.demand.descriptor_reads += 2;
+    assert_eq!(reader.cumulative_read_report().unwrap(), after_misses);
+    // The configured input window is still bounded, even for all misses.
+    assert!(matches!(
+        runtime.read_points("docs", &[key(99), key(100), key(101)]),
+        Err(HawDBError::Execution(_))
+    ));
+    assert_eq!(reader.cumulative_read_report().unwrap(), after_misses);
+    assert!(matches!(
+        runtime.read_points("docs", &[key(2), key(3)]),
+        Err(HawDBError::Execution(_))
+    ));
+    assert_eq!(reader.cumulative_read_report().unwrap().admitted_rows, 2);
+    assert!(!reader.is_poisoned());
+    fixture.remove();
+}
+
+#[test]
+fn partially_spent_rows_keep_absent_batch_input_window() {
+    let fixture = Fixture::new();
+    let task = RuntimeTaskContext::default();
+    let mut runtime = fixture.runtime(1, "SELECT id FROM docs", &task);
+    runtime.limits.demand.max_rows = NonZeroUsize::new(2).unwrap();
+    assert_eq!(
+        runtime
+            .read_point("docs", &key(0))
+            .unwrap()
+            .unwrap()
+            .row
+            .primary_key,
+        key(0)
+    );
+    let reader = runtime.backend.as_ref().unwrap();
+    let before = reader.cumulative_read_report().unwrap();
+    assert_eq!(before.admitted_rows, 1);
+    assert!(runtime
+        .read_points("docs", &[key(99), key(100)])
+        .unwrap()
+        .is_empty());
+    let mut after_misses = before;
+    after_misses.demand.descriptor_reads += 2;
+    assert_eq!(reader.cumulative_read_report().unwrap(), after_misses);
+    let rows = runtime.read_points("docs", &[key(1), key(99)]).unwrap();
+    assert_eq!(rows.keys().cloned().collect::<Vec<_>>(), vec![key(1)]);
+    assert_eq!(rows[&key(1)].row.primary_key, key(1));
+    assert_eq!(reader.cumulative_read_report().unwrap().admitted_rows, 2);
+    assert!(matches!(
+        runtime.read_points("docs", &[key(2), key(3)]),
+        Err(HawDBError::Execution(_))
+    ));
+    assert_eq!(reader.cumulative_read_report().unwrap().admitted_rows, 2);
+    assert!(!reader.is_poisoned());
+    fixture.remove();
+}
