@@ -17,15 +17,162 @@ use super::{
     ComparisonOp, CreateCompositeIndex, CreateIndex, CreateProperty, GraphAlgorithm,
     GraphAlgorithmKind, GraphAlgorithmOptions, OrderDirection, OrderExpression, ProjectGraph,
     PropertyPredicate, RelationshipDirection, SchemaObjectState, SchemaPropertyType,
-    SchemaTableKind, SetValueExpression, Statement, VectorSearch, WithAliasFilter,
-    WithAliasFilterExpression, WithAliasFilterOp,
+    SchemaTableKind, SetValueExpression, Statement, VectorSearch,
 };
 use crate::parser::MAX_CYPHER_INPUT_BYTES;
 use crate::ScalarBinaryOp;
 use crate::{AstNode, ReturnExpressionKind, ScalarExpressionKind, ValueExpressionKind};
 use hawdb_core::Value;
 
+fn pipeline_patterns(query: &crate::QueryPipeline, clause: usize) -> &[crate::MatchPattern] {
+    let ClauseKind::Match { patterns, .. } = &query.clauses[clause].kind else {
+        panic!("expected a MATCH clause");
+    };
+    patterns
+}
+
+fn pipeline_pattern(query: &crate::QueryPipeline) -> &crate::MatchPattern {
+    query
+        .clauses
+        .iter()
+        .find_map(|clause| match &clause.kind {
+            ClauseKind::Match { patterns, .. } => patterns.first(),
+            _ => None,
+        })
+        .expect("expected a MATCH pattern")
+}
+
+fn pipeline_optional_pattern(query: &crate::QueryPipeline) -> &crate::MatchPattern {
+    query
+        .clauses
+        .iter()
+        .find_map(|clause| match &clause.kind {
+            ClauseKind::Match {
+                optional: true,
+                patterns,
+                ..
+            } => patterns.first(),
+            _ => None,
+        })
+        .expect("expected an OPTIONAL MATCH pattern")
+}
+
+fn pipeline_match_node(query: &crate::QueryPipeline, index: usize) -> &crate::NodePattern {
+    query
+        .clauses
+        .iter()
+        .filter_map(|clause| match &clause.kind {
+            ClauseKind::Match { patterns, .. } => Some(patterns),
+            _ => None,
+        })
+        .flatten()
+        .map(|pattern| &pattern.first)
+        .nth(index)
+        .unwrap()
+}
+
+fn pipeline_expansion(query: &crate::QueryPipeline) -> Option<&crate::PatternStep> {
+    pipeline_pattern(query).steps.first()
+}
+
+fn pipeline_predicate(query: &crate::QueryPipeline, clause: usize) -> Option<PropertyPredicate> {
+    let ClauseKind::Match { predicate, .. } = &query.clauses[clause].kind else {
+        panic!("expected a MATCH clause");
+    };
+    predicate.as_ref().map(|predicate| predicate.kind.clone())
+}
+
+fn pipeline_sets(query: &crate::QueryPipeline) -> &[crate::SetProperty] {
+    query
+        .clauses
+        .iter()
+        .find_map(|clause| match &clause.kind {
+            ClauseKind::Set(sets) => Some(sets.as_slice()),
+            _ => None,
+        })
+        .expect("expected a SET clause")
+}
+
+fn pipeline_delete(query: &crate::QueryPipeline) -> (bool, &[String]) {
+    let ClauseKind::Delete { detach, variables } = &query.clauses.last().unwrap().kind else {
+        panic!("expected a concluding DELETE clause");
+    };
+    (*detach, variables)
+}
+
+fn pipeline_create(query: &crate::QueryPipeline) -> &crate::MatchPattern {
+    let ClauseKind::Create(patterns) = &query.clauses.last().unwrap().kind else {
+        panic!("expected a concluding CREATE clause");
+    };
+    assert_eq!(patterns.len(), 1);
+    &patterns[0]
+}
+
+fn pipeline_merge(
+    query: &crate::QueryPipeline,
+) -> (
+    &crate::MatchPattern,
+    &[crate::SetProperty],
+    &[crate::SetProperty],
+) {
+    let ClauseKind::Merge {
+        pattern,
+        on_create,
+        on_match,
+    } = &query.clauses.last().unwrap().kind
+    else {
+        panic!("expected a concluding MERGE clause");
+    };
+    (pattern, on_create, on_match)
+}
+
+fn pipeline_return(query: &crate::QueryPipeline) -> &crate::ProjectionClause {
+    let ClauseKind::Return(projection) = &query.clauses.last().unwrap().kind else {
+        panic!("expected a concluding RETURN clause");
+    };
+    projection
+}
+
+fn pipeline_with(query: &crate::QueryPipeline) -> &crate::ProjectionClause {
+    query
+        .clauses
+        .iter()
+        .find_map(|clause| match &clause.kind {
+            ClauseKind::With(projection) => Some(projection),
+            _ => None,
+        })
+        .expect("expected a WITH clause")
+}
+
+fn assert_grouped_count(
+    query: &crate::QueryPipeline,
+    group: &str,
+    count: &str,
+    distinct: bool,
+    alias: &str,
+) {
+    let projection = pipeline_with(query);
+    assert_eq!(projection.items.len(), 2);
+    assert_eq!(
+        projection.items[0].expression,
+        AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
+            ScalarExpressionKind::Variable(group.to_string())
+        )))
+    );
+    assert_eq!(
+        projection.items[1].expression,
+        AstNode::synthetic(ReturnExpressionKind::Aggregate(
+            AggregateExpression::CountVariable {
+                variable: count.to_string(),
+                distinct
+            }
+        ))
+    );
+    assert_eq!(projection.items[1].alias.as_deref(), Some(alias));
+}
+
 mod backtracking;
+mod default_pipeline;
 mod migration_corpus;
 mod source_spans;
 
@@ -65,11 +212,14 @@ fn parses_create_node() {
 #[test]
 fn parser_accepts_keyword_case_and_spacing_variants() {
     let statement = parse("  match   (m:Memory)  return  m.title as title  ").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    assert_eq!(query.variable, "m");
-    assert_eq!(query.returns[0].alias.as_deref(), Some("title"));
+    assert_eq!(pipeline_pattern(&query).first.variable, "m");
+    assert_eq!(
+        pipeline_return(&query).items[0].alias.as_deref(),
+        Some("title")
+    );
 }
 
 #[test]
@@ -181,10 +331,10 @@ fn parses_cypher_system_hints() {
             "memo".to_string()
         )))
     );
-    let Statement::MatchReturn(match_return) = query.statement else {
+    let Statement::Pipeline(match_return) = query.statement else {
         panic!("expected inner match return");
     };
-    assert_eq!(match_return.variable, "m");
+    assert_eq!(pipeline_pattern(&match_return).first.variable, "m");
 }
 
 #[test]
@@ -194,10 +344,10 @@ fn parses_explain_statements() {
         panic!("expected explain");
     };
     assert!(!explain.analyze);
-    let Statement::MatchReturn(query) = explain.statement else {
+    let Statement::Pipeline(query) = explain.statement else {
         panic!("expected inner match return");
     };
-    assert_eq!(query.variable, "m");
+    assert_eq!(pipeline_pattern(&query).first.variable, "m");
 
     let statement = parse("EXPLAIN ANALYZE MATCH (m:Memory) RETURN m.id AS id").unwrap();
     let Statement::Explain(explain) = statement else {
@@ -266,13 +416,13 @@ fn parses_unwind_mutation_statement_through_the_public_dispatcher() {
 #[test]
 fn parses_unlabeled_node_match() {
     let statement = parse("MATCH (n) WHERE n.id IN $ids RETURN n.id").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    assert_eq!(query.variable, "n");
-    assert_eq!(query.label, "");
+    assert_eq!(pipeline_pattern(&query).first.variable, "n");
+    assert_eq!(pipeline_pattern(&query).first.label, "");
     assert_eq!(
-        query.predicate,
+        pipeline_predicate(&query, 0),
         Some(PropertyPredicate::In {
             variable: "n".to_string(),
             property: "id".to_string(),
@@ -284,26 +434,26 @@ fn parses_unlabeled_node_match() {
 #[test]
 fn parses_multi_label_node_match() {
     let statement = parse("MATCH (n:Entity:Memory) RETURN n.id").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    assert_eq!(query.variable, "n");
-    assert_eq!(query.label, "Entity:Memory");
+    assert_eq!(pipeline_pattern(&query).first.variable, "n");
+    assert_eq!(pipeline_pattern(&query).first.label, "Entity:Memory");
 }
 
 #[test]
 fn parses_variable_return_item() {
     let statement = parse("MATCH (m:Memory {id: $memory_id}) RETURN m").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.returns[0].expression,
+        pipeline_return(&query).items[0].expression,
         AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
             ScalarExpressionKind::Variable("m".to_string())
         )))
     );
-    assert_eq!(query.returns[0].alias, None);
+    assert_eq!(pipeline_return(&query).items[0].alias, None);
 }
 
 #[test]
@@ -459,11 +609,11 @@ fn parses_current_timestamp_value_expression() {
     let statement =
         parse("MATCH (j:AugmentationJob {job_id: 'j1'}) SET j.started_at = CURRENT_TIMESTAMP()")
             .unwrap();
-    let Statement::MatchSet(update) = statement else {
+    let Statement::Pipeline(update) = statement else {
         panic!("expected match set");
     };
     assert_eq!(
-        update.sets[0].value,
+        pipeline_sets(&update)[0].value,
         SetValueExpression::Value(AstNode::synthetic(ValueExpressionKind::CurrentTimestamp))
     );
 }
@@ -485,11 +635,11 @@ fn parses_timestamp_value_expression() {
 
     let statement =
         parse("MATCH (m:Memory) WHERE m.created_at > timestamp($cutoff) RETURN count(m)").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.predicate,
+        pipeline_predicate(&query, 0),
         Some(PropertyPredicate::Compare {
             variable: "m".to_string(),
             property: "created_at".to_string(),
@@ -507,11 +657,11 @@ fn parses_cast_timestamp_value_expression() {
         "MATCH (m:Memory) WHERE m.created_at >= CAST($recent_7d AS TIMESTAMP) RETURN count(m)",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.predicate,
+        pipeline_predicate(&query, 0),
         Some(PropertyPredicate::Compare {
             variable: "m".to_string(),
             property: "created_at".to_string(),
@@ -796,10 +946,16 @@ fn parses_vector_search_feeding_graph_match() {
          RETURN m.id AS memory_id, score",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected vector-seeded MATCH");
     };
-    let search = query.vector_seed.expect("vector seed");
+    assert_eq!(query.clauses.len(), 3);
+    let ClauseKind::Call { procedure, yields } = &query.clauses[0].kind else {
+        panic!("expected a vector call");
+    };
+    let crate::ProcedureCallKind::VectorSearch(search) = &procedure.kind else {
+        panic!("expected vector search");
+    };
     assert_eq!(
         search.embedding,
         AstNode::synthetic(ValueExpressionKind::Parameter("embedding".to_string()))
@@ -810,9 +966,16 @@ fn parses_vector_search_feeding_graph_match() {
             Value::Int(20)
         )))
     );
-    assert_eq!(query.variable, "m");
-    assert_eq!(query.label, "Memory");
-    assert_eq!(query.returns.len(), 2);
+    assert_eq!(
+        yields
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>(),
+        ["id", "score"]
+    );
+    assert_eq!(pipeline_pattern(&query).first.variable, "m");
+    assert_eq!(pipeline_pattern(&query).first.label, "Memory");
+    assert_eq!(pipeline_return(&query).items.len(), 2);
 }
 
 #[test]
@@ -898,12 +1061,12 @@ fn parses_merge_relationship() {
 #[test]
 fn parses_match_set() {
     let statement = parse("MATCH (m:Memory) WHERE m.id = $id SET m.title = 'updated'").unwrap();
-    let Statement::MatchSet(update) = statement else {
+    let Statement::Pipeline(update) = statement else {
         panic!("expected match set");
     };
-    assert_eq!(update.variable, "m");
-    assert!(update.expand.is_none());
-    assert_eq!(update.sets[0].property, "title");
+    assert_eq!(pipeline_pattern(&update).first.variable, "m");
+    assert!(pipeline_expansion(&update).is_none());
+    assert_eq!(pipeline_sets(&update)[0].property, "title");
 }
 
 #[test]
@@ -912,26 +1075,26 @@ fn parses_match_set_return() {
         "MATCH (t:Thread) WHERE t.thread_id IN $thread_ids SET t.space_id = $target_space_id, t.updated_at = $updated_at RETURN t.thread_id",
     )
     .unwrap();
-    let Statement::MatchSetReturn(update_return) = statement else {
+    let Statement::Pipeline(update_return) = statement else {
         panic!("expected match set return");
     };
-    assert_eq!(update_return.update.variable, "t");
-    assert_eq!(update_return.update.sets.len(), 2);
-    assert_eq!(update_return.returns.len(), 1);
-    assert_eq!(update_return.returns[0].alias, None);
+    assert_eq!(pipeline_pattern(&update_return).first.variable, "t");
+    assert_eq!(pipeline_sets(&update_return).len(), 2);
+    assert_eq!(pipeline_return(&update_return).items.len(), 1);
+    assert_eq!(pipeline_return(&update_return).items[0].alias, None);
 }
 
 #[test]
 fn parses_property_increment_set() {
     let statement =
         parse("MATCH (s:Source {id: $id}) SET s.memory_count = s.memory_count + 1").unwrap();
-    let Statement::MatchSet(update) = statement else {
+    let Statement::Pipeline(update) = statement else {
         panic!("expected match set");
     };
-    assert_eq!(update.sets[0].variable, "s");
-    assert_eq!(update.sets[0].property, "memory_count");
+    assert_eq!(pipeline_sets(&update)[0].variable, "s");
+    assert_eq!(pipeline_sets(&update)[0].property, "memory_count");
     assert_eq!(
-        update.sets[0].value,
+        pipeline_sets(&update)[0].value,
         SetValueExpression::PropertyAdd {
             variable: "s".to_string(),
             property: "memory_count".to_string(),
@@ -946,13 +1109,13 @@ fn parses_case_decrement_floor_zero_set() {
         "MATCH (s:Source {id: $id}) SET s.memory_count = CASE WHEN s.memory_count > 0 THEN s.memory_count - 1 ELSE 0 END",
     )
     .unwrap();
-    let Statement::MatchSet(update) = statement else {
+    let Statement::Pipeline(update) = statement else {
         panic!("expected match set");
     };
-    assert_eq!(update.sets[0].variable, "s");
-    assert_eq!(update.sets[0].property, "memory_count");
+    assert_eq!(pipeline_sets(&update)[0].variable, "s");
+    assert_eq!(pipeline_sets(&update)[0].property, "memory_count");
     assert_eq!(
-        update.sets[0].value,
+        pipeline_sets(&update)[0].value,
         SetValueExpression::DecrementFloorZero {
             variable: "s".to_string(),
             property: "memory_count".to_string(),
@@ -968,13 +1131,13 @@ fn parses_coalesce_property_increment_set() {
              m.last_accessed_at = $now",
     )
     .unwrap();
-    let Statement::MatchSet(update) = statement else {
+    let Statement::Pipeline(update) = statement else {
         panic!("expected match set");
     };
-    assert_eq!(update.sets.len(), 2);
-    assert_eq!(update.sets[0].property, "access_count");
+    assert_eq!(pipeline_sets(&update).len(), 2);
+    assert_eq!(pipeline_sets(&update)[0].property, "access_count");
     assert_eq!(
-        update.sets[0].value,
+        pipeline_sets(&update)[0].value,
         SetValueExpression::CoalescePropertyAdd {
             variable: "m".to_string(),
             property: "access_count".to_string(),
@@ -982,7 +1145,7 @@ fn parses_coalesce_property_increment_set() {
             value: AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(1))),
         }
     );
-    assert_eq!(update.sets[1].property, "last_accessed_at");
+    assert_eq!(pipeline_sets(&update)[1].property, "last_accessed_at");
 }
 
 #[test]
@@ -991,13 +1154,13 @@ fn parses_case_preserve_newer_existing_set() {
         "MATCH (t:Thread {id: $thread_uuid}) SET t.message_count = $message_count, t.updated_at = CASE WHEN $updated_at IS NULL THEN t.updated_at WHEN $preserve_newer_existing_updated_at = true AND t.updated_at IS NOT NULL AND t.updated_at > $updated_at THEN t.updated_at ELSE $updated_at END",
     )
     .unwrap();
-    let Statement::MatchSet(update) = statement else {
+    let Statement::Pipeline(update) = statement else {
         panic!("expected match set");
     };
-    assert_eq!(update.sets.len(), 2);
-    assert_eq!(update.sets[1].property, "updated_at");
+    assert_eq!(pipeline_sets(&update).len(), 2);
+    assert_eq!(pipeline_sets(&update)[1].property, "updated_at");
     assert_eq!(
-        update.sets[1].value,
+        pipeline_sets(&update)[1].value,
         SetValueExpression::PreserveNewerExisting {
             variable: "t".to_string(),
             property: "updated_at".to_string(),
@@ -1013,16 +1176,16 @@ fn parses_case_preserve_newer_existing_set() {
 fn parses_relationship_variable_set() {
     let statement =
         parse("MATCH (m:Memory)-[r:MENTIONS]->(e:Entity) WHERE m.id = 1 SET r.weight = 2").unwrap();
-    let Statement::MatchSet(update) = statement else {
+    let Statement::Pipeline(update) = statement else {
         panic!("expected match set");
     };
-    assert_eq!(update.variable, "m");
-    let expand = update.expand.as_ref().expect("relationship expand");
-    assert_eq!(expand.variable.as_deref(), Some("r"));
-    assert_eq!(expand.rel_type, "MENTIONS");
-    assert_eq!(expand.target_variable, "e");
-    assert_eq!(update.sets[0].variable, "r");
-    assert_eq!(update.sets[0].property, "weight");
+    assert_eq!(pipeline_pattern(&update).first.variable, "m");
+    let expand = pipeline_expansion(&update).expect("relationship expand");
+    assert_eq!(expand.relationship.variable.as_deref(), Some("r"));
+    assert_eq!(expand.relationship.rel_type, "MENTIONS");
+    assert_eq!(expand.target.variable, "e");
+    assert_eq!(pipeline_sets(&update)[0].variable, "r");
+    assert_eq!(pipeline_sets(&update)[0].property, "weight");
 }
 
 #[test]
@@ -1031,21 +1194,21 @@ fn parses_relationship_pattern_properties() {
         "MATCH (m:Memory)-[r:MENTIONS {weight: $weight, kind: 'primary'}]->(e:Entity) RETURN e.name AS entity",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let expand = query.expand.unwrap();
-    assert_eq!(expand.variable.as_deref(), Some("r"));
-    assert_eq!(expand.rel_type, "MENTIONS");
-    assert_eq!(expand.properties.len(), 2);
+    let expand = pipeline_expansion(&query).unwrap();
+    assert_eq!(expand.relationship.variable.as_deref(), Some("r"));
+    assert_eq!(expand.relationship.rel_type, "MENTIONS");
+    assert_eq!(expand.relationship.properties.len(), 2);
     assert_eq!(
-        expand.properties.get("weight"),
+        expand.relationship.properties.get("weight"),
         Some(&AstNode::synthetic(ValueExpressionKind::Parameter(
             "weight".to_string()
         )))
     );
     assert_eq!(
-        expand.properties.get("kind"),
+        expand.relationship.properties.get("kind"),
         Some(&AstNode::synthetic(ValueExpressionKind::Literal(
             Value::String("primary".to_string())
         )))
@@ -1055,22 +1218,22 @@ fn parses_relationship_pattern_properties() {
 #[test]
 fn parses_match_delete() {
     let statement = parse("MATCH (m:Memory) WHERE m.id = 1 DELETE m").unwrap();
-    let Statement::MatchDelete(delete) = statement else {
+    let Statement::Pipeline(delete) = statement else {
         panic!("expected match delete");
     };
-    assert_eq!(delete.variable, "m");
-    assert_eq!(delete.delete_variable, "m");
-    assert!(!delete.detach);
+    assert_eq!(pipeline_pattern(&delete).first.variable, "m");
+    assert_eq!(pipeline_delete(&delete).1[0], "m");
+    assert!(!pipeline_delete(&delete).0);
 }
 
 #[test]
 fn parses_match_detach_delete() {
     let statement = parse("MATCH (m:Memory) WHERE m.id = 1 DETACH DELETE m").unwrap();
-    let Statement::MatchDelete(delete) = statement else {
+    let Statement::Pipeline(delete) = statement else {
         panic!("expected match delete");
     };
-    assert_eq!(delete.variable, "m");
-    assert!(delete.detach);
+    assert_eq!(pipeline_pattern(&delete).first.variable, "m");
+    assert!(pipeline_delete(&delete).0);
 }
 
 #[test]
@@ -1078,31 +1241,34 @@ fn parses_match_detach_delete_after_relationship_match() {
     let statement =
         parse("MATCH (t:Thread {id: $thread_uuid})-[:CONTAINS]->(m:Message) DETACH DELETE m")
             .unwrap();
-    let Statement::MatchDelete(delete) = statement else {
+    let Statement::Pipeline(delete) = statement else {
         panic!("expected match delete");
     };
-    assert_eq!(delete.variable, "t");
-    assert_eq!(delete.delete_variable, "m");
-    assert!(delete.detach);
-    let expand = delete.expand.expect("expected relationship expand");
-    assert_eq!(expand.rel_type, "CONTAINS");
-    assert_eq!(expand.target_variable, "m");
-    assert_eq!(expand.target_label, "Message");
+    assert_eq!(pipeline_pattern(&delete).first.variable, "t");
+    assert_eq!(pipeline_delete(&delete).1[0], "m");
+    assert!(pipeline_delete(&delete).0);
+    let expand = pipeline_expansion(&delete).expect("expected relationship expand");
+    assert_eq!(expand.relationship.rel_type, "CONTAINS");
+    assert_eq!(expand.target.variable, "m");
+    assert_eq!(expand.target.label, "Message");
 }
 
 #[test]
 fn parses_match_return() {
     let statement = parse("MATCH (m:Memory) WHERE m.id = 1 RETURN m.title AS title").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    assert_eq!(query.variable, "m");
-    assert_eq!(query.label, "Memory");
-    assert!(query.properties.is_empty());
-    assert!(!query.distinct);
-    assert_eq!(query.returns[0].alias.as_deref(), Some("title"));
+    assert_eq!(pipeline_pattern(&query).first.variable, "m");
+    assert_eq!(pipeline_pattern(&query).first.label, "Memory");
+    assert!(pipeline_pattern(&query).first.properties.is_empty());
+    assert!(!pipeline_return(&query).distinct);
     assert_eq!(
-        query.returns[0].expression,
+        pipeline_return(&query).items[0].alias.as_deref(),
+        Some("title")
+    );
+    assert_eq!(
+        pipeline_return(&query).items[0].expression,
         AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
             ScalarExpressionKind::Property {
                 variable: "m".to_string(),
@@ -1118,35 +1284,38 @@ fn parses_match_node_property_patterns() {
         "MATCH (m:Memory {is_crystal: true})-[:SYNTHESIZED_FROM]->(s:Memory {kind: 'note'}) RETURN DISTINCT s.id",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.properties.get("is_crystal"),
+        pipeline_pattern(&query).first.properties.get("is_crystal"),
         Some(&AstNode::synthetic(ValueExpressionKind::Literal(
             Value::Bool(true)
         )))
     );
-    let expand = query.expand.as_ref().expect("expected relationship expand");
+    let expand = pipeline_expansion(&query).expect("expected relationship expand");
     assert_eq!(
-        expand.target_properties.get("kind"),
+        expand.target.properties.get("kind"),
         Some(&AstNode::synthetic(ValueExpressionKind::Literal(
             Value::String("note".to_string())
         )))
     );
-    assert!(query.distinct);
+    assert!(pipeline_return(&query).distinct);
 }
 
 #[test]
 fn parses_distinct_return() {
     let statement = parse("MATCH (m:Memory) RETURN DISTINCT m.kind AS kind").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    assert!(query.distinct);
-    assert_eq!(query.returns[0].alias.as_deref(), Some("kind"));
+    assert!(pipeline_return(&query).distinct);
     assert_eq!(
-        query.returns[0].expression,
+        pipeline_return(&query).items[0].alias.as_deref(),
+        Some("kind")
+    );
+    assert_eq!(
+        pipeline_return(&query).items[0].expression,
         AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
             ScalarExpressionKind::Property {
                 variable: "m".to_string(),
@@ -1162,33 +1331,39 @@ fn parses_id_return_items() {
         "MATCH (m:Memory)-[r:MENTIONS]->(e:Entity) RETURN id(m) AS memory_id, id(r) AS rel_id",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.returns[0].expression,
+        pipeline_return(&query).items[0].expression,
         AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
             ScalarExpressionKind::Id("m".to_string())
         )))
     );
-    assert_eq!(query.returns[0].alias.as_deref(), Some("memory_id"));
     assert_eq!(
-        query.returns[1].expression,
+        pipeline_return(&query).items[0].alias.as_deref(),
+        Some("memory_id")
+    );
+    assert_eq!(
+        pipeline_return(&query).items[1].expression,
         AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
             ScalarExpressionKind::Id("r".to_string())
         )))
     );
-    assert_eq!(query.returns[1].alias.as_deref(), Some("rel_id"));
+    assert_eq!(
+        pipeline_return(&query).items[1].alias.as_deref(),
+        Some("rel_id")
+    );
 
     let statement = parse(
         "MATCH (m:Memory)-[r:MENTIONS]->(e:Entity) WHERE id(r) IN [0, $rel_id] RETURN e.name AS entity ORDER BY id(r) DESC",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.predicate.unwrap(),
+        pipeline_predicate(&query, 0).unwrap(),
         PropertyPredicate::IdIn {
             variable: "r".to_string(),
             values: AstNode::synthetic(ValueExpressionKind::List(vec![
@@ -1198,7 +1373,7 @@ fn parses_id_return_items() {
         }
     );
     assert_eq!(
-        query.order_by[0].expression,
+        pipeline_return(&query).order_by[0].expression,
         OrderExpression::Id {
             variable: "r".to_string()
         }
@@ -1209,13 +1384,13 @@ fn parses_id_return_items() {
 fn parses_bounded_relationship_match() {
     let statement =
         parse("MATCH (m:Memory)-[:MENTIONS*1..3]->(e:Entity) RETURN e.name AS name").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let expand = query.expand.unwrap();
-    assert_eq!(expand.rel_type, "MENTIONS");
-    assert_eq!(expand.min_hops, 1);
-    assert_eq!(expand.max_hops, 3);
+    let expand = pipeline_expansion(&query).unwrap();
+    assert_eq!(expand.relationship.rel_type, "MENTIONS");
+    assert_eq!(expand.relationship.min_hops, 1);
+    assert_eq!(expand.relationship.max_hops, 3);
 }
 
 #[test]
@@ -1224,16 +1399,16 @@ fn parses_bounded_relationship_match_with_unused_path_binding() {
         "MATCH p = (s:Source {id: $source_id})-[:REVISED_AS*1..10]->(older:Source) RETURN older.id AS id ORDER BY older.version DESC",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    assert_eq!(query.variable, "s");
-    assert_eq!(query.label, "Source");
-    let expand = query.expand.unwrap();
-    assert_eq!(expand.rel_type, "REVISED_AS");
-    assert_eq!(expand.min_hops, 1);
-    assert_eq!(expand.max_hops, 10);
-    assert_eq!(expand.target_variable, "older");
+    assert_eq!(pipeline_pattern(&query).first.variable, "s");
+    assert_eq!(pipeline_pattern(&query).first.label, "Source");
+    let expand = pipeline_expansion(&query).unwrap();
+    assert_eq!(expand.relationship.rel_type, "REVISED_AS");
+    assert_eq!(expand.relationship.min_hops, 1);
+    assert_eq!(expand.relationship.max_hops, 10);
+    assert_eq!(expand.target.variable, "older");
 }
 
 #[test]
@@ -1242,30 +1417,33 @@ fn parses_all_shortest_path_return() {
         "MATCH p = (a)-[e* ALL SHORTEST 1..3]-(b) WHERE a.id = $from_id AND b.id = $to_id RETURN properties(nodes(p), 'id') AS node_ids, properties(nodes(p), 'name') AS names, length(p) AS hops",
     )
     .unwrap();
-    let Statement::ShortestPathReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected shortest path return");
     };
-    assert_eq!(query.path_variable, "p");
-    assert_eq!(query.source_variable, "a");
-    assert_eq!(query.target_variable, "b");
-    assert_eq!(query.min_hops, 1);
-    assert_eq!(query.max_hops, 3);
-    assert_eq!(query.returns.len(), 3);
+    let pattern = pipeline_pattern(&query);
+    let step = &pattern.steps[0];
+    assert_eq!(step.relationship.search, crate::PathSearch::AllShortest);
+    assert_eq!(pattern.variable.as_deref(), Some("p"));
+    assert_eq!(pattern.first.variable, "a");
+    assert_eq!(step.target.variable, "b");
+    assert_eq!(step.relationship.min_hops, 1);
+    assert_eq!(step.relationship.max_hops, 3);
+    assert_eq!(pipeline_return(&query).items.len(), 3);
 }
 
 #[test]
 fn parses_relationship_variable_delete() {
     let statement = parse("MATCH (m:Memory)-[r:MENTIONS]->(e:Entity) DELETE r").unwrap();
-    let Statement::MatchDelete(delete) = statement else {
+    let Statement::Pipeline(delete) = statement else {
         panic!("expected match delete");
     };
-    let expand = delete.expand.unwrap();
-    assert_eq!(delete.variable, "m");
-    assert_eq!(delete.delete_variable, "r");
-    assert_eq!(expand.variable.as_deref(), Some("r"));
-    assert_eq!(expand.rel_type, "MENTIONS");
-    assert_eq!(expand.target_variable, "e");
-    assert_eq!(expand.target_label, "Entity");
+    let expand = pipeline_expansion(&delete).unwrap();
+    assert_eq!(pipeline_pattern(&delete).first.variable, "m");
+    assert_eq!(pipeline_delete(&delete).1[0], "r");
+    assert_eq!(expand.relationship.variable.as_deref(), Some("r"));
+    assert_eq!(expand.relationship.rel_type, "MENTIONS");
+    assert_eq!(expand.target.variable, "e");
+    assert_eq!(expand.target.label, "Entity");
 }
 
 #[test]
@@ -1273,18 +1451,18 @@ fn parses_untyped_relationship_match_and_label_return() {
     let statement =
         parse("MATCH (a)-[r]->(b) RETURN a.id AS source, b.id AS target, label(r) AS rel_type")
             .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let expand = query.expand.as_ref().expect("expected relationship expand");
-    assert_eq!(query.variable, "a");
-    assert_eq!(query.label, "");
-    assert_eq!(expand.variable.as_deref(), Some("r"));
-    assert_eq!(expand.rel_type, "");
-    assert_eq!(expand.target_variable, "b");
-    assert_eq!(expand.target_label, "");
+    let expand = pipeline_expansion(&query).expect("expected relationship expand");
+    assert_eq!(pipeline_pattern(&query).first.variable, "a");
+    assert_eq!(pipeline_pattern(&query).first.label, "");
+    assert_eq!(expand.relationship.variable.as_deref(), Some("r"));
+    assert_eq!(expand.relationship.rel_type, "");
+    assert_eq!(expand.target.variable, "b");
+    assert_eq!(expand.target.label, "");
     assert_eq!(
-        query.returns[2].expression,
+        pipeline_return(&query).items[2].expression,
         AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
             ScalarExpressionKind::RelationshipType("r".to_string())
         )))
@@ -1295,47 +1473,56 @@ fn parses_untyped_relationship_match_and_label_return() {
 fn parses_undirected_relationship_match() {
     let statement =
         parse("MATCH (m:Memory)-[:EVOLVES]-(other:Memory) RETURN other.id AS id").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let expand = query.expand.as_ref().expect("expected relationship expand");
-    assert_eq!(expand.rel_type, "EVOLVES");
-    assert_eq!(expand.direction, RelationshipDirection::Undirected);
-    assert_eq!(expand.min_hops, 1);
-    assert_eq!(expand.max_hops, 1);
+    let expand = pipeline_expansion(&query).expect("expected relationship expand");
+    assert_eq!(expand.relationship.rel_type, "EVOLVES");
+    assert_eq!(
+        expand.relationship.direction,
+        RelationshipDirection::Undirected
+    );
+    assert_eq!(expand.relationship.min_hops, 1);
+    assert_eq!(expand.relationship.max_hops, 1);
 }
 
 #[test]
 fn parses_incoming_relationship_match() {
     let statement = parse("MATCH (e:Entity)<-[:MENTIONS]-(m:Memory) RETURN m.id AS id").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let expand = query.expand.as_ref().expect("expected relationship expand");
-    assert_eq!(query.variable, "e");
-    assert_eq!(query.label, "Entity");
-    assert_eq!(expand.rel_type, "MENTIONS");
-    assert_eq!(expand.direction, RelationshipDirection::Incoming);
-    assert_eq!(expand.target_variable, "m");
-    assert_eq!(expand.target_label, "Memory");
-    assert_eq!(expand.min_hops, 1);
-    assert_eq!(expand.max_hops, 1);
+    let expand = pipeline_expansion(&query).expect("expected relationship expand");
+    assert_eq!(pipeline_pattern(&query).first.variable, "e");
+    assert_eq!(pipeline_pattern(&query).first.label, "Entity");
+    assert_eq!(expand.relationship.rel_type, "MENTIONS");
+    assert_eq!(
+        expand.relationship.direction,
+        RelationshipDirection::Incoming
+    );
+    assert_eq!(expand.target.variable, "m");
+    assert_eq!(expand.target.label, "Memory");
+    assert_eq!(expand.relationship.min_hops, 1);
+    assert_eq!(expand.relationship.max_hops, 1);
 }
 
 #[test]
 fn parses_anonymous_relationship_endpoints() {
     let statement = parse("MATCH (:Memory)-[r:MENTIONS]->() RETURN count(r) AS total").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    assert!(query.variable.starts_with("__anon"));
-    assert_eq!(query.label, "Memory");
-    let expand = query.expand.as_ref().expect("expected relationship expand");
-    assert_eq!(expand.variable.as_deref(), Some("r"));
-    assert!(expand.target_variable.starts_with("__anon"));
-    assert_eq!(expand.target_label, "");
+    assert!(pipeline_pattern(&query)
+        .first
+        .variable
+        .starts_with("__anon"));
+    assert_eq!(pipeline_pattern(&query).first.label, "Memory");
+    let expand = pipeline_expansion(&query).expect("expected relationship expand");
+    assert_eq!(expand.relationship.variable.as_deref(), Some("r"));
+    assert!(expand.target.variable.starts_with("__anon"));
+    assert_eq!(expand.target.label, "");
     assert_eq!(
-        query.returns[0].expression,
+        pipeline_return(&query).items[0].expression,
         AstNode::synthetic(ReturnExpressionKind::Aggregate(
             AggregateExpression::CountVariable {
                 variable: "r".to_string(),
@@ -1358,18 +1545,24 @@ fn parses_matched_relationship_create() {
         "MATCH (m:Memory {id: $memory_id}), (s:Source {id: $source_id}) CREATE (m)-[:SOURCED_FROM {chunk_index: $chunk_index}]->(s)",
     )
     .unwrap();
-    let Statement::MatchCreateRelationship(create) = statement else {
+    let Statement::Pipeline(create) = statement else {
         panic!("expected matched relationship create");
     };
-    assert_eq!(create.source_variable, "m");
-    assert_eq!(create.source_label, "Memory");
-    assert_eq!(create.target_variable, "s");
-    assert_eq!(create.target_label, "Source");
-    assert_eq!(create.create_source_variable, "m");
-    assert_eq!(create.create_target_variable, "s");
-    assert_eq!(create.rel_type, "SOURCED_FROM");
+    assert_eq!(pipeline_match_node(&create, 0).variable, "m");
+    assert_eq!(pipeline_match_node(&create, 0).label, "Memory");
+    assert_eq!(pipeline_match_node(&create, 1).variable, "s");
+    assert_eq!(pipeline_match_node(&create, 1).label, "Source");
+    assert_eq!(pipeline_create(&create).first.variable, "m");
+    assert_eq!(pipeline_create(&create).steps[0].target.variable, "s");
     assert_eq!(
-        create.rel_properties.get("chunk_index"),
+        pipeline_create(&create).steps[0].relationship.rel_type,
+        "SOURCED_FROM"
+    );
+    assert_eq!(
+        pipeline_create(&create).steps[0]
+            .relationship
+            .properties
+            .get("chunk_index"),
         Some(&AstNode::synthetic(ValueExpressionKind::Parameter(
             "chunk_index".to_string()
         )))
@@ -1382,14 +1575,20 @@ fn parses_matched_relationship_create_with_relationship_variable() {
         "MATCH (source:Memory {id: $source_memory_id}), (target:Memory {id: $target_memory_id}) CREATE (source)-[r:MEMORY_RELATES_TO {id: $relation_id}]->(target)",
     )
     .unwrap();
-    let Statement::MatchCreateRelationship(create) = statement else {
+    let Statement::Pipeline(create) = statement else {
         panic!("expected matched relationship create");
     };
-    assert_eq!(create.create_source_variable, "source");
-    assert_eq!(create.create_target_variable, "target");
-    assert_eq!(create.rel_type, "MEMORY_RELATES_TO");
+    assert_eq!(pipeline_create(&create).first.variable, "source");
+    assert_eq!(pipeline_create(&create).steps[0].target.variable, "target");
     assert_eq!(
-        create.rel_properties.get("id"),
+        pipeline_create(&create).steps[0].relationship.rel_type,
+        "MEMORY_RELATES_TO"
+    );
+    assert_eq!(
+        pipeline_create(&create).steps[0]
+            .relationship
+            .properties
+            .get("id"),
         Some(&AstNode::synthetic(ValueExpressionKind::Parameter(
             "relation_id".to_string()
         )))
@@ -1402,17 +1601,23 @@ fn parses_matched_relationship_create_with_endpoint_where() {
         "MATCH (a:Memory), (b:Memory) WHERE a.id = $older_id AND b.id = $newer_id CREATE (a)-[:EVOLVES {content_relation: 'replaces'}]->(b)",
     )
     .unwrap();
-    let Statement::MatchCreateRelationship(create) = statement else {
+    let Statement::Pipeline(create) = statement else {
         panic!("expected matched relationship create");
     };
-    assert_eq!(create.source_variable, "a");
-    assert_eq!(create.source_label, "Memory");
-    assert_eq!(create.target_variable, "b");
-    assert_eq!(create.target_label, "Memory");
-    assert!(matches!(create.predicate, Some(PropertyPredicate::And(_))));
-    assert_eq!(create.create_source_variable, "a");
-    assert_eq!(create.create_target_variable, "b");
-    assert_eq!(create.rel_type, "EVOLVES");
+    assert_eq!(pipeline_match_node(&create, 0).variable, "a");
+    assert_eq!(pipeline_match_node(&create, 0).label, "Memory");
+    assert_eq!(pipeline_match_node(&create, 1).variable, "b");
+    assert_eq!(pipeline_match_node(&create, 1).label, "Memory");
+    assert!(matches!(
+        pipeline_predicate(&create, 0),
+        Some(PropertyPredicate::And(_))
+    ));
+    assert_eq!(pipeline_create(&create).first.variable, "a");
+    assert_eq!(pipeline_create(&create).steps[0].target.variable, "b");
+    assert_eq!(
+        pipeline_create(&create).steps[0].relationship.rel_type,
+        "EVOLVES"
+    );
 }
 
 #[test]
@@ -1421,18 +1626,20 @@ fn parses_matched_relationship_merge_on_create_set() {
         "MATCH (m:Memory {id: $memory_id}), (l:Label {id: $label_id}) MERGE (m)-[r:HAS_LABEL]->(l) ON CREATE SET r.assigned_by = $assigned_by, r.properties = '{}'",
     )
     .unwrap();
-    let Statement::MatchMergeRelationship(merge) = statement else {
+    let Statement::Pipeline(merge) = statement else {
         panic!("expected matched relationship merge");
     };
-    assert_eq!(merge.source_variable, "m");
-    assert_eq!(merge.source_label, "Memory");
-    assert_eq!(merge.target_variable, "l");
-    assert_eq!(merge.target_label, "Label");
-    assert_eq!(merge.merge_source_variable, "m");
-    assert_eq!(merge.merge_target_variable, "l");
-    assert_eq!(merge.rel_variable.as_deref(), Some("r"));
-    assert_eq!(merge.rel_type, "HAS_LABEL");
-    assert_eq!(merge.on_create_sets.len(), 2);
+    let (pattern, on_create, on_match) = pipeline_merge(&merge);
+    assert!(on_match.is_empty());
+    assert_eq!(pipeline_match_node(&merge, 0).variable, "m");
+    assert_eq!(pipeline_match_node(&merge, 0).label, "Memory");
+    assert_eq!(pipeline_match_node(&merge, 1).variable, "l");
+    assert_eq!(pipeline_match_node(&merge, 1).label, "Label");
+    assert_eq!(pattern.first.variable, "m");
+    assert_eq!(pattern.steps[0].target.variable, "l");
+    assert_eq!(pattern.steps[0].relationship.variable.as_deref(), Some("r"));
+    assert_eq!(pattern.steps[0].relationship.rel_type, "HAS_LABEL");
+    assert_eq!(on_create.len(), 2);
 }
 
 #[test]
@@ -1441,17 +1648,29 @@ fn parses_matched_relationship_copy_merge_on_create_set() {
         "MATCH (c:Memory)-[r:CRYSTALLIZED_FROM]->(s:Memory) MERGE (c)-[n:SYNTHESIZED_FROM]->(s) ON CREATE SET n.weight = r.contribution_weight, n.occasion_key = '', n.created_at = r.created_at",
     )
     .unwrap();
-    let Statement::MatchExpandMergeRelationship(merge) = statement else {
+    let Statement::Pipeline(merge) = statement else {
         panic!("expected match expand merge relationship");
     };
-    assert_eq!(merge.source_variable, "c");
-    assert_eq!(merge.expand.variable.as_deref(), Some("r"));
-    assert_eq!(merge.expand.rel_type, "CRYSTALLIZED_FROM");
-    assert_eq!(merge.expand.target_variable, "s");
-    assert_eq!(merge.rel_variable.as_deref(), Some("n"));
-    assert_eq!(merge.rel_type, "SYNTHESIZED_FROM");
+    let (pattern, on_create, on_match) = pipeline_merge(&merge);
+    assert!(on_match.is_empty());
+    assert_eq!(pipeline_match_node(&merge, 0).variable, "c");
     assert_eq!(
-        merge.on_create_sets[0].value,
+        pipeline_expansion(&merge)
+            .unwrap()
+            .relationship
+            .variable
+            .as_deref(),
+        Some("r")
+    );
+    assert_eq!(
+        pipeline_expansion(&merge).unwrap().relationship.rel_type,
+        "CRYSTALLIZED_FROM"
+    );
+    assert_eq!(pipeline_expansion(&merge).unwrap().target.variable, "s");
+    assert_eq!(pattern.steps[0].relationship.variable.as_deref(), Some("n"));
+    assert_eq!(pattern.steps[0].relationship.rel_type, "SYNTHESIZED_FROM");
+    assert_eq!(
+        on_create[0].value,
         SetValueExpression::Property {
             variable: "r".to_string(),
             property: "contribution_weight".to_string()
@@ -1464,15 +1683,15 @@ fn parses_two_node_match_return() {
     let statement =
         parse("MATCH (m:Memory {id: $memory_id}), (s:Source {id: $source_id}) RETURN count(m)")
             .unwrap();
-    let Statement::MatchNodesReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected two-node match return");
     };
-    assert_eq!(query.left_variable, "m");
-    assert_eq!(query.left_label, "Memory");
-    assert_eq!(query.right_variable, "s");
-    assert_eq!(query.right_label, "Source");
+    assert_eq!(pipeline_match_node(&query, 0).variable, "m");
+    assert_eq!(pipeline_match_node(&query, 0).label, "Memory");
+    assert_eq!(pipeline_match_node(&query, 1).variable, "s");
+    assert_eq!(pipeline_match_node(&query, 1).label, "Source");
     assert_eq!(
-        query.returns[0].expression,
+        pipeline_return(&query).items[0].expression,
         AstNode::synthetic(ReturnExpressionKind::Aggregate(
             AggregateExpression::CountVariable {
                 variable: "m".to_string(),
@@ -1488,14 +1707,14 @@ fn parses_consecutive_two_node_match_return() {
         "MATCH (source:Entity {id: $source_entity_id}) MATCH (target:Entity {id: $target_entity_id}) RETURN source.id, target.id",
     )
     .unwrap();
-    let Statement::MatchNodesReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected two-node match return");
     };
-    assert_eq!(query.left_variable, "source");
-    assert_eq!(query.left_label, "Entity");
-    assert_eq!(query.right_variable, "target");
-    assert_eq!(query.right_label, "Entity");
-    assert_eq!(query.returns.len(), 2);
+    assert_eq!(pipeline_match_node(&query, 0).variable, "source");
+    assert_eq!(pipeline_match_node(&query, 0).label, "Entity");
+    assert_eq!(pipeline_match_node(&query, 1).variable, "target");
+    assert_eq!(pipeline_match_node(&query, 1).label, "Entity");
+    assert_eq!(pipeline_return(&query).items.len(), 2);
 }
 
 #[test]
@@ -1504,20 +1723,21 @@ fn parses_consecutive_relationship_match_return() {
         "MATCH (c:Memory {is_crystal: true})-[:SYNTHESIZED_FROM]->(src:Memory) MATCH (src)-[:EVOLVES]-(newer:Memory) WHERE newer.created_at > c.created_at AND c.review_status <> 'dismissed' RETURN c.id, newer.id ORDER BY newer.created_at DESC LIMIT 10",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    assert_eq!(query.variable, "c");
-    assert!(query.expand.is_some());
-    let post_match = query.post_match_expand.expect("post-match expand");
-    assert_eq!(post_match.source_variable, "src");
-    assert_eq!(post_match.expand.rel_type, "EVOLVES");
-    assert_eq!(post_match.expand.target_variable, "newer");
+    assert_eq!(query.clauses.len(), 3);
+    assert_eq!(pipeline_pattern(&query).first.variable, "c");
+    assert!(pipeline_expansion(&query).is_some());
+    let post_match = &pipeline_patterns(&query, 1)[0];
+    assert_eq!(post_match.first.variable, "src");
+    assert_eq!(post_match.steps[0].relationship.rel_type, "EVOLVES");
+    assert_eq!(post_match.steps[0].target.variable, "newer");
     assert_eq!(
-        post_match.expand.direction,
+        post_match.steps[0].relationship.direction,
         RelationshipDirection::Undirected
     );
-    assert_eq!(query.returns.len(), 2);
+    assert_eq!(pipeline_return(&query).items.len(), 2);
 }
 
 #[test]
@@ -1526,18 +1746,22 @@ fn parses_inline_two_hop_relationship_match_return() {
         "MATCH (m:Memory)-[:SYNTHESIZED_FROM]->(src:Memory)-[:MENTIONS]->(e:Entity) WHERE m.is_crystal = true AND e.community_id IS NOT NULL RETURN m.id, e.community_id",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let expand = query.expand.expect("first expand");
-    assert_eq!(expand.rel_type, "SYNTHESIZED_FROM");
-    assert_eq!(expand.target_variable, "src");
-    let post_match = query.post_match_expand.expect("post-match expand");
-    assert_eq!(post_match.source_variable, "src");
-    assert_eq!(post_match.expand.rel_type, "MENTIONS");
-    assert_eq!(post_match.expand.target_variable, "e");
-    assert_eq!(post_match.expand.direction, RelationshipDirection::Outgoing);
-    assert_eq!(query.returns.len(), 2);
+    let pattern = pipeline_pattern(&query);
+    assert_eq!(pattern.steps.len(), 2);
+    let first = &pattern.steps[0];
+    assert_eq!(first.relationship.rel_type, "SYNTHESIZED_FROM");
+    assert_eq!(first.target.variable, "src");
+    let second = &pattern.steps[1];
+    assert_eq!(second.relationship.rel_type, "MENTIONS");
+    assert_eq!(second.target.variable, "e");
+    assert_eq!(
+        second.relationship.direction,
+        RelationshipDirection::Outgoing
+    );
+    assert_eq!(pipeline_return(&query).items.len(), 2);
 }
 
 #[test]
@@ -1546,14 +1770,17 @@ fn parses_optional_match_count_after_node_match() {
         "MATCH (t:Thread {id: $thread_uuid}) OPTIONAL MATCH (t)-[:CONTAINS]->(m:Message) RETURN COUNT(m)",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let optional = query.optional_expand.expect("optional expand");
-    assert_eq!(optional.source_variable, "t");
-    assert_eq!(optional.expand.target_variable, "m");
-    assert_eq!(optional.expand.rel_type, "CONTAINS");
-    assert_eq!(optional.expand.direction, RelationshipDirection::Outgoing);
+    let optional = pipeline_optional_pattern(&query);
+    assert_eq!(optional.first.variable, "t");
+    assert_eq!(optional.steps[0].target.variable, "m");
+    assert_eq!(optional.steps[0].relationship.rel_type, "CONTAINS");
+    assert_eq!(
+        optional.steps[0].relationship.direction,
+        RelationshipDirection::Outgoing
+    );
 }
 
 #[test]
@@ -1562,14 +1789,21 @@ fn parses_optional_match_count_after_relationship_match() {
         "MATCH (t:Thread {id: $thread_uuid})-[:CONTAINS]->(m:Message) WHERE m.order_index >= $start_index OPTIONAL MATCH (:Memory)-[r:EXTRACTED_FROM]->(m) RETURN COUNT(r)",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let optional = query.optional_expand.expect("optional expand");
-    assert_eq!(optional.source_variable, "m");
-    assert_eq!(optional.expand.variable.as_deref(), Some("r"));
-    assert_eq!(optional.expand.target_label, "Memory");
-    assert_eq!(optional.expand.direction, RelationshipDirection::Incoming);
+    let optional = pipeline_optional_pattern(&query);
+    assert!(optional.first.anonymous);
+    assert_eq!(optional.steps[0].target.variable, "m");
+    assert_eq!(
+        optional.steps[0].relationship.variable.as_deref(),
+        Some("r")
+    );
+    assert_eq!(optional.first.label, "Memory");
+    assert_eq!(
+        optional.steps[0].relationship.direction,
+        RelationshipDirection::Outgoing
+    );
 }
 
 #[test]
@@ -1578,20 +1812,22 @@ fn parses_optional_match_with_degree_projection() {
         "MATCH (e:Entity) OPTIONAL MATCH (e)-[r]-() WITH e, COUNT(r) as degree RETURN e.id, e.name, degree ORDER BY degree DESC LIMIT 10",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let optional = query.optional_expand.expect("optional expand");
-    assert_eq!(optional.source_variable, "e");
-    assert_eq!(optional.expand.variable.as_deref(), Some("r"));
-    assert_eq!(optional.expand.direction, RelationshipDirection::Undirected);
-    let optional_with = query.optional_with.expect("optional with");
-    assert_eq!(optional_with.group_variable, "e");
-    assert_eq!(optional_with.count_variable, "r");
-    assert!(!optional_with.distinct);
-    assert_eq!(optional_with.alias, "degree");
-    assert_eq!(query.returns.len(), 3);
-    assert_eq!(query.order_by.len(), 1);
+    let optional = pipeline_optional_pattern(&query);
+    assert_eq!(optional.first.variable, "e");
+    assert_eq!(
+        optional.steps[0].relationship.variable.as_deref(),
+        Some("r")
+    );
+    assert_eq!(
+        optional.steps[0].relationship.direction,
+        RelationshipDirection::Undirected
+    );
+    assert_grouped_count(&query, "e", "r", false, "degree");
+    assert_eq!(pipeline_return(&query).items.len(), 3);
+    assert_eq!(pipeline_return(&query).order_by.len(), 1);
 }
 
 #[test]
@@ -1600,21 +1836,20 @@ fn parses_optional_match_with_target_count_projection() {
         "MATCH (l:Label) OPTIONAL MATCH (l)<-[:HAS_LABEL]-(n) WITH l, COUNT(n) as usage_count RETURN l.id, usage_count ORDER BY usage_count DESC",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let optional = query.optional_expand.expect("optional expand");
-    assert_eq!(optional.source_variable, "l");
-    assert_eq!(optional.expand.target_variable, "n");
-    assert_eq!(optional.expand.rel_type, "HAS_LABEL");
-    assert_eq!(optional.expand.direction, RelationshipDirection::Incoming);
-    let optional_with = query.optional_with.expect("optional with");
-    assert_eq!(optional_with.group_variable, "l");
-    assert_eq!(optional_with.count_variable, "n");
-    assert!(!optional_with.distinct);
-    assert_eq!(optional_with.alias, "usage_count");
-    assert_eq!(query.returns.len(), 2);
-    assert_eq!(query.order_by.len(), 1);
+    let optional = pipeline_optional_pattern(&query);
+    assert_eq!(optional.first.variable, "l");
+    assert_eq!(optional.steps[0].target.variable, "n");
+    assert_eq!(optional.steps[0].relationship.rel_type, "HAS_LABEL");
+    assert_eq!(
+        optional.steps[0].relationship.direction,
+        RelationshipDirection::Incoming
+    );
+    assert_grouped_count(&query, "l", "n", false, "usage_count");
+    assert_eq!(pipeline_return(&query).items.len(), 2);
+    assert_eq!(pipeline_return(&query).order_by.len(), 1);
 }
 
 #[test]
@@ -1623,20 +1858,19 @@ fn parses_relationship_match_with_group_count_projection() {
         "MATCH (e:Entity {community_id: $louvain_id})<-[:MENTIONS]-(m:Memory) WHERE m.is_crystal = false WITH m, COUNT(e) AS entity_count RETURN m.id, m.title, COALESCE(m.is_latest, true), entity_count ORDER BY entity_count DESC, m.importance DESC",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    assert_eq!(query.variable, "e");
-    let expand = query.expand.expect("relationship expand");
-    assert_eq!(expand.target_variable, "m");
-    assert_eq!(expand.direction, RelationshipDirection::Incoming);
-    let with = query.optional_with.expect("with count");
-    assert_eq!(with.group_variable, "m");
-    assert_eq!(with.count_variable, "e");
-    assert!(!with.distinct);
-    assert_eq!(with.alias, "entity_count");
-    assert_eq!(query.returns.len(), 4);
-    assert_eq!(query.order_by.len(), 2);
+    assert_eq!(pipeline_pattern(&query).first.variable, "e");
+    let expand = pipeline_expansion(&query).expect("relationship expand");
+    assert_eq!(expand.target.variable, "m");
+    assert_eq!(
+        expand.relationship.direction,
+        RelationshipDirection::Incoming
+    );
+    assert_grouped_count(&query, "m", "e", false, "entity_count");
+    assert_eq!(pipeline_return(&query).items.len(), 4);
+    assert_eq!(pipeline_return(&query).order_by.len(), 2);
 }
 
 #[test]
@@ -1645,16 +1879,12 @@ fn parses_relationship_match_with_distinct_group_count_projection() {
         "MATCH (m:Memory)-[:HAS_LABEL]->(l:Label) WITH l, COUNT(DISTINCT m) AS memory_count RETURN l.name, memory_count ORDER BY memory_count DESC, l.name ASC SKIP $offset LIMIT $limit",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let with = query.optional_with.expect("with count");
-    assert_eq!(with.group_variable, "l");
-    assert_eq!(with.count_variable, "m");
-    assert!(with.distinct);
-    assert_eq!(with.alias, "memory_count");
-    assert_eq!(query.returns.len(), 2);
-    assert_eq!(query.order_by.len(), 2);
+    assert_grouped_count(&query, "l", "m", true, "memory_count");
+    assert_eq!(pipeline_return(&query).items.len(), 2);
+    assert_eq!(pipeline_return(&query).order_by.len(), 2);
 }
 
 #[test]
@@ -1663,22 +1893,20 @@ fn parses_group_count_order_limit_before_return() {
         "MATCH (m:Memory)-[:MENTIONS]->(e:Entity) WHERE e.id IN $ids WITH m, COUNT(DISTINCT e) AS mention_breadth ORDER BY mention_breadth DESC, COALESCE(m.importance, 0.5) DESC LIMIT $top_n RETURN m.id, m.title, mention_breadth",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let with = query.optional_with.expect("with count");
-    assert_eq!(with.group_variable, "m");
-    assert_eq!(with.count_variable, "e");
-    assert!(with.distinct);
-    assert_eq!(with.alias, "mention_breadth");
-    assert_eq!(query.order_by.len(), 2);
+    assert_grouped_count(&query, "m", "e", true, "mention_breadth");
+    assert_eq!(pipeline_with(&query).order_by.len(), 2);
     assert_eq!(
-        query.limit,
+        pipeline_with(&query).limit,
         Some(AstNode::synthetic(ValueExpressionKind::Parameter(
             "top_n".to_string()
         )))
     );
-    assert_eq!(query.returns.len(), 3);
+    assert!(pipeline_return(&query).order_by.is_empty());
+    assert!(pipeline_return(&query).limit.is_none());
+    assert_eq!(pipeline_return(&query).items.len(), 3);
 }
 
 #[test]
@@ -1687,11 +1915,10 @@ fn parses_with_variable_group_multiple_count_aggregates() {
         "MATCH (e1:Entity)-[:RELATES_TO]-(e2:Entity) WHERE e1.community_id IN $cids AND e2.community_id IN $cids AND e1.community_id <> e2.community_id WITH e1, COUNT(DISTINCT e2.community_id) AS community_span, COUNT(*) AS bridge_strength RETURN e1.id, community_span, bridge_strength ORDER BY community_span DESC, bridge_strength DESC LIMIT $limit",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    assert!(query.optional_with.is_none());
-    let aggregate_with = query.aggregate_with.expect("aggregate with");
+    let aggregate_with = pipeline_with(&query);
     assert_eq!(aggregate_with.items.len(), 3);
     assert_eq!(
         aggregate_with.items[0].expression,
@@ -1723,9 +1950,9 @@ fn parses_with_variable_group_multiple_count_aggregates() {
         aggregate_with.items[2].alias.as_deref(),
         Some("bridge_strength")
     );
-    assert_eq!(query.order_by.len(), 2);
+    assert_eq!(pipeline_return(&query).order_by.len(), 2);
     assert_eq!(
-        query.limit,
+        pipeline_return(&query).limit,
         Some(AstNode::synthetic(ValueExpressionKind::Parameter(
             "limit".to_string()
         )))
@@ -1738,27 +1965,31 @@ fn parses_with_variable_group_multiple_count_aggregates_and_filter() {
         "MATCH (e1:Entity)-[:RELATES_TO]-(e2:Entity) WHERE e1.community_id IS NOT NULL AND e2.community_id IS NOT NULL AND e1.community_id <> e2.community_id WITH e1, COUNT(DISTINCT e2.community_id) AS community_span, COUNT(*) AS bridge_strength WHERE community_span >= 2 RETURN e1.id, e1.name, e1.community_id, community_span, bridge_strength ORDER BY community_span DESC, bridge_strength DESC LIMIT $limit",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let aggregate_with = query.aggregate_with.expect("aggregate with");
-    assert_eq!(aggregate_with.items.len(), 3);
-    let filter = query.aggregate_with_filter.expect("aggregate filter");
-    let WithAliasFilter::Comparison { left, op, right } = filter else {
+    let projection = pipeline_with(&query);
+    assert_eq!(projection.items.len(), 3);
+    let PropertyPredicate::ExpressionCompare {
+        expression,
+        op,
+        value,
+    } = &projection.predicate.as_ref().unwrap().kind
+    else {
         panic!("expected comparison filter");
     };
     assert_eq!(
-        left,
-        WithAliasFilterExpression::Column("community_span".to_string())
+        expression.kind,
+        ScalarExpressionKind::Variable("community_span".to_string())
     );
-    assert_eq!(op, WithAliasFilterOp::Gte);
+    assert_eq!(*op, ComparisonOp::Gte);
     assert_eq!(
-        right,
-        WithAliasFilterExpression::Value(AstNode::synthetic(ValueExpressionKind::Literal(
+        value.kind,
+        ScalarExpressionKind::Value(AstNode::synthetic(ValueExpressionKind::Literal(
             Value::Int(2)
         )))
     );
-    assert_eq!(query.returns.len(), 5);
+    assert_eq!(pipeline_return(&query).items.len(), 5);
 }
 
 #[test]
@@ -1767,25 +1998,26 @@ fn parses_optional_count_with_alias_filter() {
         "MATCH (e:Entity) WHERE e.name IS NOT NULL AND e.id IS NOT NULL OPTIONAL MATCH (:Memory)-[r:MENTIONS]->(e) WITH e, COUNT(r) AS mention_count WHERE mention_count < $after_count RETURN e.id, e.name, e.updated_at, mention_count ORDER BY mention_count DESC, e.name ASC LIMIT $limit",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let optional_with = query.optional_with.expect("optional with");
-    assert_eq!(optional_with.group_variable, "e");
-    assert_eq!(optional_with.count_variable, "r");
-    assert_eq!(optional_with.alias, "mention_count");
-    let filter = query.aggregate_with_filter.expect("aggregate filter");
-    let WithAliasFilter::Comparison { left, op, right } = filter else {
+    assert_grouped_count(&query, "e", "r", false, "mention_count");
+    let PropertyPredicate::ExpressionCompare {
+        expression,
+        op,
+        value,
+    } = &pipeline_with(&query).predicate.as_ref().unwrap().kind
+    else {
         panic!("expected comparison filter");
     };
     assert_eq!(
-        left,
-        WithAliasFilterExpression::Column("mention_count".to_string())
+        expression.kind,
+        ScalarExpressionKind::Variable("mention_count".to_string())
     );
-    assert_eq!(op, WithAliasFilterOp::Lt);
+    assert_eq!(*op, ComparisonOp::Lt);
     assert_eq!(
-        right,
-        WithAliasFilterExpression::Value(AstNode::synthetic(ValueExpressionKind::Parameter(
+        value.kind,
+        ScalarExpressionKind::Value(AstNode::synthetic(ValueExpressionKind::Parameter(
             "after_count".to_string()
         )))
     );
@@ -1797,34 +2029,33 @@ fn parses_optional_count_with_keyset_filter() {
         "MATCH (e:Entity) WHERE e.name IS NOT NULL AND e.id IS NOT NULL OPTIONAL MATCH (:Memory)-[r:MENTIONS]->(e) WITH e, COUNT(r) AS mention_count WHERE mention_count < $after_count OR (mention_count = $after_count AND e.name > $after_name) RETURN e.id, e.name, e.updated_at, mention_count ORDER BY mention_count DESC, e.name ASC LIMIT $limit",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let filter = query.aggregate_with_filter.expect("aggregate filter");
-    let WithAliasFilter::Or(filters) = filter else {
+    let PropertyPredicate::Or(filters) = &pipeline_with(&query).predicate.as_ref().unwrap().kind
+    else {
         panic!("expected disjunction filter");
     };
     assert_eq!(filters.len(), 2);
-    let WithAliasFilter::And(tie_breaker) = &filters[1] else {
+    let PropertyPredicate::And(tie_breaker) = &filters[1] else {
         panic!("expected tie-breaker conjunction");
     };
     assert_eq!(tie_breaker.len(), 2);
-    let WithAliasFilter::Comparison { left, op, right } = &tie_breaker[1] else {
+    let PropertyPredicate::Compare {
+        variable,
+        property,
+        op,
+        value,
+    } = &tie_breaker[1]
+    else {
         panic!("expected name comparison");
     };
+    assert_eq!(variable, "e");
+    assert_eq!(property, "name");
+    assert_eq!(*op, ComparisonOp::Gt);
     assert_eq!(
-        left,
-        &WithAliasFilterExpression::Property {
-            variable: "e".to_string(),
-            property: "name".to_string(),
-        }
-    );
-    assert_eq!(*op, WithAliasFilterOp::Gt);
-    assert_eq!(
-        right,
-        &WithAliasFilterExpression::Value(AstNode::synthetic(ValueExpressionKind::Parameter(
-            "after_name".to_string()
-        )))
+        value.kind,
+        ValueExpressionKind::Parameter("after_name".to_string())
     );
 }
 
@@ -1834,26 +2065,47 @@ fn parses_post_aggregate_community_lookup() {
         "MATCH (e1:Entity)-[:RELATES_TO]-(e2:Entity) WHERE e1.community_id = $cid AND e2.community_id IS NOT NULL AND e2.community_id <> $cid WITH e2.community_id AS other_cid, COUNT(*) AS shared_edge_count ORDER BY shared_edge_count DESC LIMIT $limit MATCH (c:Community) WHERE c.community_id = other_cid RETURN c.community_id, c.name, c.ai_summary, c.description, c.member_count, shared_edge_count",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let aggregate_with = query.aggregate_with.expect("aggregate with");
+    let aggregate_with = pipeline_with(&query);
     assert_eq!(aggregate_with.items.len(), 2);
     assert_eq!(aggregate_with.items[0].alias.as_deref(), Some("other_cid"));
     assert_eq!(
         aggregate_with.items[1].alias.as_deref(),
         Some("shared_edge_count")
     );
-    let lookup = query.post_with_match.expect("post with match");
-    assert_eq!(lookup.variable, "c");
-    assert_eq!(lookup.label, "Community");
-    assert_eq!(lookup.property, "community_id");
-    assert_eq!(lookup.column, "other_cid");
-    assert_eq!(query.returns.len(), 6);
-    assert_eq!(query.with_order_by.len(), 1);
-    assert!(query.with_limit.is_some());
-    assert!(query.order_by.is_empty());
-    assert!(query.limit.is_none());
+    let ClauseKind::Match {
+        optional,
+        patterns,
+        predicate,
+    } = &query.clauses[2].kind
+    else {
+        panic!("expected post-WITH MATCH");
+    };
+    assert!(!*optional);
+    assert_eq!(patterns[0].first.variable, "c");
+    assert_eq!(patterns[0].first.label, "Community");
+    let PropertyPredicate::ExpressionEq { expression, value } = &predicate.as_ref().unwrap().kind
+    else {
+        panic!("expected lookup comparison");
+    };
+    assert_eq!(
+        expression.kind,
+        ScalarExpressionKind::Property {
+            variable: "c".to_string(),
+            property: "community_id".to_string()
+        }
+    );
+    assert_eq!(
+        value.kind,
+        ScalarExpressionKind::Variable("other_cid".to_string())
+    );
+    assert_eq!(pipeline_return(&query).items.len(), 6);
+    assert_eq!(pipeline_with(&query).order_by.len(), 1);
+    assert!(pipeline_with(&query).limit.is_some());
+    assert!(pipeline_return(&query).order_by.is_empty());
+    assert!(pipeline_return(&query).limit.is_none());
 }
 
 #[test]
@@ -1862,20 +2114,40 @@ fn parses_post_aggregate_optional_community_lookup() {
         "MATCH (m:Memory)-[:MENTIONS]->(e:Entity) WHERE m.space_id IN $space_ids AND e.community_id IS NOT NULL WITH e.community_id AS community_id, COUNT(DISTINCT m) AS memory_count OPTIONAL MATCH (c:Community) WHERE c.community_id = community_id RETURN c.name, memory_count, c.description ORDER BY memory_count DESC LIMIT $limit",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let lookup = query.post_with_match.expect("post with match");
-    assert_eq!(lookup.variable, "c");
-    assert_eq!(lookup.label, "Community");
-    assert_eq!(lookup.property, "community_id");
-    assert_eq!(lookup.column, "community_id");
-    assert!(lookup.optional);
-    assert_eq!(query.order_by.len(), 1);
-    assert_eq!(query.returns.len(), 3);
-    assert!(query.limit.is_some());
-    assert!(query.with_order_by.is_empty());
-    assert!(query.with_limit.is_none());
+    let ClauseKind::Match {
+        optional,
+        patterns,
+        predicate,
+    } = &query.clauses[2].kind
+    else {
+        panic!("expected post-WITH MATCH");
+    };
+    assert!(*optional);
+    assert_eq!(patterns[0].first.variable, "c");
+    assert_eq!(patterns[0].first.label, "Community");
+    let PropertyPredicate::ExpressionEq { expression, value } = &predicate.as_ref().unwrap().kind
+    else {
+        panic!("expected lookup comparison");
+    };
+    assert_eq!(
+        expression.kind,
+        ScalarExpressionKind::Property {
+            variable: "c".to_string(),
+            property: "community_id".to_string()
+        }
+    );
+    assert_eq!(
+        value.kind,
+        ScalarExpressionKind::Variable("community_id".to_string())
+    );
+    assert_eq!(pipeline_return(&query).order_by.len(), 1);
+    assert_eq!(pipeline_return(&query).items.len(), 3);
+    assert!(pipeline_return(&query).limit.is_some());
+    assert!(pipeline_with(&query).order_by.is_empty());
+    assert!(pipeline_with(&query).limit.is_none());
 }
 
 #[test]
@@ -1884,24 +2156,30 @@ fn parses_case_property_presence_order_item() {
         "MATCH (c:Community) WHERE c.community_id IS NOT NULL AND c.community_id >= 0 RETURN c.community_id, c.name, c.ai_summary ORDER BY CASE WHEN c.ai_summary IS NOT NULL AND c.ai_summary <> '' THEN 0 ELSE 1 END, c.member_count DESC LIMIT $limit",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    assert_eq!(query.order_by.len(), 2);
+    assert_eq!(pipeline_return(&query).order_by.len(), 2);
     let OrderExpression::Value(AstNode {
         kind:
             ScalarExpressionKind::CasePropertyNotNullOrEq {
                 variable, property, ..
             },
         ..
-    }) = &query.order_by[0].expression
+    }) = &pipeline_return(&query).order_by[0].expression
     else {
         panic!("expected CASE order expression");
     };
     assert_eq!(variable, "c");
     assert_eq!(property, "ai_summary");
-    assert_eq!(query.order_by[0].direction, OrderDirection::Asc);
-    assert_eq!(query.order_by[1].direction, OrderDirection::Desc);
+    assert_eq!(
+        pipeline_return(&query).order_by[0].direction,
+        OrderDirection::Asc
+    );
+    assert_eq!(
+        pipeline_return(&query).order_by[1].direction,
+        OrderDirection::Desc
+    );
 }
 
 #[test]
@@ -1910,13 +2188,10 @@ fn parses_case_property_equals_rank_with_projection() {
         "MATCH (s:Skill) WHERE s.stage IS NULL OR (s.stage <> 'archived' AND s.stage <> 'rejected' AND s.stage <> 'deprecated') WITH s, CASE WHEN s.stage = 'active' THEN 4 WHEN s.stage = 'promotable' THEN 3 WHEN s.stage = 'candidate' THEN 2 WHEN s.stage = 'draft' THEN 1 ELSE 0 END AS stage_rank, COALESCE(s.evidence_count, 0) AS evidence_score ORDER BY stage_rank DESC, evidence_score DESC, s.updated_at DESC LIMIT $limit RETURN s.id, COALESCE(s.name, s.title, 'Skill')",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let with_projection = query
-        .with_projection
-        .as_ref()
-        .expect("expected WITH projection");
+    let with_projection = pipeline_with(&query);
     assert_eq!(with_projection.items.len(), 3);
     let AstNode {
         kind:
@@ -1942,10 +2217,10 @@ fn parses_case_property_equals_rank_with_projection() {
         with_projection.items[1].alias.as_deref(),
         Some("stage_rank")
     );
-    assert!(query.order_by.is_empty());
-    assert_eq!(query.with_order_by.len(), 3);
+    assert!(pipeline_return(&query).order_by.is_empty());
+    assert_eq!(pipeline_with(&query).order_by.len(), 3);
     assert_eq!(
-        query.with_order_by[0].expression,
+        pipeline_with(&query).order_by[0].expression,
         OrderExpression::Column("stage_rank".to_string())
     );
 }
@@ -1956,10 +2231,10 @@ fn parses_entity_search_rank_order_item() {
         "MATCH (e:Entity) WHERE lower(e.name) CONTAINS $raw_query OR lower(e.name) CONTAINS $normalized_query OR list_contains(e.aliases, $raw_input) OPTIONAL MATCH (m:Memory)-[:MENTIONS]->(e) RETURN e.id, COUNT(m) AS memory_count ORDER BY CASE WHEN lower(e.name) = $raw_query THEN 0 WHEN lower(e.name) = $normalized_query THEN 0 WHEN list_contains(e.aliases, $raw_input) THEN 1 ELSE 2 END ASC, memory_count DESC LIMIT $limit",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    assert_eq!(query.order_by.len(), 2);
+    assert_eq!(pipeline_return(&query).order_by.len(), 2);
     let OrderExpression::Value(AstNode {
         kind:
             ScalarExpressionKind::Case {
@@ -1968,7 +2243,7 @@ fn parses_entity_search_rank_order_item() {
                 otherwise,
             },
         ..
-    }) = &query.order_by[0].expression
+    }) = &pipeline_return(&query).order_by[0].expression
     else {
         panic!("expected entity search rank order expression");
     };
@@ -2000,8 +2275,14 @@ fn parses_entity_search_rank_order_item() {
     assert!(
         matches!(&left.kind, ScalarExpressionKind::Property { variable, property } if variable == "e" && property == "aliases")
     );
-    assert_eq!(query.order_by[0].direction, OrderDirection::Asc);
-    assert_eq!(query.order_by[1].direction, OrderDirection::Desc);
+    assert_eq!(
+        pipeline_return(&query).order_by[0].direction,
+        OrderDirection::Asc
+    );
+    assert_eq!(
+        pipeline_return(&query).order_by[1].direction,
+        OrderDirection::Desc
+    );
 }
 
 #[test]
@@ -2010,15 +2291,16 @@ fn parses_community_search_projection_with_case_aliases() {
         "MATCH (c:Community) WITH c, CASE WHEN c.name IS NOT NULL THEN lower(c.name) ELSE '' END AS c_name, CASE WHEN c.description IS NOT NULL THEN lower(c.description) ELSE '' END AS c_description, CASE WHEN c.ai_summary IS NOT NULL THEN lower(c.ai_summary) ELSE '' END AS c_summary WHERE c_name CONTAINS $raw_query OR c_description CONTAINS $normalized_query RETURN c.community_id, CASE WHEN c_name = $raw_query THEN 3 WHEN c_name = $normalized_query THEN 3 WHEN c_name CONTAINS $raw_query THEN 2 WHEN c_name CONTAINS $normalized_query THEN 2 ELSE 1 END AS match_level ORDER BY match_level DESC LIMIT $limit",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let with_projection = query
-        .with_projection
-        .as_ref()
-        .expect("expected WITH projection");
+    let with_projection = pipeline_with(&query);
     assert_eq!(with_projection.items.len(), 4);
-    assert!(query.aggregate_with_filter.is_some());
+    assert!(pipeline_with(&query)
+        .predicate
+        .as_ref()
+        .map(|predicate| predicate.kind.clone())
+        .is_some());
     let AstNode {
         kind:
             ReturnExpressionKind::Value(AstNode {
@@ -2026,7 +2308,7 @@ fn parses_community_search_projection_with_case_aliases() {
                 ..
             }),
         ..
-    } = &query.returns[1].expression
+    } = &pipeline_return(&query).items[1].expression
     else {
         panic!("expected column search rank expression");
     };
@@ -2041,7 +2323,7 @@ fn parses_community_search_projection_with_case_aliases() {
     };
     assert!(matches!(&left.kind, ScalarExpressionKind::Variable(column) if column == "c_name"));
     assert_eq!(
-        query.order_by[0].expression,
+        pipeline_return(&query).order_by[0].expression,
         OrderExpression::Column("match_level".to_string())
     );
 }
@@ -2052,17 +2334,18 @@ fn parses_source_search_projection_with_coalesce_ordering() {
         "MATCH (s:Source) WITH s, CASE WHEN s.original_name IS NOT NULL THEN lower(s.original_name) ELSE '' END AS s_name, CASE WHEN s.summary IS NOT NULL THEN lower(s.summary) ELSE '' END AS s_summary, CASE WHEN s.file_path IS NOT NULL THEN lower(s.file_path) ELSE '' END AS s_path, CASE WHEN s.source_type IS NOT NULL THEN lower(s.source_type) ELSE '' END AS s_type WHERE s_name CONTAINS $raw_query OR s_summary CONTAINS $normalized_query RETURN s.id, COALESCE(s.original_name, s.file_path, s.source_type, 'Source'), CASE WHEN s_name = $raw_query THEN 3 WHEN s_name = $normalized_query THEN 3 WHEN s_name CONTAINS $raw_query THEN 2 WHEN s_name CONTAINS $normalized_query THEN 2 ELSE 1 END AS match_level ORDER BY match_level DESC, COALESCE(s.memory_count, 0) DESC, COALESCE(s.chunk_count, 0) DESC LIMIT $limit",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let with_projection = query
-        .with_projection
-        .as_ref()
-        .expect("expected WITH projection");
+    let with_projection = pipeline_with(&query);
     assert_eq!(with_projection.items.len(), 5);
-    assert!(query.aggregate_with_filter.is_some());
+    assert!(pipeline_with(&query)
+        .predicate
+        .as_ref()
+        .map(|predicate| predicate.kind.clone())
+        .is_some());
     assert!(matches!(
-        query.returns[1].expression,
+        pipeline_return(&query).items[1].expression,
         AstNode {
             kind: ReturnExpressionKind::Value(AstNode {
                 kind: ScalarExpressionKind::Coalesce(_),
@@ -2072,7 +2355,7 @@ fn parses_source_search_projection_with_coalesce_ordering() {
         }
     ));
     assert!(matches!(
-        query.order_by[1].expression,
+        pipeline_return(&query).order_by[1].expression,
         OrderExpression::Value(AstNode {
             kind: ScalarExpressionKind::Coalesce(_),
             ..
@@ -2086,17 +2369,18 @@ fn parses_thread_search_projection_with_coalesce_ordering() {
         "MATCH (t:Thread) WITH t, CASE WHEN t.title IS NOT NULL THEN lower(t.title) ELSE '' END AS t_title, CASE WHEN t.summary IS NOT NULL THEN lower(t.summary) ELSE '' END AS t_summary, CASE WHEN t.source IS NOT NULL THEN lower(t.source) ELSE '' END AS t_source, CASE WHEN t.project IS NOT NULL THEN lower(t.project) ELSE '' END AS t_project, CASE WHEN t.workspace IS NOT NULL THEN lower(t.workspace) ELSE '' END AS t_workspace WHERE t_title CONTAINS $raw_query OR t_workspace CONTAINS $normalized_query RETURN t.id, COALESCE(t.title, t.source, 'Thread'), CASE WHEN t_title = $raw_query THEN 3 WHEN t_title = $normalized_query THEN 3 WHEN t_title CONTAINS $raw_query THEN 2 WHEN t_title CONTAINS $normalized_query THEN 2 ELSE 1 END AS match_level ORDER BY match_level DESC, COALESCE(t.message_count, 0) DESC LIMIT $limit",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let with_projection = query
-        .with_projection
-        .as_ref()
-        .expect("expected WITH projection");
+    let with_projection = pipeline_with(&query);
     assert_eq!(with_projection.items.len(), 6);
-    assert!(query.aggregate_with_filter.is_some());
+    assert!(pipeline_with(&query)
+        .predicate
+        .as_ref()
+        .map(|predicate| predicate.kind.clone())
+        .is_some());
     assert!(matches!(
-        query.returns[1].expression,
+        pipeline_return(&query).items[1].expression,
         AstNode {
             kind: ReturnExpressionKind::Value(AstNode {
                 kind: ScalarExpressionKind::Coalesce(_),
@@ -2106,7 +2390,7 @@ fn parses_thread_search_projection_with_coalesce_ordering() {
         }
     ));
     assert!(matches!(
-        query.order_by[1].expression,
+        pipeline_return(&query).order_by[1].expression,
         OrderExpression::Value(AstNode {
             kind: ScalarExpressionKind::Coalesce(_),
             ..
@@ -2120,13 +2404,13 @@ fn parses_cleanup_active_consumption_order_expression() {
         "MATCH (m:Memory) RETURN m.id ORDER BY CASE WHEN COALESCE(m.access_count, 0) - COALESCE(m.appearances, 0) - COALESCE(m.clicks, 0) < 0 THEN 0 ELSE COALESCE(m.access_count, 0) - COALESCE(m.appearances, 0) - COALESCE(m.clicks, 0) END ASC",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     let OrderExpression::Value(AstNode {
         kind: ScalarExpressionKind::CaseCoalesceDifferenceFloorZero { variable, terms },
         ..
-    }) = &query.order_by[0].expression
+    }) = &pipeline_return(&query).order_by[0].expression
     else {
         panic!("expected cleanup active-consumption CASE order expression");
     };
@@ -2138,7 +2422,10 @@ fn parses_cleanup_active_consumption_order_expression() {
             .collect::<Vec<_>>(),
         vec!["access_count", "appearances", "clicks"]
     );
-    assert_eq!(query.order_by[0].direction, OrderDirection::Asc);
+    assert_eq!(
+        pipeline_return(&query).order_by[0].direction,
+        OrderDirection::Asc
+    );
 }
 
 #[test]
@@ -2147,16 +2434,19 @@ fn parses_optional_match_direct_projection_count() {
         "MATCH (l:Label) OPTIONAL MATCH (m:Memory)-[:HAS_LABEL]->(l) RETURN l.id, l.name, COUNT(m) AS usage_count ORDER BY l.name ASC SKIP $offset LIMIT $limit",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let optional = query.optional_expand.expect("optional expand");
-    assert_eq!(optional.source_variable, "l");
-    assert_eq!(optional.expand.target_variable, "m");
-    assert_eq!(optional.expand.direction, RelationshipDirection::Incoming);
-    assert_eq!(query.returns.len(), 3);
+    let optional = pipeline_optional_pattern(&query);
+    assert_eq!(optional.first.variable, "m");
+    assert_eq!(optional.steps[0].target.variable, "l");
+    assert_eq!(
+        optional.steps[0].relationship.direction,
+        RelationshipDirection::Outgoing
+    );
+    assert_eq!(pipeline_return(&query).items.len(), 3);
     assert!(matches!(
-        query.returns[2].expression,
+        pipeline_return(&query).items[2].expression,
         AstNode {
             kind: ReturnExpressionKind::Aggregate(AggregateExpression::CountVariable { .. }),
             ..
@@ -2170,16 +2460,29 @@ fn parses_with_collect_distinct_property() {
         "MATCH (c:Memory)-[:SYNTHESIZED_FROM]->(s:Memory) WHERE c.id IN $ids WITH c, COLLECT(DISTINCT s.id) AS source_ids RETURN c.id, source_ids",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let collect_with = query.collect_with.expect("collect with");
-    assert_eq!(collect_with.group_variable, "c");
-    assert_eq!(collect_with.collect_variable, "s");
-    assert_eq!(collect_with.collect_property, "id");
-    assert!(collect_with.distinct);
-    assert_eq!(collect_with.alias, "source_ids");
-    assert_eq!(query.returns.len(), 2);
+    let projection = pipeline_with(&query);
+    assert_eq!(projection.items.len(), 2);
+    assert_eq!(
+        projection.items[0].expression,
+        AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
+            ScalarExpressionKind::Variable("c".to_string())
+        )))
+    );
+    assert_eq!(
+        projection.items[1].expression,
+        AstNode::synthetic(ReturnExpressionKind::Aggregate(
+            AggregateExpression::CollectProperty {
+                variable: "s".to_string(),
+                property: "id".to_string(),
+                distinct: true
+            }
+        ))
+    );
+    assert_eq!(projection.items[1].alias.as_deref(), Some("source_ids"));
+    assert_eq!(pipeline_return(&query).items.len(), 2);
 }
 
 #[test]
@@ -2188,10 +2491,10 @@ fn parses_with_collect_distinct_variable_and_count() {
         "MATCH (m:Memory)-[:MENTIONS]->(e:Entity) WHERE e.id IN $entity_ids WITH m, COLLECT(DISTINCT e) as entity_nodes, COUNT(DISTINCT e) as entity_count RETURN m, entity_nodes, entity_count ORDER BY entity_count DESC LIMIT $limit",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let aggregate_with = query.aggregate_with.expect("aggregate with");
+    let aggregate_with = pipeline_with(&query);
     assert_eq!(aggregate_with.items.len(), 3);
     assert!(matches!(
         aggregate_with.items[1].expression,
@@ -2207,10 +2510,10 @@ fn parses_with_collect_distinct_variable_and_count() {
             distinct: true
         }), .. } if variable == "e"
     ));
-    assert_eq!(query.returns.len(), 3);
-    assert_eq!(query.order_by.len(), 1);
+    assert_eq!(pipeline_return(&query).items.len(), 3);
+    assert_eq!(pipeline_return(&query).order_by.len(), 1);
     assert_eq!(
-        query.limit,
+        pipeline_return(&query).limit,
         Some(AstNode::synthetic(ValueExpressionKind::Parameter(
             "limit".to_string()
         )))
@@ -2223,13 +2526,13 @@ fn parses_optional_match_return_collect_distinct_property() {
         "MATCH (m:Memory) OPTIONAL MATCH (m)-[:HAS_LABEL]->(l:Label) RETURN m.id, COLLECT(DISTINCT l.name) AS labels",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let optional = query.optional_expand.expect("optional expand");
-    assert_eq!(optional.source_variable, "m");
-    assert_eq!(optional.expand.target_variable, "l");
-    assert_eq!(query.returns.len(), 2);
+    let optional = pipeline_optional_pattern(&query);
+    assert_eq!(optional.first.variable, "m");
+    assert_eq!(optional.steps[0].target.variable, "l");
+    assert_eq!(pipeline_return(&query).items.len(), 2);
     let AstNode {
         kind:
             ReturnExpressionKind::Aggregate(AggregateExpression::CollectProperty {
@@ -2238,25 +2541,28 @@ fn parses_optional_match_return_collect_distinct_property() {
                 distinct,
             }),
         ..
-    } = &query.returns[1].expression
+    } = &pipeline_return(&query).items[1].expression
     else {
         panic!("expected collect return");
     };
     assert_eq!(variable, "l");
     assert_eq!(property, "name");
     assert!(*distinct);
-    assert_eq!(query.returns[1].alias.as_deref(), Some("labels"));
+    assert_eq!(
+        pipeline_return(&query).items[1].alias.as_deref(),
+        Some("labels")
+    );
 }
 
 #[test]
 fn parses_literal_return_projection_alias() {
     let statement = parse("MATCH (m:Memory) RETURN m.id, 0 AS mention_breadth").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    assert_eq!(query.returns.len(), 2);
+    assert_eq!(pipeline_return(&query).items.len(), 2);
     assert!(matches!(
-        query.returns[1].expression,
+        pipeline_return(&query).items[1].expression,
         AstNode {
             kind: ReturnExpressionKind::Value(AstNode {
                 kind: ScalarExpressionKind::Value(_),
@@ -2265,7 +2571,10 @@ fn parses_literal_return_projection_alias() {
             ..
         }
     ));
-    assert_eq!(query.returns[1].alias.as_deref(), Some("mention_breadth"));
+    assert_eq!(
+        pipeline_return(&query).items[1].alias.as_deref(),
+        Some("mention_breadth")
+    );
 }
 
 #[test]
@@ -2274,7 +2583,7 @@ fn parses_case_property_default_if_null_order_expression() {
         "MATCH (m:Memory) RETURN m.id ORDER BY CASE WHEN m.importance IS NOT NULL THEN m.importance ELSE 0.5 END DESC",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     let OrderExpression::Value(AstNode {
@@ -2285,7 +2594,7 @@ fn parses_case_property_default_if_null_order_expression() {
                 default,
             },
         ..
-    }) = &query.order_by[0].expression
+    }) = &pipeline_return(&query).order_by[0].expression
     else {
         panic!("expected default-if-null order expression");
     };
@@ -2303,15 +2612,16 @@ fn parses_with_distinct_property_alias_count() {
         "MATCH (c:Memory)-[:CRYSTALLIZED_FROM]->(s:Memory) WITH DISTINCT c.id AS a, s.id AS b RETURN count(*)",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let distinct_with = query.distinct_with.expect("distinct with");
+    let distinct_with = pipeline_with(&query);
+    assert!(distinct_with.distinct);
     assert_eq!(distinct_with.items.len(), 2);
     assert_eq!(distinct_with.items[0].alias.as_deref(), Some("a"));
     assert_eq!(distinct_with.items[1].alias.as_deref(), Some("b"));
     assert_eq!(
-        query.returns[0].expression,
+        pipeline_return(&query).items[0].expression,
         AstNode::synthetic(ReturnExpressionKind::Aggregate(
             AggregateExpression::CountAll
         ))
@@ -2324,24 +2634,28 @@ fn parses_with_aggregate_alias_filter_return() {
         "MATCH (c:Memory)-[:SYNTHESIZED_FROM]->(s:Memory) WHERE c.is_crystal = true AND s.id IN $source_ids WITH c.id AS cid, count(DISTINCT s.id) AS covered WHERE covered = $n RETURN cid LIMIT 1",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let aggregate_with = query.aggregate_with.expect("aggregate with");
+    let aggregate_with = pipeline_with(&query);
     assert_eq!(aggregate_with.items.len(), 2);
     assert_eq!(aggregate_with.items[0].alias.as_deref(), Some("cid"));
     assert_eq!(aggregate_with.items[1].alias.as_deref(), Some("covered"));
-    let filter = query.aggregate_with_filter.expect("aggregate filter");
-    let WithAliasFilter::Comparison { left, .. } = filter else {
+    let filter = pipeline_with(&query)
+        .predicate
+        .as_ref()
+        .map(|predicate| predicate.kind.clone())
+        .expect("aggregate filter");
+    let PropertyPredicate::ExpressionEq { expression, .. } = filter else {
         panic!("expected comparison filter");
     };
     assert_eq!(
-        left,
-        WithAliasFilterExpression::Column("covered".to_string())
+        expression.kind,
+        ScalarExpressionKind::Variable("covered".to_string())
     );
-    assert_eq!(query.returns.len(), 1);
+    assert_eq!(pipeline_return(&query).items.len(), 1);
     assert_eq!(
-        query.returns[0].expression,
+        pipeline_return(&query).items[0].expression,
         AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
             ScalarExpressionKind::Variable("cid".to_string())
         )))
@@ -2354,15 +2668,15 @@ fn parses_with_aggregate_two_alias_return() {
         "MATCH (c:Memory)-[:SYNTHESIZED_FROM]->(s:Memory) WHERE c.is_crystal = true AND s.id IN $source_ids WITH c.id AS cid, c.crystal_title AS ct, count(DISTINCT s.id) AS covered WHERE covered = $n RETURN cid, ct LIMIT 1",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let aggregate_with = query.aggregate_with.expect("aggregate with");
+    let aggregate_with = pipeline_with(&query);
     assert_eq!(aggregate_with.items.len(), 3);
     assert_eq!(aggregate_with.items[0].alias.as_deref(), Some("cid"));
     assert_eq!(aggregate_with.items[1].alias.as_deref(), Some("ct"));
     assert_eq!(aggregate_with.items[2].alias.as_deref(), Some("covered"));
-    assert_eq!(query.returns.len(), 2);
+    assert_eq!(pipeline_return(&query).items.len(), 2);
 }
 
 #[test]
@@ -2371,10 +2685,10 @@ fn parses_with_date_part_group_aggregate() {
         "MATCH (m:Memory) WHERE m.created_at IS NOT NULL WITH date_part('year', m.created_at) AS year, date_part('month', m.created_at) AS month, COUNT(m) AS memory_count RETURN year, month, memory_count ORDER BY year DESC, month DESC LIMIT $months",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let aggregate_with = query.aggregate_with.expect("aggregate with");
+    let aggregate_with = pipeline_with(&query);
     assert_eq!(aggregate_with.items.len(), 3);
     assert_eq!(aggregate_with.items[0].alias.as_deref(), Some("year"));
     assert_eq!(
@@ -2392,8 +2706,8 @@ fn parses_with_date_part_group_aggregate() {
         aggregate_with.items[2].alias.as_deref(),
         Some("memory_count")
     );
-    assert_eq!(query.returns.len(), 3);
-    assert_eq!(query.order_by.len(), 2);
+    assert_eq!(pipeline_return(&query).items.len(), 3);
+    assert_eq!(pipeline_return(&query).order_by.len(), 2);
 }
 
 #[test]
@@ -2402,10 +2716,10 @@ fn parses_normalized_space_case_predicates() {
         "MATCH (t:Thread) WHERE t.thread_id IN $thread_ids AND CASE WHEN t.space_id IS NULL OR t.space_id = '' THEN 'default' ELSE t.space_id END = $source_space_id RETURN t.id",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let Some(PropertyPredicate::And(predicates)) = query.predicate else {
+    let Some(PropertyPredicate::And(predicates)) = pipeline_predicate(&query, 0) else {
         panic!("expected conjunction");
     };
     assert_eq!(predicates.len(), 2);
@@ -2424,11 +2738,11 @@ fn parses_normalized_space_case_predicates() {
         "MATCH (t:Thread) WHERE CASE WHEN t.space_id IS NULL OR t.space_id = '' THEN 'default' ELSE t.space_id END <> $target_space_id RETURN t.thread_id",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert!(matches!(
-        query.predicate,
+        pipeline_predicate(&query, 0),
         Some(PropertyPredicate::ExpressionNotEq {
             expression: AstNode {
                 kind: ScalarExpressionKind::DefaultIfNullOrEq { .. },
@@ -2445,10 +2759,10 @@ fn parses_normalized_space_case_as_first_aggregate_with_item() {
         "MATCH (t:Thread) WITH CASE WHEN t.space_id IS NULL OR t.space_id = '' THEN 'default' ELSE t.space_id END AS space_id, t.thread_id AS thread_id, MAX(t.updated_at) AS last_activity RETURN space_id, thread_id, last_activity",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let aggregate_with = query.aggregate_with.expect("expected aggregate WITH");
+    let aggregate_with = pipeline_with(&query);
     assert_eq!(aggregate_with.items.len(), 3);
     assert!(matches!(
         aggregate_with.items[0].expression,
@@ -2476,17 +2790,17 @@ fn parses_count_return_items() {
         "MATCH (m:Memory) RETURN count(*) AS total, count(m) AS memories, min(m.score), max(m.score), avg(m.score)",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.returns[0].expression,
+        pipeline_return(&query).items[0].expression,
         AstNode::synthetic(ReturnExpressionKind::Aggregate(
             AggregateExpression::CountAll
         ))
     );
     assert_eq!(
-        query.returns[1].expression,
+        pipeline_return(&query).items[1].expression,
         AstNode::synthetic(ReturnExpressionKind::Aggregate(
             AggregateExpression::CountVariable {
                 variable: "m".to_string(),
@@ -2495,7 +2809,7 @@ fn parses_count_return_items() {
         ))
     );
     assert_eq!(
-        query.returns[2].expression,
+        pipeline_return(&query).items[2].expression,
         AstNode::synthetic(ReturnExpressionKind::Aggregate(
             AggregateExpression::MinProperty {
                 variable: "m".to_string(),
@@ -2504,7 +2818,7 @@ fn parses_count_return_items() {
         ))
     );
     assert_eq!(
-        query.returns[3].expression,
+        pipeline_return(&query).items[3].expression,
         AstNode::synthetic(ReturnExpressionKind::Aggregate(
             AggregateExpression::MaxProperty {
                 variable: "m".to_string(),
@@ -2513,7 +2827,7 @@ fn parses_count_return_items() {
         ))
     );
     assert_eq!(
-        query.returns[4].expression,
+        pipeline_return(&query).items[4].expression,
         AstNode::synthetic(ReturnExpressionKind::Aggregate(
             AggregateExpression::AvgProperty {
                 variable: "m".to_string(),
@@ -2529,11 +2843,11 @@ fn parses_order_by_count_return_item() {
         "MATCH (e:Entity)-[r:RELATES_TO]-(:Entity) RETURN e.id, COUNT(r) ORDER BY COUNT(r) DESC LIMIT $limit",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.returns[1].expression,
+        pipeline_return(&query).items[1].expression,
         AstNode::synthetic(ReturnExpressionKind::Aggregate(
             AggregateExpression::CountVariable {
                 variable: "r".to_string(),
@@ -2542,10 +2856,13 @@ fn parses_order_by_count_return_item() {
         ))
     );
     assert_eq!(
-        query.order_by[0].expression,
+        pipeline_return(&query).order_by[0].expression,
         OrderExpression::Column("count(r)".to_string())
     );
-    assert_eq!(query.order_by[0].direction, OrderDirection::Desc);
+    assert_eq!(
+        pipeline_return(&query).order_by[0].direction,
+        OrderDirection::Desc
+    );
 }
 
 #[test]
@@ -2553,12 +2870,15 @@ fn parses_count_distinct_return_items() {
     let statement =
         parse("MATCH (m:Memory)-[r:MENTIONS]->(e:Entity) RETURN count(DISTINCT e.id) AS entities")
             .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    assert_eq!(query.returns[0].alias.as_deref(), Some("entities"));
     assert_eq!(
-        query.returns[0].expression,
+        pipeline_return(&query).items[0].alias.as_deref(),
+        Some("entities")
+    );
+    assert_eq!(
+        pipeline_return(&query).items[0].expression,
         AstNode::synthetic(ReturnExpressionKind::Aggregate(
             AggregateExpression::CountProperty {
                 variable: "e".to_string(),
@@ -2575,12 +2895,15 @@ fn parses_coalesce_and_left_return_items() {
         "MATCH (m:Memory) RETURN COALESCE(m.title, LEFT(COALESCE(m.content, ''), 60)) AS label",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    assert_eq!(query.returns[0].alias.as_deref(), Some("label"));
     assert_eq!(
-        query.returns[0].expression,
+        pipeline_return(&query).items[0].alias.as_deref(),
+        Some("label")
+    );
+    assert_eq!(
+        pipeline_return(&query).items[0].expression,
         AstNode::synthetic(ReturnExpressionKind::Value(AstNode::synthetic(
             ScalarExpressionKind::Coalesce(vec![
                 AstNode::synthetic(ScalarExpressionKind::Property {
@@ -2610,10 +2933,10 @@ fn parses_coalesce_and_left_predicates() {
         "MATCH (m:Memory) WHERE COALESCE(m.created_at, m.last_accessed_at) >= $cutoff AND LEFT(COALESCE(m.title, ''), 4) = 'Graph' RETURN m.id",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let Some(PropertyPredicate::And(predicates)) = query.predicate else {
+    let Some(PropertyPredicate::And(predicates)) = pipeline_predicate(&query, 0) else {
         panic!("expected predicate conjunction");
     };
     assert_eq!(
@@ -2662,12 +2985,12 @@ fn parses_coalesce_float_predicate() {
     let statement =
         parse("MATCH (m:Memory) WHERE COALESCE(m.decay_score_cached, 1.0) < 0.55 RETURN m.id")
             .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     let Some(PropertyPredicate::ExpressionCompare {
         expression, value, ..
-    }) = query.predicate
+    }) = pipeline_predicate(&query, 0)
     else {
         panic!("expected expression compare");
     };
@@ -2698,11 +3021,11 @@ fn parses_lower_contains_expression_predicates() {
         "MATCH (m:Memory) WHERE LOWER(COALESCE(m.content, '')) CONTAINS LOWER($needle) RETURN m.id",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.predicate,
+        pipeline_predicate(&query, 0),
         Some(PropertyPredicate::ExpressionContains {
             expression: AstNode::synthetic(ScalarExpressionKind::Lower(Box::new(
                 AstNode::synthetic(ScalarExpressionKind::Coalesce(vec![
@@ -2728,11 +3051,11 @@ fn parses_lower_contains_expression_predicates() {
 fn parses_lower_equality_expression_predicates() {
     let statement =
         parse("MATCH (e:Entity) WHERE LOWER(e.name) = LOWER($mention) RETURN e.id").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.predicate,
+        pipeline_predicate(&query, 0),
         Some(PropertyPredicate::ExpressionEq {
             expression: AstNode::synthetic(ScalarExpressionKind::Lower(Box::new(
                 AstNode::synthetic(ScalarExpressionKind::Property {
@@ -2754,22 +3077,25 @@ fn parses_order_offset_and_limit() {
     let statement =
         parse("MATCH (m:Memory) RETURN m.title AS title ORDER BY title DESC SKIP $offset LIMIT 10")
             .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    assert_eq!(query.order_by.len(), 1);
+    assert_eq!(pipeline_return(&query).order_by.len(), 1);
     assert_eq!(
-        query.order_by[0].expression,
+        pipeline_return(&query).order_by[0].expression,
         OrderExpression::Column("title".to_string())
     );
-    assert_eq!(query.order_by[0].direction, OrderDirection::Desc);
     assert_eq!(
-        query.offset,
+        pipeline_return(&query).order_by[0].direction,
+        OrderDirection::Desc
+    );
+    assert_eq!(
+        pipeline_return(&query).offset,
         Some(AstNode::synthetic(ValueExpressionKind::Parameter(
             "offset".to_string()
         )))
     );
-    assert!(query.limit.is_some());
+    assert!(pipeline_return(&query).limit.is_some());
 }
 
 #[test]
@@ -2778,12 +3104,12 @@ fn parses_order_by_coalesce_expression() {
         "MATCH (m:Memory) RETURN m.id AS id ORDER BY COALESCE(m.pagerank_score, m.importance, 0.5) DESC",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    assert_eq!(query.order_by.len(), 1);
+    assert_eq!(pipeline_return(&query).order_by.len(), 1);
     assert_eq!(
-        query.order_by[0].expression,
+        pipeline_return(&query).order_by[0].expression,
         OrderExpression::Value(AstNode::synthetic(ScalarExpressionKind::Coalesce(vec![
             AstNode::synthetic(ScalarExpressionKind::Property {
                 variable: "m".to_string(),
@@ -2798,17 +3124,20 @@ fn parses_order_by_coalesce_expression() {
             ))),
         ])))
     );
-    assert_eq!(query.order_by[0].direction, OrderDirection::Desc);
+    assert_eq!(
+        pipeline_return(&query).order_by[0].direction,
+        OrderDirection::Desc
+    );
 }
 
 #[test]
 fn parses_parameter_value_without_binding_it() {
     let statement = parse("MATCH (m:Memory) WHERE m.id = $id RETURN m.title").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.predicate.unwrap(),
+        pipeline_predicate(&query, 0).unwrap(),
         PropertyPredicate::Eq {
             variable: "m".to_string(),
             property: "id".to_string(),
@@ -2820,11 +3149,11 @@ fn parses_parameter_value_without_binding_it() {
 #[test]
 fn parses_null_and_list_predicates() {
     let statement = parse("MATCH (m:Memory) WHERE m.deleted_at IS NULL RETURN m.title").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.predicate.unwrap(),
+        pipeline_predicate(&query, 0).unwrap(),
         PropertyPredicate::IsNull {
             variable: "m".to_string(),
             property: "deleted_at".to_string(),
@@ -2832,10 +3161,10 @@ fn parses_null_and_list_predicates() {
     );
 
     let statement = parse("MATCH (m:Memory) WHERE m.id IN [1, 2] RETURN m.title").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let PropertyPredicate::In { values, .. } = query.predicate.unwrap() else {
+    let PropertyPredicate::In { values, .. } = pipeline_predicate(&query, 0).unwrap() else {
         panic!("expected in predicate");
     };
     assert_eq!(
@@ -2847,10 +3176,10 @@ fn parses_null_and_list_predicates() {
     );
 
     let statement = parse("MATCH (m:Memory) WHERE m.id IN [1, $id] RETURN m.title").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let PropertyPredicate::In { values, .. } = query.predicate.unwrap() else {
+    let PropertyPredicate::In { values, .. } = pipeline_predicate(&query, 0).unwrap() else {
         panic!("expected in predicate");
     };
     assert_eq!(
@@ -2863,11 +3192,11 @@ fn parses_null_and_list_predicates() {
 
     let statement =
         parse("MATCH (e:Entity) WHERE list_contains(e.aliases, $name) RETURN e.id").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.predicate.unwrap(),
+        pipeline_predicate(&query, 0).unwrap(),
         PropertyPredicate::ListContains {
             variable: "e".to_string(),
             property: "aliases".to_string(),
@@ -2877,11 +3206,11 @@ fn parses_null_and_list_predicates() {
 
     let statement =
         parse("MATCH (e:Entity) WHERE list_contains_lower(e.aliases, $query) RETURN e.id").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.predicate.unwrap(),
+        pipeline_predicate(&query, 0).unwrap(),
         PropertyPredicate::ListContainsLower {
             variable: "e".to_string(),
             property: "aliases".to_string(),
@@ -2895,10 +3224,10 @@ fn parses_parameter_null_predicate() {
     let statement =
         parse("MATCH (t:Thread) WHERE ($source IS NULL OR t.source = $source) RETURN COUNT(t)")
             .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let Some(PropertyPredicate::Or(predicates)) = query.predicate else {
+    let Some(PropertyPredicate::Or(predicates)) = pipeline_predicate(&query, 0) else {
         panic!("expected OR predicate");
     };
     assert_eq!(
@@ -2915,10 +3244,10 @@ fn parses_parameter_equality_predicate() {
         "MATCH (m:Memory) WHERE m.space_id = $space_id OR ($space_id = $default_space_id AND (m.space_id IS NULL OR m.space_id = '')) RETURN m.id",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let Some(PropertyPredicate::Or(predicates)) = query.predicate else {
+    let Some(PropertyPredicate::Or(predicates)) = pipeline_predicate(&query, 0) else {
         panic!("expected OR predicate");
     };
     let PropertyPredicate::And(default_space_predicates) = &predicates[1] else {
@@ -2941,10 +3270,10 @@ fn parses_parameter_literal_equality_predicate() {
         "MATCH (m:Memory) WHERE m.space_id = $space_id OR ($space_id = 'default' AND (m.space_id IS NULL OR m.space_id = '')) RETURN m.id",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let Some(PropertyPredicate::Or(predicates)) = query.predicate else {
+    let Some(PropertyPredicate::Or(predicates)) = pipeline_predicate(&query, 0) else {
         panic!("expected OR predicate");
     };
     let PropertyPredicate::And(default_space_predicates) = &predicates[1] else {
@@ -2967,11 +3296,11 @@ fn parses_contains_function_predicate() {
         "MATCH (m:Memory) WHERE contains(LOWER(COALESCE(m.title, '')), LOWER($q)) RETURN m.id",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert!(matches!(
-        query.predicate,
+        pipeline_predicate(&query, 0),
         Some(PropertyPredicate::ExpressionContains {
             expression: AstNode {
                 kind: ScalarExpressionKind::Lower(_),
@@ -2991,11 +3320,11 @@ fn parses_parenthesized_case_expression_predicate() {
         "MATCH (t:Thread) WHERE (CASE WHEN t.space_id IS NULL OR t.space_id = '' THEN 'default' ELSE t.space_id END) = $space_id RETURN COUNT(t)",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert!(matches!(
-        query.predicate,
+        pipeline_predicate(&query, 0),
         Some(PropertyPredicate::ExpressionEq { .. })
     ));
 }
@@ -3003,11 +3332,11 @@ fn parses_parenthesized_case_expression_predicate() {
 #[test]
 fn parses_range_predicates() {
     let statement = parse("MATCH (m:Memory) WHERE m.created_at >= 10 RETURN m.title").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.predicate.unwrap(),
+        pipeline_predicate(&query, 0).unwrap(),
         PropertyPredicate::Compare {
             variable: "m".to_string(),
             property: "created_at".to_string(),
@@ -3017,11 +3346,11 @@ fn parses_range_predicates() {
     );
 
     let statement = parse("MATCH (m:Memory) WHERE m.title < 'm' RETURN m.title").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.predicate.unwrap(),
+        pipeline_predicate(&query, 0).unwrap(),
         PropertyPredicate::Compare {
             variable: "m".to_string(),
             property: "title".to_string(),
@@ -3034,11 +3363,11 @@ fn parses_range_predicates() {
 #[test]
 fn parses_not_equal_predicates() {
     let statement = parse("MATCH (m:Memory) WHERE m.kind <> 'task' RETURN m.title").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.predicate.unwrap(),
+        pipeline_predicate(&query, 0).unwrap(),
         PropertyPredicate::NotEq {
             variable: "m".to_string(),
             property: "kind".to_string(),
@@ -3049,11 +3378,11 @@ fn parses_not_equal_predicates() {
     );
 
     let statement = parse("MATCH (m:Memory) WHERE id(m) <> $id RETURN m.title").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.predicate.unwrap(),
+        pipeline_predicate(&query, 0).unwrap(),
         PropertyPredicate::IdNotEq {
             variable: "m".to_string(),
             value: AstNode::synthetic(ValueExpressionKind::Parameter("id".to_string())),
@@ -3066,9 +3395,9 @@ fn parses_contains_predicates() {
     let statement =
         parse("MATCH (m:Memory) WHERE m.title CONTAINS 'graph' RETURN m.title").unwrap();
     match statement {
-        Statement::MatchReturn(match_return) => {
+        Statement::Pipeline(match_return) => {
             assert_eq!(
-                match_return.predicate,
+                pipeline_predicate(&match_return, 0),
                 Some(PropertyPredicate::Contains {
                     variable: "m".to_string(),
                     property: "title".to_string(),
@@ -3087,9 +3416,9 @@ fn parses_string_prefix_and_suffix_predicates() {
     let statement =
         parse("MATCH (m:Memory) WHERE m.title STARTS WITH 'Graph' RETURN m.title").unwrap();
     match statement {
-        Statement::MatchReturn(match_return) => {
+        Statement::Pipeline(match_return) => {
             assert_eq!(
-                match_return.predicate,
+                pipeline_predicate(&match_return, 0),
                 Some(PropertyPredicate::StartsWith {
                     variable: "m".to_string(),
                     property: "title".to_string(),
@@ -3105,9 +3434,9 @@ fn parses_string_prefix_and_suffix_predicates() {
     let statement =
         parse("MATCH (m:Memory) WHERE m.title ENDS WITH $suffix RETURN m.title").unwrap();
     match statement {
-        Statement::MatchReturn(match_return) => {
+        Statement::Pipeline(match_return) => {
             assert_eq!(
-                match_return.predicate,
+                pipeline_predicate(&match_return, 0),
                 Some(PropertyPredicate::EndsWith {
                     variable: "m".to_string(),
                     property: "title".to_string(),
@@ -3125,9 +3454,9 @@ fn parses_regex_match_predicate() {
         parse("MATCH (m:Memory)-[:HAS_LABEL]->(l:Label) WHERE l.name =~ $pattern RETURN m")
             .unwrap();
     match statement {
-        Statement::MatchReturn(match_return) => {
+        Statement::Pipeline(match_return) => {
             assert_eq!(
-                match_return.predicate,
+                pipeline_predicate(&match_return, 0),
                 Some(PropertyPredicate::RegexMatch {
                     variable: "l".to_string(),
                     property: "name".to_string(),
@@ -3146,11 +3475,11 @@ fn parses_and_predicates() {
     let statement =
         parse("MATCH (m:Memory) WHERE m.created_at >= 10 AND m.created_at < 20 RETURN m.title")
             .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.predicate.unwrap(),
+        pipeline_predicate(&query, 0).unwrap(),
         PropertyPredicate::And(vec![
             PropertyPredicate::Compare {
                 variable: "m".to_string(),
@@ -3171,11 +3500,11 @@ fn parses_and_predicates() {
 #[test]
 fn parses_not_predicates() {
     let statement = parse("MATCH (m:Memory) WHERE NOT m.kind = 'task' RETURN m.title").unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.predicate.unwrap(),
+        pipeline_predicate(&query, 0).unwrap(),
         PropertyPredicate::Not(Box::new(PropertyPredicate::Eq {
             variable: "m".to_string(),
             property: "kind".to_string(),
@@ -3188,11 +3517,11 @@ fn parses_not_predicates() {
     let statement =
         parse("MATCH (m:Memory) WHERE NOT (m.kind = 'task' OR m.score < 10) RETURN m.title")
             .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.predicate.unwrap(),
+        pipeline_predicate(&query, 0).unwrap(),
         PropertyPredicate::Not(Box::new(PropertyPredicate::Or(vec![
             PropertyPredicate::Eq {
                 variable: "m".to_string(),
@@ -3221,10 +3550,10 @@ fn parses_nowledge_orphan_relationship_existence_predicates() {
          RETURN e.id",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
-    let Some(PropertyPredicate::And(predicates)) = query.predicate else {
+    let Some(PropertyPredicate::And(predicates)) = pipeline_predicate(&query, 0) else {
         panic!("expected predicate conjunction");
     };
     assert_eq!(predicates.len(), 3);
@@ -3265,11 +3594,11 @@ fn parses_bound_relationship_existence_subquery_predicate() {
          RETURN count(*)",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.predicate,
+        pipeline_predicate(&query, 0),
         Some(PropertyPredicate::Not(Box::new(
             PropertyPredicate::BoundRelationshipExists {
                 source_variable: "c".to_string(),
@@ -3287,11 +3616,11 @@ fn parses_or_predicates_with_and_precedence() {
         "MATCH (m:Memory) WHERE m.kind = 'note' OR m.score >= 10 AND m.score < 20 RETURN m.title",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.predicate.unwrap(),
+        pipeline_predicate(&query, 0).unwrap(),
         PropertyPredicate::Or(vec![
             PropertyPredicate::Eq {
                 variable: "m".to_string(),
@@ -3324,11 +3653,11 @@ fn parses_parenthesized_predicates() {
         "MATCH (m:Memory) WHERE (m.kind = 'note' OR m.kind = 'thread') AND m.score >= 10 RETURN m.title",
     )
     .unwrap();
-    let Statement::MatchReturn(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match return");
     };
     assert_eq!(
-        query.predicate.unwrap(),
+        pipeline_predicate(&query, 0).unwrap(),
         PropertyPredicate::And(vec![
             PropertyPredicate::Or(vec![
                 PropertyPredicate::Eq {
@@ -3362,14 +3691,16 @@ fn parses_match_expand_match_merge_relationship() {
         "MATCH (n:Memory)-[:HAS_LABEL]->(src:Label {id: $src}) MATCH (tgt:Label {id: $tgt}) MERGE (n)-[r:HAS_LABEL]->(tgt) ON CREATE SET r.assigned_by = 'label_merge', r.created_at = $now",
     )
     .unwrap();
-    let Statement::MatchExpandMatchMergeRelationship(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match expand match merge relationship");
     };
-    assert_eq!(query.source_variable, "n");
-    assert_eq!(query.expand.target_variable, "src");
-    assert_eq!(query.matched_target_variable, "tgt");
-    assert_eq!(query.rel_type, "HAS_LABEL");
-    assert_eq!(query.on_create_sets.len(), 2);
+    let (pattern, on_create, on_match) = pipeline_merge(&query);
+    assert!(on_match.is_empty());
+    assert_eq!(pipeline_match_node(&query, 0).variable, "n");
+    assert_eq!(pipeline_expansion(&query).unwrap().target.variable, "src");
+    assert_eq!(pipeline_match_node(&query, 1).variable, "tgt");
+    assert_eq!(pattern.steps[0].relationship.rel_type, "HAS_LABEL");
+    assert_eq!(on_create.len(), 2);
 }
 
 #[test]
@@ -3378,14 +3709,19 @@ fn parses_match_expand_comma_match_merge_relationship_with_predicate() {
         "MATCH (older:Memory {id: $older_id})-[:HAS_LABEL]->(label:Label), (newer:Memory {id: $newer_id}) WHERE older.space_id = $space_id AND newer.space_id = $space_id MERGE (newer)-[edge:HAS_LABEL]->(label) ON CREATE SET edge.assigned_by = 'system', edge.created_at = $created_at, edge.properties = '{}'",
     )
     .unwrap();
-    let Statement::MatchExpandMatchMergeRelationship(query) = statement else {
+    let Statement::Pipeline(query) = statement else {
         panic!("expected match expand comma merge relationship");
     };
-    assert_eq!(query.source_variable, "older");
-    assert_eq!(query.expand.target_variable, "label");
-    assert_eq!(query.matched_target_variable, "newer");
-    assert_eq!(query.rel_variable.as_deref(), Some("edge"));
-    assert_eq!(query.rel_type, "HAS_LABEL");
-    assert!(query.predicate.is_some());
-    assert_eq!(query.on_create_sets.len(), 3);
+    let (pattern, on_create, on_match) = pipeline_merge(&query);
+    assert!(on_match.is_empty());
+    assert_eq!(pipeline_match_node(&query, 0).variable, "older");
+    assert_eq!(pipeline_expansion(&query).unwrap().target.variable, "label");
+    assert_eq!(pipeline_match_node(&query, 1).variable, "newer");
+    assert_eq!(
+        pattern.steps[0].relationship.variable.as_deref(),
+        Some("edge")
+    );
+    assert_eq!(pattern.steps[0].relationship.rel_type, "HAS_LABEL");
+    assert!(pipeline_predicate(&query, 0).is_some());
+    assert_eq!(on_create.len(), 3);
 }

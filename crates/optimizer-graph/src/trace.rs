@@ -19,16 +19,7 @@ use crate::stage::StageTrace;
 use hawdb_plan_cypher::{PhysicalOperatorId, PhysicalPlanKind};
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OptimizerConfig {
-    pub max_groups: usize,
-}
-
-impl Default for OptimizerConfig {
-    fn default() -> Self {
-        Self { max_groups: 128 }
-    }
-}
+pub use hawdb_cascades::OptimizerConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OptimizerTrace {

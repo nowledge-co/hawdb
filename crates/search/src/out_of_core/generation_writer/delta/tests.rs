@@ -25,7 +25,7 @@ struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
         static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
-        let path = std::env::temp_dir().join(format!(
+        let path = crate::test_temp_dir().join(format!(
             "hawdb-delta-context-{}-{}",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)

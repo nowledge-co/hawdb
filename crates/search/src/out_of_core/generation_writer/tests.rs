@@ -1351,7 +1351,7 @@ pub(super) fn test_dir(name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!(
+    crate::test_temp_dir().join(format!(
         "hawdb_search_{name}_{}_{}_{}",
         std::process::id(),
         nanos,

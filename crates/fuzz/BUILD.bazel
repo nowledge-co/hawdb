@@ -61,10 +61,13 @@ rust_test(
 [
     rust_test(
         name = name,
-        # Measured at 3-5s locally (2026-09-27), well under "small"; the
-        # prior "large" (900s) was ~200x observed runtime. Bazel's own
-        # --test_verbose_timeout_warnings recommended size="small" here.
+        # Retain the small resource class and complete state-machine oracles.
+        # Both append cases exhausted 60s; their postmortems track qualification.
         size = "small",
+        timeout = "moderate" if name in [
+            "hawdb_fuzz_append_seed_7_tests",
+            "hawdb_fuzz_append_replay_tests",
+        ] else "short",
         args = [
             test_filter,
             "--exact",

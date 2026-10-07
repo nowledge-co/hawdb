@@ -17,11 +17,14 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 const CASES: &str = include_str!("../../cypher/fixtures/migration_corpus_v1.jsonl");
+const DEFAULT_PIPELINE: &str =
+    include_str!("../../cypher/fixtures/migration_default_pipeline_v1.json");
 const MANIFEST: &str = include_str!("../../cypher/fixtures/migration_manifest_v1.json");
 
 #[test]
 fn migration_corpus_preserves_bindings_and_logical_plans() {
     let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
+    let migration: Value = serde_json::from_str(DEFAULT_PIPELINE).unwrap();
     let mut outcomes = BTreeMap::new();
     let mut clock_goldens = 0;
     for line in CASES.lines() {
@@ -32,7 +35,18 @@ fn migration_corpus_preserves_bindings_and_logical_plans() {
         *outcomes.entry(kind.to_owned()).or_insert(0usize) += 1;
         let statement = hawdb_cypher::parse(query);
         if kind == "parse_rejected" {
-            assert!(statement.is_err(), "{id}: expected parser rejection");
+            if let Some(change) = migration["parser_stage_changes"].get(id) {
+                let statement = statement.unwrap_or_else(|error| panic!("{id}: {error}"));
+                let error = crate::plan_with_params(&statement, &parameters(&case["parameters"]))
+                    .expect_err(id);
+                assert_eq!(
+                    error.to_string(),
+                    change["empty_parameters_error"],
+                    "{id}: rejection stage changed"
+                );
+            } else {
+                assert!(statement.is_err(), "{id}: expected parser rejection");
+            }
             continue;
         }
         let statement = statement.unwrap_or_else(|error| panic!("{id}: {error}"));
@@ -50,7 +64,11 @@ fn migration_corpus_preserves_bindings_and_logical_plans() {
                 clock_goldens += usize::from(!case["clock_slots"].as_array().unwrap().is_empty());
                 assert_eq!(
                     format!("{plan:?}"),
-                    case["plan"]["text"],
+                    migration["logical_plan_representations"]
+                        .get(id)
+                        .unwrap_or(&case["plan"]["text"])
+                        .as_str()
+                        .unwrap(),
                     "{id}: logical plan changed"
                 );
             }
@@ -321,6 +339,20 @@ fn normalized_pipeline_frozen_plan_coverage() {
         "{}",
         serde_json::to_string_pretty(&differences).unwrap()
     );
+    let migration: Value = serde_json::from_str(DEFAULT_PIPELINE).unwrap();
+    assert_eq!(
+        migration["logical_plan_representations"]
+            .as_object()
+            .unwrap()
+            .len(),
+        differences.len()
+    );
+    for difference in &differences {
+        assert_eq!(
+            difference["actual"],
+            migration["logical_plan_representations"][difference["id"].as_str().unwrap()]
+        );
+    }
     // These two are representation differences, not permission to restore
     // the incorrect group-key or pre-lookup RETURN window (#757).
     assert_eq!(
@@ -329,5 +361,55 @@ fn normalized_pipeline_frozen_plan_coverage() {
             .map(|case| case["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
         ["probe-0040", "probe-0042"]
+    );
+}
+
+#[test]
+fn default_pipeline_stage_qualification() {
+    let migration: Value = serde_json::from_str(DEFAULT_PIPELINE).unwrap();
+    let changes = migration["parser_stage_changes"].as_object().unwrap();
+    let mut qualified = std::collections::BTreeSet::new();
+    for line in CASES.lines() {
+        let case: Value = serde_json::from_str(line).unwrap();
+        let id = case["id"].as_str().unwrap();
+        let Some(change) = changes.get(id) else {
+            continue;
+        };
+        assert_eq!(case["parse"], change["prior_parse"]);
+        let statement = hawdb_cypher::parse(case["query"].as_str().unwrap()).unwrap();
+        assert!(matches!(statement, hawdb_cypher::Statement::Pipeline(_)));
+        let empty = crate::plan_with_params(&statement, &BTreeMap::new()).expect_err(id);
+        assert_eq!(empty.to_string(), change["empty_parameters_error"]);
+        let supplied = BTreeMap::from([
+            (
+                "memory_id".to_string(),
+                hawdb_core::Value::String("source".to_string()),
+            ),
+            (
+                "older_id".to_string(),
+                hawdb_core::Value::String("older".to_string()),
+            ),
+            (
+                "newer_id".to_string(),
+                hawdb_core::Value::String("newer".to_string()),
+            ),
+        ]);
+        let planned = crate::plan_with_params(&statement, &supplied);
+        match change["supplied_parameters"].as_str().unwrap() {
+            "accepted" => assert!(
+                matches!(planned, Ok(crate::LogicalPlan::Aggregate { .. })),
+                "{id}: {planned:?}"
+            ),
+            "rejected" => assert_eq!(
+                planned.expect_err(id).to_string(),
+                change["empty_parameters_error"]
+            ),
+            stage => panic!("unknown stage {stage}"),
+        }
+        qualified.insert(id.to_string());
+    }
+    assert_eq!(
+        qualified,
+        std::collections::BTreeSet::from(["mem-0344".to_string(), "mem-0361".to_string()])
     );
 }

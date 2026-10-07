@@ -104,3 +104,8 @@ and normalized its bound plan. It was reverted after characterization:
 Before default routing, preserve typed read/write cache eligibility and semantic
 statement/fast-path reporting, requalify negative query behavior, migrate AST
 assertions, and rerun the complete parser, planner, embedded and fuzz gates.
+
+The full default-entrypoint delivery is specified in
+[Default Cypher clause pipeline](CYPHER_DEFAULT_PIPELINE.md). Its explicit
+qualification preserves the historical corpus and records the two stage
+transitions and two plan representations separately.

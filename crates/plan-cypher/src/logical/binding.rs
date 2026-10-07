@@ -115,40 +115,6 @@ pub(super) fn bind_properties(
         .collect()
 }
 
-pub(super) fn bind_relationship_count_legs(
-    legs: &[hawdb_cypher::OptionalRelationshipCountLeg],
-    parameters: &BTreeMap<String, Value>,
-) -> Result<Vec<RelationshipCountLeg>> {
-    legs.iter()
-        .map(|leg| {
-            Ok(RelationshipCountLeg {
-                rel_type: leg.rel_type.clone(),
-                direction: leg.direction,
-                distinct: leg.distinct,
-                filter: leg
-                    .filter
-                    .as_ref()
-                    .map(|filter| bind_relationship_count_filter(filter, parameters))
-                    .transpose()?,
-            })
-        })
-        .collect()
-}
-
-pub(super) fn bind_relationship_count_filter(
-    filter: &hawdb_cypher::OptionalRelationshipCountFilter,
-    parameters: &BTreeMap<String, Value>,
-) -> Result<RelationshipCountFilter> {
-    match filter {
-        hawdb_cypher::OptionalRelationshipCountFilter::PropertyNotEqOrEmpty { property, value } => {
-            Ok(RelationshipCountFilter::PropertyNotEqOrEmpty {
-                property: property.clone(),
-                value: bind_value(value, parameters)?,
-            })
-        }
-    }
-}
-
 pub(super) fn bind_on_create_set_properties(
     variable: Option<&str>,
     sets: &[SetProperty],
@@ -328,37 +294,6 @@ pub(super) fn bind_relationship_copy_on_create_set_properties(
     Ok(properties)
 }
 
-pub(super) fn plan_match_pattern_predicate(
-    source_variable: &str,
-    source_properties: &BTreeMap<String, ValueExpression>,
-    expand: Option<&CypherRelationshipExpand>,
-    post_expand: Option<&hawdb_cypher::PostMatchRelationshipExpand>,
-    parameters: &BTreeMap<String, Value>,
-) -> Result<Option<Predicate>> {
-    let mut predicates =
-        plan_node_pattern_predicates(source_variable, source_properties, parameters)?;
-    if let Some(expand) = expand {
-        predicates.extend(plan_node_pattern_predicates(
-            &expand.target_variable,
-            &expand.target_properties,
-            parameters,
-        )?);
-    }
-    if let Some(post_expand) = post_expand {
-        predicates.extend(plan_node_pattern_predicates(
-            &post_expand.source_variable,
-            &post_expand.source_properties,
-            parameters,
-        )?);
-        predicates.extend(plan_node_pattern_predicates(
-            &post_expand.expand.target_variable,
-            &post_expand.expand.target_properties,
-            parameters,
-        )?);
-    }
-    Ok(combine_predicates(predicates))
-}
-
 pub(super) fn plan_node_pattern_predicates(
     variable: &str,
     properties: &BTreeMap<String, ValueExpression>,
@@ -465,8 +400,9 @@ pub(super) fn combine_pattern_and_optional_cypher_predicate(
     scope: &BTreeSet<String>,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<Option<Predicate>> {
-    let pattern_predicate =
-        plan_match_pattern_predicate(variable, properties, None, None, parameters)?;
+    let pattern_predicate = combine_predicates(plan_node_pattern_predicates(
+        variable, properties, parameters,
+    )?);
     combine_pattern_and_optional_cypher_predicate_parts(
         pattern_predicate,
         predicate,
@@ -496,8 +432,9 @@ pub(super) fn combine_pattern_and_optional_predicate(
     predicate: Option<Predicate>,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<Option<Predicate>> {
-    let pattern_predicate =
-        plan_match_pattern_predicate(variable, properties, None, None, parameters)?;
+    let pattern_predicate = combine_predicates(plan_node_pattern_predicates(
+        variable, properties, parameters,
+    )?);
     Ok(combine_optional_predicates(pattern_predicate, predicate))
 }
 

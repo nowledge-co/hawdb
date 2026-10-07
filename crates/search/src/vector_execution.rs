@@ -17,15 +17,14 @@ use super::{
     VectorSearchExecutionOptions,
 };
 use crate::error::{HawDBError, Result};
+use hawdb_cascades::{OptimizerContext, QueryFamily, ResourceHints, VectorPrecision};
 use hawdb_executor::{
     execute_vector_plan, VectorCandidate, VectorCandidateBatch, VectorCandidateScanMetrics,
     VectorCandidateScanRequest, VectorExecutionReport, VectorExecutionSource,
     VectorRawRerankRequest, VectorRawScore, VectorResidualFilterRequest, VectorScoreSource,
 };
-use hawdb_optimizer::{
-    plan_vector_search, OptimizerContext, QueryFamily, ResourceHints, VectorPrecision,
-};
-use hawdb_plan_cypher::VectorSearchLogicalPlan;
+use hawdb_optimizer_vector::plan_vector_search;
+use hawdb_plan_core::VectorSearchLogicalPlan;
 use std::collections::BTreeMap;
 #[cfg(feature = "qualification")]
 use std::collections::BTreeSet;

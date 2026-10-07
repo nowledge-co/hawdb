@@ -49,7 +49,3 @@ pub(crate) const SAMPLED_HISTOGRAM_TOTAL_PSEUDOCOUNT: u64 = 2;
 /// label's rows, before and after projection fusion. Materialization does not
 /// change selectivity, and an already-covered predicate is not applied twice.
 pub(crate) const FULL_TEXT_SELECTIVITY_DIVISOR: u64 = 4;
-
-/// Materialized/hash/merge joins without usable key NDV retain 10% of candidate
-/// pairs. Probe inputs already estimate per-outer-row fanout and do not use it.
-pub(crate) const JOIN_SELECTIVITY_DIVISOR: u64 = 10;

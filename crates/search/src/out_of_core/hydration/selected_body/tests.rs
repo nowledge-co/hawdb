@@ -126,7 +126,7 @@ fn verified_body_exceeds_its_entire_operation_memory() {
     write(b"\t1,-2.5\t6b6579=76616c7565\n");
     let encoded = encoder.finish().unwrap();
     let bytes = envelope(&encoded, inflated_bytes, digest.finish());
-    let root = std::env::temp_dir().join(format!(
+    let root = crate::test_temp_dir().join(format!(
         "hawdb-selected-body-{}-{}",
         std::process::id(),
         CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
@@ -217,7 +217,7 @@ fn verified_body_admission_and_late_checksum_fail_without_receipt() {
 fn counted_publication_scan_reopen_and_cleanup_preserve_owned_bytes_on_denial() {
     use hawdb_storage::durability::durable_replace_file;
     use hawdb_storage::file_descriptors::ProjectFileDescriptors;
-    let root = std::env::temp_dir().join(format!(
+    let root = crate::test_temp_dir().join(format!(
         "hawdb-body-descriptors-{}-{}",
         std::process::id(),
         CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed)

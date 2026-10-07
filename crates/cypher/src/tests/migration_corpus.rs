@@ -16,11 +16,16 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 const CASES: &str = include_str!("../../fixtures/migration_corpus_v1.jsonl");
+const DEFAULT_PIPELINE: &str = include_str!("../../fixtures/migration_default_pipeline_v1.json");
 const MANIFEST: &str = include_str!("../../fixtures/migration_manifest_v1.json");
 
 #[test]
 fn migration_corpus_preserves_parser_outcomes_and_source_inventory() {
     let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
+    let migration: Value = serde_json::from_str(DEFAULT_PIPELINE).unwrap();
+    let stage_changes = migration["parser_stage_changes"].as_object().unwrap();
+    let mut requalified = BTreeSet::new();
+    let mut current_outcomes = BTreeMap::new();
     let mut ids = BTreeSet::new();
     let mut origins = BTreeMap::new();
     let mut outcomes = BTreeMap::new();
@@ -39,8 +44,18 @@ fn migration_corpus_preserves_parser_outcomes_and_source_inventory() {
         } else {
             "rejected"
         };
-        assert_eq!(outcome, case["parse"], "{id} at {source}: {parsed:?}");
-        *outcomes.entry(outcome).or_insert(0usize) += 1;
+        if let Some(change) = stage_changes.get(id) {
+            assert_eq!(case["parse"], change["prior_parse"], "{id}");
+            assert_eq!(outcome, change["parse"], "{id} at {source}: {parsed:?}");
+            assert!(matches!(parsed, Ok(crate::Statement::Pipeline(_))), "{id}");
+            requalified.insert(id.to_string());
+        } else {
+            assert_eq!(outcome, case["parse"], "{id} at {source}: {parsed:?}");
+        }
+        *outcomes
+            .entry(case["parse"].as_str().unwrap().to_owned())
+            .or_insert(0usize) += 1;
+        *current_outcomes.entry(outcome).or_insert(0usize) += 1;
         if id.starts_with("mem-") {
             let (path, line) = source.rsplit_once(':').unwrap();
             assert!(line.parse::<usize>().unwrap() > 0);
@@ -55,6 +70,19 @@ fn migration_corpus_preserves_parser_outcomes_and_source_inventory() {
             );
         }
     }
+    assert_eq!(
+        requalified,
+        BTreeSet::from(["mem-0344".to_string(), "mem-0361".to_string()])
+    );
+    assert_eq!(stage_changes.len(), requalified.len());
+    assert_eq!(
+        current_outcomes["accepted"],
+        outcomes["accepted"] + requalified.len()
+    );
+    assert_eq!(
+        current_outcomes["rejected"] + requalified.len(),
+        outcomes["rejected"]
+    );
     assert_eq!(ids.len(), 1427);
     assert_eq!(ids.len(), manifest["total"].as_u64().unwrap() as usize);
     assert_eq!(serde_json::to_value(origins).unwrap(), manifest["origins"]);

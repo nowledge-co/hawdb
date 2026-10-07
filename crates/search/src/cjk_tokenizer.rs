@@ -16,7 +16,7 @@ use jieba_rs::Jieba;
 use std::sync::LazyLock;
 
 pub(super) const ANALYZER_FORMAT_VERSION: &[u8] =
-    b"hawdb-search-analyzer-v2-jieba-search-han-ngrams";
+    b"hawdb-search-analyzer-v3-jieba-0.11.0-search-han-ngrams";
 
 static CHINESE_TOKENIZER: LazyLock<Jieba> = LazyLock::new(Jieba::new);
 
@@ -62,7 +62,7 @@ pub(super) fn visit_chinese_search_tokens_with_workspace<'a>(
 }
 
 pub(super) fn prime_workspace(text: &str) -> super::Result<()> {
-    // An unknown two-Han word forces HMM and its skip regex to initialize on
+    // An unknown two-Han word forces the pinned analyzer TLS to initialize on
     // this worker. The private dictionary is immutable; fail closed if a future
     // dictionary invalidates the dependency qualification fixture.
     if CHINESE_TOKENIZER.has_word(text) {

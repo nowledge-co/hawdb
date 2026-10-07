@@ -26,7 +26,7 @@ pub(super) fn record_inflated_bytes(bytes: u64) {
 
 fn test_dir() -> PathBuf {
     let sequence = CANDIDATE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let root = std::env::temp_dir().join(format!(
+    let root = crate::test_temp_dir().join(format!(
         "hawdb-streamed-hydration-{}-{sequence}",
         std::process::id()
     ));
