@@ -762,10 +762,11 @@ impl GraphStore {
                 work,
             )
             .map_err(HawDBError::from_storage_error)?;
-            let checkpoint_append_reader = AppendGenerationReader::open_bound(
+            let checkpoint_append_reader = AppendGenerationReader::open_bound_with_work_context(
                 durable.root_path(),
                 append_report.generation_artifacts,
                 self.append_publication_config,
+                work,
             )
             .map_err(HawDBError::from_storage_error)?;
             if let Some(encoded) = projected_graph_artifacts.as_deref() {

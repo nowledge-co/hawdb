@@ -360,10 +360,11 @@ owned temporary creation, 64 KiB writes, synchronization and durable rename to
 the admitted task's I/O waves. Cleanup arms only after creation and disarms
 once rename completes; interrupted earlier temporary evidence is preserved,
 and a lost reply after rename retains the complete published private artifact.
-Ordinary publication keeps its existing writer path and bytes. Validation,
-segment/overflow encoding, compaction, schema/manifest copying and hashing,
-reader mounting and retained cleanup/resource accounting remain uncontrolled;
-this is an I/O step boundary rather than a complete append-build bound.
+Ordinary publication keeps its existing writer path and bytes. The controlled
+metadata, segment, validation and mount steps below share the same task.
+Individual schema/key codecs, compaction and retained cleanup/resource
+accounting remain incomplete; publication I/O alone does not establish a
+complete append-build bound.
 
 Append manifest preparation now copies schema/watermark entries and at most
 1,024 prior segment bindings per work unit. Payload encoding admits each schema
@@ -371,9 +372,8 @@ record, watermark and segment entry, copies binary strings/records in 64 KiB
 chunks, and hashes/copies the manifest closure in 64 KiB chunks. The integrity
 closure hashes borrowed header/payload slices without a second complete
 integrity-input buffer. Individual schema cloning and WAL-schema encoding,
-publication validation, segment/overflow codecs, compaction and reader mounting
-still have uncontrolled inner work, and complete buffers lack a hard byte
-ledger. These metadata units do not establish whole-append-build bounds.
+individual schema/key codecs, compaction and reader retention still have
+uncontrolled inner work, and complete buffers lack a hard byte ledger. These metadata units do not establish whole-append-build bounds.
 
 Private append segment construction now scans each partition boundary once,
 admits individual ordering/partition/row/value/descriptor work, and encodes
@@ -385,14 +385,51 @@ body digest hashes borrowed directory/payload slices instead of building a
 second complete body buffer. Ordinary segment/row/key/overflow codecs remain
 separate references. Variable-width key comparison/descriptor cloning, vector
 reallocation, full-buffer retention and Vec-to-Arc conversion still require
-hard byte/time accounting. Publication validation, append compaction and reader
-mounting are not yet covered. These operations do not authorize removing the
+hard byte/time accounting. Append compaction and complete
+schema/key codec, reader-retention and allocation accounting remain open. These operations do not authorize removing the
 whole-candidate permit or claiming a complete append-build bound. Regressions
 compare the complete 2,049-row multi-table/partition/overflow segment and its
 reopened rows against the ordinary encoder, verify large Unicode/NUL keys and
 all scalar row tags, exercise raw/compressed overflow fixtures with cancellation
 at every admitted completion, and stop/retry block/directory/compression/copy/
 integrity steps with a one-operation class limit and four-operation total limit.
+
+Private append publication validation now admits each schema, previous
+binding descriptor, live watermark update, generated watermark, partition
+maximum and row-table lookup. Generated maxima are checked directly against
+borrowed partition keys instead of cloning a singleton schema map for every
+table. Ordinary validation remains the independent result/error reference.
+The regression compares every one of 4,097 generated rows across 37 partitions,
+combines base and suffix watermarks, verifies identity/schema/unknown-table and
+missing/regressed/invalid generated-order errors, and cancels/retries with
+released permits and unchanged prior authority. Individual schema/key cloning
+and comparison, validation allocation/drop, append compaction and reader
+retention still lack complete byte/time control. This validation boundary alone
+does not prove whole-append resource bounds.
+
+Private append generation mounting now reads manifests and complete segment
+integrity in admitted 64 KiB I/O waves. Manifest integrity hashes borrowed
+header/payload slices, and decoding checks each schema/watermark/binding and
+binding pair under a work unit. Segment directories admit each descriptor and
+ordering pair; generation mounting admits each binding and partition watermark
+before validation. The checkpoint candidate uses this path, while ordinary
+readers remain result/error references. Individual schema decoding/cloning,
+variable-width key decoding/comparison, full directory/manifest allocations,
+reader retention and append compaction still lack complete byte/time accounting.
+Regressions compare complete manifest decode/state and corruption diagnostics
+against the ordinary codec, cancel at every actual mount I/O admission and
+representative descriptor/entry boundaries, preserve both published files,
+release all work/I/O leases, and retry to an exact 512-row reopen. No full
+append resource or cancellation bound is established by these mounts.
+
+Catalog capture now shares its fixed set of immutable collection roots rather
+than copying every schema name/descriptor under the publication guard. Schema
+mutation detaches only the changed collection, preserving old source and
+candidate identities. The public catalog APIs and serialization inputs remain
+unchanged. This addresses schema-size-dependent capture copying; DDL detachment,
+last-owner destruction, checkpoint statistics capture and retained-source
+admission still need bounds and foreground release measurements. It does not
+establish a complete capture-time or commit-p99 guarantee.
 
 `HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
 two schema/data transactions under both durability policies. Its complete

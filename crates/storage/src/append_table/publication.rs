@@ -300,6 +300,7 @@ fn publish_checkpoint_request(
     if let Some(work) = work {
         work.checkpoint().map_err(super::checkpoint::work_error)?;
     }
+    checkpoint::validate_request(&request, work)?;
     let AppendCheckpointPublicationRequest {
         directory,
         generation,
@@ -309,15 +310,7 @@ fn publish_checkpoint_request(
         rows,
         config,
     } = request;
-    validate_publication_request(
-        generation,
-        source_commit_epoch,
-        previous,
-        state.schemas,
-        state.generated_order_watermarks,
-        rows,
-        config,
-    )?;
+
     if let Some(work) = work {
         let unit = work.start_unit().map_err(super::checkpoint::work_error)?;
         let wave = work.io_wave().map_err(super::checkpoint::work_error)?;
@@ -449,6 +442,15 @@ pub struct AppendGenerationReader {
 }
 
 impl AppendGenerationReader {
+    pub(crate) fn open_bound_with_work_context(
+        directory: &Path,
+        expected: AppendGenerationArtifacts,
+        config: AppendPublicationConfig,
+        work: &CheckpointWorkContext,
+    ) -> Result<Self, AppendTableError> {
+        checkpoint::read::open(directory, expected, config, work)
+    }
+
     pub fn open_bound(
         directory: &Path,
         expected: AppendGenerationArtifacts,

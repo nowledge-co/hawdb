@@ -282,22 +282,30 @@ impl GraphStatistics {
     }
 }
 
+mod snapshot;
+#[cfg(test)]
+mod snapshot_tests;
+
 #[derive(Debug, Default, Clone)]
 pub struct Catalog {
-    labels_by_name: BTreeMap<String, LabelId>,
-    labels: Vec<Label>,
-    rel_types_by_name: BTreeMap<String, RelTypeId>,
-    rel_types: Vec<RelType>,
-    tables_by_key: BTreeMap<(TableKind, String), TableId>,
-    tables: Vec<TableDescriptor>,
-    properties_by_key: BTreeMap<(TableId, String), PropertyId>,
-    properties: Vec<PropertyDescriptor>,
-    property_indexes_by_key: BTreeMap<(LabelId, String, IndexKind), IndexId>,
-    property_indexes: Vec<IndexDescriptor>,
-    composite_property_indexes_by_key: BTreeMap<(LabelId, Vec<String>), IndexId>,
-    composite_property_indexes: Vec<CompositeIndexDescriptor>,
-    constraints_by_key: BTreeMap<(ConstraintSubject, String, ConstraintKind), ConstraintId>,
-    constraints: Vec<ConstraintDescriptor>,
+    labels_by_name: snapshot::CatalogSnapshot<BTreeMap<String, LabelId>>,
+    labels: snapshot::CatalogSnapshot<Vec<Label>>,
+    rel_types_by_name: snapshot::CatalogSnapshot<BTreeMap<String, RelTypeId>>,
+    rel_types: snapshot::CatalogSnapshot<Vec<RelType>>,
+    tables_by_key: snapshot::CatalogSnapshot<BTreeMap<(TableKind, String), TableId>>,
+    tables: snapshot::CatalogSnapshot<Vec<TableDescriptor>>,
+    properties_by_key: snapshot::CatalogSnapshot<BTreeMap<(TableId, String), PropertyId>>,
+    properties: snapshot::CatalogSnapshot<Vec<PropertyDescriptor>>,
+    property_indexes_by_key:
+        snapshot::CatalogSnapshot<BTreeMap<(LabelId, String, IndexKind), IndexId>>,
+    property_indexes: snapshot::CatalogSnapshot<Vec<IndexDescriptor>>,
+    composite_property_indexes_by_key:
+        snapshot::CatalogSnapshot<BTreeMap<(LabelId, Vec<String>), IndexId>>,
+    composite_property_indexes: snapshot::CatalogSnapshot<Vec<CompositeIndexDescriptor>>,
+    constraints_by_key: snapshot::CatalogSnapshot<
+        BTreeMap<(ConstraintSubject, String, ConstraintKind), ConstraintId>,
+    >,
+    constraints: snapshot::CatalogSnapshot<Vec<ConstraintDescriptor>>,
 }
 
 impl Catalog {

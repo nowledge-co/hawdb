@@ -393,3 +393,379 @@ fn checkpoint_units_append_manifest_cancel_encoding_copy_and_hash_keep_legacy_li
         encode_manifest_payload(&manifest, tight).unwrap_err()
     );
 }
+
+fn validation_reference(
+    request: AppendCheckpointPublicationRequest<'_>,
+) -> Result<(), AppendTableError> {
+    validate_publication_request(
+        request.generation,
+        request.source_commit_epoch,
+        request.previous,
+        request.state.schemas,
+        request.state.generated_order_watermarks,
+        request.rows,
+        request.config,
+    )
+}
+
+#[test]
+fn checkpoint_units_append_validation_preserves_complete_generated_watermarks_and_cancels() {
+    let schema = AppendTableSchema {
+        name: "generated".into(),
+        columns: ["stream", "sequence"]
+            .into_iter()
+            .map(|name| RelationalColumnSchema {
+                name: name.into(),
+                scalar_type: RelationalScalarType::BigInt,
+                nullable: false,
+                default: None,
+            })
+            .collect(),
+        partition_key: vec!["stream".into()],
+        order_key: vec!["sequence".into()],
+        order_mode: AppendOrderMode::CommitSequence,
+    };
+    let schemas = BTreeMap::from([("generated".into(), schema)]);
+    let mut rows = (1..=4097)
+        .map(|sequence| AppendTableRow {
+            table: "generated".into(),
+            partition_key: RelationalKey(vec![RelationalValue::BigInt(sequence % 37)]),
+            order_key: RelationalKey(vec![RelationalValue::BigInt(sequence)]),
+            row: RelationalRow::new(vec![
+                RelationalValue::BigInt(sequence % 37),
+                RelationalValue::BigInt(sequence),
+            ]),
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(compare_rows);
+    let base_rows = rows
+        .iter()
+        .filter(|row| row.order_key.0[0] <= RelationalValue::BigInt(64))
+        .cloned()
+        .collect::<Vec<_>>();
+    let segment =
+        AppendSegmentWriter::encode(1, 10, &base_rows, AppendSegmentConfig::default()).unwrap();
+    let previous = AppendGenerationReader {
+        manifest: Arc::new(AppendGenerationManifest {
+            generation: 1,
+            source_commit_epoch: 10,
+            previous_generation: None,
+            schemas: schemas.clone(),
+            generated_order_watermarks: BTreeMap::from([("generated".into(), 64)]),
+            root_set_digest: integrity_digest(&[]).sha256,
+            segments: vec![AppendSegmentBinding {
+                generation: 1,
+                source_commit_epoch: 10,
+                artifact: segment.artifact,
+            }],
+        }),
+        segments: Arc::from([AppendSegmentReader::open(
+            segment.encoded,
+            AppendSegmentConfig::default(),
+        )
+        .unwrap()]),
+    };
+    let suffix = rows
+        .iter()
+        .filter(|row| row.order_key.0[0] > RelationalValue::BigInt(64))
+        .cloned()
+        .collect::<Vec<_>>();
+    let generated = BTreeMap::from([("generated".into(), 4097)]);
+    let request = AppendCheckpointPublicationRequest {
+        directory: Path::new("unused-validation-only"),
+        generation: 2,
+        source_commit_epoch: 11,
+        previous: Some(&previous),
+        state: AppendPublicationState::new(&schemas, &generated),
+        rows: &suffix,
+        config: AppendPublicationConfig::default(),
+    };
+    let scheduler = scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let work = probe.context(scheduler.clone());
+    let actual = effective_watermarks(Some(&previous), &suffix, &work).unwrap();
+    assert_eq!(
+        actual,
+        effective_publication_watermarks(Some(&previous), &suffix)
+    );
+    assert_eq!(actual["generated"].len(), 37);
+    validate_request(&request, Some(&work)).unwrap();
+    validation_reference(request).unwrap();
+    assert_eq!(probe.peak_units.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.io_waves.load(Ordering::SeqCst), 0);
+    probe.assert_released(&scheduler);
+    for boundary in [17, 127, 2048, 4097] {
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_after.store(boundary, Ordering::SeqCst);
+        assert_stopped(validate_request(
+            &request,
+            Some(&probe.context(scheduler.clone())),
+        ));
+        assert_eq!(probe.completed.load(Ordering::SeqCst), boundary);
+        probe.assert_released(&scheduler);
+    }
+    let baseline = previous.manifest.clone();
+    for changed in [
+        BTreeMap::new(),
+        BTreeMap::from([("generated".into(), -1)]),
+        BTreeMap::from([("generated".into(), 4096)]),
+        BTreeMap::from([("unknown".into(), 4097)]),
+    ] {
+        let request = AppendCheckpointPublicationRequest {
+            state: AppendPublicationState::new(&schemas, &changed),
+            ..request
+        };
+        assert_eq!(
+            validate_request(&request, Some(&CheckpointWorkContext::default())),
+            validation_reference(request)
+        );
+    }
+    for request in [
+        AppendCheckpointPublicationRequest {
+            generation: 0,
+            ..request
+        },
+        AppendCheckpointPublicationRequest {
+            generation: 1,
+            ..request
+        },
+        AppendCheckpointPublicationRequest {
+            source_commit_epoch: 0,
+            ..request
+        },
+        AppendCheckpointPublicationRequest {
+            source_commit_epoch: 9,
+            ..request
+        },
+    ] {
+        assert_eq!(
+            validate_request(&request, Some(&CheckpointWorkContext::default())),
+            validation_reference(request)
+        );
+    }
+    let mut mismatched = schemas.clone();
+    mismatched.get_mut("generated").unwrap().name = "wrong".into();
+    let bad = AppendCheckpointPublicationRequest {
+        state: AppendPublicationState::new(&mismatched, &generated),
+        ..request
+    };
+    assert_eq!(
+        validate_request(&bad, Some(&CheckpointWorkContext::default())),
+        validation_reference(bad)
+    );
+    let mut unknown = suffix.clone();
+    unknown[17].table = "missing".into();
+    let bad = AppendCheckpointPublicationRequest {
+        rows: &unknown,
+        ..request
+    };
+    assert_eq!(
+        validate_request(&bad, Some(&CheckpointWorkContext::default())),
+        validation_reference(bad)
+    );
+    let retry = Arc::new(CheckpointWorkProbe::default());
+    validate_request(&request, Some(&retry.context(scheduler.clone()))).unwrap();
+    retry.assert_released(&scheduler);
+    assert_eq!(previous.manifest, baseline);
+}
+
+#[test]
+fn checkpoint_units_append_manifest_decode_preserves_complete_state_and_corruption_errors() {
+    let mut manifest = manifest_fixture();
+    let config = AppendPublicationConfig::default();
+    let payload = encode_manifest_payload(&manifest, config).unwrap();
+    manifest.root_set_digest = integrity_digest(&payload).sha256;
+    let encoded = encode_manifest_with_payload(&manifest, payload, config).unwrap();
+    let scheduler = scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let work = probe.context(scheduler.clone());
+    assert_eq!(
+        read::manifest_decode(&encoded, config, &work).unwrap(),
+        manifest
+    );
+    assert_eq!(
+        read::manifest_decode(&encoded, config, &work).unwrap(),
+        decode_manifest(&encoded, config).unwrap()
+    );
+    probe.assert_released(&scheduler);
+    for boundary in [2, 17, 512, 3000] {
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_after.store(boundary, Ordering::SeqCst);
+        assert_stopped(read::manifest_decode(
+            &encoded,
+            config,
+            &probe.context(scheduler.clone()),
+        ));
+        assert_eq!(probe.completed.load(Ordering::SeqCst), boundary);
+        probe.assert_released(&scheduler);
+    }
+    for offset in [
+        0,
+        8,
+        10,
+        12,
+        28,
+        36,
+        40,
+        44,
+        52,
+        84,
+        88,
+        120,
+        124,
+        128,
+        encoded.len() - 1,
+    ] {
+        let mut corrupt = encoded.clone();
+        corrupt[offset] ^= 255;
+        assert_eq!(
+            read::manifest_decode(&corrupt, config, &CheckpointWorkContext::default()),
+            decode_manifest(&corrupt, config)
+        );
+    }
+    for end in [0, 7, 8, 120, 128, encoded.len() - 1] {
+        assert_eq!(
+            read::manifest_decode(&encoded[..end], config, &CheckpointWorkContext::default()),
+            decode_manifest(&encoded[..end], config)
+        );
+    }
+}
+
+#[test]
+fn checkpoint_units_append_private_mount_cancels_every_io_then_reopens_complete_rows() {
+    let directory = Directory::new();
+    let mut random = 0x5a17_8ca3_u64;
+    let rows = (1..=512)
+        .map(|sequence| AppendTableRow {
+            table: "events".into(),
+            partition_key: RelationalKey(Vec::new()),
+            order_key: RelationalKey(vec![RelationalValue::BigInt(sequence)]),
+            row: RelationalRow::new(vec![
+                RelationalValue::BigInt(sequence),
+                RelationalValue::Bytea(
+                    (0..3500)
+                        .map(|_| {
+                            random ^= random << 13;
+                            random ^= random >> 7;
+                            random ^= random << 17;
+                            random as u8
+                        })
+                        .collect(),
+                ),
+            ]),
+        })
+        .collect::<Vec<_>>();
+    let schema = AppendTableSchema {
+        name: "events".into(),
+        columns: [
+            ("sequence", RelationalScalarType::BigInt),
+            ("payload", RelationalScalarType::Bytea),
+        ]
+        .into_iter()
+        .map(|(name, scalar_type)| RelationalColumnSchema {
+            name: name.into(),
+            scalar_type,
+            nullable: false,
+            default: None,
+        })
+        .collect(),
+        partition_key: vec![],
+        order_key: vec!["sequence".into()],
+        order_mode: AppendOrderMode::CallerProvided,
+    };
+    let schemas = BTreeMap::from([("events".into(), schema)]);
+    let generated = BTreeMap::new();
+    let config = AppendPublicationConfig {
+        segment: AppendSegmentConfig {
+            target_decoded_block_bytes: 128 * 1024,
+            ..AppendSegmentConfig::default()
+        },
+        ..AppendPublicationConfig::default()
+    };
+    let report = AppendPublisher::publish_candidate_with_state(
+        &directory.0,
+        7,
+        91,
+        None,
+        AppendPublicationState::new(&schemas, &generated),
+        &rows,
+        config,
+    )
+    .unwrap();
+    let manifest_path = directory.0.join(append_generation_manifest_file(7));
+    let segment_path = directory.0.join(append_segment_file(7));
+    let manifest_bytes = fs::read(&manifest_path).unwrap();
+    let segment_bytes = fs::read(&segment_path).unwrap();
+    let reference =
+        AppendGenerationReader::open_bound(&directory.0, report.generation_artifacts, config)
+            .unwrap();
+    let scheduler = scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let reader = AppendGenerationReader::open_bound_with_work_context(
+        &directory.0,
+        report.generation_artifacts,
+        config,
+        &probe.context(scheduler.clone()),
+    )
+    .unwrap();
+    assert_eq!(reader.manifest(), reference.manifest());
+    assert_eq!(reader.watermarks(), reference.watermarks());
+    assert_eq!(reader.checkpoint_rows(512).unwrap(), rows);
+    let total = probe.completed.load(Ordering::SeqCst);
+    let waves = probe.io_waves.load(Ordering::SeqCst);
+    assert!(waves > 20);
+    assert_eq!(probe.peak_units.load(Ordering::SeqCst), 1);
+    probe.assert_released(&scheduler);
+    drop(reader);
+    for wave in 1..=waves {
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_on_io_wave.store(wave, Ordering::SeqCst);
+        assert_stopped(AppendGenerationReader::open_bound_with_work_context(
+            &directory.0,
+            report.generation_artifacts,
+            config,
+            &probe.context(scheduler.clone()),
+        ));
+        assert_eq!(probe.io_waves.load(Ordering::SeqCst), wave);
+        probe.assert_released(&scheduler);
+    }
+    for boundary in [1, 17, total / 2, total - 1, total] {
+        let probe = Arc::new(CheckpointWorkProbe::default());
+        probe.cancel_after.store(boundary, Ordering::SeqCst);
+        assert_stopped(AppendGenerationReader::open_bound_with_work_context(
+            &directory.0,
+            report.generation_artifacts,
+            config,
+            &probe.context(scheduler.clone()),
+        ));
+        assert_eq!(probe.completed.load(Ordering::SeqCst), boundary);
+        probe.assert_released(&scheduler);
+    }
+    assert_eq!(fs::read(&manifest_path).unwrap(), manifest_bytes);
+    assert_eq!(fs::read(&segment_path).unwrap(), segment_bytes);
+    let retry = Arc::new(CheckpointWorkProbe::default());
+    let reader = AppendGenerationReader::open_bound_with_work_context(
+        &directory.0,
+        report.generation_artifacts,
+        config,
+        &retry.context(scheduler.clone()),
+    )
+    .unwrap();
+    assert_eq!(reader.checkpoint_rows(512).unwrap(), rows);
+    retry.assert_released(&scheduler);
+    let mut corrupt = segment_bytes.clone();
+    *corrupt.last_mut().unwrap() ^= 255;
+    fs::write(&segment_path, &corrupt).unwrap();
+    assert_eq!(
+        AppendGenerationReader::open_bound_with_work_context(
+            &directory.0,
+            report.generation_artifacts,
+            config,
+            &CheckpointWorkContext::default()
+        )
+        .unwrap_err(),
+        AppendGenerationReader::open_bound(&directory.0, report.generation_artifacts, config)
+            .unwrap_err()
+    );
+    fs::write(&segment_path, &segment_bytes).unwrap();
+}

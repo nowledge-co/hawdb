@@ -527,6 +527,15 @@ struct AppendSegmentHeader {
 }
 
 impl AppendSegmentReader {
+    pub(crate) fn open_bound_file_with_work_context(
+        path: &Path,
+        expected: AppendSegmentArtifactMetadata,
+        config: AppendSegmentConfig,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Self, AppendTableError> {
+        checkpoint::read::open(path, expected, config, work)
+    }
+
     pub fn open(encoded: Arc<[u8]>, config: AppendSegmentConfig) -> Result<Self, AppendTableError> {
         validate_config(config)?;
         let header = decode_segment_header(
