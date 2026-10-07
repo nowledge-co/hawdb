@@ -1005,6 +1005,80 @@ fn parses_graph_algorithm_calls() {
 }
 
 #[test]
+fn projected_relationship_predicates_bound_utf8_input() {
+    let prefix = "r.status = '";
+    let suffix = "'";
+    let literal = "a".repeat(16 * 1024 - prefix.len() - suffix.len());
+    let exact = format!("{prefix}{literal}{suffix}");
+    assert_eq!(exact.len(), 16 * 1024);
+    let query = |filter: &str| {
+        format!("CALL project_graph('g', ['Entity'], {{'RELATES_TO': \"{filter}\"}})")
+    };
+    assert!(parse(&query(&exact)).is_ok());
+    let overflow = format!("{prefix}{literal}é{suffix}");
+    assert_eq!(overflow.len(), 16 * 1024 + 2);
+    assert!(
+        parse(&query(&overflow)).is_err(),
+        "oversized UTF-8 predicates must fail before inner expression parsing"
+    );
+}
+
+#[test]
+fn projected_relationship_predicates_bound_nested_conjuncts() {
+    let query = |count: usize| {
+        let left = std::iter::repeat_n("r.confidence >= 0.7", 8)
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let right = std::iter::repeat_n("r.strength >= 0.5", count - 8)
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        format!("CALL project_graph('g', ['Entity'], {{'RELATES_TO': '({left}) AND ({right})'}})")
+    };
+    assert!(parse(&query(16)).is_ok());
+    assert!(
+        parse(&query(17)).is_err(),
+        "nested AND groups must not bypass the predicate conjunct limit"
+    );
+}
+
+#[test]
+fn projected_graph_maps_reject_duplicate_keys() {
+    for query in [
+        "CALL project_graph('g', {'Entity': '', 'Entity': ''}, ['RELATES_TO'])",
+        "CALL project_graph('g', ['Entity'], {'RELATES_TO': '', 'RELATES_TO': \"r.status = 'active'\"})",
+        "CALL project_graph('g', ['Entity'], {'RELATES_TO': \"r.status = 'active'\", 'RELATES_TO': ''})",
+        "CALL project_graph('g', ['Entity'], {'RELATES_TO': '', 'RELATES_TO': ''})",
+    ] {
+        assert!(parse(query).is_err(), "duplicate map key was admitted: {query}");
+    }
+    assert!(
+        parse("CALL project_graph('g', ['Entity', 'Memory'], ['RELATES_TO', 'MENTIONS'])").is_ok()
+    );
+}
+
+#[test]
+fn graph_algorithm_options_reject_duplicate_aliases() {
+    for query in [
+        "CALL page_rank('g', dampingFactor := 0.85, damping := 0.5)",
+        "CALL page_rank('g', maxIterations := 20, iterations := 1)",
+        "CALL page_rank('g', tolerance := 0.0, TOLERANCE := 0.1)",
+        "CALL page_rank('g', normalizeInitial := true, normalizeInitial := false)",
+        "CALL louvain('g', maxLevels := 1, maxPhases := 20)",
+        "CALL louvain('g', phases := 2, maxPhases := 3)",
+        "CALL louvain('g', resolution := 0.8, resolution := 1.0)",
+    ] {
+        assert!(
+            parse(query).is_err(),
+            "duplicate option was admitted: {query}"
+        );
+    }
+    assert!(parse("CALL page_rank('g', dampingFactor := 0.85, maxIterations := 20, tolerance := 0.0000001, normalizeInitial := true)").is_ok());
+    assert!(
+        parse("CALL louvain('g', maxPhases := 20, maxIterations := 20, resolution := 0.8)").is_ok()
+    );
+}
+
+#[test]
 fn parses_parameterized_vector_search() {
     assert_eq!(
         parse("CALL vector_search($embedding, topK := 20) RETURN id, score").unwrap(),

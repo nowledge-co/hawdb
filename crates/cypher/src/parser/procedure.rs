@@ -17,6 +17,9 @@ use hawdb_core::Result;
 use super::super::ast::*;
 use super::Parser;
 
+const MAX_PROJECTED_RELATIONSHIP_PREDICATE_BYTES: usize = 16 * 1024;
+const MAX_PROJECTED_RELATIONSHIP_PREDICATE_CONJUNCTS: usize = 16;
+
 impl Parser<'_> {
     pub(super) fn parse_call_statement(&mut self, call_start: usize) -> Result<Statement> {
         self.skip_ws();
@@ -170,12 +173,17 @@ impl Parser<'_> {
         }
         self.expect_char('{')?;
         let mut labels = Vec::new();
+        let mut seen_labels = std::collections::BTreeSet::new();
         loop {
             self.skip_ws();
             if self.consume_char('}') {
                 break;
             }
-            labels.push(self.parse_string()?);
+            let label = self.parse_string()?;
+            if !seen_labels.insert(label.clone()) {
+                return Err(self.error("duplicate projected node label map key"));
+            }
+            labels.push(label);
             self.expect_char(':')?;
             self.skip_ws();
             let predicate = self.parse_string()?;
@@ -203,6 +211,7 @@ impl Parser<'_> {
         }
         self.expect_char('{')?;
         let mut values = Vec::new();
+        let mut seen_types = std::collections::BTreeSet::new();
         let mut predicates = std::collections::BTreeMap::new();
         loop {
             self.skip_ws();
@@ -210,6 +219,9 @@ impl Parser<'_> {
                 break;
             }
             let rel_type = self.parse_string()?;
+            if !seen_types.insert(rel_type.clone()) {
+                return Err(self.error("duplicate projected relationship type map key"));
+            }
             self.expect_char(':')?;
             self.skip_ws();
             let filter = self.parse_string()?;
@@ -245,24 +257,19 @@ impl Parser<'_> {
             self.skip_ws();
             self.expect_token(":=")?;
             let normalized = name.to_ascii_lowercase();
-            if normalized == "dampingfactor" || normalized == "damping" {
-                options.damping = Some(self.parse_value()?);
-            } else if normalized == "maxiterations" || normalized == "iterations" {
-                options.max_iterations = Some(self.parse_value()?);
-            } else if matches!(
-                normalized.as_str(),
-                "maxlevels" | "levels" | "maxphases" | "phases"
-            ) {
-                options.max_levels = Some(self.parse_value()?);
-            } else if normalized == "tolerance" {
-                options.tolerance = Some(self.parse_value()?);
-            } else if normalized == "normalizeinitial" {
-                options.normalize_initial = Some(self.parse_value()?);
-            } else if normalized == "resolution" {
-                options.resolution = Some(self.parse_value()?);
-            } else {
-                return Err(self.error("unsupported graph algorithm option"));
+            let option = match normalized.as_str() {
+                "dampingfactor" | "damping" => &mut options.damping,
+                "maxiterations" | "iterations" => &mut options.max_iterations,
+                "maxlevels" | "levels" | "maxphases" | "phases" => &mut options.max_levels,
+                "tolerance" => &mut options.tolerance,
+                "normalizeinitial" => &mut options.normalize_initial,
+                "resolution" => &mut options.resolution,
+                _ => return Err(self.error("unsupported graph algorithm option")),
+            };
+            if option.is_some() {
+                return Err(self.error("duplicate graph algorithm option"));
             }
+            *option = Some(self.parse_value()?);
         }
         Ok(options)
     }
@@ -381,6 +388,11 @@ impl Parser<'_> {
 }
 
 fn parse_projected_relationship_predicate(input: &str) -> Result<PropertyPredicate> {
+    if input.len() > MAX_PROJECTED_RELATIONSHIP_PREDICATE_BYTES {
+        return Err(hawdb_core::HawDBError::Semantic(format!(
+            "projected relationship predicate exceeds limit of {MAX_PROJECTED_RELATIONSHIP_PREDICATE_BYTES} UTF-8 bytes"
+        )));
+    }
     let mut parser = Parser::new(input);
     let predicate = parser.parse_predicate(false)?;
     parser.expect_eof()?;
@@ -388,23 +400,29 @@ fn parse_projected_relationship_predicate(input: &str) -> Result<PropertyPredica
     Ok(predicate)
 }
 
-fn validate_projected_relationship_predicate(predicate: &PropertyPredicate) -> Result<()> {
+fn validate_projected_relationship_predicate(predicate: &PropertyPredicate) -> Result<usize> {
     match predicate {
         PropertyPredicate::And(predicates) if !predicates.is_empty() => {
+            let mut conjuncts = 0;
             for predicate in predicates {
-                validate_projected_relationship_predicate(predicate)?;
+                conjuncts += validate_projected_relationship_predicate(predicate)?;
+                if conjuncts > MAX_PROJECTED_RELATIONSHIP_PREDICATE_CONJUNCTS {
+                    return Err(hawdb_core::HawDBError::Semantic(format!(
+                        "projected relationship predicate exceeds limit of {MAX_PROJECTED_RELATIONSHIP_PREDICATE_CONJUNCTS} conjuncts"
+                    )));
+                }
             }
-            Ok(())
+            Ok(conjuncts)
         }
         PropertyPredicate::Eq {
             variable, value, ..
-        } if variable == "r" && matches!(&value.kind, ValueExpressionKind::Literal(_)) => Ok(()),
+        } if variable == "r" && matches!(&value.kind, ValueExpressionKind::Literal(_)) => Ok(1),
         PropertyPredicate::Compare {
             variable,
             op: ComparisonOp::Gte,
             value,
             ..
-        } if variable == "r" && matches!(&value.kind, ValueExpressionKind::Literal(_)) => Ok(()),
+        } if variable == "r" && matches!(&value.kind, ValueExpressionKind::Literal(_)) => Ok(1),
         _ => Err(hawdb_core::HawDBError::Semantic(
             "projected relationship predicates support only literal r.property comparisons joined by AND"
                 .to_string(),
