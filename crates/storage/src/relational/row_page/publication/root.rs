@@ -28,7 +28,6 @@ use crate::relational::{
 use hawdb_integrity::{IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufWriter, Write};
-use std::path::Path;
 
 mod codec;
 
@@ -98,17 +97,13 @@ pub(super) struct PageArtifactWriter {
 }
 
 impl PageArtifactWriter {
-    pub(super) fn new(
-        path: &Path,
-        limits: RelationalRowPageLimits,
-    ) -> Result<Self, RelationalRowPagePublicationError> {
-        let file = File::create(path).map_err(durability("create row-page artifact"))?;
-        Ok(Self {
+    pub(super) fn new(file: File, limits: RelationalRowPageLimits) -> Self {
+        Self {
             writer: BufWriter::new(file),
             hasher: IntegrityHasher::new(),
             page_count: 0,
             limits,
-        })
+        }
     }
 
     pub(super) fn write(
@@ -184,8 +179,8 @@ impl PageArtifactWriter {
 }
 
 pub(super) struct RootBuildRequest<'a> {
-    pub descriptor_path: &'a Path,
-    pub key_path: &'a Path,
+    pub descriptor_file: File,
+    pub key_file: File,
     pub base: Option<&'a RelationalRowPageRootReader>,
     pub deltas: &'a mut BTreeMap<String, PreparedTableDelta>,
     pub generation: u64,
@@ -199,17 +194,15 @@ pub(super) fn write_root_artifacts(
     rewrite: Option<RowPageRewriteControls<'_>>,
 ) -> Result<RootBuildOutput, RelationalRowPagePublicationError> {
     let RootBuildRequest {
-        descriptor_path,
-        key_path,
+        descriptor_file,
+        key_file,
         base,
         deltas,
         generation,
         source_commit_epoch,
         config,
     } = request;
-    let descriptor_file =
-        File::create(descriptor_path).map_err(durability("create row-page root descriptors"))?;
-    let key_file = File::create(key_path).map_err(durability("create row-page root keys"))?;
+
     let mut writer = RootWriter {
         descriptors: BufWriter::new(descriptor_file),
         keys: BufWriter::new(key_file),

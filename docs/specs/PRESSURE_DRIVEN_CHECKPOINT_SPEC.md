@@ -576,6 +576,18 @@ sorting, publication I/O, temporary-file ownership and cleanup debt still need
 their own controls and hard resource accounting. This is validation coverage,
 not whole-publisher memory/time, power-loss or production admission qualification.
 
+Row-page publishers now exclusively create and own their five temporary
+artifacts, cleaning only successful creates before releasing their publication
+lock. Writers receive the already owned files rather than reopening/truncating
+paths. Every preexisting required temporary fails explicitly; non-selecting
+candidates preserve an unrelated latest-selector temporary. Failure cleanup
+retains renamed immutable artifacts. Tests cover each of five temporary stages
+across ordinary persistence, compaction and latest selection, all selected base
+artifact bytes and rows, full immutable candidate hydration and retry, and every
+pre-selector fault phase with unrelated evidence retained. This local ownership
+contract does not bound row encoding/merging, allocator/drop, disk/FD usage or
+cleanup debt, and it is not a power-loss or production-admission qualification.
+
 Overflow publishers now create each temporary artifact exclusively and record
 cleanup ownership only after that create succeeds. Cleanup runs before the
 serialized publication lock is released and never removes an unowned temporary

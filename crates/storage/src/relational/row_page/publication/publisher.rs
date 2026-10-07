@@ -200,7 +200,6 @@ impl RelationalRowPagePublisher {
         fs::create_dir_all(directory).map_err(durability("create row-page directory"))?;
         let _lock = acquire_publication_lock(directory)?;
         let paths = PublicationPaths::new(directory, generation);
-        paths.remove_temps()?;
         paths.require_fresh_generation()?;
 
         let base_generation = base.map(|reader| reader.manifest.generation);
@@ -239,7 +238,10 @@ impl RelationalRowPagePublisher {
         }
         preflight_root_resources(base, &deltas, self.config)?;
 
-        let result = self.build_and_publish(PublicationBuild {
+        // Cleanup drops before the publication lock and owns only exclusive creates.
+        let mut temporary = OwnedTemporaryArtifacts::default();
+        self.build_and_publish(PublicationBuild {
+            temporary: &mut temporary,
             paths: &paths,
             base,
             generation,
@@ -250,12 +252,7 @@ impl RelationalRowPagePublisher {
             select_latest,
             stop_after,
             rewrite,
-        });
-        // Success has durably renamed every candidate; only failure leaves temporary files.
-        if result.is_err() {
-            let _ = paths.remove_temps();
-        }
-        result
+        })
     }
 
     fn build_and_publish(
@@ -267,8 +264,10 @@ impl RelationalRowPagePublisher {
             RelationalRowPagePublicationPhase::CandidateStarted,
         )?;
 
-        let mut pages =
-            root::PageArtifactWriter::new(&build.paths.page_tmp, self.config.page_limits)?;
+        let page_file = build
+            .temporary
+            .create(&build.paths.page_tmp, "create row-page artifact")?;
+        let mut pages = root::PageArtifactWriter::new(page_file, self.config.page_limits);
         let mut dirty_page_count = 0u64;
         for delta in build.deltas.values_mut() {
             for page in &mut delta.dirty_pages {
@@ -281,8 +280,13 @@ impl RelationalRowPagePublisher {
         }
         let root = root::write_root_artifacts(
             root::RootBuildRequest {
-                descriptor_path: &build.paths.descriptor_tmp,
-                key_path: &build.paths.key_tmp,
+                descriptor_file: build.temporary.create(
+                    &build.paths.descriptor_tmp,
+                    "create row-page root descriptors",
+                )?,
+                key_file: build
+                    .temporary
+                    .create(&build.paths.key_tmp, "create row-page root keys")?,
                 base: build.base,
                 deltas: build.deltas,
                 generation: build.generation,
@@ -318,7 +322,11 @@ impl RelationalRowPagePublisher {
             physical_generations: root.physical_generations,
         };
         let encoded_manifest = manifest::encode_manifest(&manifest, self.config)?;
-        write_synced(&build.paths.generation_manifest_tmp, &encoded_manifest)?;
+        write_synced(
+            build.temporary,
+            &build.paths.generation_manifest_tmp,
+            &encoded_manifest,
+        )?;
 
         durable_publish_immutable(&build.paths.page_tmp, &build.paths.page)?;
         maybe_stop(
@@ -356,7 +364,11 @@ impl RelationalRowPagePublisher {
             RelationalRowPagePublicationPhase::BaseRevalidated,
         )?;
         if build.select_latest {
-            write_synced(&build.paths.latest_manifest_tmp, &encoded_manifest)?;
+            write_synced(
+                build.temporary,
+                &build.paths.latest_manifest_tmp,
+                &encoded_manifest,
+            )?;
             durable_replace_file(
                 &build.paths.latest_manifest_tmp,
                 &build.paths.latest_manifest,
@@ -446,6 +458,7 @@ pub(super) struct PublicationControls<'a> {
 }
 
 struct PublicationBuild<'a> {
+    temporary: &'a mut OwnedTemporaryArtifacts,
     paths: &'a PublicationPaths,
     base: Option<&'a RelationalRowPageRootReader>,
     generation: u64,
@@ -875,8 +888,12 @@ pub(crate) fn acquire_publication_lock(
     Ok(lock)
 }
 
-fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), RelationalRowPagePublicationError> {
-    let mut file = File::create(path).map_err(durability("create row-page candidate"))?;
+fn write_synced(
+    temporary: &mut OwnedTemporaryArtifacts,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), RelationalRowPagePublicationError> {
+    let mut file = temporary.create(path, "create row-page candidate")?;
     file.write_all(bytes)
         .map_err(durability("write row-page candidate"))?;
     file.sync_all()
@@ -906,6 +923,49 @@ fn maybe_stop(
         )));
     }
     Ok(())
+}
+
+// Only an exclusive create transfers cleanup ownership. Renamed immutable files
+// stay available for recovery; failed cleanup retains evidence. Global accounting
+// and retrying cleanup debt are separate from this local ownership guard.
+#[derive(Default)]
+struct OwnedTemporaryArtifacts {
+    paths: Vec<PathBuf>,
+}
+
+impl OwnedTemporaryArtifacts {
+    fn create(
+        &mut self,
+        path: &Path,
+        context: &'static str,
+    ) -> Result<File, RelationalRowPagePublicationError> {
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(durability(context))?;
+        self.paths.push(path.to_path_buf());
+        Ok(file)
+    }
+}
+
+impl Drop for OwnedTemporaryArtifacts {
+    fn drop(&mut self) {
+        let mut removed = false;
+        for path in &self.paths {
+            if fs::remove_file(path).is_ok() {
+                removed = true;
+            }
+        }
+        if let Some(directory) = self
+            .paths
+            .first()
+            .filter(|_| removed)
+            .and_then(|path| path.parent())
+        {
+            let _ = sync_directory(directory);
+        }
+    }
 }
 
 struct PublicationPaths {
@@ -941,30 +1001,6 @@ impl PublicationPaths {
             generation_manifest,
             latest_manifest,
         }
-    }
-
-    fn remove_temps(&self) -> Result<(), RelationalRowPagePublicationError> {
-        for path in [
-            &self.page_tmp,
-            &self.descriptor_tmp,
-            &self.key_tmp,
-            &self.generation_manifest_tmp,
-            &self.latest_manifest_tmp,
-        ] {
-            match fs::remove_file(path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(durability("remove stale row-page candidate")(error)),
-            }
-        }
-        sync_directory(
-            self.latest_manifest
-                .parent()
-                .expect("publication paths have a directory"),
-        )
-        .map_err(durability(
-            "sync row-page directory after candidate cleanup",
-        ))
     }
 
     fn require_fresh_generation(&self) -> Result<(), RelationalRowPagePublicationError> {
