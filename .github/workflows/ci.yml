@@ -158,7 +158,8 @@ jobs:
         run: cargo test -p hawdb --features acl --lib api::tests::storage_recovery
 
       - name: Test row-page compaction and reclamation
-        run: cargo test -p hawdb --features acl --lib row_page_compaction
+        shell: bash
+        run: bash scripts/cargo-test-required.sh --locked -p hawdb --features acl --test row_page_compaction
 
       - name: Test out-of-core search projection I/O
         shell: bash
