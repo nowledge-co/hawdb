@@ -111,6 +111,9 @@ use std::sync::Arc;
 mod checkpoint;
 pub(crate) use checkpoint::encode_binary_wal_record_with_work_context;
 
+mod checkpoint_decode;
+pub(crate) use checkpoint_decode::decode_binary_wal_record_with_work_context;
+
 const RECORD_KIND_SINGLE: u8 = 0;
 const RECORD_KIND_BATCH: u8 = 1;
 

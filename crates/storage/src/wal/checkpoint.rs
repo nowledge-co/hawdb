@@ -18,6 +18,9 @@
 use super::*;
 use crate::background::CheckpointWorkContext;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) struct CheckpointWalRecordCursor {
     reader: frame::CheckpointBinaryWalReader<File>,
     work: CheckpointWorkContext,
@@ -91,12 +94,8 @@ impl CheckpointWalRecordCursor {
                     .integrity(&payload)
                     .map_err(HawDBError::from_storage_error)?
                     .sha256;
-                let unit = self
-                    .work
-                    .start_unit()
-                    .map_err(HawDBError::from_storage_error)?;
-                let decoded = binary::decode_binary_wal_record(&payload);
-                unit.finish();
+                let decoded =
+                    binary::decode_binary_wal_record_with_work_context(&payload, &self.work);
                 match decoded? {
                     binary::BinaryWalRecordDecode::Entry { entry, .. } => {
                         self.work

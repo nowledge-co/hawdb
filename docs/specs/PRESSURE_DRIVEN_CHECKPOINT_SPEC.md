@@ -1081,6 +1081,31 @@ source authority, cleanup and complete ordinary-reopen assertions remain
 unchanged. The corrected fixture passed in isolation; the corrected combined
 tree still requires supported-profile and complete regression/fuzz qualification.
 
+Checkpoint suffix decoding now has its own cooperative path, while ordinary
+decoding remains independent. Each transaction operation and field scan checks
+the admitted task. The field inventory borrows input slices instead of storing
+duplicate strings, varints and message descriptors. UTF-8 validation and owned
+string/binary copying use at most 64 KiB source chunks, carrying at most three
+incomplete UTF-8 bytes between chunks. Error offsets remain relative to the
+complete wire string. Vector growth moves values in bounded chunks rather than
+letting an implicit large reallocation copy a complete list or operation array.
+
+A genuine file-backed cursor regression observed only nine work units while
+decoding a 1057-operation transaction. Its unchanged full-byte/source/EOF and
+real-governor release assertions now pass with at least one unit per operation.
+Focused tests compare all op kinds, values, deep/wide Unicode, unknown/duplicate
+fields, truncation and complete diagnostics with ordinary decoding, and cancel
+every actual classified unit before fully retrying. Work cancellation/admission
+errors remain execution failures rather than corrupt-record events. An initial
+combined fixture incorrectly nested an existing batch; its failure is retained
+and individual batch cases remain while the combined fixture uses flat children.
+Final supported-profile and complete regression/fuzz qualification is pending.
+Decoded strings/lists/maps and retained runtime allocation leases remain open;
+standard Arc finalization, internal map comparisons and destruction/cleanup
+also require separate resource/work qualification. This cooperative decoder
+does not authorize production per-unit admission or remove the default owner's
+whole-candidate operation limit.
+
 The row-page publisher's complete cancellation matrix repeatedly recreated and
 synchronized the identical durable source for every CPU/I/O cut. Two full
 current-main commands and one unchanged isolated diagnostic reached the existing
