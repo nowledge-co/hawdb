@@ -163,6 +163,12 @@ jobs:
       - name: Test out-of-core search projection I/O
         shell: bash
         run: |
+          set -euo pipefail
+          # Until #819 isolates Windows alias probes, exhausted project fixtures
+          # must not overlap unrelated existing-project admission.
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            export RUST_TEST_THREADS=1
+          fi
           bash scripts/cargo-test-required.sh --locked -p hawdb-search --features acl --lib out_of_core::
 
       - name: Capture Windows storage lifecycle evidence
