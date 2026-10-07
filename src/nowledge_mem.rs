@@ -2370,6 +2370,17 @@ impl<'a> NowledgeMemReadSnapshot<'a> {
         parameters: &BTreeMap<String, Value>,
         max_rows: usize,
     ) -> Result<QueryOutput> {
+        Ok(self
+            .query_cypher_profiled(cypher, parameters, max_rows)?
+            .output)
+    }
+
+    pub fn query_cypher_profiled(
+        &mut self,
+        cypher: &str,
+        parameters: &BTreeMap<String, Value>,
+        max_rows: usize,
+    ) -> Result<BoundedReadQueryOutput> {
         let completed_statement_count =
             self.cypher_statement_count.checked_add(1).ok_or_else(|| {
                 HawDBError::Execution(
@@ -2394,7 +2405,10 @@ impl<'a> NowledgeMemReadSnapshot<'a> {
         )?;
         self.consume(report.output_rows, report.output_payload_bytes)?;
         self.cypher_statement_count = completed_statement_count;
-        Ok(QueryOutput { rows: rows.into() })
+        Ok(BoundedReadQueryOutput {
+            output: QueryOutput { rows: rows.into() },
+            execution_profile: report.execution_profile,
+        })
     }
 
     pub fn query_sql(
@@ -2807,7 +2821,18 @@ impl NowledgeMemEmbeddedStoreHandle {
         budget: NowledgeMemReadSnapshotBudget,
         operation: impl FnOnce(&mut NowledgeMemReadSnapshot<'_>) -> Result<T>,
     ) -> Result<T> {
-        self.with_bounded_read_snapshot_kind(budget, true, operation)
+        self.with_bounded_read_snapshot_context(budget, &RuntimeTaskContext::default(), operation)
+    }
+
+    /// Executes one bounded App read snapshot under the caller's cancellation,
+    /// deadline, and resource reservation context.
+    pub fn with_bounded_read_snapshot_context<T>(
+        &self,
+        budget: NowledgeMemReadSnapshotBudget,
+        task_context: &RuntimeTaskContext,
+        operation: impl FnOnce(&mut NowledgeMemReadSnapshot<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.with_bounded_read_snapshot_kind(budget, true, task_context, operation)
     }
 
     /// Executes bounded graph and relational reads from the published committed
@@ -2821,13 +2846,29 @@ impl NowledgeMemEmbeddedStoreHandle {
         budget: NowledgeMemReadSnapshotBudget,
         operation: impl FnOnce(&mut NowledgeMemReadSnapshot<'_>) -> Result<T>,
     ) -> Result<T> {
-        self.with_bounded_read_snapshot_kind(budget, false, operation)
+        self.with_bounded_graph_read_snapshot_context(
+            budget,
+            &RuntimeTaskContext::default(),
+            operation,
+        )
+    }
+
+    /// Executes one published graph snapshot under the caller's cancellation,
+    /// deadline, and resource reservation context.
+    pub fn with_bounded_graph_read_snapshot_context<T>(
+        &self,
+        budget: NowledgeMemReadSnapshotBudget,
+        task_context: &RuntimeTaskContext,
+        operation: impl FnOnce(&mut NowledgeMemReadSnapshot<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.with_bounded_read_snapshot_kind(budget, false, task_context, operation)
     }
 
     fn with_bounded_read_snapshot_kind<T>(
         &self,
         budget: NowledgeMemReadSnapshotBudget,
         pin_projection: bool,
+        task_context: &RuntimeTaskContext,
         operation: impl FnOnce(&mut NowledgeMemReadSnapshot<'_>) -> Result<T>,
     ) -> Result<T> {
         if budget.max_rows == 0 {
@@ -2841,13 +2882,16 @@ impl NowledgeMemEmbeddedStoreHandle {
             ));
         }
         if !pin_projection {
-            let (_permit, transaction) =
-                self.canonical_read_transaction(budget.max_payload_bytes, Some(budget.max_rows))?;
+            let (_permit, transaction) = self.canonical_read_transaction_with_context(
+                budget.max_payload_bytes,
+                Some(budget.max_rows),
+                task_context,
+            )?;
             let mut snapshot = NowledgeMemReadSnapshot::new(transaction, budget, None, None);
             return self.finish_canonical_read(operation(&mut snapshot));
         }
         let permit = self.admit_typed_read(budget.max_payload_bytes)?;
-        let task_context = permit.bind_task_context(RuntimeTaskContext::default());
+        let task_context = permit.bind_task_context(task_context.clone());
         let _permit = permit;
         let store = self.read_store()?;
         let configured_rows = store
@@ -3439,6 +3483,19 @@ impl NowledgeMemEmbeddedStoreHandle {
         max_estimated_payload_bytes: usize,
         max_rows: Option<usize>,
     ) -> Result<(RuntimePermit, crate::DatabaseReadTransaction)> {
+        self.canonical_read_transaction_with_context(
+            max_estimated_payload_bytes,
+            max_rows,
+            &RuntimeTaskContext::default(),
+        )
+    }
+
+    fn canonical_read_transaction_with_context(
+        &self,
+        max_estimated_payload_bytes: usize,
+        max_rows: Option<usize>,
+        task_context: &RuntimeTaskContext,
+    ) -> Result<(RuntimePermit, crate::DatabaseReadTransaction)> {
         // Admission emits host telemetry. Never invoke it while holding the
         // publication lock: a sink may reenter the embedded handle.
         let (governor, request) = {
@@ -3478,7 +3535,7 @@ impl NowledgeMemEmbeddedStoreHandle {
                 )));
             }
         }
-        let task_context = permit.bind_task_context(RuntimeTaskContext::default());
+        let task_context = permit.bind_task_context(task_context.clone());
         let transaction = published.snapshot.begin_read_transaction(&task_context)?;
         Ok((permit, transaction))
     }
