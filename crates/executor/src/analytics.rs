@@ -14,7 +14,7 @@
 
 //! Internal graph algorithm execution over storage-neutral reads.
 
-use crate::binding::{node_memory_bytes, Binding};
+use crate::binding::Binding;
 use crate::expression::property_filter_from_predicate;
 use crate::kernel::{push_bounded_operator_binding, OperatorMemoryTracker};
 use crate::observer::QueryExecutionObserver;
@@ -23,13 +23,13 @@ use crate::predicate::node_matches_property_filter;
 use crate::store::{GraphExecutionRead, ScanControl};
 use crate::{ExecutionLimit, ExecutionMemoryConfig, QueryMemoryClass, QueryMemoryLedger};
 use hawdb_analytics::{
-    LouvainOptions, PageRankOptions, ProjectedGraph, ProjectedGraphExecution, ProjectionLayout,
+    LouvainProcedureOptions, PageRankProcedureOptions, ProjectedGraph, ProjectionLayout,
     ProjectionMemoryBudget,
 };
 use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
 use hawdb_plan_cypher::{GraphAlgorithmKind, Predicate};
 use hawdb_storage::{NodeId, NodeRecord, RelRecord};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 mod streaming;
 
@@ -62,9 +62,9 @@ pub struct ProjectedGraphFilters<'a> {
 }
 
 impl GraphAlgorithmSpec<'_> {
-    fn page_rank_options(self) -> Result<PageRankOptions> {
-        let defaults = PageRankOptions::default();
-        let options = PageRankOptions {
+    fn page_rank_options(self) -> Result<PageRankProcedureOptions> {
+        let defaults = PageRankProcedureOptions::default();
+        let options = PageRankProcedureOptions {
             iterations: self.options.max_iterations.unwrap_or(defaults.iterations),
             damping: self.options.damping.unwrap_or(defaults.damping),
             tolerance: self.options.tolerance.unwrap_or(defaults.tolerance),
@@ -73,34 +73,26 @@ impl GraphAlgorithmSpec<'_> {
                 .normalize_initial
                 .unwrap_or(defaults.normalize_initial),
         };
-        if !options.damping.is_finite() || !(0.0..1.0).contains(&options.damping) {
-            return Err(HawDBError::Semantic(
-                "PageRank damping must be finite and in [0, 1)".into(),
-            ));
-        }
-        if !options.tolerance.is_finite() || options.tolerance < 0.0 {
-            return Err(HawDBError::Semantic(
-                "PageRank tolerance must be finite and non-negative".into(),
-            ));
-        }
+        options.validate()?;
         Ok(options)
     }
 
-    fn louvain_options(self) -> Result<LouvainOptions> {
-        let defaults = LouvainOptions::default();
-        let options = LouvainOptions {
+    fn louvain_options(self) -> Result<LouvainProcedureOptions> {
+        let defaults = LouvainProcedureOptions::default();
+        let options = LouvainProcedureOptions {
             max_iterations: self
                 .options
                 .max_iterations
                 .unwrap_or(defaults.max_iterations),
-            max_levels: self.options.max_levels.unwrap_or(defaults.max_levels),
+            max_levels: self
+                .options
+                .max_levels
+                .or(self.options.max_phases)
+                .unwrap_or(defaults.max_levels),
+            hierarchy: self.options.max_levels.is_some(),
             resolution: self.options.resolution.unwrap_or(defaults.resolution),
         };
-        if !options.resolution.is_finite() || options.resolution <= 0.0 {
-            return Err(HawDBError::Semantic(
-                "Louvain resolution must be finite and greater than 0".into(),
-            ));
-        }
+        options.validate()?;
         Ok(options)
     }
 
@@ -145,7 +137,12 @@ impl GraphAlgorithmSpec<'_> {
             GraphAlgorithmKind::Louvain => ProjectionLayout::Undirected,
         };
         let budget = ProjectionMemoryBudget::new(context.memory.blocking_operator_bytes);
-        let source = GraphExecutionProjectionSource(context.store, context.task_context);
+        let no_properties = BTreeSet::new();
+        let source = GraphExecutionProjectionSource(
+            context.store,
+            context.task_context,
+            node_visibility_filter.is_none().then_some(&no_properties),
+        );
         let admitted = if let Some(filter) = node_visibility_filter.as_ref() {
             try_projected_graph_with_filters_admitted(
                 context.catalog,
@@ -178,7 +175,7 @@ impl GraphAlgorithmSpec<'_> {
                 let estimate = match algorithm {
                     GraphAlgorithmKind::PageRank => graph.page_rank_memory_estimate(),
                     GraphAlgorithmKind::Louvain => {
-                        graph.louvain_memory_estimate(self.louvain_options()?)
+                        graph.louvain_procedure_memory_estimate(self.louvain_options()?)
                     }
                 };
                 if estimate.total_peak_bytes > context.memory.blocking_operator_bytes.get() {
@@ -231,7 +228,8 @@ impl GraphAlgorithmSpec<'_> {
                         &mut tracker,
                         estimate.algorithm_peak_bytes,
                     )?;
-                    let scores = graph.page_rank_with_context(options, context.task_context)?;
+                    let scores =
+                        graph.page_rank_procedure_with_context(options, context.task_context)?;
                     tracker.release(estimate.algorithm_peak_bytes);
                     let result_bytes =
                         estimated_vec_memory_bytes::<hawdb_analytics::PageRankScore>(scores.len());
@@ -276,17 +274,15 @@ impl GraphAlgorithmSpec<'_> {
                 }
                 GraphAlgorithmKind::Louvain => {
                     let options = self.louvain_options()?;
-                    let estimate = graph.louvain_memory_estimate(options);
+                    let estimate = graph.louvain_procedure_memory_estimate(options);
                     charge_graph_algorithm_memory(
                         "Louvain",
                         "scratch and result state",
                         &mut tracker,
                         estimate.algorithm_peak_bytes,
                     )?;
-                    let assignments = graph.hierarchical_louvain_communities_with_context(
-                        options,
-                        context.task_context,
-                    )?;
+                    let assignments =
+                        graph.louvain_procedure_with_context(options, context.task_context)?;
                     tracker.release(estimate.algorithm_peak_bytes);
                     let result_bytes = estimated_vec_memory_bytes::<
                         hawdb_analytics::HierarchicalCommunityAssignment,
@@ -358,20 +354,29 @@ fn append_node_identity(
     algorithm: &'static str,
     tracker: &mut OperatorMemoryTracker,
 ) -> Result<usize> {
-    let node = store.node_owned(node_id)?.ok_or_else(|| {
-        HawDBError::Execution(format!(
-            "graph algorithm result references missing node {}",
-            node_id.0
-        ))
-    })?;
-    let hydration_bytes = node_memory_bytes(&node);
-    charge_graph_algorithm_memory(
-        algorithm,
-        "node identity hydration",
-        tracker,
-        hydration_bytes,
-    )?;
-    let external_id = node.properties.get("id").cloned().unwrap_or(Value::Null);
+    let mut hydration_bytes = 0usize;
+    let mut node = store
+        .projected_node_owned_admitted(
+            node_id,
+            &BTreeSet::from(["id".to_string()]),
+            &mut |bytes| {
+                charge_graph_algorithm_memory(
+                    algorithm,
+                    "node identity hydration",
+                    tracker,
+                    bytes,
+                )?;
+                hydration_bytes = bytes;
+                Ok(())
+            },
+        )?
+        .ok_or_else(|| {
+            HawDBError::Execution(format!(
+                "graph algorithm result references missing node {}",
+                node_id.0
+            ))
+        })?;
+    let external_id = node.properties.remove("id").unwrap_or(Value::Null);
     let label = preferred_labels
         .iter()
         .find(|label| {
@@ -379,13 +384,19 @@ fn append_node_identity(
                 .label_id(label)
                 .is_some_and(|label_id| node.labels.contains(&label_id))
         })
-        .cloned()
+        .map(String::as_str)
         .or_else(|| {
             node.labels
                 .iter()
-                .find_map(|label_id| catalog.label_name(*label_id).map(str::to_string))
-        })
-        .map(Value::String)
+                .find_map(|label_id| catalog.label_name(*label_id))
+        });
+    let label_bytes = label
+        .map_or(0, str::len)
+        .saturating_add(std::mem::size_of::<Value>());
+    charge_graph_algorithm_memory(algorithm, "node label hydration", tracker, label_bytes)?;
+    hydration_bytes = hydration_bytes.saturating_add(label_bytes);
+    let label = label
+        .map(|label| Value::String(label.to_string()))
         .unwrap_or(Value::Null);
     values.insert("node_id".to_string(), external_id);
     values.insert("node_label".to_string(), label);
@@ -469,7 +480,7 @@ pub fn try_projected_graph_with_filters(
 ) -> Result<ProjectedGraph> {
     try_projected_graph_with_filters_admitted(
         catalog,
-        &GraphExecutionProjectionSource(store, None),
+        &GraphExecutionProjectionSource(store, None, None),
         filters,
         include_node,
         layout,
@@ -608,6 +619,7 @@ fn bind_projected_relationship_predicate(
 struct GraphExecutionProjectionSource<'a>(
     &'a dyn GraphExecutionRead,
     Option<&'a RuntimeTaskContext>,
+    Option<&'a BTreeSet<String>>,
 );
 
 impl hawdb_analytics::ProjectionSource for GraphExecutionProjectionSource<'_> {
@@ -616,17 +628,29 @@ impl hawdb_analytics::ProjectionSource for GraphExecutionProjectionSource<'_> {
         visitor: &mut dyn FnMut(NodeRecord) -> hawdb_analytics::ProjectionScanControl,
     ) -> std::result::Result<hawdb_analytics::ProjectionScanControl, String> {
         let mut ordinal = 0usize;
-        self.0
-            .visit_nodes_owned(None, &mut |node| {
-                if ordinal.is_multiple_of(1024) {
-                    runtime_checkpoint(self.1)?;
-                }
-                ordinal = ordinal.saturating_add(1);
-                Ok(match visitor(node) {
-                    hawdb_analytics::ProjectionScanControl::Continue => ScanControl::Continue,
-                    hawdb_analytics::ProjectionScanControl::Stop => ScanControl::Stop,
-                })
+        let mut consume = |node| {
+            if ordinal.is_multiple_of(1024) {
+                runtime_checkpoint(self.1)?;
+            }
+            ordinal = ordinal.saturating_add(1);
+            Ok(match visitor(node) {
+                hawdb_analytics::ProjectionScanControl::Continue => ScanControl::Continue,
+                hawdb_analytics::ProjectionScanControl::Stop => ScanControl::Stop,
             })
+        };
+        let control = match self.2 {
+            Some(properties) => self
+                .0
+                .visit_projected_nodes_owned(None, properties, &mut |node| {
+                    consume(NodeRecord {
+                        id: node.id,
+                        labels: node.labels,
+                        properties: node.properties,
+                    })
+                }),
+            None => self.0.visit_nodes_owned(None, &mut consume),
+        };
+        control
             .map(|control| match control {
                 ScanControl::Continue => hawdb_analytics::ProjectionScanControl::Continue,
                 ScanControl::Stop => hawdb_analytics::ProjectionScanControl::Stop,

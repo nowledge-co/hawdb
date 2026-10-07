@@ -20,15 +20,50 @@ neighbor row by reading the original adjacency. Parallel endpoints are
 deduplicated using generation marks. Sparse rows do not clear or scan the
 entire node set. Community representatives use ordered membership sets.
 
-This implementation preserves HawDB's existing simple, unweighted algorithm
-semantics, deterministic ordering, self-loop handling and hierarchy outputs.
-It does not implement the weighted/filtered Mem compatibility proposal in
-[#898](https://github.com/nowledge-co/hawdb/issues/898). Typed legacy algorithm
-methods continue to use the same kernels.
+The Cypher procedures use the Mem compatibility contract tracked in
+[#898](https://github.com/nowledge-co/hawdb/issues/898). PageRank counts the
+initial state in `maxIterations`: caps 0 and 1 return the initial scores, and
+cap 2 performs one update. Dangling rank is not redistributed. Initialization
+is `1 / N` with `normalizeInitial := true` (the default), otherwise 1; convergence
+uses the sum of absolute score changes and a strict `< tolerance` check
+(default `1e-7`). These rules follow
+[Mem's pinned Ladybug source](https://github.com/ladybugdb/ladybug/blob/c740246b48489057ea4a8dc2c49b1b2878dccc36/extension/algo/src/function/page_rank.cpp).
+
+Louvain `maxPhases` returns one final assignment per original node, retaining
+only that final vector while phases run. Explicit `maxLevels` preserves the
+hierarchy output contract; the two spellings cannot be combined. Phase caps
+0 and 1 both execute one phase, and `maxIterations := 0` leaves the initial
+singleton partition. The default phase cap is 20. Resolution is finite and
+positive (default 1), and contracted adjacency retains aggregate edge weights
+and both degree contributions of self-loops. A stationary partition does not
+add a duplicate hierarchy level. Original projections remain simple graphs:
+parallel relationships to the same original endpoint are deduplicated. This
+change does not add a relationship-weight property API or establish equal
+arbitrary community identifiers with Ladybug's parallel implementation.
+
+Legacy `PageRankOptions { iterations, damping }` and
+`LouvainOptions { max_iterations, max_levels }` literals and projected-graph
+helper signatures remain compatible. Legacy PageRank helpers perform N
+updates and redistribute dangling mass; legacy Louvain helpers preserve their
+unweighted hierarchy behavior. Additive `PageRankProcedureOptions` and
+`LouvainProcedureOptions` select the Cypher contract explicitly. The typed
+publication coordinator also accepts `PageRankProcedure` and
+`LouvainProcedure` variants when extended options are needed; its legacy
+variants still execute parameterized Cypher using the matching defaults.
+
+Optional `node_id` and `node_label` hydration uses an admitted selected-column
+point read. Only stored `id` and labels are cloned or decoded, after a
+conservative allocation estimate has been charged to the query ledger.
+Unrequested property strings are validated without copying their contents.
+Queries without node visibility predicates also scan only node identities and
+labels when constructing their projection. Storage cache/page and spill I/O
+allocations retain their separate existing storage limits; the admission bound
+covers the owned query values rather than claiming a total heap/RSS cap.
 
 The operator conservatively admits 192 bytes per node for PageRank and 576
 for Louvain, plus twice the scalar result size for possible vector capacity
-growth. Louvain includes every requested level in the result estimate. A
+growth. Louvain includes every requested hierarchy level in the result estimate;
+final-phase calls reserve only one result per node. A
 decoded relationship must fit the remaining operator budget and is charged
 transiently to the query ledger. Decoding and page retention also depend on
 the host's separate storage record and segment-cache limits. Node state,
@@ -67,8 +102,11 @@ The facade exposes `GraphAnalyticsRequest`, `GraphAnalyticsAlgorithm`,
    level per original node, independently of row order; its byte budget covers
    those unique node values and the map overhead. `row_count()` counts retained
    node values; `execution_report().output_rows` counts raw hierarchy rows.
-   The staging reservation is deducted from the configured query
-   budget. Iterations and damping are parameters; the projection name is escaped
+   The complete preparation budget is the smaller of the configured query
+   budget and the caller's memory reservation, when supplied. Staging is
+   deducted before binding the remaining query budget to the snapshot. Result
+   reservations keep the caller's ceiling, including an explicit zero.
+   Iterations and damping are parameters; the projection name is escaped
    structural input because the existing CALL grammar requires a string literal.
 2. `Database::publish_graph_analytics` validates the database incarnation,
    branch and source epoch, obtains background admission for the complete
@@ -107,6 +145,17 @@ library's default admission and power-loss-safe durability remain unchanged.
 
 Publication leaves older values on nodes that no longer belong to the projection.
 `Fresh` describes the current publication, not every property with the same name.
+When the host attaches a `RuntimeGovernor`, preparation and publication each
+admit background work with CPU, blocking-task, I/O and memory reservations.
+Preparation separately charges complete staging through the existing retained
+memory contract, including the governor's attached process-memory policy.
+The prepared object retains that memory charge after active work releases its
+execution slots; dropping the object releases the retained charge. Publication
+admits the existing conservative mutation-memory estimate and query resources.
+A caller reservation must cover that work and the retained staging; rejection
+preserves all previous values and provenance. Result admission intersects the
+configured governor's result ceiling instead of increasing it.
+
 Readers must bind the status's `publication_id` and filter by provenance, for
 example `MATCH (n) WHERE n.rank_publication_id = $publication RETURN n.id, n.rank`,
 with explicit row and payload budgets. Reading status and values from the same

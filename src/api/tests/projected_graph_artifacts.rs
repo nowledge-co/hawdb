@@ -284,10 +284,13 @@ fn projects_graph_for_page_rank() {
     let output = db
         .query("CALL louvain('EntityGraph', maxLevels := 2) RETURN node, level, louvain_id")
         .unwrap();
+    // This graph reaches its final partition in the first phase. Contracting
+    // it again must not append an identical hierarchy level.
+    assert_eq!(output.rows.len(), 4);
     assert!(output
         .rows
         .iter()
-        .any(|row| row.get("level") == Some(&Value::Int(1))));
+        .all(|row| row.get("level") == Some(&Value::Int(0))));
 
     let output = db
         .query("CALL page_rank('EntityOnlyGraph') RETURN node, pagerank_score")

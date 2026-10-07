@@ -282,3 +282,27 @@ fn explain_shape_and_payload_campaign() {
     assert_eq!(renderings, 1536);
     eprintln!("EXPLAIN campaign: 256 fixtures, {renderings} byte-exact renderings");
 }
+
+#[test]
+fn louvain_phase_and_hierarchy_modes_have_distinct_fingerprints() {
+    let plan = |phases, levels| PhysicalPlan::GraphAlgorithm {
+        algorithm: crate::GraphAlgorithmKind::Louvain,
+        graph_name: "topics".into(),
+        options: crate::GraphAlgorithmOptions {
+            max_phases: phases,
+            max_levels: levels,
+            ..crate::GraphAlgorithmOptions::default()
+        },
+        score_column: "louvain_id".into(),
+        return_node_identity: false,
+        node_visibility_predicate: None,
+    };
+    let final_phase = plan(Some(20), None);
+    let hierarchy = plan(None, Some(20));
+    assert_ne!(
+        final_phase.instance_fingerprint(),
+        hierarchy.instance_fingerprint()
+    );
+    assert!(final_phase.explain(0).contains("max_phases: Some(20)"));
+    assert!(hierarchy.explain(0).contains("max_levels: Some(20)"));
+}

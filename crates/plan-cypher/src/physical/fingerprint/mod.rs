@@ -244,6 +244,10 @@ impl PhysicalPlan {
                 if let Some(iterations) = options.max_iterations {
                     output.push_str(&iterations.to_string());
                 }
+                output.push_str(":phases=");
+                if let Some(phases) = options.max_phases {
+                    output.push_str(&phases.to_string());
+                }
                 output.push_str(":levels=");
                 if let Some(levels) = options.max_levels {
                     output.push_str(&levels.to_string());

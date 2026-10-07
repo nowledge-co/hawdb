@@ -434,6 +434,7 @@ pub enum GraphAlgorithmKind {
 pub struct GraphAlgorithmOptions {
     pub damping: Option<f64>,
     pub max_iterations: Option<usize>,
+    pub max_phases: Option<usize>,
     pub max_levels: Option<usize>,
     pub tolerance: Option<f64>,
     pub normalize_initial: Option<bool>,

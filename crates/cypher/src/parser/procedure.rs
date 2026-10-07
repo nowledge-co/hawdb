@@ -242,6 +242,7 @@ impl Parser<'_> {
             damping: None,
             max_iterations: None,
             max_levels: None,
+            max_phases: None,
             tolerance: None,
             normalize_initial: None,
             resolution: None,
@@ -260,7 +261,8 @@ impl Parser<'_> {
             let option = match normalized.as_str() {
                 "dampingfactor" | "damping" => &mut options.damping,
                 "maxiterations" | "iterations" => &mut options.max_iterations,
-                "maxlevels" | "levels" | "maxphases" | "phases" => &mut options.max_levels,
+                "maxlevels" | "levels" => &mut options.max_levels,
+                "maxphases" | "phases" => &mut options.max_phases,
                 "tolerance" => &mut options.tolerance,
                 "normalizeinitial" => &mut options.normalize_initial,
                 "resolution" => &mut options.resolution,
@@ -270,6 +272,9 @@ impl Parser<'_> {
                 return Err(self.error("duplicate graph algorithm option"));
             }
             *option = Some(self.parse_value()?);
+            if options.max_levels.is_some() && options.max_phases.is_some() {
+                return Err(self.error("duplicate graph algorithm option: maxLevels and maxPhases"));
+            }
         }
         Ok(options)
     }

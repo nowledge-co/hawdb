@@ -134,11 +134,13 @@ impl GraphAlgorithmSpec<'_> {
             runtime_checkpoint(context.task_context)?;
             let levels = match self.algorithm {
                 GraphAlgorithmKind::PageRank => 1,
-                GraphAlgorithmKind::Louvain => self
-                    .options
-                    .max_levels
-                    .unwrap_or(LouvainOptions::default().max_levels)
-                    .max(1),
+                GraphAlgorithmKind::Louvain => {
+                    if self.louvain_options()?.hierarchy {
+                        self.louvain_options()?.max_levels.max(1)
+                    } else {
+                        1
+                    }
+                }
             };
             let result_per_node = match self.algorithm {
                 GraphAlgorithmKind::PageRank => {
@@ -157,7 +159,7 @@ impl GraphAlgorithmSpec<'_> {
             let per_node = state_per_node.saturating_add(result_per_node);
             let mut nodes = Vec::new();
             let mut ordinal = 0usize;
-            let control = context.store.visit_nodes_owned(None, &mut |node| {
+            let mut consume = |node: NodeRecord| {
                 if ordinal.is_multiple_of(1024) {
                     runtime_checkpoint(context.task_context)?;
                 }
@@ -187,7 +189,20 @@ impl GraphAlgorithmSpec<'_> {
                 nodes.push(node.id);
                 tracker.release(transient);
                 Ok(ScanControl::Continue)
-            })?;
+            };
+            let control = if visibility.is_none() {
+                context
+                    .store
+                    .visit_projected_nodes_owned(None, &BTreeSet::new(), &mut |node| {
+                        consume(NodeRecord {
+                            id: node.id,
+                            labels: node.labels,
+                            properties: node.properties,
+                        })
+                    })?
+            } else {
+                context.store.visit_nodes_owned(None, &mut consume)?
+            };
             if control == ScanControl::Stop {
                 return Err(HawDBError::Execution(
                     "streaming analytics node scan is incomplete".into(),
@@ -216,13 +231,13 @@ impl GraphAlgorithmSpec<'_> {
             let result_rows: Result<_> = match self.algorithm {
                 GraphAlgorithmKind::PageRank => {
                     let rows = graph
-                        .page_rank(self.page_rank_options()?, context.task_context)
+                        .page_rank_procedure(self.page_rank_options()?, context.task_context)
                         .map(AlgorithmRows::PageRank);
                     drop(graph);
                     rows
                 }
                 GraphAlgorithmKind::Louvain => graph
-                    .hierarchical_louvain(self.louvain_options()?, context.task_context)
+                    .louvain_procedure(self.louvain_options()?, context.task_context)
                     .map(AlgorithmRows::Louvain),
             };
             tracker.peak_bytes = tracker

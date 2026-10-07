@@ -47,6 +47,88 @@ pub use hawdb_core::projection::{
     ProjectionMemoryAdmissionError, ProjectionMemoryBudget, ProjectionMemoryEstimate,
 };
 
+/// Cypher PageRank contract: the cap includes the initial state and dangling
+/// rank is not redistributed. Legacy `PageRankOptions` helpers keep their
+/// original update count and mass-conserving behavior.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PageRankProcedureOptions {
+    pub iterations: usize,
+    pub damping: f64,
+    pub tolerance: f64,
+    pub normalize_initial: bool,
+}
+
+impl PageRankProcedureOptions {
+    pub fn validate(self) -> Result<()> {
+        if !self.damping.is_finite() || !(0.0..1.0).contains(&self.damping) {
+            return Err(HawDBError::Semantic(
+                "PageRank damping must be finite and in [0, 1)".into(),
+            ));
+        }
+        if !self.tolerance.is_finite() || self.tolerance < 0.0 {
+            return Err(HawDBError::Semantic(
+                "PageRank tolerance must be finite and non-negative".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Default for PageRankProcedureOptions {
+    fn default() -> Self {
+        Self {
+            iterations: 20,
+            damping: 0.85,
+            tolerance: 0.0000001,
+            normalize_initial: true,
+        }
+    }
+}
+
+/// Procedure-only resolution and output policy, without changing the legacy
+/// `LouvainOptions` struct literal contract. Final output retains at most one
+/// assignment per original node throughout execution.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LouvainProcedureOptions {
+    pub max_iterations: usize,
+    pub max_levels: usize,
+    pub resolution: f64,
+    pub hierarchy: bool,
+}
+
+impl LouvainProcedureOptions {
+    pub fn validate(self) -> Result<()> {
+        if !self.resolution.is_finite() || self.resolution <= 0.0 {
+            return Err(HawDBError::Semantic(
+                "Louvain resolution must be finite and greater than 0".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Default for LouvainProcedureOptions {
+    fn default() -> Self {
+        Self {
+            max_iterations: 20,
+            max_levels: 20,
+            resolution: 1.0,
+            hierarchy: false,
+        }
+    }
+}
+
+impl From<LouvainOptions> for LouvainProcedureOptions {
+    fn from(options: LouvainOptions) -> Self {
+        Self {
+            max_iterations: options.max_iterations,
+            max_levels: options.max_levels,
+            resolution: 1.0,
+            hierarchy: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectedGraph {
     nodes: Vec<NodeId>,
@@ -571,9 +653,69 @@ impl ProjectedGraph {
                 materialized: None,
                 undirected: false,
             },
-            options,
+            streaming::PageRankConfig::legacy(options),
             task_context,
         )
+    }
+
+    /// Executes the bounded Cypher procedure contract over this projection.
+    pub fn page_rank_procedure_with_context(
+        &self,
+        options: PageRankProcedureOptions,
+        task_context: Option<&RuntimeTaskContext>,
+    ) -> Result<Vec<PageRankScore>> {
+        options.validate()?;
+        streaming::page_rank(
+            &ResidentAdjacency {
+                graph: self,
+                materialized: None,
+                undirected: false,
+            },
+            streaming::PageRankConfig::procedure(options),
+            task_context,
+        )
+    }
+
+    pub fn louvain_procedure_with_context(
+        &self,
+        options: LouvainProcedureOptions,
+        task_context: Option<&RuntimeTaskContext>,
+    ) -> Result<Vec<HierarchicalCommunityAssignment>> {
+        options.validate()?;
+        let source = ResidentEdgeSource {
+            graph: self,
+            materialized: if self.layout == ProjectionLayout::Undirected {
+                None
+            } else {
+                Some(self.undirected_adjacency(task_context)?)
+            },
+        };
+        StreamingGraph::new(&source, self.nodes.clone(), true)?
+            .louvain_procedure(options, task_context)
+    }
+
+    pub fn louvain_procedure_memory_estimate(
+        &self,
+        options: LouvainProcedureOptions,
+    ) -> GraphAlgorithmMemoryEstimate {
+        let mut estimate = self.louvain_memory_estimate(LouvainOptions {
+            max_iterations: options.max_iterations,
+            max_levels: if options.hierarchy {
+                options.max_levels
+            } else {
+                1
+            },
+        });
+        // The procedure contracts by re-reading original edges and retains only
+        // node membership. The legacy estimate is conservative for that state.
+        estimate.result_bytes = estimated_vec_bytes::<HierarchicalCommunityAssignment>(
+            self.nodes.len().saturating_mul(if options.hierarchy {
+                options.max_levels.max(1)
+            } else {
+                1
+            }),
+        );
+        estimate
     }
 
     pub fn louvain_communities(&self, options: LouvainOptions) -> Vec<CommunityAssignment> {
@@ -665,7 +807,7 @@ impl ProjectedGraph {
                 materialized,
                 undirected: true,
             },
-            options,
+            options.into(),
             task_context,
         )
     }
@@ -836,6 +978,32 @@ impl ProjectedGraph {
                 .iter()
                 .copied(),
         )
+    }
+}
+
+struct ResidentEdgeSource<'a> {
+    graph: &'a ProjectedGraph,
+    materialized: Option<Vec<BTreeSet<usize>>>,
+}
+
+impl AnalyticsEdgeSource for ResidentEdgeSource<'_> {
+    fn visit_neighbors(
+        &self,
+        node: NodeId,
+        _undirected: bool,
+        visitor: &mut dyn FnMut(NodeId) -> Result<()>,
+    ) -> Result<()> {
+        let index =
+            self.graph.nodes.binary_search(&node).map_err(|_| {
+                HawDBError::Execution("resident analytics lost node identity".into())
+            })?;
+        for target in self
+            .graph
+            .undirected_neighbor_indexes(index, self.materialized.as_deref())
+        {
+            visitor(self.graph.nodes[target])?;
+        }
+        Ok(())
     }
 }
 
@@ -1054,9 +1222,9 @@ fn validate_indexes(
 #[cfg(test)]
 mod tests {
     use super::{
-        projection_memory_estimate, LouvainOptions, PageRankOptions, ProjectedGraph,
-        ProjectedGraphExecution, ProjectionLayout, ProjectionMemoryBudget, ProjectionScanControl,
-        ProjectionSource,
+        projection_memory_estimate, LouvainOptions, LouvainProcedureOptions, PageRankOptions,
+        PageRankProcedureOptions, PageRankScore, ProjectedGraph, ProjectedGraphExecution,
+        ProjectionLayout, ProjectionMemoryBudget, ProjectionScanControl, ProjectionSource,
     };
     use hawdb_core::ids::{NodeId, NodeRecord, RelId, RelRecord};
     use hawdb_core::{Catalog, Value};
@@ -1334,31 +1502,7 @@ mod tests {
 
     #[test]
     fn page_rank_honors_initial_normalization_and_tolerance() {
-        assert_eq!(PageRankOptions::default().tolerance, 0.0);
-        let edgeless = ProjectedGraph::from_parts(
-            vec![NodeId(0), NodeId(1)],
-            vec![0, 0, 0],
-            vec![],
-            vec![0, 0, 0],
-            vec![],
-        )
-        .unwrap();
-        let normalized = edgeless.page_rank(PageRankOptions {
-            iterations: 1,
-            damping: 0.85,
-            tolerance: 0.0,
-            normalize_initial: true,
-        });
-        let unnormalized = edgeless.page_rank(PageRankOptions {
-            iterations: 1,
-            damping: 0.85,
-            tolerance: 0.0,
-            normalize_initial: false,
-        });
-        assert!(normalized.iter().all(|score| score.score == 0.5));
-        assert!(unnormalized.iter().all(|score| score.score == 1.0));
-
-        let directed = ProjectedGraph::from_parts(
+        let graph = ProjectedGraph::from_parts(
             vec![NodeId(0), NodeId(1)],
             vec![0, 1, 1],
             vec![1],
@@ -1366,38 +1510,50 @@ mod tests {
             vec![0],
         )
         .unwrap();
-        let early = directed.page_rank(PageRankOptions {
-            iterations: 20,
-            damping: 0.85,
-            tolerance: f64::MAX,
-            normalize_initial: true,
-        });
-        let converged = directed.page_rank(PageRankOptions {
-            tolerance: 0.0,
-            ..PageRankOptions::default()
-        });
-        let clamped = directed.page_rank(PageRankOptions {
-            iterations: 1,
-            damping: 2.0,
-            tolerance: 0.0,
-            normalize_initial: true,
-        });
-        let unit_damping = directed.page_rank(PageRankOptions {
-            iterations: 1,
-            damping: 1.0,
-            tolerance: 0.0,
-            normalize_initial: true,
-        });
-        let source_score = |scores: &[super::PageRankScore]| {
-            scores
-                .iter()
-                .find(|score| score.node == NodeId(0))
+        let run = |options| {
+            graph
+                .page_rank_procedure_with_context(options, None)
                 .unwrap()
-                .score
         };
-        assert!((source_score(&early) - 0.2875).abs() < 1e-12);
-        assert!((source_score(&early) - source_score(&converged)).abs() > 0.01);
-        assert_eq!(clamped, unit_damping);
+        let normalized = run(PageRankProcedureOptions {
+            iterations: 1,
+            ..PageRankProcedureOptions::default()
+        });
+        let unnormalized = run(PageRankProcedureOptions {
+            iterations: 1,
+            normalize_initial: false,
+            ..PageRankProcedureOptions::default()
+        });
+        assert!(normalized.iter().all(|row| row.score == 0.5));
+        assert!(unnormalized.iter().all(|row| row.score == 1.0));
+        let early = run(PageRankProcedureOptions {
+            tolerance: f64::MAX,
+            ..PageRankProcedureOptions::default()
+        });
+        let converged = run(PageRankProcedureOptions {
+            tolerance: 0.0,
+            ..PageRankProcedureOptions::default()
+        });
+        let source =
+            |rows: &[PageRankScore]| rows.iter().find(|row| row.node == NodeId(0)).unwrap().score;
+        assert!((source(&early) - 0.075).abs() < 1e-12);
+        assert_ne!(early, converged);
+        // Literal syntax and old mass-conserving, one-update behavior survive.
+        let legacy = graph.page_rank(PageRankOptions {
+            iterations: 1,
+            damping: 0.85,
+        });
+        assert!((source(&legacy) - 0.2875).abs() < 1e-12);
+        assert_eq!(
+            graph.page_rank(PageRankOptions {
+                iterations: 1,
+                damping: 2.0
+            }),
+            graph.page_rank(PageRankOptions {
+                iterations: 1,
+                damping: 1.0
+            })
+        );
     }
 
     #[test]
@@ -1449,11 +1605,16 @@ mod tests {
         .unwrap();
         let communities = |resolution| {
             graph
-                .louvain_communities(LouvainOptions {
-                    max_iterations: 20,
-                    max_levels: 1,
-                    resolution,
-                })
+                .louvain_procedure_with_context(
+                    LouvainProcedureOptions {
+                        max_iterations: 20,
+                        max_levels: 1,
+                        resolution,
+                        hierarchy: false,
+                    },
+                    None,
+                )
+                .unwrap()
                 .into_iter()
                 .map(|assignment| (assignment.node, assignment.community))
                 .collect::<BTreeMap<_, _>>()
@@ -1524,7 +1685,6 @@ mod tests {
         let assignments = graph.hierarchical_louvain_communities(LouvainOptions {
             max_iterations: 20,
             max_levels: 2,
-            resolution: 1.0,
         });
 
         assert_eq!(assignments.len(), 8);
@@ -1551,12 +1711,10 @@ mod tests {
         let louvain_one_level = graph.louvain_memory_estimate(LouvainOptions {
             max_iterations: 2,
             max_levels: 1,
-            resolution: 1.0,
         });
         let louvain_two_levels = graph.louvain_memory_estimate(LouvainOptions {
             max_iterations: 2,
             max_levels: 2,
-            resolution: 1.0,
         });
 
         assert_eq!(

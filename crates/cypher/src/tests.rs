@@ -860,6 +860,7 @@ fn parses_graph_algorithm_calls() {
                 damping: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Float(0.85)))),
                 max_iterations: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(20)))),
                 max_levels: None,
+                max_phases: None,
                 ..GraphAlgorithmOptions::default()
             }),
             score_column: "pagerank_score".to_string(),
@@ -903,6 +904,7 @@ fn parses_graph_algorithm_calls() {
                 damping: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Float(0.85)))),
                 max_iterations: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(20)))),
                 max_levels: None,
+                max_phases: None,
                 tolerance: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Float(
                     0.0000001,
                 )))),
@@ -943,6 +945,7 @@ fn parses_graph_algorithm_calls() {
                 damping: Some(AstNode::synthetic(ValueExpressionKind::Parameter("damping".to_string()))),
                 max_iterations: Some(AstNode::synthetic(ValueExpressionKind::Parameter("iterations".to_string()))),
                 max_levels: None,
+                max_phases: None,
                 ..GraphAlgorithmOptions::default()
             }),
             score_column: "pagerank_score".to_string(),
@@ -980,7 +983,7 @@ fn parses_graph_algorithm_calls() {
         panic!("expected graph algorithm");
     };
     assert_eq!(
-        algorithm.options.max_levels,
+        algorithm.options.max_phases,
         Some(AstNode::synthetic(ValueExpressionKind::Literal(
             Value::Int(20)
         )))

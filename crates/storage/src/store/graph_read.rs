@@ -15,6 +15,7 @@
 //! Read, scan, seek, and scan-pruning methods for [`GraphStore`].
 
 use super::*;
+use hawdb_core::ids::{project_node_record_ref, projected_node_allocation_bytes};
 use hawdb_storage::ids::project_node_record;
 
 enum RangeRecord<'a> {
@@ -77,6 +78,36 @@ impl GraphStore {
             .map(|reader| reader.get_node(id).map_err(canonical_segment_error))
             .transpose()
             .map(Option::flatten)
+    }
+
+    /// Admit the selected node allocation before cloning or decoding values.
+    /// The immutable reader pins the same record across preflight and decoding.
+    pub fn projected_node_owned_admitted(
+        &self,
+        id: NodeId,
+        required_properties: &BTreeSet<String>,
+        admit: &mut dyn FnMut(usize) -> Result<()>,
+    ) -> Result<Option<ProjectedNodeRecord>> {
+        if self.node_tombstones.contains(&id) {
+            return Ok(None);
+        }
+        if let Some(node) = self.nodes.get(&id) {
+            admit(projected_node_allocation_bytes(node, required_properties))?;
+            return Ok(Some(project_node_record_ref(node, required_properties)));
+        }
+        let Some(reader) = self.canonical_base.as_ref() else {
+            return Ok(None);
+        };
+        let Some(bytes) = reader
+            .projected_node_allocation_bytes(id, required_properties)
+            .map_err(canonical_segment_error)?
+        else {
+            return Ok(None);
+        };
+        admit(bytes)?;
+        reader
+            .get_projected_node(id, required_properties)
+            .map_err(canonical_segment_error)
     }
 
     pub fn relationship_owned(&self, id: RelId) -> Result<Option<RelRecord>> {
@@ -183,7 +214,7 @@ impl GraphStore {
         mut consumer: impl FnMut(ProjectedNodeRecord) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
         let project_delta = |node: &NodeRecord| match required_properties {
-            Some(required) => project_node_record(node.clone(), required),
+            Some(required) => project_node_record_ref(node, required),
             None => ProjectedNodeRecord {
                 id: node.id,
                 labels: node.labels.clone(),

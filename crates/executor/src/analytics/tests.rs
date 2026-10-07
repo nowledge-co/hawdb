@@ -421,7 +421,7 @@ fn projection_budget_is_inclusive_and_stops_before_more_node_reads() {
 #[test]
 fn storage_scan_failure_and_early_stop_preserve_adapter_control() {
     let mut fixture = Fixture::new();
-    let source = GraphExecutionProjectionSource(&fixture, None);
+    let source = GraphExecutionProjectionSource(&fixture, None, None);
     assert_eq!(
         source
             .visit_projection_nodes(&mut |_| ProjectionScanControl::Stop)
@@ -631,4 +631,98 @@ fn algorithm_options_fail_closed_and_identity_columns_are_bounded() {
     let error = bounded.result.unwrap_err().to_string();
     assert!(error.contains("node identity hydration"), "{error}");
     assert!(bounded.batches.is_empty());
+}
+
+#[test]
+fn identity_hydration_admits_selected_columns_before_cloning() {
+    let mut fixture = Fixture::new();
+    fixture.nodes[0].properties.insert(
+        "content".into(),
+        Value::String("unrelated".repeat(256 * 1024)),
+    );
+    let ledger = QueryMemoryLedger::new(nz(4096));
+    let mut tracker = OperatorMemoryTracker::with_account(
+        nz(4096),
+        ledger.account(QueryMemoryClass::BlockingState, "identity test", nz(4096)),
+    );
+    let mut row = BTreeMap::new();
+    let bytes = append_node_identity(
+        &mut row,
+        &fixture.catalog,
+        &fixture,
+        NodeId(0),
+        &["Memory".into()],
+        "PageRank",
+        &mut tracker,
+    )
+    .unwrap();
+    assert!(bytes < 4096, "unrequested content was retained");
+    assert_eq!(row["node_id"], Value::String("node-0".into()));
+    tracker.release(bytes);
+    fixture.nodes[0]
+        .properties
+        .insert("id".into(), Value::String("oversized".repeat(1024)));
+    let mut row = BTreeMap::new();
+    let error = append_node_identity(
+        &mut row,
+        &fixture.catalog,
+        &fixture,
+        NodeId(0),
+        &[],
+        "PageRank",
+        &mut tracker,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("blocking_operator_bytes"));
+    assert!(row.is_empty());
+    drop(tracker);
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn mem_pagerank_reference_values_match_resident_and_forced_streaming() {
+    let mut fixture = Fixture::new();
+    fixture.nodes.truncate(2);
+    fixture.relationships.truncate(1);
+    for normalize in [true, false] {
+        let initial = if normalize { 0.5 } else { 1.0 };
+        let mut expected = [initial; 2];
+        for iterations in 0..=3 {
+            if iterations > 1 {
+                expected = [0.15 * initial, 0.15 * initial + 0.85 * expected[0]];
+            }
+            let options = RunOptions {
+                options: GraphAlgorithmOptions {
+                    max_iterations: Some(iterations),
+                    damping: Some(0.85),
+                    tolerance: Some(0.0),
+                    normalize_initial: Some(normalize),
+                    ..GraphAlgorithmOptions::default()
+                },
+                ..RunOptions::default()
+            };
+            for outcome in [
+                run(&fixture, &options, None),
+                streaming::run_external(&fixture, &options, None),
+            ] {
+                assert_eq!(outcome.result.unwrap(), BatchControl::Continue);
+                let rows: Vec<_> = outcome.batches.into_iter().flatten().collect();
+                assert_eq!(rows.len(), 2);
+                for row in rows {
+                    let index = if row.values["node"] == Value::Int(0) {
+                        0
+                    } else {
+                        1
+                    };
+                    let Value::Float(score) = row.values["score"] else {
+                        panic!("missing score")
+                    };
+                    assert!(
+                        (score - expected[index]).abs() < 1e-12,
+                        "cap={iterations}, normalize={normalize}, node={index}"
+                    );
+                }
+            }
+        }
+    }
 }

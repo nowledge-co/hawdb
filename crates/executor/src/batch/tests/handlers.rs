@@ -20,8 +20,7 @@ use crate::external::NoExternalReadOperator;
 use crate::observer::QueryExecutionReports;
 use crate::Row;
 use hawdb_analytics::{
-    LouvainOptions, PageRankOptions, ProjectedGraphExecution, ProjectionLayout,
-    ProjectionMemoryBudget,
+    LouvainProcedureOptions, PageRankProcedureOptions, ProjectionLayout, ProjectionMemoryBudget,
 };
 use hawdb_plan_cypher::GraphAlgorithmKind;
 
@@ -124,10 +123,10 @@ fn graph_row_oracle(algorithm: GraphAlgorithmKind, context: BatchReadContext<'_>
     .unwrap();
     match algorithm {
         GraphAlgorithmKind::PageRank => graph
-            .page_rank_with_context(
-                PageRankOptions {
+            .page_rank_procedure_with_context(
+                PageRankProcedureOptions {
                     iterations: 2,
-                    ..PageRankOptions::default()
+                    ..PageRankProcedureOptions::default()
                 },
                 None,
             )
@@ -141,11 +140,12 @@ fn graph_row_oracle(algorithm: GraphAlgorithmKind, context: BatchReadContext<'_>
             })
             .collect(),
         GraphAlgorithmKind::Louvain => graph
-            .hierarchical_louvain_communities_with_context(
-                LouvainOptions {
+            .louvain_procedure_with_context(
+                LouvainProcedureOptions {
                     max_iterations: 2,
                     max_levels: 1,
                     resolution: 1.0,
+                    hierarchy: true,
                 },
                 None,
             )

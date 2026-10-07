@@ -14,8 +14,8 @@
 
 use super::*;
 use hawdb_analytics::{
-    LouvainOptions, PageRankOptions, ProjectedGraph, ProjectionLayout, ProjectionMemoryBudget,
-    ProjectionScanControl, ProjectionSource,
+    LouvainProcedureOptions, PageRankProcedureOptions, ProjectedGraph, ProjectionLayout,
+    ProjectionMemoryBudget, ProjectionScanControl, ProjectionSource,
 };
 use hawdb_core::{HawDBError, RelTypeId};
 use hawdb_executor::store::{GraphExecutionRead, ScanControl};
@@ -288,11 +288,15 @@ impl Fixture {
         let outgoing = source.project(ProjectionLayout::Outgoing);
         let undirected = source.project(ProjectionLayout::Undirected);
         let expected_rank: Vec<BTreeMap<String, Value>> = outgoing
-            .page_rank(PageRankOptions {
-                damping: 0.5,
-                iterations: 3,
-                ..PageRankOptions::default()
-            })
+            .page_rank_procedure_with_context(
+                PageRankProcedureOptions {
+                    damping: 0.5,
+                    iterations: 3,
+                    ..PageRankProcedureOptions::default()
+                },
+                None,
+            )
+            .unwrap()
             .into_iter()
             .map(|score| {
                 BTreeMap::from([
@@ -302,11 +306,16 @@ impl Fixture {
             })
             .collect();
         let expected_communities: Vec<BTreeMap<String, Value>> = undirected
-            .hierarchical_louvain_communities(LouvainOptions {
-                max_iterations: 3,
-                max_levels: 2,
-                ..LouvainOptions::default()
-            })
+            .louvain_procedure_with_context(
+                LouvainProcedureOptions {
+                    max_iterations: 3,
+                    max_levels: 2,
+                    hierarchy: true,
+                    ..LouvainProcedureOptions::default()
+                },
+                None,
+            )
+            .unwrap()
             .into_iter()
             .map(|row| {
                 BTreeMap::from([

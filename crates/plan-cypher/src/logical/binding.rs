@@ -36,6 +36,11 @@ pub(super) fn bind_graph_algorithm_options(
             .as_ref()
             .map(|value| bind_non_negative_usize(value, parameters, "maxIterations"))
             .transpose()?,
+        max_phases: options
+            .max_phases
+            .as_ref()
+            .map(|value| bind_non_negative_usize(value, parameters, "maxPhases"))
+            .transpose()?,
         max_levels: options
             .max_levels
             .as_ref()

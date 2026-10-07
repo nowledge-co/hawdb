@@ -96,6 +96,19 @@ pub trait GraphExecutionRead {
 
     fn node_owned(&self, id: NodeId) -> Result<Option<NodeRecord>>;
 
+    /// Selected-column point read. Implementations must call admission before
+    /// allocating the owned result, and propagate rejection without decoding.
+    fn projected_node_owned_admitted(
+        &self,
+        _id: NodeId,
+        _required_properties: &BTreeSet<String>,
+        _admit: &mut dyn FnMut(usize) -> Result<()>,
+    ) -> Result<Option<ProjectedNodeRecord>> {
+        Err(hawdb_core::HawDBError::Execution(
+            "storage reader does not support admitted projected node reads".into(),
+        ))
+    }
+
     fn scan_nodes_borrowed<'a>(
         &'a self,
         label_id: Option<LabelId>,

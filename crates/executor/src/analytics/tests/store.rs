@@ -35,6 +35,30 @@ impl GraphExecutionRead for Fixture {
     fn relationship_count_for_type(&self, _: Option<RelTypeId>) -> usize {
         panic!("unexpected graph execution read: relationship_count_for_type")
     }
+    fn projected_node_owned_admitted(
+        &self,
+        id: NodeId,
+        required_properties: &BTreeSet<String>,
+        admit: &mut dyn FnMut(usize) -> Result<()>,
+    ) -> Result<Option<ProjectedNodeRecord>> {
+        if self.fail_identity_node == Some(id) {
+            return Err(HawDBError::StorageIntegrity(
+                "identity lookup sentinel".into(),
+            ));
+        }
+        let Some(node) = self.nodes.iter().find(|node| node.id == id) else {
+            return Ok(None);
+        };
+        admit(hawdb_core::ids::projected_node_allocation_bytes(
+            node,
+            required_properties,
+        ))?;
+        Ok(Some(hawdb_core::ids::project_node_record_ref(
+            node,
+            required_properties,
+        )))
+    }
+
     fn node_owned(&self, id: NodeId) -> Result<Option<NodeRecord>> {
         if self.fail_identity_node == Some(id) {
             return Err(HawDBError::StorageIntegrity(

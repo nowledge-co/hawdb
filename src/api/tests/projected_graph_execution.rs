@@ -16,6 +16,7 @@ use super::*;
 use crate::StorageResidencyMode;
 
 mod differential;
+mod review_regressions;
 mod streaming_parity;
 
 #[test]
@@ -141,7 +142,7 @@ fn projected_graph_queries_preserve_residency_reopen_and_read_only_wal_boundarie
                 }
                 assert!(results[2]
                     .iter()
-                    .all(|row| row["pagerank_score"] == Value::Float(0.5)));
+                    .all(|row| matches!(row["pagerank_score"], Value::Float(score) if (score - 0.25).abs() < 1e-12)));
                 if let Some(expected) = &reference {
                     assert_eq!(&results, expected, "{mode:?}");
                 } else {

@@ -175,11 +175,8 @@ fn resident_and_streaming_preserve_predicates_options_and_complete_identities() 
         assert_eq!(external, resident);
         assert_eq!(
             external.len(),
-            if algorithm == GraphAlgorithmKind::PageRank {
-                128
-            } else {
-                256
-            }
+            128,
+            "stationary Louvain phases must not duplicate assignments"
         );
         for row in external {
             let Value::Int(node) = row.values["node"] else {
@@ -253,11 +250,8 @@ fn both_algorithms_complete_when_edges_exceed_the_blocking_budget() {
         let rows: Vec<_> = output.batches.into_iter().flatten().collect();
         assert_eq!(
             rows.len(),
-            if algorithm == GraphAlgorithmKind::PageRank {
-                128
-            } else {
-                256
-            }
+            128,
+            "stationary Louvain phases must not duplicate assignments"
         );
         for row in rows {
             if algorithm == GraphAlgorithmKind::PageRank {

@@ -175,25 +175,27 @@ fn check_projection(
 fn expected_rows(graph: &ProjectedGraph, options: &RunOptions) -> (Vec<Binding>, usize, usize) {
     let (rows, result_bytes, scratch) = match options.algorithm {
         GraphAlgorithmKind::PageRank => {
-            let settings = PageRankOptions {
+            let settings = PageRankProcedureOptions {
                 damping: options
                     .options
                     .damping
-                    .unwrap_or(PageRankOptions::default().damping),
+                    .unwrap_or(PageRankProcedureOptions::default().damping),
                 iterations: options
                     .options
                     .max_iterations
-                    .unwrap_or(PageRankOptions::default().iterations),
+                    .unwrap_or(PageRankProcedureOptions::default().iterations),
                 tolerance: options
                     .options
                     .tolerance
-                    .unwrap_or(PageRankOptions::default().tolerance),
+                    .unwrap_or(PageRankProcedureOptions::default().tolerance),
                 normalize_initial: options
                     .options
                     .normalize_initial
-                    .unwrap_or(PageRankOptions::default().normalize_initial),
+                    .unwrap_or(PageRankProcedureOptions::default().normalize_initial),
             };
-            let scores = graph.page_rank_with_context(settings, None).unwrap();
+            let scores = graph
+                .page_rank_procedure_with_context(settings, None)
+                .unwrap();
             let bytes = scores.len() * std::mem::size_of::<hawdb_analytics::PageRankScore>() * 2;
             let rows = scores
                 .into_iter()
@@ -211,22 +213,24 @@ fn expected_rows(graph: &ProjectedGraph, options: &RunOptions) -> (Vec<Binding>,
             )
         }
         GraphAlgorithmKind::Louvain => {
-            let settings = LouvainOptions {
+            let settings = LouvainProcedureOptions {
+                hierarchy: options.options.max_levels.is_some(),
                 max_iterations: options
                     .options
                     .max_iterations
-                    .unwrap_or(LouvainOptions::default().max_iterations),
+                    .unwrap_or(LouvainProcedureOptions::default().max_iterations),
                 max_levels: options
                     .options
                     .max_levels
-                    .unwrap_or(LouvainOptions::default().max_levels),
+                    .or(options.options.max_phases)
+                    .unwrap_or(LouvainProcedureOptions::default().max_levels),
                 resolution: options
                     .options
                     .resolution
-                    .unwrap_or(LouvainOptions::default().resolution),
+                    .unwrap_or(LouvainProcedureOptions::default().resolution),
             };
             let assignments = graph
-                .hierarchical_louvain_communities_with_context(settings, None)
+                .louvain_procedure_with_context(settings, None)
                 .unwrap();
             let bytes = assignments.len()
                 * std::mem::size_of::<hawdb_analytics::HierarchicalCommunityAssignment>()
@@ -247,7 +251,9 @@ fn expected_rows(graph: &ProjectedGraph, options: &RunOptions) -> (Vec<Binding>,
             (
                 rows,
                 bytes,
-                graph.louvain_memory_estimate(settings).algorithm_peak_bytes,
+                graph
+                    .louvain_procedure_memory_estimate(settings)
+                    .algorithm_peak_bytes,
             )
         }
     };
@@ -260,14 +266,14 @@ fn graph_algorithm_option_error(options: &RunOptions) -> Option<&'static str> {
             let damping = options
                 .options
                 .damping
-                .unwrap_or(PageRankOptions::default().damping);
+                .unwrap_or(PageRankProcedureOptions::default().damping);
             if !damping.is_finite() || !(0.0..1.0).contains(&damping) {
                 return Some("PageRank damping must be finite and in [0, 1)");
             }
             let tolerance = options
                 .options
                 .tolerance
-                .unwrap_or(PageRankOptions::default().tolerance);
+                .unwrap_or(PageRankProcedureOptions::default().tolerance);
             if !tolerance.is_finite() || tolerance < 0.0 {
                 return Some("PageRank tolerance must be finite and non-negative");
             }
@@ -277,7 +283,7 @@ fn graph_algorithm_option_error(options: &RunOptions) -> Option<&'static str> {
             let resolution = options
                 .options
                 .resolution
-                .unwrap_or(LouvainOptions::default().resolution);
+                .unwrap_or(LouvainProcedureOptions::default().resolution);
             (!resolution.is_finite() || resolution <= 0.0)
                 .then_some("Louvain resolution must be finite and greater than 0")
         }
