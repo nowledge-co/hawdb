@@ -13,6 +13,123 @@
 // limitations under the License.
 
 use hawdb_integrity::{IntegrityHasher, Sha256Digest};
+use std::path::{Path, PathBuf};
+
+/// An exclusively owned, already durable selector link. Preparation never
+/// changes the shared latest selector; publication performs only its rename
+/// and directory durability barrier. A lost publication reply retains evidence.
+#[derive(Debug)]
+pub(crate) struct PreparedRelationalRecoverySelector {
+    temporary: PathBuf,
+    destination: PathBuf,
+    cleanup_on_drop: bool,
+}
+
+impl PreparedRelationalRecoverySelector {
+    pub(crate) fn prepare(immutable: &Path, destination: PathBuf) -> std::io::Result<Self> {
+        let temporary = immutable.with_extension("hawdb.select.tmp");
+        crate::file_io::hard_link(immutable, &temporary)?;
+        let selector = Self {
+            temporary,
+            destination,
+            cleanup_on_drop: true,
+        };
+        crate::durability::sync_directory(
+            immutable.parent().expect("recovery manifest has a parent"),
+        )?;
+        Ok(selector)
+    }
+
+    pub(crate) fn publish(&mut self) -> std::io::Result<()> {
+        // The rename may succeed even when its durability reply is lost.
+        // Neither the selector nor its remaining temporary evidence is then
+        // safe to remove as an ordinary abandoned private candidate.
+        self.cleanup_on_drop = false;
+        crate::durability::durable_replace_file(&self.temporary, &self.destination)
+    }
+}
+
+impl Drop for PreparedRelationalRecoverySelector {
+    fn drop(&mut self) {
+        if self.cleanup_on_drop && crate::file_io::remove_file(&self.temporary).is_ok() {
+            let _ = crate::durability::sync_directory(
+                self.temporary
+                    .parent()
+                    .expect("recovery selector has a parent"),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod selector_tests {
+    use super::*;
+    use crate::file_io as fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn directory() -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "hawdb-private-selector-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn private_selector_cancel_preserves_latest_and_immutable_bytes() {
+        let directory = directory();
+        let immutable = directory.join("generation.manifest.hawdb");
+        let latest = directory.join("latest.manifest.hawdb");
+        fs::write(&immutable, b"new complete generation").unwrap();
+        fs::write(&latest, b"old selected generation").unwrap();
+        let selector =
+            PreparedRelationalRecoverySelector::prepare(&immutable, latest.clone()).unwrap();
+        let temporary = selector.temporary.clone();
+        assert_eq!(fs::read(&latest).unwrap(), b"old selected generation");
+        assert_eq!(fs::read(&temporary).unwrap(), b"new complete generation");
+        drop(selector);
+        assert!(!temporary.exists());
+        assert_eq!(fs::read(&latest).unwrap(), b"old selected generation");
+        assert_eq!(fs::read(&immutable).unwrap(), b"new complete generation");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn private_selector_does_not_remove_an_unowned_temporary() {
+        let directory = directory();
+        let immutable = directory.join("generation.manifest.hawdb");
+        let temporary = immutable.with_extension("hawdb.select.tmp");
+        let latest = directory.join("latest.manifest.hawdb");
+        fs::write(&immutable, b"new complete generation").unwrap();
+        fs::write(&temporary, b"unowned recovery evidence").unwrap();
+        fs::write(&latest, b"old selected generation").unwrap();
+        assert!(PreparedRelationalRecoverySelector::prepare(&immutable, latest.clone()).is_err());
+        assert_eq!(fs::read(&temporary).unwrap(), b"unowned recovery evidence");
+        assert_eq!(fs::read(&latest).unwrap(), b"old selected generation");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn private_selector_publication_failure_retains_complete_evidence() {
+        let directory = directory();
+        let immutable = directory.join("generation.manifest.hawdb");
+        let latest = directory.join("latest.manifest.hawdb");
+        fs::write(&immutable, b"new complete generation").unwrap();
+        fs::create_dir(&latest).unwrap();
+        let mut selector =
+            PreparedRelationalRecoverySelector::prepare(&immutable, latest.clone()).unwrap();
+        let temporary = selector.temporary.clone();
+        assert!(selector.publish().is_err());
+        drop(selector);
+        assert!(latest.is_dir());
+        assert_eq!(fs::read(&temporary).unwrap(), b"new complete generation");
+        assert_eq!(fs::read(&immutable).unwrap(), b"new complete generation");
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
 
 const RECOVERY_SOURCE_DOMAIN: &[u8] = b"HAWDB_RELATIONAL_RECOVERY_SOURCE_V1\0";
 pub(crate) const RELATIONAL_RECOVERY_SOURCE_BYTES: usize = 56;

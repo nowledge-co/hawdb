@@ -213,6 +213,7 @@ pub enum RelationalRowDeltaPublicationPhase {
     CandidateRunsDurable,
     CandidateManifestDurable,
     BaseRevalidated,
+    PrivateManifestPrepared,
     LatestManifestPublished,
 }
 

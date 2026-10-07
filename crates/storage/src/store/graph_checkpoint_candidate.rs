@@ -70,6 +70,7 @@ pub struct CheckpointCandidate {
     branch_root: Option<PreparedCheckpointBranchRoot>,
     owns_branch_wal: bool,
     recovery_source: Option<RelationalRecoverySourceBuilder>,
+    recovery_selectors: [Option<crate::relational::PreparedRelationalRecoverySelector>; 2],
     replay_finalized: bool,
     failed: bool,
     retain_artifacts: bool,
@@ -250,6 +251,7 @@ impl GraphStore {
                 prepared.source_next_lsn,
             )),
             replay_finalized: false,
+            recovery_selectors: [None, None],
             store: Some(self.checkpoint_source()),
             catalog: Some(catalog.clone()),
             prepared: Some(prepared),
@@ -407,6 +409,15 @@ impl GraphStore {
         // any of these publications become uncertain.
         candidate.retain_artifacts = true;
         let publication: Result<()> = (|| {
+            for selector in candidate.recovery_selectors.iter_mut().flatten() {
+                selector.publish().map_err(|error| {
+                    HawDBError::Storage(format!("publish checkpoint recovery selector: {error}"))
+                })?;
+            }
+            if let Some(report) = next.relational_row_pages.recovery_report.as_mut() {
+                report.events[3] =
+                    crate::relational::RelationalRowDeltaPublicationPhase::LatestManifestPublished;
+            }
             let durable = next.durable.as_mut().expect("candidate is durable");
             let is_branch = candidate.branch_root.is_some();
             let manifest = durable.checkpoint_manifest(
@@ -528,7 +539,7 @@ impl CheckpointCandidate {
             let next = self.store.as_mut().ok_or_else(|| {
                 HawDBError::Storage("checkpoint candidate has no private runtime".into())
             })?;
-            next.finish_wal_recovery(source, replayed)?;
+            self.recovery_selectors = next.finish_private_wal_recovery(source, replayed)?;
             next.validate_authoritative_relational_index_open()?;
             next.open_relational_row_snapshot_reader()?;
             Ok(())

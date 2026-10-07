@@ -149,6 +149,18 @@ reframes/replays captured WAL intervals, revalidates the final writer identity,
 and selects a legacy manifest or admitted branch head. It preserves current
 conflict history, consumer acknowledgments and shared fatal-state ownership.
 The strict ordinary prepared-checkpoint path retains its stale-source guard.
+Private suffix finalization builds immutable row/index recovery generations
+and mounts them by their exact generation and WAL fence. It does not replace
+the shared recovery selectors used by ordinary opens. It prepares exclusively
+owned selector hard links in the same directory, then selects them only inside
+the authoritative publication attempt. Cancellation removes owned unselected
+links and preserves existing selectors; an uncertain publication retains the
+immutable closure and fails the live writer closed. This relies on same-volume
+hard links and the existing rename/directory synchronization assumptions.
+The ordinary recovery publication and reader paths remain independently usable.
+This selector boundary does not bound final replay, reader construction, total
+memory/disk retention, or the final foreground pause.
+
 Focused regressions cover multiple catch-up passes, writes after a capture,
 historical snapshots, both durability policies, legacy residency modes,
 mixed graph/relational branch recovery, subsequent sealing/forking, missing

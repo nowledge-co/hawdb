@@ -57,6 +57,7 @@ pub use compaction::{
     RelationalRowPageCompactionConfig, RelationalRowPageCompactionReport,
 };
 pub use constraints::RelationalConstraintIndex;
+pub(crate) use index_shadow::relational_index_recovery_manifest_generation_file;
 pub use index_shadow::{
     relational_index_recovery_delta_file, relational_index_shadow_artifact_file,
     relational_index_shadow_manifest_generation_file, RelationalIndexArtifactMetadata,
@@ -99,7 +100,7 @@ pub use overflow::{
     DEFAULT_RELATIONAL_OVERFLOW_REFERENCE_SPILL_BYTES, DEFAULT_RELATIONAL_OVERFLOW_THRESHOLD_BYTES,
     RELATIONAL_OVERFLOW_MANIFEST_FILE,
 };
-pub(crate) use recovery::RELATIONAL_RECOVERY_SOURCE_BYTES;
+pub(crate) use recovery::{PreparedRelationalRecoverySelector, RELATIONAL_RECOVERY_SOURCE_BYTES};
 pub use recovery::{
     RelationalRecoveryFence, RelationalRecoverySourceBuilder, RelationalRecoverySourceIdentity,
 };

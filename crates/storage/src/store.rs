@@ -8809,6 +8809,418 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_candidate_private_recovery_keeps_existing_selectors_until_publication() {
+        use crate::config::RelationalIndexMode;
+        use crate::relational::{
+            RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE, RELATIONAL_ROW_DELTA_MANIFEST_FILE,
+        };
+
+        let path = unique_test_dir("checkpoint_candidate_private_selectors");
+        let replay = WalReplayConfig {
+            relational_index_mode: RelationalIndexMode::Shadow,
+            ..WalReplayConfig::default()
+        };
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            replay,
+        )
+        .unwrap();
+        let row = |id: usize| {
+            RelationalRow::new(vec![
+                RelationalValue::Text(id.to_string()),
+                RelationalValue::Text(format!("complete row {id}: 雪")),
+            ])
+        };
+        let insert = |id| RelationalTransaction {
+            writes: vec![RelationalWrite::Insert {
+                table: "documents".into(),
+                mode: RelationalInsertMode::Error,
+                rows: vec![row(id)],
+            }],
+        };
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![
+                        RelationalWrite::CreateTable(RelationalTableSchema {
+                            name: "documents".into(),
+                            columns: ["id", "body"]
+                                .into_iter()
+                                .map(|name| RelationalColumnSchema {
+                                    name: name.into(),
+                                    scalar_type: RelationalScalarType::Text,
+                                    nullable: false,
+                                    default: None,
+                                })
+                                .collect(),
+                            primary_key: vec!["id".into()],
+                            unique_constraints: Vec::new(),
+                            foreign_keys: Vec::new(),
+                            indexes: Vec::new(),
+                        }),
+                        insert(0).writes.pop().unwrap(),
+                    ],
+                },
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        store
+            .commit_relational_transaction(&mut catalog, insert(1))
+            .unwrap();
+        drop(store);
+        // Ordinary writable recovery establishes exact source selectors before
+        // any private future generation exists.
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            replay,
+        )
+        .unwrap();
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        store
+            .commit_relational_transaction(&mut catalog, insert(2))
+            .unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(7))]))
+            .unwrap();
+        let before_manifest = fs::read(path.join(MANIFEST_FILE)).unwrap();
+        let before_wal = fs::read(active_wal_path(&path)).unwrap();
+        let selectors = [
+            RELATIONAL_ROW_DELTA_MANIFEST_FILE,
+            RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE,
+        ]
+        .map(|name| (name, fs::read(path.join(name)).unwrap()));
+        let captured = store.checkpoint_source();
+        candidate.catch_up(&captured).unwrap();
+        drop(captured);
+        candidate.finish_catch_up().unwrap();
+        assert_eq!(fs::read(path.join(MANIFEST_FILE)).unwrap(), before_manifest);
+        assert_eq!(fs::read(active_wal_path(&path)).unwrap(), before_wal);
+        for (name, expected) in selectors {
+            assert_eq!(
+                fs::read(path.join(name)).unwrap(),
+                expected,
+                "private {name}"
+            );
+        }
+        drop(candidate);
+        let expected = (0..3).map(row).collect::<Vec<_>>();
+        assert_eq!(
+            store
+                .relational_state()
+                .rows("documents")
+                .map(|(_, row)| row.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        drop(store);
+        let recovered = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            replay,
+        )
+        .unwrap();
+        assert_eq!(
+            recovered
+                .relational_state()
+                .rows("documents")
+                .map(|(_, row)| row.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        drop(recovered);
+        let read_only = GraphStore::open_read_only_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            DurabilityPolicy::default(),
+            replay,
+        )
+        .unwrap();
+        assert_eq!(
+            read_only
+                .relational_state()
+                .rows("documents")
+                .map(|(_, row)| row.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        drop(read_only);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    fn private_checkpoint_recovery_publication(
+        mode: crate::config::RelationalIndexMode,
+        durability: DurabilityPolicy,
+        uncertain: bool,
+    ) {
+        use crate::relational::{
+            RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE, RELATIONAL_ROW_DELTA_MANIFEST_FILE,
+        };
+
+        let path = unique_test_dir(&format!(
+            "checkpoint_candidate_private_publish_{mode:?}_{durability:?}_{uncertain}"
+        ));
+        let replay = WalReplayConfig {
+            relational_index_mode: mode,
+            residency_mode: StorageResidencyMode::OutOfCore,
+            ..WalReplayConfig::default()
+        };
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            durability,
+            WalReplayConfig {
+                // Authoritative opens require a pre-existing canonical index
+                // binding. Bootstrap it through the supported shadow path.
+                relational_index_mode: crate::config::RelationalIndexMode::Shadow,
+                ..replay
+            },
+        )
+        .unwrap();
+        let row = |id: usize| {
+            RelationalRow::new(vec![
+                RelationalValue::Text(id.to_string()),
+                RelationalValue::Text(format!("complete row {id}: 雪")),
+            ])
+        };
+        let insert = |id| RelationalTransaction {
+            writes: vec![RelationalWrite::Insert {
+                table: "documents".into(),
+                mode: RelationalInsertMode::Error,
+                rows: vec![row(id)],
+            }],
+        };
+        store
+            .commit_relational_transaction(
+                &mut catalog,
+                RelationalTransaction {
+                    writes: vec![
+                        RelationalWrite::CreateTable(RelationalTableSchema {
+                            name: "documents".into(),
+                            columns: ["id", "body"]
+                                .into_iter()
+                                .map(|name| RelationalColumnSchema {
+                                    name: name.into(),
+                                    scalar_type: RelationalScalarType::Text,
+                                    nullable: false,
+                                    default: None,
+                                })
+                                .collect(),
+                            primary_key: vec!["id".into()],
+                            unique_constraints: Vec::new(),
+                            foreign_keys: Vec::new(),
+                            indexes: Vec::new(),
+                        }),
+                        insert(0).writes.pop().unwrap(),
+                    ],
+                },
+            )
+            .unwrap();
+        store.checkpoint(&catalog).unwrap();
+        store
+            .commit_relational_transaction(&mut catalog, insert(1))
+            .unwrap();
+        drop(store);
+        // Ordinary writable recovery establishes exact source selectors before
+        // any private future generation exists.
+        let mut store = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            durability,
+            replay,
+        )
+        .unwrap();
+        let source = store.checkpoint_source();
+        let mut candidate = source
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        drop(source);
+        store
+            .commit_relational_transaction(&mut catalog, insert(2))
+            .unwrap();
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(7))]))
+            .unwrap();
+        let before_manifest = fs::read(path.join(MANIFEST_FILE)).unwrap();
+        let before_wal = fs::read(active_wal_path(&path)).unwrap();
+        let selectors = [
+            RELATIONAL_ROW_DELTA_MANIFEST_FILE,
+            RELATIONAL_INDEX_RECOVERY_MANIFEST_FILE,
+        ]
+        .map(|name| (name, fs::read(path.join(name)).unwrap()));
+        let captured = store.checkpoint_source();
+        candidate.catch_up(&captured).unwrap();
+        drop(captured);
+        candidate.finish_catch_up().unwrap();
+        assert_eq!(fs::read(path.join(MANIFEST_FILE)).unwrap(), before_manifest);
+        assert_eq!(fs::read(active_wal_path(&path)).unwrap(), before_wal);
+        for (name, expected) in selectors {
+            assert_eq!(
+                fs::read(path.join(name)).unwrap(),
+                expected,
+                "private {name}"
+            );
+        }
+        let epoch = store.commit_epoch();
+        let generation = store
+            .durable
+            .as_ref()
+            .unwrap()
+            .next_checkpoint_generation()
+            .unwrap();
+        let private_wal = path.join(super::wal_generation_file(generation));
+        if uncertain {
+            super::set_checkpoint_failpoint(Some(super::CheckpointPublishStage::ManifestPublished));
+        }
+        let published =
+            store.publish_checkpoint_candidate_deferred_reclamation(&mut candidate, None);
+        super::set_checkpoint_failpoint(None);
+        if uncertain {
+            assert!(matches!(published, Err(HawDBError::StorageIntegrity(_))));
+            assert!(store.ensure_usable().is_err());
+        } else {
+            published.unwrap();
+            assert_eq!(store.commit_epoch(), epoch);
+            assert_private_checkpoint_recovery_rows(&store, epoch, &row);
+        }
+        drop(candidate);
+        assert!(private_wal.exists());
+        assert!(path
+            .join(super::checkpoint_generation_file(generation))
+            .exists());
+        drop(store);
+        // Read-only recovery must work immediately, without a writable open
+        // publishing replacement derived selectors first.
+        let read_only = GraphStore::open_read_only_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            durability,
+            replay,
+        )
+        .unwrap();
+        assert_private_checkpoint_recovery_rows(&read_only, epoch, &row);
+        drop(read_only);
+        let recovered = GraphStore::open_with_durability_and_replay_config(
+            &path,
+            &mut catalog,
+            durability,
+            replay,
+        )
+        .unwrap();
+        assert_private_checkpoint_recovery_rows(&recovered, epoch, &row);
+        drop(recovered);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    fn assert_private_checkpoint_recovery_rows(
+        store: &GraphStore,
+        epoch: u64,
+        row: &impl Fn(usize) -> RelationalRow,
+    ) {
+        use crate::relational::{
+            RelationalHydrationBudget, RelationalKey, RelationalRowPageSnapshotReadLimits,
+        };
+        assert_eq!(store.commit_epoch(), epoch);
+        assert_eq!(store.node_count_for_label(None), 1);
+        assert_eq!(
+            store
+                .node_owned(NodeId(0))
+                .unwrap()
+                .unwrap()
+                .properties
+                .get("id"),
+            Some(&Value::Int(7))
+        );
+        store
+            .validate_authoritative_relational_index_open()
+            .unwrap();
+        let reader = store
+            .open_relational_row_snapshot_reader()
+            .unwrap()
+            .unwrap();
+        let mut hydration = RelationalHydrationBudget::default();
+        for id in 0..3 {
+            let (actual, report) = reader
+                .point_projected(
+                    "documents",
+                    &RelationalKey(vec![RelationalValue::Text(id.to_string())]),
+                    &[0, 1],
+                    RelationalRowPageSnapshotReadLimits::default(),
+                    &mut hydration,
+                    &hawdb_core::RuntimeTaskContext::default(),
+                )
+                .unwrap();
+            let actual = actual
+                .unwrap()
+                .fields
+                .into_iter()
+                .map(|field| field.value)
+                .collect::<Vec<_>>();
+            assert_eq!(actual.as_slice(), row(id).values());
+            assert_eq!(report.identity.visible_commit_epoch, epoch);
+            let key = RelationalKey(vec![RelationalValue::Text(id.to_string())]);
+            let mut postings = Vec::new();
+            store
+                .visit_relational_index_read_view_prefix(
+                    "documents",
+                    crate::relational::RELATIONAL_PRIMARY_INDEX_NAME,
+                    &key,
+                    crate::relational::RelationalIndexReadLimits::default(),
+                    |posting| {
+                        postings.push(posting.clone());
+                        true
+                    },
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(postings, vec![key]);
+        }
+    }
+
+    #[test]
+    fn checkpoint_candidate_private_recovery_publishes_complete_selectors() {
+        for mode in [
+            crate::config::RelationalIndexMode::Shadow,
+            crate::config::RelationalIndexMode::Authoritative,
+        ] {
+            for durability in [
+                DurabilityPolicy::SyncOnEveryWrite,
+                DurabilityPolicy::SyncOnCheckpoint,
+            ] {
+                private_checkpoint_recovery_publication(mode, durability, false);
+            }
+        }
+    }
+
+    #[test]
+    fn checkpoint_candidate_private_recovery_uncertain_publication_retains_recovery() {
+        for mode in [
+            crate::config::RelationalIndexMode::Shadow,
+            crate::config::RelationalIndexMode::Authoritative,
+        ] {
+            for durability in [
+                DurabilityPolicy::SyncOnEveryWrite,
+                DurabilityPolicy::SyncOnCheckpoint,
+            ] {
+                private_checkpoint_recovery_publication(mode, durability, true);
+            }
+        }
+    }
+
+    #[test]
     fn checkpoint_candidate_advances_across_captured_suffixes_without_rebuilding() {
         for residency in [
             StorageResidencyMode::Auto,

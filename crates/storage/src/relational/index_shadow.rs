@@ -59,6 +59,7 @@ pub use demand_read::{
     DEFAULT_RELATIONAL_INDEX_READ_PAGES, DEFAULT_RELATIONAL_INDEX_READ_ROWS,
     DEFAULT_RELATIONAL_INDEX_READ_TREE_HEIGHT,
 };
+pub(crate) use recovery::relational_index_recovery_manifest_generation_file;
 pub use recovery::{
     relational_index_recovery_delta_file, RelationalIndexRecoveryBuilder,
     RelationalIndexRecoveryConfig, RelationalIndexRecoveryManifest,

@@ -350,11 +350,46 @@ impl RelationalRowDeltaBuilder {
     /// Publishes a recovery delta with exact final row counts bound to the
     /// same relational state that produced its captured row changes.
     pub fn finish_with_state(
+        self,
+        expected_visible_commit_epoch: u64,
+        recovery_source: RelationalRecoverySourceIdentity,
+        overflow_root: Option<&RelationalOverflowRootReader>,
+        final_state: &RelationalState,
+    ) -> Result<RelationalRowDeltaReport, RelationalRowDeltaError> {
+        self.finish_with_state_inner(
+            expected_visible_commit_epoch,
+            recovery_source,
+            overflow_root,
+            final_state,
+            true,
+        )
+    }
+
+    /// Completes an immutable recovery generation without selecting it for
+    /// ordinary opens. The checkpoint owner publishes the selector later.
+    pub(crate) fn finish_private_with_state(
+        self,
+        expected_visible_commit_epoch: u64,
+        recovery_source: RelationalRecoverySourceIdentity,
+        overflow_root: Option<&RelationalOverflowRootReader>,
+        final_state: &RelationalState,
+    ) -> Result<RelationalRowDeltaReport, RelationalRowDeltaError> {
+        self.finish_with_state_inner(
+            expected_visible_commit_epoch,
+            recovery_source,
+            overflow_root,
+            final_state,
+            false,
+        )
+    }
+
+    fn finish_with_state_inner(
         mut self,
         expected_visible_commit_epoch: u64,
         recovery_source: RelationalRecoverySourceIdentity,
         overflow_root: Option<&RelationalOverflowRootReader>,
         final_state: &RelationalState,
+        select_latest: bool,
     ) -> Result<RelationalRowDeltaReport, RelationalRowDeltaError> {
         let final_tables = table_metadata_for_state(final_state)?;
         if final_tables.len() != self.tables.len()
@@ -375,20 +410,47 @@ impl RelationalRowDeltaBuilder {
             });
         }
         self.tables = final_tables;
-        self.finish_inner(
-            expected_visible_commit_epoch,
-            recovery_source,
-            overflow_root,
-            None,
-        )
+        if select_latest {
+            self.finish_inner(
+                expected_visible_commit_epoch,
+                recovery_source,
+                overflow_root,
+                None,
+            )
+        } else {
+            self.finish_selected_inner(
+                expected_visible_commit_epoch,
+                recovery_source,
+                overflow_root,
+                None,
+                false,
+            )
+        }
     }
 
     pub(super) fn finish_inner(
+        self,
+        expected_visible_commit_epoch: u64,
+        recovery_source: RelationalRecoverySourceIdentity,
+        overflow_root: Option<&RelationalOverflowRootReader>,
+        stop_after: Option<RelationalRowDeltaPublicationPhase>,
+    ) -> Result<RelationalRowDeltaReport, RelationalRowDeltaError> {
+        self.finish_selected_inner(
+            expected_visible_commit_epoch,
+            recovery_source,
+            overflow_root,
+            stop_after,
+            true,
+        )
+    }
+
+    fn finish_selected_inner(
         mut self,
         expected_visible_commit_epoch: u64,
         recovery_source: RelationalRecoverySourceIdentity,
         overflow_root: Option<&RelationalOverflowRootReader>,
         stop_after: Option<RelationalRowDeltaPublicationPhase>,
+        select_latest: bool,
     ) -> Result<RelationalRowDeltaReport, RelationalRowDeltaError> {
         self.require_available()?;
         if self.visible_commit_epoch != expected_visible_commit_epoch {
@@ -488,11 +550,16 @@ impl RelationalRowDeltaBuilder {
             stop_after,
             RelationalRowDeltaPublicationPhase::BaseRevalidated,
         )?;
-        let latest_tmp = latest.with_extension("hawdb.tmp");
-        remove_if_exists(&latest_tmp)?;
-        write_synced(&latest_tmp, &encoded_manifest)?;
-        durable_replace_file(&latest_tmp, &latest)
-            .map_err(durability("publish latest row delta manifest"))?;
+        let mut events = COMPLETE_PUBLICATION_TRACE;
+        if select_latest {
+            let latest_tmp = latest.with_extension("hawdb.tmp");
+            remove_if_exists(&latest_tmp)?;
+            write_synced(&latest_tmp, &encoded_manifest)?;
+            durable_replace_file(&latest_tmp, &latest)
+                .map_err(durability("publish latest row delta manifest"))?;
+        } else {
+            events[3] = RelationalRowDeltaPublicationPhase::PrivateManifestPrepared;
+        }
 
         Ok(RelationalRowDeltaReport {
             generation: manifest.generation(),
@@ -505,7 +572,7 @@ impl RelationalRowDeltaBuilder {
             replayed_batches: self.replayed_batches,
             peak_dirty_entries: self.peak_dirty_entries,
             peak_dirty_bytes: self.peak_dirty_bytes,
-            events: COMPLETE_PUBLICATION_TRACE,
+            events,
         })
     }
 
