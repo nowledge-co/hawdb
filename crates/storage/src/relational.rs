@@ -29,6 +29,7 @@ mod codec;
 mod compaction;
 mod constraints;
 mod index_shadow;
+pub(crate) use index_shadow::{IndexReadAdmission, IndexReadCharge, IndexReadObserver};
 mod ordered_key;
 pub(crate) mod overflow;
 mod recovery;
@@ -113,6 +114,7 @@ pub use row_page::{
     RelationalRowDeltaReport, RelationalRowDeltaTableMetadata, RelationalRowLiveUnavailable,
     RelationalRowPageArtifactMetadata, RelationalRowPageBootstrap,
     RelationalRowPageBootstrapReport, RelationalRowPageCheckpointError,
+    RelationalRowPageCumulativeReadRemaining, RelationalRowPageCumulativeReadReport,
     RelationalRowPageDemandReadError, RelationalRowPageDemandReadLimits,
     RelationalRowPageDemandReadReport, RelationalRowPageDemandReader, RelationalRowPageEntry,
     RelationalRowPageError, RelationalRowPageGenerationArtifacts,

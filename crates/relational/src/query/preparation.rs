@@ -12,20 +12,91 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(test)]
+use super::RelationalJoinPlanningContext;
 use super::{
     choose_base_access, choose_join_access, elapsed_nanos, measure_nanos,
     plan_relational_field_plan, projection_access_planning, projection_contains_aggregate,
     reject_non_public_schema, resolve_relational_order_target,
     validate_non_aggregate_coalesce_projections, HawDBError, Instant, PreparedRelationalAccessPlan,
     PreparedRelationalExecutionDescriptor, PreparedRelationalSelect,
-    RelationalAccessPathDescriptor, RelationalBaseAccessPlanning, RelationalJoinPlanningContext,
-    RelationalQueryLimits, RelationalQueryReadModes, RelationalQueryStoreReader,
+    RelationalAccessPathDescriptor, RelationalBaseAccessPlanning, RelationalQueryLimits,
+    RelationalQueryReadModes, RelationalQueryResourceContext, RelationalQueryStoreReader,
     RelationalSqlStageTimings, RelationalState, Result, SelectStatement, Value,
 };
 pub(super) use crate::field_plan::resolved_access_order_by;
+use crate::row_runtime::{map_snapshot_error, RelationalRowReadMode};
+use hawdb_core::RuntimeTaskContext;
+use hawdb_expression::BindingId;
+use hawdb_optimizer::{RelationalAccessCostContext, RelationalJoinCostContexts};
+use hawdb_storage::relational::RelationalRowPageSnapshotReader;
+use std::num::NonZeroU64;
 
+pub(super) struct RelationalQueryPlanningSnapshot {
+    pub(super) reader: Option<RelationalRowPageSnapshotReader>,
+    pub(super) cost_contexts: RelationalJoinCostContexts,
+    pub(super) index_context: crate::index_runtime::RelationalIndexRuntimeContext,
+}
+
+struct RelationalQueryRowPlanningSnapshot {
+    reader: Option<RelationalRowPageSnapshotReader>,
+    cost_contexts: RelationalJoinCostContexts,
+}
+
+impl RelationalQueryRowPlanningSnapshot {
+    fn open(
+        select: &SelectStatement,
+        state: &RelationalState,
+        row_mode: RelationalRowReadMode<'_, impl RelationalQueryStoreReader>,
+        task: &RuntimeTaskContext,
+    ) -> Result<Self> {
+        hawdb_executor::pipeline::runtime_checkpoint(Some(task))?;
+        let reader = row_mode.open_snapshot_reader()?;
+        let mut cost_contexts = RelationalJoinCostContexts::default();
+        if let Some(reader) = &reader {
+            for (index, table) in std::iter::once(&select.from_table().name)
+                .chain(select.joins.iter().map(|join| &join.table.name))
+                .enumerate()
+            {
+                let binding = BindingId::new(u32::try_from(index).map_err(|_| {
+                    HawDBError::Execution("relational planning exceeds the binding-id range".into())
+                })?);
+                if row_mode.is_projection_table(table) {
+                    continue;
+                }
+                let Some(root) = reader
+                    .checkpoint_table_root(table, task)
+                    .map_err(map_snapshot_error)?
+                else {
+                    continue;
+                };
+                if state.table_schema(table) != Some(&root.schema)
+                    || u64::try_from(state.row_count(table)).ok() != Some(root.row_count)
+                {
+                    continue;
+                }
+                if let (Some(rows), Some(pages)) = (
+                    NonZeroU64::new(root.row_count),
+                    NonZeroU64::new(root.page_count),
+                ) {
+                    cost_contexts = cost_contexts.with_relation(
+                        binding,
+                        RelationalAccessCostContext::for_snapshot_rows(rows, pages),
+                    );
+                }
+            }
+        }
+        hawdb_executor::pipeline::runtime_checkpoint(Some(task))?;
+        Ok(Self {
+            reader,
+            cost_contexts,
+        })
+    }
+}
+
+#[cfg(test)]
 pub(super) fn prepare_relational_select(
-    mut select: SelectStatement,
+    select: SelectStatement,
     parameters: &[Value],
     state: &RelationalState,
     read_modes: RelationalQueryReadModes<'_, impl RelationalQueryStoreReader>,
@@ -33,6 +104,33 @@ pub(super) fn prepare_relational_select(
     join_planning: RelationalJoinPlanningContext,
     initial_stage_timings: RelationalSqlStageTimings,
 ) -> Result<PreparedRelationalSelect> {
+    let execution_memory = hawdb_executor::ExecutionMemoryConfig::default();
+    let (prepared, _) = prepare_relational_select_with_snapshot(
+        select,
+        parameters,
+        state,
+        read_modes,
+        RelationalQueryResourceContext {
+            join_planning,
+            limits,
+            execution_memory: &execution_memory,
+            task_context: None,
+        },
+        initial_stage_timings,
+    )?;
+    Ok(prepared)
+}
+
+pub(super) fn prepare_relational_select_with_snapshot(
+    mut select: SelectStatement,
+    parameters: &[Value],
+    state: &RelationalState,
+    read_modes: RelationalQueryReadModes<'_, impl RelationalQueryStoreReader>,
+    resources: RelationalQueryResourceContext<'_>,
+    initial_stage_timings: RelationalSqlStageTimings,
+) -> Result<(PreparedRelationalSelect, RelationalQueryPlanningSnapshot)> {
+    let limits = resources.limits;
+    let join_planning = resources.join_planning;
     let prepare_started = Instant::now();
     let mut current_state_bind_nanos = 0;
     measure_nanos(&mut current_state_bind_nanos, || -> Result<()> {
@@ -60,6 +158,24 @@ pub(super) fn prepare_relational_select(
         }
         Ok(())
     })?;
+    let default_task = RuntimeTaskContext::default();
+    let snapshot = RelationalQueryRowPlanningSnapshot::open(
+        &select,
+        state,
+        read_modes.row,
+        resources.task_context.unwrap_or(&default_task),
+    )?;
+    let index_runtime = crate::index_runtime::RelationalIndexRuntime::with_context(
+        read_modes.index,
+        limits.index_read,
+        crate::index_runtime::RelationalIndexRuntimeContext::new(
+            limits.index_read,
+            resources.task_context.unwrap_or(&default_task).clone(),
+        ),
+    );
+    let read_modes = read_modes
+        .with_cost_contexts(&snapshot.cost_contexts)
+        .with_index_runtime(&index_runtime);
     let planned = join_order::plan_select_join_order(
         select,
         parameters,
@@ -76,8 +192,17 @@ pub(super) fn prepare_relational_select(
         }
     };
     let field_plan = plan_relational_field_plan(&planned.statement, state)?;
-    access_plan.finalize_physical_join_plan(&planned.statement, state, read_modes.index)?;
-    access_plan.apply_physical_index_coverage(state, &field_plan)?;
+    access_plan.finalize_physical_join_plan_with_cost_contexts(
+        &planned.statement,
+        state,
+        read_modes.index,
+        &snapshot.cost_contexts,
+    )?;
+    access_plan.apply_physical_index_coverage_with_cost_contexts(
+        state,
+        &field_plan,
+        &snapshot.cost_contexts,
+    )?;
     let execution =
         PreparedRelationalExecutionDescriptor::prepare(&planned.statement, &access_plan)?;
     let prepare_nanos = elapsed_nanos(prepare_started);
@@ -95,8 +220,15 @@ pub(super) fn prepare_relational_select(
             execute_nanos: 0,
         },
     };
-    prepared.validate()?;
-    Ok(prepared)
+    prepared.validate_with_cost_contexts(&snapshot.cost_contexts)?;
+    Ok((
+        prepared,
+        RelationalQueryPlanningSnapshot {
+            reader: snapshot.reader,
+            cost_contexts: snapshot.cost_contexts,
+            index_context: index_runtime.into_context(),
+        },
+    ))
 }
 
 pub(super) fn prepare_syntax_access_plan(
@@ -125,7 +257,9 @@ pub(super) fn prepare_syntax_access_plan(
     let access_order_by = resolved_access_order_by(select)?;
     let fields = plan_relational_field_plan(select, state)?;
     let base_access = choose_base_access(RelationalBaseAccessPlanning {
+        cost_context: read_modes.cost_context(BindingId::new(0)),
         index_read_mode: read_modes.index,
+        index_runtime: read_modes.index_runtime,
         fields: &fields,
         predicate: select.selection.as_ref(),
         order_by: &access_order_by,
@@ -141,7 +275,8 @@ pub(super) fn prepare_syntax_access_plan(
     let join_accesses = select
         .joins
         .iter()
-        .map(|join| {
+        .enumerate()
+        .map(|(index, join)| {
             let join_schema = state.table_schema(&join.table.name).ok_or_else(|| {
                 HawDBError::Semantic(format!("unknown relational table {}", join.table.name))
             })?;
@@ -158,6 +293,13 @@ pub(super) fn prepare_syntax_access_plan(
                 read_modes.index,
                 projection_access_planning(read_modes.row, &join.table.name),
                 &fields,
+                read_modes.cost_context(BindingId::new(
+                    u32::try_from(index.saturating_add(1)).map_err(|_| {
+                        HawDBError::Execution(
+                            "relational planning exceeds the binding-id range".into(),
+                        )
+                    })?,
+                )),
             )
         })
         .collect::<Result<Vec<_>>>()?;

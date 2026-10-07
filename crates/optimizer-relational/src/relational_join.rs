@@ -314,8 +314,27 @@ pub fn enumerate_relational_inner_joins(
     required_properties: &RequiredProperties,
     config: RelationalJoinEnumerationConfig,
 ) -> Result<RelationalInnerJoinEnumeration, RelationalJoinEnumerationError> {
+    enumerate_relational_inner_joins_with_cost_contexts(
+        graph,
+        required_properties,
+        config,
+        &crate::RelationalJoinCostContexts::default(),
+    )
+}
+
+pub fn enumerate_relational_inner_joins_with_cost_contexts(
+    graph: &RelationalJoinGraph,
+    required_properties: &RequiredProperties,
+    config: RelationalJoinEnumerationConfig,
+    cost_contexts: &crate::RelationalJoinCostContexts,
+) -> Result<RelationalInnerJoinEnumeration, RelationalJoinEnumerationError> {
     validate_graph(graph)?;
-    crate::relational_join_hypergraph::enumerate_inner_graph(graph, required_properties, config)
+    crate::relational_join_hypergraph::enumerate_inner_graph(
+        graph,
+        required_properties,
+        config,
+        cost_contexts,
+    )
 }
 
 fn validate_graph(graph: &RelationalJoinGraph) -> Result<(), RelationalJoinEnumerationError> {

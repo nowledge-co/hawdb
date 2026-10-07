@@ -31,15 +31,16 @@ use hawdb_expression::{
     BindingId, BindingSet, BoundPredicate, BoundScalarExpression, ScalarNullability,
 };
 use hawdb_optimizer::{
-    enumerate_relational_csg_cmp_joins_with_implementations, enumerate_relational_inner_joins,
-    enumerate_relational_join_rewrites, RelationalAccessPathDescriptor, RelationalAccessPathKind,
-    RelationalCsgCmpPlan, RelationalCsgCmpPlanNode, RelationalCsgCmpRightInputPolicy,
-    RelationalJoinAccessPath, RelationalJoinEnumerationConfig, RelationalJoinEnumerationError,
-    RelationalJoinGraph, RelationalJoinOperator, RelationalJoinOperatorId,
-    RelationalJoinOperatorKind, RelationalJoinPlanningDirective, RelationalJoinPredicate,
-    RelationalJoinPredicateId, RelationalJoinRelation, RelationalJoinRewriteError,
-    RelationalJoinRewritePlan, RelationalJoinRewriteProblem, RelationalJoinTree,
-    RequiredProperties,
+    enumerate_relational_csg_cmp_joins_with_cost_contexts,
+    enumerate_relational_inner_joins_with_cost_contexts,
+    enumerate_relational_join_rewrites_with_cost_contexts, RelationalAccessPathDescriptor,
+    RelationalAccessPathKind, RelationalCsgCmpPlan, RelationalCsgCmpPlanNode,
+    RelationalCsgCmpRightInputPolicy, RelationalJoinAccessPath, RelationalJoinCostContexts,
+    RelationalJoinEnumerationConfig, RelationalJoinEnumerationError, RelationalJoinGraph,
+    RelationalJoinOperator, RelationalJoinOperatorId, RelationalJoinOperatorKind,
+    RelationalJoinPlanningDirective, RelationalJoinPredicate, RelationalJoinPredicateId,
+    RelationalJoinRelation, RelationalJoinRewriteError, RelationalJoinRewritePlan,
+    RelationalJoinRewriteProblem, RelationalJoinTree, RequiredProperties,
 };
 use hawdb_optimizer::{
     RelationalJoinPlanningAttempt, RelationalJoinPlanningOutcome, RelationalJoinPlanningReason,
@@ -104,6 +105,8 @@ pub(super) fn plan_select_join_order(
     planning: RelationalJoinPlanningContext,
     binding_nanos: &mut u64,
 ) -> Result<PlannedSelectStatement> {
+    let default_cost_contexts = RelationalJoinCostContexts::default();
+    let cost_contexts = read_modes.cost_contexts.unwrap_or(&default_cost_contexts);
     let config = planning.enumeration;
     let syntax_order = select_relation_order(&select);
     if planning.directive == RelationalJoinPlanningDirective::SyntaxOrder {
@@ -188,12 +191,13 @@ pub(super) fn plan_select_join_order(
                 .iter()
                 .map(|implementation| implementation.optimizer.clone())
                 .collect::<Vec<_>>();
-            enumerate_relational_csg_cmp_joins_with_implementations(
+            enumerate_relational_csg_cmp_joins_with_cost_contexts(
                 problem,
                 &RequiredProperties::default(),
                 config,
                 RelationalCsgCmpRightInputPolicy::AllowMaterialized,
                 &optimizer_implementations,
+                cost_contexts,
             )
             .map(|enumeration| (enumeration, implementations))
         });
@@ -254,7 +258,12 @@ pub(super) fn plan_select_join_order(
                 })
                 .collect(),
         };
-        match enumerate_relational_inner_joins(&graph, &RequiredProperties::default(), config) {
+        match enumerate_relational_inner_joins_with_cost_contexts(
+            &graph,
+            &RequiredProperties::default(),
+            config,
+            cost_contexts,
+        ) {
             Ok(enumeration) => {
                 let selected_bindings = enumeration.plan.binding_order();
                 let syntax_bindings = relations
@@ -303,10 +312,11 @@ pub(super) fn plan_select_join_order(
         );
         return Ok(unchanged(select, outcome));
     };
-    let enumeration = match enumerate_relational_join_rewrites(
+    let enumeration = match enumerate_relational_join_rewrites_with_cost_contexts(
         &problem,
         &RequiredProperties::default(),
         config,
+        cost_contexts,
     ) {
         Ok(enumeration) => enumeration,
         Err(error) => {
@@ -562,7 +572,9 @@ fn build_graph_relation(
     fields: &RelationalFieldPlan,
 ) -> Result<Option<PreparedGraphRelation>> {
     let base = choose_base_access(RelationalBaseAccessPlanning {
+        cost_context: read_modes.cost_context(relation.binding),
         index_read_mode: read_modes.index,
+        index_runtime: read_modes.index_runtime,
         fields,
         predicate: select.selection.as_ref(),
         order_by: &[],
@@ -639,6 +651,7 @@ fn build_graph_relation(
             read_modes.index,
             projection_access_planning(read_modes.row, &relation.table.name),
             fields,
+            read_modes.cost_context(relation.binding),
         )?;
         if candidate.descriptor.kind == RelationalAccessPathKind::FullScan {
             continue;

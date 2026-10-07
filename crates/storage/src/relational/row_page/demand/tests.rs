@@ -34,6 +34,9 @@ use std::sync::Arc;
 static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const PAGE_BYTES: usize = 4096;
 
+#[path = "tests/admission.rs"]
+mod admission;
+
 #[test]
 fn descriptor_exhaustion_preserves_demand_reader_for_retry() {
     use crate::file_descriptors::ProjectFileDescriptors;
@@ -373,6 +376,7 @@ fn lending_range_keeps_base_rows_borrowed_and_overlay_rows_owned() {
         .reader
         .visit_projected_range_with_overlay_ref(
             RelationalRowPageOverlayRead {
+                owned_callback: false,
                 range: projected_range(Bound::Unbounded, Bound::Unbounded, &requested),
                 limits: RelationalRowPageDemandReadLimits::default(),
                 overlay: RelationalRowPageOverlayRange {
@@ -422,6 +426,7 @@ fn lending_range_keeps_base_rows_borrowed_and_overlay_rows_owned() {
         .reader
         .visit_projected_range_with_overlay_ref(
             RelationalRowPageOverlayRead {
+                owned_callback: false,
                 range: projected_range(Bound::Unbounded, Bound::Unbounded, &requested),
                 limits: RelationalRowPageDemandReadLimits::default(),
                 overlay: RelationalRowPageOverlayRange {

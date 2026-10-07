@@ -30,10 +30,11 @@ use hawdb_optimizer::relational_sargability::{
     predicate_is_covered_by_equalities,
 };
 use hawdb_optimizer::{
-    estimate_relational_access_path_cost, estimate_relational_join_cost, PlanCostBreakdown,
-    RelationalAccessPathDescriptor, RelationalAccessPathKind, RelationalJoinCardinality,
-    RelationalJoinPlanningOutcome, RelationalJoinRightInput, RelationalJoinSelectivity,
-    RelationalOperatorCardinalityProfile, RelationalOperatorId, RelationalOperatorKind,
+    estimate_relational_access_path_cost_with_context, estimate_relational_join_cost_with_contexts,
+    PlanCostBreakdown, RelationalAccessPathDescriptor, RelationalAccessPathKind,
+    RelationalJoinCardinality, RelationalJoinCostContexts, RelationalJoinPlanningOutcome,
+    RelationalJoinRightInput, RelationalJoinSelectivity, RelationalOperatorCardinalityProfile,
+    RelationalOperatorId, RelationalOperatorKind,
 };
 use hawdb_sql::{
     RelationalSqlStageTimings, SelectStatement, SqlColumnRef, SqlJoinKind, SqlPredicate,
@@ -268,12 +269,14 @@ pub struct RelationalPhysicalJoinSpec {
 impl RelationalPhysicalJoinNode {
     fn visit_costs(
         &self,
+        cost_contexts: &RelationalJoinCostContexts,
         visit: &mut impl FnMut(&Self, PlanCostBreakdown) -> Result<()>,
     ) -> Result<PlanCostBreakdown> {
         let cost = match self {
-            Self::Relation(relation) => {
-                estimate_relational_access_path_cost(relation.access.descriptor())
-            }
+            Self::Relation(relation) => estimate_relational_access_path_cost_with_context(
+                relation.access.descriptor(),
+                cost_contexts.for_relation(relation.binding),
+            ),
             Self::Join {
                 kind,
                 algorithm,
@@ -281,9 +284,9 @@ impl RelationalPhysicalJoinNode {
                 left,
                 right,
                 ..
-            } => estimate_relational_join_cost(
-                left.visit_costs(visit)?,
-                right.visit_costs(visit)?,
+            } => estimate_relational_join_cost_with_contexts(
+                left.visit_costs(cost_contexts, visit)?,
+                right.visit_costs(cost_contexts, visit)?,
                 match kind {
                     SqlJoinKind::Inner => RelationalJoinCardinality::Inner,
                     SqlJoinKind::Left => RelationalJoinCardinality::PreserveLeft,
@@ -300,6 +303,10 @@ impl RelationalPhysicalJoinNode {
                     }
                 },
                 *selectivity,
+                // Hash is validated to have two relation inputs. Other
+                // algorithms do not perform resident locator re-fetches.
+                cost_contexts.for_relation(left.first_relation().binding),
+                cost_contexts.for_relation(right.first_relation().binding),
             ),
         };
         visit(self, cost)?;
@@ -668,8 +675,21 @@ impl RelationalPhysicalJoinPlan {
         state: &RelationalState,
         fields: &RelationalFieldPlan,
     ) -> Result<()> {
+        self.apply_index_coverage_with_cost_contexts(
+            state,
+            fields,
+            &RelationalJoinCostContexts::default(),
+        )
+    }
+
+    pub fn apply_index_coverage_with_cost_contexts(
+        &mut self,
+        state: &RelationalState,
+        fields: &RelationalFieldPlan,
+        cost_contexts: &RelationalJoinCostContexts,
+    ) -> Result<()> {
         self.root.apply_index_coverage(state, fields)?;
-        self.cost_breakdown = self.root.visit_costs(&mut |_, _| Ok(()))?;
+        self.cost_breakdown = self.root.visit_costs(cost_contexts, &mut |_, _| Ok(()))?;
         Ok(())
     }
 }
@@ -867,6 +887,19 @@ impl PreparedRelationalAccessPlan {
         state: &RelationalState,
         fields: &RelationalFieldPlan,
     ) -> Result<()> {
+        self.apply_physical_index_coverage_with_cost_contexts(
+            state,
+            fields,
+            &RelationalJoinCostContexts::default(),
+        )
+    }
+
+    pub fn apply_physical_index_coverage_with_cost_contexts(
+        &mut self,
+        state: &RelationalState,
+        fields: &RelationalFieldPlan,
+        cost_contexts: &RelationalJoinCostContexts,
+    ) -> Result<()> {
         self.physical_join_plan
             .as_mut()
             .ok_or_else(|| {
@@ -874,7 +907,7 @@ impl PreparedRelationalAccessPlan {
                     "cannot apply relational index coverage before physical planning".to_string(),
                 )
             })?
-            .apply_index_coverage(state, fields)
+            .apply_index_coverage_with_cost_contexts(state, fields, cost_contexts)
     }
 
     pub fn finalize_physical_join_plan<R: RelationalIndexStoreReader>(
@@ -882,6 +915,21 @@ impl PreparedRelationalAccessPlan {
         statement: &SelectStatement,
         state: &RelationalState,
         index_read_mode: RelationalIndexReadMode<'_, R>,
+    ) -> Result<()> {
+        self.finalize_physical_join_plan_with_cost_contexts(
+            statement,
+            state,
+            index_read_mode,
+            &RelationalJoinCostContexts::default(),
+        )
+    }
+
+    pub fn finalize_physical_join_plan_with_cost_contexts<R: RelationalIndexStoreReader>(
+        &mut self,
+        statement: &SelectStatement,
+        state: &RelationalState,
+        index_read_mode: RelationalIndexReadMode<'_, R>,
+        cost_contexts: &RelationalJoinCostContexts,
     ) -> Result<()> {
         if self.physical_join_plan.is_some() {
             return Ok(());
@@ -924,13 +972,6 @@ impl PreparedRelationalAccessPlan {
                 &right,
                 &merge_keys,
             );
-            let cost = estimate_relational_join_cost(
-                estimate_relational_access_path_cost(&self.base_access.descriptor),
-                estimate_relational_access_path_cost(&right_access.descriptor),
-                RelationalJoinCardinality::Inner,
-                RelationalJoinRightInput::Merge,
-                selectivity,
-            );
             let root = RelationalPhysicalJoinNode::merge_join(
                 RelationalOperatorId::from_plan_index(1),
                 vec![join.on.clone()],
@@ -939,6 +980,7 @@ impl PreparedRelationalAccessPlan {
                 left,
                 right,
             )?;
+            let cost = root.visit_costs(cost_contexts, &mut |_, _| Ok(()))?;
             self.physical_join_plan = Some(RelationalPhysicalJoinPlan::new(root, cost));
             return Ok(());
         }
@@ -980,16 +1022,6 @@ impl PreparedRelationalAccessPlan {
                 &right,
                 &equi_join_keys,
             );
-            let cost = estimate_relational_join_cost(
-                estimate_relational_access_path_cost(&self.base_access.descriptor),
-                estimate_relational_access_path_cost(&right_access.descriptor),
-                match join.kind {
-                    SqlJoinKind::Inner => RelationalJoinCardinality::Inner,
-                    SqlJoinKind::Left => RelationalJoinCardinality::PreserveLeft,
-                },
-                RelationalJoinRightInput::Hash,
-                selectivity,
-            );
             let root = RelationalPhysicalJoinNode::hash_join(
                 RelationalOperatorId::from_plan_index(1),
                 join.kind,
@@ -999,6 +1031,7 @@ impl PreparedRelationalAccessPlan {
                 left,
                 right,
             )?;
+            let cost = root.visit_costs(cost_contexts, &mut |_, _| Ok(()))?;
             self.physical_join_plan = Some(RelationalPhysicalJoinPlan::new(root, cost));
             return Ok(());
         }
@@ -1014,7 +1047,6 @@ impl PreparedRelationalAccessPlan {
             base_qualifier.to_string(),
             RelationalPhysicalAccess::Base(self.base_access.clone()),
         );
-        let mut cost = estimate_relational_access_path_cost(&self.base_access.descriptor);
         for (index, (join, access)) in statement.joins.iter().zip(&self.join_accesses).enumerate() {
             let binding = if let Some(selection) = selection {
                 *selection.join_bindings.get(index).ok_or_else(|| {
@@ -1045,17 +1077,8 @@ impl PreparedRelationalAccessPlan {
                 root,
                 right,
             )?;
-            cost = estimate_relational_join_cost(
-                cost,
-                estimate_relational_access_path_cost(&access.descriptor),
-                match join.kind {
-                    SqlJoinKind::Inner => RelationalJoinCardinality::Inner,
-                    SqlJoinKind::Left => RelationalJoinCardinality::PreserveLeft,
-                },
-                RelationalJoinRightInput::Probe,
-                RelationalJoinSelectivity::Unknown,
-            );
         }
+        let cost = root.visit_costs(cost_contexts, &mut |_, _| Ok(()))?;
         let cost_breakdown = selection.map_or(cost, |selection| selection.cost_breakdown);
         self.physical_join_plan = Some(RelationalPhysicalJoinPlan::new(root, cost_breakdown));
         Ok(())
@@ -1187,6 +1210,13 @@ pub struct PreparedRelationalSelect {
 
 impl PreparedRelationalSelect {
     pub fn validate(&self) -> Result<()> {
+        self.validate_with_cost_contexts(&RelationalJoinCostContexts::default())
+    }
+
+    pub fn validate_with_cost_contexts(
+        &self,
+        cost_contexts: &RelationalJoinCostContexts,
+    ) -> Result<()> {
         if self.statement.joins.len() != self.access_plan.join_accesses.len() {
             return Err(HawDBError::Execution(format!(
                 "prepared relational SELECT has {} joins but {} join access paths",
@@ -1232,7 +1262,10 @@ impl PreparedRelationalSelect {
         }
         physical_plan.validate()?;
         validate_prepared_physical_join_plan_accesses(&physical_plan.root, true)?;
-        planned_tree_operator_cardinality_profiles(physical_plan)?;
+        planned_tree_operator_cardinality_profiles_with_cost_contexts(
+            physical_plan,
+            cost_contexts,
+        )?;
         if let Some(selection) = &self.access_plan.join_selection {
             if selection.join_bindings.len() != self.statement.joins.len() {
                 return Err(HawDBError::Execution(format!(
@@ -1365,11 +1398,34 @@ pub fn join_access_matches_descriptor(candidate: &RelationalJoinAccessCandidate)
 pub fn planned_operator_cardinality_profiles(
     prepared: &PreparedRelationalSelect,
 ) -> Result<Vec<RelationalOperatorCardinalityProfile>> {
-    planned_tree_operator_cardinality_profiles(prepared.access_plan.physical_join_plan()?)
+    planned_operator_cardinality_profiles_with_cost_contexts(
+        prepared,
+        &RelationalJoinCostContexts::default(),
+    )
+}
+
+pub fn planned_operator_cardinality_profiles_with_cost_contexts(
+    prepared: &PreparedRelationalSelect,
+    cost_contexts: &RelationalJoinCostContexts,
+) -> Result<Vec<RelationalOperatorCardinalityProfile>> {
+    planned_tree_operator_cardinality_profiles_with_cost_contexts(
+        prepared.access_plan.physical_join_plan()?,
+        cost_contexts,
+    )
 }
 
 pub fn planned_tree_operator_cardinality_profiles(
     tree: &RelationalPhysicalJoinPlan,
+) -> Result<Vec<RelationalOperatorCardinalityProfile>> {
+    planned_tree_operator_cardinality_profiles_with_cost_contexts(
+        tree,
+        &RelationalJoinCostContexts::default(),
+    )
+}
+
+pub fn planned_tree_operator_cardinality_profiles_with_cost_contexts(
+    tree: &RelationalPhysicalJoinPlan,
+    cost_contexts: &RelationalJoinCostContexts,
 ) -> Result<Vec<RelationalOperatorCardinalityProfile>> {
     let relation_count = tree.root.relation_count();
     let mut profiles = vec![None; relation_count];
@@ -1387,7 +1443,7 @@ pub fn planned_tree_operator_cardinality_profiles(
         actual_rows: None,
         fully_consumed: false,
     });
-    let cost = tree.root.visit_costs(&mut |node, cost| {
+    let cost = tree.root.visit_costs(cost_contexts, &mut |node, cost| {
         if let RelationalPhysicalJoinNode::Join {
             operator_id,
             kind,

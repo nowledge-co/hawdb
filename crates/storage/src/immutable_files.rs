@@ -199,6 +199,18 @@ impl ImmutableFileHandles {
         binding: &ImmutableFileBinding,
         context: &FileOpenContext,
     ) -> io::Result<Arc<File>> {
+        self.get_admitted(binding, context, |_| Ok(()))
+            .map(|(file, _)| file)
+    }
+
+    /// Cold validation is admitted before payload I/O while the opening lock
+    /// coalesces readers. A warm lease performs no additional validation read.
+    pub(crate) fn get_admitted(
+        &self,
+        binding: &ImmutableFileBinding,
+        context: &FileOpenContext,
+        admit_validation: impl FnMut(u64) -> io::Result<()>,
+    ) -> io::Result<(Arc<File>, u64)> {
         if let Some(file) = self
             .handles
             .lock()
@@ -207,7 +219,7 @@ impl ImmutableFileHandles {
             .cloned()
         {
             self.state.record_cache_hit();
-            return Ok(file);
+            return Ok((file, 0));
         }
         // Coalesce cold opens without holding the eviction map across admission.
         // This serializes file validation, never waits for descriptor capacity.
@@ -223,25 +235,35 @@ impl ImmutableFileHandles {
             .cloned()
         {
             self.state.record_cache_hit();
-            return Ok(file);
+            return Ok((file, 0));
         }
         self.state.record_cache_miss();
-        let file = Arc::new(Self::open_verified_object(
+        let file = Arc::new(Self::open_verified_object_admitted(
             binding,
             context,
             DescriptorKind::ImmutableCache,
+            admit_validation,
         )?);
         self.handles
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .insert(binding.reference, file.clone());
-        Ok(file)
+        Ok((file, binding.reference.byte_length))
     }
 
     fn open_verified_object(
         binding: &ImmutableFileBinding,
         context: &FileOpenContext,
         kind: DescriptorKind,
+    ) -> io::Result<File> {
+        Self::open_verified_object_admitted(binding, context, kind, |_| Ok(()))
+    }
+
+    fn open_verified_object_admitted(
+        binding: &ImmutableFileBinding,
+        context: &FileOpenContext,
+        kind: DescriptorKind,
+        mut admit_validation: impl FnMut(u64) -> io::Result<()>,
     ) -> io::Result<File> {
         let mut file = OpenOptions::new()
             .read(true)
@@ -254,30 +276,24 @@ impl ImmutableFileHandles {
                 "immutable handle identity length mismatch",
             ));
         }
+        // Descriptor rejection occurs before this charge. No payload may be
+        // read until the caller has reserved the complete identity validation.
+        admit_validation(binding.reference.byte_length)?;
         let mut hasher = crate::immutable_object::identity_hasher(
             binding.reference.kind,
             binding.reference.format_version,
             binding.reference.byte_length,
         );
         let mut buffer = [0_u8; 64 * 1024];
-        let mut read_bytes = 0_u64;
-        loop {
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            read_bytes = read_bytes
-                .checked_add(read as u64)
-                .ok_or_else(|| io::Error::other("immutable file length overflow"))?;
-            if read_bytes > binding.reference.byte_length {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "immutable handle grew during validation",
-                ));
-            }
-            hasher.update(&buffer[..read]);
+        let mut remaining = binding.reference.byte_length;
+        while remaining > 0 {
+            let chunk = remaining.min(buffer.len() as u64) as usize;
+            file.read_exact(&mut buffer[..chunk])?;
+            remaining -= chunk as u64;
+            hasher.update(&buffer[..chunk]);
         }
-        if read_bytes != binding.reference.byte_length
+        // Detect length drift without fetching an unadmitted EOF sentinel.
+        if file.metadata()?.len() != binding.reference.byte_length
             || hasher.finish().sha256 != binding.reference.sha256
         {
             return Err(io::Error::new(

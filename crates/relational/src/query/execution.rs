@@ -15,18 +15,21 @@
 use super::{
     elapsed_nanos, execute_aggregate_select, execute_blocking_projection,
     execute_ordered_index_projection, execute_streaming_projection, format_relational_explain,
-    plan_relational_field_plan, planned_operator_cardinality_profiles, prepared_access_descriptors,
-    AdmittedRelationalExecution, BindingId, HawDBError, Instant, PlannedJoin,
-    PreparedRelationalExecutionMode, PreparedRelationalSelect, QueryRows, RefCell,
+    plan_relational_field_plan, planned_operator_cardinality_profiles_with_cost_contexts,
+    prepared_access_descriptors, AdmittedRelationalExecution, BindingId, HawDBError, Instant,
+    PlannedJoin, PreparedRelationalExecutionMode, PreparedRelationalSelect, QueryRows, RefCell,
     RelationalIndexRuntime, RelationalPhysicalJoinExecution, RelationalPipelineState,
     RelationalQueryLimits, RelationalQueryOutput, RelationalQueryStoreReader,
     RelationalRowExecutionEvidence, RelationalSqlStageTimings, Result, Value,
 };
+use hawdb_optimizer::RelationalJoinCostContexts;
 
 pub(super) fn explain_select(
     prepared: &PreparedRelationalSelect,
     parameters: &[Value],
     limits: RelationalQueryLimits,
+    cost_contexts: &RelationalJoinCostContexts,
+    index_evidence: Vec<crate::index_runtime::RelationalIndexExecutionEvidence>,
 ) -> Result<RelationalQueryOutput> {
     let (access_path, join_access_paths) = prepared_access_descriptors(&prepared.access_plan);
     format_relational_explain(
@@ -36,12 +39,13 @@ pub(super) fn explain_select(
             rows: QueryRows::empty(),
             stage_timings: prepared.stage_timings,
             join_planning: prepared.join_planning.clone(),
-            operator_cardinality_profiles: planned_operator_cardinality_profiles(prepared)?,
+            operator_cardinality_profiles:
+                planned_operator_cardinality_profiles_with_cost_contexts(prepared, cost_contexts)?,
             intermediate_rows: 0,
             hydration: limits.hydration,
             access_path,
             join_access_paths,
-            index_execution_evidence: Vec::new(),
+            index_execution_evidence: index_evidence,
             row_execution_evidence: RelationalRowExecutionEvidence {
                 runtime_path: "not_executed",
                 ..RelationalRowExecutionEvidence::default()
@@ -72,7 +76,13 @@ pub(super) fn execute_select<'state>(
 ) -> Result<RelationalQueryOutput> {
     let select = &prepared.statement;
     let join_planning = &prepared.join_planning;
-    let operator_cardinality_profiles = planned_operator_cardinality_profiles(prepared)?;
+    let default_cost_contexts = RelationalJoinCostContexts::default();
+    let cost_contexts = execution
+        .planning_snapshot
+        .as_ref()
+        .map_or(&default_cost_contexts, |snapshot| &snapshot.cost_contexts);
+    let operator_cardinality_profiles =
+        planned_operator_cardinality_profiles_with_cost_contexts(prepared, cost_contexts)?;
     let AdmittedRelationalExecution {
         state,
         index_read_mode,
@@ -81,6 +91,7 @@ pub(super) fn execute_select<'state>(
         execution_memory,
         memory_ledger,
         task_context,
+        planning_snapshot,
     } = execution;
     let base_schema = state
         .table_schema(&select.from_table().name)
@@ -125,20 +136,40 @@ pub(super) fn execute_select<'state>(
     let default_task = hawdb_core::RuntimeTaskContext::default();
     let row_task = task_context.unwrap_or(&default_task);
     let field_plan = plan_relational_field_plan(select, state)?;
-    let row_runtime = row_read_mode.open_runtime(
-        state,
-        field_plan,
-        limits.row_read,
-        limits.hydration,
-        row_task,
-    )?;
+    let (row_runtime, index_context) = match planning_snapshot {
+        Some(snapshot) => (
+            row_read_mode.open_runtime_with_snapshot(
+                state,
+                snapshot.reader,
+                field_plan,
+                limits.row_read,
+                limits.hydration,
+                row_task,
+            )?,
+            snapshot.index_context,
+        ),
+        None => (
+            row_read_mode.open_runtime(
+                state,
+                field_plan,
+                limits.row_read,
+                limits.hydration,
+                row_task,
+            )?,
+            crate::index_runtime::RelationalIndexRuntimeContext::new(
+                limits.index_read,
+                row_task.clone(),
+            ),
+        ),
+    };
     let mut pipeline = RelationalPipelineState::new(
         task_context,
         limits,
         execution_memory.batch_rows,
         operator_cardinality_profiles,
     );
-    let index_runtime = RelationalIndexRuntime::new(index_read_mode, limits.index_read);
+    let index_runtime =
+        RelationalIndexRuntime::with_context(index_read_mode, limits.index_read, index_context);
     let physical_execution = RelationalPhysicalJoinExecution {
         tree: prepared.access_plan.physical_join_plan()?,
         memory: execution_memory,

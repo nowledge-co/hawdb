@@ -17,8 +17,10 @@ use hawdb_storage::relational::{
     RelationalIndexRangeScan, RelationalIndexReadReport, RelationalIndexRecoveryReadReport,
     RelationalIndexScanDirection, RelationalValue,
 };
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+mod capabilities;
 mod fixtures;
 use fixtures::{expected, key, replace, report, Fixture, Outcome, Reader, INDEX, TABLE};
 
@@ -90,8 +92,8 @@ fn scan(prefix: &[i64], backward: bool, bound: Option<&[i64]>) -> RelationalInde
     }
 }
 
-fn visit(
-    runtime: &Runtime<'_>,
+fn visit<R: RelationalIndexStoreReader>(
+    runtime: &RelationalIndexRuntime<'_, R>,
     state: &RelationalState,
     kind: usize,
     mut callback: impl FnMut(&RelationalKey, &RelationalKey) -> Result<bool>,
@@ -450,7 +452,7 @@ fn exhausted_query_budget_falls_back_only_for_non_authoritative_modes() {
         for resource in 0..4 {
             for authoritative in [false, true] {
                 let reader = Reader::script(Outcome::Success, false);
-                let mut runtime = Runtime::new(
+                let runtime = Runtime::new(
                     if authoritative {
                         Mode::Authoritative(&reader)
                     } else {
@@ -458,13 +460,17 @@ fn exhausted_query_budget_falls_back_only_for_non_authoritative_modes() {
                     },
                     Default::default(),
                 );
-                let used = runtime.state.get_mut();
+                let mut usage = report();
+                let mut backend = RelationalIndexReadReport::default();
                 match resource {
-                    0 => used.logical_pages = runtime.limits.max_pages.get(),
-                    1 => used.rows_visited = runtime.limits.max_rows.get(),
-                    2 => used.logical_bytes = runtime.limits.max_bytes.get(),
-                    _ => used.file_bytes = runtime.limits.max_file_bytes + 1,
+                    0 => backend.pages_read = runtime.limits.max_pages.get(),
+                    1 => usage.rows_visited = runtime.limits.max_rows.get(),
+                    2 => backend.bytes_read = runtime.limits.max_bytes.get(),
+                    _ => backend.file_bytes_read = runtime.limits.max_file_bytes + 1,
                 }
+                usage.backend = RelationalIndexReadViewBackendReport::Base(backend);
+                let admitted = runtime.context.read_context.admit_reported_usage(&usage);
+                assert_eq!(admitted.is_ok(), resource != 3);
                 let mut calls = 0;
                 let result = visit(&runtime, &fixture.state, kind, |_, _| {
                     calls += 1;
@@ -918,5 +924,127 @@ fn assert_outcome(
     } else {
         assert_eq!(result.unwrap(), complete, "seed/case/mode={context:?}");
         assert_eq!(rows, expected, "seed/case/mode={context:?}");
+    }
+}
+
+fn record_identity_report(
+    runtime: &Runtime<'_>,
+    report: &RelationalIndexReadViewReport,
+    purpose: RelationalIndexReadPurpose<'_>,
+) -> Result<()> {
+    runtime
+        .context
+        .read_context
+        .admit_reported_usage(report)
+        .unwrap();
+    runtime.record_admitted_success(TABLE, INDEX, report, purpose)
+}
+
+fn assert_metadata_first_identity_drift(next_is_metadata: bool) {
+    let fixture = Fixture::new();
+    let transaction = fixture.transaction();
+    let reader = Reader::script(Outcome::Success, false);
+    let prefix = key(&[1]);
+    let range = scan(&[1], true, Some(&[1, 2]));
+    for mode in [
+        Mode::DemandPaged(&reader),
+        Mode::Authoritative(&reader),
+        Mode::AuthoritativeTransaction(&transaction),
+    ] {
+        for cached_first in [false, true] {
+            for next_is_range in [false, true] {
+                if next_is_metadata && next_is_range {
+                    continue;
+                }
+                for field in 0..5 {
+                    let runtime = Runtime::new(mode, Default::default());
+                    let mut initial = report();
+                    if !cached_first {
+                        initial.backend =
+                            RelationalIndexReadViewBackendReport::Base(RelationalIndexReadReport {
+                                pages_read: 1,
+                                bytes_read: 16,
+                                ..Default::default()
+                            });
+                    }
+                    record_identity_report(
+                        &runtime,
+                        &initial,
+                        RelationalIndexReadPurpose::MetadataCount,
+                    )
+                    .unwrap();
+                    // A same-identity zero-I/O count must retain the first binding.
+                    record_identity_report(
+                        &runtime,
+                        &report(),
+                        RelationalIndexReadPurpose::MetadataCount,
+                    )
+                    .unwrap();
+                    let evidence = runtime.evidence();
+                    assert_eq!(evidence[0].metadata_count_lookups, 2);
+                    assert_eq!(evidence[0].logical_pages, usize::from(!cached_first));
+                    let mut changed = report();
+                    match field {
+                        0 => changed.base_generation += 1,
+                        1 => changed.delta_generation = Some(1),
+                        2 => changed.base_commit_epoch += 1,
+                        3 => changed.visible_commit_epoch += 1,
+                        _ => changed.root_set_digest.push('x'),
+                    }
+                    let purpose = if next_is_metadata {
+                        RelationalIndexReadPurpose::MetadataCount
+                    } else {
+                        RelationalIndexReadPurpose::ExecutionProbe(if next_is_range {
+                            RelationalIndexProbeSelector::Range(&range)
+                        } else {
+                            RelationalIndexProbeSelector::Prefix(&prefix)
+                        })
+                    };
+                    assert!(
+                        matches!(
+                            record_identity_report(&runtime, &changed, purpose),
+                            Err(HawDBError::StorageIntegrity(_))
+                        ),
+                        "cached_first={cached_first}, next_is_range={next_is_range}, field={field}"
+                    );
+                    assert_eq!(runtime.evidence(), evidence);
+                }
+            }
+        }
+    }
+    drop(transaction);
+    fixture.remove();
+}
+
+#[test]
+fn metadata_first_identity_fence_rejects_later_counts() {
+    assert_metadata_first_identity_drift(true);
+}
+
+#[test]
+fn metadata_first_identity_fence_rejects_first_execution_probe() {
+    assert_metadata_first_identity_drift(false);
+}
+
+#[test]
+fn metadata_first_identity_fence_allows_binding_after_fallback() {
+    let reader = Reader::script(Outcome::Success, false);
+    let prefix = key(&[1]);
+    for purpose in [
+        RelationalIndexReadPurpose::MetadataCount,
+        RelationalIndexReadPurpose::ExecutionProbe(RelationalIndexProbeSelector::Prefix(&prefix)),
+    ] {
+        let runtime = Runtime::new(Mode::DemandPaged(&reader), Default::default());
+        runtime
+            .record_fallback(TABLE, INDEX, "read_view_unavailable")
+            .unwrap();
+        assert_eq!(runtime.evidence()[0].lookups, 1);
+        assert_eq!(runtime.evidence()[0].base_generation, None);
+        record_identity_report(&runtime, &report(), purpose).unwrap();
+        let evidence = runtime.evidence();
+        assert_eq!(evidence[0].lookups, 2);
+        assert_eq!(evidence[0].base_generation, Some(1));
+        assert_eq!(evidence[0].root_set_digest.as_deref(), Some("fixture-root"));
+        assert_eq!(evidence[0].canonical_fallback_lookups, 1);
     }
 }

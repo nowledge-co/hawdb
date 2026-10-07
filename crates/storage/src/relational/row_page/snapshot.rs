@@ -21,11 +21,13 @@ use super::demand::{
 use super::live::{RelationalRowPageOverlayRangeSources, RelationalRowPageOverlayRangeValue};
 use super::{
     RelationalProjectedField, RelationalProjectedRow, RelationalProjectedRowView,
-    RelationalRowDeltaError, RelationalRowDeltaReadReport, RelationalRowPageDemandReadError,
-    RelationalRowPageDemandReadLimits, RelationalRowPageDemandReadReport,
-    RelationalRowPageDemandReader, RelationalRowPageProjectedFields,
-    RelationalRowPageProjectedRange, RelationalRowPageProjectedRangeFields,
-    RelationalRowPageReadView, RelationalRowPageReadViewIdentity, RelationalRowPageRecoveredValue,
+    RelationalRowDeltaError, RelationalRowDeltaReadReport,
+    RelationalRowPageCumulativeReadRemaining, RelationalRowPageCumulativeReadReport,
+    RelationalRowPageDemandReadError, RelationalRowPageDemandReadLimits,
+    RelationalRowPageDemandReadReport, RelationalRowPageDemandReader,
+    RelationalRowPageProjectedFields, RelationalRowPageProjectedRange,
+    RelationalRowPageProjectedRangeFields, RelationalRowPageReadView,
+    RelationalRowPageReadViewIdentity, RelationalRowPageRecoveredValue,
 };
 use crate::cache::{SegmentCache, StoreId};
 use crate::relational::{
@@ -114,6 +116,7 @@ struct ProjectedRangeVisitContext<'a> {
     hydration: &'a mut RelationalHydrationBudget,
     task: &'a RuntimeTaskContext,
     hydration_fields: Option<&'a [usize]>,
+    owned_callback: bool,
 }
 
 struct ProjectedPointReadRequest<'a> {
@@ -193,6 +196,50 @@ impl fmt::Debug for RelationalRowPageSnapshotReader {
 }
 
 impl RelationalRowPageSnapshotReader {
+    /// Attach this reader to one cumulative statement budget. Repeated calls
+    /// only tighten limits and never reset usage. Standalone readers retain
+    /// their existing per-invocation limits until explicitly attached.
+    #[doc(hidden)]
+    pub fn restrict_cumulative_read_limits(
+        &self,
+        limits: RelationalRowPageSnapshotReadLimits,
+    ) -> Result<(), RelationalRowPageSnapshotReadError> {
+        self.demand
+            .cumulative
+            .restrict(limits)
+            .map_err(map_demand_error)
+    }
+
+    #[doc(hidden)]
+    pub fn cumulative_read_report(&self) -> Option<RelationalRowPageCumulativeReadReport> {
+        self.demand.cumulative.report().map(|mut report| {
+            report.demand.generation = self.demand.generation();
+            report.demand.source_commit_epoch = self.demand.source_commit_epoch();
+            report
+        })
+    }
+
+    /// Preflight allowance comes from admission, independently of row emission.
+    #[doc(hidden)]
+    pub fn cumulative_read_remaining(&self) -> Option<RelationalRowPageCumulativeReadRemaining> {
+        self.demand.cumulative.remaining()
+    }
+
+    /// Charge mixed-source statement work, whose evidence remains owned by
+    /// that source's runtime. No reader lock spans I/O or a callback.
+    #[doc(hidden)]
+    pub fn admit_cumulative_external_work(
+        &self,
+        pages: usize,
+        bytes: usize,
+        rows: usize,
+    ) -> Result<(), RelationalRowPageSnapshotReadError> {
+        self.demand
+            .cumulative
+            .admit_external(pages, bytes, rows)
+            .map_err(map_demand_error)
+    }
+
     pub fn new(
         view: Arc<RelationalRowPageReadView>,
         base_overflow: Arc<RelationalOverflowRootReader>,
@@ -234,6 +281,31 @@ impl RelationalRowPageSnapshotReader {
                 .view
                 .recovery_delta()
                 .is_some_and(|delta| delta.is_poisoned())
+    }
+
+    /// Returns bounded layout metadata when this reader serves only its
+    /// checkpoint base. Overlaid views cannot use base counts as visible counts.
+    /// The returned root stays borrowed from this exact pinned reader; no row
+    /// pages or descriptor artifacts are read to obtain it.
+    pub fn checkpoint_table_root(
+        &self,
+        table: &str,
+        task: &RuntimeTaskContext,
+    ) -> Result<
+        Option<&crate::relational::RelationalRowPageTableRoot>,
+        RelationalRowPageSnapshotReadError,
+    > {
+        self.checkpoint(task)?;
+        if self.view.recovery_delta().is_some() || self.view.live_batch_count() != 0 {
+            return Ok(None);
+        }
+        let root = self
+            .view
+            .base()
+            .table_root(table)
+            .map_err(|error| self.map_row_publication_error(error))?;
+        self.checkpoint(task)?;
+        Ok(Some(root))
     }
 
     /// Proves that the pinned snapshot has no primary key in `partition_prefix`
@@ -459,6 +531,10 @@ impl RelationalRowPageSnapshotReader {
                     limits.max_overlay_bytes
                 )));
             }
+            self.demand
+                .cumulative
+                .admit_overlay(1, resident_bytes)
+                .map_err(map_demand_error)?;
             let deleted = matches!(value, RelationalRowPageRecoveredValue::Deleted);
             let unbound_overlay =
                 selected_live || (!selected_live && self.overlay_overflow.is_none());
@@ -602,6 +678,10 @@ impl RelationalRowPageSnapshotReader {
                         limits.max_overlay_bytes
                     )));
                 }
+                self.demand
+                    .cumulative
+                    .admit_overlay(1, overlay_resident_bytes)
+                    .map_err(map_demand_error)?;
                 let value = project_overlay_value(
                     &value,
                     requested_fields,
@@ -748,6 +828,7 @@ impl RelationalRowPageSnapshotReader {
                 hydration,
                 task,
                 hydration_fields: Some(hydration_fields),
+                owned_callback: true,
             },
             &mut resolve,
             visit,
@@ -781,6 +862,7 @@ impl RelationalRowPageSnapshotReader {
                 hydration,
                 task,
                 hydration_fields: Some(hydration_fields),
+                owned_callback: false,
             },
             &mut resolve,
             visit,
@@ -809,6 +891,7 @@ impl RelationalRowPageSnapshotReader {
                 hydration: &mut hydration,
                 task,
                 hydration_fields: None,
+                owned_callback: true,
             },
             &mut resolve,
             |row, _| visit(row),
@@ -853,6 +936,7 @@ impl RelationalRowPageSnapshotReader {
             hydration,
             task,
             hydration_fields,
+            owned_callback,
         } = context;
         self.checkpoint(task)?;
         let mut overlay = StreamingOverlayCursor::new(self, range, limits, task)?;
@@ -867,6 +951,7 @@ impl RelationalRowPageSnapshotReader {
                         cursor: &mut overlay,
                         overflow_root: self.overlay_overflow.as_deref(),
                     },
+                    owned_callback,
                 },
                 hydration,
                 task,
@@ -1168,19 +1253,13 @@ impl<'a> StreamingOverlayCursor<'a> {
                 self.identity.base_commit_epoch, self.identity.visible_commit_epoch
             )));
         }
-        let (value, value_resident_bytes) = match value {
+        let value_resident_bytes = match &value {
             RelationalRowPageOverlayRangeValue::Projected(value) => {
-                let resident_bytes = projected_value_resident_bytes(&value)?;
-                (value, resident_bytes)
+                projected_value_resident_bytes(value)?
             }
             RelationalRowPageOverlayRangeValue::Recovered(value) => {
-                validate_overlay_row(&value, self.column_count)?;
-                let resident_bytes =
-                    projected_overlay_resident_bytes(&value, self.requested_fields)?;
-                (
-                    project_overlay_value(&value, self.requested_fields, false),
-                    resident_bytes,
-                )
+                validate_overlay_row(value, self.column_count)?;
+                projected_overlay_resident_bytes(value, self.requested_fields)?
             }
         };
         let entry_bytes = overlay_key_resident_bytes(&key)?
@@ -1208,6 +1287,13 @@ impl<'a> StreamingOverlayCursor<'a> {
                 self.limits.max_overlay_bytes
             )));
         }
+        self.admit_peak(next_bytes)?;
+        let value = match value {
+            RelationalRowPageOverlayRangeValue::Projected(value) => value,
+            RelationalRowPageOverlayRangeValue::Recovered(value) => {
+                project_overlay_value(&value, self.requested_fields, false)
+            }
+        };
         self.heap.push(StreamingOverlayHead {
             key,
             epoch,
@@ -1232,7 +1318,7 @@ impl<'a> StreamingOverlayCursor<'a> {
         resident_bytes: usize,
         working_bytes: usize,
     ) -> Result<(), RelationalRowPageSnapshotReadError> {
-        self.peak_resident_bytes = self.peak_resident_bytes.max(resident_bytes);
+        self.admit_peak(resident_bytes)?;
         let entries = self
             .heap
             .len()
@@ -1244,6 +1330,20 @@ impl<'a> StreamingOverlayCursor<'a> {
                 )
             })?;
         self.peak_buffered_entries = self.peak_buffered_entries.max(entries);
+        Ok(())
+    }
+
+    fn admit_peak(
+        &mut self,
+        resident_bytes: usize,
+    ) -> Result<(), RelationalRowPageSnapshotReadError> {
+        let next_peak = self.peak_resident_bytes.max(resident_bytes);
+        self.owner
+            .demand
+            .cumulative
+            .admit_overlay(0, next_peak - self.peak_resident_bytes)
+            .map_err(map_demand_error)?;
+        self.peak_resident_bytes = next_peak;
         Ok(())
     }
 
@@ -1312,6 +1412,11 @@ impl<'a> StreamingOverlayCursor<'a> {
                 self.entries, self.limits.max_overlay_entries
             )));
         }
+        self.owner
+            .demand
+            .cumulative
+            .admit_overlay(1, 0)
+            .map_err(map_demand_error)?;
         self.emitted_bytes = selected.resident_bytes;
         let resident_bytes = self
             .buffered_bytes

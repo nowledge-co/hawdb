@@ -24,7 +24,6 @@ use super::{
 };
 use crate::cache::SegmentCacheIdentity;
 use crate::file_io::{self as fs, File, OpenOptions};
-use crate::io::read_exact_at;
 use crate::{
     cache::{
         content_digest, ManifestGeneration, RepresentationKind, SegmentCache, SegmentCacheError,
@@ -50,6 +49,7 @@ use std::sync::{Arc, OnceLock};
 
 mod build;
 mod demand_read;
+pub(crate) use demand_read::{IndexReadAdmission, IndexReadCharge, IndexReadObserver};
 mod recovery;
 
 pub use demand_read::{
@@ -756,6 +756,10 @@ impl std::error::Error for RelationalIndexShadowError {
 
 impl RelationalIndexShadowError {
     pub(super) fn from_io(context: &str, error: std::io::Error) -> Self {
+        let error = match error.downcast::<Self>() {
+            Ok(error) => return error,
+            Err(error) => error,
+        };
         match hawdb_core::error::file_descriptor_error(&error) {
             Some(error) => Self::FileDescriptors(error),
             None => Self::Durability(format!("{context}: {error}")),
@@ -1192,6 +1196,7 @@ pub struct RelationalIndexShadowReader {
 
 pub(super) struct RelationalIndexPageRead {
     pub page: ImmutableIndexPage,
+    pub file_bytes_read: usize,
     pub cache_hit: bool,
     pub cache_miss: bool,
     pub cache_admission_rejected: bool,
@@ -1438,6 +1443,15 @@ impl RelationalIndexShadowReader {
         self.poisoned.load(Ordering::Acquire)
     }
 
+    fn check_not_poisoned(&self) -> Result<(), RelationalIndexShadowError> {
+        if self.is_poisoned() {
+            return Err(RelationalIndexShadowError::Corrupt(
+                "relational index shadow reader is poisoned by an earlier page failure".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn poison(&self) {
         self.poisoned.store(true, Ordering::Release);
     }
@@ -1446,7 +1460,7 @@ impl RelationalIndexShadowReader {
         &self,
         page_id: IndexPageId,
     ) -> Result<ImmutableIndexPage, RelationalIndexShadowError> {
-        self.read_page_accounted(page_id, usize::MAX)
+        self.read_page_accounted(page_id, usize::MAX, IndexReadAdmission::default())
             .map(|read| read.page)
     }
 
@@ -1454,6 +1468,7 @@ impl RelationalIndexShadowReader {
         &self,
         page_id: IndexPageId,
         max_file_bytes: usize,
+        read_admission: IndexReadAdmission<'_>,
     ) -> Result<RelationalIndexPageRead, RelationalIndexShadowError> {
         if page_id.get() > self.manifest.page_count {
             return Err(RelationalIndexShadowError::Corrupt(format!(
@@ -1462,12 +1477,8 @@ impl RelationalIndexShadowReader {
                 self.manifest.page_count
             )));
         }
-        if self.is_poisoned() {
-            return Err(RelationalIndexShadowError::Corrupt(
-                "relational index shadow reader is poisoned by an earlier page failure".to_string(),
-            ));
-        }
-        let result = self.read_page_inner(page_id, max_file_bytes);
+        self.check_not_poisoned()?;
+        let result = self.read_page_inner(page_id, max_file_bytes, read_admission);
         if result.as_ref().is_err_and(|error| {
             !matches!(
                 error,
@@ -1484,6 +1495,7 @@ impl RelationalIndexShadowReader {
         &self,
         page_id: IndexPageId,
         max_file_bytes: usize,
+        read_admission: IndexReadAdmission<'_>,
     ) -> Result<RelationalIndexPageRead, RelationalIndexShadowError> {
         let page_bytes = self.config.page_limits.max_page_bytes.get();
         let cache_identity = SegmentCacheIdentity {
@@ -1501,6 +1513,7 @@ impl RelationalIndexShadowReader {
             )?;
             return Ok(RelationalIndexPageRead {
                 page,
+                file_bytes_read: 0,
                 cache_hit: true,
                 cache_miss: false,
                 cache_admission_rejected: false,
@@ -1519,8 +1532,42 @@ impl RelationalIndexShadowReader {
                 RelationalIndexShadowError::Corrupt("index page offset overflow".to_string())
             })?;
         let mut slot = vec![0; page_bytes];
-        read_exact_at(self.artifact()?, &mut slot, offset)
-            .map_err(durability("read shadow page"))?;
+        let validation_bytes = crate::io::read_exact_at_admitted(
+            self.artifact()?,
+            &mut slot,
+            offset,
+            |validation_bytes| {
+                let validation_bytes = usize::try_from(validation_bytes).map_err(|_| {
+                    std::io::Error::other(RelationalIndexShadowError::Admission(
+                        "immutable validation byte count overflows usize".to_string(),
+                    ))
+                })?;
+                if validation_bytes > max_file_bytes - page_bytes {
+                    return Err(std::io::Error::other(RelationalIndexShadowError::Admission(
+                        format!(
+                            "index validation needs {validation_bytes} bytes plus {page_bytes} page bytes, exceeding remaining file byte budget {max_file_bytes}"
+                        ),
+                    )));
+                }
+                read_admission
+                    .charge(IndexReadCharge::FileBytes(validation_bytes))
+                    .map_err(std::io::Error::other)
+            },
+            || {
+                read_admission
+                    .charge(IndexReadCharge::FileBytes(page_bytes))
+                    .map_err(std::io::Error::other)
+            },
+        )
+        .map_err(durability("read shadow page"))?;
+        let file_bytes_read = usize::try_from(validation_bytes)
+            .ok()
+            .and_then(|bytes| bytes.checked_add(page_bytes))
+            .ok_or_else(|| {
+                RelationalIndexShadowError::Admission(
+                    "index file byte counter overflow".to_string(),
+                )
+            })?;
 
         let page = self.validate_selected_page(
             ImmutableIndexPage::decode_slot(&slot, self.config.page_limits)?,
@@ -1555,6 +1602,7 @@ impl RelationalIndexShadowReader {
         }
         Ok(RelationalIndexPageRead {
             page,
+            file_bytes_read,
             cache_hit: false,
             cache_miss: self.page_cache.is_some(),
             cache_admission_rejected,

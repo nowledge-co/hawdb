@@ -23,6 +23,9 @@ use hawdb_storage::{
 use std::cell::Cell;
 
 mod fixtures;
+mod inflight_budget;
+mod mixed_budget;
+mod query_cost_contexts;
 use fixtures::{apply, fields, key, state, Fixture};
 
 const SHAPES: [(&str, &[usize], &[usize]); 6] = [
@@ -872,4 +875,36 @@ fn row_runtime_differential_smoke() {
 #[ignore = "explicit local differential campaign"]
 fn row_runtime_differential_campaign() {
     differential_campaign(128, 64);
+}
+
+#[test]
+fn nested_snapshot_point_reads_include_in_flight_parent_range_pages() {
+    let fixture = Fixture::new();
+    let task = RuntimeTaskContext::default();
+    for borrowed in [false, true] {
+        let mut runtime = fixture.runtime(1, "SELECT id FROM docs", &task);
+        runtime.limits.demand.max_pages = NonZeroUsize::new(8).unwrap();
+        let mut attempts = 0;
+        let mut completed = 0;
+        let mut callback = || {
+            let id = attempts;
+            attempts += 1;
+            assert!(runtime.read_point("docs", &key(id))?.is_some());
+            completed += 1;
+            Ok(true)
+        };
+        let result = if borrowed {
+            runtime.visit_all_ref("docs", |_| callback())
+        } else {
+            runtime.visit_all("docs", |_| callback())
+        };
+        assert!(
+            matches!(&result, Err(HawDBError::Execution(message)) if message.contains("page")),
+            "one parent page plus eight point pages must refuse the eighth nested read: {result:?}",
+        );
+        assert_eq!(attempts, 8);
+        assert_eq!(completed, 7);
+        assert_eq!(runtime.evidence().logical_pages, 8);
+    }
+    fixture.remove();
 }

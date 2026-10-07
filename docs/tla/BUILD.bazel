@@ -40,6 +40,19 @@ alias(
     actual = ":storage_models_evidence",
 )
 
+[
+    tla_check(
+        name = "HawDBRelationalStatementReadBudget" + control + "_check",
+        module = "HawDBRelationalStatementReadBudget.tla",
+        config = "mutants/HawDBRelationalStatementReadBudget" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in ["PrivateAdmission", "ForgetOnRebind"]
+]
+
 # Small lifecycle counterexamples are independently runnable during integration.
 _LARGE_DOCUMENT_CONTROLS = [
     "CleanupRetryWitness",

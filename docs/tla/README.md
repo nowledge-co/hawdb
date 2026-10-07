@@ -1996,3 +1996,33 @@ background aging and recurring foreground arrivals. See the
 `HawDBGovernedConflictRetry` models a shared first attempt and capacity escalation
 after conflict, with an explicit starvation control for fixed-weight retries.
 See [the retry-policy proof and workload](GOVERNED_CONFLICT_RETRY_PROOF.md).
+
+
+## Relational statement read budget
+
+`HawDBRelationalStatementReadBudget.tla` models a parent traversal, one nested
+read, five cumulative resources and monotone limit attachment. `Admit` maps to
+the inline `CumulativeReadBudget` in the snapshot's demand reader; page and
+slot-byte admission is atomic, row admission precedes selected field decode,
+hydration and callbacks, and
+overlay cursors charge selected entries and increments in each invocation's
+peak before exposing rows. `Finish` retains work on success, rejection, early
+stop and unwind. `Rebind` maps to limit tightening that rejects caps below
+existing usage. Mixed projection row/byte charges use the same admission owner;
+projection frames remain distinct from the demand-reader page resource.
+Runtime preflight intersects its reported-work allowance with the owner's
+typed remaining admission, so failed hydration and earlier cap tightening
+cannot enlarge a later projection frame. These implementation boundaries are
+protected by the native `demand::tests::admission` and
+`row_runtime::tests::mixed_budget` guards; the latter retains public emission
+counts independently and covers both nested source directions.
+
+The bounded model checks aggregate active-plus-finished work and exact retained
+accounting. It does not prove Rust locking/memory safety, physical I/O, payload
+allocation, hydration, row order, visibility or pin counts; the existing demand
+and snapshot models and native tests cover those separate contracts. The
+`PrivateAdmission` mutant exposes the former per-traversal hole; `ForgetOnRebind`
+loses already accepted work. Both have explicit manual Bazel negative-control
+targets and entries in `mutants/mutants.txt`. Native row-runtime regressions
+cover owned/borrowed callbacks, page/byte/row/overlay admission, parent resume,
+complete admitted results and callback unwind.

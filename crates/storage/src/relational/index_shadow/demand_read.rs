@@ -14,12 +14,15 @@
 
 use super::super::{RelationalIndexRangeScan, RelationalIndexScanDirection};
 use super::{
-    encode_relational_key, IndexLeafPosting, IndexPageId, RelationalIndexRootDescriptor,
-    RelationalIndexShadowError, RelationalIndexShadowReader,
+    encode_relational_key, index_leaf_posting_rows, IndexLeafPosting, IndexPageId,
+    RelationalIndexRootDescriptor, RelationalIndexShadowError, RelationalIndexShadowReader,
 };
 use crate::index_page::{ImmutableIndexPage, ImmutableIndexPageBody, IndexPostingPage};
 use std::collections::BTreeMap;
 use std::num::{NonZeroU32, NonZeroUsize};
+
+#[cfg(test)]
+mod posting_count_tests;
 
 pub const DEFAULT_RELATIONAL_INDEX_READ_PAGES: usize = 256;
 pub const DEFAULT_RELATIONAL_INDEX_READ_ROWS: usize = 4096;
@@ -59,7 +62,9 @@ impl Default for RelationalIndexReadLimits {
 pub struct RelationalIndexReadReport {
     pub pages_read: usize,
     pub bytes_read: usize,
+    /// Selected page slots fetched, excluding whole-object handle validation.
     pub file_pages_read: usize,
+    /// All payload bytes fetched, including cold immutable handle validation.
     pub file_bytes_read: usize,
     pub cache_hits: usize,
     pub cache_misses: usize,
@@ -70,51 +75,156 @@ pub struct RelationalIndexReadReport {
     pub stopped_early: bool,
 }
 
+/// Per-operation admission shared by nested reads; reports remain per-read.
+pub(crate) trait IndexReadObserver {
+    fn charge(&self, charge: IndexReadCharge) -> Result<(), RelationalIndexShadowError>;
+    fn file_budget(&self, requested: usize) -> Result<usize, RelationalIndexShadowError>;
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum IndexReadCharge {
+    Page(usize),
+    FileBytes(usize),
+    LiveBytes(usize),
+    Row,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct IndexReadAdmission<'a> {
+    observer: Option<&'a dyn IndexReadObserver>,
+    charge_rows: bool,
+}
+
+impl<'a> IndexReadAdmission<'a> {
+    pub(crate) fn new(observer: &'a dyn IndexReadObserver) -> Self {
+        Self {
+            observer: Some(observer),
+            charge_rows: true,
+        }
+    }
+
+    pub(crate) fn without_rows(self) -> Self {
+        Self {
+            charge_rows: false,
+            ..self
+        }
+    }
+
+    pub(crate) fn charge(self, charge: IndexReadCharge) -> Result<(), RelationalIndexShadowError> {
+        if matches!(charge, IndexReadCharge::Row) && !self.charge_rows {
+            return Ok(());
+        }
+        self.observer
+            .map_or(Ok(()), |observer| observer.charge(charge))
+    }
+
+    pub(crate) fn file_budget(self, requested: usize) -> Result<usize, RelationalIndexShadowError> {
+        self.observer
+            .map_or(Ok(requested), |observer| observer.file_budget(requested))
+    }
+}
+
 impl RelationalIndexShadowReader {
+    /// Returns the declared posting count for one complete index key and the
+    /// actual metadata read report. Logical traversal and decoding visit only
+    /// the checked root-to-leaf path, without decoding posting-chain pages or
+    /// visiting canonical rows. Inline locator bytes are decoded as part of the
+    /// leaf page, without interpreting them as relational keys.
+    /// Cold or evicted mounted handles additionally validate the whole immutable
+    /// object; these physical bytes are admitted and included in the report.
+    ///
+    /// Page, logical-byte, file-byte and tree-height limits still apply, even
+    /// for cache hits. The count may exceed the row-visit limit because no rows
+    /// are visited. Partial keys are rejected. A count does not verify undecoded
+    /// posting-chain structure; known reader poison is rejected.
+    /// Callers must share these reads with their statement accounting and
+    /// cancellation rather than treating each estimate as a new read budget.
+    pub fn count_exact_postings(
+        &self,
+        table: &str,
+        index: &str,
+        key: &super::RelationalKey,
+        limits: RelationalIndexReadLimits,
+    ) -> Result<(u64, RelationalIndexReadReport), RelationalIndexShadowError> {
+        self.count_exact_postings_admitted(table, index, key, limits, IndexReadAdmission::default())
+    }
+
+    pub(crate) fn count_exact_postings_admitted(
+        &self,
+        table: &str,
+        index: &str,
+        key: &super::RelationalKey,
+        limits: RelationalIndexReadLimits,
+        read_admission: IndexReadAdmission<'_>,
+    ) -> Result<(u64, RelationalIndexReadReport), RelationalIndexShadowError> {
+        self.check_not_poisoned()?;
+        let descriptor = self.root_descriptor(table, index)?;
+        let width = descriptor.statistics.leading_prefixes.len();
+        if width == 0 || key.0.len() != width {
+            return Err(RelationalIndexShadowError::Admission(format!(
+                "index posting count requires {width} complete key components, received {}",
+                key.0.len()
+            )));
+        }
+        let encoded = self.encode_lookup_key(key)?;
+        let mut context = ReadContext::new_admitted(self, limits, read_admission);
+        let rows = context
+            .find_exact_posting(descriptor, &encoded)?
+            .as_ref()
+            .map(index_leaf_posting_rows)
+            .transpose()?
+            .unwrap_or(0);
+        Ok((rows, context.report))
+    }
+
     /// Visits the postings for one complete encoded index key.
     ///
     /// Values observed by `visit` are provisional until this method returns
     /// `Ok`; callers must discard them when traversal fails. Returning
-    /// `false` stops before reading the remainder of a posting chain.
+    /// `false` stops further logical posting-chain traversal. Cold mounted handle
+    /// validation may already have fetched those bytes under the file budget.
     pub fn visit_exact_postings(
         &self,
         table: &str,
         index: &str,
         key: &super::RelationalKey,
         limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&super::RelationalKey) -> bool,
+    ) -> Result<RelationalIndexReadReport, RelationalIndexShadowError> {
+        self.visit_exact_postings_admitted(
+            table,
+            index,
+            key,
+            limits,
+            visit,
+            IndexReadAdmission::default(),
+        )
+    }
+
+    pub(crate) fn visit_exact_postings_admitted(
+        &self,
+        table: &str,
+        index: &str,
+        key: &super::RelationalKey,
+        limits: RelationalIndexReadLimits,
         mut visit: impl FnMut(&super::RelationalKey) -> bool,
+        read_admission: IndexReadAdmission<'_>,
     ) -> Result<RelationalIndexReadReport, RelationalIndexShadowError> {
         let descriptor = self.root_descriptor(table, index)?.clone();
         let encoded = self.encode_lookup_key(key)?;
-        let mut context = ReadContext::new(self, limits);
-        let root = context.read_root(&descriptor)?;
-        let Some(leaf) = context.find_leaf(root.child, root.height, &encoded)? else {
-            return Ok(context.report);
-        };
-        let ImmutableIndexPageBody::Leaf(leaf) = leaf.body else {
-            return Err(context.corrupt("index traversal ended on a non-leaf page"));
-        };
-        let mut comparisons = 0usize;
-        let position = leaf.entries.binary_search_by(|entry| {
-            comparisons = comparisons.saturating_add(1);
-            entry.key.as_slice().cmp(&encoded)
-        });
-        context.report.leaf_entries_visited = context
-            .report
-            .leaf_entries_visited
-            .checked_add(comparisons)
-            .ok_or_else(|| context.admission("leaf-entry counter overflow"))?;
-        if let Ok(position) = position {
-            context.report.matched_index_keys = 1;
-            let outcome = context.visit_posting(&leaf.entries[position].posting, &mut visit)?;
+        let mut context = ReadContext::new_admitted(self, limits, read_admission);
+        if let Some(posting) = context.find_exact_posting(&descriptor, &encoded)? {
+            let outcome = context.visit_posting(&posting, &mut visit)?;
             context.report.stopped_early = outcome == VisitOutcome::Stopped;
         }
         Ok(context.report)
     }
 
     /// Visits postings whose complete index key has the supplied leading
-    /// relational-key prefix. Only root-to-leaf paths and selected posting
-    /// pages are read; opening the reader and unrelated subtrees remain cold.
+    /// relational-key prefix. Traversal decodes root-to-leaf paths and selected
+    /// posting pages, leaving unrelated subtrees undecoded. Cold mounted handles
+    /// additionally validate the whole immutable object under the file budget;
+    /// the report includes those physical bytes.
     ///
     /// Values observed by `visit` are provisional until this method returns
     /// `Ok`; callers must discard them on error.
@@ -124,11 +234,35 @@ impl RelationalIndexShadowReader {
         index: &str,
         prefix: &super::RelationalKey,
         limits: RelationalIndexReadLimits,
-        mut visit: impl FnMut(&super::RelationalKey) -> bool,
+        visit: impl FnMut(&super::RelationalKey) -> bool,
     ) -> Result<RelationalIndexReadReport, RelationalIndexShadowError> {
-        self.visit_prefix_entries(table, index, prefix, limits, |_, primary_key| {
-            visit(primary_key)
-        })
+        self.visit_prefix_postings_admitted(
+            table,
+            index,
+            prefix,
+            limits,
+            visit,
+            IndexReadAdmission::default(),
+        )
+    }
+
+    pub(crate) fn visit_prefix_postings_admitted(
+        &self,
+        table: &str,
+        index: &str,
+        prefix: &super::RelationalKey,
+        limits: RelationalIndexReadLimits,
+        mut visit: impl FnMut(&super::RelationalKey) -> bool,
+        read_admission: IndexReadAdmission<'_>,
+    ) -> Result<RelationalIndexReadReport, RelationalIndexShadowError> {
+        self.visit_prefix_entries_admitted(
+            table,
+            index,
+            prefix,
+            limits,
+            |_, primary_key| visit(primary_key),
+            read_admission,
+        )
     }
 
     /// Visits ordered `(index_key, primary_key)` entries whose complete index
@@ -142,11 +276,30 @@ impl RelationalIndexShadowReader {
         index: &str,
         prefix: &super::RelationalKey,
         limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&super::RelationalKey, &super::RelationalKey) -> bool,
+    ) -> Result<RelationalIndexReadReport, RelationalIndexShadowError> {
+        self.visit_prefix_entries_admitted(
+            table,
+            index,
+            prefix,
+            limits,
+            visit,
+            IndexReadAdmission::default(),
+        )
+    }
+
+    pub(crate) fn visit_prefix_entries_admitted(
+        &self,
+        table: &str,
+        index: &str,
+        prefix: &super::RelationalKey,
+        limits: RelationalIndexReadLimits,
         mut visit: impl FnMut(&super::RelationalKey, &super::RelationalKey) -> bool,
+        read_admission: IndexReadAdmission<'_>,
     ) -> Result<RelationalIndexReadReport, RelationalIndexShadowError> {
         let descriptor = self.root_descriptor(table, index)?.clone();
         let encoded = self.encode_lookup_key(prefix)?;
-        let mut context = ReadContext::new(self, limits);
+        let mut context = ReadContext::new_admitted(self, limits, read_admission);
         let root = context.read_root(&descriptor)?;
         let outcome =
             context.visit_prefix_subtree(root.child, root.height, None, &encoded, &mut visit)?;
@@ -166,11 +319,30 @@ impl RelationalIndexShadowReader {
         index: &str,
         prefixes: &[super::RelationalKey],
         limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&super::RelationalKey, &super::RelationalKey, &super::RelationalKey) -> bool,
+    ) -> Result<RelationalIndexReadReport, RelationalIndexShadowError> {
+        self.visit_prefix_entries_many_admitted(
+            table,
+            index,
+            prefixes,
+            limits,
+            visit,
+            IndexReadAdmission::default(),
+        )
+    }
+
+    pub(crate) fn visit_prefix_entries_many_admitted(
+        &self,
+        table: &str,
+        index: &str,
+        prefixes: &[super::RelationalKey],
+        limits: RelationalIndexReadLimits,
         mut visit: impl FnMut(
             &super::RelationalKey,
             &super::RelationalKey,
             &super::RelationalKey,
         ) -> bool,
+        read_admission: IndexReadAdmission<'_>,
     ) -> Result<RelationalIndexReadReport, RelationalIndexShadowError> {
         let mut encoded_prefixes = BTreeMap::new();
         let mut prefix_width = None;
@@ -193,7 +365,7 @@ impl RelationalIndexShadowReader {
         }
 
         let descriptor = self.root_descriptor(table, index)?.clone();
-        let mut context = ReadContext::new(self, limits);
+        let mut context = ReadContext::new_admitted(self, limits, read_admission);
         let root = context.read_root(&descriptor)?;
         for (encoded_prefix, prefix) in encoded_prefixes {
             let outcome = context.visit_prefix_subtree(
@@ -218,7 +390,26 @@ impl RelationalIndexShadowReader {
         index: &str,
         scan: &RelationalIndexRangeScan,
         limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&super::RelationalKey, &super::RelationalKey) -> bool,
+    ) -> Result<RelationalIndexReadReport, RelationalIndexShadowError> {
+        self.visit_range_entries_admitted(
+            table,
+            index,
+            scan,
+            limits,
+            visit,
+            IndexReadAdmission::default(),
+        )
+    }
+
+    pub(crate) fn visit_range_entries_admitted(
+        &self,
+        table: &str,
+        index: &str,
+        scan: &RelationalIndexRangeScan,
+        limits: RelationalIndexReadLimits,
         mut visit: impl FnMut(&super::RelationalKey, &super::RelationalKey) -> bool,
+        read_admission: IndexReadAdmission<'_>,
     ) -> Result<RelationalIndexReadReport, RelationalIndexShadowError> {
         let descriptor = self.root_descriptor(table, index)?.clone();
         let encoded_prefix = self.encode_lookup_key(&scan.prefix)?;
@@ -227,7 +418,7 @@ impl RelationalIndexShadowReader {
             .as_ref()
             .map(|bound| self.encode_lookup_key(bound))
             .transpose()?;
-        let mut context = ReadContext::new(self, limits);
+        let mut context = ReadContext::new_admitted(self, limits, read_admission);
         let root = context.read_root(&descriptor)?;
         let outcome = match scan.direction {
             RelationalIndexScanDirection::Forward => context.visit_forward_range_subtree(
@@ -310,17 +501,35 @@ enum VisitOutcome {
 
 struct ReadContext<'a> {
     reader: &'a RelationalIndexShadowReader,
+    read_admission: IndexReadAdmission<'a>,
     limits: RelationalIndexReadLimits,
     report: RelationalIndexReadReport,
 }
 
 impl<'a> ReadContext<'a> {
+    #[cfg(test)]
     const fn new(
         reader: &'a RelationalIndexShadowReader,
         limits: RelationalIndexReadLimits,
     ) -> Self {
+        Self::new_admitted(
+            reader,
+            limits,
+            IndexReadAdmission {
+                observer: None,
+                charge_rows: false,
+            },
+        )
+    }
+
+    const fn new_admitted(
+        reader: &'a RelationalIndexShadowReader,
+        limits: RelationalIndexReadLimits,
+        read_admission: IndexReadAdmission<'a>,
+    ) -> Self {
         Self {
             reader,
+            read_admission,
             limits,
             report: RelationalIndexReadReport {
                 pages_read: 0,
@@ -336,6 +545,34 @@ impl<'a> ReadContext<'a> {
                 stopped_early: false,
             },
         }
+    }
+
+    fn find_exact_posting(
+        &mut self,
+        descriptor: &RelationalIndexRootDescriptor,
+        encoded: &[u8],
+    ) -> Result<Option<IndexLeafPosting>, RelationalIndexShadowError> {
+        let root = self.read_root(descriptor)?;
+        let Some(leaf) = self.find_leaf(root.child, root.height, encoded)? else {
+            return Ok(None);
+        };
+        let ImmutableIndexPageBody::Leaf(mut leaf) = leaf.body else {
+            return Err(self.corrupt("index traversal ended on a non-leaf page"));
+        };
+        let mut comparisons = 0usize;
+        let position = leaf.entries.binary_search_by(|entry| {
+            comparisons = comparisons.saturating_add(1);
+            entry.key.as_slice().cmp(encoded)
+        });
+        self.report.leaf_entries_visited = self
+            .report
+            .leaf_entries_visited
+            .checked_add(comparisons)
+            .ok_or_else(|| self.admission("leaf-entry counter overflow"))?;
+        Ok(position.ok().map(|position| {
+            self.report.matched_index_keys = 1;
+            leaf.entries.swap_remove(position).posting
+        }))
     }
 
     fn read_root(
@@ -769,9 +1006,12 @@ impl<'a> ReadContext<'a> {
             .max_file_bytes
             .checked_sub(self.report.file_bytes_read)
             .ok_or_else(|| self.admission("index file byte counter exceeds its limit"))?;
-        let read = self
-            .reader
-            .read_page_accounted(page_id, remaining_file_bytes)?;
+        self.read_admission
+            .charge(IndexReadCharge::Page(page_bytes))?;
+        let remaining_file_bytes = self.read_admission.file_budget(remaining_file_bytes)?;
+        let read =
+            self.reader
+                .read_page_accounted(page_id, remaining_file_bytes, self.read_admission)?;
         self.report.pages_read += 1;
         self.report.bytes_read = next_bytes;
         self.report.cache_hits += usize::from(read.cache_hit);
@@ -782,7 +1022,7 @@ impl<'a> ReadContext<'a> {
             self.report.file_bytes_read = self
                 .report
                 .file_bytes_read
-                .checked_add(page_bytes)
+                .checked_add(read.file_bytes_read)
                 .ok_or_else(|| self.admission("index file byte counter overflow"))?;
         }
         Ok(read.page)

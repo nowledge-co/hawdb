@@ -19,6 +19,7 @@ use hawdb::{
     QueryStreamOptions, RelationalOperatorKind, RelationalSqlReadProfile, Value,
 };
 use hawdb_storage::config::{RelationalIndexMode, StorageResidencyMode};
+use hawdb_storage::relational::DEFAULT_RELATIONAL_ROW_PAGE_ROWS;
 use serde_json::json;
 use std::fmt::Write as _;
 use std::hint::black_box;
@@ -169,23 +170,40 @@ fn measure_path(
     let read = database.begin_read_transaction().unwrap();
     let (column, parameter) = shape.predicate(indexed);
     let sql = format!("SELECT id, body FROM access_rows WHERE {column} = $1");
+    // Both body widths fit the declared default row-count bound before the
+    // page-byte bound. Independently compose the documented raw logical policy
+    // over this fixture's page geometry and exact value-specific cardinality.
+    let pages = ROWS.div_ceil(DEFAULT_RELATIONAL_ROW_PAGE_ROWS);
+    let search_steps = (usize::BITS - pages.leading_zeros()) as usize;
+    let point_setup = 2 + search_steps;
+    let candidates = expected.len().max(1);
+    // Each descriptor read also seeks its fixed record and both bound keys.
+    // These are logical access components, independent of row-page cache hits.
+    let index_cpu = candidates * (2 + point_setup);
+    let index_random = 1 + candidates + candidates * search_steps * 3;
+    let index_cost = index_cpu + 2 * index_random + candidates + candidates;
+    let scan_cpu = ROWS + 4 + 3 * pages;
+    let scan_sequential = ROWS + 3 * pages;
+    let scan_cost = scan_cpu + scan_sequential + ROWS;
     let operator = if !indexed {
         RelationalOperatorKind::TableFullScan
     } else if matches!(shape, Shape::Point) {
         RelationalOperatorKind::TablePointGet
-    } else if match shape {
-        Shape::Bucket(_) => ROWS.div_ceil(3),
-        _ => ROWS,
-    } * 6
-        + 2
-        < ROWS * 3 + 4
-    {
-        // Independent policy oracle over fresh prefix NDV, not actual result rows.
+    } else if index_cost < scan_cost {
         RelationalOperatorKind::IndexRangeScan
     } else {
         RelationalOperatorKind::TableFullScan
     };
-    let (first_nanos, first) = execute(&read, &sql, parameter, width, expected, operator);
+    let plans_index_metadata = indexed && !matches!(shape, Shape::Point);
+    let (first_nanos, first) = execute(
+        &read,
+        &sql,
+        parameter,
+        width,
+        expected,
+        operator,
+        plans_index_metadata,
+    );
     assert!(
         first.row_read.physical_pages > 0,
         "first query did not read row files"
@@ -195,7 +213,15 @@ fn measure_path(
     let mut planning = Vec::with_capacity(SAMPLES);
     let mut warm_profiles = Vec::with_capacity(SAMPLES);
     for _ in 0..SAMPLES {
-        let (nanos, profile) = execute(&read, &sql, parameter, width, expected, operator);
+        let (nanos, profile) = execute(
+            &read,
+            &sql,
+            parameter,
+            width,
+            expected,
+            operator,
+            plans_index_metadata,
+        );
         assert_eq!(profile.stage_timings.parse_nanos, 0, "warm SQL cache miss");
         assert_eq!(profile.row_read.physical_pages, 0, "warm row-file read");
         assert!(profile
@@ -229,6 +255,7 @@ fn execute(
     width: usize,
     expected: &[usize],
     operator: RelationalOperatorKind,
+    plans_index_metadata: bool,
 ) -> (u128, RelationalSqlReadProfile) {
     let started = Instant::now();
     let ProfiledRelationalSqlQueryOutput { output, profile } = read
@@ -277,18 +304,43 @@ fn execute(
         "row pages were not read"
     );
     assert_eq!(profile.row_read.overlay_entries, 0);
-    // Primary-key point reads use the canonical row-page locator directly.
-    // Only secondary-index probes traverse a separate index-page tree.
-    if operator != RelationalOperatorKind::IndexRangeScan {
-        assert!(profile.index_reads.is_empty());
+    if operator == RelationalOperatorKind::TableFullScan {
+        assert_eq!(
+            profile.row_read.logical_pages,
+            ROWS.div_ceil(DEFAULT_RELATIONAL_ROW_PAGE_ROWS),
+            "fixture page geometry changed; review the independent policy oracle"
+        );
+    }
+    // A rejected secondary candidate still paid for its planning metadata. Its
+    // report has zero row visits; an executed index adds its complete locators.
+    if plans_index_metadata {
+        assert_eq!(profile.index_reads.len(), 1);
+        let index = &profile.index_reads[0];
+        let expected_runtime_path = match operator {
+            RelationalOperatorKind::IndexRangeScan => "authoritative",
+            RelationalOperatorKind::TableFullScan => "not_executed",
+            _ => panic!("secondary metadata requires an index or full-scan operator"),
+        };
+        assert_eq!(index.runtime_path, expected_runtime_path);
+        assert!(
+            index.logical_pages > 0,
+            "planning index metadata was not reported"
+        );
+        assert_eq!(
+            index.rows_visited,
+            if operator == RelationalOperatorKind::IndexRangeScan {
+                expected.len()
+            } else {
+                0
+            }
+        );
     } else {
+        assert!(profile.index_reads.is_empty());
+    }
+    if operator == RelationalOperatorKind::IndexRangeScan {
         assert!(!access.access_path.covering);
         assert!(access.access_path.requires_row_fetch);
-        assert!(!profile.index_reads.is_empty());
-        for index in &profile.index_reads {
-            assert_eq!(index.runtime_path, "authoritative");
-            assert!(index.logical_pages > 0, "index pages were not read");
-        }
+        assert_eq!(access.estimated_rows, expected.len().max(1));
     }
     black_box(output);
     (elapsed, profile)

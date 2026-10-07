@@ -13,10 +13,11 @@
 // limitations under the License.
 
 use super::*;
-use hawdb_optimizer::estimate_relational_access_cost;
+use hawdb_optimizer::{estimate_relational_access_cost, estimate_relational_access_path_cost};
 use hawdb_sql::SqlStatement;
 use std::num::NonZeroUsize;
 
+mod cost_contexts;
 mod fixtures;
 use fixtures::*;
 

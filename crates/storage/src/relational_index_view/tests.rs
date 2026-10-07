@@ -13,6 +13,10 @@
 // limitations under the License.
 
 use super::*;
+mod context_posting_count_tests;
+mod mounted_context_tests;
+mod posting_count_tests;
+mod recovery_payload_tests;
 use crate::relational::{
     RelationalColumnSchema, RelationalConstraintIndex, RelationalError, RelationalIndexSchema,
     RelationalIndexShadowConfig, RelationalIndexShadowWriter, RelationalInsertMode,

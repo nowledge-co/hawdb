@@ -17,11 +17,12 @@
 use super::*;
 use crate::{
     relational_join_cost::{
-        estimate_relational_access_path_cost, estimate_relational_join_cost,
-        RelationalJoinCardinality,
+        estimate_relational_access_path_cost_with_context, estimate_relational_join_cost,
+        estimate_relational_join_cost_with_contexts, RelationalJoinCardinality,
     },
-    GroupId, Memo, RelationalInnerJoinEnumeration, RelationalJoinEnumerationError,
-    RelationalJoinGraph, RelationalJoinPlan, RelationalJoinPredicate, RelationalJoinRelation,
+    GroupId, Memo, RelationalAccessCostContext, RelationalInnerJoinEnumeration,
+    RelationalJoinCostContexts, RelationalJoinEnumerationError, RelationalJoinGraph,
+    RelationalJoinPlan, RelationalJoinPredicate, RelationalJoinRelation,
     RelationalJoinRewriteEnumeration, RelationalJoinRewritePlan, RelationalJoinRewriteStep,
     RelationalJoinStep,
 };
@@ -462,6 +463,7 @@ pub(crate) fn enumerate_inner_graph(
     graph: &RelationalJoinGraph,
     required_properties: &RequiredProperties,
     config: RelationalJoinEnumerationConfig,
+    cost_contexts: &RelationalJoinCostContexts,
 ) -> Result<RelationalInnerJoinEnumeration, RelationalJoinEnumerationError> {
     let memo = build_join_memo(
         &graph.relations,
@@ -489,6 +491,7 @@ pub(crate) fn enumerate_inner_graph(
         RelationalCsgCmpRightInputPolicy::ProbeOnly,
         &[],
         EnumerationDomain::Inner,
+        cost_contexts,
         &mut HashMap::new(),
     )
     .ok_or(RelationalJoinEnumerationError::RequiredPropertiesUnsatisfied)?;
@@ -519,6 +522,7 @@ pub(crate) fn enumerate_left_deep_rewrites(
     analysis: RelationalJoinConflictAnalysis,
     required_properties: &RequiredProperties,
     config: RelationalJoinEnumerationConfig,
+    cost_contexts: &RelationalJoinCostContexts,
 ) -> Result<RelationalJoinRewriteEnumeration, RelationalJoinRewriteError> {
     let memo = build_join_memo(
         &problem.relations,
@@ -542,6 +546,7 @@ pub(crate) fn enumerate_left_deep_rewrites(
         RelationalCsgCmpRightInputPolicy::ProbeOnly,
         &[],
         EnumerationDomain::Rewrite,
+        cost_contexts,
         &mut HashMap::new(),
     )
     .ok_or(RelationalJoinEnumerationError::RequiredPropertiesUnsatisfied)?;
@@ -577,6 +582,7 @@ pub(super) fn enumerate_csg_cmp(
     config: RelationalJoinEnumerationConfig,
     right_input_policy: RelationalCsgCmpRightInputPolicy,
     implementations: &[RelationalCsgCmpJoinImplementation],
+    cost_contexts: &RelationalJoinCostContexts,
 ) -> Result<RelationalCsgCmpEnumeration, RelationalJoinRewriteError> {
     let logical_expression_budget = config
         .max_expressions
@@ -626,6 +632,7 @@ pub(super) fn enumerate_csg_cmp(
         right_input_policy,
         implementations,
         EnumerationDomain::CsgCmp,
+        cost_contexts,
         &mut HashMap::new(),
     )
     .ok_or(RelationalJoinEnumerationError::RequiredPropertiesUnsatisfied)?;
@@ -652,6 +659,7 @@ fn best_plan(
     right_input_policy: RelationalCsgCmpRightInputPolicy,
     implementations: &[RelationalCsgCmpJoinImplementation],
     domain: EnumerationDomain,
+    cost_contexts: &RelationalJoinCostContexts,
     cache: &mut HashMap<(GroupId, RequiredProperties), Option<SelectedPlan>>,
 ) -> Option<SelectedPlan> {
     let key = (group, required_properties.clone());
@@ -680,8 +688,9 @@ fn best_plan(
                                 binding: *binding,
                                 access_path: access.clone(),
                             },
-                            cost_breakdown: estimate_relational_access_path_cost(
+                            cost_breakdown: estimate_relational_access_path_cost_with_context(
                                 &access.descriptor,
+                                cost_contexts.for_relation(*binding),
                             ),
                             properties: access.properties.clone(),
                         })
@@ -704,6 +713,7 @@ fn best_plan(
                     right_input_policy,
                     implementations,
                     domain,
+                    cost_contexts,
                     cache,
                 );
                 let right_key = memo
@@ -725,6 +735,7 @@ fn best_plan(
                             .expect("csg-cmp memo tracks every left group")
                             .bindings,
                         domain,
+                        cost_contexts.for_relation(binding),
                     ))
                 } else {
                     None
@@ -745,6 +756,7 @@ fn best_plan(
                                 right_input_policy,
                                 implementations,
                                 domain,
+                                cost_contexts,
                                 cache,
                             ),
                             true,
@@ -814,12 +826,16 @@ fn best_plan(
                                     .satisfies(required_properties)
                                     .then(|| SelectedPlan {
                                         properties,
-                                        cost_breakdown: estimate_relational_join_cost(
-                                            estimate_relational_access_path_cost(
+                                        cost_breakdown: estimate_relational_join_cost_with_contexts(
+                                            estimate_relational_access_path_cost_with_context(
                                                 &implementation.left_access.descriptor,
+                                                cost_contexts
+                                                    .for_relation(implementation.left_binding),
                                             ),
-                                            estimate_relational_access_path_cost(
+                                            estimate_relational_access_path_cost_with_context(
                                                 &implementation.right_access.descriptor,
+                                                cost_contexts
+                                                    .for_relation(implementation.right_binding),
                                             ),
                                             match operator_kind {
                                                 RelationalJoinOperatorKind::Inner => {
@@ -831,6 +847,9 @@ fn best_plan(
                                             },
                                             implementation.algorithm.right_input(),
                                             implementation.selectivity,
+                                            cost_contexts.for_relation(implementation.left_binding),
+                                            cost_contexts
+                                                .for_relation(implementation.right_binding),
                                         ),
                                         root: SelectedNode::Join {
                                             operator_id: *operator_id,
@@ -869,6 +888,7 @@ fn best_probe_relation_plan(
     binding: BindingId,
     outer_bindings: &BindingSet,
     domain: EnumerationDomain,
+    context: RelationalAccessCostContext,
 ) -> Option<SelectedPlan> {
     let access = relations
         .iter()
@@ -878,13 +898,16 @@ fn best_probe_relation_plan(
         .filter(|access| {
             access.supports_probe() && access.required_bindings.is_subset(outer_bindings)
         })
-        .min_by(|left, right| compare_probe_access_paths(left, right, domain))?;
+        .min_by(|left, right| compare_probe_access_paths(left, right, domain, context))?;
     Some(SelectedPlan {
         root: SelectedNode::Relation {
             binding,
             access_path: access.clone(),
         },
-        cost_breakdown: estimate_relational_access_path_cost(&access.descriptor),
+        cost_breakdown: estimate_relational_access_path_cost_with_context(
+            &access.descriptor,
+            context,
+        ),
         properties: access.properties.clone(),
     })
 }
@@ -893,19 +916,21 @@ fn compare_probe_access_paths(
     left: &RelationalJoinAccessPath,
     right: &RelationalJoinAccessPath,
     domain: EnumerationDomain,
+    context: RelationalAccessCostContext,
 ) -> std::cmp::Ordering {
     let rows = |access: &RelationalJoinAccessPath| {
         // CSG-CMP ranks costed probes; the flat frontends rank raw estimates.
         // Preserve the distinction at the zero/one cardinality boundary.
         if domain == EnumerationDomain::CsgCmp {
-            estimate_relational_access_path_cost(&access.descriptor).estimated_rows
+            estimate_relational_access_path_cost_with_context(&access.descriptor, context)
+                .estimated_rows
         } else {
             u64::try_from(access.descriptor.estimated_rows).unwrap_or(u64::MAX)
         }
     };
-    estimate_relational_access_path_cost(&left.descriptor)
+    estimate_relational_access_path_cost_with_context(&left.descriptor, context)
         .cost
-        .cmp(&estimate_relational_access_path_cost(&right.descriptor).cost)
+        .cmp(&estimate_relational_access_path_cost_with_context(&right.descriptor, context).cost)
         .then_with(|| rows(left).cmp(&rows(right)))
         .then_with(|| {
             right
