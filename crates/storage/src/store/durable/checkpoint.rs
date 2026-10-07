@@ -25,21 +25,24 @@ use crate::file_io::{self as fs, File};
 use crate::store::{
     canonical_adjacency_artifact_generation_file, canonical_artifact_generation_file,
     canonical_manifest_generation_file, checkpoint_generation_file, checkpoint_publish_failpoint,
-    file_checksum, property_projection_artifact_generation_file,
-    property_projection_manifest_generation_file, property_spill_artifact_generation_file,
-    property_spill_manifest_generation_file, read_durable_text_bytes_with_limit,
-    relational_checkpoint_generation_file, remove_source_scan_artifacts, safe_reclaim_commit_epoch,
-    source_scan, sync_parent_dir, verify_integrity, wal_generation_file, CheckpointPublishStage,
-    PROJECTED_GRAPHS_FILE,
+    property_projection_artifact_generation_file, property_projection_manifest_generation_file,
+    property_spill_artifact_generation_file, property_spill_manifest_generation_file,
+    read_durable_text_bytes_with_limit, relational_checkpoint_generation_file,
+    remove_source_scan_artifacts, safe_reclaim_commit_epoch, source_scan, sync_parent_dir,
+    verify_integrity, wal_generation_file, CheckpointPublishStage, PROJECTED_GRAPHS_FILE,
 };
 use hawdb_storage::{
     cache::ManifestGeneration,
     config::{DurableCompression, WalReplayConfig},
     durability::durable_replace_file,
     projection::SearchProjectionGraphChange,
-    relational::{encode_relational_checkpoint_to_writer, RelationalDecodeLimits, RelationalState},
+    relational::{
+        encode_relational_checkpoint_with_work_context, CheckpointOutputIo, RelationalDecodeLimits,
+        RelationalState,
+    },
     scan::FileSegmentRangeReader,
 };
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -92,6 +95,7 @@ impl DurableStore {
         state: &RelationalState,
         commit_epoch: u64,
         generation: u64,
+        work: &crate::background::CheckpointWorkContext,
     ) -> Result<Option<DurableArtifactMetadata>> {
         let path = self
             .root_path
@@ -103,28 +107,55 @@ impl DurableStore {
         // hydration or produce an incomplete artifact whose retained overflow
         // segments appear unreachable.
         if state.is_empty() || state.canonical_row_metadata_only() {
+            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+            let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
             match fs::remove_file(&path) {
                 Ok(()) => sync_parent_dir(&path)?,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
             }
+            unit.finish();
+            work.checkpoint().map_err(HawDBError::from_storage_error)?;
             return Ok(None);
         }
         let max_bytes = RelationalDecodeLimits::checkpoint().max_record_bytes;
         let tmp_path = path.with_extension("hawdb.tmp");
+        let mut temporary = super::artifacts::CheckpointMetadataTemporaryPath(None);
         {
-            let mut file = File::create(&tmp_path)?;
-            encode_relational_checkpoint_to_writer(&mut file, commit_epoch, state, max_bytes)
-                .map_err(HawDBError::from_storage_error)?;
+            let mut file = {
+                let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+                let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
+                let file = File::options()
+                    .write(true)
+                    .create_new(true)
+                    .open(&tmp_path)?;
+                temporary.0 = Some(tmp_path.clone());
+                unit.finish();
+                file
+            };
+            encode_relational_checkpoint_with_work_context(
+                &mut file,
+                commit_epoch,
+                state,
+                max_bytes,
+                CheckpointOutputIo::File,
+                work,
+            )
+            .map_err(HawDBError::from_storage_error)?;
+            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+            let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
             file.sync_all()?;
+            unit.finish();
         }
-        let (encoded_len, encoded_checksum, encoded_sha256) = file_checksum(&tmp_path)?;
-        let metadata = DurableArtifactMetadata {
-            encoded_len,
-            encoded_checksum,
-            encoded_sha256,
-        };
-        durable_replace_file(&tmp_path, &path)?;
+        let metadata = checkpoint_file_integrity(&tmp_path, work)?;
+        {
+            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+            let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
+            durable_replace_file(&tmp_path, &path)?;
+            temporary.0 = None;
+            unit.finish();
+        }
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
         Ok(Some(metadata))
     }
 
@@ -489,4 +520,48 @@ impl DurableStore {
         );
         Ok(())
     }
+}
+
+fn checkpoint_file_integrity(
+    path: &Path,
+    work: &crate::background::CheckpointWorkContext,
+) -> Result<DurableArtifactMetadata> {
+    let mut file = {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
+        let file = File::open(path)?;
+        unit.finish();
+        file
+    };
+    let mut hasher = hawdb_integrity::IntegrityHasher::new();
+    let mut encoded_len = 0u64;
+    let mut block = {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        let block = vec![0; 64 * 1024];
+        unit.finish();
+        block
+    };
+    loop {
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
+        let read = file.read(&mut block)?;
+        if read == 0 {
+            unit.finish();
+            break;
+        }
+        encoded_len = encoded_len
+            .checked_add(read as u64)
+            .ok_or_else(|| HawDBError::Storage("checkpoint file length overflows u64".into()))?;
+        hasher.update(&block[..read]);
+        unit.finish();
+    }
+    let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+    let digest = hasher.finish();
+    unit.finish();
+    work.checkpoint().map_err(HawDBError::from_storage_error)?;
+    Ok(DurableArtifactMetadata {
+        encoded_len,
+        encoded_checksum: digest.crc32c.as_u64(),
+        encoded_sha256: digest.sha256,
+    })
 }

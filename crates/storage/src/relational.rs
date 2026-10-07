@@ -45,8 +45,10 @@ pub use codec::{
     RelationalWalBatch,
 };
 pub(crate) use codec::{
-    decode_relational_row_payload, decode_relational_table_schema, encode_relational_row_payload,
+    decode_relational_row_payload, decode_relational_table_schema,
+    encode_relational_checkpoint_with_work_context, encode_relational_row_payload,
     encode_relational_row_payload_with_work_context, encode_relational_table_schema,
+    CheckpointOutputIo,
 };
 #[doc(hidden)]
 pub use compaction::relational_row_page_compaction_publication_config;
@@ -686,6 +688,18 @@ pub(crate) fn encode_relational_primary_key_with_work_context(
     key: &RelationalKey,
     work: &crate::background::CheckpointWorkContext,
 ) -> Result<Vec<u8>, RelationalError> {
+    encode_relational_primary_key_with_checkpoint_work(key, work).map_err(|error| match error {
+        CheckpointKeyEncodeError::Key(error) => error,
+        CheckpointKeyEncodeError::Work(error) => RelationalError::Admission(error.to_string()),
+    })
+}
+
+pub(crate) use ordered_key::CheckpointKeyEncodeError;
+
+pub(crate) fn encode_relational_primary_key_with_checkpoint_work(
+    key: &RelationalKey,
+    work: &crate::background::CheckpointWorkContext,
+) -> Result<Vec<u8>, CheckpointKeyEncodeError> {
     ordered_key::encode_ordered_relational_key_with_work_context(key, work)
 }
 

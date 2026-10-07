@@ -454,7 +454,7 @@ counter/sample and preserve cancellation or QoS rejection without mutating the
 source. Full snapshot/write isolation and out-of-core checkpoint/reopen coverage
 also preserves initial basic-only and retained advanced-statistics behavior.
 This removes database-sized statistics copying from capture/adoption, but page
-directory copies, individual DDL detachment, DTO serialization, allocations and
+directory copies, individual DDL detachment, DTO/output buffers, allocations and
 final-owner destruction still lack complete byte/time bounds and resource
 accounting. These changes do not qualify the entire candidate or commit p99.
 
@@ -470,8 +470,25 @@ and arms cleanup only after successful creation. Tests cancel every actual I/O
 wave, preserve unowned evidence and old manifest/sidecars, and retry the complete
 decoded image. A cancelled reply after complete rename retains the published
 private artifact. Complete output/intermediate buffers, reallocations, recursive
-value depth, individual relational-key codecs and cleanup debt still need hard
+value depth, ordered-key output buffers/comparisons and cleanup debt still need hard
 resource/time bounds. This does not establish whole-candidate admission safety.
+
+The private legacy relational image encoder now traverses borrowed schemas,
+rows and overflow closure under cooperative work boundaries. Variable-width
+schema/default/row bytes and payload writes use 64 KiB chunks. File-backed
+overflow reads bypass serving caches, retain registered file identity and verify
+range CRC32C and full overflow SHA-256 in controlled chunks. File publication
+uses exclusive temporary ownership, controlled sync/readback integrity and
+rename, preserving complete private artifacts after lost responses. Captured
+relational search keys reuse the controlled ordered-key encoder, including
+wide Unicode, embedded zero bytes and escaped binary keys. The ordinary codecs
+remain independent complete-byte and error-order references. Regressions cover
+all 512 logical rows, every actual read/publication I/O admission, representative
+CPU/final boundaries, QoS rejection, unchanged source/manifest/sidecars and
+complete retry/reopen. Whole schema/row/output buffers, reallocations and map
+comparisons still need hard byte/time accounting; relational decode/mount,
+row-page/index/overflow publishers and cleanup debt remain incomplete. These
+boundaries do not qualify full candidate resources or final-writer latency.
 
 `HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
 two schema/data transactions under both durability policies. Its complete

@@ -140,7 +140,16 @@ impl Fixture {
                         .map(|id| {
                             RelationalKey(vec![
                                 RelationalValue::BigInt(id),
-                                RelationalValue::Text(format!("key-{id}-界")),
+                                RelationalValue::Text(if id == 1024 {
+                                    "key-界\0".repeat(25000)
+                                } else {
+                                    format!("key-{id}-界")
+                                }),
+                                RelationalValue::Bytea(if id == 1024 {
+                                    vec![0; 65537]
+                                } else {
+                                    vec![id as u8; 3]
+                                }),
                             ])
                         })
                         .collect(),

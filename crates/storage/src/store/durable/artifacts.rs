@@ -70,7 +70,7 @@ use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-struct CheckpointMetadataTemporaryPath(Option<PathBuf>);
+pub(super) struct CheckpointMetadataTemporaryPath(pub(super) Option<PathBuf>);
 
 impl Drop for CheckpointMetadataTemporaryPath {
     fn drop(&mut self) {

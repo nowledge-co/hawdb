@@ -39,7 +39,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 mod checkpoint;
-pub(crate) use checkpoint::encode_relational_row_payload_with_work_context;
+pub(crate) use checkpoint::{
+    encode_relational_checkpoint_with_work_context,
+    encode_relational_row_payload_with_work_context, CheckpointOutputIo,
+};
 
 const WAL_MAGIC: &[u8; 8] = b"SKRLWAL1";
 const CHECKPOINT_MAGIC: &[u8; 8] = b"SKRLCKP1";

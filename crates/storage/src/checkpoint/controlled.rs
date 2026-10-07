@@ -503,10 +503,16 @@ fn capture_text(
             hex(table.table.as_bytes(), work)?
         ))?;
         for (position, key) in table.primary_keys.iter().enumerate() {
-            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
             let encoded =
-                encode_relational_primary_key(key).map_err(HawDBError::from_storage_error)?;
-            unit.finish();
+                crate::relational::encode_relational_primary_key_with_checkpoint_work(key, work)
+                    .map_err(|error| match error {
+                        crate::relational::CheckpointKeyEncodeError::Key(error) => {
+                            HawDBError::from_storage_error(error)
+                        }
+                        crate::relational::CheckpointKeyEncodeError::Work(error) => {
+                            HawDBError::from_storage_error(error)
+                        }
+                    })?;
             body.write(format_args!(
                 "{}{}",
                 if position == 0 { "" } else { ":" },

@@ -51,16 +51,21 @@ pub(super) fn encode_ordered_relational_key(
     Ok(encoded)
 }
 
+#[derive(Debug)]
+pub(crate) enum CheckpointKeyEncodeError {
+    Key(super::RelationalError),
+    Work(crate::background::CheckpointWorkError),
+}
+
 /// Internal checkpoint codec; ordinary host key encoding remains unchanged.
 pub(super) fn encode_ordered_relational_key_with_work_context(
     key: &RelationalKey,
     work: &crate::background::CheckpointWorkContext,
-) -> Result<Vec<u8>, super::RelationalError> {
-    let stopped = |error: crate::background::CheckpointWorkError| {
-        super::RelationalError::Admission(error.to_string())
+) -> Result<Vec<u8>, CheckpointKeyEncodeError> {
+    let stopped = CheckpointKeyEncodeError::Work;
+    let codec_error = |error: OrderedRelationalKeyError| {
+        CheckpointKeyEncodeError::Key(super::RelationalError::Corruption(error.to_string()))
     };
-    let codec_error =
-        |error: OrderedRelationalKeyError| super::RelationalError::Corruption(error.to_string());
     work.checkpoint().map_err(stopped)?;
     if key.0.is_empty() {
         return Err(codec_error(OrderedRelationalKeyError::Corrupt(

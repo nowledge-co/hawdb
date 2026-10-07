@@ -850,6 +850,7 @@ impl GraphStore {
                 &self.relational_state,
                 commit_epoch,
                 generation,
+                work,
             )?;
             let checkpoint_relational_state = relational_checkpoint_artifact
                 .map(|_| {
