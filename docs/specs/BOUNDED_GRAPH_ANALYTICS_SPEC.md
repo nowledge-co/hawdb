@@ -67,8 +67,11 @@ The facade exposes `GraphAnalyticsRequest`, `GraphAnalyticsAlgorithm`,
    level per original node, independently of row order; its byte budget covers
    those unique node values and the map overhead. `row_count()` counts retained
    node values; `execution_report().output_rows` counts raw hierarchy rows.
-   The staging reservation is deducted from the configured query
-   budget. Iterations and damping are parameters; the projection name is escaped
+   The complete preparation budget is the smaller of the configured query
+   budget and the caller's memory reservation, when supplied. Staging is
+   deducted before binding the remaining query budget to the snapshot. Result
+   reservations keep the caller's ceiling, including an explicit zero.
+   Iterations and damping are parameters; the projection name is escaped
    structural input because the existing CALL grammar requires a string literal.
 2. `Database::publish_graph_analytics` validates the database incarnation,
    branch and source epoch, obtains background admission for the complete
@@ -107,6 +110,17 @@ library's default admission and power-loss-safe durability remain unchanged.
 
 Publication leaves older values on nodes that no longer belong to the projection.
 `Fresh` describes the current publication, not every property with the same name.
+When the host attaches a `RuntimeGovernor`, preparation and publication each
+admit background work with CPU, blocking-task, I/O and memory reservations.
+Preparation separately charges complete staging through the existing retained
+memory contract, including the governor's attached process-memory policy.
+The prepared object retains that memory charge after active work releases its
+execution slots; dropping the object releases the retained charge. Publication
+admits the existing conservative mutation-memory estimate and query resources.
+A caller reservation must cover that work and the retained staging; rejection
+preserves all previous values and provenance. Result admission intersects the
+configured governor's result ceiling instead of increasing it.
+
 Readers must bind the status's `publication_id` and filter by provenance, for
 example `MATCH (n) WHERE n.rank_publication_id = $publication RETURN n.id, n.rank`,
 with explicit row and payload budgets. Reading status and values from the same

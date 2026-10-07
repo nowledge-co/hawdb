@@ -68,6 +68,7 @@ pub struct PreparedGraphAnalytics {
     publication_id: String,
     rows: BTreeMap<i64, (i64, Value)>,
     _staging: hawdb_executor::QueryMemoryLease,
+    _retained: Option<hawdb_qos::RuntimeRetainedMemory>,
     report: QueryStreamReport,
 }
 
@@ -101,15 +102,65 @@ impl Database {
     ) -> Result<PreparedGraphAnalytics> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         validate_request(&request)?;
-        let budget = self.config.execution_memory.query_memory_bytes.get();
+        hawdb_executor::pipeline::runtime_checkpoint(task_context)?;
+        let budget = task_context
+            .and_then(hawdb_core::RuntimeTaskContext::memory_reservation)
+            .map_or(
+                self.config.execution_memory.query_memory_bytes.get(),
+                |reservation| {
+                    self.config
+                        .execution_memory
+                        .query_memory_bytes
+                        .get()
+                        .min(usize::try_from(reservation.memory_bytes()).unwrap_or(usize::MAX))
+                },
+            );
         let query_bytes = budget
             .checked_sub(request.max_staged_bytes.get())
             .and_then(NonZeroUsize::new)
             .ok_or_else(|| {
-                HawDBError::Execution("analytics staging leaves no query_memory_bytes".into())
+                HawDBError::Execution(
+                    "analytics staging leaves no query_memory_bytes within the caller/configured budget".into(),
+                )
             })?;
-        let ledger =
-            hawdb_executor::QueryMemoryLedger::new(self.config.execution_memory.query_memory_bytes);
+        let mut query_context = task_context.cloned();
+        if let Some(context) = &mut query_context
+            && let Some(reservation) = context.memory_reservation()
+        {
+            *context =
+                context
+                    .clone()
+                    .with_memory_reservation(hawdb_core::RuntimeMemoryReservation::new(
+                        query_bytes.get() as u64,
+                        reservation.result_bytes(),
+                    ));
+        }
+        let result_bytes = task_context
+            .and_then(hawdb_core::RuntimeTaskContext::memory_reservation)
+            .map_or(request.max_payload_bytes.get() as u64, |reservation| {
+                reservation
+                    .result_bytes()
+                    .min(request.max_payload_bytes.get() as u64)
+            });
+        let runtime_permit =
+            self.analytics_runtime_permit(query_bytes.get() as u64, result_bytes)?;
+        // Staging survives active work; its extra charge must survive without
+        // keeping CPU, background-task or I/O slots occupied.
+        let retained = runtime_permit
+            .as_ref()
+            .map(|permit| permit.reserve_retained_memory(request.max_staged_bytes.get() as u64))
+            .transpose()
+            .map_err(|admission| {
+                HawDBError::Execution(format!(
+                    "analytics staging memory not admitted: {admission}"
+                ))
+            })?;
+        if let Some(permit) = &runtime_permit {
+            query_context = Some(permit.bind_task_context(query_context.unwrap_or_default()));
+        }
+        let ledger = hawdb_executor::QueryMemoryLedger::new(
+            NonZeroUsize::new(budget).expect("the staging subtraction proved a positive budget"),
+        );
         let staging = ledger
             .account(
                 hawdb_executor::QueryMemoryClass::ResultMaterialization,
@@ -117,7 +168,7 @@ impl Database {
                 request.max_staged_bytes,
             )
             .reserve(request.max_staged_bytes.get())?;
-        let mut snapshot = match task_context {
+        let mut snapshot = match query_context.as_ref() {
             Some(context) => self.begin_read_transaction_with_context(context)?,
             None => self.begin_read_transaction()?,
         };
@@ -207,6 +258,7 @@ impl Database {
             publication_id,
             rows,
             _staging: staging,
+            _retained: retained,
             report,
         })
     }
@@ -261,6 +313,41 @@ impl Database {
                 "complete analytics publication exceeds transaction operation budget".into(),
             ));
         }
+        let staging_bytes = prepared.request.max_staged_bytes.get() as u64;
+        let query_bytes = (self.config.execution_memory.query_memory_bytes.get() as u64)
+            .saturating_sub(staging_bytes);
+        let mutation_bytes = hawdb_executor::memory::estimated_mutation_memory_bytes(
+            self.config.mutation_limits,
+            self.config.max_wal_record_bytes,
+        );
+        let mut working_bytes = query_bytes.max(mutation_bytes);
+        let mut result_bytes = self.config.mutation_limits.max_result_payload_bytes.get() as u64;
+        let mut publication_context = task_context.cloned();
+        if let Some(context) = &mut publication_context
+            && let Some(reservation) = context.memory_reservation()
+        {
+            let available = reservation.memory_bytes().saturating_sub(staging_bytes);
+            if available == 0 || mutation_bytes > available {
+                return Err(HawDBError::Execution(
+                    "complete analytics publication exceeds caller memory reservation".into(),
+                ));
+            }
+            working_bytes = working_bytes.min(available);
+            result_bytes = result_bytes.min(reservation.result_bytes());
+            *context =
+                context
+                    .clone()
+                    .with_memory_reservation(hawdb_core::RuntimeMemoryReservation::new(
+                        working_bytes,
+                        result_bytes,
+                    ));
+        }
+        let runtime_permit = self.analytics_runtime_permit(working_bytes, result_bytes)?;
+        if let Some(permit) = &runtime_permit {
+            publication_context =
+                Some(permit.bind_task_context(publication_context.unwrap_or_default()));
+        }
+        let task_context = publication_context.as_ref();
         let scheduler = self.local_qos_scheduler_for_work();
         let permit = scheduler
             .try_start(WorkRequest::background(WorkClass::Projection, operations))
@@ -331,6 +418,31 @@ impl Database {
         })();
         permit.finish_with_outcome(result.is_ok());
         result
+    }
+
+    fn analytics_runtime_permit(
+        &self,
+        memory_bytes: u64,
+        result_bytes: u64,
+    ) -> Result<Option<hawdb_qos::RuntimePermit>> {
+        self.runtime_governor
+            .as_ref()
+            .map(|governor| {
+                governor.try_admit(
+                    hawdb_qos::RuntimeWorkRequest::background_maintenance(memory_bytes)
+                        .with_result_bytes(
+                            result_bytes.min(governor.snapshot().limits.result_budget_bytes),
+                        )
+                        .with_blocking(true)
+                        .with_io_slots(1),
+                )
+            })
+            .transpose()
+            .map_err(|admission| {
+                HawDBError::Execution(format!(
+                    "background graph analytics runtime not admitted: {admission}"
+                ))
+            })
     }
 
     /// Freshness is conservative: any commit after publication makes the result
