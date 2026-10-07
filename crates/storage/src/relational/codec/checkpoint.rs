@@ -14,6 +14,9 @@
 
 //! Borrowed row payload encoding for a cooperatively admitted checkpoint.
 
+mod mount;
+pub(crate) use mount::decode_relational_checkpoint_file_with_work_context;
+
 use super::*;
 use crate::background::{CheckpointWorkContext, CheckpointWorkError};
 

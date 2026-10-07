@@ -490,6 +490,21 @@ comparisons still need hard byte/time accounting; relational decode/mount,
 row-page/index/overflow publishers and cleanup debt remain incomplete. These
 boundaries do not qualify full candidate resources or final-writer latency.
 
+The private relational reopen path now gives the ordinary parser a controlled
+64 KiB buffered file input. Inspection, header opening and file-identity
+registration acquire I/O admission separately; payload reads/integrity and
+bounded buffer copies release their work and I/O leases between units. Logical
+positions and complete-request truncation checks remain separate from read-ahead.
+Full 512-row/schema/index-posting parity covers both index load modes. Tests
+cancel every actual mount I/O wave and representative/final input units, compare
+13 ordinary corruption/budget diagnostics, deny admission before I/O and retry
+all rows without modifying the source. Parser allocations, UTF-8 validation,
+row/schema validation, page construction, reachability/foreign-key traversal,
+index reconstruction and reader retention still require controls and accounting.
+Read-ahead may discover a physical I/O failure before an earlier malformed
+payload field; both paths must fail closed. Input control does not establish
+a complete mount cancellation, memory or time bound.
+
 `HawDBAutomaticCheckpoint` independently models one old/candidate handoff and
 two schema/data transactions under both durability policies. Its complete
 configured safety graph passed TLC (34,275 distinct states). Five deliberately

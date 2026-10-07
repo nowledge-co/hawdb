@@ -45,10 +45,10 @@ pub use codec::{
     RelationalWalBatch,
 };
 pub(crate) use codec::{
-    decode_relational_row_payload, decode_relational_table_schema,
-    encode_relational_checkpoint_with_work_context, encode_relational_row_payload,
-    encode_relational_row_payload_with_work_context, encode_relational_table_schema,
-    CheckpointOutputIo,
+    decode_relational_checkpoint_file_with_work_context, decode_relational_row_payload,
+    decode_relational_table_schema, encode_relational_checkpoint_with_work_context,
+    encode_relational_row_payload, encode_relational_row_payload_with_work_context,
+    encode_relational_table_schema, CheckpointOutputIo,
 };
 #[doc(hidden)]
 pub use compaction::relational_row_page_compaction_publication_config;

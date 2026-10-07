@@ -15,6 +15,7 @@
 //! Checkpoint preparation and publication, backup, residency and pressure reporting, and published-manifest accessors for [`GraphStore`].
 
 use super::*;
+use crate::relational::decode_relational_checkpoint_file_with_work_context;
 
 struct ExactRelationalOverflowCheckpoint<'a> {
     references: &'a hawdb_storage::relational::RelationalOverflowReferenceSet,
@@ -855,12 +856,13 @@ impl GraphStore {
             let checkpoint_relational_state = relational_checkpoint_artifact
                 .map(|_| {
                     let index_load = self.relational_checkpoint_index_load();
-                    decode_relational_checkpoint_file_with_index_load(
+                    decode_relational_checkpoint_file_with_work_context(
                         &durable
                             .root_path()
                             .join(relational_checkpoint_generation_file(generation)),
                         RelationalDecodeLimits::checkpoint(),
                         index_load,
+                        work,
                     )
                     .map(|checkpoint| checkpoint.state)
                     .map_err(HawDBError::from_storage_error)
