@@ -20625,9 +20625,16 @@ pub(super) fn execute_database_transaction_prepared_sql(
         } else {
             None
         };
-        return Ok(sql_query_result(QueryOutput {
-            rows: crate::relational_sql::format_append_explain(&plan, report.as_ref()).into(),
-        }));
+        return observability::admit_append_explain(
+            crate::relational_sql::format_append_explain(&plan, report.as_ref()),
+            &runtime.config,
+            QueryStreamOptions {
+                max_rows: runtime.config.max_read_result_rows,
+                max_payload_bytes: max_read_result_payload_bytes,
+            },
+            options.task_context,
+        )
+        .map(sql_query_result);
     }
     if matches!(
         prepared.statement(),
@@ -22408,9 +22415,15 @@ where
                 None
             };
             query_runtime::query_runtime_checkpoint(Some(task_context))?;
-            return Ok(QueryOutput {
-                rows: crate::relational_sql::format_append_explain(&plan, report.as_ref()).into(),
-            });
+            return observability::admit_append_explain(
+                crate::relational_sql::format_append_explain(&plan, report.as_ref()),
+                &self.config,
+                QueryStreamOptions {
+                    max_rows,
+                    max_payload_bytes,
+                },
+                Some(task_context),
+            );
         }
 
         self.execute_profiled_relational_sql(
