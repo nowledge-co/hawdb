@@ -706,8 +706,7 @@ impl CheckpointCandidate {
         let mut bytes = self.candidate_wal_bytes;
         let mut expected_lsn = self.captured_next_lsn;
         if expected_lsn < original.next_lsn {
-            let open_wave = replay_io_wave(task)?;
-            let cursor = WalRecordCursor::open_range(
+            let cursor = crate::wal::CheckpointWalRecordCursor::open_range(
                 &original.wal_path,
                 original.checkpoint_tail_record_limit(),
                 original.wal_generation,
@@ -715,15 +714,13 @@ impl CheckpointCandidate {
                 self.captured_wal_bytes
                     .max(WAL_BINARY_FILE_HEADER_BYTES as u64),
                 original.wal_bytes,
+                &work,
             );
             source.poison_on_storage_error(&cursor);
             let mut cursor = cursor?;
-            drop(open_wave);
             loop {
                 replay_checkpoint(task)?;
-                let read_wave = replay_io_wave(task)?;
                 let event = cursor.next();
-                drop(read_wave);
                 source.poison_on_storage_error(&event);
                 let entry = match event? {
                     WalCursorEvent::Entry { entry, .. } => entry,

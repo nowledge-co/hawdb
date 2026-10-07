@@ -9614,10 +9614,11 @@ mod tests {
                 _task: &RuntimeTaskContext,
             ) -> std::result::Result<Box<dyn RuntimeIoWavePermit>, RuntimeIoWaveError> {
                 assert_eq!(slots.get(), 1);
-                // Candidate open, source open, read and write the first
-                // complete transaction, then cancel during the next read.
-                // This controls scheduling without a timing-dependent sleep.
-                if self.acquisitions.fetch_add(1, AtomicOrdering::SeqCst) + 1 == 5 {
+                // For this single-block suffix: candidate/source open, source
+                // seek/read and the first candidate write precede the second
+                // write. Cancel there after exactly one transaction is applied.
+                // All authority/partial-replay/cleanup/reopen assertions remain.
+                if self.acquisitions.fetch_add(1, AtomicOrdering::SeqCst) + 1 == 6 {
                     self.cancellation.cancel();
                 }
                 assert_eq!(self.in_flight.fetch_add(1, AtomicOrdering::SeqCst), 0);
@@ -9663,7 +9664,7 @@ mod tests {
         let result = candidate.catch_up_with_task_context(&captured, &task);
         assert!(matches!(result, Err(HawDBError::Execution(_))));
         assert_eq!(candidate.commit_epoch(), 2);
-        assert_eq!(controller.acquisitions.load(AtomicOrdering::SeqCst), 5);
+        assert_eq!(controller.acquisitions.load(AtomicOrdering::SeqCst), 6);
         assert_eq!(controller.in_flight.load(AtomicOrdering::SeqCst), 0);
         assert!(store
             .publish_checkpoint_candidate(&mut candidate, None, &BTreeSet::new())

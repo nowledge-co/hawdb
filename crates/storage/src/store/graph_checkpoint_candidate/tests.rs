@@ -479,3 +479,168 @@ fn checkpoint_units_wal_payload_actual_suffix_denies_unaccounted_overlap_and_ful
     drop(recovered);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[derive(Debug)]
+struct CursorMemoryWaves {
+    admitted: RuntimeTaskContext,
+    ceiling: u64,
+    available_at_acquire: std::sync::Mutex<Vec<u64>>,
+}
+
+impl CursorMemoryWaves {
+    fn observe(&self) {
+        let available = match self.admitted.reserve_working_memory(self.ceiling) {
+            Err(RuntimeMemoryError::ReservationExceeded {
+                available_bytes, ..
+            }) => available_bytes,
+            _ => panic!("an audited full-budget request must expose remaining real reservation"),
+        };
+        self.available_at_acquire.lock().unwrap().push(available);
+    }
+}
+
+impl RuntimeIoWaveController for CursorMemoryWaves {
+    fn acquire(
+        &self,
+        slots: NonZeroUsize,
+        _task: &RuntimeTaskContext,
+    ) -> std::result::Result<Box<dyn RuntimeIoWavePermit>, RuntimeIoWaveError> {
+        let permit = self
+            .admitted
+            .acquire_io_wave(slots)?
+            .expect("real governor I/O lease");
+        self.observe();
+        Ok(permit)
+    }
+
+    fn try_acquire(
+        &self,
+        slots: NonZeroUsize,
+        _task: &RuntimeTaskContext,
+    ) -> std::result::Result<Option<Box<dyn RuntimeIoWavePermit>>, RuntimeIoWaveError> {
+        match self.admitted.try_acquire_io_wave(slots)? {
+            RuntimeIoWaveTryAcquire::Acquired(Some(permit)) => {
+                self.observe();
+                Ok(Some(permit))
+            }
+            RuntimeIoWaveTryAcquire::Pending => Ok(None),
+            RuntimeIoWaveTryAcquire::Acquired(None) => {
+                panic!("the memory audit must delegate to a real governor I/O lease")
+            }
+        }
+    }
+}
+
+#[test]
+fn checkpoint_units_wal_cursor_actual_suffix_admits_read_buffer_before_payload_work() {
+    let directory = std::env::temp_dir().join(format!(
+        "hawdb-checkpoint-wal-cursor-memory-{}",
+        hawdb_core::generate_uuidv7().unwrap()
+    ));
+    let mut catalog = Catalog::default();
+    let mut store = GraphStore::open(&directory, &mut catalog).unwrap();
+    store
+        .create_node(
+            &mut catalog,
+            "Memory",
+            BTreeMap::from([("id".into(), Value::Int(1))]),
+        )
+        .unwrap();
+    let source = store.checkpoint_source();
+    let source_catalog = catalog.clone();
+    let source_identity = source.checkpoint_source_identity();
+    let mut candidate = source
+        .prepare_checkpoint_candidate(&source_catalog)
+        .unwrap()
+        .unwrap();
+    store
+        .create_node(
+            &mut catalog,
+            "Memory",
+            BTreeMap::from([
+                ("id".into(), Value::Int(2)),
+                ("payload".into(), Value::String("\0界🙂".repeat(30_000))),
+            ]),
+        )
+        .unwrap();
+    let identity = store.checkpoint_source_identity();
+    let durable = store.durable.as_ref().unwrap();
+    let wal_path = durable.wal_path.clone();
+    let manifest_path = durable.manifest_path().to_path_buf();
+    let wal = std::fs::read(&wal_path).unwrap();
+    let manifest = std::fs::read(&manifest_path).unwrap();
+    let expected = store
+        .node_records_owned()
+        .collect::<crate::Result<Vec<_>>>()
+        .unwrap();
+    let ceiling = 2 * 1024 * 1024;
+    let governor = governor(ceiling);
+    let permit = governor
+        .try_admit(RuntimeWorkRequest::background_maintenance(ceiling).with_io_wave_slots(1))
+        .unwrap();
+    let audit = Arc::new(CursorMemoryWaves {
+        admitted: permit.bind_task_context(RuntimeTaskContext::default()),
+        ceiling,
+        available_at_acquire: std::sync::Mutex::new(Vec::new()),
+    });
+    let task = audit
+        .admitted
+        .clone()
+        .with_io_wave_controller(audit.clone());
+    let replay = candidate.catch_up_with_task_context(&store, &task).unwrap();
+    let observed = audit.available_at_acquire.lock().unwrap().clone();
+    assert!(
+        observed.len() >= 3,
+        "the real candidate must open output/source and read a captured record"
+    );
+    // The third wave is at the captured-record read, before encoding/framing
+    // can charge their output. A governor-bound cursor must already own its
+    // physical 32 KiB read buffer. Later output reservations cannot mask it.
+    assert!(
+        observed[2] <= ceiling - crate::wal::frame::WAL_BLOCK_BYTES as u64,
+        "the captured WAL read buffer is unaccounted before payload work: {observed:?}"
+    );
+    assert_eq!(replay.entries, 1);
+    assert_eq!(replay.captured_commit_epoch, store.commit_epoch());
+    assert_eq!(store.checkpoint_source_identity(), identity);
+    assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+    assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest);
+    assert_eq!(
+        candidate
+            .store
+            .as_ref()
+            .unwrap()
+            .node_records_owned()
+            .collect::<crate::Result<Vec<_>>>()
+            .unwrap(),
+        expected
+    );
+    assert!(
+        matches!(task.reserve_working_memory(ceiling), Err(RuntimeMemoryError::ReservationExceeded { available_bytes, .. }) if available_bytes == ceiling)
+    );
+    store
+        .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
+        .unwrap();
+    drop(candidate);
+    drop(task);
+    drop(audit);
+    drop(permit);
+    let closed = governor.snapshot();
+    assert_eq!(closed.active_background_io_slots, 0);
+    assert_eq!(closed.active_cpu_slots, 0);
+    assert_eq!(closed.active_background_tasks, 0);
+    assert_eq!(closed.admitted_memory_bytes, 0);
+    assert_eq!(source.checkpoint_source_identity(), source_identity);
+    drop(source);
+    drop(store);
+    let recovered = GraphStore::open(&directory, &mut catalog).unwrap();
+    assert_eq!(
+        recovered
+            .node_records_owned()
+            .collect::<crate::Result<Vec<_>>>()
+            .unwrap(),
+        expected
+    );
+    drop(recovered);
+    std::fs::remove_dir_all(directory).unwrap();
+}

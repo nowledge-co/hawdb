@@ -18,6 +18,9 @@
 use super::*;
 use crate::background::{CheckpointBytes, CheckpointWorkContext, CheckpointWorkError};
 
+mod reader;
+pub(crate) use reader::{CheckpointBinaryWalReader, CheckpointWalReadEvent};
+
 #[cfg(test)]
 mod tests;
 

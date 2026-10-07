@@ -124,6 +124,38 @@ impl CheckpointBytes {
         &mut self.bytes
     }
 
+    /// Fragment chains grow geometrically. Admit simultaneous old/new
+    /// capacities before copying, without extending beyond the record limit.
+    pub(crate) fn append_growing(
+        &mut self,
+        bytes: &[u8],
+        limit: Option<usize>,
+        work: &CheckpointWorkContext,
+    ) -> Result<(), CheckpointWorkError> {
+        let required = self.bytes.len().checked_add(bytes.len()).ok_or_else(|| {
+            work.record_failure(CheckpointWorkError::Allocation {
+                bytes: u64::MAX,
+                reason: "fragment chain length overflows usize".into(),
+            })
+        })?;
+        if required > self.bytes.capacity() {
+            let capacity = required
+                .max(self.bytes.capacity().saturating_mul(2))
+                .min(limit.unwrap_or(usize::MAX));
+            if capacity < required {
+                return Err(work.record_failure(CheckpointWorkError::Allocation {
+                    bytes: required as u64,
+                    reason: "fragment chain exceeds its checked record limit".into(),
+                }));
+            }
+            let mut replacement = Self::new(capacity, work)?;
+            replacement.append(&self.bytes, work)?;
+            std::mem::swap(self, &mut replacement);
+            drop(replacement);
+        }
+        self.append(bytes, work)
+    }
+
     fn new_with_ownership(
         capacity: usize,
         ownership_bytes: usize,

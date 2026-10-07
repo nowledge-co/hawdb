@@ -1035,11 +1035,51 @@ A genuine candidate regression demonstrates the previous unaccounted overlap:
 a reservation sufficient for the complete framed output incorrectly succeeds
 while its simultaneously live encoded payload is uncharged. The identical
 regression now rejects without changing source WAL/manifest identity and fully
-retries from the same pinned base before ordinary publication/reopen. Further
-focused and supported-profile/full-regression/fuzz qualification remains
-required for this follow-up. Decoded cursor values and replayed/retained runtime
+retries from the same pinned base before ordinary publication/reopen. The payload
+correction is qualified at commit `e883f9f8d8834806edaa28a631179d5d36b2f1e1`
+(tree `6e02de549cb26a482d5e19d5559d79f35b4b3f42`): all four supported lint
+profiles, complete storage/owner/concurrent/graph/pipeline/cascades regressions
+and all 96 mandatory fuzz targets passed. This evidence precedes the physical
+reader correction below. Decoded cursor values and replayed/retained runtime
 ownership are separate gaps; this payload correction does not remove the
 whole-candidate local-operation limit or qualify default sustained progress.
+
+Captured suffix reads now use an admitted physical reader with a 32 KiB input
+buffer, rather than untracked BufReader/block Vecs. Fragment chains retain their
+capacity leases across block reads and into returned records. Geometric growth
+admits simultaneous old/new capacities before bounded copying; declared record
+limits are checked before allocation. File opening, seeking and each bounded
+read use the owner's actual I/O reservation. The same validated file handle is
+retained through the captured interval, with at most one preceding block and no
+reads of later appends. CRC, sequence, stale-generation, torn-tail and corruption
+events retain the ordinary reader's diagnostics and complete byte offsets.
+
+A real candidate governor audit fails against the former reader: its first
+record-read wave still exposes the entire working reservation, before any
+payload/framing output is allocated. The identical regression passes with
+admitted input ownership and complete source identity/publication/reopen checks.
+Ordinary-reader damage/boundary parity, exact one-byte input-overlap denial,
+retained-record ownership and every actual CPU cancellation/retry unit have
+focused checks. A retained record holds the shared admission envelope after
+execution closes; released input-buffer capacity is separately observable on
+the same task, and the envelope returns when the last record drops. The first
+retention fixture incorrectly expected the envelope snapshot to show only the
+record's working bytes; its failure is archived and the corrected assertion
+also checks the actual returned input capacity. Supported-profile/full-suite/
+fuzz qualification remains required. Decoded WalOp and replayed/retained runtime
+allocations, complete sealing work and source ownership remain separate gaps;
+this reader does not authorize replacing whole-candidate QoS admission.
+
+The broader cancellation suite exposed a fixture tied to the fifth I/O
+acquisition as the boundary after one replayed transaction. The controlled
+reader adds an admitted seek and block read, so the fifth acquisition is now
+the first candidate write. The archived failure stopped before that transaction
+was applied. For this single-block fixture, the sixth acquisition is the second
+candidate write; cancellation there preserves the original requirement that
+exactly one transaction has been applied. The epoch, partial-replay rejection,
+source authority, cleanup and complete ordinary-reopen assertions remain
+unchanged. The corrected fixture passed in isolation; the corrected combined
+tree still requires supported-profile and complete regression/fuzz qualification.
 
 The row-page publisher's complete cancellation matrix repeatedly recreated and
 synchronized the identical durable source for every CPU/I/O cut. Two full
