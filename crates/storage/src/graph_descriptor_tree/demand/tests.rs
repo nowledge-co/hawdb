@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use super::*;
-use crate::graph_descriptor_page::{GraphDescriptorPageLimits, ImmutableGraphDescriptorPageBody};
+use crate::graph_descriptor_page::{
+    GraphDescriptorPageLimits, ImmutableGraphDescriptorPage, ImmutableGraphDescriptorPageBody,
+};
 use crate::graph_descriptor_tree::{
     GraphDescriptorTreeBuilder, GraphDescriptorTreePaths, GraphDescriptorTreeWriteOutput,
 };
@@ -175,6 +177,115 @@ fn prefix_scan_is_bounded_ordered_and_cacheable() {
     assert_eq!(warm.storage_bytes_read, 0);
     assert_eq!(warm.page_bytes_decoded, cold.page_bytes_decoded);
     assert_eq!(warm.cache_hits, warm.pages_visited);
+    assert!(!reader.is_poisoned());
+}
+
+#[test]
+fn warm_page_views_reuse_integrity_proof_and_seek_without_full_leaf_walks() {
+    let directory = TestDirectory::new("verified-seek");
+    let mut page_config = config();
+    page_config.page_limits.max_page_bytes = NonZeroUsize::new(64 * 1024).unwrap();
+    page_config.page_limits.max_entries = NonZeroUsize::new(1024).unwrap();
+    let mut builder = GraphDescriptorTreeBuilder::create(
+        paths(directory.path()),
+        GraphDescriptorKind::CanonicalAdjacency,
+        7,
+        19,
+        0x534b_4744_4144_4a31,
+        page_config,
+    )
+    .unwrap();
+    for item in 0u64..1000 {
+        let mut key = 7u64.to_be_bytes().to_vec();
+        key.extend_from_slice(&item.to_be_bytes());
+        builder.push(key, item.to_le_bytes().to_vec()).unwrap();
+    }
+    builder.finish().unwrap().publish().unwrap();
+    let reader = GraphDescriptorTreeDemandReader::open(
+        GraphDescriptorTreeRootReader::open(paths(directory.path()), page_config).unwrap(),
+        page_config,
+        Arc::new(SegmentCache::new(128 * 1024)),
+        StoreId(17),
+    )
+    .unwrap();
+    crate::cache::PAGE_INTEGRITY_CHECKS.set(0);
+    let (cold, _) = scan_from(&reader, 7, 999, 1).unwrap();
+    assert_eq!(cold, vec![(7, 999)]);
+    assert!(crate::cache::PAGE_INTEGRITY_CHECKS.get() > 0);
+
+    crate::cache::PAGE_INTEGRITY_CHECKS.set(0);
+    let (warm, report) = scan_from(&reader, 7, 999, 1).unwrap();
+    assert_eq!(warm, cold);
+    assert_eq!(report.descriptors_emitted, 1);
+    assert!(
+        report.leaf_entries_examined <= 11,
+        "binary search comparisons must also be reported"
+    );
+    assert_eq!(report.cache_hits, report.pages_visited);
+    assert_eq!(report.storage_bytes_read, 0);
+    assert_eq!(crate::cache::PAGE_INTEGRITY_CHECKS.get(), 0);
+    let cache = reader.cache.snapshot();
+    assert_eq!(
+        cache.resident_bytes,
+        report.page_bytes_decoded + 1000 * 8 + 24
+    );
+    assert!(cache.resident_bytes <= cache.capacity_bytes);
+    assert_eq!(cache.pinned_bytes, 0);
+
+    reader
+        .deep_visit(|_, _| Ok(GraphDescriptorTreeScanControl::Continue))
+        .unwrap();
+    assert!(crate::cache::PAGE_INTEGRITY_CHECKS.get() > 0);
+}
+
+#[test]
+fn verified_warm_pages_still_enforce_codec_limits_and_source_binding() {
+    let directory = TestDirectory::new("verified-binding");
+    build(directory.path());
+    let reader = open_reader(directory.path(), 128 * 1024);
+    scan_group(&reader, 7, limits()).unwrap();
+
+    let mut bounded = reader.clone();
+    bounded.config.page_limits.max_entries = NonZeroUsize::new(1).unwrap();
+    assert!(matches!(
+        scan_group(&bounded, 7, limits()),
+        Err(GraphDescriptorTreeError::Page(
+            GraphDescriptorPageError::Admission(_)
+        ))
+    ));
+    assert!(!bounded.is_poisoned());
+
+    let mut bounded_value = reader.clone();
+    bounded_value.config.page_limits.max_value_bytes = NonZeroUsize::new(7).unwrap();
+    assert!(matches!(
+        scan_group(&bounded_value, 7, limits()),
+        Err(GraphDescriptorTreeError::Page(
+            GraphDescriptorPageError::Admission(_)
+        ))
+    ));
+    assert!(!bounded_value.is_poisoned());
+
+    let mut changed_source = reader.clone();
+    Arc::make_mut(&mut changed_source.root).source_commit_epoch += 1;
+    let error = scan_group(&changed_source, 7, limits()).unwrap_err();
+    assert!(error.to_string().contains("does not match its reference"));
+    assert!(changed_source.is_poisoned());
+}
+
+#[test]
+fn indexed_view_rejection_preserves_uncached_reads_and_full_verification() {
+    let directory = TestDirectory::new("view-rejection");
+    build(directory.path());
+    let reader = open_reader(directory.path(), 1);
+    for _ in 0..2 {
+        crate::cache::PAGE_INTEGRITY_CHECKS.set(0);
+        let (values, report) = scan_group(&reader, 7, limits()).unwrap();
+        assert_eq!(values, (0..100).collect::<Vec<_>>());
+        assert_eq!(report.cache_admission_rejections, report.pages_visited);
+        assert_eq!(report.cache_hits, 0);
+        assert!(crate::cache::PAGE_INTEGRITY_CHECKS.get() > 0);
+        assert_eq!(reader.cache.snapshot().resident_bytes, 0);
+    }
     assert!(!reader.is_poisoned());
 }
 

@@ -45,6 +45,16 @@ files remain intact, and authoritative projection definitions recover through
 the existing WAL/catalog path. Such readers query canonical adjacency rather
 than loading a complete old cache before query admission.
 
+Descriptor scans retain a verified page view in the existing bounded segment
+cache. Its charge includes the immutable page image, entry offsets and codec
+limit maxima. Cache hits bind the selecting page's SHA-256, identity, key range
+and current limits before borrowing entries; they do not rehash or allocate
+the entire page. Prefix and lower-bound scans seek through sorted entries,
+including binary-search comparisons in the leaf-read counters. Cache misses
+and full scrub still run the complete checksum and structural codec. Cache
+rejection preserves fully verified uncached execution. No persistent descriptor
+format or cache-capacity default changes.
+
 ## Embedded staging and publication
 
 The facade exposes `GraphAnalyticsRequest`, `GraphAnalyticsAlgorithm`,
