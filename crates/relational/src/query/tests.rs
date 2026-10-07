@@ -26,6 +26,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 
 mod columnar_aggregate;
 mod cross_join;
+mod distinct_output;
 mod having;
 mod ordinary_aggregate;
 

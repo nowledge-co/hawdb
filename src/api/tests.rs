@@ -123,6 +123,7 @@ mod community_lifecycle;
 mod community_memberships;
 mod community_reads;
 mod concurrent_transactions;
+mod default_pipeline;
 mod delete_mutations;
 mod expression_functions;
 mod external_content_artifacts;

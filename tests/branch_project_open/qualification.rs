@@ -13,13 +13,20 @@
 // limitations under the License.
 
 use super::Project;
-use hawdb::{Database, DurabilityPolicy, Value};
+use hawdb::{Database, DurabilityPolicy, HawDBError, Value};
 use std::collections::BTreeMap;
 
 fn select(database: &mut Database, name: &str) {
     database
         .query_sql_with_params("USE BRANCH NAME $1", &[Value::String(name.into())])
         .unwrap();
+}
+
+fn assert_semantic_error(error: HawDBError, expected: &str) {
+    assert!(
+        matches!(&error, HawDBError::Semantic(message) if message == expected),
+        "unexpected error: {error:?}"
+    );
 }
 
 fn assert_branch_state(database: &mut Database, name: &str, applied_at: i64) {
@@ -67,7 +74,12 @@ fn assert_branch_state(database: &mut Database, name: &str, applied_at: i64) {
         );
         assert_eq!(database.commit_epoch().unwrap(), epoch);
     }
-    assert!(database.query_sql("SELECT id FROM rolled_back").is_err());
+    assert_semantic_error(
+        database
+            .query_sql("SELECT id FROM rolled_back")
+            .unwrap_err(),
+        "unknown relational table rolled_back",
+    );
     let missing = database
         .query("MATCH (m:SchemaMigrationLog) WHERE m.id = 'rolled-back' RETURN m.id AS id")
         .unwrap();
@@ -76,6 +88,8 @@ fn assert_branch_state(database: &mut Database, name: &str, applied_at: i64) {
 
 #[test]
 fn branch_schema_constraints_indexes_and_migrations_survive_every_reopen_order() {
+    // Both policies exercise clean checkpoint/reopen isolation. Loss of
+    // unsynchronized writes is qualified separately by the power-loss matrix.
     for durability in [
         DurabilityPolicy::SyncOnEveryWrite,
         DurabilityPolicy::SyncOnCheckpoint,
@@ -165,6 +179,18 @@ fn branch_schema_constraints_indexes_and_migrations_survive_every_reopen_order()
             ["sibling", "main", "child"],
             ["sibling", "child", "main"],
         ] {
+            let mut selected = Database::open_with_durability(&project.0, durability).unwrap();
+            for name in order {
+                select(&mut selected, name);
+                let applied_at = match name {
+                    "main" => 10,
+                    "child" => 20,
+                    "sibling" => 30,
+                    _ => unreachable!(),
+                };
+                assert_branch_state(&mut selected, name, applied_at);
+            }
+            drop(selected);
             for name in order {
                 let mut database = Database::open_with_durability(&project.0, durability).unwrap();
                 select(&mut database, name);
@@ -181,7 +207,7 @@ fn branch_schema_constraints_indexes_and_migrations_survive_every_reopen_order()
 }
 
 #[test]
-fn branch_read_snapshot_keeps_schema_and_data_through_atomic_ddl_publication() {
+fn branch_read_snapshot_keeps_schema_and_data_after_ddl_data_commit() {
     for durability in [
         DurabilityPolicy::SyncOnEveryWrite,
         DurabilityPolicy::SyncOnCheckpoint,
@@ -224,7 +250,10 @@ fn branch_read_snapshot_keeps_schema_and_data_through_atomic_ddl_publication() {
         assert_eq!(previous.rows.len(), 1);
         assert_eq!(previous.rows[0]["body"], Value::String("old".into()));
         assert_eq!(old.commit_epoch(), epoch);
-        assert!(old.query_sql("SELECT tag FROM records").is_err());
+        assert_semantic_error(
+            old.query_sql("SELECT tag FROM records").unwrap_err(),
+            "unknown relational column tag",
+        );
         let current = database
             .query_sql("SELECT id, body, tag FROM records ORDER BY id")
             .unwrap();
@@ -234,7 +263,10 @@ fn branch_read_snapshot_keeps_schema_and_data_through_atomic_ddl_publication() {
         assert_eq!(database.commit_epoch().unwrap(), epoch + 1);
         drop(old);
         select(&mut database, "main");
-        assert!(database.query_sql("SELECT tag FROM records").is_err());
+        assert_semantic_error(
+            database.query_sql("SELECT tag FROM records").unwrap_err(),
+            "unknown relational column tag",
+        );
         assert_eq!(
             database
                 .query_sql("SELECT id FROM records")

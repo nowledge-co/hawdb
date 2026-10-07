@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{MatchNodesReturn, MatchReturn, Statement};
+use crate::{ClauseKind, PathSearch, QueryPipeline, Statement};
 
 /// Syntactic properties of a Cypher read route used by host-level reporting.
 #[doc(hidden)]
@@ -42,100 +42,175 @@ pub fn query_statement_body(statement: &Statement) -> &Statement {
 #[doc(hidden)]
 pub fn classify_read_route_shape(statement: &Statement) -> CypherReadRouteShape {
     let body = query_statement_body(statement);
-    let fast_path_reason = match body {
-        Statement::MatchReturn(query) if is_simple_node_lookup(query) => Some("simple_node_lookup"),
-        Statement::MatchReturn(query) if is_simple_one_hop_expand(query) => {
-            Some("simple_one_hop_expand")
-        }
-        Statement::MatchNodesReturn(query) if is_simple_two_node_lookup(query) => {
-            Some("simple_two_node_lookup")
-        }
-        Statement::ShortestPathReturn(_) => Some("bounded_shortest_path"),
-        _ => None,
-    };
+    if let Statement::Pipeline(query) = body {
+        return classify_pipeline_read_route(query);
+    }
     CypherReadRouteShape {
-        fast_path_reason,
-        has_ordering: statement_has_ordering(body),
-        has_pagination: statement_has_pagination(body),
+        fast_path_reason: None,
+        has_ordering: false,
+        has_pagination: false,
     }
 }
 
-fn statement_has_ordering(statement: &Statement) -> bool {
-    match statement {
-        Statement::MatchReturn(query) => {
-            !query.order_by.is_empty() || !query.with_order_by.is_empty()
+fn classify_pipeline_read_route(query: &QueryPipeline) -> CypherReadRouteShape {
+    let projections = query
+        .clauses
+        .iter()
+        .filter_map(|clause| match &clause.kind {
+            ClauseKind::With(projection) | ClauseKind::Return(projection) => Some(projection),
+            _ => None,
+        });
+    let mut shape = CypherReadRouteShape {
+        fast_path_reason: None,
+        has_ordering: false,
+        has_pagination: false,
+    };
+    for projection in projections {
+        shape.has_ordering |= !projection.order_by.is_empty();
+        shape.has_pagination |= projection.offset.is_some() || projection.limit.is_some();
+    }
+
+    let Some((returned, matched)) = query.clauses.split_last() else {
+        return shape;
+    };
+    let ClauseKind::Return(projection) = &returned.kind else {
+        return shape;
+    };
+    // The legacy seeded read shared MATCH's syntactic lookup/expansion report.
+    // Keep procedure capability and plan-cache eligibility as separate policies.
+    let vector_seeded = matched.first().is_some_and(|clause| {
+        matches!(&clause.kind,
+        ClauseKind::Call { procedure, yields }
+        if matches!(procedure.kind, crate::ProcedureCallKind::VectorSearch(_))
+            && yields.len() == 2
+            && yields[0].name.eq_ignore_ascii_case("id") && yields[0].alias.is_none()
+            && yields[1].name.eq_ignore_ascii_case("score") && yields[1].alias.is_none())
+    });
+    let matched = if vector_seeded {
+        &matched[1..]
+    } else {
+        matched
+    };
+    if projection.distinct
+        || projection.predicate.is_some()
+        || shape.has_ordering
+        || projection.offset.is_some()
+    {
+        return shape;
+    }
+
+    if let [clause] = matched
+        && let ClauseKind::Match {
+            optional: false,
+            patterns,
+            predicate,
+        } = &clause.kind
+        && let [pattern] = patterns.as_slice()
+    {
+        if let [step] = pattern.steps.as_slice()
+            && !vector_seeded
+            && pattern.variable.is_some()
+            && step.relationship.search == PathSearch::AllShortest
+            && projection.limit.is_none()
+        {
+            shape.fast_path_reason = Some("bounded_shortest_path");
+        } else if !pattern.first.properties.is_empty() && predicate.is_none() {
+            shape.fast_path_reason = match pattern.steps.as_slice() {
+                [] => Some("simple_node_lookup"),
+                [step]
+                    if step.relationship.min_hops == 1
+                        && step.relationship.max_hops == 1
+                        && step.relationship.search == PathSearch::All =>
+                {
+                    Some("simple_one_hop_expand")
+                }
+                _ => None,
+            };
         }
-        _ => false,
+        return shape;
     }
-}
 
-fn statement_has_pagination(statement: &Statement) -> bool {
-    match statement {
-        Statement::MatchReturn(query) => {
-            query.offset.is_some()
-                || query.limit.is_some()
-                || query.with_offset.is_some()
-                || query.with_limit.is_some()
+    if vector_seeded {
+        return shape;
+    }
+
+    // The two independent nodes may occur in one MATCH or two consecutive MATCHes.
+    // Any filter, expansion or intervening clause requires the general read route.
+    let mut nodes = 0;
+    for clause in matched {
+        let ClauseKind::Match {
+            optional: false,
+            patterns,
+            predicate: None,
+        } = &clause.kind
+        else {
+            return shape;
+        };
+        for pattern in patterns {
+            if !pattern.steps.is_empty() || pattern.first.properties.is_empty() {
+                return shape;
+            }
+            nodes += 1;
         }
-        Statement::MatchNodesReturn(query) => query.limit.is_some(),
-        _ => false,
     }
-}
-
-fn is_simple_node_lookup(query: &MatchReturn) -> bool {
-    !query.properties.is_empty()
-        && query.expand.is_none()
-        && query.post_match_expand.is_none()
-        && query.optional_expand.is_none()
-        && query.optional_with.is_none()
-        && query.collect_with.is_none()
-        && query.distinct_with.is_none()
-        && query.with_projection.is_none()
-        && query.with_order_by.is_empty()
-        && query.with_offset.is_none()
-        && query.with_limit.is_none()
-        && query.aggregate_with.is_none()
-        && query.aggregate_with_filter.is_none()
-        && query.post_with_match.is_none()
-        && query.predicate.is_none()
-        && !query.distinct
-        && query.order_by.is_empty()
-        && query.offset.is_none()
-}
-
-fn is_simple_one_hop_expand(query: &MatchReturn) -> bool {
-    query.expand.as_ref().is_some_and(|expand| {
-        expand.min_hops == 1
-            && expand.max_hops == 1
-            && !query.properties.is_empty()
-            && query.post_match_expand.is_none()
-            && query.optional_expand.is_none()
-            && query.optional_with.is_none()
-            && query.collect_with.is_none()
-            && query.distinct_with.is_none()
-            && query.with_projection.is_none()
-            && query.with_order_by.is_empty()
-            && query.with_offset.is_none()
-            && query.with_limit.is_none()
-            && query.aggregate_with.is_none()
-            && query.aggregate_with_filter.is_none()
-            && query.post_with_match.is_none()
-            && query.predicate.is_none()
-            && !query.distinct
-            && query.order_by.is_empty()
-            && query.offset.is_none()
-    })
-}
-
-fn is_simple_two_node_lookup(query: &MatchNodesReturn) -> bool {
-    !query.left_properties.is_empty()
-        && !query.right_properties.is_empty()
-        && query.predicate.is_none()
+    if nodes == 2 {
+        shape.fast_path_reason = Some("simple_two_node_lookup");
+    }
+    shape
 }
 
 #[cfg(test)]
 mod tests {
-    use super::classify_read_route_shape;
+    use super::{classify_read_route_shape, CypherReadRouteShape};
+
+    #[test]
+    fn pipeline_read_routes_preserve_fast_paths_and_window_reports() {
+        let cases = [
+            ("MATCH (m:Memory {id: $id}) RETURN m.title AS title", Some("simple_node_lookup"), false, false),
+            ("MATCH (m:Memory {id: $id}) RETURN m.title AS title LIMIT 1", Some("simple_node_lookup"), false, true),
+            ("MATCH (m:Memory {id: $id})-[:MENTIONS]->(e:Entity) RETURN e.id", Some("simple_one_hop_expand"), false, false),
+            ("MATCH (a:Memory {id: $a}), (b:Memory {id: $b}) RETURN a.id, b.id LIMIT 1", Some("simple_two_node_lookup"), false, true),
+            ("MATCH p = (a)-[e* ALL SHORTEST 1..3]-(b) WHERE a.id = $from_id AND b.id = $to_id RETURN length(p) AS hops", Some("bounded_shortest_path"), false, false),
+            ("MATCH (m:Memory {id: $id}) RETURN m.title AS title ORDER BY title LIMIT 1", None, true, true),
+            ("MATCH (m:Memory {id: $id}) RETURN m.title AS title SKIP 1", None, false, true),
+            ("MATCH (m:Memory) WITH m, COUNT(*) AS total ORDER BY total LIMIT 1 RETURN m.id, total", None, true, true),
+            ("MATCH (m:Memory) WHERE m.id = $id RETURN m.title", None, false, false),
+            ("MATCH (m:Memory {id: $id}) SET m.title = $title RETURN m.title", None, false, false),
+            ("CALL vector_search($embedding, topK := 20) YIELD id, score MATCH (m:Memory {id: $id}) RETURN m.title, score", Some("simple_node_lookup"), false, false),
+            ("CALL vector_search($embedding, topK := 20) YIELD id, score MATCH (m:Memory {id: $id}) RETURN m.title, score LIMIT 1", Some("simple_node_lookup"), false, true),
+            ("CALL vector_search($embedding, topK := 20) YIELD id, score MATCH (m:Memory {id: $id})-[:MENTIONS]->(e:Entity) RETURN e.id, score", Some("simple_one_hop_expand"), false, false),
+            ("CALL vector_search($embedding, topK := 20) YIELD id, score MATCH (m:Memory {id: $id}) RETURN m.title, score ORDER BY score DESC LIMIT 1", None, true, true),
+        ];
+        for (source, fast_path_reason, has_ordering, has_pagination) in cases {
+            let expected = CypherReadRouteShape {
+                fast_path_reason,
+                has_ordering,
+                has_pagination,
+            };
+            let parsed = crate::parse(source).unwrap();
+            assert_eq!(
+                classify_read_route_shape(&parsed),
+                expected,
+                "default parser: {source}"
+            );
+            let statement =
+                crate::Statement::Pipeline(Box::new(crate::parse_pipeline(source).unwrap()));
+            assert_eq!(
+                classify_read_route_shape(&statement),
+                expected,
+                "pipeline: {source}"
+            );
+            let wrapped = crate::Statement::CypherQuery(Box::new(crate::CypherQuery {
+                system_variables: Vec::new(),
+                statement,
+            }));
+            assert_eq!(
+                classify_read_route_shape(&wrapped),
+                expected,
+                "wrapped: {source}"
+            );
+        }
+    }
 
     #[test]
     fn classifies_read_route_shape_from_ast_not_query_text() {

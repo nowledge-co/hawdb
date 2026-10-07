@@ -116,7 +116,12 @@ fn chained_optional_match(program: &GraphMatchProgram, input: LogicalPlan) -> Op
     else {
         return None;
     };
-    if expand_source != &source.variable || !source.properties.is_empty() {
+    // Expand cannot encode target-node properties. A filter above an optional
+    // Expand would remove the required NULL row when all endpoints are rejected.
+    if expand_source != &source.variable
+        || !source.properties.is_empty()
+        || !target.properties.is_empty()
+    {
         return None;
     }
     let mut introduced = BTreeSet::from([target.variable.as_str()]);

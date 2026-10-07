@@ -20,7 +20,7 @@ use hawdb_storage::file_io::{File, OpenOptions};
 use hawdb_storage::{NodeId, NodeRecord, RelId, RelRecord};
 use pool::{process_marker, RunLease, SPILL_FILE_PREFIX, SPILL_FILE_SUFFIX};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{BufReader, BufWriter, Cursor, ErrorKind, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Cursor, ErrorKind, Read, Write};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -306,6 +306,16 @@ impl SpillRecordPayload {
 }
 
 impl SpillReader {
+    /// Detect a terminal full batch without allocating another decoded record.
+    pub(crate) fn is_exhausted(&mut self) -> Result<bool> {
+        self.reader
+            .fill_buf()
+            .map(|bytes| bytes.is_empty())
+            .map_err(|error| {
+                HawDBError::Execution(format!("failed to inspect spill record boundary: {error}"))
+            })
+    }
+
     pub fn read(&mut self, max_record_bytes: usize) -> Result<Option<(u64, Binding)>> {
         let mut encoded_len = [0u8; 8];
         let bytes_read = self.reader.read(&mut encoded_len).map_err(|error| {
