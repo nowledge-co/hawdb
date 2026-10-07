@@ -292,34 +292,21 @@ fn check_stream(fixture: &Fixture, options: &RunOptions, only_visible: bool, ide
     let graph = reference_graph(fixture, only_visible, layout);
     let projection = graph.memory_estimate().estimated_bytes;
     if let Some(message) = graph_algorithm_option_error(options) {
-        let output = run(fixture, options, None);
-        assert!(
-            matches!(output.result, Err(HawDBError::Semantic(ref actual)) if actual == message),
-            "{identity}"
-        );
-        assert_eq!(output.peak_bytes, projection, "{identity}");
-        assert_eq!(
-            output.reports.blocking_memory,
-            vec![crate::BlockingOperatorMemoryReport {
-                operator: "GraphAlgorithm".to_string(),
-                budget_bytes: options.memory.blocking_operator_bytes.get(),
-                peak_tracked_bytes: projection,
-                input_rows: graph.node_count(),
-                candidate_rows: 0,
-                replay_rows: 0,
-                repartitions: 0,
-                max_spill_bytes: options.memory.max_spill_bytes.get(),
-                max_spill_runs: options.memory.max_spill_runs.get(),
-                spilled_bytes: 0,
-                spill_run_count: 0,
-                spilled_rows: 0,
-            }],
-            "{identity}"
-        );
-        assert!(
-            output.batches.is_empty() && output.live_bytes.is_empty(),
-            "{identity}"
-        );
+        for output in [
+            run(fixture, options, None),
+            super::streaming::run_external(fixture, options, None),
+        ] {
+            assert!(
+                matches!(output.result, Err(HawDBError::Semantic(ref actual)) if actual == message),
+                "{identity}"
+            );
+            assert_eq!(output.peak_bytes, 0, "{identity}");
+            assert!(output.reports.blocking_memory.is_empty(), "{identity}");
+            assert!(
+                output.batches.is_empty() && output.live_bytes.is_empty(),
+                "{identity}"
+            );
+        }
         return;
     }
     let (mut expected, result_bytes, scratch) = expected_rows(&graph, options);
@@ -340,6 +327,36 @@ fn check_stream(fixture: &Fixture, options: &RunOptions, only_visible: bool, ide
         spill_run_count: 0,
         spilled_rows: 0,
     };
+    let streamed = super::streaming::run_external(fixture, options, None);
+    let actual_streamed: Vec<_> = streamed.batches.into_iter().flatten().collect();
+    let expected_streamed = if options.exit == Exit::Complete {
+        expected.clone()
+    } else {
+        expected
+            .iter()
+            .take(options.memory.batch_rows.get())
+            .cloned()
+            .collect()
+    };
+    assert_eq!(actual_streamed, expected_streamed, "streaming {identity}");
+    if !expected.is_empty() && options.exit == Exit::Error {
+        assert!(streamed.result.is_err(), "streaming {identity}");
+    } else {
+        assert_eq!(
+            streamed.result.unwrap(),
+            if !expected.is_empty() && options.exit == Exit::Stop {
+                BatchControl::Stop
+            } else {
+                BatchControl::Continue
+            },
+            "streaming {identity}"
+        );
+    }
+    assert!(streamed
+        .reports
+        .blocking_memory
+        .iter()
+        .all(|report| report.peak_tracked_bytes <= report.budget_bytes));
     let output = run(fixture, options, None);
     assert_eq!(
         output.reports.blocking_memory,

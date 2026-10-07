@@ -250,11 +250,7 @@ fn graph_handler_errors_release_memory_without_emitting_partial_results() {
             4096,
             "projected graph 'MissingGraph' does not exist",
         ),
-        (
-            scratch,
-            150,
-            "GraphAlgorithm PageRank scratch and result state",
-        ),
+        (scratch, 150, "GraphAlgorithm streaming node scan"),
     ] {
         let (result, reports) = with_graph_context(&plan, 1, budget, None, |context| {
             execute_binding_batches(&plan, context, ExecutionLimit::unlimited(), &mut |_| {
@@ -264,7 +260,11 @@ fn graph_handler_errors_release_memory_without_emitting_partial_results() {
         assert!(result.unwrap_err().to_string().contains(expected));
         if budget == 150 {
             assert_eq!(reports.blocking_memory.len(), 1);
-            assert!(reports.blocking_memory[0].peak_tracked_bytes > 0);
+            assert_eq!(
+                reports.blocking_memory[0].operator,
+                "GraphAlgorithmStreaming"
+            );
+            assert!(reports.blocking_memory[0].peak_tracked_bytes <= budget);
         }
     }
 }

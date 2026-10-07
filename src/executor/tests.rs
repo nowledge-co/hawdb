@@ -17,6 +17,7 @@
 #![allow(deprecated)]
 
 use super::*;
+use hawdb_executor::analytics::try_projected_graph_with_node_filter;
 
 #[path = "tests/clause_mutations.rs"]
 mod clause_mutations;
@@ -1510,13 +1511,30 @@ fn graph_algorithms_admit_direction_specific_projections() {
 }
 
 #[test]
-fn graph_algorithm_rejects_scratch_before_allocation() {
+fn graph_algorithm_rejects_unadmitted_resident_and_streaming_state() {
     let (mut catalog, mut store) = graph_algorithm_fixture();
     let plan = graph_algorithm_plan(GraphAlgorithmKind::PageRank);
     let memory = ExecutionMemoryConfig {
         blocking_operator_bytes: NonZeroUsize::new(150).unwrap(),
         ..spill_test_config("algorithm-scratch-rejection")
     };
+    {
+        let graph = try_projected_graph_with_node_filter(
+            &catalog,
+            &store,
+            &["Memory".to_string()],
+            &["MENTIONS".to_string()],
+            |_| true,
+            ProjectionLayout::Outgoing,
+            ProjectionMemoryBudget::new(memory.blocking_operator_bytes),
+        )
+        .unwrap();
+        let estimate = graph.page_rank_memory_estimate();
+        // The projection fits, but admitting PageRank scratch must select the
+        // external path. Its node state must still fail under the same budget.
+        assert!(estimate.projection_bytes <= memory.blocking_operator_bytes.get());
+        assert!(estimate.total_peak_bytes > memory.blocking_operator_bytes.get());
+    }
     let mut external = NoExternalReadOperator;
 
     let error = execute_with_row_limit_profile_and_external_and_memory(
@@ -1530,9 +1548,13 @@ fn graph_algorithm_rejects_scratch_before_allocation() {
     )
     .unwrap_err();
 
-    assert!(error
-        .to_string()
-        .contains("GraphAlgorithm PageRank scratch and result state"));
+    assert!(matches!(error, HawDBError::Execution(_)));
+    assert!(
+        error
+            .to_string()
+            .contains("GraphAlgorithm streaming node scan"),
+        "{error}"
+    );
     assert!(error
         .to_string()
         .contains("exceeding blocking_operator_bytes 150"));

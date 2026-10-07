@@ -586,6 +586,20 @@ fn projected_graph_registration_and_admission_include_canonical_edges() {
                 .project(layout)
                 .memory_estimate()
                 .estimated_bytes;
+            let runtime = fixture.db.as_ref().unwrap().runtime.get().unwrap();
+            let resident_error = hawdb_executor::analytics::try_projected_graph_with_node_filter(
+                &runtime.catalog,
+                &runtime.store,
+                &["Memory".into()],
+                &["LINK".into()],
+                |_| true,
+                layout,
+                ProjectionMemoryBudget::new(std::num::NonZeroUsize::new(bytes - 1).unwrap()),
+            )
+            .unwrap_err();
+            assert!(resident_error.to_string().contains(&format!(
+                "requires an estimated {bytes} bytes for 4 nodes and 4 relationships"
+            )));
             drop(fixture.db.take());
             let mut config = DatabaseConfig {
                 storage_residency_mode: mode,
@@ -602,9 +616,12 @@ fn projected_graph_registration_and_admission_include_canonical_edges() {
                 .query(&format!("CALL {algorithm}('selected')"))
                 .unwrap_err();
             assert!(
-                error.to_string().contains(&format!(
-                    "requires an estimated {bytes} bytes for 4 nodes and 4 relationships"
-                )),
+                error
+                    .to_string()
+                    .contains("GraphAlgorithm streaming node scan")
+                    && error
+                        .to_string()
+                        .contains(&format!("exceeding blocking_operator_bytes {}", bytes - 1)),
                 "{mode:?} {algorithm}: {error}"
             );
             assert_eq!(fixture.db().commit_epoch(), epoch);
