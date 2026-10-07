@@ -52,7 +52,7 @@ impl Parser<'_> {
         Ok(Statement::GraphAlgorithm(GraphAlgorithm {
             algorithm,
             graph_name,
-            options,
+            options: Box::new(options),
             score_column,
             return_node_identity,
         }))
@@ -382,7 +382,7 @@ impl Parser<'_> {
 
 fn parse_projected_relationship_predicate(input: &str) -> Result<PropertyPredicate> {
     let mut parser = Parser::new(input);
-    let predicate = parser.parse_property_predicate()?;
+    let predicate = parser.parse_predicate(false)?;
     parser.expect_eof()?;
     validate_projected_relationship_predicate(&predicate)?;
     Ok(predicate)

@@ -856,12 +856,12 @@ fn parses_graph_algorithm_calls() {
         Statement::GraphAlgorithm(GraphAlgorithm {
             algorithm: GraphAlgorithmKind::PageRank,
             graph_name: "EntityGraph".to_string(),
-            options: GraphAlgorithmOptions {
+            options: Box::new(GraphAlgorithmOptions {
                 damping: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Float(0.85)))),
                 max_iterations: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(20)))),
                 max_levels: None,
                 ..GraphAlgorithmOptions::default()
-            },
+            }),
             score_column: "pagerank_score".to_string(),
             return_node_identity: false,
         })
@@ -899,7 +899,7 @@ fn parses_graph_algorithm_calls() {
         Statement::GraphAlgorithm(GraphAlgorithm {
             algorithm: GraphAlgorithmKind::PageRank,
             graph_name: "UnifiedGraph".to_string(),
-            options: GraphAlgorithmOptions {
+            options: Box::new(GraphAlgorithmOptions {
                 damping: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Float(0.85)))),
                 max_iterations: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(20)))),
                 max_levels: None,
@@ -910,7 +910,7 @@ fn parses_graph_algorithm_calls() {
                     Value::Bool(true),
                 ))),
                 resolution: None,
-            },
+            }),
             score_column: "rank".to_string(),
             return_node_identity: false,
         })
@@ -921,14 +921,14 @@ fn parses_graph_algorithm_calls() {
         Statement::GraphAlgorithm(GraphAlgorithm {
             algorithm: GraphAlgorithmKind::Louvain,
             graph_name: "EntityGraph".to_string(),
-            options: GraphAlgorithmOptions {
+            options: Box::new(GraphAlgorithmOptions {
                 damping: None,
                 max_iterations: None,
                 max_levels: Some(AstNode::synthetic(ValueExpressionKind::Literal(
                     Value::Int(2)
                 ))),
                 ..GraphAlgorithmOptions::default()
-            },
+            }),
             score_column: "louvain_id".to_string(),
             return_node_identity: false,
         })
@@ -939,12 +939,12 @@ fn parses_graph_algorithm_calls() {
         Statement::GraphAlgorithm(GraphAlgorithm {
             algorithm: GraphAlgorithmKind::PageRank,
             graph_name: "EntityGraph".to_string(),
-            options: GraphAlgorithmOptions {
+            options: Box::new(GraphAlgorithmOptions {
                 damping: Some(AstNode::synthetic(ValueExpressionKind::Parameter("damping".to_string()))),
                 max_iterations: Some(AstNode::synthetic(ValueExpressionKind::Parameter("iterations".to_string()))),
                 max_levels: None,
                 ..GraphAlgorithmOptions::default()
-            },
+            }),
             score_column: "pagerank_score".to_string(),
             return_node_identity: false,
         })

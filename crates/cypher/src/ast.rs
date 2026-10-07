@@ -128,7 +128,7 @@ pub struct ProjectGraph {
 pub struct GraphAlgorithm {
     pub algorithm: GraphAlgorithmKind,
     pub graph_name: String,
-    pub options: GraphAlgorithmOptions,
+    pub options: Box<GraphAlgorithmOptions>,
     pub score_column: String,
     pub return_node_identity: bool,
 }
