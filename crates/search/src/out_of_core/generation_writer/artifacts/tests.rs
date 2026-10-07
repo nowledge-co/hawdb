@@ -85,7 +85,7 @@ fn partial_segment_io_failure_poisoning_prevents_finish_and_releases_ownership()
     assert!(builder.flush_segment().is_err());
     assert!(builder.document_file.metadata().unwrap().len() > 0);
     assert_eq!(builder.metadata_offset, 0);
-    assert!(builder.descriptor.segments.is_empty());
+    assert_eq!(builder.descriptor.segment_count, 0);
     assert!(builder.layouts.is_empty());
     assert!(builder
         .push(1, document(1))
@@ -114,5 +114,40 @@ fn remove_on_drop_guard_removes_the_file_unless_disarmed() {
     drop(guard);
     assert!(disarmed_path.exists());
 
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn completed_segment_metadata_does_not_accumulate_in_the_build_ledger() {
+    let root = test_dir("segment_descriptor_streaming_budget");
+    fs::create_dir(&root).unwrap();
+    let task = context();
+    let memory = BuildMemory::new(&task).unwrap();
+    let fields = super::super::required_descriptor_fields();
+    let options = SearchOutOfCoreGenerationBuildOptions::default();
+    let mut builder =
+        SegmentArtifactBuilder::new_with_context(&root, 1, &fields, &options, memory.clone(), task)
+            .unwrap();
+    for ordinal in 0..4000 {
+        builder.push(ordinal, document(ordinal as usize)).unwrap();
+    }
+    let output = builder.finish(4000).unwrap();
+    assert_eq!(output.layout.segments.len(), 2000);
+    assert!(memory.ledger.snapshot().used_bytes < 1024 * 1024);
+    let descriptor = crate::read_search_segment_descriptor(&root)
+        .unwrap()
+        .unwrap();
+    assert_eq!(descriptor.document_count, 4000);
+    assert_eq!(descriptor.segments.len(), 2000);
+    for (ordinal, entry) in descriptor.segments.iter().enumerate() {
+        assert_eq!(entry.segment_id, ordinal as u64);
+        assert_eq!(entry.document_count, 2);
+        assert_eq!(
+            entry.metadata[crate::SEARCH_DOCUMENT_ID_FIELD].values.len(),
+            2
+        );
+    }
+    drop(output);
+    assert_eq!(memory.ledger.snapshot().used_bytes, 0);
     fs::remove_dir_all(root).unwrap();
 }

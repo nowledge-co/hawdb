@@ -89,17 +89,11 @@ impl NowledgeMemOutOfCoreSearchProjection {
         })
     }
 
-    fn refreshed_reader(&self) -> Result<SearchOutOfCoreReader> {
-        let (path, _) = self.maintenance.as_ref().ok_or_else(|| {
+    fn refresh_reader(&mut self) -> Result<crate::search::SearchOutOfCoreRefreshReport> {
+        self.maintenance.as_ref().ok_or_else(|| {
             HawDBError::Semantic("qualified out-of-core search is not a maintenance target".into())
         })?;
-        SearchOutOfCoreReader::open_with_lexical_policies(
-            path,
-            self.reader.config().clone(),
-            self.reader.analyzer_lexicon().clone(),
-            self.reader.lexical_term_policy(),
-            self.reader.lexical_source_policy(),
-        )
+        self.reader.refresh()
     }
 }
 
@@ -186,8 +180,8 @@ impl NowledgeMemEmbeddedStore {
         let projection = self.out_of_core_search_projection.as_mut().ok_or_else(|| {
             HawDBError::Semantic("incremental search maintenance is not configured".into())
         })?;
-        match projection.refreshed_reader() {
-            Ok(reader) => projection.reader = reader,
+        match projection.refresh_reader() {
+            Ok(_) => {}
             Err(error) => {
                 // Keep published evidence on disk, but do not serve a stale
                 // generation after failing to attach the durable head.
@@ -214,12 +208,12 @@ impl NowledgeMemEmbeddedStore {
         delta: SearchProjectionDelta,
         task: RuntimeTaskContext,
     ) -> Result<SearchProjectionDeltaReport> {
+        // A previous response may have been lost after publication. Re-read the
+        // durable head before retrying instead of assuming that it rolled back.
+        self.refresh_incremental_search_reader()?;
         let projection = self.out_of_core_search_projection.as_mut().ok_or_else(|| {
             HawDBError::Semantic("incremental search maintenance is not configured".into())
         })?;
-        // A previous response may have been lost after publication. Re-read the
-        // durable head before retrying instead of assuming that it rolled back.
-        projection.reader = projection.refreshed_reader()?;
         let (_, options) = projection.maintenance.as_ref().ok_or_else(|| {
             HawDBError::Semantic("qualified search cannot publish maintenance deltas".into())
         })?;
@@ -258,10 +252,10 @@ impl NowledgeMemEmbeddedStore {
                 "incremental catch-up requires nonzero change, projection and batch limits".into(),
             ));
         }
-        let projection = self.out_of_core_search_projection.as_mut().ok_or_else(|| {
+        self.refresh_incremental_search_reader()?;
+        let projection = self.out_of_core_search_projection.as_ref().ok_or_else(|| {
             HawDBError::Semantic("incremental search maintenance is not configured".into())
         })?;
-        projection.reader = projection.refreshed_reader()?;
         let start = projection.freshness();
         let graph_epoch = self.graph.database().commit_epoch()?;
         let mut batch_count = 0usize;
