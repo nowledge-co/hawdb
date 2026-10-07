@@ -64,14 +64,11 @@ covers one native directory traversal, an entry and path conversion, independent
 of the number of generated files. This is a generated-stage bound, not a contract
 for arbitrary externally supplied recursive trees.
 
-The implementation keeps the standard library's handle-relative deletion and
-symlink handling. On pinned Rust 1.97.1, Unix uses fdopendir/openat/unlinkat;
-Windows uses a fixed 1-KiB directory buffer and a handle stack. The generated
-flat layout needs one stack entry. See the pinned
-[Windows implementation](https://github.com/rust-lang/rust/blob/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/sys/fs/windows/remove_dir_all.rs)
-and [Unix implementation](https://github.com/rust-lang/rust/blob/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/sys/fs/unix.rs).
-Deletion remains best effort on filesystem errors and does not observe task
-cancellation during Drop. The spool descriptor closes before stage cleanup;
+The flat-stage walker closes its counted directory iterator before unlinking
+each bounded batch through project-accounted file I/O. It unlinks symlinks without
+following their targets and refuses unexpected child directories rather than
+recursively deleting unknown evidence. Filesystem failures retain a cleanup
+ticket; Drop does not observe task cancellation. The spool descriptor closes before stage cleanup;
 startup, spool-open and final metadata path conversions use the existing admitted
 I/O boundary. Payload owners drop before their leases.
 
@@ -80,6 +77,38 @@ Pressure tests retain their original input/vector working capacity in addition t
 this cleanup owner, then fill the remaining root or exercise the same native
 admission failure. A separate test rejects insufficient cleanup capacity before
 creation; the original failure assertions remain.
+
+## Retained private stages
+
+Each canonical search root admits at most 256 active or pending cleanup owners.
+The process registry uses individually charged map entries, so permanent debt in
+one root cannot consume another root's owner capacity. Ticket fields, canonical
+root paths, conservative map-node capacity and shared ledger metadata are admitted
+before directory creation. The attached host governor admits the same retained
+allowance separately from active work. Cleanup releases ticket allocations before
+their owner reservation; retained debt holds neither active task slots nor a
+project FD domain.
+
+Automatic retry remains root-scoped: at most four stages and four flat batches
+per stage. Explicit retry snapshots at most 256 ticket identities in admitted
+workspace and preserves the caller-error disposition if it cannot start cleanup.
+The process registry still scans admitted owner metadata for lookup and reporting;
+this change does not establish a constant lookup cost as total debt grows.
+
+The public writer regression retains 256 injected, unexpected directories in one
+root, verifies its own capacity refusal (including a Unix symlink alias), then
+publishes and independently opens a generation in another root. It checks exact
+host memory accounting, the single background slot, changed-FD-limit reopen and
+preservation of every injected evidence file. Only fixture-owned injections are
+removed before a successful retry releases all debt. Existing regressions retain
+the sub-8-KiB allowance for their small-path fixtures, caller-failure attribution,
+bounded retries, cancellation and unwind behavior.
+
+This is a partial repair for [#867](https://github.com/nowledge-co/hawdb/issues/867).
+Persistent failures can still fill their own root's capacity. Operator remediation,
+durable crash-orphan ownership, typed maintenance/reopen coordination and native
+Windows alias/handle qualification remain separate requirements. No unknown-stage
+recursive deletion or unaccounted memory growth is authorized.
 
 ## Validation and remaining work
 
