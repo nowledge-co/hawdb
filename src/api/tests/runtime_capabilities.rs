@@ -36,6 +36,12 @@ fn disabled_query_capabilities_fail_before_planning_or_catalog_mutation() {
             .unwrap_err(),
         RuntimeCapability::VectorSearch,
     );
+    for query in [
+        "CALL vector_search($embedding, topK := 1) YIELD id, score MATCH (m:Memory) WHERE m.space_id = $space_id RETURN m.id, score",
+        "CALL vector_search($embedding, topK := 1) YIELD id, score MATCH (m:Memory) WHERE m.space_id = $space_id WITH m, score WITH m, score RETURN m.id, score",
+    ] {
+        assert_capability_error(db.query(query).unwrap_err(), RuntimeCapability::VectorSearch);
+    }
     assert_capability_error(
         db.query("CALL project_graph('EntityGraph', ['Entity'], ['MENTIONS'])")
             .unwrap_err(),

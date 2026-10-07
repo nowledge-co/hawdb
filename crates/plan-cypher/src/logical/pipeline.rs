@@ -35,7 +35,21 @@ pub fn plan_parsed_pipeline_query(
     query: &QueryPipeline,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<LogicalPlan> {
-    bind_pipeline(query, parameters)
+    let plan = bind_pipeline(query, parameters)?;
+    // Multi-WITH statements already had a public generic-plan contract before
+    // default MATCH routing. Keep their EXPLAIN shape and exact-parameter cache
+    // variants; normalize the newly migrated statement shapes after admission.
+    if query
+        .clauses
+        .iter()
+        .filter(|clause| matches!(clause.kind, ClauseKind::With(_)))
+        .nth(1)
+        .is_some()
+    {
+        Ok(plan)
+    } else {
+        Ok(normalize::normalize(plan))
+    }
 }
 
 /// Migration entrypoint with structural read-plan normalization enabled.

@@ -15,6 +15,23 @@
 use super::*;
 use crate::ClauseKind;
 
+fn explicit_generated_bindings(mut statement: Statement) -> Statement {
+    let Statement::Pipeline(query) = &mut statement else {
+        panic!("expected a query pipeline");
+    };
+    for clause in &mut query.clauses {
+        if let ClauseKind::Match { patterns, .. } = &mut clause.kind {
+            for pattern in patterns {
+                pattern.first.anonymous = false;
+                for step in &mut pattern.steps {
+                    step.target.anonymous = false;
+                }
+            }
+        }
+    }
+    statement
+}
+
 #[test]
 fn failed_optional_match_parse_preserves_anonymous_variable_numbering() {
     for (prefix, next_id) in [
@@ -28,7 +45,7 @@ fn failed_optional_match_parse_preserves_anonymous_variable_numbering() {
             "{explicit_prefix} OPTIONAL MATCH (__anon{next_id}:Memory)-[r:MENTIONS]->(e) RETURN COUNT(r)"
         );
         assert_eq!(
-            parse(&anonymous).unwrap(),
+            explicit_generated_bindings(parse(&anonymous).unwrap()),
             parse(&explicit).unwrap(),
             "failed probe changed the AST for {anonymous}"
         );
@@ -147,7 +164,11 @@ fn parser_backtracking_differential_campaign() {
                 .unwrap_or_else(|error| panic!("seed={seed} index={index} {anonymous:?}: {error}"));
             let expected = parse(&explicit)
                 .unwrap_or_else(|error| panic!("seed={seed} index={index} {explicit:?}: {error}"));
-            assert_eq!(actual, expected, "seed={seed} index={index} {anonymous:?}");
+            assert_eq!(
+                explicit_generated_bindings(actual.clone()),
+                expected,
+                "seed={seed} index={index} {anonymous:?}"
+            );
             assert_eq!(parse(&anonymous).unwrap(), actual);
             let invalid = anonymous.replace("[r:MENTIONS]", "[r:MENTIONS*1..2]");
             let error = parse(&invalid).expect_err("multi-hop OPTIONAL MATCH must stay rejected");
@@ -162,4 +183,19 @@ fn parser_backtracking_differential_campaign() {
     }
     assert_eq!(cases, SHAPES * 3);
     println!("Parser backtracking differential: {cases} full-AST comparisons, {cases} rejections");
+}
+
+#[test]
+fn default_parser_rejects_multi_hop_optional_matches() {
+    for relationship in ["-[r:MENTIONS*1..2]->", "<-[r:MENTIONS*1..2]-", "-[r*1..2]-"] {
+        let query =
+            format!("MATCH (e:Entity) OPTIONAL MATCH (e){relationship}(:Memory) RETURN COUNT(r)");
+        let error = parse(&query).expect_err("multi-hop OPTIONAL MATCH must stay rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("OPTIONAL MATCH supports only one-hop relationships"),
+            "{error}"
+        );
+    }
 }

@@ -20,13 +20,11 @@ mod case;
 mod cursor;
 mod ddl;
 mod mutation;
-mod pattern;
 mod pipeline;
 pub use pipeline::parse_pipeline;
 mod predicate;
 mod procedure;
 mod projection;
-mod query;
 mod scalar;
 
 #[cfg(test)]
@@ -168,8 +166,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_statement_inner(&mut self) -> Result<Statement> {
+        self.skip_ws();
         let statement_start = self.checkpoint();
-        if let Some(statement) = self.parse_multi_stage_pipeline_statement() {
+        if !self.next_keyword_is("MATCH")
+            && let Some(statement) = self.parse_multi_stage_pipeline_statement()
+        {
             return Ok(statement);
         }
         match self.parse_statement_dispatch()? {
@@ -188,26 +189,43 @@ impl<'a> Parser<'a> {
                 )))
             }
             StatementDispatch::Merge => self.parse_merge_statement(),
-            StatementDispatch::Match => self.parse_match_statement(),
+            StatementDispatch::Match => {
+                self.restore(statement_start);
+                Ok(Statement::Pipeline(Box::new(
+                    self.parse_public_query_pipeline()?,
+                )))
+            }
             StatementDispatch::Set => self.parse_set_system_variable_statement(),
-            StatementDispatch::Call => self.parse_call_statement(),
+            StatementDispatch::Call => self.parse_call_statement(statement_start.pos),
             StatementDispatch::Checkpoint => Ok(Statement::Checkpoint),
             StatementDispatch::Commit => Ok(Statement::Commit),
             StatementDispatch::Rollback => Ok(Statement::Rollback),
         }
     }
 
+    fn parse_public_query_pipeline(&mut self) -> Result<super::ast::QueryPipeline> {
+        let query = self.parse_query_pipeline()?;
+        // The standalone grammar API admits bounded shapes for binder tests.
+        // Simpler catalogue queries had a one-hop OPTIONAL boundary. Previously
+        // public multi-WITH pipelines already delegated bounded admission to
+        // the binder, so keep that boundary after parsing only once.
+        if !Self::is_multi_stage_pipeline(&query)
+            && query.clauses.iter().any(|clause| {
+                matches!(&clause.kind,
+            super::ast::ClauseKind::Match { optional: true, patterns, .. }
+            if patterns.iter().any(|pattern| pattern.steps.iter().any(|step|
+                step.relationship.min_hops != 1 || step.relationship.max_hops != 1)))
+            })
+        {
+            return Err(self.error("OPTIONAL MATCH supports only one-hop relationships"));
+        }
+        Ok(query)
+    }
+
     fn parse_multi_stage_pipeline_statement(&mut self) -> Option<Statement> {
         let checkpoint = self.checkpoint();
         let pipeline = self.parse_query_pipeline();
-        let is_multi_stage = pipeline.as_ref().is_ok_and(|pipeline| {
-            pipeline
-                .clauses
-                .iter()
-                .filter(|clause| matches!(clause.kind, crate::ClauseKind::With(_)))
-                .count()
-                >= 2
-        });
+        let is_multi_stage = pipeline.as_ref().is_ok_and(Self::is_multi_stage_pipeline);
         if is_multi_stage {
             return pipeline
                 .ok()
@@ -215,6 +233,15 @@ impl<'a> Parser<'a> {
         }
         self.restore(checkpoint);
         None
+    }
+
+    fn is_multi_stage_pipeline(pipeline: &crate::QueryPipeline) -> bool {
+        pipeline
+            .clauses
+            .iter()
+            .filter(|clause| matches!(clause.kind, crate::ClauseKind::With(_)))
+            .count()
+            >= 2
     }
 
     pub(super) fn with_recursion<T>(

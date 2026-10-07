@@ -315,6 +315,8 @@ rust_test(
     # The remaining root tests can still exceed the 300-second default under
     # Prow contention even after the crash matrix and compaction are isolated.
     size = "large",
+    # Temporary headroom for measured decomposition; see issue #870.
+    timeout = "eternal",
     args = [
         "--skip",
         _HAWDB_STORAGE_CRASH_MATRIX_TEST,

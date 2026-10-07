@@ -121,6 +121,41 @@ impl ComposedReturnBinder<'_> {
     }
 }
 
+pub(super) fn scalar_expression_is_scoped(
+    expression: &ScalarExpression,
+    scope: &BTreeSet<String>,
+    column_names: &BTreeSet<String>,
+) -> bool {
+    match &expression.kind {
+        ScalarExpressionKind::Variable(variable)
+        | ScalarExpressionKind::Property { variable, .. }
+        | ScalarExpressionKind::DefaultIfNullOrEq { variable, .. }
+        | ScalarExpressionKind::DefaultIfNull { variable, .. }
+        | ScalarExpressionKind::CasePropertyNotNullOrEq { variable, .. }
+        | ScalarExpressionKind::CasePropertyEqualsRank { variable, .. }
+        | ScalarExpressionKind::CaseLowerPropertyDefault { variable, .. }
+        | ScalarExpressionKind::CaseCoalesceDifferenceFloorZero { variable, .. } => {
+            column_names.contains(variable) || scope.contains(variable)
+        }
+        ScalarExpressionKind::Case { .. }
+        | ScalarExpressionKind::Binary { .. }
+        | ScalarExpressionKind::Not(_)
+        | ScalarExpressionKind::IsNull { .. } => expression
+            .kind
+            .all_children(|child| scalar_expression_is_scoped(child, scope, column_names)),
+        ScalarExpressionKind::Value(_) => true,
+        ScalarExpressionKind::Coalesce(expressions) => expressions
+            .iter()
+            .all(|expression| scalar_expression_is_scoped(expression, scope, column_names)),
+        ScalarExpressionKind::Left { expression, .. } | ScalarExpressionKind::Lower(expression) => {
+            scalar_expression_is_scoped(expression, scope, column_names)
+        }
+        ScalarExpressionKind::Id(_)
+        | ScalarExpressionKind::RelationshipType(_)
+        | ScalarExpressionKind::DatePart { .. } => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
