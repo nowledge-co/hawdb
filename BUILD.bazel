@@ -332,6 +332,8 @@ rust_test(
 rust_test(
     name = "hawdb_unit_row_page_compaction_tests",
     size = "large",
+    # Finite headroom before full-case timing/decomposition; see issue #889.
+    timeout = "eternal",
     args = [
         _HAWDB_ROW_PAGE_COMPACTION_TEST,
         "--exact",

@@ -1,0 +1,12 @@
+# Isolated row-page compaction target exceeded its deadline
+
+Owner: https://github.com/nowledge-co/hawdb/issues/889.
+Qualification affected: https://github.com/nowledge-co/hawdb/pull/874 and https://github.com/nowledge-co/hawdb/issues/502.
+
+The root Prow check for `54c400b0f985beb0d5272f15ec8c7f7134721eff` (Check run `112560281211`, attempt `2107620548979724288`) failed after its isolated row-page compaction target reached 900.0 seconds. The authorized GitHub Check attached build-log excerpt reports all 47 targets executed: 46 passed, one timed out. The fast root target passed at 602.3 seconds and storage crash matrix at 94.1 seconds. A terminal Bazel summary exists, distinguishing this target deadline from a whole-job termination. Raw Prow artifact access remains unverified. No assertion failure, hang cause, or performance regression is established by this excerpt.
+
+The selected test is `store_facade_tests::row_page_compaction::row_page_compaction_converges_disk_bytes_and_preserves_pinned_readers`. It constructs independent Materialized and OutOfCore persistent databases, verifies page-generation churn and compaction reports, preserves pinned-reader visibility, checks live readers, scrubs, releases the pinned snapshot, checkpoints, checks reclaimed physical bytes, reopens and verifies every table again. The immediate mitigation preserves both complete scenarios and all their assertions.
+
+Per the Mem Bazel timeout policy, increase only `//:hawdb_unit_row_page_compaction_tests` to the next standard finite timeout, `eternal` (3600 seconds), in an independent PR before timing/decomposition work. Keep `size = "large"`, the exact test filter, source fixture, dependencies, features, retry policy and default Bazel configuration. The root-fast mitigation https://github.com/nowledge-co/hawdb/issues/870 and spill fuzz owner https://github.com/nowledge-co/hawdb/issues/877 affect different targets.
+
+This change does not improve production compaction speed or prove a completed test. Full unchanged-case execution, actual per-residency duration and a decomposition or retention disposition remain pending under the owner issue. The two residency scenarios have independently created directories and databases, suggesting a possible partition boundary; that is an unmeasured hypothesis, not a qualified decomposition. The latest containing-source CI must also pass. A 3600-second target limit does not independently prove whole-job headroom.
