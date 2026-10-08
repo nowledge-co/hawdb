@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod checkpoint_read;
+
 use crate::file_io::{self as fs, File};
 use crate::graph_descriptor_tree::demand::{
     GraphDescriptorTreeDemandReader, GraphDescriptorTreeReadLimits, GraphDescriptorTreeReadReport,

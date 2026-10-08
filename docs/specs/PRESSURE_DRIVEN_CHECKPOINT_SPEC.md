@@ -1227,6 +1227,37 @@ returns to its measured baseline. Mounted-record hydration, allocator rounding
 and latency, cleanup latency and complete replay/candidate ownership remain
 separate gaps; these controls do not enable production per-unit owner admission.
 
+Private checkpoint canonical point reads now admit captured range input,
+scratch and I/O/copy/hash waves, and visit every framed record before ID
+filtering. Successful-read probes explicitly reserve one I/O slot, matching
+the unchanged production owner; separate zero-slot coverage requires denial
+before metadata lookup. The original zero-slot success fixture and its failed
+first correction remain archived alongside the corrected 1057-record/4096-byte
+proof and its genuine before-fix failure. Work denial/cancellation preserves
+source health and its work-error classification; physical failures retain
+ordinary shared-source poison behavior. Descriptor/cache traversal and ownership,
+FD/disk admission and cleanup still need complete controls.
+
+Private canonical record decoding now visits labels, properties and nested
+values, admits strings/bytes/list capacity and insertion-only tree coverage
+before allocation, and retains those leases with the actual temporary decoded
+record through production delta estimation. Dictionary-key copies validate and
+copy UTF-8 in bounded chunks. Property-spill reads use admitted captured input
+and scratch instead of serving-cache block/Arc value allocation; complete block
+framing is checked under per-value units. Ordinary canonical/spill decoding
+remains independent. Two genuine before-fix probes decoded 1057 dictionary
+properties in 9 work units and allowed more than 1 MiB of key copies under 128 KiB.
+The exact 5286-byte regression fixture remains unchanged. Test-only plain-record
+adapters preserve the earlier buffer/visit probes; production retains the
+private allocation-owning record. Qualification covers actual decoded-record
+retention after execution closes, cancellation and same-reservation retry,
+complete scalar/nested/spill node/relationship parity and ordinary reopen.
+Pinned BTree insertion/comparison implementation, allocation rounding/latency
+and destruction latency remain assumptions. Descriptor/cache memory, overlay
+clones, mutation/replay-created objects and the complete candidate ledger still
+need admission and qualification. These changes do not authorize production
+per-unit owner admission or establish default sustained progress.
+
 The ordinary binary format still rejects nested batches. Three initial related
 fixtures requested that unsupported encoding and failed before replay; the
 original inputs and complete failures are archived. The corrected fixtures

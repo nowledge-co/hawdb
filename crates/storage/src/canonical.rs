@@ -14,7 +14,9 @@
 
 use crate::background::{CheckpointWorkContext, CheckpointWorkError};
 
+mod checkpoint_decode;
 mod checkpoint_point;
+
 use crate::file_io::{self as fs, File};
 use crate::graph_descriptor_tree::demand::{
     GraphDescriptorTreeDemandReader, GraphDescriptorTreeReadLimits, GraphDescriptorTreeReadReport,
@@ -37,6 +39,7 @@ use crate::{
     scan::{FileSegmentRangeReader, SegmentRangeRead, SegmentReadError, SegmentReadRange},
     wire, NodeId, NodeRecord, ProjectedNodeRecord, RelId, RelRecord,
 };
+pub(crate) use checkpoint_decode::CheckpointRecord;
 use hawdb_core::{LabelId, RelTypeId, Value};
 use hawdb_integrity::{IntegrityHasher, Sha256Digest};
 use std::borrow::Borrow;

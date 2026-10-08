@@ -105,6 +105,7 @@ impl GraphStore {
         ))
     }
 
+    #[cfg(test)]
     pub(in crate::store) fn checkpoint_node_owned(
         &self,
         id: NodeId,
@@ -116,6 +117,41 @@ impl GraphStore {
         }
         if let Some(node) = self.nodes.get(&id) {
             return Ok(Some(node.clone()));
+        }
+        Ok(self
+            .checkpoint_mounted_node(id, work)?
+            .map(|record| record.into_record()))
+    }
+
+    #[cfg(test)]
+    pub(in crate::store) fn checkpoint_relationship_owned(
+        &self,
+        id: RelId,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Option<RelRecord>> {
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        if self.relationship_tombstones.contains(&id) {
+            return Ok(None);
+        }
+        if let Some(relationship) = self.relationships.get(&id) {
+            return Ok(Some(relationship.clone()));
+        }
+        Ok(self
+            .checkpoint_mounted_relationship(id, work)?
+            .map(|record| record.into_record()))
+    }
+
+    // Delta estimation calls these only for records absent from the overlay.
+    // Keep the allocation owner with the temporary decoded record through the
+    // estimator's final borrow; a plain owned-record return would release early.
+    pub(in crate::store) fn checkpoint_mounted_node(
+        &self,
+        id: NodeId,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Option<crate::canonical::CheckpointRecord<NodeRecord>>> {
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        if self.node_tombstones.contains(&id) {
+            return Ok(None);
         }
         self.canonical_base
             .as_ref()
@@ -131,17 +167,14 @@ impl GraphStore {
             .map(Option::flatten)
     }
 
-    pub(in crate::store) fn checkpoint_relationship_owned(
+    pub(in crate::store) fn checkpoint_mounted_relationship(
         &self,
         id: RelId,
         work: &crate::background::CheckpointWorkContext,
-    ) -> Result<Option<RelRecord>> {
+    ) -> Result<Option<crate::canonical::CheckpointRecord<RelRecord>>> {
         work.checkpoint().map_err(HawDBError::from_storage_error)?;
         if self.relationship_tombstones.contains(&id) {
             return Ok(None);
-        }
-        if let Some(relationship) = self.relationships.get(&id) {
-            return Ok(Some(relationship.clone()));
         }
         self.canonical_base
             .as_ref()

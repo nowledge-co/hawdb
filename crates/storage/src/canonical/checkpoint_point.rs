@@ -13,7 +13,7 @@
 // limitations under the License.
 
 //! Private checkpoint point reads admit segment bytes and every record visit.
-//! Descriptor lookup and decoded record/spill ownership need separate controls.
+//! Decoded records retain separate ownership; metadata/cache interiors remain gaps.
 
 use super::*;
 use crate::scan::CheckpointRangeReadError;
@@ -23,13 +23,14 @@ impl CanonicalSegmentReader {
         &self,
         id: NodeId,
         work: &CheckpointWorkContext,
-    ) -> Result<Option<NodeRecord>, CanonicalSegmentError> {
+    ) -> Result<Option<CheckpointRecord<NodeRecord>>, CanonicalSegmentError> {
         self.checkpoint_record(CanonicalSegmentKind::Nodes, id.0, work, |id, payload| {
-            decode_node_with_property_spills(
+            checkpoint_decode::node(
                 id,
                 payload,
                 self.property_spills.as_ref(),
-                Some(self.property_keys()),
+                self.property_keys(),
+                work,
             )
         })
     }
@@ -38,17 +39,18 @@ impl CanonicalSegmentReader {
         &self,
         id: RelId,
         work: &CheckpointWorkContext,
-    ) -> Result<Option<RelRecord>, CanonicalSegmentError> {
+    ) -> Result<Option<CheckpointRecord<RelRecord>>, CanonicalSegmentError> {
         self.checkpoint_record(
             CanonicalSegmentKind::Relationships,
             id.0,
             work,
             |id, payload| {
-                decode_relationship_with_property_spills(
+                checkpoint_decode::relationship(
                     id,
                     payload,
                     self.property_spills.as_ref(),
-                    Some(self.property_keys()),
+                    self.property_keys(),
+                    work,
                 )
             },
         )
