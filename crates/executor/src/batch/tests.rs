@@ -49,6 +49,7 @@ fn with_context<T>(
         definition: Some(hawdb_storage::projection::ProjectedGraphDefinition {
             node_labels: vec!["Memory".into()],
             rel_types: vec!["MENTIONS".into()],
+            relationship_predicates: BTreeMap::new(),
         }),
         out_of_core: false,
         ..store::ReadFixture::default()
@@ -117,8 +118,10 @@ fn graph_handler_checks_cancellation_inside_its_execution_boundary() {
                 damping: None,
                 max_iterations: Some(2),
                 max_levels: Some(1),
+                ..Default::default()
             },
             score_column: "score".into(),
+            return_node_identity: false,
             node_visibility_predicate: None,
         };
         let cancellation = hawdb_core::RuntimeCancellationToken::new();

@@ -211,6 +211,10 @@ cargo build --locked --release -p hawdb \
 
 Measured dependency footprints are in [`docs/COMPOSITION_BASELINE.md`](docs/COMPOSITION_BASELINE.md).
 
+### Host-owned memory allocator
+
+HawDB does not install or bundle a custom allocator. The final host binary or WASM `cdylib` chooses its Rust allocator with `#[global_allocator]`, and HawDB's Rust allocations and Zstd context workspaces use that choice. Without host injection, Rust's target default applies. Mem's server selects `mimalloc`; embedding HawDB in that binary reuses the existing selection. See [the allocator contract](docs/ALLOCATORS.md) for native and WASM examples, ownership boundaries, and verification commands.
+
 ### Bazel
 
 ```console
@@ -273,6 +277,7 @@ Alongside the models, the repository keeps differential fuzzing, crash-recovery 
 | [`docs/specs/KNOWLEDGE_RETRIEVAL_PIPELINE_SPEC.md`](docs/specs/KNOWLEDGE_RETRIEVAL_PIPELINE_SPEC.md) | Retrieval stages, scoring, and budgets |
 | [`docs/specs/EMBEDDED_RUNTIME_SPEC.md`](docs/specs/EMBEDDED_RUNTIME_SPEC.md) | Concurrency, durability, resources, telemetry |
 | [`docs/STORAGE.md`](docs/STORAGE.md) | On-disk generations, WAL, and checkpoints |
+| [`docs/ALLOCATORS.md`](docs/ALLOCATORS.md) | Host-owned global allocator contract |
 | [`docs/specs/README.md`](docs/specs/README.md) | Index of normative contracts |
 | [`docs/WASM.md`](docs/WASM.md) | In-tree experimental browser runtime |
 | [hawdb.ai](https://hawdb.ai) | Public site and playground. Source: [hawdb-website](https://github.com/nowledge-co/hawdb-website) |

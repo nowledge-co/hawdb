@@ -105,82 +105,86 @@ fn physical_page_bytes(path: &Path) -> u64 {
 }
 
 #[test]
-fn row_page_compaction_converges_disk_bytes_and_preserves_pinned_readers() {
-    for mode in [
-        StorageResidencyMode::Materialized,
-        StorageResidencyMode::OutOfCore,
-    ] {
-        let path = unique_test_dir(&format!("row_page_compaction_churn_{mode:?}"));
-        let mut db = churn_database(&path, mode, TABLES);
-        let before = db.storage_residency_report().unwrap().relational_rows;
-        assert_eq!(before.root_page_count, LIVE_PAGES);
-        assert_eq!(
-            before.allocated_page_count,
-            TABLES * (TABLES + 1) / 2 + 1,
-            "{before:?}"
-        );
-        assert_eq!(before.physical_generation_count, TABLES as usize);
-        if mode == StorageResidencyMode::OutOfCore {
-            assert!(before.checkpoint_state_metadata_only);
-            assert_eq!(before.materialized_row_count, 0);
-        }
-        let pinned = db.begin_read_transaction().unwrap();
-        let report = db
-            .compact_relational_row_pages(RelationalRowPageCompactionConfig::default())
-            .unwrap();
-        assert_eq!(report.root_pages, LIVE_PAGES);
-        assert_eq!(report.dirty_pages_written, 0);
-        assert_eq!(report.relocated_pages_written, LIVE_PAGES - 1);
-        assert_eq!(report.reused_pages, 1);
-        assert_eq!(report.previous_allocated_pages, before.allocated_page_count);
-        assert_eq!(report.allocated_pages, LIVE_PAGES);
-        let compacted = db.storage_residency_report().unwrap().relational_rows;
-        assert_eq!(compacted.allocated_page_bytes, compacted.live_page_bytes);
-        assert!(physical_page_bytes(&path) > compacted.allocated_page_bytes);
-        for table in 0..TABLES {
-            let sql = format!("SELECT revision FROM documents_{table} WHERE id = 1");
-            let expected = vec![BTreeMap::from([(
-                "revision".to_string(),
-                Value::Int(table as i64),
-            )])];
-            assert_eq!(pinned.query_sql(&sql).unwrap().rows, expected);
-            assert_eq!(db.query_sql(&sql).unwrap().rows, expected);
-        }
-        db.scrub_storage().unwrap();
-        drop(pinned);
-        db.checkpoint().unwrap();
-        let reclaimed = physical_page_bytes(&path);
-        assert_eq!(reclaimed, compacted.live_page_bytes);
-        assert!(reclaimed * 4 < before.allocated_page_bytes);
-        drop(db);
+fn row_page_compaction_converges_disk_bytes_and_preserves_pinned_readers_materialized() {
+    assert_compaction_converges_and_preserves_pinned_readers(StorageResidencyMode::Materialized);
+}
 
-        let mut reopened = Database::open_with_config(&path, open_config(mode)).unwrap();
+#[test]
+fn row_page_compaction_converges_disk_bytes_and_preserves_pinned_readers_out_of_core() {
+    assert_compaction_converges_and_preserves_pinned_readers(StorageResidencyMode::OutOfCore);
+}
+
+fn assert_compaction_converges_and_preserves_pinned_readers(mode: StorageResidencyMode) {
+    let path = unique_test_dir(&format!("row_page_compaction_churn_{mode:?}"));
+    let mut db = churn_database(&path, mode, TABLES);
+    let before = db.storage_residency_report().unwrap().relational_rows;
+    assert_eq!(before.root_page_count, LIVE_PAGES);
+    assert_eq!(
+        before.allocated_page_count,
+        TABLES * (TABLES + 1) / 2 + 1,
+        "{before:?}"
+    );
+    assert_eq!(before.physical_generation_count, TABLES as usize);
+    if mode == StorageResidencyMode::OutOfCore {
+        assert!(before.checkpoint_state_metadata_only);
+        assert_eq!(before.materialized_row_count, 0);
+    }
+    let pinned = db.begin_read_transaction().unwrap();
+    let report = db
+        .compact_relational_row_pages(RelationalRowPageCompactionConfig::default())
+        .unwrap();
+    assert_eq!(report.root_pages, LIVE_PAGES);
+    assert_eq!(report.dirty_pages_written, 0);
+    assert_eq!(report.relocated_pages_written, LIVE_PAGES - 1);
+    assert_eq!(report.reused_pages, 1);
+    assert_eq!(report.previous_allocated_pages, before.allocated_page_count);
+    assert_eq!(report.allocated_pages, LIVE_PAGES);
+    let compacted = db.storage_residency_report().unwrap().relational_rows;
+    assert_eq!(compacted.allocated_page_bytes, compacted.live_page_bytes);
+    assert!(physical_page_bytes(&path) > compacted.allocated_page_bytes);
+    for table in 0..TABLES {
+        let sql = format!("SELECT revision FROM documents_{table} WHERE id = 1");
+        let expected = vec![BTreeMap::from([(
+            "revision".to_string(),
+            Value::Int(table as i64),
+        )])];
+        assert_eq!(pinned.query_sql(&sql).unwrap().rows, expected);
+        assert_eq!(db.query_sql(&sql).unwrap().rows, expected);
+    }
+    db.scrub_storage().unwrap();
+    drop(pinned);
+    db.checkpoint().unwrap();
+    let reclaimed = physical_page_bytes(&path);
+    assert_eq!(reclaimed, compacted.live_page_bytes);
+    assert!(reclaimed * 4 < before.allocated_page_bytes);
+    drop(db);
+
+    let mut reopened = Database::open_with_config(&path, open_config(mode)).unwrap();
+    assert_eq!(
+        reopened
+            .storage_residency_report()
+            .unwrap()
+            .relational_rows
+            .allocated_page_count,
+        LIVE_PAGES
+    );
+    reopened.scrub_storage().unwrap();
+    for table in 0..TABLES {
         assert_eq!(
             reopened
-                .storage_residency_report()
+                .query_sql(&format!(
+                    "SELECT revision FROM documents_{table} WHERE id = 1"
+                ))
                 .unwrap()
-                .relational_rows
-                .allocated_page_count,
-            LIVE_PAGES
+                .rows,
+            vec![BTreeMap::from([(
+                "revision".to_string(),
+                Value::Int(table as i64)
+            )])]
         );
-        reopened.scrub_storage().unwrap();
-        for table in 0..TABLES {
-            assert_eq!(
-                reopened
-                    .query_sql(&format!(
-                        "SELECT revision FROM documents_{table} WHERE id = 1"
-                    ))
-                    .unwrap()
-                    .rows,
-                vec![BTreeMap::from([(
-                    "revision".to_string(),
-                    Value::Int(table as i64)
-                )])]
-            );
-        }
-        drop(reopened);
-        std::fs::remove_dir_all(path).unwrap();
     }
+    drop(reopened);
+    std::fs::remove_dir_all(path).unwrap();
 }
 
 #[test]

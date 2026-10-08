@@ -14,6 +14,7 @@ pub(super) fn bind_procedure_pipeline(
             name,
             node_labels,
             rel_types,
+            relationship_predicates,
         } => {
             if !yields.is_empty() || !tail.is_empty() {
                 return Err(unsupported("project_graph does not yield query rows"));
@@ -22,6 +23,9 @@ pub(super) fn bind_procedure_pipeline(
                 name: name.clone(),
                 node_labels: node_labels.clone(),
                 rel_types: rel_types.clone(),
+                relationship_predicates: bind_projected_relationship_predicates(
+                    relationship_predicates,
+                )?,
             });
         }
         ProcedureCallKind::GraphAlgorithm {
@@ -34,10 +38,18 @@ pub(super) fn bind_procedure_pipeline(
                 CypherGraphAlgorithmKind::Louvain => "louvain_id",
             };
             let mut score = default_score.to_string();
-            let mut columns = vec!["node".to_string()];
-            if *algorithm == CypherGraphAlgorithmKind::Louvain {
-                columns.push("level".to_string());
+            let yield_has_node_id = yields
+                .iter()
+                .any(|item| item.name.eq_ignore_ascii_case("node_id"));
+            let yield_has_node_label = yields
+                .iter()
+                .any(|item| item.name.eq_ignore_ascii_case("node_label"));
+            if yield_has_node_id != yield_has_node_label {
+                return Err(unsupported(
+                    "graph algorithm identity requires both node_id and node_label",
+                ));
             }
+            let mut return_node_identity = yield_has_node_id;
             // PageRank historically exposes the requested rank spelling directly.
             if yields.is_empty()
                 && let [clause] = tail
@@ -46,17 +58,22 @@ pub(super) fn bind_procedure_pipeline(
                 && names
                     .first()
                     .is_some_and(|name| name.eq_ignore_ascii_case("node"))
-                && let Some(last) = names.last()
-                && (last.eq_ignore_ascii_case(default_score)
+                && let Some((identity, score_name)) =
+                    graph_algorithm_return_shape(*algorithm, &names)
+                && (score_name.eq_ignore_ascii_case(default_score)
                     || (*algorithm == CypherGraphAlgorithmKind::PageRank
-                        && last.eq_ignore_ascii_case("rank")))
-                && (names.len() == 2
-                    || (*algorithm == CypherGraphAlgorithmKind::Louvain
-                        && names.len() == 3
-                        && names[1].eq_ignore_ascii_case("level")))
+                        && score_name.eq_ignore_ascii_case("rank")))
             {
-                score = last.clone();
+                return_node_identity = identity;
+                score = score_name.to_string();
                 tail = &[];
+            }
+            let mut columns = vec!["node".to_string()];
+            if return_node_identity {
+                columns.extend(["node_id".to_string(), "node_label".to_string()]);
+            }
+            if *algorithm == CypherGraphAlgorithmKind::Louvain {
+                columns.push("level".to_string());
             }
             columns.push(score.clone());
             (
@@ -65,6 +82,7 @@ pub(super) fn bind_procedure_pipeline(
                     graph_name: graph_name.clone(),
                     options: bind_graph_algorithm_options(options, parameters)?,
                     score_column: score,
+                    return_node_identity,
                     node_visibility_predicate: None,
                 },
                 columns,
@@ -175,6 +193,38 @@ fn identity_columns(projection: &ProjectionClause) -> Option<Vec<String>> {
             _ => None,
         })
         .collect()
+}
+
+fn graph_algorithm_return_shape(
+    algorithm: CypherGraphAlgorithmKind,
+    names: &[String],
+) -> Option<(bool, &str)> {
+    let mut index = 1;
+    let identity = names
+        .get(index)
+        .is_some_and(|name| name.eq_ignore_ascii_case("node_id"));
+    if identity {
+        if !names
+            .get(index + 1)
+            .is_some_and(|name| name.eq_ignore_ascii_case("node_label"))
+        {
+            return None;
+        }
+        index += 2;
+    } else if names
+        .get(index)
+        .is_some_and(|name| name.eq_ignore_ascii_case("node_label"))
+    {
+        return None;
+    }
+    if algorithm == CypherGraphAlgorithmKind::Louvain
+        && names
+            .get(index)
+            .is_some_and(|name| name.eq_ignore_ascii_case("level"))
+    {
+        index += 1;
+    }
+    (index + 1 == names.len()).then(|| (identity, names[index].as_str()))
 }
 
 fn bind_yields(

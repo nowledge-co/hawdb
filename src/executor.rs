@@ -29,7 +29,6 @@ use crate::schema::Catalog;
 use crate::store::{GraphStore, MutationLimits, ProjectedGraphDefinition, ScanPruningReport};
 use crate::value::Value;
 use hawdb_core::RuntimeTaskContext;
-use hawdb_executor::analytics::try_projected_graph_with_node_filter;
 use hawdb_executor::ExecutionLimit;
 use std::collections::BTreeMap;
 #[cfg(test)]

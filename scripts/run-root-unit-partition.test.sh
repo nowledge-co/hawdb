@@ -35,6 +35,14 @@ if [[ "${1:-}" == --list ]]; then
   echo 'api::tests::graph_analytics::owned: test'
   echo 'api::tests::storage_recovery::owned: test'
   echo 'api::tests::query_execution::owned: test'
+  if [[ "${PARTITION_PROBE_OVERLAP:-0}" == 1 ]]; then
+    echo 'analytics::overlap: test'
+    echo 'api::tests::query_execution::analytics::overlap: test'
+  fi
+  if [[ "${PARTITION_PROBE_SAME_OWNER:-0}" == 1 ]]; then
+    echo 'query_control::owned: test'
+    echo 'api::tests::query_execution::query_control::owned: test'
+  fi
   echo '4 tests, 0 benchmarks'
   exit 0
 fi
@@ -77,4 +85,10 @@ expect_exit 42 env PARTITION_PROBE_EXIT=42 "${runner}" "${fixture}/binary" gener
 expect_exit 17 env PARTITION_PROBE_DISCOVERY_EXIT=17 "${runner}" "${fixture}/binary" general
 expect_exit 1 env PARTITION_PROBE_EMPTY=1 "${runner}" "${fixture}/binary" concurrent
 expect_exit 64 "${runner}" "${fixture}/binary" unknown
+rm -f "${PARTITION_PROBE_ARGS}"
+expect_exit 1 env PARTITION_PROBE_OVERLAP=1 "${runner}" "${fixture}/binary" general
+[[ "$(<"${fixture}/error")" == *"root unit partition name overlap"* ]]
+[[ ! -e "${PARTITION_PROBE_ARGS}" ]]
+env PARTITION_PROBE_SAME_OWNER=1 "${runner}" "${fixture}/binary" general
+[[ "$(<"${PARTITION_PROBE_ARGS}")" != *"query_control::owned"* ]]
 echo "root unit partition ownership, caller arguments and failure propagation passed"

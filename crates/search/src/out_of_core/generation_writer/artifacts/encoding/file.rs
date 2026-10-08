@@ -53,7 +53,8 @@ pub(in super::super) fn append_segment<T: RecordSource>(
     };
     #[cfg(test)]
     evidence::started();
-    let mut encoder = zstd::stream::write::Encoder::new(&mut compressed, SEARCH_COMPRESSION_LEVEL)?;
+    let mut encoder =
+        hawdb_storage::compression::Encoder::new(&mut compressed, SEARCH_COMPRESSION_LEVEL)?;
     let mut digest = Crc32cHasher::new();
     encoding.write_to(&mut CheckedWriter::new(
         &mut DigestWriter {

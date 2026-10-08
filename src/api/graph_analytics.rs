@@ -28,6 +28,8 @@ const STAGED_HEADER_BYTES: usize = 1024;
 pub enum GraphAnalyticsAlgorithm {
     PageRank(crate::PageRankOptions),
     Louvain(crate::LouvainOptions),
+    PageRankProcedure(crate::PageRankProcedureOptions),
+    LouvainProcedure(crate::LouvainProcedureOptions),
 }
 
 /// Row and payload limits cover the complete query output, including every
@@ -211,11 +213,23 @@ impl Database {
                     ));
                 }
                 let level = match request.algorithm {
-                    GraphAnalyticsAlgorithm::PageRank(_) => 0,
-                    GraphAnalyticsAlgorithm::Louvain(options) => match row.get("level") {
+                    GraphAnalyticsAlgorithm::PageRank(_)
+                    | GraphAnalyticsAlgorithm::PageRankProcedure(_) => 0,
+                    GraphAnalyticsAlgorithm::Louvain(_)
+                    | GraphAnalyticsAlgorithm::LouvainProcedure(_) => match row.get("level") {
                         Some(Value::Int(level))
-                            if usize::try_from(*level)
-                                .is_ok_and(|level| level < options.max_levels.max(1)) =>
+                            if usize::try_from(*level).is_ok_and(|level| {
+                                level
+                                    < match request.algorithm {
+                                        GraphAnalyticsAlgorithm::Louvain(options) => {
+                                            options.max_levels.max(1)
+                                        }
+                                        GraphAnalyticsAlgorithm::LouvainProcedure(options) => {
+                                            options.max_levels.max(1)
+                                        }
+                                        _ => unreachable!(),
+                                    }
+                            }) =>
                         {
                             *level
                         }
@@ -552,10 +566,31 @@ fn validate_request(request: &GraphAnalyticsRequest) -> Result<()> {
     }
     match request.algorithm {
         GraphAnalyticsAlgorithm::PageRank(options)
-            if !options.damping.is_finite() || !(0.0..=1.0).contains(&options.damping) =>
+            if !options.damping.is_finite() || !(0.0..1.0).contains(&options.damping) =>
         {
             Err(HawDBError::Execution(
-                "analytics damping must be finite and between zero and one".into(),
+                "analytics damping must be finite and in [0, 1)".into(),
+            ))
+        }
+        GraphAnalyticsAlgorithm::PageRankProcedure(options)
+            if !options.damping.is_finite() || !(0.0..1.0).contains(&options.damping) =>
+        {
+            Err(HawDBError::Execution(
+                "analytics damping must be finite and in [0, 1)".into(),
+            ))
+        }
+        GraphAnalyticsAlgorithm::PageRankProcedure(options)
+            if !options.tolerance.is_finite() || options.tolerance < 0.0 =>
+        {
+            Err(HawDBError::Execution(
+                "analytics tolerance must be finite and non-negative".into(),
+            ))
+        }
+        GraphAnalyticsAlgorithm::LouvainProcedure(options)
+            if !options.resolution.is_finite() || options.resolution <= 0.0 =>
+        {
+            Err(HawDBError::Execution(
+                "analytics resolution must be finite and greater than 0".into(),
             ))
         }
         _ => Ok(()),
@@ -591,14 +626,28 @@ fn algorithm_query(
             HawDBError::Execution("analytics iteration count exceeds Cypher integer".into())
         })
     };
-    match request.algorithm {
-        GraphAnalyticsAlgorithm::PageRank(options) => Ok((
-            format!("CALL page_rank('{graph}', maxIterations := $iterations, dampingFactor := $damping) RETURN node, pagerank_score"),
-            BTreeMap::from([("iterations".into(), integer(options.iterations)?), ("damping".into(), Value::Float(options.damping))]), "pagerank_score",
+    let algorithm = match request.algorithm {
+        GraphAnalyticsAlgorithm::PageRank(options) => {
+            GraphAnalyticsAlgorithm::PageRankProcedure(crate::PageRankProcedureOptions {
+                iterations: options.iterations,
+                damping: options.damping,
+                ..crate::PageRankProcedureOptions::default()
+            })
+        }
+        GraphAnalyticsAlgorithm::Louvain(options) => {
+            GraphAnalyticsAlgorithm::LouvainProcedure(options.into())
+        }
+        procedure => procedure,
+    };
+    match algorithm {
+        GraphAnalyticsAlgorithm::PageRank(_) | GraphAnalyticsAlgorithm::Louvain(_) => unreachable!("legacy options converted above"),
+        GraphAnalyticsAlgorithm::PageRankProcedure(options) => Ok((
+            format!("CALL page_rank('{graph}', maxIterations := $iterations, dampingFactor := $damping, tolerance := $tolerance, normalizeInitial := $normalize) RETURN node, pagerank_score"),
+            BTreeMap::from([("iterations".into(), integer(options.iterations)?), ("damping".into(), Value::Float(options.damping)), ("tolerance".into(), Value::Float(options.tolerance)), ("normalize".into(), Value::Bool(options.normalize_initial))]), "pagerank_score",
         )),
-        GraphAnalyticsAlgorithm::Louvain(options) => Ok((
-            format!("CALL louvain('{graph}', maxIterations := $iterations, maxLevels := $levels) RETURN node, level, louvain_id"),
-            BTreeMap::from([("iterations".into(), integer(options.max_iterations)?), ("levels".into(), integer(options.max_levels)?)]), "louvain_id",
+        GraphAnalyticsAlgorithm::LouvainProcedure(options) => Ok((
+            format!("CALL louvain('{graph}', maxIterations := $iterations, {} := $levels, resolution := $resolution) RETURN node, level, louvain_id", if options.hierarchy { "maxLevels" } else { "maxPhases" }),
+            BTreeMap::from([("iterations".into(), integer(options.max_iterations)?), ("levels".into(), integer(options.max_levels)?), ("resolution".into(), Value::Float(options.resolution))]), "louvain_id",
         )),
     }
 }

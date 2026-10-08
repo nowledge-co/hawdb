@@ -12,90 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::observation::Observe;
 use super::*;
 use crate::lexical_projection::{LexicalProjectionConfig, LexicalProjectionWriter};
 use crate::{SearchDocument, SearchIndex};
 use hawdb_core::RuntimeMemoryReservation;
-use hawdb_executor::QueryMemoryLedger;
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-
-#[derive(Default)]
-struct Observation {
-    exits: Vec<(std::thread::ThreadId, usize, QueryMemoryLedger)>,
-}
-
-thread_local! {
-    static OBSERVING: RefCell<Option<Arc<Mutex<Observation>>>> = const { RefCell::new(None) };
-    static WORKER_EXIT: RefCell<Option<WorkerExit>> = const { RefCell::new(None) };
-}
-
-pub(super) struct WorkerExit {
-    observation: Arc<Mutex<Observation>>,
-    ledger: QueryMemoryLedger,
-}
-
-impl Drop for WorkerExit {
-    fn drop(&mut self) {
-        self.observation.lock().unwrap().exits.push((
-            std::thread::current().id(),
-            self.ledger.snapshot().used_bytes,
-            self.ledger.clone(),
-        ));
-    }
-}
-
-pub(super) fn capture(memory: &BuildMemory) -> Option<WorkerExit> {
-    OBSERVING.with(|current| {
-        current.borrow().as_ref().map(|observation| WorkerExit {
-            observation: Arc::clone(observation),
-            ledger: memory.ledger.clone(),
-        })
-    })
-}
-
-pub(super) fn install(observation: Option<WorkerExit>) {
-    WORKER_EXIT.with(|slot| *slot.borrow_mut() = observation);
-}
-
-struct Observe(Arc<Mutex<Observation>>);
-
-impl Observe {
-    fn new() -> Self {
-        let observation = Arc::new(Mutex::new(Observation::default()));
-        OBSERVING.with(|current| {
-            assert!(current.replace(Some(Arc::clone(&observation))).is_none());
-        });
-        Self(observation)
-    }
-
-    fn assert_joined(&self, workers: usize) {
-        let observation = self.0.lock().unwrap();
-        assert_eq!(observation.exits.len(), workers);
-        for (worker, bytes, _) in &observation.exits {
-            assert_ne!(*worker, std::thread::current().id());
-            assert!(
-                *bytes >= STACK_BYTES,
-                "thread lease released before TLS exit"
-            );
-        }
-    }
-
-    fn assert_released(&self) {
-        for (_, _, ledger) in &self.0.lock().unwrap().exits {
-            assert_eq!(ledger.snapshot().used_bytes, 0);
-        }
-    }
-}
-
-impl Drop for Observe {
-    fn drop(&mut self) {
-        OBSERVING.with(|current| current.replace(None));
-    }
-}
+use std::sync::Arc;
 
 struct Directory {
     path: PathBuf,

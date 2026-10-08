@@ -60,6 +60,13 @@ Arrow integration is not part of the replacement boundary. Nowledge stores graph
 identity and scalar properties in the graph database, while vector search remains
 outside the graph engine.
 
+`project_graph` relationship predicates are limited to 16 KiB of decoded UTF-8
+and 16 comparisons, including comparisons nested in `AND` groups. Projection
+maps reject duplicate node-label and relationship-type keys. Algorithm calls
+reject repeated options, including alternative spellings of the same option,
+instead of choosing a value silently. These checks run before a projection can
+be registered or replaced; existing unfiltered list forms keep their capacity.
+
 ## Crate Layout
 
 HawDB follows a RisingWave/Chryso-style workspace-and-facade layout. The root

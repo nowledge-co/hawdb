@@ -122,14 +122,15 @@ impl Parser<'_> {
             "project_graph" => {
                 let name = self.parse_string()?;
                 self.expect_char(',')?;
-                let node_labels = self.parse_string_list()?;
+                let node_labels = self.parse_project_graph_node_labels()?;
                 self.expect_char(',')?;
-                let rel_types = self.parse_project_graph_rel_types()?;
+                let (rel_types, relationship_predicates) = self.parse_project_graph_rel_types()?;
                 self.skip_procedure_args_tail()?;
                 ProcedureCallKind::ProjectGraph {
                     name,
                     node_labels,
                     rel_types,
+                    relationship_predicates,
                 }
             }
             "page_rank" | "pagerank" | "louvain" => {
@@ -143,7 +144,7 @@ impl Parser<'_> {
                 ProcedureCallKind::GraphAlgorithm {
                     algorithm,
                     graph_name,
-                    options,
+                    options: Box::new(options),
                 }
             }
             _ => return Err(self.error("unsupported procedure")),
