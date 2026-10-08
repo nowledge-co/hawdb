@@ -185,7 +185,9 @@ fn checkpoint_units_append_capture_preserves_admission_and_cross_run_corruption_
     let scheduler = scheduler();
     let probe = Arc::new(CheckpointWorkProbe::default());
     assert_eq!(
-        state.checkpoint_rows_with_work_context(4096, &probe.context(scheduler.clone())),
+        state
+            .checkpoint_rows_with_work_context(4096, &probe.context(scheduler.clone()))
+            .map(|rows| rows.to_vec()),
         state.checkpoint_rows(4096)
     );
     assert_eq!(probe.completed.load(AtomicOrdering::SeqCst), 0);
@@ -217,7 +219,12 @@ fn checkpoint_units_append_capture_preserves_admission_and_cross_run_corruption_
         ..corrupt
     };
     assert_eq!(
-        corrupt.checkpoint_rows_with_work_context(4097, &Default::default()),
+        corrupt
+            .checkpoint_rows_with_work_context(4097, &Default::default())
+            .map(|rows| rows.to_vec()),
         corrupt.checkpoint_rows(4097)
     );
 }
+
+#[path = "memory_tests.rs"]
+mod memory_tests;

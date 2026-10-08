@@ -15,9 +15,12 @@
 //! Cooperative live-row capture for private checkpoint preparation.
 
 use super::{compare_rows, AppendState, AppendTableError, AppendTableRow};
-use crate::background::{CheckpointWorkContext, CheckpointWorkError};
+use crate::background::{CheckpointAllocationOwner, CheckpointWorkContext, CheckpointWorkError};
 use std::cmp::{Ordering, Reverse};
-use std::collections::{BinaryHeap, VecDeque};
+use std::collections::BinaryHeap;
+
+mod memory;
+use memory::CheckpointAppendRows;
 
 const SORT_ROWS_PER_UNIT: usize = 1024;
 
@@ -56,7 +59,7 @@ impl AppendState {
         &self,
         max_rows: usize,
         work: &CheckpointWorkContext,
-    ) -> Result<Vec<AppendTableRow>, AppendTableError> {
+    ) -> Result<CheckpointAppendRows, AppendTableError> {
         work.checkpoint().map_err(work_error)?;
         if self.live_rows > max_rows {
             return Err(AppendTableError::Admission(format!(
@@ -64,22 +67,18 @@ impl AppendState {
                 self.live_rows
             )));
         }
-        let unit = work.start_unit().map_err(work_error)?;
-        let mut rows = Vec::with_capacity(self.live_rows);
+        let mut rows = CheckpointAppendRows::new(self.live_rows, work)?;
         let mut batch = self.live_head.as_deref();
-        unit.finish();
         while let Some(current) = batch {
             let unit = work.start_unit().map_err(work_error)?;
             let input = current.rows.iter();
             batch = current.previous.as_deref();
             unit.finish();
             for row in input {
-                let unit = work.start_unit().map_err(work_error)?;
-                rows.push(row.clone());
-                unit.finish();
+                rows.push_clone(row, work)?;
             }
         }
-        let rows = sort_rows_with_work_context(rows, work)?;
+        let rows = sort_captured_rows(rows, work, true)?;
         if rows.len() != self.live_rows {
             return Err(inconsistent_batches());
         }
@@ -108,38 +107,85 @@ pub(super) fn sort_rows_with_work_context(
     rows: Vec<AppendTableRow>,
     work: &CheckpointWorkContext,
 ) -> Result<Vec<AppendTableRow>, AppendTableError> {
+    // The existing compaction API still returns an unleased Vec. Live capture
+    // retains its typed owner directly; compaction ownership remains separate.
+    Ok(sort_captured_rows(CheckpointAppendRows::unadmitted(rows), work, false)?.rows)
+}
+
+fn scratch_capacity<T>(
+    capacity: usize,
+    allocations: &mut CheckpointAllocationOwner,
+    work: &CheckpointWorkContext,
+    admitted: bool,
+) -> Result<Vec<T>, AppendTableError> {
+    if admitted {
+        allocations
+            .reserve(memory::capacity_bytes::<T>(capacity)?, work)
+            .map_err(work_error)?;
+    }
+    work.checkpoint().map_err(work_error)?;
+    memory::allocate_capacity(capacity, work)
+}
+
+fn sort_captured_rows(
+    mut rows: CheckpointAppendRows,
+    work: &CheckpointWorkContext,
+    admitted: bool,
+) -> Result<CheckpointAppendRows, AppendTableError> {
     let row_count = rows.len();
-    let mut input = rows.into_iter();
+    let run_count = row_count.div_ceil(SORT_ROWS_PER_UNIT);
+    // Leases outlive all scratch buffers, also on a cancellation/error unwind.
+    let mut scratch = CheckpointAllocationOwner::default();
+    let mut input = std::mem::take(&mut rows.rows).into_iter();
     let mut runs = Vec::new();
     while !input.as_slice().is_empty() {
         let unit = work.start_unit().map_err(work_error)?;
-        let mut run = input.by_ref().take(SORT_ROWS_PER_UNIT).collect::<Vec<_>>();
+        if runs.is_empty() {
+            runs = scratch_capacity(run_count, &mut scratch, work, admitted)?;
+        }
+        let capacity = input.as_slice().len().min(SORT_ROWS_PER_UNIT);
+        let mut run = scratch_capacity(capacity, &mut scratch, work, admitted)?;
+        run.extend(input.by_ref().take(capacity));
         run.sort_unstable_by(compare_rows);
-        runs.push(VecDeque::from(run));
+        runs.push(run.into_iter());
         unit.finish();
     }
     let mut heap = BinaryHeap::new();
     for (run, rows) in runs.iter_mut().enumerate() {
         let unit = work.start_unit().map_err(work_error)?;
-        if let Some(row) = rows.pop_front() {
+        if run == 0 {
+            heap = BinaryHeap::from(scratch_capacity(run_count, &mut scratch, work, admitted)?);
+        }
+        if let Some(row) = rows.next() {
             heap.push(Reverse(MergeHead { row, run }));
         }
         unit.finish();
     }
     let unit = work.start_unit().map_err(work_error)?;
-    let mut sorted = Vec::with_capacity(row_count);
+    let memory = if admitted {
+        memory::reserve_capacity::<AppendTableRow>(row_count, work)?
+    } else {
+        None
+    };
+    let mut sorted = memory::allocate_capacity(row_count, work)?;
     unit.finish();
     while !heap.is_empty() {
         let unit = work.start_unit().map_err(work_error)?;
         let Reverse(head) = heap.pop().expect("heap was checked nonempty");
         sorted.push(head.row);
-        if let Some(row) = runs[head.run].pop_front() {
+        if let Some(row) = runs[head.run].next() {
             heap.push(Reverse(MergeHead { row, run: head.run }));
         }
         unit.finish();
     }
+    drop(heap);
+    drop(runs);
+    drop(input);
+    drop(scratch);
+    rows.rows = sorted;
+    rows.memory = memory;
     work.checkpoint().map_err(work_error)?;
-    Ok(sorted)
+    Ok(rows)
 }
 
 struct MergeHead {

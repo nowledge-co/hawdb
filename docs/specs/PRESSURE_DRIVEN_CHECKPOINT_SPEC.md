@@ -1435,3 +1435,31 @@ publication builders, root registration/GC, captured range maps, retained
 capacity and complete candidate resources still need separate accounting.
 This ownership correction does not enable production per-unit owner admission
 or establish default sustained progress, power-loss or release performance.
+
+Private live append capture now returns an allocation-owning row array instead
+of detaching a raw Vec from its working reservation. Complete input/output row
+capacity, cloned table names and partition/order key arrays and variable payloads
+are admitted before fallible exact-capacity allocation. Immutable RelationalRow
+values remain shared with the source. Bounded records preserve the original
+one-row CPU unit; larger text/binary keys copy in at most 64 KiB units, align
+borrowed UTF-8 slices, and wide key arrays copy entries cooperatively. Sorting
+preallocates run/heap capacity without implicit growth, keeps input/run/output
+capacity charged during their overlap, and releases scratch only after its real
+buffers are destroyed. Returned rows retain their leases after task/source close.
+
+Two real-governor before probes failed: a one-byte allowance still captured all
+5127 rows, and task close released admission while captured allocations lived.
+Both pass after correction. The original three capture assertions, counts,
+cancellation cuts and budgets are retained; two error-only Result expressions
+add return-type adapters that never execute for their unchanged Err cases. A
+pinned formatter-equivalence receipt records this adjustment and the original
+8015-byte fixture is archived. Nine focused cases pass, including the existing
+store candidate test, exact initial array denial, measured sort overlap, typed
+memory denial and complete retry under the same actual reservation, and every
+actual CPU cancellation point across Unicode/binary and 1057-column partition
+keys. Scoped strict profiles, wrong controls and full qualification remain
+required. Compaction still uses its existing unleased Vec path; source/shared
+row retention, variable-width sorting/comparison, schema/segment/decode buffers,
+allocator rounding/latency and complete publication/cleanup resources remain
+separate gaps. This correction does not enable whole-owner per-unit admission
+or qualify default sustained progress or full issue acceptance.
