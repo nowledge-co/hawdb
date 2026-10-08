@@ -21,6 +21,12 @@ wasm-bindgen query bridge (#734). `examples/wasm-playground/` supplies the page
 and a single **Dedicated Web Worker** (#735). It runs on the user's device,
 not in Cloudflare Workers. Neither is a production browser SDK.
 
+The deployed site and playground are [hawdb.ai](https://hawdb.ai), built from
+[nowledge-co/hawdb-website](https://github.com/nowledge-co/hawdb-website).
+That repository is the consuming frontend: it pins a HawDB revision and binds
+`Database::new`, `query`, `query_sql`, and `Value`. The pages below describe
+the in-tree development example, which is separate from that deployment.
+
 ## Query playground
 
 Install the pinned Rust toolchain, `wasm32-unknown-unknown` target, LLVM tools,

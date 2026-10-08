@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Project website
+    url: https://hawdb.ai
+    about: Landing page and in-browser playground for HawDB.
   - name: Contribution guide
     url: https://github.com/nowledge-co/hawdb/blob/main/CONTRIBUTING.md
     about: Read the build, reporting, testing, and review guidelines before contributing.

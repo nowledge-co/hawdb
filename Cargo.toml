@@ -6,7 +6,7 @@ rust-version = "1.97.1"
 license = "Apache-2.0"
 description = "An embedded Rust graph database for local data-plane workloads"
 repository = "https://github.com/nowledge-co/hawdb"
-homepage = "https://github.com/nowledge-co/hawdb"
+homepage = "https://hawdb.ai"
 readme = "README.md"
 
 [dependencies]
@@ -132,7 +132,7 @@ rust-version = "1.97.1"
 license = "Apache-2.0"
 description = "An embedded Rust graph database for local data-plane workloads"
 repository = "https://github.com/nowledge-co/hawdb"
-homepage = "https://github.com/nowledge-co/hawdb"
+homepage = "https://hawdb.ai"
 
 [profile.dev]
 opt-level = 0
