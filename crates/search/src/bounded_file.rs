@@ -20,6 +20,19 @@ use std::path::Path;
 const READ_BUFFER_BYTES: usize = 8192;
 
 pub(crate) fn read_bounded_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
+    read_file(path, max_bytes, None)
+}
+
+/// Read an immutable artifact whose exact length is bound by its manifest.
+///
+/// Reserving that admitted length once avoids geometric reallocations. On some
+/// allocators repeated reallocations leave resident pages after the Vec drops.
+/// Mutable markers and files without a bound length retain progressive growth.
+pub(crate) fn read_bound_file(path: &Path, expected_bytes: u64, name: &str) -> Result<Vec<u8>> {
+    read_file(path, expected_bytes, Some((expected_bytes, name)))
+}
+
+fn read_file(path: &Path, max_bytes: u64, expected_bytes: Option<(u64, &str)>) -> Result<Vec<u8>> {
     // Admission and reading must refer to the same opened file, even if its
     // pathname is replaced while a generation is being published.
     let mut file = File::open(path)?;
@@ -30,6 +43,13 @@ pub(crate) fn read_bounded_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>> 
             path.display()
         )));
     }
+    if let Some((expected, name)) = expected_bytes
+        && length != expected
+    {
+        return Err(HawDBError::Storage(format!(
+            "{name} length or checksum mismatch"
+        )));
+    }
     let length = usize::try_from(length).map_err(|_| {
         HawDBError::Storage(format!(
             "search artifact {} length does not fit in memory",
@@ -38,14 +58,27 @@ pub(crate) fn read_bounded_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>> 
     })?;
     #[cfg(test)]
     tests::after_admission(path);
-    let bytes = read_admitted_bytes(&mut file, length, path)?;
+    let bytes = match expected_bytes {
+        Some(_) => read_admitted_bytes_with_capacity(&mut file, length, path, length)?,
+        None => read_admitted_bytes(&mut file, length, path)?,
+    };
     #[cfg(test)]
     tests::after_read(path);
     Ok(bytes)
 }
 
 fn read_admitted_bytes(reader: &mut impl Read, length: usize, path: &Path) -> Result<Vec<u8>> {
+    read_admitted_bytes_with_capacity(reader, length, path, 0)
+}
+
+fn read_admitted_bytes_with_capacity(
+    reader: &mut impl Read,
+    length: usize,
+    path: &Path,
+    initial_capacity: usize,
+) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
+    reserve(&mut bytes, initial_capacity, path)?;
     let mut buffer = [0u8; READ_BUFFER_BYTES];
     while bytes.len() < length {
         let count = buffer.len().min(length - bytes.len());
@@ -55,14 +88,8 @@ fn read_admitted_bytes(reader: &mut impl Read, length: usize, path: &Path) -> Re
             // Grow with data actually read, without quadratic reallocations or
             // reserving the entire caller budget for a small or truncated file.
             let capacity = needed.max(bytes.capacity().saturating_mul(2)).min(length);
-            bytes
-                .try_reserve_exact(capacity - bytes.len())
-                .map_err(|error| {
-                    HawDBError::Storage(format!(
-                        "search artifact {} allocation failed: {error}",
-                        path.display()
-                    ))
-                })?;
+            let additional = capacity - bytes.len();
+            reserve(&mut bytes, additional, path)?;
         }
         bytes.extend_from_slice(&buffer[..count]);
     }
@@ -81,6 +108,15 @@ fn read_admitted_bytes(reader: &mut impl Read, length: usize, path: &Path) -> Re
             Err(error) => return Err(error.into()),
         }
     }
+}
+
+fn reserve(bytes: &mut Vec<u8>, additional: usize, path: &Path) -> Result<()> {
+    bytes.try_reserve_exact(additional).map_err(|error| {
+        HawDBError::Storage(format!(
+            "search artifact {} allocation failed: {error}",
+            path.display()
+        ))
+    })
 }
 
 #[cfg(test)]

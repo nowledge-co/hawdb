@@ -1,5 +1,5 @@
 use super::*;
-use hawdb_plan_cypher::LogicalPlan;
+use hawdb_plan_cypher::{GraphMatchStep, LogicalPlan};
 
 // The oracle lowers the generic operators directly, independently of optimizer fast paths.
 fn lower(plan: LogicalPlan) -> PhysicalPlan {
@@ -149,6 +149,126 @@ fn optional_null_import_never_matches_real_node_zero() {
     assert!(rows.is_empty());
     let rows = execute("MATCH (n:Memory) OPTIONAL MATCH (n)-[:ABSENT]->(m:Memory) WITH m AS kept OPTIONAL MATCH (kept)-[:MENTIONS]->(target:Memory) RETURN COUNT(target) AS count").unwrap();
     assert_eq!(rows[0].values["count"], Value::Int(0));
+}
+
+fn unsupported_bounded_match_is_independent_of_input_and_relationship_type(
+    configure: impl Fn(&mut GraphMatchStep),
+) {
+    for rel_type in ["ABSENT", "MENTIONS"] {
+        for query in [
+            format!("MATCH (n:Memory)-[:{rel_type}*0..1]->(m:Memory) RETURN m"),
+            format!("MATCH (seed:Missing) WITH seed AS n MATCH (n)-[:{rel_type}*0..1]->(m:Memory) RETURN m"),
+        ] {
+            let mut plan =
+                lower(hawdb_plan_cypher::plan_pipeline_query(&query, &BTreeMap::new()).unwrap());
+            let PhysicalPlan::ProjectExec { input, .. } = &mut plan else {
+                panic!("expected projection");
+            };
+            let PhysicalPlan::GraphMatchExec { program, .. } = input.as_mut() else {
+                panic!("expected generic MATCH");
+            };
+            configure(
+                program
+                    .steps
+                    .iter_mut()
+                    .find(|step| matches!(step, GraphMatchStep::Expand { .. }))
+                    .expect("expected expansion"),
+            );
+            with_context(None, |context| {
+                let empty = store::ReadFixture::default();
+                for (graph, store) in [
+                    ("populated", context.store),
+                    ("empty", &empty as &dyn crate::store::GraphExecutionRead),
+                ] {
+                    let context = BatchReadContext { store, ..context };
+                    let result = execute_binding_batches(
+                        &plan,
+                        context,
+                        ExecutionLimit::unlimited(),
+                        &mut |_| panic!("unsupported bounded MATCH emitted a row"),
+                    );
+                    assert!(
+                        matches!(result, Err(HawDBError::Execution(ref message))
+                            if message.contains("bounded MATCH expansion requires an outgoing typed pattern without relationship bindings")),
+                        "graph={graph}, query={query}: {result:?}"
+                    );
+                }
+            });
+        }
+    }
+}
+
+#[test]
+fn bounded_match_direction_rejection_is_independent_of_relationship_type() {
+    for unsupported in [
+        RelationshipDirection::Incoming,
+        RelationshipDirection::Undirected,
+    ] {
+        unsupported_bounded_match_is_independent_of_input_and_relationship_type(|step| {
+            let GraphMatchStep::Expand { direction, .. } = step else {
+                panic!("expected expansion");
+            };
+            *direction = unsupported;
+        });
+    }
+}
+
+#[test]
+fn bounded_match_property_rejection_is_independent_of_relationship_type() {
+    unsupported_bounded_match_is_independent_of_input_and_relationship_type(|step| {
+        let GraphMatchStep::Expand { properties, .. } = step else {
+            panic!("expected expansion");
+        };
+        properties.insert("weight".into(), Value::Int(10));
+    });
+}
+
+#[test]
+fn bounded_match_relationship_binding_rejection_is_independent_of_relationship_type() {
+    unsupported_bounded_match_is_independent_of_input_and_relationship_type(|step| {
+        let GraphMatchStep::Expand { relationship, .. } = step else {
+            panic!("expected expansion");
+        };
+        *relationship = Some("edge".into());
+    });
+}
+
+#[test]
+fn bounded_match_untyped_rejection_is_independent_of_input() {
+    unsupported_bounded_match_is_independent_of_input_and_relationship_type(|step| {
+        let GraphMatchStep::Expand { rel_type, .. } = step else {
+            panic!("expected expansion");
+        };
+        rel_type.clear();
+    });
+}
+
+#[test]
+fn valid_bounded_match_preserves_empty_input() {
+    for rel_type in ["ABSENT", "MENTIONS"] {
+        let query = format!(
+            "MATCH (seed:Missing) WITH seed AS n MATCH (n)-[:{rel_type}*0..1]->(m:Memory) RETURN m"
+        );
+        assert!(execute(&query).unwrap().is_empty());
+        let plan = lower(
+            hawdb_plan_cypher::plan_pipeline_query(
+                &format!("MATCH (n:Memory)-[:{rel_type}*0..1]->(m:Memory) RETURN m"),
+                &BTreeMap::new(),
+            )
+            .unwrap(),
+        );
+        with_context(None, |context| {
+            let empty = store::ReadFixture::default();
+            let context = BatchReadContext {
+                store: &empty,
+                ..context
+            };
+            execute_binding_batches(&plan, context, ExecutionLimit::unlimited(), &mut |_| {
+                panic!("empty bounded MATCH emitted a row")
+            })
+            .unwrap();
+        });
+    }
 }
 
 #[test]

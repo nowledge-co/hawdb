@@ -89,6 +89,11 @@ mod branch_lifecycle;
 mod canonical_snapshot;
 mod concurrent;
 mod explain;
+mod graph_analytics;
+pub use graph_analytics::{
+    GraphAnalyticsAlgorithm, GraphAnalyticsFreshness, GraphAnalyticsPublicationStatus,
+    GraphAnalyticsRequest, PreparedGraphAnalytics,
+};
 #[cfg(test)]
 mod explain_format_tests;
 mod observability;

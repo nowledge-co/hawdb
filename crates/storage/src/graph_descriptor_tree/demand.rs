@@ -18,15 +18,14 @@ use super::{
     admission, corrupt, GraphDescriptorTreeBuildConfig, GraphDescriptorTreeError,
     GraphDescriptorTreeRoot, GraphDescriptorTreeRootReader,
 };
-use crate::cache::SegmentCacheIdentity;
 use crate::cache::{
-    content_digest, ManifestGeneration, RepresentationKind, SegmentCache, SegmentCacheError,
+    ContentDigest, ManifestGeneration, RepresentationKind, SegmentCache, SegmentCacheError,
     SegmentCacheKey, StoreId,
 };
 use crate::file_io::File;
 use crate::graph_descriptor_page::{
-    GraphDescriptorKind, GraphDescriptorPageError, GraphDescriptorPageRef,
-    ImmutableGraphDescriptorPage, ImmutableGraphDescriptorPageBody,
+    encode_verified_view, GraphDescriptorKind, GraphDescriptorPageError, GraphDescriptorPageRef,
+    GraphDescriptorPageView,
 };
 use hawdb_integrity::IntegrityHasher;
 use std::collections::BTreeSet;
@@ -369,91 +368,92 @@ impl GraphDescriptorTreeDemandReader {
             .report
             .maximum_depth
             .max(self.root.height.saturating_sub(remaining_height));
-        match (remaining_height, page.body) {
-            (0, ImmutableGraphDescriptorPageBody::Leaf(entries)) => {
-                state.leaf_pages = state
-                    .leaf_pages
+        let (first, comparisons) = match start {
+            GraphDescriptorTreeScanStart::All => (0, 0),
+            GraphDescriptorTreeScanStart::Prefix(key)
+            | GraphDescriptorTreeScanStart::LowerBound(key) => page.lower_bound(key)?,
+        };
+        if page.is_leaf() {
+            state.report.leaf_entries_examined = state
+                .report
+                .leaf_entries_examined
+                .checked_add(comparisons)
+                .ok_or_else(|| corrupt("graph descriptor entry count overflow"))?;
+            if remaining_height != 0 {
+                return Err(corrupt(
+                    "graph descriptor leaf page appears above the declared tree height",
+                ));
+            }
+            state.leaf_pages = state
+                .leaf_pages
+                .checked_add(1)
+                .ok_or_else(|| corrupt("graph descriptor leaf page count overflow"))?;
+            for index in first..page.len() {
+                let (key, value) = page.leaf_entry(index)?;
+                state.report.leaf_entries_examined = state
+                    .report
+                    .leaf_entries_examined
                     .checked_add(1)
-                    .ok_or_else(|| corrupt("graph descriptor leaf page count overflow"))?;
-                for entry in entries {
-                    state.report.leaf_entries_examined = state
-                        .report
-                        .leaf_entries_examined
-                        .checked_add(1)
-                        .ok_or_else(|| corrupt("graph descriptor entry count overflow"))?;
-                    if state.verify_global_key_order {
-                        if state
-                            .previous_key
-                            .as_ref()
-                            .is_some_and(|previous| previous.as_slice() >= entry.key.as_slice())
-                        {
-                            return Err(corrupt(
-                                "graph descriptor leaf keys are not globally ordered",
-                            ));
-                        }
-                        state.previous_key = Some(entry.key.clone());
+                    .ok_or_else(|| corrupt("graph descriptor entry count overflow"))?;
+                if state.verify_global_key_order {
+                    if state
+                        .previous_key
+                        .as_ref()
+                        .is_some_and(|previous| previous.as_slice() >= key)
+                    {
+                        return Err(corrupt(
+                            "graph descriptor leaf keys are not globally ordered",
+                        ));
                     }
-                    match start {
-                        GraphDescriptorTreeScanStart::All => {}
-                        GraphDescriptorTreeScanStart::Prefix(prefix) => {
-                            if !entry.key.starts_with(prefix) {
-                                if entry.key.as_slice() > prefix {
-                                    break;
-                                }
-                                continue;
-                            }
-                        }
-                        GraphDescriptorTreeScanStart::LowerBound(lower_bound) => {
-                            if entry.key.as_slice() < lower_bound {
-                                continue;
-                            }
-                        }
-                    }
-                    state.report.descriptors_emitted = state
-                        .report
-                        .descriptors_emitted
-                        .checked_add(1)
-                        .ok_or_else(|| admission("graph descriptor result count overflow"))?;
-                    if state.report.descriptors_emitted > state.limits.max_descriptors.get() {
-                        return Err(admission(format!(
-                            "graph descriptor scan emits {} descriptors, exceeding limit {}",
-                            state.report.descriptors_emitted, state.limits.max_descriptors
-                        )));
-                    }
-                    if consumer(&entry.key, &entry.value)? == GraphDescriptorTreeScanControl::Stop {
-                        return Ok(GraphDescriptorTreeScanControl::Stop);
-                    }
+                    state.previous_key = Some(key.to_vec());
                 }
-                Ok(GraphDescriptorTreeScanControl::Continue)
+                if let GraphDescriptorTreeScanStart::Prefix(prefix) = start
+                    && !key.starts_with(prefix)
+                {
+                    break;
+                }
+                state.report.descriptors_emitted = state
+                    .report
+                    .descriptors_emitted
+                    .checked_add(1)
+                    .ok_or_else(|| admission("graph descriptor result count overflow"))?;
+                if state.report.descriptors_emitted > state.limits.max_descriptors.get() {
+                    return Err(admission(format!(
+                        "graph descriptor scan emits {} descriptors, exceeding limit {}",
+                        state.report.descriptors_emitted, state.limits.max_descriptors,
+                    )));
+                }
+                if consumer(key, value)? == GraphDescriptorTreeScanControl::Stop {
+                    return Ok(GraphDescriptorTreeScanControl::Stop);
+                }
             }
-            (height, ImmutableGraphDescriptorPageBody::Interior(entries)) => {
-                if height == 0 {
-                    return Err(corrupt(
-                        "graph descriptor interior page appears below the declared tree height",
-                    ));
-                }
-                for entry in entries {
-                    if !start.range_may_match(&entry.child) {
-                        continue;
-                    }
-                    let control = self.scan_page(
-                        &entry.child,
-                        remaining_height - 1,
-                        start,
-                        use_cache,
-                        state,
-                        consumer,
-                    )?;
-                    if control == GraphDescriptorTreeScanControl::Stop {
-                        return Ok(control);
-                    }
-                }
-                Ok(GraphDescriptorTreeScanControl::Continue)
+        } else {
+            if remaining_height == 0 {
+                return Err(corrupt(
+                    "graph descriptor interior page appears below the declared tree height",
+                ));
             }
-            (_, ImmutableGraphDescriptorPageBody::Leaf(_)) => Err(corrupt(
-                "graph descriptor leaf page appears above the declared tree height",
-            )),
+            for index in first..page.len() {
+                let (lower, upper) = page.child_bounds(index)?;
+                if !start.bounds_may_match(lower, upper) {
+                    // Ordered, disjoint ranges cannot match this prefix later.
+                    break;
+                }
+                let child = page.child(index, self.config.page_limits)?;
+                if self.scan_page(
+                    &child,
+                    remaining_height - 1,
+                    start,
+                    use_cache,
+                    state,
+                    consumer,
+                )? == GraphDescriptorTreeScanControl::Stop
+                {
+                    return Ok(GraphDescriptorTreeScanControl::Stop);
+                }
+            }
         }
+        Ok(GraphDescriptorTreeScanControl::Continue)
     }
 
     fn read_page(
@@ -461,24 +461,26 @@ impl GraphDescriptorTreeDemandReader {
         reference: &GraphDescriptorPageRef,
         use_cache: bool,
         report: &mut GraphDescriptorTreeReadReport,
-    ) -> Result<ImmutableGraphDescriptorPage, GraphDescriptorTreeError> {
+    ) -> Result<GraphDescriptorPageView, GraphDescriptorTreeError> {
         self.validate_selected_reference(reference)?;
-        let identity = SegmentCacheIdentity {
+        let cache_key = SegmentCacheKey {
             store_id: self.store_id,
             manifest_generation: ManifestGeneration(reference.physical_generation),
             segment_id: reference.page_id.get(),
+            content_digest: ContentDigest(reference.content_crc32c.as_u64()),
             representation: self.representation,
         };
-        if use_cache && let Some(encoded) = self.cache.get_by_identity(&identity) {
+        let verification_tag = *reference.content_sha256.as_bytes();
+        if use_cache && let Some(encoded) = self.cache.get_verified(&cache_key, verification_tag) {
             report.cache_hits = report
                 .cache_hits
                 .checked_add(1)
                 .ok_or_else(|| admission("graph descriptor cache hit accounting overflow"))?;
-            return ImmutableGraphDescriptorPage::decode_bound(
+            return GraphDescriptorPageView::from_verified_cache(
+                encoded.into_bytes(),
                 reference,
                 self.root.kind,
                 self.root.source_commit_epoch,
-                &encoded,
                 self.config.page_limits,
             )
             .map_err(GraphDescriptorTreeError::Page);
@@ -511,46 +513,54 @@ impl GraphDescriptorTreeDemandReader {
         let mut encoded = vec![0u8; page_bytes];
         file.read_exact(&mut encoded)?;
         report.storage_bytes_read = next_storage_bytes;
-        let page = ImmutableGraphDescriptorPage::decode_bound(
+        let encoded = encode_verified_view(
             reference,
             self.root.kind,
             self.root.source_commit_epoch,
-            &encoded,
+            encoded,
             self.config.page_limits,
         )
         .map_err(GraphDescriptorTreeError::Page)?;
-        if use_cache {
-            let key = SegmentCacheKey {
-                store_id: identity.store_id,
-                manifest_generation: identity.manifest_generation,
-                segment_id: identity.segment_id,
-                content_digest: content_digest(&encoded),
-                representation: identity.representation,
-            };
-            match self.cache.insert(key, encoded) {
-                Ok(_) => {}
-                Err(error)
-                    if matches!(
-                        error.error(),
-                        SegmentCacheError::EntryTooLarge { .. }
-                            | SegmentCacheError::PinnedCapacity { .. }
-                    ) =>
-                {
-                    report.cache_admission_rejections = report
-                        .cache_admission_rejections
-                        .checked_add(1)
-                        .ok_or_else(|| {
-                            admission("graph descriptor cache rejection accounting overflow")
-                        })?;
-                }
+        let encoded = if use_cache {
+            match self
+                .cache
+                .insert_verified(cache_key, verification_tag, encoded)
+            {
+                Ok(lease) => lease.into_bytes(),
                 Err(error) => {
-                    return Err(corrupt(format!(
-                        "graph descriptor cache rejected immutable page identity: {error}"
-                    )))
+                    let (reason, encoded) = error.into_parts();
+                    match reason {
+                        SegmentCacheError::EntryTooLarge { .. }
+                        | SegmentCacheError::PinnedCapacity { .. } => {
+                            report.cache_admission_rejections = report
+                                .cache_admission_rejections
+                                .checked_add(1)
+                                .ok_or_else(|| {
+                                    admission(
+                                        "graph descriptor cache rejection accounting overflow",
+                                    )
+                                })?;
+                            encoded.into()
+                        }
+                        error => {
+                            return Err(corrupt(format!(
+                                "graph descriptor cache rejected immutable page identity: {error}"
+                            )))
+                        }
+                    }
                 }
             }
-        }
-        Ok(page)
+        } else {
+            encoded.into()
+        };
+        GraphDescriptorPageView::from_verified_cache(
+            encoded,
+            reference,
+            self.root.kind,
+            self.root.source_commit_epoch,
+            self.config.page_limits,
+        )
+        .map_err(GraphDescriptorTreeError::Page)
     }
 
     fn validate_selected_reference(
@@ -616,10 +626,16 @@ enum GraphDescriptorTreeScanStart<'a> {
 
 impl GraphDescriptorTreeScanStart<'_> {
     fn range_may_match(self, reference: &GraphDescriptorPageRef) -> bool {
+        self.bounds_may_match(&reference.lower_bound, &reference.upper_bound)
+    }
+
+    fn bounds_may_match(self, lower: &[u8], upper: &[u8]) -> bool {
         match self {
             Self::All => true,
-            Self::Prefix(prefix) => range_can_contain_prefix(reference, prefix),
-            Self::LowerBound(lower_bound) => reference.upper_bound.as_slice() >= lower_bound,
+            Self::Prefix(prefix) => {
+                upper >= prefix && (lower <= prefix || lower.starts_with(prefix))
+            }
+            Self::LowerBound(lower_bound) => upper >= lower_bound,
         }
     }
 }
@@ -738,6 +754,7 @@ impl VisitedPages {
     }
 }
 
+#[cfg(test)]
 fn range_can_contain_prefix(reference: &GraphDescriptorPageRef, prefix: &[u8]) -> bool {
     reference.upper_bound.as_slice() >= prefix
         && (reference.lower_bound.as_slice() <= prefix || reference.lower_bound.starts_with(prefix))

@@ -18,6 +18,7 @@ use super::{
 };
 use crate::search::{SearchProjectionKind, SearchProjectionRow};
 use crate::{Database, DatabaseConfig, SearchIndex, Value};
+use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
 use std::collections::BTreeMap;
 
 fn snapshot_governor() -> hawdb_qos::RuntimeGovernor {
@@ -169,6 +170,122 @@ fn bounded_read_snapshot_coordinates_search_graph_and_relational_queries() {
     assert!(!encoded_evidence.contains("nearest"));
     assert!(!encoded_evidence.contains("thread-1"));
     assert!(!encoded_evidence.contains("App-owned relational payload"));
+}
+
+#[test]
+fn bounded_graph_read_snapshot_exposes_profiled_query_memory_evidence() {
+    let handle = app_read_handle();
+    let context = RuntimeTaskContext::default();
+    let report = handle
+        .with_bounded_graph_read_snapshot_context(
+            NowledgeMemReadSnapshotBudget {
+                max_rows: 2,
+                max_payload_bytes: 4096,
+            },
+            &context,
+            |snapshot| {
+                let query = snapshot.query_cypher_profiled(
+                    "MATCH (m:Memory) RETURN m.id AS id LIMIT 1",
+                    &BTreeMap::new(),
+                    1,
+                )?;
+                assert_eq!(query.output.rows.len(), 1);
+                let memory = &query.execution_profile.pipeline_memory_report;
+                assert!(memory.query_memory_budget_bytes > 0);
+                assert!(memory.query_memory_peak_bytes <= memory.query_memory_budget_bytes);
+                assert_eq!(memory.output_rows, 1);
+                Ok(snapshot.report())
+            },
+        )
+        .unwrap();
+
+    assert_eq!(report.cypher_statement_count, 1);
+    assert_eq!(report.output_rows, 1);
+    assert_eq!(report.remaining_rows, 1);
+}
+
+#[test]
+fn bounded_graph_read_snapshot_propagates_cancellation_without_leaking_admission() {
+    let handle = app_read_handle();
+    let governor = handle
+        .read_store()
+        .unwrap()
+        .graph()
+        .runtime_governor()
+        .clone();
+    let cancellation = RuntimeCancellationToken::new();
+    let context = RuntimeTaskContext::without_deadline(cancellation.clone());
+    let before = governor.snapshot();
+
+    let error = handle
+        .with_bounded_graph_read_snapshot_context(
+            NowledgeMemReadSnapshotBudget {
+                max_rows: 1,
+                max_payload_bytes: 4096,
+            },
+            &context,
+            |snapshot| {
+                assert!(cancellation.cancel());
+                snapshot
+                    .query_cypher_profiled(
+                        "MATCH (m:Memory) RETURN m.id AS id LIMIT 1",
+                        &BTreeMap::new(),
+                        1,
+                    )
+                    .map(|_| ())
+            },
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("cancelled"));
+    let after = governor.snapshot();
+    assert_eq!(after.admissions, before.admissions + 1);
+    assert_eq!(after.completions, before.completions + 1);
+    assert_eq!(after.active_foreground_tasks, 0);
+    assert_eq!(after.active_cpu_slots, 0);
+    assert_eq!(after.active_blocking_tasks, 0);
+    assert_eq!(after.admitted_memory_bytes, 0);
+}
+
+#[test]
+fn bounded_graph_read_snapshot_propagates_deadline_without_leaking_admission() {
+    let handle = app_read_handle();
+    let governor = handle
+        .read_store()
+        .unwrap()
+        .graph()
+        .runtime_governor()
+        .clone();
+    let context = RuntimeTaskContext::with_timeout(std::time::Duration::ZERO);
+    let before = governor.snapshot();
+
+    let error = handle
+        .with_bounded_graph_read_snapshot_context(
+            NowledgeMemReadSnapshotBudget {
+                max_rows: 1,
+                max_payload_bytes: 4096,
+            },
+            &context,
+            |snapshot| {
+                snapshot
+                    .query_cypher_profiled(
+                        "MATCH (m:Memory) RETURN m.id AS id LIMIT 1",
+                        &BTreeMap::new(),
+                        1,
+                    )
+                    .map(|_| ())
+            },
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("deadline"));
+    let after = governor.snapshot();
+    assert_eq!(after.admissions, before.admissions + 1);
+    assert_eq!(after.completions, before.completions + 1);
+    assert_eq!(after.active_foreground_tasks, 0);
+    assert_eq!(after.active_cpu_slots, 0);
+    assert_eq!(after.active_blocking_tasks, 0);
+    assert_eq!(after.admitted_memory_bytes, 0);
 }
 
 #[test]
@@ -706,6 +823,256 @@ fn durable_snapshot_handle(root: &SnapshotTestRoot) -> NowledgeMemEmbeddedStoreH
         snapshot_governor(),
     );
     NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(graph, None)).unwrap()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SnapshotContextCase {
+    Success,
+    AnalyticsProfile,
+    RowBudget,
+    PayloadBudget,
+    Cancellation,
+    Deadline,
+    MemoryReservation,
+    MemoryRejection,
+}
+
+fn assert_read_only_snapshot_context(case: SnapshotContextCase) {
+    for residency in [
+        crate::store::StorageResidencyMode::Materialized,
+        crate::store::StorageResidencyMode::OutOfCore,
+    ] {
+        let root = SnapshotTestRoot::new();
+        let config = DatabaseConfig {
+            storage_residency_mode: residency,
+            max_read_result_rows: Some(16),
+            max_read_result_payload_bytes: Some(16 * 1024),
+            ..DatabaseConfig::default()
+        };
+        let mut writer = Database::open_with_config(&root.0, config.clone()).unwrap();
+        writer.query("CREATE (:Record {id: 'committed'})").unwrap();
+        writer
+            .query_sql("CREATE TABLE records (id TEXT PRIMARY KEY)")
+            .unwrap();
+        writer
+            .query_sql("INSERT INTO records (id) VALUES ('committed')")
+            .unwrap();
+        #[cfg(feature = "graph-analytics")]
+        writer
+            .query("CALL project_graph('snapshot_context', ['Record'], [])")
+            .unwrap();
+        writer.checkpoint().unwrap();
+        let epoch = writer.commit_epoch().unwrap();
+        drop(writer);
+
+        let hawdb_storage::branch_project::ProjectManifest::Branch(selector) =
+            hawdb_storage::branch_project::inspect_project_manifest(&root.0).unwrap()
+        else {
+            panic!("expected a branch project")
+        };
+        let branch = root
+            .0
+            .join("branches")
+            .join(selector.main_branch_id().as_uuid().to_string());
+        let head =
+            hawdb_storage::branch_head::read_branch_head(&branch.join("branch.head")).unwrap();
+        let wal_path = branch.join(hawdb_storage::artifact_files::wal_generation_file(
+            head.active_wal.generation,
+        ));
+        let wal = std::fs::read(&wal_path).unwrap();
+        let read_only_config = DatabaseConfig {
+            read_only: true,
+            ..config
+        };
+        let database = Database::open_with_config(&root.0, read_only_config.clone()).unwrap();
+        assert_eq!(
+            database.storage_residency_report().unwrap().out_of_core,
+            residency == crate::store::StorageResidencyMode::OutOfCore
+        );
+        let governor = snapshot_governor();
+        let graph = NowledgeMemGraph::from_database_with_runtime_governor(
+            database,
+            NowledgeMemGraphMode::ShadowReadOnly,
+            governor.clone(),
+        );
+        let projection = NowledgeMemSearchProjection::from_index(SearchIndex::in_memory());
+        let handle = NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(
+            graph,
+            Some(projection),
+        ))
+        .unwrap();
+
+        for pin_projection in [false, true] {
+            for sql_first in [false, true] {
+                let cancellation = RuntimeCancellationToken::new();
+                let context = match case {
+                    SnapshotContextCase::Deadline => {
+                        RuntimeTaskContext::with_timeout(std::time::Duration::ZERO)
+                    }
+                    SnapshotContextCase::MemoryReservation
+                    | SnapshotContextCase::MemoryRejection => RuntimeTaskContext::default()
+                        .with_memory_reservation(hawdb_core::RuntimeMemoryReservation::new(
+                            if case == SnapshotContextCase::MemoryReservation {
+                                32 * 1024 * 1024
+                            } else {
+                                64 * 1024
+                            },
+                            4096,
+                        )),
+                    _ => RuntimeTaskContext::without_deadline(cancellation.clone()),
+                };
+                let budget = NowledgeMemReadSnapshotBudget {
+                    max_rows: if case == SnapshotContextCase::RowBudget {
+                        1
+                    } else {
+                        4
+                    },
+                    max_payload_bytes: if case == SnapshotContextCase::PayloadBudget {
+                        20
+                    } else {
+                        4096
+                    },
+                };
+                let before = governor.snapshot();
+                let operation = |snapshot: &mut super::NowledgeMemReadSnapshot<'_>| {
+                    assert_eq!(snapshot.commit_epoch(), epoch);
+                    assert_eq!(snapshot.report().search_projection_present, pin_projection);
+                    if case == SnapshotContextCase::Cancellation {
+                        assert!(cancellation.cancel());
+                    }
+                    let mut query = |sql| -> crate::Result<()> {
+                        let output = if sql {
+                            snapshot.query_sql("SELECT id FROM records LIMIT 1", &[], 1)?
+                        } else {
+                            let statement = if case == SnapshotContextCase::AnalyticsProfile {
+                                "CALL page_rank('snapshot_context') RETURN node, pagerank_score"
+                            } else {
+                                "MATCH (r:Record) RETURN r.id AS id LIMIT 1"
+                            };
+                            let query =
+                                snapshot.query_cypher_profiled(statement, &BTreeMap::new(), 1)?;
+                            let memory = &query.execution_profile.pipeline_memory_report;
+                            assert_eq!(memory.output_rows, 1);
+                            assert!(
+                                memory.query_memory_peak_bytes <= memory.query_memory_budget_bytes
+                            );
+                            if case == SnapshotContextCase::MemoryReservation {
+                                assert_eq!(memory.query_memory_budget_bytes, 32 * 1024 * 1024);
+                            }
+                            query.output
+                        };
+                        assert_eq!(output.rows.len(), 1);
+                        if !sql && case == SnapshotContextCase::AnalyticsProfile {
+                            assert_eq!(output.rows[0]["node"], Value::Int(0));
+                            assert_eq!(output.rows[0]["pagerank_score"], Value::Float(1.0));
+                        } else {
+                            assert_eq!(output.rows[0]["id"], Value::String("committed".into()));
+                        }
+                        Ok(())
+                    };
+                    query(sql_first)?;
+                    query(!sql_first)?;
+                    let report = snapshot.report();
+                    assert_eq!(report.output_rows, 2);
+                    assert_eq!(report.cypher_statement_count, 1);
+                    assert_eq!(report.sql_statement_count, 1);
+                    assert_eq!(report.remaining_rows, 2);
+                    Ok(())
+                };
+                let result = if pin_projection {
+                    handle.with_bounded_read_snapshot_context(budget, &context, operation)
+                } else {
+                    handle.with_bounded_graph_read_snapshot_context(budget, &context, operation)
+                };
+                match case {
+                    SnapshotContextCase::Success
+                    | SnapshotContextCase::AnalyticsProfile
+                    | SnapshotContextCase::MemoryReservation => {
+                        result.unwrap();
+                    }
+                    _ => {
+                        let error = result.unwrap_err().to_string();
+                        let expected = match case {
+                            SnapshotContextCase::RowBudget => "exhausted max_rows",
+                            SnapshotContextCase::PayloadBudget => "payload",
+                            SnapshotContextCase::Cancellation => "cancelled",
+                            SnapshotContextCase::Deadline => "deadline",
+                            SnapshotContextCase::MemoryRejection => "query_memory_bytes 65536",
+                            _ => unreachable!(),
+                        };
+                        assert!(error.contains(expected), "{case:?}: {error}");
+                    }
+                }
+                let after = governor.snapshot();
+                assert_eq!(after.admissions, before.admissions + 1);
+                assert_eq!(after.completions, before.completions + 1);
+                assert_eq!(after.active_foreground_tasks, 0);
+                assert_eq!(after.active_background_tasks, 0);
+                assert_eq!(after.active_cpu_slots, 0);
+                assert_eq!(after.active_blocking_tasks, 0);
+                assert_eq!(after.active_foreground_io_slots, 0);
+                assert_eq!(after.active_background_io_slots, 0);
+                assert_eq!(after.admitted_memory_bytes, 0);
+                assert_eq!(after.queued_admission_waiters, 0);
+                assert_eq!(
+                    handle
+                        .read_store()
+                        .unwrap()
+                        .graph()
+                        .database()
+                        .commit_epoch()
+                        .unwrap(),
+                    epoch
+                );
+                assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+            }
+        }
+        drop(handle);
+        let reopened = Database::open_with_config(&root.0, read_only_config).unwrap();
+        assert_eq!(reopened.commit_epoch().unwrap(), epoch);
+        assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
+    }
+}
+
+#[test]
+fn bounded_snapshot_context_read_only_success_preserves_wal_and_epoch() {
+    assert_read_only_snapshot_context(SnapshotContextCase::Success);
+}
+
+#[test]
+#[cfg(feature = "graph-analytics")]
+fn bounded_snapshot_context_read_only_analytics_exposes_same_execution_profile() {
+    assert_read_only_snapshot_context(SnapshotContextCase::AnalyticsProfile);
+}
+
+#[test]
+fn bounded_snapshot_context_read_only_row_budget_releases_admission() {
+    assert_read_only_snapshot_context(SnapshotContextCase::RowBudget);
+}
+
+#[test]
+fn bounded_snapshot_context_read_only_payload_budget_releases_admission() {
+    assert_read_only_snapshot_context(SnapshotContextCase::PayloadBudget);
+}
+
+#[test]
+fn bounded_snapshot_context_read_only_cancellation_releases_admission() {
+    assert_read_only_snapshot_context(SnapshotContextCase::Cancellation);
+}
+
+#[test]
+fn bounded_snapshot_context_read_only_deadline_releases_admission() {
+    assert_read_only_snapshot_context(SnapshotContextCase::Deadline);
+}
+
+#[test]
+fn bounded_snapshot_context_read_only_reservation_bounds_profile_memory() {
+    assert_read_only_snapshot_context(SnapshotContextCase::MemoryReservation);
+}
+
+#[test]
+fn bounded_snapshot_context_read_only_undersized_memory_releases_admission() {
+    assert_read_only_snapshot_context(SnapshotContextCase::MemoryRejection);
 }
 
 #[test]

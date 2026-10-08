@@ -286,3 +286,116 @@ fn branch_read_snapshot_keeps_schema_and_data_after_ddl_data_commit() {
         );
     }
 }
+
+#[test]
+fn branch_fork_excludes_rolled_back_schema_and_data() {
+    for durability in [
+        DurabilityPolicy::SyncOnEveryWrite,
+        DurabilityPolicy::SyncOnCheckpoint,
+    ] {
+        let project = Project::new();
+        let mut database = Database::open_with_durability(&project.0, durability).unwrap();
+        database
+            .query_sql("CREATE TABLE records (id BIGINT PRIMARY KEY, body TEXT)")
+            .unwrap();
+        database
+            .query_sql("INSERT INTO records (id, body) VALUES (0, 'committed')")
+            .unwrap();
+        let revision = database.commit_epoch().unwrap();
+        database
+            .query_sql_with_params(
+                "CREATE BRANCH child FROM main AT REVISION $1 REQUEST KEY 'rollback-child'",
+                &[Value::Int(i64::try_from(revision).unwrap())],
+            )
+            .unwrap();
+        select(&mut database, "child");
+        let committed_epoch = database.commit_epoch().unwrap();
+        let expected = database.query_sql("SELECT id, body FROM records").unwrap();
+        {
+            let mut transaction = database.begin_transaction().unwrap();
+            transaction
+                .query_sql("CREATE TABLE rolled_back (id BIGINT PRIMARY KEY)")
+                .unwrap();
+            transaction
+                .query_sql("INSERT INTO rolled_back (id) VALUES (1)")
+                .unwrap();
+            transaction
+                .query_sql("INSERT INTO records (id, body) VALUES (1, 'uncommitted')")
+                .unwrap();
+            transaction
+                .query("CREATE (:Memory {id: 'uncommitted-fork'})")
+                .unwrap();
+            assert_eq!(
+                transaction
+                    .query_sql("SELECT id FROM records")
+                    .unwrap()
+                    .rows
+                    .len(),
+                2
+            );
+            assert!(matches!(
+                transaction.query_sql_with_params(
+                    "CREATE BRANCH forbidden FROM child AT REVISION $1 REQUEST KEY 'uncommitted-fork'",
+                    &[Value::Int(i64::try_from(committed_epoch).unwrap())],
+                ),
+                Err(HawDBError::BranchCommandUnsupported {
+                    context: "explicit transaction",
+                    ..
+                })
+            ));
+            transaction.rollback();
+        }
+        assert_eq!(database.commit_epoch().unwrap(), committed_epoch);
+        assert_eq!(
+            database
+                .query_sql("SHOW BRANCHES LIMIT 10")
+                .unwrap()
+                .rows
+                .len(),
+            2
+        );
+        database
+            .query_sql_with_params(
+                "CREATE BRANCH grandchild FROM child AT REVISION $1 REQUEST KEY 'committed-fork'",
+                &[Value::Int(i64::try_from(committed_epoch).unwrap())],
+            )
+            .unwrap();
+        select(&mut database, "grandchild");
+        assert_eq!(database.commit_epoch().unwrap(), committed_epoch);
+        assert_eq!(
+            database.query_sql("SELECT id, body FROM records").unwrap(),
+            expected
+        );
+        assert_semantic_error(
+            database
+                .query_sql("SELECT id FROM rolled_back")
+                .unwrap_err(),
+            "unknown relational table rolled_back",
+        );
+        assert!(database
+            .query("MATCH (m:Memory {id: 'uncommitted-fork'}) RETURN m.id AS id")
+            .unwrap()
+            .rows
+            .is_empty());
+        database.checkpoint().unwrap();
+        drop(database);
+        let mut reopened = Database::open_with_durability(&project.0, durability).unwrap();
+        select(&mut reopened, "grandchild");
+        assert_eq!(reopened.commit_epoch().unwrap(), committed_epoch);
+        assert_eq!(
+            reopened.query_sql("SELECT id, body FROM records").unwrap(),
+            expected
+        );
+        assert_semantic_error(
+            reopened
+                .query_sql("SELECT id FROM rolled_back")
+                .unwrap_err(),
+            "unknown relational table rolled_back",
+        );
+        assert!(reopened
+            .query("MATCH (m:Memory {id: 'uncommitted-fork'}) RETURN m.id AS id")
+            .unwrap()
+            .rows
+            .is_empty());
+    }
+}

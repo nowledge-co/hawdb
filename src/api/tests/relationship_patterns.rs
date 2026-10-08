@@ -342,6 +342,11 @@ fn pipeline_bounded_match_validation_is_independent_of_graph_contents() {
             "(a:Node)-[*1..2]->(b:Node)",
             "(a:Node)<-[:LINK*1..2]-(b:Node)",
             "(a:Node)-[:LINK*1..2]-(b:Node)",
+            "(a:Node)-[r:ABSENT*0..1]->(b:Node)",
+            "(a:Node)-[:ABSENT*0..1 {weight: 10}]->(b:Node)",
+            "(a:Node)-[*0..1]->(b:Node)",
+            "(a:Node)<-[:ABSENT*0..1]-(b:Node)",
+            "(a:Node)-[:ABSENT*0..1]-(b:Node)",
         ] {
             let query = format!("MATCH {pattern} WITH a, b WITH a, b RETURN b.id AS id");
             let error = db.query(&query).unwrap_err();

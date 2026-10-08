@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{read_admitted_bytes, read_bounded_file, READ_BUFFER_BYTES};
+use super::{read_admitted_bytes, read_bound_file, read_bounded_file, READ_BUFFER_BYTES};
 use std::cell::RefCell;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
@@ -168,6 +168,54 @@ fn length_changes_fail_even_when_the_caller_has_spare_budget() {
         });
         assert!(read_bounded_file(&path, 128).is_err());
     }
+}
+
+#[test]
+fn bound_files_reject_length_changes_and_keep_the_admitted_file_identity() {
+    let directory = Directory::new();
+    let path = directory.0.join("bound-artifact");
+    for changed_length in [0, 7, 9, 2 * READ_BUFFER_BYTES as u64] {
+        fs::write(&path, b"original").unwrap();
+        ADMISSION_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move |path| {
+                OpenOptions::new()
+                    .write(true)
+                    .open(path)
+                    .unwrap()
+                    .set_len(changed_length)
+                    .unwrap();
+            }));
+        });
+        assert!(read_bound_file(&path, 8, "bound fixture").is_err());
+    }
+
+    fs::write(&path, b"original").unwrap();
+    ADMISSION_HOOK.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(|path| {
+            fs::rename(path, path.with_extension("retained")).unwrap();
+            fs::write(path, b"replaced").unwrap();
+        }));
+    });
+    assert_eq!(
+        read_bound_file(&path, 8, "bound fixture").unwrap(),
+        b"original"
+    );
+    assert_eq!(fs::read(path).unwrap(), b"replaced");
+}
+
+#[test]
+fn bound_length_mismatch_is_rejected_before_reserving_the_expected_bytes() {
+    let _serial = crate::test_allocation::serial();
+    let directory = Directory::new();
+    let path = directory.0.join("bound-artifact");
+    fs::write(&path, b"original").unwrap();
+    let baseline = crate::test_allocation::live();
+    let (error, peak) = crate::test_allocation::measure(|| {
+        read_bound_file(&path, u64::MAX, "bound fixture").unwrap_err()
+    });
+    assert!(error.to_string().contains("length or checksum mismatch"));
+    assert!(peak.saturating_sub(baseline) < 64 * 1024);
+    assert_eq!(fs::read(path).unwrap(), b"original");
 }
 
 struct SplitReader<'a> {

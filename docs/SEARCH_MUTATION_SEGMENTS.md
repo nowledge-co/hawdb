@@ -211,6 +211,24 @@ The report retains source hashes, the typed prototype, configuration, process
 counters and measurement limits. This is diagnostic evidence; full-build and
 sustained scale acceptance remain pending.
 
+Immutable artifact reads validate the exact manifest-bound length against the
+opened file before reserving one encoded buffer. Bounded reads, EOF and checksum
+checks still reject truncation, growth and replacement inconsistencies. Mutable
+markers without a bound length retain progressive allocation. Lexical manifest
+block decoding moves validated records from temporary nodes into one exact
+final directory; the existing decode admission covers their overlap and the
+serialized format is unchanged. These paths avoid geometric reallocations of
+corpus-sized buffers, which retained resident pages in the measured macOS runs.
+
+The [allocation and cold-open diagnostic](benchmarks/search_bound_artifact_reads_macos_2026_10_08.json)
+retains genuine failing allocation regressions and all original measurements.
+The same complete immutable base with 32 cold seed publications and a K10
+replacement reached 691,470,336 bytes originally, 337,264,640 with exact file
+buffers alone, and 157,319,168 after both corrections. Fresh construction is
+excluded from that diagnostic. The original full 20 GiB sustained run failed
+its 256 MiB RSS budget despite completing all 128 updates and merges; complete
+fresh scale qualification on the corrected source remains pending.
+
 In `Preferred` mode, only a typed compressed-search resource-budget error
 restarts exact scalar scoring with the same visibility, candidate set and task
 context. Reports include `compressed_vector_budget_exceeded`; `Required`

@@ -31,6 +31,8 @@ use hawdb_plan_cypher::{GraphAlgorithmKind, Predicate};
 use hawdb_storage::{NodeRecord, RelRecord};
 use std::collections::BTreeMap;
 
+mod streaming;
+
 /// Borrows the existing query/store seams without owning admission or catalog mutation.
 #[derive(Clone, Copy)]
 pub struct GraphAlgorithmContext<'a> {
@@ -42,6 +44,7 @@ pub struct GraphAlgorithmContext<'a> {
     pub observer: &'a QueryExecutionObserver,
 }
 
+#[derive(Clone, Copy)]
 pub struct GraphAlgorithmSpec<'a> {
     pub algorithm: &'a GraphAlgorithmKind,
     pub graph_name: &'a str,
@@ -78,10 +81,11 @@ impl GraphAlgorithmSpec<'_> {
             GraphAlgorithmKind::Louvain => ProjectionLayout::Undirected,
         };
         let budget = ProjectionMemoryBudget::new(context.memory.blocking_operator_bytes);
-        let graph = if let Some(filter) = node_visibility_filter.as_ref() {
-            try_projected_graph_with_node_filter(
+        let source = GraphExecutionProjectionSource(context.store, context.task_context);
+        let admitted = if let Some(filter) = node_visibility_filter.as_ref() {
+            try_projected_graph_with_node_filter_admitted(
                 context.catalog,
-                context.store,
+                &source,
                 &definition.node_labels,
                 &definition.rel_types,
                 |node| node_matches_property_filter(node, filter),
@@ -89,16 +93,46 @@ impl GraphAlgorithmSpec<'_> {
                 budget,
             )
         } else {
-            try_projected_graph_with_node_filter(
+            try_projected_graph_with_node_filter_admitted(
                 context.catalog,
-                context.store,
+                &source,
                 &definition.node_labels,
                 &definition.rel_types,
                 |_| true,
                 layout,
                 budget,
             )
-        }?;
+        };
+        let graph = match admitted {
+            Ok(graph) => {
+                let estimate = match algorithm {
+                    GraphAlgorithmKind::PageRank => graph.page_rank_memory_estimate(),
+                    GraphAlgorithmKind::Louvain => graph.louvain_memory_estimate(LouvainOptions {
+                        max_iterations: options
+                            .max_iterations
+                            .unwrap_or(LouvainOptions::default().max_iterations),
+                        max_levels: options
+                            .max_levels
+                            .unwrap_or(LouvainOptions::default().max_levels),
+                    }),
+                };
+                if estimate.total_peak_bytes > context.memory.blocking_operator_bytes.get() {
+                    drop(graph);
+                    return self.stream_external(context, execution_limit, emit);
+                }
+                graph
+            }
+            Err(error) if error.storage_error.is_none() => {
+                return self.stream_external(context, execution_limit, emit);
+            }
+            Err(error) => {
+                // ProjectionSource transports scan errors as strings. Preserve
+                // the runtime's typed cancellation/deadline outcome when the
+                // checkpoint inside that scan stopped the projection build.
+                runtime_checkpoint(context.task_context)?;
+                return Err(HawDBError::Execution(error.to_string()));
+            }
+        };
         runtime_checkpoint(context.task_context)?;
         let mut tracker = OperatorMemoryTracker::with_account(
             context.memory.blocking_operator_bytes,
@@ -285,16 +319,35 @@ pub fn try_projected_graph_with_node_filter(
     layout: ProjectionLayout,
     budget: ProjectionMemoryBudget,
 ) -> Result<ProjectedGraph> {
-    let source = GraphExecutionProjectionSource(store);
+    try_projected_graph_with_node_filter_admitted(
+        catalog,
+        &GraphExecutionProjectionSource(store, None),
+        node_labels,
+        rel_types,
+        include_node,
+        layout,
+        budget,
+    )
+    .map_err(|error| HawDBError::Execution(error.to_string()))
+}
+
+fn try_projected_graph_with_node_filter_admitted(
+    catalog: &Catalog,
+    source: &GraphExecutionProjectionSource<'_>,
+    node_labels: &[String],
+    rel_types: &[String],
+    include_node: impl Fn(&NodeRecord) -> bool,
+    layout: ProjectionLayout,
+    budget: ProjectionMemoryBudget,
+) -> std::result::Result<ProjectedGraph, hawdb_analytics::ProjectionMemoryAdmissionError> {
     if node_labels.is_empty() && rel_types.is_empty() {
         return ProjectedGraph::try_from_store_with_node_filter_and_layout(
-            &source,
+            source,
             None,
             include_node,
             layout,
             budget,
-        )
-        .map_err(|error| HawDBError::Execution(error.to_string()));
+        );
     }
     let label_ids = node_labels
         .iter()
@@ -302,13 +355,12 @@ pub fn try_projected_graph_with_node_filter(
         .collect::<Vec<_>>();
     if !node_labels.is_empty() && label_ids.is_empty() {
         return ProjectedGraph::try_from_store_labels_without_edges_with_node_filter_and_layout(
-            &source,
+            source,
             &[],
             include_node,
             layout,
             budget,
-        )
-        .map_err(|error| HawDBError::Execution(error.to_string()));
+        );
     }
     let rel_type_ids = rel_types
         .iter()
@@ -317,42 +369,47 @@ pub fn try_projected_graph_with_node_filter(
     if !rel_types.is_empty() && rel_type_ids.is_empty() {
         if label_ids.is_empty() {
             return ProjectedGraph::try_from_store_without_edges_with_node_filter_and_layout(
-                &source,
+                source,
                 include_node,
                 layout,
                 budget,
-            )
-            .map_err(|error| HawDBError::Execution(error.to_string()));
+            );
         }
         return ProjectedGraph::try_from_store_labels_without_edges_with_node_filter_and_layout(
-            &source,
+            source,
             &label_ids,
             include_node,
             layout,
             budget,
-        )
-        .map_err(|error| HawDBError::Execution(error.to_string()));
+        );
     }
     ProjectedGraph::try_from_store_labels_and_rel_types_with_node_filter_and_layout(
-        &source,
+        source,
         &label_ids,
         &rel_type_ids,
         include_node,
         layout,
         budget,
     )
-    .map_err(|error| HawDBError::Execution(error.to_string()))
 }
 
-struct GraphExecutionProjectionSource<'a>(&'a dyn GraphExecutionRead);
+struct GraphExecutionProjectionSource<'a>(
+    &'a dyn GraphExecutionRead,
+    Option<&'a RuntimeTaskContext>,
+);
 
 impl hawdb_analytics::ProjectionSource for GraphExecutionProjectionSource<'_> {
     fn visit_projection_nodes(
         &self,
         visitor: &mut dyn FnMut(NodeRecord) -> hawdb_analytics::ProjectionScanControl,
     ) -> std::result::Result<hawdb_analytics::ProjectionScanControl, String> {
+        let mut ordinal = 0usize;
         self.0
             .visit_nodes_owned(None, &mut |node| {
+                if ordinal.is_multiple_of(1024) {
+                    runtime_checkpoint(self.1)?;
+                }
+                ordinal = ordinal.saturating_add(1);
                 Ok(match visitor(node) {
                     hawdb_analytics::ProjectionScanControl::Continue => ScanControl::Continue,
                     hawdb_analytics::ProjectionScanControl::Stop => ScanControl::Stop,
@@ -369,8 +426,13 @@ impl hawdb_analytics::ProjectionSource for GraphExecutionProjectionSource<'_> {
         &self,
         visitor: &mut dyn FnMut(RelRecord) -> hawdb_analytics::ProjectionScanControl,
     ) -> std::result::Result<hawdb_analytics::ProjectionScanControl, String> {
+        let mut ordinal = 0usize;
         self.0
             .visit_relationships_owned(None, &mut |relationship| {
+                if ordinal.is_multiple_of(1024) {
+                    runtime_checkpoint(self.1)?;
+                }
+                ordinal = ordinal.saturating_add(1);
                 Ok(match visitor(relationship) {
                     hawdb_analytics::ProjectionScanControl::Continue => ScanControl::Continue,
                     hawdb_analytics::ProjectionScanControl::Stop => ScanControl::Stop,

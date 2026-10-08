@@ -34,7 +34,7 @@ use super::{
     FULL_REINDEX_MARKER, METADATA_REPAIR_MARKER, SEARCH_SEGMENT_DESCRIPTOR_FILE,
     SEARCH_SEGMENT_PAYLOAD_FILE,
 };
-use crate::bounded_file::read_bounded_file;
+use crate::bounded_file::{read_bound_file, read_bounded_file};
 use crate::error::{HawDBError, Result};
 #[cfg(test)]
 use crate::{decode_search_segment_documents_bounded, validate_search_segment_documents};
@@ -3927,7 +3927,7 @@ fn read_bound_artifact(
             "{name} exceeds the manifest read budget"
         )));
     }
-    let bytes = read_bounded_file(path, expected_len)?;
+    let bytes = read_bound_file(path, expected_len, name)?;
     if bytes.len() as u64 != expected_len || checksum_bytes(&bytes) != expected_checksum {
         return Err(HawDBError::Storage(format!(
             "{name} length or checksum mismatch"
@@ -4114,6 +4114,37 @@ mod tests {
             metadata_filters: BTreeMap::new(),
             policy_epoch: None,
         }
+    }
+
+    #[test]
+    fn bound_artifact_read_retains_one_encoded_buffer() {
+        let _serial = crate::test_allocation::serial();
+        let root = test_dir("bound-artifact-allocation");
+        let path = root.join("artifact");
+        // Cross the final geometric growth boundary of a large descriptor.
+        let data = vec![b'x'; 17 * 1024 * 1024 + 4096];
+        fs::write(&path, &data).unwrap();
+        let checksum = checksum_bytes(&data);
+        let baseline = crate::test_allocation::live();
+        let (bytes, peak) = crate::test_allocation::measure(|| {
+            read_bound_artifact(
+                &path,
+                data.len() as u64,
+                checksum,
+                64 * 1024 * 1024,
+                "allocation fixture",
+            )
+            .unwrap()
+        });
+        assert_eq!(bytes, data);
+        let peak = peak.saturating_sub(baseline);
+        assert!(
+            peak <= data.len() + 64 * 1024,
+            "bound artifact retained {peak} allocated bytes for {} encoded bytes",
+            data.len()
+        );
+        drop(bytes);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
