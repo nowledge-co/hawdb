@@ -34,7 +34,6 @@ struct CustomMemory {
     opaque: *mut c_void,
 }
 
-#[link(name = "zstd", kind = "static")]
 unsafe extern "C" {
     fn ZSTD_createCCtx_advanced(memory: CustomMemory) -> *mut sys::ZSTD_CCtx;
     fn ZSTD_createDCtx_advanced(memory: CustomMemory) -> *mut sys::ZSTD_DCtx;

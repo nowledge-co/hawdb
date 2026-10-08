@@ -196,6 +196,23 @@ fn malformed_truncated_and_failed_sink_paths_release_workspaces() {
 }
 
 #[test]
+fn short_magic_prefixes_report_incomplete_frame_and_release_context() {
+    let magic = 0xfd2fb528u32.to_le_bytes();
+    for length in 1..magic.len() {
+        let (_, activity) = observe(None, || {
+            let input = BufReader::with_capacity(1, &magic[..length]);
+            let mut decoder = Decoder::with_buffer(input).unwrap();
+            let mut decoded = Vec::new();
+            let error = decoder.read_to_end(&mut decoded).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+            assert_eq!(error.to_string(), "incomplete frame");
+            assert!(decoded.is_empty());
+        });
+        assert_eq!(activity.allocations, 1);
+    }
+}
+
+#[test]
 fn native_error_requires_reset_before_context_reuse() {
     let mut context = DecompressionContext::new().unwrap();
     let mut bytes = [0; 64];

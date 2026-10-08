@@ -93,10 +93,10 @@ This follows seekdb's library-level [Zstd allocator adapter](https://github.com/
 HawDB does not install seekdb's process-wide malloc hooks or malloc zones.
 The [Zstd custom-memory API](https://github.com/facebook/zstd/blob/v1.5.7/lib/zstd.h)
 requires static linking. The internal bridge uses two private ABI declarations,
-requires a static Zstd archive, and checks the qualified 1.5.7 binding and linked
-library versions before context construction. Dependency upgrades must
-requalify this ABI and the existing search memory envelopes. Do not substitute
-a dynamic Zstd library through pkg-config.
+uses the static archive linked by `zstd-sys`, and checks the qualified 1.5.7
+binding and linked library versions before context construction. The bridge does
+not declare another native-library link or bundle a second archive into
+`hawdb-storage`. Do not substitute a dynamic Zstd library through pkg-config.
 
 HawDB writes modern Zstd frames. Pre-1.0 legacy frame magic is rejected before
 native decoding, because those historical decoders bypass custom-memory
@@ -115,6 +115,30 @@ or a custom allocator requirement at database construction. Rust allocation
 failure can terminate the native artifact or trap WASM; existing query admission
 and result limits are independent controls.
 
+## Zstd ABI requalification
+
+The compile-time version assertion intentionally rejects an upgrade from Zstd
+1.5.7 to 1.5.8 (or any other version). Do not simply change `QUALIFIED_VERSION`
+to make a dependency update compile. Before accepting a new version:
+
+1. Compare `ZSTD_createCCtx_advanced` and `ZSTD_createDCtx_advanced` in the new
+   `zstd.h` with the private declarations in
+   `crates/storage/src/compression/context.rs`. Check each parameter, return
+   type, and calling convention, and confirm that the static archive exports
+   both symbols.
+2. Compare `ZSTD_customMem` with `CustomMemory`: callback signatures, field types
+   and order, struct size, and alignment must match on native and WASM targets.
+3. Recheck modern/skippable frame boundaries and legacy decoder allocation
+   paths. Legacy frame magic must still be rejected before any decoder that
+   bypasses the host callbacks is created. Requalify context/workspace sizing
+   against the existing search memory envelopes, including allocation headers.
+4. Update the qualified compile-time and runtime version guards together in
+   storage's `compression/context.rs` and search's `build_memory/compression.rs`.
+   Rerun the codec and host allocator suites listed below, including the
+   `legacy_magic_is_rejected_before_creating_a_libc_owned_decoder` regression.
+   Run native default/minimal host tests and the browser WASM host tests; verify
+   encoding compatibility and balanced allocation/deallocation in each case.
+
 ## Verification
 
 `tests/host_allocator.rs` registers an instrumented allocator in a separate
@@ -123,8 +147,9 @@ It verifies that graph and SQL operations allocate through the host, that
 database/result teardown deallocates through it, and that native Zstd context
 and compression workspace allocations have matching host deallocations.
 Codec unit tests cover alignment, zero-size/overflow/null handling, allocation
-failures, damaged/truncated frames, sink failures, cross-thread destruction,
-and byte-for-byte encoding compatibility with the existing Zstd stream codec.
+failures, damaged/truncated frames (including 1-3 byte magic prefixes), sink
+failures, cross-thread destruction, and byte-for-byte encoding compatibility
+with the existing Zstd stream codec.
 Assertions concern observable allocator activity, not a total-memory estimate.
 `tests/in_memory_portable.rs` retains coverage without an injected allocator.
 
