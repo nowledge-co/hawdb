@@ -55,11 +55,12 @@ pub fn value_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
 ///
 /// `bool` is checked before `int` because Python's `bool` is a subclass of
 /// `int`. Integers, including objects implementing `__index__`, must fit in
-/// `i64` or raise `OverflowError`. Only `float` instances become floats:
-/// `__float__` alone may round, so `Decimal` or `Fraction` raise `TypeError`
-/// instead of being stored inexactly. `uuid.UUID` is accepted via its string
-/// form; everything outside the listed types raises `TypeError` rather than
-/// guessing.
+/// `i64` or raise `OverflowError`. Only `float` instances and NumPy's
+/// `float16`/`float32` scalars, which widen to `f64` exactly, become floats:
+/// `__float__` alone may round, so `Decimal`, `Fraction`, or NumPy
+/// `longdouble` raise `TypeError` instead of being stored inexactly.
+/// `uuid.UUID` is accepted via its string form; everything outside the listed
+/// types raises `TypeError` rather than guessing.
 pub fn py_to_value(object: &Bound<'_, PyAny>) -> PyResult<Value> {
     if object.is_none() {
         return Ok(Value::Null);
@@ -115,10 +116,24 @@ pub fn py_to_value(object: &Bound<'_, PyAny>) -> PyResult<Value> {
         }
         return Ok(Value::Map(map));
     }
+    // Checked last so common parameter types skip the type lookup.
+    if is_numpy_narrow_float(object)? {
+        return object.extract::<f64>().map(Value::Float);
+    }
     Err(PyTypeError::new_err(format!(
         "unsupported parameter type: {}",
         object.get_type().name()?
     )))
+}
+
+/// NumPy scalars are not `float` subclasses below `float64`, so they are
+/// recognized by type, as PyO3 does for `numpy.bool_`.
+fn is_numpy_narrow_float(object: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let ty = object.get_type();
+    Ok(ty.module()? == "numpy" && {
+        let name = ty.name()?;
+        name == "float16" || name == "float32"
+    })
 }
 
 /// Converts a Python `dict` of query parameters into the HawDB parameter map.
