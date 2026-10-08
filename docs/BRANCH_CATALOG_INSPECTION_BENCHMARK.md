@@ -7,8 +7,11 @@ The consistency contract is in
 ## Workload and evidence boundary
 
 `benches/branch_catalog_inspection.rs` measures synthetic metadata catalogs with
-1, 16, 256, 4,096, and 16,384 records. A star gives every child the same parent;
-a chain gives each child the preceding record as its parent. The fixture does
+1, 16, 256, 4,096, 16,384, 65,536, and 100,000 records. The two largest counts
+also retain deleted records and their successful-create receipts for 50% and
+90% of children, rounded down. The main record remains ready. A star gives
+every child the same parent; a chain gives each child the preceding record as
+its parent. The fixture does
 not create a data runtime for every catalog record. It measures catalog
 inspection, not branch admission, recovery, production Mem traffic, or power-loss
 safety. Fixtures use the default `SyncOnEveryWrite` policy; the timed operations
@@ -16,15 +19,26 @@ are read-only inspection and validation.
 
 Each case measures catalog validation, bounded decoding, and three embedded SQL
 operations: a one-row page at the midpoint, exact name lookup, and exact UUID
-lookup of the final record. Query parameters are bound, and every query asserts
-its exact returned UUID and one-row result. The page and lookup paths still read
-and validate the entire catalog; a one-row result does not imply one-record I/O.
-The largest encoded catalog contains 2,424,812 bytes in both lineage shapes.
+lookup of the final ready record. Tombstone cases also inspect one retained
+deleted UUID and assert its deleted state. Query parameters are bound, and
+every query asserts its exact returned UUID and one-row result. The page and
+lookup paths still read and validate the entire catalog; a one-row result does
+not imply one-record I/O.
+Each 100,000-record catalog contains 14,800,012 encoded bytes in both lineage
+shapes and at all three retained-deletion fractions.
 
-The optimized benchmark uses three warmups and 31 measured samples per operation.
+The v2 fixture starts from an ordinary-open project's actual catalog. It keeps
+the project/main UUIDs and published main root digest, appends synthetic
+metadata records, sorts by UUID, and revalidates the published catalog against
+the project selector before timing. Child data runtimes and physical child
+artifacts are not created. Names and request keys are unique, and deleted
+records keep their parent identities and successful-create receipts.
+
+The release benchmark uses three warmups and 31 measured samples per operation.
 Raw sample order and P50/P95/P99 are retained. The debug smoke uses 1 and 16
-records, one warmup, and two measured samples. Both Cargo and the manual Bazel
-target execute the same source:
+records, including the two retained-deletion fractions at 16 records, one
+warmup, and two measured samples. It executes eight cases. Both Cargo and the
+manual Bazel target execute the same source:
 
 ```console
 cargo test --locked --bench branch_catalog_inspection
@@ -35,7 +49,12 @@ bazel run //:hawdb_bench_branch_catalog_inspection
 The Bazel target is outside the routine benchmark smoke dispatch. It does not
 add a CI job or change fuzz scheduling.
 
-## Comparison protocol
+## Historical v1 comparison protocol
+
+The preserved v1 comparison uses the earlier 1-through-16,384-record fixture,
+ten cases per process, and no deleted records. Its synthetic project/main
+identities and bootstrap-root fields differ from v2. Its results below remain
+an independent Linux comparison, with the original raw artifact unchanged.
 
 The baseline runtime is `804f1a6139f73470c58167411f6cad871efffdbf`.
 The candidate changes catalog validation to sort UUID values instead of cloning
@@ -57,7 +76,7 @@ The comparison validates all sample counts, recomputes percentiles, and checks
 that every run has identical case identities, catalog lengths, and result-row
 counts. The source assertions check query result identity during execution.
 
-## Results
+## Historical v1 results
 
 The [raw comparison](BRANCH_CATALOG_INSPECTION_BENCHMARK.json) retains all six
 complete processes (9,300 measured operations), their raw samples, the initial
@@ -95,6 +114,51 @@ regressed by 6.1%-12.8% across the five operations, while the next two pairs
 improved. Some 1/16-record SQL pairs also regressed. This is not a universal
 latency improvement claim or a passed production performance gate.
 
+## Retained catalog qualification (v2)
+
+The [v2 raw cohort](BRANCH_CATALOG_RETENTION_BENCHMARK.json) retains three
+complete release processes on macOS arm64, with 22 cases per process and
+10,974 measured operations. Every process validates the full case set, actual
+ready/deleted/receipt counts, encoded lengths, query identities and states,
+sample counts, and recomputed nearest-rank P50/P95/P99. The eight-case Cargo
+and manual Bazel debug smokes each retain 88 measured operations as well.
+
+The source is based directly on main
+`199c2c11532845e0b3315ff5577469e3b5102fb2`, using pinned Rust 1.97.1, locked
+dependencies, the default HawDB features, and the Cargo bench profile. The
+artifact records the exact benchmark and release-binary digests. All checks
+and the release build in this protocol finish before the three timed
+processes; no compiler or test is started by the protocol during the cohort.
+Warmups, all raw sample order, per-process CPU/resource reports, and host load,
+paging and swap observations are retained.
+
+Values below are the median of three per-process P50s in milliseconds, at
+100,000 total retained records. The delete percentages apply to the 99,999
+children, giving 49,999 or 89,999 tombstones; the main branch is always ready.
+
+| Shape | Deleted children | Validate | Decode | One-row page | Exact name | Exact ready UUID | Exact deleted UUID |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| star | 0% | 14.917 | 23.722 | 26.440 | 26.392 | 26.176 | n/a |
+| star | 50% | 8.917 | 17.927 | 20.218 | 20.419 | 20.148 | 20.146 |
+| star | 90% | 5.204 | 14.319 | 16.192 | 16.031 | 15.884 | 16.009 |
+| chain | 0% | 16.650 | 25.902 | 28.370 | 28.095 | 28.426 | n/a |
+| chain | 50% | 11.953 | 20.905 | 22.984 | 23.513 | 23.418 | 23.580 |
+| chain | 90% | 8.082 | 17.275 | 19.663 | 19.721 | 19.669 | 19.817 |
+
+The validator inserts only non-deleted names into its uniqueness set. More
+deleted records therefore reduce that part of validation, while the encoded
+length and complete-catalog read/decode requirement stay fixed. Tombstones
+and receipts continue to consume the same 100,000-record codec allowance.
+
+This is a standalone warm-cache scaling observation. The host is not
+isolated: its one-minute load falls from 16.25 to 5.79 during the cohort and
+swap usage changes in the third process. The full-process maximum resident
+set reports are 300,990,464, 363,724,800 and 445,513,728 bytes, including fixture
+creation and all 22 cases. These do not establish a per-query memory bound or
+a production latency gate. The historical Linux v1 comparison and this macOS
+v2 cohort use different hosts and fixture identities; no runtime speedup is
+inferred between them.
+
 ## Decision and remaining qualification
 
 Keep complete, freshly validated catalog reads for each inspection statement.
@@ -113,7 +177,8 @@ usable source, and accepts a retry against the newly observed target revision.
 These tests do not establish power-loss behavior.
 
 This synthetic matrix does not establish representative Mem branch counts,
-inspection rates, or latency budgets. Those host measurements remain necessary
+inspection rates, or latency budgets. The v2 matrix adds evidence for retained
+receipts at the codec ceiling. Representative host measurements remain necessary
 before declaring catalog inspection production-qualified or deciding that a
 long-lived cache or persistent lookup index is warranted. Retained tombstones
 still count toward the 100,000-record codec limit. This change does not alter
