@@ -284,6 +284,22 @@ rust_test(
 )
 
 rust_test(
+    name = "hawdb_search_analyzer_observation_tests",
+    crate_root = "tests/analyzer_observation.rs",
+    srcs = [
+        "src/analyzer_workspace/observation.rs",
+        "src/analyzer_workspace/stack.rs",
+        "src/build_control/read_observation.rs",
+        "tests/analyzer_observation.rs",
+    ],
+    edition = "2024",
+    deps = [
+        "//crates/core:hawdb_core",
+        "//crates/executor:hawdb_executor",
+    ],
+)
+
+rust_test(
     name = "hawdb_search_term_policy_fuzz_tests",
     args = [
         "out_of_core::generation_writer::tests::term_policy::term_policy_lifecycle_differential_campaign",

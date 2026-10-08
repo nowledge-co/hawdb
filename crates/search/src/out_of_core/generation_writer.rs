@@ -41,8 +41,6 @@ use publication::file_len_checksum;
 use publication::{publish_generation, ActiveManifestUpdate, PublishGenerationInput};
 use rabitq::RaBitQArtifactBuilder;
 use serde::Serialize;
-#[cfg(test)]
-pub(crate) use spool::read_evidence as analyzer_read_evidence;
 pub use spool::SearchStagingCleanupReport;
 pub(in crate::out_of_core) use spool::StageDirectory;
 use spool::{SpoolSource, SPOOL_FRAME_HEADER_BYTES, SPOOL_HEADER};
