@@ -158,8 +158,9 @@ pub(crate) mod evidence {
     pub(crate) enum Point {
         BeforeAdmission,
         AfterCommit,
+        AfterInitialPartition,
     }
-    thread_local! { static CALLBACKS: RefCell<[Option<Callback>; 2]> = RefCell::new([None, None]); }
+    thread_local! { static CALLBACKS: RefCell<[Option<Callback>; 3]> = RefCell::new([None, None, None]); }
     pub(crate) struct Guard {
         point: Point,
         previous: Option<Callback>,

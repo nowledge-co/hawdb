@@ -23,6 +23,25 @@ closure therefore removes its run; a partial closure keeps the outside targets
 without widening the selected range. Sustained workload, power-loss recovery
 and whole-process RSS qualification remain separate gates.
 
+Initial import now constructs independently bounded content owners from one
+captured spool. Intermediate prefix selectors exist only inside the writer's
+private stage; the real root receives one complete manifest after every
+dependency has been installed and validated. The finite publication model
+abstracts this as one prepared complete closure and does not separately model
+those private prefix selectors or adaptive partition sizes. Its refinement
+therefore remains conditional on that implementation boundary.
+
+The native `partitioned_initial_publication_survives_lost_torn_and_reordered_writes`
+fixture exercises real writes and private/final selector renames for both an
+absent prior dataset and a retained existing dataset. Physical image replay
+checks complete hydration and published text/scalar/RaBitQ/hybrid results;
+private prefixes cannot become a partial active dataset. The cancellation and
+memory-admission fixture interrupts construction after a complete private
+prefix and checks that the old real selector and dataset survive. These finite
+fixtures assume reliable completed POSIX file/directory synchronization and
+atomic same-directory rename; they do not establish arbitrary hardware coverage
+or whole-process scale admission.
+
 ## Exact target contribution validation
 
 The runtime now adds `mutation_run::validate_targets` after structural closure

@@ -437,11 +437,35 @@ fn select_with_fan_in(
         {
             continue;
         }
-        let source_bytes = candidates.iter().try_fold(0u64, |total, segment| {
-            total
-                .checked_add(segment_bytes(segment)?)
-                .ok_or_else(|| HawDBError::Storage("search segment byte count overflows".into()))
-        })?;
+        let source_bytes =
+            candidates
+                .iter()
+                .enumerate()
+                .try_fold(0u64, |total, (offset, segment)| {
+                    let lexical_artifact_bytes = reader.segments[start + offset]
+                        .lexical_projection
+                        .artifact_len();
+                    total
+                        .checked_add(segment_bytes(segment, lexical_artifact_bytes)?)
+                        .ok_or_else(|| {
+                            HawDBError::Storage("search segment byte count overflows".into())
+                        })
+                })?;
+        // A target rewrite serializes the complete retained mutation closure.
+        // Its input runs belong to the same admission as the selected content.
+        let source_bytes = if contains_target {
+            reader
+                .manifest
+                .mutation_runs
+                .iter()
+                .try_fold(source_bytes, |total, run| {
+                    total.checked_add(run.len).ok_or_else(|| {
+                        HawDBError::Storage("search mutation source byte count overflows".into())
+                    })
+                })?
+        } else {
+            source_bytes
+        };
         if source_bytes > policy.max_input_bytes.get()
             || (enforce_tier_limit && source_bytes > policy.level_input_limit(source_level))
         {
@@ -563,7 +587,10 @@ fn prepare_mutation_rewrite(
     }))
 }
 
-fn segment_bytes(segment: &crate::out_of_core::SearchOutOfCoreSegmentManifest) -> Result<u64> {
+fn segment_bytes(
+    segment: &crate::out_of_core::SearchOutOfCoreSegmentManifest,
+    lexical_artifact_bytes: u64,
+) -> Result<u64> {
     [
         segment.descriptor_len,
         segment.payload_len,
@@ -571,6 +598,7 @@ fn segment_bytes(segment: &crate::out_of_core::SearchOutOfCoreSegmentManifest) -
         segment.vector_payload_len,
         segment.layout_len,
         segment.lexical_manifest_len,
+        lexical_artifact_bytes,
         segment.rabitq_artifact_len.unwrap_or_default(),
     ]
     .into_iter()

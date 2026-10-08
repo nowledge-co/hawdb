@@ -108,6 +108,139 @@ fn partial_mutation_root(name: &str) -> PathBuf {
 }
 
 #[test]
+fn initial_content_ownership_allows_bounded_target_reclamation() {
+    let root = test_dir("initial_content_target_reclamation");
+    let options = SearchOutOfCoreGenerationBuildOptions {
+        max_segment_uncompressed_bytes: NonZeroU64::new(4096).unwrap(),
+        max_record_bytes: NonZeroU64::new(4096).unwrap(),
+        max_content_documents: NonZeroUsize::new(2).unwrap(),
+        max_content_artifact_bytes: NonZeroU64::new(64 * 1024).unwrap(),
+        ..Default::default()
+    };
+    let documents: Vec<_> = (0..20)
+        .map(|number| {
+            let mut source = document(number);
+            source.content = "initial content ownership ".repeat(24);
+            source
+        })
+        .collect();
+    let mut writer = SearchOutOfCoreGenerationWriter::create(&root, options.clone()).unwrap();
+    for source in &documents {
+        writer.push(source.clone()).unwrap();
+    }
+    writer.finish().unwrap();
+    let pinned = SearchOutOfCoreReader::open(&root).unwrap();
+    assert!(
+        pinned.manifest.segments.len() > 1,
+        "bounded payload ranges must have independent lexical/vector content ownership"
+    );
+    let original_target = pinned.manifest.segments[0].segment_id;
+    let replacement = SearchProjectionRow {
+        kind: SearchProjectionKind::Memory,
+        external_id: "000000".into(),
+        title: "replacement of initial document".into(),
+        body: "bounded target reclamation changed content".into(),
+        embedding: Some(vec![0.0, 1.0]),
+        source_id: None,
+        metadata: documents[0].metadata.clone(),
+    };
+    SearchOutOfCoreGenerationWriter::prepare_delta(
+        &pinned,
+        SearchProjectionDelta {
+            upserts: vec![replacement],
+            ..Default::default()
+        },
+        options.clone(),
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let initial_content_bytes = 64 * 1024;
+    let merged = SearchOutOfCoreGenerationWriter::compact_segments(
+        &reader,
+        policy(initial_content_bytes),
+        options,
+    )
+    .unwrap()
+    .expect("initial owners must be eligible within bounded input bytes");
+    assert_eq!(merged.source_segment_count(), 2);
+    assert!(merged.source_bytes() <= initial_content_bytes);
+    let reopened = SearchOutOfCoreReader::open(&root).unwrap();
+    assert_eq!(reopened.document_count(), documents.len());
+    assert!(reopened
+        .manifest
+        .segments
+        .iter()
+        .all(|segment| segment.segment_id != original_target));
+    assert!(reopened
+        .visibility
+        .retractions()
+        .all(|entry| entry.target_segment_id != original_target));
+    let changed = reopened
+        .hydrate_documents(std::slice::from_ref(&documents[0].id))
+        .unwrap();
+    assert_eq!(changed.documents.len(), 1);
+    assert_eq!(
+        changed.documents[0].title,
+        "replacement of initial document"
+    );
+    assert_eq!(
+        pinned
+            .hydrate_documents(std::slice::from_ref(&documents[0].id))
+            .unwrap()
+            .documents,
+        vec![documents[0].clone()]
+    );
+    drop(reopened);
+    drop(reader);
+    drop(pinned);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn compaction_admission_counts_the_complete_lexical_artifacts() {
+    let root = append_only_root("compaction_complete_lexical_bytes", 2);
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let lexical_bytes: u64 = reader
+        .segments
+        .iter()
+        .map(|segment| segment.lexical_projection.artifact_len())
+        .sum();
+    assert!(lexical_bytes > 0);
+    let complete_bytes = reader.projection_payload_bytes() + lexical_bytes;
+    let before = super::published_files(&root);
+    assert!(
+        SearchOutOfCoreGenerationWriter::segment_compaction_work_plan(
+            &reader,
+            policy(complete_bytes - 1),
+            BackgroundWorkHint::default(),
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert!(SearchOutOfCoreGenerationWriter::prepare_segment_compaction(
+        &reader,
+        policy(complete_bytes - 1),
+        Default::default(),
+    )
+    .unwrap()
+    .is_none());
+    assert_eq!(super::published_files(&root), before);
+    let report = SearchOutOfCoreGenerationWriter::compact_segments(
+        &reader,
+        policy(complete_bytes),
+        Default::default(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(report.source_bytes(), complete_bytes);
+    assert_eq!(report.source_segment_count(), 2);
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn mutation_compaction_planning_does_not_copy_retained_runs() {
     let _serial = crate::test_allocation::serial();
     let root = partial_mutation_root("mutation_compaction_planning");
@@ -143,6 +276,63 @@ fn mutation_compaction_planning_does_not_copy_retained_runs() {
         peak < retained_bytes,
         "peak={peak}, retained={retained_bytes}"
     );
+    drop(reader);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn compaction_admission_counts_rewritten_mutation_run_artifacts() {
+    let root = partial_mutation_root("compaction_complete_mutation_bytes");
+    let reader = SearchOutOfCoreReader::open(&root).unwrap();
+    let lexical_bytes: u64 = reader
+        .segments
+        .iter()
+        .map(|segment| segment.lexical_projection.artifact_len())
+        .sum();
+    let run_bytes: u64 = reader
+        .manifest
+        .mutation_runs
+        .iter()
+        .map(|run| run.len)
+        .sum();
+    assert!(run_bytes > 0);
+    let complete_bytes = reader.projection_payload_bytes() + lexical_bytes + run_bytes;
+    let selected_policy = |bytes| {
+        SearchOutOfCoreSegmentCompactionPolicy::new(
+            NonZeroUsize::new(3).unwrap(),
+            NonZeroU64::new(bytes).unwrap(),
+        )
+        .unwrap()
+    };
+    assert!(
+        SearchOutOfCoreGenerationWriter::segment_compaction_work_plan(
+            &reader,
+            selected_policy(complete_bytes - 1),
+            BackgroundWorkHint::default(),
+        )
+        .unwrap()
+        .is_none()
+    );
+    let report = SearchOutOfCoreGenerationWriter::compact_segments(
+        &reader,
+        selected_policy(complete_bytes),
+        Default::default(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(report.source_bytes(), complete_bytes);
+    let reopened = SearchOutOfCoreReader::open(&root).unwrap();
+    assert_eq!(reopened.document_count(), 1);
+    assert!(reopened.manifest.mutation_runs.is_empty());
+    assert_eq!(
+        reopened
+            .hydrate_documents(&[document(1).id])
+            .unwrap()
+            .documents
+            .len(),
+        1
+    );
+    drop(reopened);
     drop(reader);
     fs::remove_dir_all(root).unwrap();
 }

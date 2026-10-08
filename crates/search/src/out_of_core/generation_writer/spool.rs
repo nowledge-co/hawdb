@@ -239,6 +239,8 @@ impl SpoolSource<'_> {
 }
 
 mod stage;
+#[cfg(test)]
+pub(super) use stage::evidence::fail_unlink;
 pub(in crate::out_of_core) use stage::retry_staging_cleanup;
 pub use stage::SearchStagingCleanupReport;
 pub(in crate::out_of_core) use stage::StageDirectory;

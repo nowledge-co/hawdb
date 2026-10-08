@@ -32,6 +32,18 @@ pub(super) struct Options {
 }
 
 impl Options {
+    pub(super) fn try_clone(
+        &self,
+        memory: &BuildMemory,
+        task: &RuntimeTaskContext,
+    ) -> Result<Self> {
+        let lease = memory.retained.reserve(options_bytes(&self.value, task)?)?;
+        Ok(Self {
+            value: self.value.clone(),
+            _memory: lease,
+        })
+    }
+
     pub(super) fn new(
         value: SearchOutOfCoreGenerationBuildOptions,
         memory: &BuildMemory,

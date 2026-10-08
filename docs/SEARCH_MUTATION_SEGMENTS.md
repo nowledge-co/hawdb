@@ -91,6 +91,38 @@ as incremental appends. A manifest entry that owns a corpus-sized lexical or
 vector artifact is not a valid mutation target: replacing one ID would still
 rewrite that full artifact.
 
+`SearchOutOfCoreGenerationBuildOptions` applies the same input content limits
+to initial imports and incremental content publications: `max_content_documents`
+defaults to 8,192 and `max_content_artifact_bytes` defaults to 64 MiB. The byte
+limit includes the descriptor, all three payload files, layout, complete lexical
+artifact and manifest, and optional RaBitQ artifact. Compaction outputs use the
+separate typed compaction input policy. Payload descriptor ranges retain their
+own existing limits.
+
+Initial import captures bodies once in its immutable spool. Each content owner
+is built from a bounded spool range under the same operation memory ledger,
+task and descriptor admission. Oversized artifact candidates split into smaller
+ranges; a single document that cannot fit fails admission. Global metadata-field
+and embedding identity remain consistent across the partitions, including fields
+absent from a particular partition. Private prefix manifests remain in the
+writer's stage. After every partition and its dependencies validate, one final
+manifest publishes the complete dataset in the real root. Cancellation or
+admission failure before that boundary retains the previous complete dataset;
+an absent previous selector remains absent. A lost response after the completed
+durability barriers may leave the full import committed.
+
+Partition stages remain flat siblings under the real project root. A deferred
+partition deletion stays registered with `retry_staging_cleanup` for that root,
+including after publication. Build reports conservatively retain any observed
+partition cleanup debt until the host inspects or retries the registered stages.
+
+Build reports aggregate only the final content dependencies and final manifest,
+excluding intermediate private manifests. `published_content_segments` reports
+the new owners; the singular `rabitq_source_digest` is absent when zero or
+multiple new RaBitQ artifacts were produced. Complete fresh scale qualification
+must be repeated for this initial ownership path; earlier runs of the single-owner
+builder do not qualify it.
+
 ### Mutation run
 
 A mutation run is an immutable, checksummed artifact published with one
@@ -285,6 +317,9 @@ Leveled selection remains bounded by the existing input-byte policy. If the
 visibility closure would exceed the selected budget, the run is deferred rather
 than widening the operation or silently retaining a partial result. QoS
 admission and cancellation use the scheduled compaction API introduced by #704.
+Input admission and reports include the complete lexical artifact as well as
+its manifest. Selecting any target also counts all input mutation-run artifact
+bytes, because the surviving target closure is rewritten in that publication.
 Selection borrows retractions without copying them before QoS admission.
 Preparation charges the retained entries, IDs, and term capacities to the build
 memory ledger and keeps that reservation until the writer releases them.

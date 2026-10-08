@@ -44,6 +44,10 @@ pub(in super::super) struct SpoolRecord {
 }
 
 impl SpoolRecord {
+    pub(in super::super) fn add_digest(&self, digest: &mut DocumentsDigest) {
+        digest.add_record(self.checksum, self.encoded_bytes);
+    }
+
     pub(in super::super) fn write_to(
         &self,
         output: &mut impl Write,
@@ -233,6 +237,10 @@ pub(in super::super) struct SpoolCursor {
 }
 
 impl SpoolCursor {
+    pub(in super::super) fn position(&self) -> u64 {
+        self.offset
+    }
+
     pub(in super::super) fn next(&mut self) -> Result<Option<SpoolRecord>> {
         checkpoint(&self.task)?;
         if self.ordinal == self.document_count {
@@ -311,6 +319,23 @@ impl SpoolCursor {
 }
 
 impl SpoolSource<'_> {
+    pub(in super::super) fn range_cursor(
+        &self,
+        start: u64,
+        end: u64,
+        documents: usize,
+        task: &RuntimeTaskContext,
+    ) -> Result<SpoolCursor> {
+        let mut cursor = self.cursor(task)?;
+        if start < SPOOL_HEADER.len() as u64 || end < start || end > cursor.length {
+            return Err(HawDBError::Storage("invalid initial spool range".into()));
+        }
+        cursor.offset = start;
+        cursor.length = end;
+        cursor.document_count = documents;
+        Ok(cursor)
+    }
+
     pub(in super::super) fn cursor(&self, task: &RuntimeTaskContext) -> Result<SpoolCursor> {
         checkpoint(task)?;
         let cursor_memory = self.memory.spool.reserve(size_of::<SpoolCursor>())?;
