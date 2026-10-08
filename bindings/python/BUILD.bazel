@@ -84,7 +84,10 @@ py_test(
 py_test(
     name = "hawdb_python_pydantic_tests",
     size = "small",
-    srcs = ["tests/pytest_main.py"] + glob(["tests/test_pydantic*.py"]),
+    srcs = [
+        "tests/conftest.py",
+        "tests/pytest_main.py",
+    ] + glob(["tests/test_pydantic*.py"]),
     legacy_create_init = False,
     main = "tests/pytest_main.py",
     deps = [

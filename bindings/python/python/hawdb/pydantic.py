@@ -44,8 +44,8 @@ __all__ = ["params", "parse"]
 Model = TypeVar("Model", bound=pydantic.BaseModel)
 
 # Scalars the binding converts into parameter values. `bool` is an `int`
-# subclass, and `tuple` binds as a list. The binding would turn an `int`
-# outside the engine's 64-bit range into a float, so `params` rejects it.
+# subclass, and `tuple` binds as a list. `params` checks them, including the
+# engine's 64-bit `int` range, itself, so its errors name the field.
 _SCALARS = (type(None), int, float, str, bytes, uuid.UUID)
 _INT_MIN, _INT_MAX = -(2**63), 2**63 - 1
 
