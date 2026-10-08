@@ -31,6 +31,9 @@ pub use buffer::CheckpointSharedBytes;
 mod values;
 pub(crate) use values::{CheckpointSharedValues, CheckpointValues};
 
+mod allocation;
+pub(crate) use allocation::{CheckpointAllocationOwner, CheckpointAllocationToken};
+
 /// The task already admitted by the owner, optionally with per-unit local QoS.
 /// This never creates a governor or reserves the owner's memory a second time.
 /// Builders must keep each unit bounded by their record/page limits. One unit

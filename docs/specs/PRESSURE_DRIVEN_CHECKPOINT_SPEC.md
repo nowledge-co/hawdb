@@ -100,8 +100,10 @@ recovery establishes authority. A successfully committed user transaction must
 not be reported as rolled back because later maintenance failed.
 
 Shutdown stops admission of new work, cancels or completes the owned candidate,
-joins its worker, and releases all leases. Workers must not retain a strong
-ownership cycle. Manual checkpoints, branch selection, and schema-required
+joins its worker, and releases worker-owned sources, artifacts and execution
+leases. Adopted serving runtimes and live readers retain allocation leases until
+their actual data owners close. Workers must not retain a strong ownership cycle.
+Manual checkpoints, branch selection, and schema-required
 checkpoints coordinate with the same candidate owner and publication barrier.
 Tokio integration uses the same library contract and the host's existing
 runtime admission; no nested blocking wait or helper-process control plane.
@@ -1078,8 +1080,8 @@ was applied. For this single-block fixture, the sixth acquisition is the second
 candidate write; cancellation there preserves the original requirement that
 exactly one transaction has been applied. The epoch, partial-replay rejection,
 source authority, cleanup and complete ordinary-reopen assertions remain
-unchanged. The corrected fixture passed in isolation; the corrected combined
-tree still requires supported-profile and complete regression/fuzz qualification.
+unchanged. The corrected reader tree passed four supported profiles, all required
+complete regression commands and all 96 actually executed local fuzz targets.
 
 Checkpoint suffix decoding now has its own cooperative path, while ordinary
 decoding remains independent. Each transaction operation and field scan checks
@@ -1099,12 +1101,85 @@ every actual classified unit before fully retrying. Work cancellation/admission
 errors remain execution failures rather than corrupt-record events. An initial
 combined fixture incorrectly nested an existing batch; its failure is retained
 and individual batch cases remain while the combined fixture uses flat children.
-Final supported-profile and complete regression/fuzz qualification is pending.
-Decoded strings/lists/maps and retained runtime allocation leases remain open;
-standard Arc finalization, internal map comparisons and destruction/cleanup
-also require separate resource/work qualification. This cooperative decoder
-does not authorize production per-unit admission or remove the default owner's
-whole-candidate operation limit.
+The cooperative decoder passed four supported profiles, all required complete
+regression commands and all 96 actually executed local fuzz targets on tree
+`10b0f6e4b2b81b2388f1da1b5904d58977bee973`. Internal map comparisons, standard
+Arc finalization and destruction/cleanup still require resource/work
+qualification. This decoder does not authorize production per-unit admission
+or remove the default owner's whole-candidate operation limit.
+
+Controlled decoding now admits String, binary and vector capacities before
+allocation, including retained inventory cells and pinned Arc counters. Vector
+growth and Vec-to-Arc conversion admit simultaneous old/new capacities; the old
+buffer lease returns only after the old allocation is destroyed. The concrete
+governor independently charges its permit payload. Allocator metadata/rounding,
+standard Arc conversion latency and destruction remain platform assumptions.
+
+A private decoded-record wrapper retains these leases with its owned values;
+ordinary decoding remains unchanged. Replay installs ownership in the candidate
+runtime before moving any values. Successful and partially failed replay both
+keep moved values admitted. Runtime snapshots share the persistent inventory
+without copying cells; inventory destruction is iterative, without allocating
+scratch or recursively dropping a long unshared chain. Conservative inventory
+metadata and overwritten decoded values remain charged until the last owner.
+
+The unchanged genuine real-governor regression previously observed zero admitted
+bytes after task closure while wide decoded string/binary values still lived.
+It now keeps the admission envelope until record destruction. Thirteen focused
+tests also cover exact one-byte denial and full retry on the same reservation,
+actual vector/Arc capacity release, runtime and COW-snapshot retention, injected
+partial replay failure, allocations preceding a later corrupt record, critical
+memory pressure recovery and every actual classified cancellation unit. An
+initial remaining-capacity helper exceeded the static task ceiling and bypassed
+the controller ledger; its two failures are archived. The corrected helper
+requests exactly that ceiling to reach the real controller, preserving all
+original boundary assertions. The decoded-memory and 1057-operation before-fix
+regression files remain byte-identical.
+
+The broader reader/framing/payload audits originally required all working memory to return
+immediately after catch-up, while the candidate still owned the decoded suffix.
+Four unchanged checks failed at those release checks with decoded ownership enabled;
+their sources and complete failure log/hashes are archived. The revised audits keep
+the original before-I/O charging, full data/source identity, file-authority,
+complete release and ordinary-reopen assertions. It additionally requires the
+wide decoded payload to remain charged both in the candidate and after serving
+runtime adoption, and checks returned working capacity only after both runtimes
+are destroyed. Every original I/O cancellation cut and same-reservation retry
+remains; final publication closes the adopted runtime before checking complete
+release. The full zero-slot/zero-memory checks still follow task closure, without
+changing budgets, cases or deadlines.
+
+The full owner suite also found an admission-zero assertion immediately after
+worker stop, before the adopted serving runtime was destroyed. Its complete
+failure evidence and original fixture are archived. The corrected audit requires
+zero task/CPU/I/O slots after stop while the adopted epoch-3 runtime and its three
+nodes remain live and charged; it preserves the original zero-memory check after
+closing that runtime and the full ordinary-reopen property checks. All three
+prefix seals, foreground writes, group flush, base-byte checks, budgets and
+deadlines remain unchanged.
+
+Decoded property maps and nested map values now admit standard-library node
+storage before insertion. A stack-local counter covers the pinned Rust 1.97.1
+node layout and insertion splits separately from key/value heap buffers. The
+bound includes internal child pointers, layout padding, the root and a newly
+allocated empty split node; other insertion-path nodes hold at least four keys.
+The allocation inventory keeps this coverage through record moves, replay and
+snapshots. This relies on the inspected pinned standard-library implementation;
+allocator rounding/bookkeeping and insertion/comparison latency remain platform
+assumptions. It does not change the ordinary WAL decoder or wire format.
+
+The unchanged actual-governor empty-key/int-value regression previously decoded
+a live nonempty map with no string/vector buffers and zero admission after task
+closure. It now retains the envelope until record destruction. Seventeen focused
+decoder tests pass, including exact one-byte node-capacity denial and full retry
+on the same reservation, 1057-key property/nested-map split growth with complete
+encoded-byte parity, and cancellation at every actual classified unit for both
+map routes. Full supported-profile and regression/fuzz qualification is pending.
+
+Replay-created and cloned graph/catalog/relational/append allocations, source/mounted ownership,
+complete cleanup and sealing resources remain separate gaps. These focused
+ownership checks do not establish a complete working-set bound or qualify
+default sustained progress.
 
 The row-page publisher's complete cancellation matrix repeatedly recreated and
 synchronized the identical durable source for every CPU/I/O cut. Two full

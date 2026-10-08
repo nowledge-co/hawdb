@@ -14,23 +14,56 @@
 
 //! Cooperative checkpoint-only WAL decoding. Ordinary decoding stays independent.
 //! Field inventory borrows the record instead of allocating duplicate fields.
-//! Owned runtime allocation leases, map comparisons, Arc finalization and
-//! cancellation cleanup/destruction require separate resource qualification.
+//! Decoded strings, byte buffers and vectors retain admitted allocation owners.
+//! Map nodes/comparisons, replay-created allocations, Arc finalization and
+//! cancellation cleanup/destruction still require resource qualification.
 
 use super::*;
 use crate::background::{CheckpointOperationError, CheckpointWorkContext, CheckpointWorkError};
 
+mod map_memory;
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod memory_tests;
+
+#[cfg(test)]
+mod memory_related_tests;
+
+#[cfg(test)]
+mod map_memory_tests;
+
+#[cfg(test)]
+mod map_related_tests;
 
 pub(crate) fn decode_binary_wal_record_with_work_context(
     bytes: &[u8],
     work: &CheckpointWorkContext,
-) -> Result<BinaryWalRecordDecode> {
+) -> Result<BinaryWalRecordDecode<crate::wal::checkpoint::CheckpointWalEntry>> {
     match work.classify(|work| {
-        let decoded = decode_binary_wal_record_inner(bytes, work)?;
-        work.checkpoint().map_err(HawDBError::from_storage_error)?;
-        Ok(decoded)
+        let context = DecodeContext {
+            work: work.clone(),
+            memory: std::cell::RefCell::new(Default::default()),
+        };
+        let decoded = decode_binary_wal_record_inner(bytes, &context)?;
+        context
+            .checkpoint()
+            .map_err(HawDBError::from_storage_error)?;
+        match decoded {
+            BinaryWalRecordDecode::Entry {
+                entry,
+                commit_epoch,
+            } => Ok(BinaryWalRecordDecode::Entry {
+                entry: crate::wal::checkpoint::CheckpointWalEntry::new(
+                    entry,
+                    context.memory.into_inner(),
+                ),
+                commit_epoch,
+            }),
+            BinaryWalRecordDecode::Corrupt(reason) => Ok(BinaryWalRecordDecode::Corrupt(reason)),
+        }
     }) {
         Ok(decoded) => Ok(decoded),
         Err(CheckpointOperationError::Operation(HawDBError::Storage(reason))) => {
@@ -43,23 +76,55 @@ pub(crate) fn decode_binary_wal_record_with_work_context(
     }
 }
 
-fn allocation(
-    error: impl std::fmt::Display,
-    bytes: usize,
-    work: &CheckpointWorkContext,
-) -> HawDBError {
+struct DecodeContext {
+    work: CheckpointWorkContext,
+    memory: std::cell::RefCell<crate::background::CheckpointAllocationOwner>,
+}
+
+impl std::ops::Deref for DecodeContext {
+    type Target = CheckpointWorkContext;
+    fn deref(&self) -> &Self::Target {
+        &self.work
+    }
+}
+
+impl DecodeContext {
+    fn reserve(&self, bytes: usize) -> Result<crate::background::CheckpointAllocationToken> {
+        self.memory
+            .borrow_mut()
+            .reserve(bytes, self)
+            .map_err(HawDBError::from_storage_error)
+    }
+    fn find(&self, address: usize) -> Result<crate::background::CheckpointAllocationToken> {
+        self.memory
+            .borrow()
+            .find(address, self)
+            .map_err(HawDBError::from_storage_error)
+    }
+}
+
+fn allocation(error: impl std::fmt::Display, bytes: usize, work: &DecodeContext) -> HawDBError {
     HawDBError::from_storage_error(work.record_failure(CheckpointWorkError::Allocation {
         bytes: bytes as u64,
         reason: error.to_string(),
     }))
 }
 
-fn copy_bytes(bytes: &[u8], work: &CheckpointWorkContext) -> Result<Vec<u8>> {
+fn copy_bytes(bytes: &[u8], work: &DecodeContext) -> Result<Vec<u8>> {
     let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+    let token = work.reserve(bytes.len())?;
     let mut output = Vec::new();
     output
         .try_reserve_exact(bytes.len())
         .map_err(|error| allocation(error, bytes.len(), work))?;
+    if output.capacity() != bytes.len() {
+        return Err(allocation(
+            "byte capacity differs from admitted capacity",
+            bytes.len(),
+            work,
+        ));
+    }
+    token.address(output.as_ptr() as usize);
     unit.finish();
     for chunk in bytes.chunks(64 * 1024) {
         let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
@@ -70,11 +135,7 @@ fn copy_bytes(bytes: &[u8], work: &CheckpointWorkContext) -> Result<Vec<u8>> {
     Ok(output)
 }
 
-fn visit_utf8(
-    bytes: &[u8],
-    work: &CheckpointWorkContext,
-    mut visit: impl FnMut(&str),
-) -> Result<()> {
+fn visit_utf8(bytes: &[u8], work: &DecodeContext, mut visit: impl FnMut(&str)) -> Result<()> {
     let mut offset = 0;
     while offset < bytes.len() {
         let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
@@ -110,42 +171,67 @@ fn visit_utf8(
     work.checkpoint().map_err(HawDBError::from_storage_error)
 }
 
-fn copy_string(bytes: &[u8], work: &CheckpointWorkContext) -> Result<String> {
+fn copy_string(bytes: &[u8], work: &DecodeContext) -> Result<String> {
     let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+    let token = work.reserve(bytes.len())?;
     let mut output = String::new();
     output
         .try_reserve_exact(bytes.len())
         .map_err(|error| allocation(error, bytes.len(), work))?;
+    if output.capacity() != bytes.len() {
+        return Err(allocation(
+            "string capacity differs from admitted capacity",
+            bytes.len(),
+            work,
+        ));
+    }
+    token.address(output.as_ptr() as usize);
     unit.finish();
     visit_utf8(bytes, work, |text| output.push_str(text))?;
     Ok(output)
 }
 
-fn decode_string_body(
-    bytes: &[u8],
-    pos: &mut usize,
-    work: &CheckpointWorkContext,
-) -> Result<String> {
+fn decode_string_body(bytes: &[u8], pos: &mut usize, work: &DecodeContext) -> Result<String> {
     copy_string(decode_len_body(bytes, pos)?, work)
 }
 
-fn copy_arc(bytes: &[u8], work: &CheckpointWorkContext) -> Result<Arc<[u8]>> {
+fn copy_arc(bytes: &[u8], work: &DecodeContext) -> Result<Arc<[u8]>> {
     let bytes = copy_bytes(bytes, work)?;
-    // The standard Arc conversion remains an allocation/copy qualification gap.
+    let previous = work.find(bytes.as_ptr() as usize)?;
+    let alignment = std::mem::align_of::<std::sync::atomic::AtomicUsize>();
+    let capacity = bytes
+        .len()
+        .checked_add(2 * std::mem::size_of::<std::sync::atomic::AtomicUsize>())
+        .and_then(|bytes| bytes.checked_add(alignment - 1))
+        .map(|bytes| bytes / alignment * alignment)
+        .ok_or_else(|| allocation("WAL Arc capacity overflows usize", usize::MAX, work))?;
     let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-    let output = Arc::from(bytes);
+    let token = work.reserve(capacity)?;
+    // Standard Arc finalization remains a CPU/allocation-latency assumption.
+    let output: Arc<[u8]> = Arc::from(bytes);
+    token.address(output.as_ptr() as usize);
+    previous.release_buffer();
     unit.finish();
     work.checkpoint().map_err(HawDBError::from_storage_error)?;
     Ok(output)
 }
 
-fn push<T>(values: &mut Vec<T>, value: T, work: &CheckpointWorkContext) -> Result<()> {
+fn push<T>(values: &mut Vec<T>, value: T, work: &DecodeContext) -> Result<()> {
     if values.len() == values.capacity() {
+        let previous = if values.capacity() == 0 {
+            None
+        } else {
+            Some(work.find(values.as_ptr() as usize)?)
+        };
         let capacity = values
             .capacity()
             .saturating_mul(2)
             .max(values.len().saturating_add(1));
         let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+        let bytes = capacity
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| allocation("WAL vector capacity overflows usize", usize::MAX, work))?;
+        let token = work.reserve(bytes)?;
         let mut replacement = Vec::new();
         replacement.try_reserve_exact(capacity).map_err(|error| {
             allocation(
@@ -154,6 +240,14 @@ fn push<T>(values: &mut Vec<T>, value: T, work: &CheckpointWorkContext) -> Resul
                 work,
             )
         })?;
+        if replacement.capacity() != capacity {
+            return Err(allocation(
+                "vector capacity differs from admitted capacity",
+                bytes,
+                work,
+            ));
+        }
+        token.address(replacement.as_ptr() as usize);
         unit.finish();
         let mut old = std::mem::take(values).into_iter();
         let count = (64 * 1024 / std::mem::size_of::<T>().max(1)).max(1);
@@ -163,6 +257,9 @@ fn push<T>(values: &mut Vec<T>, value: T, work: &CheckpointWorkContext) -> Resul
             unit.finish();
         }
         drop(old);
+        if let Some(previous) = previous {
+            previous.release_buffer();
+        }
         *values = replacement;
     }
     let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
@@ -182,7 +279,7 @@ struct Fields<'a, 'w> {
     pos: usize,
     strings: &'a [u32],
     messages: &'a [u32],
-    work: &'w CheckpointWorkContext,
+    work: &'w DecodeContext,
 }
 impl<'a> Fields<'a, '_> {
     fn next(&mut self) -> Result<Option<Field<'a>>> {
@@ -216,14 +313,14 @@ struct OpFields<'a, 'w> {
     bytes: &'a [u8],
     strings: &'a [u32],
     messages: &'a [u32],
-    work: &'w CheckpointWorkContext,
+    work: &'w DecodeContext,
 }
 impl<'a, 'w> OpFields<'a, 'w> {
     fn parse(
         bytes: &'a [u8],
         strings: &'a [u32],
         messages: &'a [u32],
-        work: &'w CheckpointWorkContext,
+        work: &'w DecodeContext,
     ) -> Result<Self> {
         let out = Self {
             bytes,
@@ -295,6 +392,7 @@ impl<'a, 'w> OpFields<'a, 'w> {
     }
     fn properties_for(&self, id: u32) -> Result<BTreeMap<String, Value>> {
         let mut properties = BTreeMap::new();
+        let mut memory = map_memory::MapMemory::default();
         let mut fields = self.iter();
         while let Some(field) = fields.next()? {
             if let Field::Message(found, bytes) = field
@@ -305,6 +403,7 @@ impl<'a, 'w> OpFields<'a, 'w> {
                     .work
                     .start_unit()
                     .map_err(HawDBError::from_storage_error)?;
+                memory.before_insert(properties.len(), self.work)?;
                 properties.insert(key, value);
                 unit.finish();
             }
@@ -315,7 +414,7 @@ impl<'a, 'w> OpFields<'a, 'w> {
 
 fn decode_binary_wal_record_inner(
     bytes: &[u8],
-    work: &CheckpointWorkContext,
+    work: &DecodeContext,
 ) -> Result<BinaryWalRecordDecode> {
     let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
     if bytes.len() < 21 {
@@ -369,10 +468,11 @@ fn decode_binary_wal_record_inner(
     })
 }
 
-fn decode_value_message(bytes: &[u8], depth: usize, work: &CheckpointWorkContext) -> Result<Value> {
+fn decode_value_message(bytes: &[u8], depth: usize, work: &DecodeContext) -> Result<Value> {
     ensure_value_depth(depth)?;
     let mut pos = 0usize;
     let mut value: Option<Value> = None;
+    let mut map_nodes = map_memory::MapMemory::default();
     while pos < bytes.len() {
         let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
         let (field_id, wire_type) = decode_tag(bytes, &mut pos)?;
@@ -446,11 +546,15 @@ fn decode_value_message(bytes: &[u8], depth: usize, work: &CheckpointWorkContext
                 let body = decode_len_body(bytes, &mut pos)?;
                 let mut map = match value.take() {
                     Some(Value::Map(values)) => values,
-                    None | Some(_) => BTreeMap::new(),
+                    None | Some(_) => {
+                        map_nodes = map_memory::MapMemory::default();
+                        BTreeMap::new()
+                    }
                 };
                 if !body.is_empty() {
                     let (key, entry_value) = decode_map_entry(body, depth.saturating_add(2), work)?;
                     let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+                    map_nodes.before_insert(map.len(), work)?;
                     map.insert(key, entry_value);
                     unit.finish();
                 }
@@ -465,7 +569,7 @@ fn decode_value_message(bytes: &[u8], depth: usize, work: &CheckpointWorkContext
 fn decode_map_entry(
     bytes: &[u8],
     value_depth: usize,
-    work: &CheckpointWorkContext,
+    work: &DecodeContext,
 ) -> Result<(String, Value)> {
     let mut pos = 0usize;
     let mut key = None;
@@ -496,7 +600,7 @@ fn decode_map_entry(
     }
 }
 
-fn decode_op_frame(bytes: &[u8], pos: &mut usize, work: &CheckpointWorkContext) -> Result<WalOp> {
+fn decode_op_frame(bytes: &[u8], pos: &mut usize, work: &DecodeContext) -> Result<WalOp> {
     let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
     let op_code = decode_varint_u64(bytes, pos)?;
     let body = decode_len_body(bytes, pos)?;
@@ -504,7 +608,7 @@ fn decode_op_frame(bytes: &[u8], pos: &mut usize, work: &CheckpointWorkContext) 
     decode_op_body(op_code, body, work)
 }
 
-fn decode_op_body(op_code: u64, body: &[u8], work: &CheckpointWorkContext) -> Result<WalOp> {
+fn decode_op_body(op_code: u64, body: &[u8], work: &DecodeContext) -> Result<WalOp> {
     match op_code {
         OP_CREATE_NODE_LABEL => {
             let fields = OpFields::parse(body, &[1], &[], work)?;

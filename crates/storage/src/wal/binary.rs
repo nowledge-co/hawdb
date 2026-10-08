@@ -159,9 +159,9 @@ const VALUE_FIELD_UUID: u32 = 9;
 const ENTRY_FIELD_KEY: u32 = 1;
 const ENTRY_FIELD_VALUE: u32 = 2;
 
-pub enum BinaryWalRecordDecode {
+pub enum BinaryWalRecordDecode<E = WalEntry> {
     Entry {
-        entry: WalEntry,
+        entry: E,
         #[allow(dead_code)]
         commit_epoch: u64,
     },

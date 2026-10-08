@@ -220,9 +220,9 @@ pub fn reject_corrupt_wal_record<T>(
 
 /// One decoded event from a WAL scan. Offsets are absolute
 /// file offsets; `encoded_len` covers the framed bytes of the record.
-pub enum WalCursorEvent {
+pub enum WalCursorEvent<E = WalEntry> {
     Entry {
-        entry: WalEntry,
+        entry: E,
         start_offset: u64,
         encoded_len: u64,
         payload_len: u64,

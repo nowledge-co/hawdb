@@ -985,10 +985,15 @@ mod tests {
         owner.stop();
         assert_eq!(governor.snapshot().active_background_tasks, 0);
         assert_eq!(governor.snapshot().active_background_io_slots, 0);
-        assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+        assert_eq!(governor.snapshot().active_cpu_slots, 0);
+        // Stopping execution cannot uncharge decoded values in the adopted store.
+        assert!(governor.snapshot().admitted_memory_bytes > 0);
+        assert_eq!(store.commit_epoch(), 3);
+        assert_eq!(store.node_count_for_label(None), 3);
         drop(owner);
         drop(control);
         drop(store);
+        assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
         let recovered = GraphStore::open(&fixture.0, &mut catalog).unwrap();
         assert_eq!(recovered.commit_epoch(), 3);
         for id in 0..3 {

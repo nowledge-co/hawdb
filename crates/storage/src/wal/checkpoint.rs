@@ -18,6 +18,9 @@
 use super::*;
 use crate::background::CheckpointWorkContext;
 
+mod entry;
+pub(crate) use entry::CheckpointWalEntry;
+
 #[cfg(test)]
 mod tests;
 
@@ -81,7 +84,7 @@ impl CheckpointWalRecordCursor {
         })
     }
 
-    pub(crate) fn next(&mut self) -> Result<WalCursorEvent> {
+    pub(crate) fn next(&mut self) -> Result<WalCursorEvent<CheckpointWalEntry>> {
         match self.reader.next_event()? {
             frame::CheckpointWalReadEvent::Record {
                 payload,

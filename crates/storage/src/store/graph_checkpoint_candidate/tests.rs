@@ -176,10 +176,11 @@ fn checkpoint_units_wal_framing_actual_suffix_denies_memory_and_fully_retries() 
     drop(candidate);
     drop(task);
     drop(permit);
-    assert_eq!(allowed.snapshot().admitted_memory_bytes, 0);
+    assert_eq!(allowed.snapshot().admitted_memory_bytes, 2 * 1024 * 1024);
     assert_eq!(source.checkpoint_source_identity(), source_identity);
     drop(source);
     drop(store);
+    assert_eq!(allowed.snapshot().admitted_memory_bytes, 0);
     let recovered = GraphStore::open(&directory, &mut catalog).unwrap();
     assert_eq!(
         recovered
@@ -262,7 +263,9 @@ fn checkpoint_units_wal_framing_actual_suffix_cancels_every_io_wave_and_retries_
     drop(baseline_permit);
     assert_eq!(baseline_governor.snapshot().admitted_memory_bytes, 0);
 
+    let mut serving = Some(store);
     for stop in 1..=waves {
+        let store = serving.as_mut().unwrap();
         let governor = governor(ceiling);
         let permit = governor
             .try_admit(RuntimeWorkRequest::background_maintenance(ceiling).with_io_wave_slots(1))
@@ -284,7 +287,7 @@ fn checkpoint_units_wal_framing_actual_suffix_cancels_every_io_wave_and_retries_
             .unwrap()
             .unwrap();
         let error = candidate
-            .catch_up_with_task_context(&store, &task)
+            .catch_up_with_task_context(store, &task)
             .unwrap_err();
         assert!(error.to_string().contains("stopped"), "{error:?}");
         assert_eq!(counter.calls.load(Ordering::SeqCst), stop);
@@ -305,9 +308,7 @@ fn checkpoint_units_wal_framing_actual_suffix_cancels_every_io_wave_and_retries_
             .prepare_checkpoint_candidate(&source_catalog)
             .unwrap()
             .unwrap();
-        let replay = candidate
-            .catch_up_with_task_context(&store, &fresh)
-            .unwrap();
+        let replay = candidate.catch_up_with_task_context(store, &fresh).unwrap();
         assert_eq!(replay.entries, 2);
         assert_eq!(replay.captured_commit_epoch, store.commit_epoch());
         assert_eq!(
@@ -320,8 +321,9 @@ fn checkpoint_units_wal_framing_actual_suffix_cancels_every_io_wave_and_retries_
                 .unwrap(),
             expected
         );
+        let retained_payload_bytes = 2 * "\0界🙂".len() as u64 * 30_000;
         assert!(
-            matches!(fresh.reserve_working_memory(ceiling), Err(RuntimeMemoryError::ReservationExceeded { available_bytes, .. }) if available_bytes == ceiling)
+            matches!(fresh.reserve_working_memory(ceiling), Err(RuntimeMemoryError::ReservationExceeded { available_bytes, .. }) if available_bytes <= ceiling - retained_payload_bytes)
         );
         assert_eq!(governor.snapshot().admissions, 1);
         if stop == waves {
@@ -330,6 +332,13 @@ fn checkpoint_units_wal_framing_actual_suffix_cancels_every_io_wave_and_retries_
                 .unwrap();
         }
         drop(candidate);
+        if stop == waves {
+            // Final publication moved the decoded owners into the serving runtime.
+            drop(serving.take());
+        }
+        assert!(
+            matches!(fresh.reserve_working_memory(ceiling), Err(RuntimeMemoryError::ReservationExceeded { available_bytes, .. }) if available_bytes == ceiling)
+        );
         drop(fresh);
         drop(permit);
         let closed = governor.snapshot();
@@ -338,7 +347,7 @@ fn checkpoint_units_wal_framing_actual_suffix_cancels_every_io_wave_and_retries_
         assert_eq!(closed.admitted_memory_bytes, 0);
     }
     drop(source);
-    drop(store);
+    drop(serving);
     let recovered = GraphStore::open(&directory, &mut catalog).unwrap();
     assert_eq!(
         recovered
@@ -464,10 +473,11 @@ fn checkpoint_units_wal_payload_actual_suffix_denies_unaccounted_overlap_and_ful
     drop(candidate);
     drop(task);
     drop(permit);
-    assert_eq!(allowed.snapshot().admitted_memory_bytes, 0);
+    assert_eq!(allowed.snapshot().admitted_memory_bytes, 2 * 1024 * 1024);
     assert_eq!(source.checkpoint_source_identity(), source_identity);
     drop(source);
     drop(store);
+    assert_eq!(allowed.snapshot().admitted_memory_bytes, 0);
     let recovered = GraphStore::open(&directory, &mut catalog).unwrap();
     assert_eq!(
         recovered
@@ -615,13 +625,26 @@ fn checkpoint_units_wal_cursor_actual_suffix_admits_read_buffer_before_payload_w
             .unwrap(),
         expected
     );
+    // Decoded suffix data is now owned by the live candidate. The physical
+    // reader and encoding scratch return, but the wide string stays charged.
+    let retained_payload_bytes = "\0界🙂".len() as u64 * 30_000;
     assert!(
-        matches!(task.reserve_working_memory(ceiling), Err(RuntimeMemoryError::ReservationExceeded { available_bytes, .. }) if available_bytes == ceiling)
+        matches!(task.reserve_working_memory(ceiling), Err(RuntimeMemoryError::ReservationExceeded { available_bytes, .. }) if available_bytes <= ceiling - retained_payload_bytes)
     );
     store
         .publish_checkpoint_candidate(&mut candidate, None, &Default::default())
         .unwrap();
     drop(candidate);
+    // Publication transfers these same data owners into the serving runtime.
+    assert!(
+        matches!(task.reserve_working_memory(ceiling), Err(RuntimeMemoryError::ReservationExceeded { available_bytes, .. }) if available_bytes <= ceiling - retained_payload_bytes)
+    );
+    assert_eq!(source.checkpoint_source_identity(), source_identity);
+    drop(source);
+    drop(store);
+    assert!(
+        matches!(task.reserve_working_memory(ceiling), Err(RuntimeMemoryError::ReservationExceeded { available_bytes, .. }) if available_bytes == ceiling)
+    );
     drop(task);
     drop(audit);
     drop(permit);
@@ -630,9 +653,6 @@ fn checkpoint_units_wal_cursor_actual_suffix_admits_read_buffer_before_payload_w
     assert_eq!(closed.active_cpu_slots, 0);
     assert_eq!(closed.active_background_tasks, 0);
     assert_eq!(closed.admitted_memory_bytes, 0);
-    assert_eq!(source.checkpoint_source_identity(), source_identity);
-    drop(source);
-    drop(store);
     let recovered = GraphStore::open(&directory, &mut catalog).unwrap();
     assert_eq!(
         recovered

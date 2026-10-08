@@ -811,7 +811,17 @@ impl GraphStore {
 
     /// The same transaction/epoch boundary is used by ordinary recovery and
     /// private checkpoint candidates. This never appends another WAL record.
-    pub(super) fn apply_replayed_wal_transaction(
+    pub(crate) fn retain_decoded_checkpoint_memory(
+        &mut self,
+        incoming: &mut crate::background::CheckpointAllocationOwner,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<()> {
+        self.checkpoint_allocations
+            .append(incoming, work)
+            .map_err(HawDBError::from_storage_error)
+    }
+
+    pub(crate) fn apply_replayed_wal_transaction(
         &mut self,
         catalog: &mut Catalog,
         operation: WalOp,

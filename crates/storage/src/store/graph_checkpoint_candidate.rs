@@ -784,7 +784,7 @@ impl CheckpointCandidate {
                     .record(entry.lsn, payload.len() as u64, digest.sha256)
                     .map_err(|reason| HawDBError::StorageIntegrity(reason.into()))?;
                 drop(payload);
-                store.apply_replayed_wal_transaction(catalog, entry.op)?;
+                entry.replay_into(store, catalog, &work)?;
                 expected_lsn = expected_lsn.checked_add(1).ok_or_else(|| {
                     HawDBError::StorageIntegrity("checkpoint suffix LSN overflow".into())
                 })?;

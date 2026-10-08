@@ -26,19 +26,21 @@ fn scheduler() -> LocalQosScheduler {
 }
 
 #[derive(PartialEq, Eq)]
-enum Outcome {
+pub(super) enum Outcome {
     Entry(Vec<u8>, u64),
     Corrupt(String),
     Error(String),
 }
 
-fn outcome(decoded: Result<BinaryWalRecordDecode>) -> Outcome {
+pub(super) fn outcome<E: std::borrow::Borrow<WalEntry>>(
+    decoded: Result<BinaryWalRecordDecode<E>>,
+) -> Outcome {
     match decoded {
         Ok(BinaryWalRecordDecode::Entry {
             entry,
             commit_epoch,
         }) => Outcome::Entry(
-            encode_binary_wal_record(&entry, commit_epoch).unwrap(),
+            encode_binary_wal_record(entry.borrow(), commit_epoch).unwrap(),
             commit_epoch,
         ),
         Ok(BinaryWalRecordDecode::Corrupt(reason)) => Outcome::Corrupt(reason),
@@ -46,7 +48,7 @@ fn outcome(decoded: Result<BinaryWalRecordDecode>) -> Outcome {
     }
 }
 
-fn parity(bytes: &[u8], work: &CheckpointWorkContext) {
+pub(super) fn parity(bytes: &[u8], work: &CheckpointWorkContext) {
     assert!(
         outcome(decode_binary_wal_record_with_work_context(bytes, work))
             == outcome(super::super::decode_binary_wal_record(bytes)),

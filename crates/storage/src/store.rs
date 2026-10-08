@@ -858,6 +858,8 @@ pub struct GraphStore {
     branch_runtime_owner: Option<Arc<crate::file_descriptors::AdmittedRuntimeOwner>>,
     snapshot_file_context: Option<crate::file_descriptors::FileOpenContext>,
     durable: Option<DurableStore>,
+    // Data/COW runtime owners above must drop before decoded allocation leases.
+    checkpoint_allocations: crate::background::CheckpointAllocationOwner,
 }
 
 impl hawdb_storage::graph_engine::GraphMutationEngine for GraphStore {
@@ -1784,6 +1786,7 @@ impl GraphStore {
             branch_runtime_owner: None,
             snapshot_file_context: None,
             durable: Some(durable),
+            checkpoint_allocations: Default::default(),
         };
         if replay_config
             .relational_index_mode
@@ -2252,6 +2255,7 @@ impl GraphStore {
             branch_runtime_owner: self.branch_runtime_owner.clone(),
             snapshot_file_context: self.file_descriptor_context(),
             durable: None,
+            checkpoint_allocations: self.checkpoint_allocations.clone(),
         }
     }
 
