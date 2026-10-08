@@ -50,8 +50,7 @@ use hawdb_storage::{
     property_projection::{
         PersistentPropertyProjectionConfig, PersistentPropertyProjectionDefinition,
         PersistentPropertyProjectionDescriptorTree, PersistentPropertyProjectionManifest,
-        PersistentPropertyProjectionReader, PersistentPropertyProjectionRecord,
-        PersistentPropertyProjectionWriter,
+        PersistentPropertyProjectionReader, PersistentPropertyProjectionWriter,
     },
     property_spill::{
         PersistentPropertySpillDescriptorTree, PropertySpillConfig, PropertySpillManifest,
@@ -147,7 +146,7 @@ impl DurableStore {
         }
     }
 
-    pub(in crate::store) fn write_canonical_segments<N, R>(
+    pub(in crate::store) fn write_canonical_segments<N, R, NT, RT>(
         &self,
         nodes: N,
         relationships: R,
@@ -156,8 +155,10 @@ impl DurableStore {
         work: &crate::background::CheckpointWorkContext,
     ) -> Result<(DurableArtifactMetadata, DurableArtifactMetadata)>
     where
-        N: IntoIterator<Item = std::result::Result<Option<NodeRecord>, CanonicalSegmentError>>,
-        R: IntoIterator<Item = std::result::Result<Option<RelRecord>, CanonicalSegmentError>>,
+        N: IntoIterator<Item = std::result::Result<Option<NT>, CanonicalSegmentError>>,
+        R: IntoIterator<Item = std::result::Result<Option<RT>, CanonicalSegmentError>>,
+        NT: std::borrow::Borrow<NodeRecord>,
+        RT: std::borrow::Borrow<RelRecord>,
     {
         let artifact_path = self
             .root_path
@@ -179,7 +180,7 @@ impl DurableStore {
         let (canonical_manifest, property_spill_output) =
             CanonicalSegmentWriter::new(CanonicalSegmentConfig::default())
                 .with_work_context(work.clone())
-                .write_fallible_with_property_spills_steps(
+                .write_checkpoint_steps(
                     &artifact_path,
                     ManifestGeneration(generation),
                     nodes,
@@ -221,7 +222,7 @@ impl DurableStore {
         ))
     }
 
-    pub(in crate::store) fn write_canonical_adjacency<R>(
+    pub(in crate::store) fn write_canonical_adjacency<R, RT>(
         &self,
         relationships: R,
         generation: u64,
@@ -232,10 +233,11 @@ impl DurableStore {
     where
         R: IntoIterator<
             Item = std::result::Result<
-                Option<RelRecord>,
+                Option<RT>,
                 hawdb_storage::canonical_adjacency::CanonicalAdjacencyError,
             >,
         >,
+        RT: std::borrow::Borrow<RelRecord>,
     {
         let artifact_path = self
             .root_path
@@ -259,7 +261,7 @@ impl DurableStore {
         };
         let output = CanonicalAdjacencyWriter::new(config)
             .with_work_context(work.clone())
-            .write_fallible_with_descriptor_tree_steps(
+            .write_checkpoint_steps(
                 &artifact_path,
                 descriptor_paths,
                 ManifestGeneration(generation),
@@ -298,7 +300,7 @@ impl DurableStore {
         })
     }
 
-    pub(in crate::store) fn write_persistent_property_projection<N>(
+    pub(in crate::store) fn write_persistent_property_projection<N, PT>(
         &self,
         definitions: Vec<PersistentPropertyProjectionDefinition>,
         nodes: N,
@@ -310,10 +312,11 @@ impl DurableStore {
     where
         N: IntoIterator<
             Item = std::result::Result<
-                Option<PersistentPropertyProjectionRecord>,
+                Option<PT>,
                 hawdb_storage::property_projection::PersistentPropertyProjectionError,
             >,
         >,
+        PT: crate::property_projection::PropertyProjectionRecord,
     {
         let artifact_path = self
             .root_path
@@ -332,7 +335,7 @@ impl DurableStore {
         );
         let output = PersistentPropertyProjectionWriter::new(config)
             .with_work_context(work.clone())
-            .write_fallible_steps(
+            .write_checkpoint_steps(
                 &artifact_path,
                 ManifestGeneration(generation),
                 source_commit_epoch,

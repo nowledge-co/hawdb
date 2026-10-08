@@ -18,6 +18,8 @@ mod checkpoint_decode;
 #[cfg(test)]
 mod checkpoint_metadata_tests;
 mod checkpoint_point;
+mod checkpoint_scan;
+pub(crate) use checkpoint_scan::{CheckpointCanonicalIterator, CheckpointCanonicalRecord};
 
 use crate::file_io::{self as fs, File};
 use crate::graph_descriptor_tree::demand::{
@@ -876,6 +878,7 @@ impl From<CheckpointWorkError> for CanonicalSegmentError {
 }
 
 pub struct CanonicalSegmentWriter {
+    source_admits: bool,
     config: CanonicalSegmentConfig,
     work: Option<CheckpointWorkContext>,
 }
@@ -898,7 +901,11 @@ impl Drop for CanonicalTemporaryData {
 
 impl CanonicalSegmentWriter {
     pub const fn new(config: CanonicalSegmentConfig) -> Self {
-        Self { config, work: None }
+        Self {
+            config,
+            work: None,
+            source_admits: false,
+        }
     }
 
     #[doc(hidden)]
@@ -1003,6 +1010,45 @@ impl CanonicalSegmentWriter {
         N: IntoIterator<Item = Result<Option<NodeRecord>, CanonicalSegmentError>>,
         R: IntoIterator<Item = Result<Option<RelRecord>, CanonicalSegmentError>>,
     {
+        self.write_borrowed_steps(path, generation, nodes, relationships, property_spill)
+    }
+
+    pub(crate) fn write_checkpoint_steps<N, R, NT, RT>(
+        &self,
+        path: &Path,
+        generation: ManifestGeneration,
+        nodes: N,
+        relationships: R,
+        property_spill: PropertySpillWriteOptions<'_>,
+    ) -> Result<(CanonicalSegmentManifest, PropertySpillWriteOutput), CanonicalSegmentError>
+    where
+        N: IntoIterator<Item = Result<Option<NT>, CanonicalSegmentError>>,
+        R: IntoIterator<Item = Result<Option<RT>, CanonicalSegmentError>>,
+        NT: Borrow<NodeRecord>,
+        RT: Borrow<RelRecord>,
+    {
+        let writer = Self {
+            config: self.config,
+            work: self.work.clone(),
+            source_admits: true,
+        };
+        writer.write_borrowed_steps(path, generation, nodes, relationships, property_spill)
+    }
+
+    fn write_borrowed_steps<N, R, NT, RT>(
+        &self,
+        path: &Path,
+        generation: ManifestGeneration,
+        nodes: N,
+        relationships: R,
+        property_spill: PropertySpillWriteOptions<'_>,
+    ) -> Result<(CanonicalSegmentManifest, PropertySpillWriteOutput), CanonicalSegmentError>
+    where
+        N: IntoIterator<Item = Result<Option<NT>, CanonicalSegmentError>>,
+        R: IntoIterator<Item = Result<Option<RT>, CanonicalSegmentError>>,
+        NT: Borrow<NodeRecord>,
+        RT: Borrow<RelRecord>,
+    {
         let work = self.work.clone().unwrap_or_default();
         work.checkpoint()?;
         let tmp_path = path.with_extension("hawdb.tmp");
@@ -1045,7 +1091,7 @@ impl CanonicalSegmentWriter {
         Ok((canonical_manifest, spill_output))
     }
 
-    fn write_inner<N, R>(
+    fn write_inner<N, R, NT, RT>(
         &self,
         path: &Path,
         identity: CanonicalWriteIdentity,
@@ -1055,8 +1101,10 @@ impl CanonicalSegmentWriter {
         mut descriptor_tree: GraphDescriptorTreeBuilder,
     ) -> Result<PreparedCanonicalSegmentArtifact, CanonicalSegmentError>
     where
-        N: IntoIterator<Item = Result<Option<NodeRecord>, CanonicalSegmentError>>,
-        R: IntoIterator<Item = Result<Option<RelRecord>, CanonicalSegmentError>>,
+        N: IntoIterator<Item = Result<Option<NT>, CanonicalSegmentError>>,
+        R: IntoIterator<Item = Result<Option<RT>, CanonicalSegmentError>>,
+        NT: Borrow<NodeRecord>,
+        RT: Borrow<RelRecord>,
     {
         let CanonicalWriteIdentity {
             generation,
@@ -1085,11 +1133,7 @@ impl CanonicalSegmentWriter {
         );
         let mut nodes = nodes.into_iter();
         loop {
-            let unit = work.start_unit()?;
-            let node = {
-                let _wave = work.io_wave()?;
-                nodes.next()
-            };
+            let (node, unit) = work.next_input(&mut nodes, self.source_admits)?;
             let Some(node) = node else {
                 unit.finish();
                 break;
@@ -1098,9 +1142,10 @@ impl CanonicalSegmentWriter {
                 unit.finish();
                 continue;
             };
+            let node = node.borrow();
             work.checkpoint()?;
             let payload = encode_node_with_property_spills(
-                &node,
+                node,
                 property_spills.as_deref_mut(),
                 Some(&mut property_keys),
             )?;
@@ -1128,7 +1173,7 @@ impl CanonicalSegmentWriter {
                     self.config,
                 );
             }
-            accumulator.add_node_properties(&node)?;
+            accumulator.add_node_properties(node)?;
             accumulator.push(node.id.0, &payload, None)?;
             unit.finish();
         }
@@ -1158,11 +1203,7 @@ impl CanonicalSegmentWriter {
         );
         let mut relationships = relationships.into_iter();
         loop {
-            let unit = work.start_unit()?;
-            let relationship = {
-                let _wave = work.io_wave()?;
-                relationships.next()
-            };
+            let (relationship, unit) = work.next_input(&mut relationships, self.source_admits)?;
             let Some(relationship) = relationship else {
                 unit.finish();
                 break;
@@ -1171,9 +1212,10 @@ impl CanonicalSegmentWriter {
                 unit.finish();
                 continue;
             };
+            let relationship = relationship.borrow();
             work.checkpoint()?;
             let payload = encode_relationship_with_property_spills(
-                &relationship,
+                relationship,
                 property_spills.as_deref_mut(),
                 Some(&mut property_keys),
             )?;

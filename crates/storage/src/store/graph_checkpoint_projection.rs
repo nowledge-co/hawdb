@@ -141,11 +141,9 @@ fn build(
         .checkpoint_node_records_owned(work)?
         .checkpoint_steps();
     loop {
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        let next = source.next();
         let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-        let next = {
-            let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
-            source.next()
-        };
         let Some(record) = next else {
             unit.finish();
             break;
@@ -173,11 +171,9 @@ fn build(
             .checkpoint_relationship_records_owned(work)?
             .checkpoint_steps();
         loop {
+            work.checkpoint().map_err(HawDBError::from_storage_error)?;
+            let next = source.next();
             let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-            let next = {
-                let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
-                source.next()
-            };
             let Some(record) = next else {
                 unit.finish();
                 break;

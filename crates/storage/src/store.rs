@@ -260,7 +260,6 @@ use hawdb_storage::{
     pressure::available_storage_space,
     property_projection::{
         persistent_composite_property_identity, PersistentPropertyProjectionDefinitionAdmission,
-        PersistentPropertyProjectionRecord,
     },
     relational::{
         decode_relational_checkpoint_file_with_index_load,

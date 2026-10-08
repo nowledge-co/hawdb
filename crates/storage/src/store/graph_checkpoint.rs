@@ -600,7 +600,7 @@ impl GraphStore {
                 .inspect(|record| self.poison_on_storage_error(record))
                 .map(|record| {
                     record
-                        .map(|record| record.map(PersistentPropertyProjectionRecord::Node))
+                        .map(|record| record.map(crate::property_projection::CheckpointPropertyProjectionRecord::Node))
                         .map_err(|error| {
                             hawdb_storage::property_projection::PersistentPropertyProjectionError::Source(
                                 error.to_string(),
@@ -613,7 +613,7 @@ impl GraphStore {
                 .inspect(|record| self.poison_on_storage_error(record))
                 .map(|record| {
                     record
-                        .map(|record| record.map(PersistentPropertyProjectionRecord::Relationship))
+                        .map(|record| record.map(crate::property_projection::CheckpointPropertyProjectionRecord::Relationship))
                         .map_err(|error| {
                             hawdb_storage::property_projection::PersistentPropertyProjectionError::Source(
                                 error.to_string(),
@@ -793,10 +793,10 @@ impl GraphStore {
                         work,
                     )?,
                     (None, None) => durable.write_canonical_segments(
-                        self.nodes.values().map(|node| Ok(Some(node.clone()))),
+                        self.nodes.values().map(|node| Ok(Some(node))),
                         self.relationships
                             .values()
-                            .map(|relationship| Ok(Some(relationship.clone()))),
+                            .map(|relationship| Ok(Some(relationship))),
                         generation,
                         commit_epoch,
                         work,
@@ -812,7 +812,7 @@ impl GraphStore {
                     work,
                 )?,
                 None => durable.write_canonical_adjacency(
-                    self.relationships.values().cloned().map(Some).map(Ok),
+                    self.relationships.values().map(Some).map(Ok),
                     generation,
                     commit_epoch,
                     build_config.adjacency,
@@ -832,15 +832,15 @@ impl GraphStore {
                     property_projection_definitions,
                     self.nodes
                         .values()
-                        .cloned()
-                        .map(PersistentPropertyProjectionRecord::Node)
+                        .map(|node| crate::property_projection::CheckpointPropertyProjectionRecord::Node(
+                            crate::graph_overlay::CheckpointRecordRef::Borrowed(node)))
                         .map(Some)
                         .map(Ok)
                         .chain(
                             self.relationships
                                 .values()
-                                .cloned()
-                                .map(PersistentPropertyProjectionRecord::Relationship)
+                                .map(|relationship| crate::property_projection::CheckpointPropertyProjectionRecord::Relationship(
+                                    crate::graph_overlay::CheckpointRecordRef::Borrowed(relationship)))
                                 .map(Some)
                                 .map(Ok),
                         ),

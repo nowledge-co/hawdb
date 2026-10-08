@@ -1734,9 +1734,59 @@ existing greater-than-64-KiB threshold; the initial all-allocation observation
 would also include the classification/diagnostic wrapper. These preparation
 failures and frozen corrected fixtures remain archived separately.
 
-Legacy owned scan inputs still copy complete overlay records and use ordinary
-canonical decoding. Source/catalog/container-cache ownership, variable-width
-catalog lookup, allocator/map-comparison/destruction costs, and complete disk,
-FD and cleanup debt remain resource-ledger gaps. These changes do not alter
+Controlled checkpoint scans now borrow immutable overlay rows and retain typed
+canonical decoded-record owners. Source/catalog/container-cache ownership,
+variable-width catalog lookup, ordinary variable-width builder encoding,
+allocator/map-comparison/destruction costs, and complete disk, FD and cleanup
+debt remain resource-ledger gaps. These changes do not alter
 whole-owner operation admission or establish default sustained progress,
 complete physical power-loss/refinement safety or paired release performance.
+
+
+### Native checkpoint scan ownership
+
+The private native scanner retains each decoded node/relationship allocation
+owner through its final consumer borrow. Its fixed 17-byte descriptor cursor
+uses admitted descriptor traversal and captured physical range reads, bypassing
+the serving segment cache. A segment's admitted outer record array and each
+record's inventory have separate lifetimes; exhausted arrays are destroyed
+before the next segment is admitted. Descriptor counts, complete segment
+framing, ID ordering, delta replacements, tombstones and physical error
+precedence preserve ordinary scan semantics. Recoverable work denial and
+cancellation do not poison the source. The existing capture-unit cancellation
+boundaries are preserved without cloning wide overlay rows.
+
+Canonical, adjacency and property-projection writers accept private borrowed
+checkpoint records. They release the synthetic fetch permit before a scan
+performs its actual units and I/O waves. Materialized checkpoint sources also
+lend records to these writers; property subjects iterate borrowed labels and
+one relationship type without a temporary owning subject vector. Ordinary
+public writer APIs keep their existing concrete record contracts. Variable
+width output encoding, builder arrays, cache/catalog ownership and disk/FD
+cleanup still need their own complete admission qualification.
+
+Two unchanged scan fixtures genuinely fail before correction: materialized
+capture copies six large buffers, and a one-byte canonical budget permits an
+unadmitted scan. Related runtime fixtures check full node/relationship payloads,
+retention after iterator/execution closure, independent 8193-empty-row array
+capacity, denial/retry on the same governor, warm-cache physical corruption,
+replacement/tombstone parity and every actual cold CPU/I/O cancellation cut.
+The initial related harness confused cold and reused captured handles: the
+cold baseline has seven waves and a reused scan has five. Each enumerated cold
+cut now reopens the same read-only artifact before retry; all original bounds
+and complete-result assertions remain. A near-ceiling held lease also leaves
+64 bytes for governor permit metadata rather than failing in fixture setup.
+These preparation failures are archived and are not resource-before evidence.
+
+
+Ordinary public writer callbacks retain their existing consumer unit and I/O
+admission contract. Only the private controlled scan entry points let the
+source own admission, avoiding nested permits; complete original callback
+probes remain unchanged. The first full targeted run identified three callback
+regressions, which are archived rather than counted as qualification.
+
+Nested checkpoint classification now forwards a recorded work failure to its
+parent classification scope. An unchanged 8193-empty-row fixture first fails
+when deep admitted array growth is reported as an ordinary operation failure,
+then passes with the shared classifier correction, releases all partial state
+and retries every full record on the same real governor reservation.

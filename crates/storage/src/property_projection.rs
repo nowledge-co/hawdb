@@ -83,6 +83,44 @@ pub enum PersistentPropertyProjectionRecord {
     Relationship(RelRecord),
 }
 
+pub(crate) enum CheckpointPropertyProjectionRecord<'a> {
+    Node(crate::graph_overlay::CheckpointRecordRef<'a, NodeRecord>),
+    Relationship(crate::graph_overlay::CheckpointRecordRef<'a, RelRecord>),
+}
+
+pub(crate) trait PropertyProjectionRecord {
+    fn node(&self) -> Option<&NodeRecord>;
+    fn relationship(&self) -> Option<&RelRecord>;
+}
+impl PropertyProjectionRecord for PersistentPropertyProjectionRecord {
+    fn node(&self) -> Option<&NodeRecord> {
+        match self {
+            Self::Node(node) => Some(node),
+            Self::Relationship(_) => None,
+        }
+    }
+    fn relationship(&self) -> Option<&RelRecord> {
+        match self {
+            Self::Relationship(rel) => Some(rel),
+            Self::Node(_) => None,
+        }
+    }
+}
+impl PropertyProjectionRecord for CheckpointPropertyProjectionRecord<'_> {
+    fn node(&self) -> Option<&NodeRecord> {
+        match self {
+            Self::Node(node) => Some(node),
+            Self::Relationship(_) => None,
+        }
+    }
+    fn relationship(&self) -> Option<&RelRecord> {
+        match self {
+            Self::Relationship(rel) => Some(rel),
+            Self::Node(_) => None,
+        }
+    }
+}
+
 pub fn persistent_composite_property_identity(
     properties: &[String],
 ) -> Result<String, PersistentPropertyProjectionError> {
@@ -852,6 +890,7 @@ impl EntryKey {
 }
 
 pub struct PersistentPropertyProjectionWriter {
+    source_admits: bool,
     config: PersistentPropertyProjectionConfig,
     work: Option<CheckpointWorkContext>,
 }
@@ -866,7 +905,11 @@ impl Drop for TemporaryProjectionArtifact {
 
 impl PersistentPropertyProjectionWriter {
     pub const fn new(config: PersistentPropertyProjectionConfig) -> Self {
-        Self { config, work: None }
+        Self {
+            config,
+            work: None,
+            source_admits: false,
+        }
     }
 
     #[doc(hidden)]
@@ -917,6 +960,57 @@ impl PersistentPropertyProjectionWriter {
             >,
         >,
     {
+        self.write_borrowed_steps(
+            path,
+            generation,
+            source_commit_epoch,
+            definitions,
+            nodes,
+            descriptor_tree,
+        )
+    }
+
+    pub(crate) fn write_checkpoint_steps<N, T>(
+        &self,
+        path: &Path,
+        generation: ManifestGeneration,
+        source_commit_epoch: u64,
+        definitions: Vec<PersistentPropertyProjectionDefinition>,
+        nodes: N,
+        descriptor_tree: PersistentPropertyProjectionDescriptorTree,
+    ) -> Result<PersistentPropertyProjectionWriteOutput, PersistentPropertyProjectionError>
+    where
+        N: IntoIterator<Item = Result<Option<T>, PersistentPropertyProjectionError>>,
+        T: PropertyProjectionRecord,
+    {
+        let writer = Self {
+            config: self.config,
+            work: self.work.clone(),
+            source_admits: true,
+        };
+        writer.write_borrowed_steps(
+            path,
+            generation,
+            source_commit_epoch,
+            definitions,
+            nodes,
+            descriptor_tree,
+        )
+    }
+
+    fn write_borrowed_steps<N, T>(
+        &self,
+        path: &Path,
+        generation: ManifestGeneration,
+        source_commit_epoch: u64,
+        definitions: Vec<PersistentPropertyProjectionDefinition>,
+        nodes: N,
+        descriptor_tree: PersistentPropertyProjectionDescriptorTree,
+    ) -> Result<PersistentPropertyProjectionWriteOutput, PersistentPropertyProjectionError>
+    where
+        N: IntoIterator<Item = Result<Option<T>, PersistentPropertyProjectionError>>,
+        T: PropertyProjectionRecord,
+    {
         self.write_fallible_inner(
             path,
             generation,
@@ -927,7 +1021,7 @@ impl PersistentPropertyProjectionWriter {
         )
     }
 
-    fn write_fallible_inner<N>(
+    fn write_fallible_inner<N, T>(
         &self,
         path: &Path,
         generation: ManifestGeneration,
@@ -937,12 +1031,8 @@ impl PersistentPropertyProjectionWriter {
         descriptor_tree: PersistentPropertyProjectionDescriptorTree,
     ) -> Result<PersistentPropertyProjectionWriteOutput, PersistentPropertyProjectionError>
     where
-        N: IntoIterator<
-            Item = Result<
-                Option<PersistentPropertyProjectionRecord>,
-                PersistentPropertyProjectionError,
-            >,
-        >,
+        N: IntoIterator<Item = Result<Option<T>, PersistentPropertyProjectionError>>,
+        T: PropertyProjectionRecord,
     {
         let (descriptor_paths, descriptor_config) = descriptor_tree.into_parts();
         let work = self.work.clone().unwrap_or_default();
@@ -1026,11 +1116,7 @@ impl PersistentPropertyProjectionWriter {
         let mut peak_resident_bytes = 0u64;
         let mut records = nodes.into_iter();
         loop {
-            let unit = work.start_unit()?;
-            let record = {
-                let _wave = work.io_wave()?;
-                records.next()
-            };
+            let (record, unit) = work.next_input(&mut records, self.source_admits)?;
             let Some(record) = record else {
                 unit.finish();
                 break;
@@ -1041,22 +1127,30 @@ impl PersistentPropertyProjectionWriter {
             };
             work.checkpoint()?;
             input_records = input_records.saturating_add(1);
-            let (subjects, properties, entity_id) = match &record {
-                PersistentPropertyProjectionRecord::Node(node) => (
-                    node.labels
-                        .iter()
-                        .copied()
-                        .map(ProjectionSubject::Node)
-                        .collect::<Vec<_>>(),
+            let (labels, rel_type, properties, entity_id) = if let Some(node) = record.node() {
+                (
+                    Some(&node.labels),
+                    None,
                     &node.properties,
                     NodeId(node.id.0),
-                ),
-                PersistentPropertyProjectionRecord::Relationship(relationship) => (
-                    vec![ProjectionSubject::Relationship(relationship.rel_type)],
+                )
+            } else {
+                let relationship = record
+                    .relationship()
+                    .expect("projection record has one kind");
+                (
+                    None,
+                    Some(relationship.rel_type),
                     &relationship.properties,
                     NodeId(relationship.id.0),
-                ),
+                )
             };
+            let subjects = labels
+                .into_iter()
+                .flatten()
+                .copied()
+                .map(ProjectionSubject::Node)
+                .chain(rel_type.into_iter().map(ProjectionSubject::Relationship));
             unit.finish();
             for subject in subjects {
                 work.checkpoint()?;

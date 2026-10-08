@@ -26,8 +26,10 @@ use hawdb_core::{HawDBError, Result};
 use std::collections::BTreeSet;
 use std::iter::Peekable;
 
+mod checkpoint;
 #[cfg(test)]
 mod tests;
+pub(crate) use checkpoint::{CheckpointOverlayIterator, CheckpointRecordRef};
 
 pub struct GraphNodeIterator {
     inner: OverlayIterator<NodeRecord, CanonicalNodeIterator>,
@@ -92,7 +94,7 @@ pub fn relationship_records(
     }
 }
 
-trait OverlayRecord {
+pub(crate) trait OverlayRecord {
     type Id: Copy + Ord;
 
     fn id(&self) -> Self::Id;

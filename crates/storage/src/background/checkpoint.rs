@@ -84,7 +84,7 @@ impl CheckpointWorkContext {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
         match failure {
-            Some(error) => Err(CheckpointOperationError::Work(error)),
+            Some(error) => Err(CheckpointOperationError::Work(self.record_failure(error))),
             None => result.map_err(CheckpointOperationError::Operation),
         }
     }
@@ -116,6 +116,29 @@ impl CheckpointWorkContext {
         // A telemetry callback can cancel while admission is being recorded.
         self.checkpoint()?;
         Ok(CheckpointWorkUnit(permit))
+    }
+
+    /// Ordinary iterator callbacks keep their original consumer admission.
+    /// Controlled readers own real fetch units/waves; consumers admit only
+    /// after fetching so one-unit/one-wave reservations remain usable.
+    pub(crate) fn next_input<I: Iterator>(
+        &self,
+        input: &mut I,
+        source_admits: bool,
+    ) -> Result<(Option<I::Item>, CheckpointWorkUnit), CheckpointWorkError> {
+        self.checkpoint()?;
+        if source_admits {
+            let item = input.next();
+            let unit = self.start_unit()?;
+            Ok((item, unit))
+        } else {
+            let unit = self.start_unit()?;
+            let item = {
+                let _wave = self.io_wave()?;
+                input.next()
+            };
+            Ok((item, unit))
+        }
     }
 
     pub(crate) fn io_wave(

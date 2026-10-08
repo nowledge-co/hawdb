@@ -606,6 +606,7 @@ impl EncodedEntry {
 }
 
 pub struct CanonicalAdjacencyWriter {
+    source_admits: bool,
     config: CanonicalAdjacencyConfig,
     work: Option<CheckpointWorkContext>,
 }
@@ -620,7 +621,11 @@ impl Drop for TemporaryAdjacencyArtifact {
 
 impl CanonicalAdjacencyWriter {
     pub const fn new(config: CanonicalAdjacencyConfig) -> Self {
-        Self { config, work: None }
+        Self {
+            config,
+            work: None,
+            source_admits: false,
+        }
     }
 
     #[doc(hidden)]
@@ -679,6 +684,57 @@ impl CanonicalAdjacencyWriter {
     where
         R: IntoIterator<Item = Result<Option<RelRecord>, CanonicalAdjacencyError>>,
     {
+        self.write_borrowed_steps(
+            path,
+            descriptor_paths,
+            generation,
+            source_commit_epoch,
+            descriptor_config,
+            relationships,
+        )
+    }
+
+    pub(crate) fn write_checkpoint_steps<R, T>(
+        &self,
+        path: &Path,
+        descriptor_paths: GraphDescriptorTreePaths,
+        generation: ManifestGeneration,
+        source_commit_epoch: u64,
+        descriptor_config: GraphDescriptorTreeBuildConfig,
+        relationships: R,
+    ) -> Result<CanonicalAdjacencyWriteOutput, CanonicalAdjacencyError>
+    where
+        R: IntoIterator<Item = Result<Option<T>, CanonicalAdjacencyError>>,
+        T: std::borrow::Borrow<RelRecord>,
+    {
+        let writer = Self {
+            config: self.config,
+            work: self.work.clone(),
+            source_admits: true,
+        };
+        writer.write_borrowed_steps(
+            path,
+            descriptor_paths,
+            generation,
+            source_commit_epoch,
+            descriptor_config,
+            relationships,
+        )
+    }
+
+    fn write_borrowed_steps<R, T>(
+        &self,
+        path: &Path,
+        descriptor_paths: GraphDescriptorTreePaths,
+        generation: ManifestGeneration,
+        source_commit_epoch: u64,
+        descriptor_config: GraphDescriptorTreeBuildConfig,
+        relationships: R,
+    ) -> Result<CanonicalAdjacencyWriteOutput, CanonicalAdjacencyError>
+    where
+        R: IntoIterator<Item = Result<Option<T>, CanonicalAdjacencyError>>,
+        T: std::borrow::Borrow<RelRecord>,
+    {
         self.write_fallible_internal(
             path,
             generation,
@@ -687,7 +743,7 @@ impl CanonicalAdjacencyWriter {
         )
     }
 
-    fn write_fallible_internal<R>(
+    fn write_fallible_internal<R, T>(
         &self,
         path: &Path,
         generation: ManifestGeneration,
@@ -699,7 +755,8 @@ impl CanonicalAdjacencyWriter {
         relationships: R,
     ) -> Result<CanonicalAdjacencyWriteOutput, CanonicalAdjacencyError>
     where
-        R: IntoIterator<Item = Result<Option<RelRecord>, CanonicalAdjacencyError>>,
+        R: IntoIterator<Item = Result<Option<T>, CanonicalAdjacencyError>>,
+        T: std::borrow::Borrow<RelRecord>,
     {
         let work = self.work.clone().unwrap_or_default();
         {
@@ -725,11 +782,7 @@ impl CanonicalAdjacencyWriter {
         let mut peak_resident_bytes = 0u64;
         let mut relationships = relationships.into_iter();
         loop {
-            let unit = work.start_unit()?;
-            let relationship = {
-                let _wave = work.io_wave()?;
-                relationships.next()
-            };
+            let (relationship, unit) = work.next_input(&mut relationships, self.source_admits)?;
             let Some(relationship) = relationship else {
                 unit.finish();
                 break;
@@ -738,11 +791,12 @@ impl CanonicalAdjacencyWriter {
                 unit.finish();
                 continue;
             };
+            let relationship = relationship.borrow();
             work.checkpoint()?;
-            let payload = if estimated_relationship_payload_bytes(&relationship)
+            let payload = if estimated_relationship_payload_bytes(relationship)
                 <= self.config.max_record_bytes.get()
             {
-                let payload = encode_relationship(&relationship)
+                let payload = encode_relationship(relationship)
                     .map_err(|error| CanonicalAdjacencyError::Source(error.to_string()))?;
                 if payload.len() as u64 <= self.config.max_record_bytes.get() {
                     payload

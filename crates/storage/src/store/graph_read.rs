@@ -66,43 +66,50 @@ impl GraphStore {
         )
     }
 
-    pub(super) fn checkpoint_node_records_owned(
-        &self,
+    pub(super) fn checkpoint_node_records_owned<'a>(
+        &'a self,
         work: &crate::background::CheckpointWorkContext,
-    ) -> Result<GraphNodeIterator> {
-        let mut delta = Vec::new();
-        for node in self.nodes.values() {
+    ) -> Result<
+        crate::graph_overlay::CheckpointOverlayIterator<
+            'a,
+            NodeRecord,
+            impl Iterator<Item = &'a NodeRecord>,
+        >,
+    > {
+        // Preserve the capture cancellation boundaries without copying values.
+        for _ in self.nodes.values() {
             let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-            delta.push(node.clone());
             unit.finish();
         }
         work.checkpoint().map_err(HawDBError::from_storage_error)?;
-        Ok(hawdb_storage::graph_overlay::node_records(
-            self.canonical_base
-                .as_ref()
-                .map(CanonicalSegmentReader::node_records),
-            delta,
-            self.node_tombstones.clone(),
+        Ok(crate::graph_overlay::CheckpointOverlayIterator::new(
+            self.canonical_base.as_ref(),
+            self.nodes.values(),
+            &self.node_tombstones,
+            work,
         ))
     }
 
-    pub(super) fn checkpoint_relationship_records_owned(
-        &self,
+    pub(super) fn checkpoint_relationship_records_owned<'a>(
+        &'a self,
         work: &crate::background::CheckpointWorkContext,
-    ) -> Result<GraphRelationshipIterator> {
-        let mut delta = Vec::new();
-        for relationship in self.relationships.values() {
+    ) -> Result<
+        crate::graph_overlay::CheckpointOverlayIterator<
+            'a,
+            RelRecord,
+            impl Iterator<Item = &'a RelRecord>,
+        >,
+    > {
+        for _ in self.relationships.values() {
             let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-            delta.push(relationship.clone());
             unit.finish();
         }
         work.checkpoint().map_err(HawDBError::from_storage_error)?;
-        Ok(hawdb_storage::graph_overlay::relationship_records(
-            self.canonical_base
-                .as_ref()
-                .map(CanonicalSegmentReader::relationship_records),
-            delta,
-            self.relationship_tombstones.clone(),
+        Ok(crate::graph_overlay::CheckpointOverlayIterator::new(
+            self.canonical_base.as_ref(),
+            self.relationships.values(),
+            &self.relationship_tombstones,
+            work,
         ))
     }
 
@@ -3987,3 +3994,7 @@ fn relationship_matches_endpoint(
         AdjacencyDirection::Incoming => relationship.target == node_id,
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "graph_read/checkpoint_scan_memory_tests.rs"]
+mod checkpoint_scan_memory_tests;

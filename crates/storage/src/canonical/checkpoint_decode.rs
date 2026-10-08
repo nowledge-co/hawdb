@@ -40,6 +40,12 @@ impl<T> std::ops::Deref for CheckpointRecord<T> {
     }
 }
 
+impl<T> std::borrow::Borrow<T> for CheckpointRecord<T> {
+    fn borrow(&self) -> &T {
+        &self.record
+    }
+}
+
 impl<T> CheckpointRecord<T> {
     // Compatibility adapters for the original plain-record regression probes.
     // Production estimation retains this wrapper through its final borrow.
