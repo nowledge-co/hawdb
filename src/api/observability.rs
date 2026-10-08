@@ -799,10 +799,13 @@ pub(super) fn execute_branch_sql_at_path(
         }
         BranchSqlStatement::ShowBranch(statement) => {
             let selector = branch_selector_from_sql(&statement.selector, parameters)?;
-            let branch = branches
+            let matching = branches
                 .into_iter()
-                .find(|branch| branch_matches_selector(branch, &selector))
-                .ok_or_else(|| HawDBError::Semantic("branch does not exist".to_string()))?;
+                .filter(|branch| branch_matches_selector(branch, &selector));
+            let branch = super::branch_lifecycle::prefer_current_branch(matching, |branch| {
+                branch.state == super::BranchLifecycleState::Deleted
+            })
+            .ok_or_else(|| HawDBError::Semantic("branch does not exist".to_string()))?;
             vec![branch_info_row(&branch)?]
         }
         _ => unreachable!("context commands and current branch are handled before catalog reads"),
