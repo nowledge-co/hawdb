@@ -2,8 +2,8 @@
 
 ## Status
 
-Implementation contract for the remaining work in issue #291 after append-only
-publication and bounded leveled compaction. Mutation-run encoding, integrity
+Implementation contract for issue #291's incremental publication and bounded
+leveled compaction. Mutation-run encoding, integrity
 inspection, shared serving visibility and a continuation writer exist. Ordinary
 new-ID updates still use the append path; updates to visible IDs publish a
 target-bound mutation run. Cleanup can validate and retain those artifacts.
@@ -36,7 +36,8 @@ Compaction rewrites the mutation run atomically with the selected range. A
 range containing the complete target closure materializes only visible
 documents and removes those entries; a partial closure retains entries targeting
 segments outside the range in a new run. Unaffected ranges retain their
-existing runs and may compact. Sustained qualification is still required.
+existing runs and may compact. The source-bound resource qualification below
+covers sustained writes and actual bounded merges.
 
 ## Goal
 
@@ -119,9 +120,9 @@ partition cleanup debt until the host inspects or retries the registered stages.
 Build reports aggregate only the final content dependencies and final manifest,
 excluding intermediate private manifests. `published_content_segments` reports
 the new owners; the singular `rabitq_source_digest` is absent when zero or
-multiple new RaBitQ artifacts were produced. Complete fresh scale qualification
-must be repeated for this initial ownership path; earlier runs of the single-owner
-builder do not qualify it.
+multiple new RaBitQ artifacts were produced. The completed fresh three-cell
+qualification below covers this initial ownership path. Earlier runs of the
+single-owner builder remain separate evidence.
 
 ### Mutation run
 
@@ -240,8 +241,8 @@ records one changed-document publication against a complete 327,749-document,
 peak from 283,525,120 to 152,453,120 bytes with identical 47,302 published artifact
 bytes under the same 256 MiB reservation. The old result exceeds admission.
 The report retains source hashes, the typed prototype, configuration, process
-counters and measurement limits. This is diagnostic evidence; full-build and
-sustained scale acceptance remain pending.
+counters and measurement limits. This diagnostic remains separate from the
+completed fresh full-build and sustained qualification below.
 
 Immutable artifact reads validate the exact manifest-bound length against the
 opened file before reserving one encoded buffer. Bounded reads, EOF and checksum
@@ -258,8 +259,9 @@ The same complete immutable base with 32 cold seed publications and a K10
 replacement reached 691,470,336 bytes originally, 337,264,640 with exact file
 buffers alone, and 157,319,168 after both corrections. Fresh construction is
 excluded from that diagnostic. The original full 20 GiB sustained run failed
-its 256 MiB RSS budget despite completing all 128 updates and merges; complete
-fresh scale qualification on the corrected source remains pending.
+its 256 MiB RSS budget despite completing all 128 updates and merges. The
+completed fresh qualification below covers the corrected, bounded initial
+ownership implementation and retains these earlier failures.
 
 In `Preferred` mode, only a typed compressed-search resource-budget error
 restarts exact scalar scoring with the same visibility, candidate set and task
@@ -329,8 +331,9 @@ increase the transient decode requirement. Failure preserves the active manifest
 
 ## Delivery order
 
-1. Replace corpus-sized initial artifact ownership with independently published
-   bounded content segments, and add exact target-record lookup evidence.
+1. Replace corpus-sized initial artifact ownership with bounded content segments
+   selected by one complete final publication, and add exact target-record lookup
+   evidence.
 2. Add mutation-run encoding, manifest closure validation, publish-last
    recovery, pin-aware cleanup, and corruption tests.
 3. Install mutation runs in `prepare_delta` and make the text path use shared
@@ -489,6 +492,95 @@ qualification gates.
   against the host-selected production corpus, then run the existing full
   read-equivalence and recovery gates.
 
+## Source-bound resource qualification
+
+The [source-bound report and raw results](benchmarks/search_initial_ownership_macos_2026_10_08/report.json)
+record fresh macOS ARM64 runs at commit
+`13aa6304450b8e1d9df46675f69bc634ade099f4`. They use pinned Rust 1.97.1 and
+complete 5 GiB/20 GiB body-shaped corpora, with 65,536-byte bodies,
+384-dimensional ordinal/column-hashed embeddings, and 32 cold seed segments.
+Each cell performs its initial build, `K` changed-text/vector replacements,
+`K` deletions, then 128 sustained rounds with two upserts and one actual
+compaction per round. All three fresh cells complete successfully; all 1,902
+source hashes, the committed head, clean worktree, and release benchmark agree
+before and after execution.
+
+| Logical corpus | K | Replacement checkpoint bytes | Delete checkpoint bytes | Lifetime peak RSS (MiB) | Maximum steady RSS (MiB) | Actual merges |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 5 GiB | 10 | 96,406 | 48,073 | 96.46875 | 86.71875 | 128 |
+| 20 GiB | 10 | 127,635 | 79,390 | 174.921875 | 168.09375 | 128 |
+| 20 GiB | 100 | 570,223 | 110,926 | 177.734375 | 170.828125 | 128 |
+
+Every peak/steady sample is available and within the original 256 MiB complete
+writer budget. Other unchanged limits are 8 MiB lexical build memory,
+64 MiB segment bytes, 1,024 admitted project descriptors, and an OS descriptor
+limit of 4,096. Validation reuse is enabled in every cell. At fixed K10, a
+fourfold corpus increase grows initial artifacts 4.00008 times but replacement
+checkpoint bytes 1.32393 times. At fixed 20 GiB, tenfold K grows changed dense
+vector payload 10.2063 times. These are measured fixture ratios, not a claim
+that every possible input has identical compression or metadata overhead.
+
+The matched historical `8cbe16f8` K10 checkpoint emits 1,630,468,181 artifact
+bytes for the same 327,680 base documents, 32 seed rows, body length, embedding
+dimension and replacements. The qualified implementation emits 127,635 bytes,
+a before/after artifact-byte ratio of 12,774.46. The historical initialization
+builds seed rows together; persistent formats, dependencies and admission APIs
+differ. This does not isolate throughput, RSS or device-write improvements.
+
+Forced per-round compaction records checkpoint/merge artifact totals of
+7,631,114/949,101,190 bytes, 11,408,495/2,907,016,737 bytes, and
+11,515,923/2,906,121,477 bytes for the three cells. Corresponding artifact-byte
+write amplification is 55.7198, 169.9681 and 169.9222, including all 384 actual
+merges. These totals are not device writes. Host/cache state is uncontrolled;
+elapsed times of 6,563.76, 16,401.31 and 11,318.13 seconds are supporting
+observations, not controlled throughput measurements.
+
+Reproduce the cells from the qualified commit with a separate temporary root:
+
+```sh
+scale_root=$(mktemp -d)
+ulimit -n 4096
+for scale_shape in 81920:10 327680:10 327680:100; do
+  scale_documents="${scale_shape%:*}"
+  scale_touches="${scale_shape#*:}"
+  TMPDIR="$scale_root" \
+    HAWDB_SEARCH_MUTATION_BENCH_DOCUMENTS="$scale_documents" \
+    HAWDB_SEARCH_MUTATION_BENCH_TOUCHES="$scale_touches" \
+    HAWDB_SEARCH_MUTATION_BENCH_CONTENT_BYTES=65536 \
+    HAWDB_SEARCH_MUTATION_BENCH_ROUNDS=128 \
+    HAWDB_SEARCH_MUTATION_BENCH_MEMORY_BYTES=268435456 \
+    HAWDB_SEARCH_MUTATION_BENCH_SEGMENT_BYTES=67108864 \
+    HAWDB_SEARCH_MUTATION_BENCH_LEXICAL_BUILD_MEMORY_BYTES=8388608 \
+    HAWDB_SEARCH_MUTATION_BENCH_OPEN_FILES=1024 \
+    HAWDB_SEARCH_MUTATION_BENCH_VECTOR_DIMENSIONS=384 \
+    HAWDB_SEARCH_MUTATION_BENCH_COMPACTION_EVERY=1 \
+    HAWDB_SEARCH_MUTATION_BENCH_REUSE_VALIDATION=1 \
+    cargo bench --locked --bench search_mutation
+done
+```
+
+Retain the complete benchmark JSON and process counters for each cell. The
+complete local source-bound qualification export retains command logs, raw
+results and hashes. The published report includes all three raw results and
+complete benchmark stdout/stderr with their hashes. Native recovery evidence
+includes 848 actual fault-image plans across 16 cut families, including private initial
+prefixes and final real-root selection. The unchanged bounded protocol model
+does not explicitly model adaptive initial partitions. Completed POSIX
+synchronization/atomic rename assumptions, finite differential coverage and
+hardware qualification limits remain explicit; these runs do not prove a
+universal ANN or hardware power-loss guarantee.
+
+The report retains the complete local root-suite failures: the post-scale macOS run passes 26/29 targets, with three original-deadline timeouts that
+also occur on clean main. Their full isolated executions and the current
+Linux 53-target root suite pass without extending deadlines. This supports a
+nonblocking disposition for this repair, without proving macOS whole-suite
+stability or a host cause. The post-scale complete fuzz command executes and
+passes all 96 targets freshly; its earlier 95/96 outcome remains recorded.
+All four required Linux checks pass at the qualified source, and platform CI
+passes 12/12 jobs. Documentation publication preserves every non-documentation
+source, test, benchmark, dependency and build file byte-for-byte; final-head
+CI and independent review remain separate delivery gates.
+
 ## Non-goals
 
 This is not an LSM for primary graph or relational storage, a background thread
@@ -523,6 +615,8 @@ can publish just a new manifest (including source-epoch progress).
 The existing generation lease/CAS and manifest-last commit boundary apply.
 Cancellation, stale-generation rejection and budget failure leave the old
 manifest unchanged. Mutation-aware compaction supports complete and partial
-closures; unaffected ranges retain existing runs while compacting. Sustained
-RSS/write-amplification and host power-loss qualification remain explicit
-unfinished requirements in issue #291.
+closures; unaffected ranges retain existing runs while compacting. The
+source-bound qualification above records complete sustained RSS and artifact
+write amplification. Fault-image recovery evidence assumes the documented
+platform synchronization contract; hardware power-loss qualification is not
+provided by these software runs.

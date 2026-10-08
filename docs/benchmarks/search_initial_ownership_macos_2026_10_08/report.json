@@ -1,0 +1,555 @@
+{
+  "schema": "hawdb.search.initial-ownership-qualification.v1",
+  "issue": "https://github.com/nowledge-co/hawdb/issues/291",
+  "qualified_commit": "13aa6304450b8e1d9df46675f69bc634ade099f4",
+  "qualified_tree": "cde88f55c57aac07cb19ffb015472a7af5fc3c7c",
+  "qualified_source_file_count": 1902,
+  "source_guard": {
+    "all_source_hashes_equal_before_after": true,
+    "commit_equal_before_after": true,
+    "clean_worktree_before_after": true
+  },
+  "publication_scope": "Documentation and evidence only. Production, test, benchmark, dependency, toolchain and build files remain byte-identical to the qualified commit. Qualification does not certify later unrelated main changes.",
+  "host": {
+    "platform": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0.1\nBuildVersion:\t\t26A434\n",
+    "host_ram_bytes": 137438953472,
+    "host_model": "Mac15,8",
+    "filesystem": "APFS; internal Apple Fabric SSD; 4096-byte allocation blocks",
+    "rustc_verbose": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+    "process_inspection": "No vmmap, sample or debugger attachment. Internal process counters plus passive ps/scratch sampling only. Host and cache state are uncontrolled; one run per cell. Cells may overlap separately recorded final-source regression checks and unrelated host tasks; per-process memory is measured independently. Timings are supporting evidence, not controlled throughput comparison."
+  },
+  "fixture": "Repeated bounded-search-mutation text, 65536 bytes per body and ordinal/column-hashed 384-dimensional dense embeddings; streaming full build and 32 seed segments, then K changed-text/vector replacements, K deletes, and128 replacement/insert/compaction rounds. Logical body size is corpus-shaped; emitted artifact bytes are compressed files, not device-level writes.",
+  "limits": {
+    "writer_bytes": 268435456,
+    "lexical_build_bytes": 8388608,
+    "segment_bytes": 67108864,
+    "project_open_files": 1024,
+    "os_open_files": 4096,
+    "body_bytes": 65536,
+    "vector_dimensions": 384,
+    "cold_seeds": 32,
+    "sustained_rounds_per_cell": 128,
+    "compaction_every": 1,
+    "validation_reuse": true
+  },
+  "release_library_sha256": "8b3a826b673c7b949520680eca6536e3131bebeeed801d51bd2f953586c90017",
+  "release_benchmark_sha256": "89d4161164361f1aba3ed7b5e3f6a82c04b09bc20320912e562806a61b8138a4",
+  "all_three_cells_passed": true,
+  "cells": [
+    {
+      "label": "d81920-k10",
+      "state": "passed",
+      "checks": {
+        "successful_exit_and_log_hashes": true,
+        "raw_result_matches_logged_result": true,
+        "fixture_shape": true,
+        "vector_fixture": true,
+        "explicit_resource_configuration": true,
+        "sustained_rounds_and_merges": true,
+        "expected_visible_counts": true,
+        "complete_peak_and_steady_rss": true,
+        "new_bytes_smaller_than_full": true
+      },
+      "logical_corpus_bytes": 5368709120,
+      "touches": 10,
+      "full_artifact_bytes": 361973783,
+      "upsert_artifact_bytes": 96406,
+      "delete_artifact_bytes": 48073,
+      "upsert_vector_payload_bytes": 18236,
+      "upsert_rabitq_artifact_bytes": 2847,
+      "upsert_source_hydrated_documents": 0,
+      "delete_source_hydrated_documents": 0,
+      "peak_resident_bytes": 101154816,
+      "max_steady_resident_bytes": 90931200,
+      "rounds": 128,
+      "merges": 128,
+      "sustained_checkpoint_bytes": 7631114,
+      "sustained_merge_artifact_bytes": 949101190,
+      "sustained_merge_source_bytes": 943627331,
+      "sustained_artifact_write_amplification": 55.71975731303674,
+      "elapsed_seconds": 6563.759608030319,
+      "scratch_allocated_highwater_bytes": 11476062208,
+      "raw_stdout_sha256": "61da39a7ca036d36f7239fc475aaf28146263639fe68d714b045946fe3173193",
+      "raw_stderr_sha256": "a3855dd6d72dce6f31d4e4b63a8ab83bc90e24463971aba74d176f08d2c57f45",
+      "raw_result_sha256": "d0d3bd1e93e602677f5c3a21f6c5d9e2d7ef4f0fc59b687e9da39781920e7029"
+    },
+    {
+      "label": "d327680-k10",
+      "state": "passed",
+      "checks": {
+        "successful_exit_and_log_hashes": true,
+        "raw_result_matches_logged_result": true,
+        "fixture_shape": true,
+        "vector_fixture": true,
+        "explicit_resource_configuration": true,
+        "sustained_rounds_and_merges": true,
+        "expected_visible_counts": true,
+        "complete_peak_and_steady_rss": true,
+        "new_bytes_smaller_than_full": true
+      },
+      "logical_corpus_bytes": 21474836480,
+      "touches": 10,
+      "full_artifact_bytes": 1447925315,
+      "upsert_artifact_bytes": 127635,
+      "delete_artifact_bytes": 79390,
+      "upsert_vector_payload_bytes": 18205,
+      "upsert_rabitq_artifact_bytes": 2844,
+      "upsert_source_hydrated_documents": 0,
+      "delete_source_hydrated_documents": 0,
+      "peak_resident_bytes": 183418880,
+      "max_steady_resident_bytes": 176259072,
+      "rounds": 128,
+      "merges": 128,
+      "sustained_checkpoint_bytes": 11408495,
+      "sustained_merge_artifact_bytes": 2907016737,
+      "sustained_merge_source_bytes": 2897777278,
+      "sustained_artifact_write_amplification": 169.96807255635736,
+      "elapsed_seconds": 16401.3140540123,
+      "scratch_allocated_highwater_bytes": 47207968768,
+      "raw_stdout_sha256": "e1e4a3de6547030b0c81b6fea359f94b407093fd409ed653c47648cc379a443b",
+      "raw_stderr_sha256": "c756f73ff7616af460d3641f5881438128d3edb6242ad778c3df4859efed2736",
+      "raw_result_sha256": "d0c7c701304399081a4e3aee598edaba6572110f3d0a0e5a8d5028f272e7e6ad"
+    },
+    {
+      "label": "d327680-k100",
+      "state": "passed",
+      "checks": {
+        "successful_exit_and_log_hashes": true,
+        "raw_result_matches_logged_result": true,
+        "fixture_shape": true,
+        "vector_fixture": true,
+        "explicit_resource_configuration": true,
+        "sustained_rounds_and_merges": true,
+        "expected_visible_counts": true,
+        "complete_peak_and_steady_rss": true,
+        "new_bytes_smaller_than_full": true
+      },
+      "logical_corpus_bytes": 21474836480,
+      "touches": 100,
+      "full_artifact_bytes": 1447925315,
+      "upsert_artifact_bytes": 570223,
+      "delete_artifact_bytes": 110926,
+      "upsert_vector_payload_bytes": 185806,
+      "upsert_rabitq_artifact_bytes": 21568,
+      "upsert_source_hydrated_documents": 0,
+      "delete_source_hydrated_documents": 0,
+      "peak_resident_bytes": 186368000,
+      "max_steady_resident_bytes": 179126272,
+      "rounds": 128,
+      "merges": 128,
+      "sustained_checkpoint_bytes": 11515923,
+      "sustained_merge_artifact_bytes": 2906121477,
+      "sustained_merge_source_bytes": 2897795061,
+      "sustained_artifact_write_amplification": 169.92218949412572,
+      "elapsed_seconds": 11318.132928848267,
+      "scratch_allocated_highwater_bytes": 45907791872,
+      "raw_stdout_sha256": "a78280b47f3c964b2ff2e5bea1b3b2dd13f69ae4c0879217d9904432dca5aff2",
+      "raw_stderr_sha256": "c756f73ff7616af460d3641f5881438128d3edb6242ad778c3df4859efed2736",
+      "raw_result_sha256": "658526fdd6fcedcdfd4568ad29f58e5897ce8d16b6c243e10aa00b41f402cbd8"
+    }
+  ],
+  "raw_files": [
+    {
+      "file": "d81920-k10.result.json",
+      "sha256": "d0d3bd1e93e602677f5c3a21f6c5d9e2d7ef4f0fc59b687e9da39781920e7029"
+    },
+    {
+      "file": "d81920-k10.stdout.log",
+      "sha256": "61da39a7ca036d36f7239fc475aaf28146263639fe68d714b045946fe3173193"
+    },
+    {
+      "file": "d81920-k10.stderr.log",
+      "sha256": "a3855dd6d72dce6f31d4e4b63a8ab83bc90e24463971aba74d176f08d2c57f45"
+    },
+    {
+      "file": "d327680-k10.result.json",
+      "sha256": "d0c7c701304399081a4e3aee598edaba6572110f3d0a0e5a8d5028f272e7e6ad"
+    },
+    {
+      "file": "d327680-k10.stdout.log",
+      "sha256": "e1e4a3de6547030b0c81b6fea359f94b407093fd409ed653c47648cc379a443b"
+    },
+    {
+      "file": "d327680-k10.stderr.log",
+      "sha256": "c756f73ff7616af460d3641f5881438128d3edb6242ad778c3df4859efed2736"
+    },
+    {
+      "file": "d327680-k100.result.json",
+      "sha256": "658526fdd6fcedcdfd4568ad29f58e5897ce8d16b6c243e10aa00b41f402cbd8"
+    },
+    {
+      "file": "d327680-k100.stdout.log",
+      "sha256": "a78280b47f3c964b2ff2e5bea1b3b2dd13f69ae4c0879217d9904432dca5aff2"
+    },
+    {
+      "file": "d327680-k100.stderr.log",
+      "sha256": "c756f73ff7616af460d3641f5881438128d3edb6242ad778c3df4859efed2736"
+    }
+  ],
+  "matching_20gib_k10_bytes": {
+    "before_full_checkpoint": 1630468181,
+    "after_incremental_upsert": 127635,
+    "ratio": 12774.459834684843,
+    "limits": "The old API has no complete-operation reservation or project descriptor admission. No same-budget historical RSS qualification is claimed. Historical and candidate formats/dependencies differ; observed bytes do not isolate only the incremental-segment change."
+  },
+  "required_ci_at_qualified_commit": {
+    "state": "passed",
+    "head": "13aa6304450b8e1d9df46675f69bc634ade099f4",
+    "checks": [
+      {
+        "id": 113281485748,
+        "name": "ci/skein-storage-crash-recovery",
+        "head_sha": "13aa6304450b8e1d9df46675f69bc634ade099f4",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-08T11:10:18Z",
+        "completed_at": "2026-10-08T11:13:50Z",
+        "details_url": "https://prow.nowledge.co/view/gs/ci-cd-503413-prow-public/artifacts/native/pr-logs/pull/nowledge-co_hawdb/924/pull-skein-storage-crash-recovery/2108153004963139584",
+        "log": "/private/tmp/hawdb-291-pr924-four-ci-skein-storage-crash-recovery.log",
+        "log_sha256": "bebe7642dac7f140a9d823acf1e8df492f71830895aa83318d5cc85b53940893"
+      },
+      {
+        "id": 113281481958,
+        "name": "ci/skein-bazel-test-root",
+        "head_sha": "13aa6304450b8e1d9df46675f69bc634ade099f4",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-08T11:10:18Z",
+        "completed_at": "2026-10-08T11:35:11Z",
+        "details_url": "https://prow.nowledge.co/view/gs/ci-cd-503413-prow-public/artifacts/native/pr-logs/pull/nowledge-co_hawdb/924/pull-skein-bazel-test-root/2108153004858281984",
+        "log": "/private/tmp/hawdb-291-pr924-four-ci-skein-bazel-test-root.log",
+        "log_sha256": "29299c4df14c2aff32901bb4c909fe89ad0c76ca98c3c11ff5f1ddf7edd8d1c4",
+        "executed": 53,
+        "passed": 53,
+        "cached": 0
+      },
+      {
+        "id": 113281475681,
+        "name": "ci/skein-bazel-test-crates",
+        "head_sha": "13aa6304450b8e1d9df46675f69bc634ade099f4",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-08T11:10:18Z",
+        "completed_at": "2026-10-08T11:27:24Z",
+        "details_url": "https://prow.nowledge.co/view/gs/ci-cd-503413-prow-public/artifacts/native/pr-logs/pull/nowledge-co_hawdb/924/pull-skein-bazel-test-crates/2108153005105745920",
+        "log": "/private/tmp/hawdb-291-pr924-four-ci-skein-bazel-test-crates.log",
+        "log_sha256": "885b583a0f75a4d2e48a0abddaf17bfb324a5da9d163b1bc75ea3a129c9e5ed4",
+        "executed": 93,
+        "passed": 93,
+        "cached": 0
+      },
+      {
+        "id": 113281471100,
+        "name": "ci/skein-bazel-build",
+        "head_sha": "13aa6304450b8e1d9df46675f69bc634ade099f4",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-08T11:10:18Z",
+        "completed_at": "2026-10-08T11:15:31Z",
+        "details_url": "https://prow.nowledge.co/view/gs/ci-cd-503413-prow-public/artifacts/native/pr-logs/pull/nowledge-co_hawdb/924/pull-skein-bazel-build/2108153004795367424",
+        "log": "/private/tmp/hawdb-291-pr924-four-ci-skein-bazel-build.log",
+        "log_sha256": "a8bafd9e1250ae6fd46e68c067d1e7a70086238b41341fe37c6deb6c5c123b8b"
+      }
+    ]
+  },
+  "linux_root": {
+    "executed": 53,
+    "passed": 53,
+    "cached": 0
+  },
+  "linux_crates": {
+    "executed": 93,
+    "passed": 93,
+    "cached": 0,
+    "original_streamed_lifecycle_targets_passed": 5
+  },
+  "native_and_focused_validation": {
+    "fmt": "passed",
+    "full_strict_clippy": "passed",
+    "prek_all_files": "passed",
+    "minimal_strict_clippy": "passed",
+    "browser_wasm_strict_clippy": "passed",
+    "initial_ownership_cases": 6,
+    "compaction_cases": 24,
+    "physical_fault_image_plans": 848,
+    "fault_cut_families": 16,
+    "full_release_differential_comparisons": 294
+  },
+  "search_bazel_profiles": {
+    "passed": [
+      796,
+      798,
+      742,
+      726,
+      780
+    ],
+    "existing_ignored_per_profile": 20,
+    "cached_targets": 0
+  },
+  "platform_ci": {
+    "qualified_commit": "13aa6304450b8e1d9df46675f69bc634ade099f4",
+    "passed_jobs": 12,
+    "power_loss_discovered_executed_passed_cases_each_on_linux_macos": 16,
+    "windows_native_namespace_or_hardware_guarantee": false
+  },
+  "local_failure_disposition": {
+    "verified": true,
+    "original_cases_budgets_deadlines_preserved": true,
+    "failures": {
+      "frozen13aa-root": [
+        {
+          "target": "//:hawdb_branch_project_open_minimal_tests",
+          "outcome": "TIMEOUT",
+          "seconds": 300.3
+        },
+        {
+          "target": "//:hawdb_branch_project_open_tests",
+          "outcome": "TIMEOUT",
+          "seconds": 301.6
+        },
+        {
+          "target": "//:hawdb_unit_concurrent_tests",
+          "outcome": "TIMEOUT",
+          "seconds": 900.1
+        },
+        {
+          "target": "//:hawdb_process_memory_policy_contract_minimal_tests",
+          "outcome": "FAILED",
+          "seconds": 123.0
+        },
+        {
+          "target": "//:hawdb_process_memory_policy_contract_tests",
+          "outcome": "FAILED",
+          "seconds": 105.6
+        }
+      ],
+      "candidate-main2403-root": [
+        {
+          "target": "//:hawdb_branch_project_open_minimal_tests",
+          "outcome": "TIMEOUT",
+          "seconds": 301.0
+        },
+        {
+          "target": "//:hawdb_branch_project_open_tests",
+          "outcome": "TIMEOUT",
+          "seconds": 300.3
+        },
+        {
+          "target": "//:hawdb_unit_concurrent_tests",
+          "outcome": "TIMEOUT",
+          "seconds": 900.2
+        }
+      ],
+      "clean-main2403-root": [
+        {
+          "target": "//:hawdb_branch_project_open_minimal_tests",
+          "outcome": "TIMEOUT",
+          "seconds": 300.6
+        },
+        {
+          "target": "//:hawdb_branch_project_open_tests",
+          "outcome": "TIMEOUT",
+          "seconds": 300.8
+        },
+        {
+          "target": "//:hawdb_unit_concurrent_tests",
+          "outcome": "TIMEOUT",
+          "seconds": 900.1
+        },
+        {
+          "target": "//:hawdb_unit_recovery_tests",
+          "outcome": "TIMEOUT",
+          "seconds": 900.1
+        },
+        {
+          "target": "//:hawdb_process_memory_policy_contract_tests",
+          "outcome": "FAILED",
+          "seconds": 110.4
+        }
+      ],
+      "candidate-main2403-fuzz": [
+        {
+          "target": "//crates/search:hawdb_search_projection_evidence_fuzz_tests",
+          "outcome": "TIMEOUT",
+          "seconds": 300.1
+        }
+      ],
+      "post-scale-complete-root": [
+        {
+          "target": "//:hawdb_branch_project_open_minimal_tests",
+          "outcome": "TIMEOUT",
+          "seconds": 300.2
+        },
+        {
+          "target": "//:hawdb_branch_project_open_tests",
+          "outcome": "TIMEOUT",
+          "seconds": 300.5
+        },
+        {
+          "target": "//:hawdb_unit_concurrent_tests",
+          "outcome": "TIMEOUT",
+          "seconds": 900.2
+        }
+      ]
+    },
+    "observed_dispositions": {
+      "original5root": "All five unchanged single-target reproductions pass; default memory reproduction is explicitly cached from the separately observed fresh pass, other four fresh. Both memory profiles pass in complete patched main2403 run. Original failed complete29 run is retained.",
+      "candidate3root": "Every timeout reproduces on clean main2403 with byte-identical relevant tests/build inputs. Clean main additionally fails memory contract and recovery. Complete outcomes retained; this is overlap evidence, not a proven host cause.",
+      "projection_fuzz": "The earlier complete96 timeout and isolated pass remain archived. The fresh post-scale complete96 command now executes and passes all96 with zero cached results and unchanged source/deadlines; the full128-seed/10880-case projection-evidence target passes in80.4s.",
+      "baseline_only": "Clean-main memory deadline failures and900s recovery timeout retained as actual baseline outcomes; they are not passing candidate evidence.",
+      "post_scale_root": "Three inherited whole-suite macOS timeouts remain visible. They reproduce on clean main with identical fixtures, selected concurrent modules, wrapper, build and toolchain inputs; all three full isolated executions and current complete Linux root53 pass under original deadlines. Relevant branch/concurrency fixtures do not invoke initial search generation construction. No new correctness failure is observed. Classify these retained timing failures as nonblocking for the bounded initial-ownership repair; this does not certify macOS whole-suite stability or prove a host cause."
+    },
+    "full_suite_stability_established": false,
+    "limits": [
+      "Host/cache state uncontrolled; no causal load diagnosis.",
+      "Full macOS local root-suite failures remain explicit; stability is not established.",
+      "All four current Linux required checks pass at13aa, with root53 and crates93 actually executed; the earlier three incomplete eviction rounds remain archived.",
+      "This is a verified evidence assessment for the bounded initial-ownership repair, not independent review approval or CI bypass permission."
+    ],
+    "full_required_fuzz_suite_fresh_success": true,
+    "post_scale_full_root": {
+      "executed": 29,
+      "passed": 26,
+      "cached": 0,
+      "failures": [
+        {
+          "target": "//:hawdb_branch_project_open_minimal_tests",
+          "outcome": "TIMEOUT",
+          "seconds": 300.2
+        },
+        {
+          "target": "//:hawdb_branch_project_open_tests",
+          "outcome": "TIMEOUT",
+          "seconds": 300.5
+        },
+        {
+          "target": "//:hawdb_unit_concurrent_tests",
+          "outcome": "TIMEOUT",
+          "seconds": 900.2
+        }
+      ]
+    },
+    "post_scale_full_fuzz": {
+      "executed": 96,
+      "passed": 96,
+      "cached": 0,
+      "projection_evidence_campaign_seconds": 80.4
+    },
+    "disposition_scope": "Evidence assessment for PR924 qualification, not independent review approval, a claim that all macOS root tests pass, or authorization to bypass required CI."
+  },
+  "root_timeout_comparison": [
+    {
+      "target": "//:hawdb_branch_project_open_minimal_tests",
+      "post_scale_complete_suite_failure": {
+        "target": "//:hawdb_branch_project_open_minimal_tests",
+        "outcome": "TIMEOUT",
+        "seconds": 300.2
+      },
+      "clean_main_failure": {
+        "target": "//:hawdb_branch_project_open_minimal_tests",
+        "kind": "TIMEOUT",
+        "seconds": 300.6
+      },
+      "isolated_full_cases": [
+        [
+          "ok",
+          "35",
+          "0",
+          "0"
+        ]
+      ],
+      "isolated_command_seconds": 105.191201708,
+      "linux_current_head_pass_seconds": 75.2,
+      "unchanged_deadline_seconds": 300
+    },
+    {
+      "target": "//:hawdb_branch_project_open_tests",
+      "post_scale_complete_suite_failure": {
+        "target": "//:hawdb_branch_project_open_tests",
+        "outcome": "TIMEOUT",
+        "seconds": 300.5
+      },
+      "clean_main_failure": {
+        "target": "//:hawdb_branch_project_open_tests",
+        "kind": "TIMEOUT",
+        "seconds": 300.8
+      },
+      "isolated_full_cases": [
+        [
+          "ok",
+          "35",
+          "0",
+          "0"
+        ]
+      ],
+      "isolated_command_seconds": 211.69435625,
+      "linux_current_head_pass_seconds": 74.7,
+      "unchanged_deadline_seconds": 300
+    },
+    {
+      "target": "//:hawdb_unit_concurrent_tests",
+      "post_scale_complete_suite_failure": {
+        "target": "//:hawdb_unit_concurrent_tests",
+        "outcome": "TIMEOUT",
+        "seconds": 900.2
+      },
+      "clean_main_failure": {
+        "target": "//:hawdb_unit_concurrent_tests",
+        "kind": "TIMEOUT",
+        "seconds": 900.1
+      },
+      "isolated_full_cases": [
+        [
+          "ok",
+          "112",
+          "0",
+          "1"
+        ]
+      ],
+      "isolated_command_seconds": 630.961926458,
+      "linux_current_head_pass_seconds": 352.9,
+      "unchanged_deadline_seconds": 900
+    }
+  ],
+  "commands": {
+    "root": [
+      "bazel",
+      "test",
+      "//:hawdb_unit_tests",
+      "//:hawdb_cli_tests",
+      "--nocache_test_results",
+      "--test_output=errors"
+    ],
+    "fuzz": [
+      "bazel",
+      "test",
+      "//crates/fuzz:hawdb_fuzz_tests",
+      "//crates/fuzz:hawdb_fuzz_cli_tests",
+      "//:hawdb_linux_ci_fuzz_smoke_test",
+      "--nocache_test_results",
+      "--test_output=errors"
+    ],
+    "reproduction_document": "../../SEARCH_MUTATION_SEGMENTS.md#source-bound-resource-qualification"
+  },
+  "full_local_portable_export": {
+    "sha256": "d0a834dadb6a20dcb5dd19d0449c1d51978279ea4111441fb33320c0182f9fe6",
+    "files": 493,
+    "available_in_review_repository": false,
+    "contents": "Full source archive, source hashes, native/Bazel/CI/local-failure logs, complete raw scale results and hashed receipts. Kept locally; published scale raw files are listed above."
+  },
+  "boundaries": [
+    "All three fresh cells use the same qualified runtime; previous runtime results are excluded.",
+    "Artifact-byte totals include all 128 forced real merges and are not device writes.",
+    "The before/after shape is matched, but historical formats/dependencies and admission API differ.",
+    "Host/cache/timing state is uncontrolled; no isolated throughput claim.",
+    "Finite differential and physical-image tests do not establish universal ANN or hardware guarantees.",
+    "Platform and historical source receipts remain separate from current delivery CI/review/merge status.",
+    "Original failed local root targets and invalid controls remain recorded, not silently replaced.",
+    "The main2403 full fuzz run executed 96 targets with 95 passes and one original-deadline timeout; isolated evidence does not replace that outcome.",
+    "The post-scale complete main2403 retry executes all 96 fuzz targets freshly and passes all 96; the earlier failed full run remains recorded.",
+    "The post-scale complete local root retry executes all 29 targets freshly: 26 pass and the same three original-deadline timeouts remain; full macOS suite stability is not established.",
+    "The clean-main root baseline uses unchanged cases, budgets and deadlines; its actual outcomes and the complete patched outcome are both retained.",
+    "Three observed root presubmit rounds terminated after five pod evictions each; incomplete CI cannot certify the full Linux root suite.",
+    "After verified external infrastructure deployment, the fourth round passes all four checks on the qualified head; root53 and crates93 execute with zero cached tests."
+  ]
+}
