@@ -27,6 +27,17 @@ not imply one-record I/O.
 Each 100,000-record catalog contains 14,800,012 encoded bytes in both lineage
 shapes and at all three retained-deletion fractions.
 
+The codec enforces two independent limits: 100,000 records (`MAX_BRANCHES`)
+and 16 MiB of encoded catalog bytes (`MAX_CATALOG_BYTES`). This matrix reaches
+the record-count limit with short synthetic fields: each child has a 13-byte
+name, a 14-byte request key, and no owner. The 100,000-record fixture averages
+approximately 148 encoded bytes per record and uses about 88.2% of the byte
+budget. Longer names, request keys, or owners can exhaust the byte budget
+before the record-count limit. Their respective field limits are 128, 256,
+and 256 bytes; a near-byte-limit fixture with longer fields has not been
+measured here. These results do not qualify the 16 MiB byte ceiling or
+representative host metadata sizes.
+
 The v2 fixture starts from an ordinary-open project's actual catalog. It keeps
 the project/main UUIDs and published main root digest, appends synthetic
 metadata records, sorts by UUID, and revalidates the published catalog against
@@ -148,7 +159,8 @@ children, giving 49,999 or 89,999 tombstones; the main branch is always ready.
 The validator inserts only non-deleted names into its uniqueness set. More
 deleted records therefore reduce that part of validation, while the encoded
 length and complete-catalog read/decode requirement stay fixed. Tombstones
-and receipts continue to consume the same 100,000-record codec allowance.
+and receipts continue to consume both the 100,000-record allowance and the
+16 MiB encoded-byte budget.
 
 This is a standalone warm-cache scaling observation. The host is not
 isolated: its one-minute load falls from 16.25 to 5.79 during the cohort and
@@ -178,9 +190,11 @@ These tests do not establish power-loss behavior.
 
 This synthetic matrix does not establish representative Mem branch counts,
 inspection rates, or latency budgets. The v2 matrix adds evidence for retained
-receipts at the codec ceiling. Representative host measurements remain necessary
-before declaring catalog inspection production-qualified or deciding that a
-long-lived cache or persistent lookup index is warranted. Retained tombstones
-still count toward the 100,000-record codec limit. This change does not alter
+receipts at the record-count limit with short synthetic fields. Representative
+host measurements, including encoded-byte growth and when the byte cap blocks
+new creates, remain necessary before declaring catalog inspection
+production-qualified or deciding that a long-lived cache or persistent lookup
+index is warranted. Retained tombstones
+still consume both catalog budgets. This change does not alter
 receipt retention, branch existence, garbage collection, or deferred ordinary
 project admission.
