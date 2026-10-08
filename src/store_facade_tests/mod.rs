@@ -24,7 +24,9 @@ mod derived_repair_tests;
 mod doctor_tests;
 mod envelope_recovery_tests;
 mod hex_recovery_tests;
-mod row_page_compaction;
+mod paths;
+
+pub use paths::unique_test_dir;
 
 pub use hawdb_storage::store::read_durable_text;
 
@@ -32,14 +34,6 @@ use hawdb_integrity::integrity_digest;
 use hawdb_storage::config::DurableCompression;
 use hawdb_storage::store::checksum_bytes;
 use hawdb_storage::text::envelope::{encode_durable_text, DURABLE_COMPRESSION_HEADER};
-
-pub fn unique_test_dir(name: &str) -> std::path::PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir().join(format!("hawdb_store_{name}_{nanos}"))
-}
 
 /// Standalone backups let decoder tests change valid outer checksums without
 /// invalidating a project's immutable-object identity first. Seed through the
