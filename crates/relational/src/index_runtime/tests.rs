@@ -28,6 +28,222 @@ type Mode<'a> = RelationalIndexReadMode<'a, Reader>;
 type Runtime<'a> = RelationalIndexRuntime<'a, Reader>;
 type Entry = (RelationalKey, RelationalKey);
 
+fn native_probe<R: RelationalIndexStoreReader>(
+    runtime: &RelationalIndexRuntime<'_, R>,
+    state: &RelationalState,
+    kind: usize,
+    prefix: &RelationalKey,
+    mut visit: impl FnMut(&RelationalKey, &RelationalKey) -> Result<bool>,
+) -> Result<bool> {
+    match kind {
+        0 => runtime.visit_prefix_entries(state, TABLE, INDEX, prefix, visit),
+        1 => runtime.visit_range_entries(
+            state,
+            TABLE,
+            INDEX,
+            &RelationalIndexRangeScan {
+                prefix: prefix.clone(),
+                exclusive_bound: None,
+                direction: RelationalIndexScanDirection::Forward,
+            },
+            visit,
+        ),
+        2 => runtime.visit_prefix_entries_many(
+            state,
+            TABLE,
+            INDEX,
+            std::slice::from_ref(prefix),
+            |_, index, primary| visit(index, primary),
+        ),
+        _ => unreachable!(),
+    }
+}
+
+fn native_zero_row_probe_after_consumed_rows(kind: usize, live_delete: bool) {
+    let fixture = Fixture::new();
+    let mut state = fixture.state.clone();
+    let mut oracle = fixture.oracle.clone();
+    let view = if live_delete {
+        Arc::new(
+            fixture
+                .reader
+                .view()
+                .advance(
+                    41,
+                    Some(replace(&mut state, &mut oracle, 9, None)),
+                    Default::default(),
+                )
+                .unwrap(),
+        )
+    } else {
+        Arc::clone(fixture.reader.view())
+    };
+    let reader = Reader::pinned(view);
+    let present_values: &[i64] = if live_delete { &[1, 2] } else { &[0, 3] };
+    let absent = key(if live_delete { &[0, 3] } else { &[99, 100] });
+    let present = key(present_values);
+    let expected_rows = expected(&oracle, &scan(present_values, false, None));
+    assert_eq!(expected_rows.len(), if live_delete { 2 } else { 1 });
+    let row_limit = RelationalIndexReadLimits {
+        max_rows: NonZeroUsize::new(expected_rows.len()).unwrap(),
+        ..Default::default()
+    };
+    for mode in 0..5 {
+        let statement_limits = if mode == 3 {
+            Default::default()
+        } else {
+            row_limit
+        };
+        let transaction_limits = if mode >= 3 {
+            row_limit
+        } else {
+            Default::default()
+        };
+        let transaction = RelationalTransactionIndexView::new(
+            Arc::clone(reader.view()),
+            Default::default(),
+            transaction_limits,
+        );
+        let read_mode = match mode {
+            0 => Mode::Authoritative(&reader),
+            1 => Mode::DemandPaged(&reader),
+            _ => Mode::AuthoritativeTransaction(&transaction),
+        };
+        let runtime = Runtime::new(read_mode, statement_limits);
+        let probe = |prefix: &RelationalKey, output: &mut Vec<Entry>| {
+            native_probe(&runtime, &state, kind, prefix, |index, primary| {
+                output.push((index.clone(), primary.clone()));
+                Ok(true)
+            })
+        };
+        let mut output = Vec::new();
+        assert!(probe(&present, &mut output).unwrap());
+        assert_eq!(output, expected_rows);
+        output.clear();
+        assert!(
+            probe(&absent, &mut output).unwrap(),
+            "zero-row native probe requires no additional output allowance: mode={mode}, kind={kind}, live_delete={live_delete}"
+        );
+        assert!(output.is_empty());
+        let evidence = runtime.evidence();
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].lookups, 2);
+        assert_eq!(evidence[0].canonical_fallback_lookups, 0);
+        assert_eq!(evidence[0].rows_visited, expected_rows.len());
+        if mode == 1 {
+            assert!(probe(&present, &mut output).unwrap());
+            assert_eq!(
+                output, expected_rows,
+                "DemandPaged retains canonical fallback"
+            );
+            let evidence = runtime.evidence();
+            assert_eq!(evidence[0].canonical_fallback_lookups, 1);
+            assert_eq!(
+                evidence[0].rows_visited,
+                expected_rows.len(),
+                "native row charges cannot be refunded"
+            );
+        } else {
+            assert!(probe(&present, &mut output).is_err());
+            assert!(output.is_empty(), "authoritative rows cannot be refunded");
+        }
+    }
+    drop(reader);
+    fixture.remove();
+}
+
+#[test]
+fn native_absent_prefix_survives_consumed_row_allowance() {
+    native_zero_row_probe_after_consumed_rows(0, false);
+}
+
+#[test]
+fn native_absent_range_survives_consumed_row_allowance() {
+    native_zero_row_probe_after_consumed_rows(1, false);
+}
+
+#[test]
+fn native_absent_batch_survives_consumed_row_allowance() {
+    native_zero_row_probe_after_consumed_rows(2, false);
+}
+
+#[test]
+fn native_live_delete_prefix_survives_consumed_row_allowance() {
+    native_zero_row_probe_after_consumed_rows(0, true);
+}
+
+#[test]
+fn native_live_delete_range_survives_consumed_row_allowance() {
+    native_zero_row_probe_after_consumed_rows(1, true);
+}
+
+#[test]
+fn native_live_delete_batch_survives_consumed_row_allowance() {
+    native_zero_row_probe_after_consumed_rows(2, true);
+}
+
+#[test]
+fn native_live_delete_constraints_survive_consumed_row_allowance() {
+    use hawdb_storage::relational::RelationalConstraintIndex;
+    use hawdb_storage::relational_index_view::AuthoritativeRelationalConstraintIndex;
+
+    let fixture = Fixture::new();
+    let mut state = fixture.state.clone();
+    let mut oracle = fixture.oracle.clone();
+    let live = Arc::new(
+        fixture
+            .reader
+            .view()
+            .advance(
+                41,
+                Some(replace(&mut state, &mut oracle, 9, None)),
+                Default::default(),
+            )
+            .unwrap(),
+    );
+    let limits = RelationalIndexReadLimits {
+        max_rows: NonZeroUsize::new(2).unwrap(),
+        ..Default::default()
+    };
+    for transactional in [false, true] {
+        let transaction =
+            RelationalTransactionIndexView::new(Arc::clone(&live), Default::default(), limits);
+        let committed = AuthoritativeRelationalConstraintIndex::new(Arc::clone(&live), limits);
+        let owner: &dyn RelationalConstraintIndex = if transactional {
+            &transaction
+        } else {
+            &committed
+        };
+        let mut rows = Vec::new();
+        owner
+            .visit_exact_primary_keys(TABLE, INDEX, &key(&[1, 2]), &mut |row| {
+                rows.push(row.clone());
+                true
+            })
+            .unwrap();
+        assert_eq!(rows, vec![key(&[1]), key(&[16])]);
+        rows.clear();
+        owner
+            .visit_exact_primary_keys(TABLE, INDEX, &key(&[0, 3]), &mut |row| {
+                rows.push(row.clone());
+                true
+            })
+            .expect(
+                "one bounded live Delete suppresses its base posting without output Row charge",
+            );
+        assert!(rows.is_empty());
+        assert!(owner
+            .visit_exact_primary_keys(TABLE, INDEX, &key(&[1, 2]), &mut |row| {
+                rows.push(row.clone());
+                true
+            })
+            .is_err());
+        assert!(rows.is_empty(), "constraint rows cannot be refunded");
+    }
+    drop(live);
+    fixture.remove();
+}
+
 #[test]
 fn descriptor_exhaustion_preserves_index_runtime_for_retry() {
     use hawdb_core::error::FileDescriptorError;

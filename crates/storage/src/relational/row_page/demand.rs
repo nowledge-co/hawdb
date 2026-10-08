@@ -494,11 +494,8 @@ impl RelationalRowPageDemandReader {
                 else {
                     continue;
                 };
-                context.admit_row()?;
-                let mut row = view
-                    .decode_projected_row(ordinal, requested_fields)
-                    .map_err(|error| context.map_page_error(error))?;
-                context.record_decoded_row()?;
+                let mut row =
+                    context.decode_row(|| view.decode_projected_row(ordinal, requested_fields))?;
                 context.resolve_projected_row(&mut row, hydration_fields)?;
                 context.record_emitted_row(true)?;
                 rows.insert(primary_key, row);
@@ -584,11 +581,8 @@ impl RelationalRowPageDemandReader {
             return Ok((None, context.finish()));
         };
         context.checkpoint()?;
-        context.admit_row()?;
-        let mut row = view
-            .decode_projected_row(ordinal, requested_fields)
-            .map_err(|error| context.map_page_error(error))?;
-        context.record_decoded_row()?;
+        let mut row =
+            context.decode_row(|| view.decode_projected_row(ordinal, requested_fields))?;
         if let Some(hydration_fields) = hydration_fields {
             context.resolve_projected_row(&mut row, hydration_fields)?;
         }
@@ -880,16 +874,13 @@ impl RelationalRowPageDemandReader {
                         continue;
                     }
                 }
-                context.admit_row()?;
-                let row = cursor
-                    .next_row()
-                    .map_err(|error| context.map_page_error(error))?
-                    .ok_or_else(|| {
-                        RelationalRowPageDemandReadError::Corrupt(
+                let row = context.decode_row(|| {
+                    cursor.next_row()?.ok_or_else(|| {
+                        RelationalRowPageError::Corrupt(
                             "row cursor lost an admitted row".to_string(),
                         )
-                    })?;
-                context.record_decoded_row()?;
+                    })
+                })?;
                 if !emit_base_row(&mut context, row, hydration_fields, &mut visit)? {
                     context.report.stopped_early = true;
                     return Ok(context.finish());
@@ -1117,6 +1108,16 @@ impl<'a> DemandReadContext<'a> {
             )));
         }
         self.reader.cumulative.admit_row()
+    }
+
+    fn decode_row<T>(
+        &mut self,
+        decode: impl FnOnce() -> Result<T, RelationalRowPageError>,
+    ) -> Result<T, RelationalRowPageDemandReadError> {
+        self.admit_row()?;
+        let row = decode().map_err(|error| self.map_page_error(error))?;
+        self.record_decoded_row()?;
+        Ok(row)
     }
 
     // A successful decode (or selected owned overlay row) remains observable

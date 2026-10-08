@@ -77,8 +77,28 @@ pub struct RelationalIndexReadReport {
 
 /// Per-operation admission shared by nested reads; reports remain per-read.
 pub(crate) trait IndexReadObserver {
+    fn check_charge(&self, charge: IndexReadCharge) -> Result<(), IndexReadPreflightError>;
+    fn set_budget_refusal(&self, refused: bool);
     fn charge(&self, charge: IndexReadCharge) -> Result<(), RelationalIndexShadowError>;
     fn file_budget(&self, requested: usize) -> Result<usize, RelationalIndexShadowError>;
+}
+
+/// Only owner-budget preflight can certify refusal before an operation begins.
+/// Closed owners, cancellation and accounting failures retain their own cause.
+pub(crate) enum IndexReadPreflightError {
+    Budget,
+    Failed(RelationalIndexShadowError),
+}
+
+impl IndexReadPreflightError {
+    pub(crate) fn into_error(self) -> RelationalIndexShadowError {
+        match self {
+            Self::Budget => RelationalIndexShadowError::Admission(
+                "authoritative relational index reader exceeded its transaction budget".to_string(),
+            ),
+            Self::Failed(error) => error,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -114,8 +134,38 @@ impl<'a> IndexReadAdmission<'a> {
         if matches!(charge, IndexReadCharge::Row) && !self.charge_rows {
             return Ok(());
         }
+        self.set_budget_refusal(false);
         self.observer
             .map_or(Ok(()), |observer| observer.charge(charge))
+    }
+
+    pub(crate) fn check_charge(
+        self,
+        charge: IndexReadCharge,
+    ) -> Result<(), IndexReadPreflightError> {
+        if matches!(charge, IndexReadCharge::Row) && !self.charge_rows {
+            return Ok(());
+        }
+        self.observer
+            .map_or(Ok(()), |observer| observer.check_charge(charge))
+    }
+
+    pub(crate) fn set_budget_refusal(self, refused: bool) {
+        if let Some(observer) = self.observer {
+            observer.set_budget_refusal(refused);
+        }
+    }
+
+    /// Check true owners before native positive envelopes can mask their cause.
+    pub(crate) fn preflight_charge(
+        self,
+        charge: IndexReadCharge,
+    ) -> Result<(), RelationalIndexShadowError> {
+        self.set_budget_refusal(false);
+        self.check_charge(charge).map_err(|error| {
+            self.set_budget_refusal(matches!(error, IndexReadPreflightError::Budget));
+            error.into_error()
+        })
     }
 
     pub(crate) fn file_budget(self, requested: usize) -> Result<usize, RelationalIndexShadowError> {
@@ -982,14 +1032,16 @@ impl<'a> ReadContext<'a> {
         &mut self,
         page_id: IndexPageId,
     ) -> Result<ImmutableIndexPage, RelationalIndexShadowError> {
+        let page_bytes = usize::try_from(self.reader.manifest().page_bytes)
+            .map_err(|_| self.corrupt("manifest page size overflows usize"))?;
+        self.read_admission
+            .preflight_charge(IndexReadCharge::Page(page_bytes))?;
         if self.report.pages_read >= self.limits.max_pages.get() {
             return Err(self.admission(format!(
                 "index lookup exceeds page limit {}",
                 self.limits.max_pages
             )));
         }
-        let page_bytes = usize::try_from(self.reader.manifest().page_bytes)
-            .map_err(|_| self.corrupt("manifest page size overflows usize"))?;
         let next_bytes = self
             .report
             .bytes_read

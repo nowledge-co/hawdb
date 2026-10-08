@@ -326,6 +326,10 @@ impl Reader {
 }
 
 impl RelationalIndexStoreReader for Reader {
+    fn supports_relational_index_operation_admission(&self) -> bool {
+        matches!(self.source, Source::View(_))
+    }
+
     fn visit_relational_index_read_view_prefix_entries_with_context(
         &self,
         table: &str,

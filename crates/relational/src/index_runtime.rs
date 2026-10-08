@@ -34,6 +34,12 @@ use std::collections::{BTreeMap, BTreeSet};
 /// preserve reader errors and stop when the visitor returns false; query-level
 /// fallback, admission, and evidence remain owned by this runtime.
 pub trait RelationalIndexStoreReader {
+    /// True only when every context read admits each operation before I/O and
+    /// callbacks. Legacy/report-only providers retain strict positive preflight.
+    fn supports_relational_index_operation_admission(&self) -> bool {
+        false
+    }
+
     /// Optional metadata-count capability of the facade-selected view.
     /// Existing readers decline until they can retain provenance and accounting.
     fn relational_index_exact_posting_count(
@@ -789,7 +795,19 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
     }
 
     fn remaining_limits(&self) -> Option<RelationalIndexReadLimits> {
-        self.context.read_context.remaining_limits().ok()
+        let native = match self.mode {
+            RelationalIndexReadMode::DemandPaged(store)
+            | RelationalIndexReadMode::Authoritative(store) => {
+                store.supports_relational_index_operation_admission()
+            }
+            RelationalIndexReadMode::AuthoritativeTransaction(_) => true,
+            _ => false,
+        };
+        if native {
+            self.context.read_context.native_operation_limits().ok()
+        } else {
+            self.context.read_context.remaining_limits().ok()
+        }
     }
 
     fn evidence_mut<'state>(

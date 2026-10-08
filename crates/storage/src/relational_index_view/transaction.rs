@@ -115,7 +115,7 @@ struct TransactionOverlayMerge<'a, F> {
     error: Option<RelationalIndexShadowError>,
     overlay: BTreeMap<RelationalKey, RelationalIndexChangeKind>,
     visit: &'a mut F,
-    overlay_rows_emitted: usize,
+    rows_visited: usize,
     stopped_early: bool,
 }
 
@@ -170,16 +170,16 @@ impl<F> TransactionOverlayMerge<'_, F>
 where
     F: FnMut(&RelationalKey) -> bool,
 {
-    fn emit_overlay(&mut self, primary_key: &RelationalKey) -> bool {
+    fn emit(&mut self, primary_key: &RelationalKey) -> bool {
         if let Err(error) = self.read_admission.charge(IndexReadCharge::Row) {
             self.error = Some(error);
             self.stopped_early = true;
             return false;
         }
-        self.overlay_rows_emitted = self
-            .overlay_rows_emitted
+        self.rows_visited = self
+            .rows_visited
             .checked_add(1)
-            .expect("reserved transaction overlay row count cannot overflow");
+            .expect("admitted transaction row count cannot overflow");
         if !(self.visit)(primary_key) {
             self.stopped_early = true;
             return false;
@@ -190,13 +190,7 @@ where
     fn visit_base(&mut self, primary_key: &RelationalKey) -> bool {
         match self.overlay.remove(primary_key) {
             Some(RelationalIndexChangeKind::Delete) => true,
-            Some(RelationalIndexChangeKind::Insert) | None => {
-                if !(self.visit)(primary_key) {
-                    self.stopped_early = true;
-                    return false;
-                }
-                true
-            }
+            Some(RelationalIndexChangeKind::Insert) | None => self.emit(primary_key),
         }
     }
 
@@ -205,7 +199,7 @@ where
             let Some((primary_key, kind)) = self.overlay.pop_first() else {
                 break;
             };
-            if kind == RelationalIndexChangeKind::Insert && !self.emit_overlay(&primary_key) {
+            if kind == RelationalIndexChangeKind::Insert && !self.emit(&primary_key) {
                 break;
             }
         }
@@ -288,7 +282,7 @@ impl RelationalTransactionIndexView {
             .map(|reader| {
                 reader?;
                 self.read_ledger
-                    .remaining_limits()
+                    .check_health()
                     .map_err(relational_read_error)?;
                 Ok(self.base.as_ref())
             })
@@ -307,7 +301,7 @@ impl RelationalTransactionIndexView {
                 let view = view?;
                 let attempt = self
                     .read_ledger
-                    .begin_read()
+                    .begin_native_read()
                     .map_err(relational_read_error)?;
                 let limits = intersect_read_limits(limits, attempt.limits());
                 let observer = PairedIndexReadAdmission {
@@ -383,7 +377,7 @@ impl RelationalTransactionIndexView {
     ) -> Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
         let attempt = self
             .read_ledger
-            .begin_read()
+            .begin_native_read()
             .map_err(relational_read_error)?;
         let limits = intersect_read_limits(limits, attempt.limits());
         let observer = PairedIndexReadAdmission {
@@ -432,7 +426,7 @@ impl RelationalTransactionIndexView {
     ) -> Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
         let attempt = self
             .read_ledger
-            .begin_read()
+            .begin_native_read()
             .map_err(relational_read_error)?;
         let limits = intersect_read_limits(limits, attempt.limits());
         let observer = PairedIndexReadAdmission {
@@ -814,7 +808,7 @@ impl RelationalTransactionIndexView {
             error: None,
             overlay,
             visit: &mut visit,
-            overlay_rows_emitted: 0,
+            rows_visited: 0,
             stopped_early: false,
         };
         let mut report = {
@@ -827,7 +821,7 @@ impl RelationalTransactionIndexView {
                         key,
                         backend_limits,
                         &mut emit_base,
-                        read_admission,
+                        read_admission.without_rows(),
                     )?
                 }
                 RelationalIndexReadSelector::Prefix(prefix) => {
@@ -837,7 +831,7 @@ impl RelationalTransactionIndexView {
                         prefix,
                         backend_limits,
                         &mut emit_base,
-                        read_admission,
+                        read_admission.without_rows(),
                     )?
                 }
                 RelationalIndexReadSelector::Range(_) => {
@@ -871,11 +865,7 @@ impl RelationalTransactionIndexView {
             bytes_visited,
             "transaction index byte count",
         )?;
-        report.rows_visited = checked_add(
-            report.rows_visited,
-            merge.overlay_rows_emitted,
-            "transaction index row count",
-        )?;
+        report.rows_visited = merge.rows_visited;
         report.stopped_early |= merge.stopped_early;
         Ok(report)
     }
@@ -889,7 +879,7 @@ impl RelationalConstraintIndex for RelationalTransactionIndexView {
         key: &RelationalKey,
         visit: &mut dyn FnMut(&RelationalKey) -> bool,
     ) -> Result<(), RelationalError> {
-        let attempt = self.read_ledger.begin_read()?;
+        let attempt = self.read_ledger.begin_native_read()?;
         let result = self
             .visit_with_overlay(
                 table,
@@ -1003,7 +993,7 @@ mod tests {
                 (deleted_late.clone(), RelationalIndexChangeKind::Delete),
             ]),
             visit: &mut visit,
-            overlay_rows_emitted: 0,
+            rows_visited: 0,
             stopped_early: false,
         };
 

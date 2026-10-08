@@ -24,6 +24,10 @@ pub type RelationalIndexReadMode<'a> =
     crate::index_runtime::RelationalIndexReadMode<'a, GraphStore>;
 
 impl RelationalIndexStoreReader for GraphStore {
+    fn supports_relational_index_operation_admission(&self) -> bool {
+        true
+    }
+
     fn visit_relational_index_read_view_prefix_entries_with_context(
         &self,
         table: &str,

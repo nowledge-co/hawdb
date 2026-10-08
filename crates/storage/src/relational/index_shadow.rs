@@ -49,7 +49,9 @@ use std::sync::{Arc, OnceLock};
 
 mod build;
 mod demand_read;
-pub(crate) use demand_read::{IndexReadAdmission, IndexReadCharge, IndexReadObserver};
+pub(crate) use demand_read::{
+    IndexReadAdmission, IndexReadCharge, IndexReadObserver, IndexReadPreflightError,
+};
 mod recovery;
 
 pub use demand_read::{

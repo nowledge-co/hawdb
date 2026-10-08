@@ -13,8 +13,10 @@
 // limitations under the License.
 
 use super::*;
-use crate::relational::{IndexReadObserver, RelationalConstraintIndex, RelationalError};
-use std::cell::RefCell;
+use crate::relational::{
+    IndexReadObserver, IndexReadPreflightError, RelationalConstraintIndex, RelationalError,
+};
+use std::cell::{Cell, RefCell};
 
 #[derive(Debug, Default, Clone, Copy)]
 struct AuthoritativeReadUsage {
@@ -40,46 +42,53 @@ impl AuthoritativeReadLedger {
     }
 
     pub(super) fn remaining_limits(&self) -> Result<RelationalIndexReadLimits, RelationalError> {
-        let usage = self.usage.borrow();
-        if usage.closed_after_failed_read {
+        self.remaining_read_limits(false)
+    }
+
+    pub(super) fn check_health(&self) -> Result<(), RelationalError> {
+        if self.usage.borrow().closed_after_failed_read {
             return Err(RelationalError::Admission(
                 "authoritative relational index read ledger is closed after a failed read"
                     .to_string(),
             ));
         }
-        let max_pages = self
-            .limits
-            .max_pages
-            .get()
-            .checked_sub(usage.logical_pages)
-            .and_then(NonZeroUsize::new)
-            .ok_or_else(|| {
-                RelationalError::Admission(
-                    "authoritative relational index page budget is exhausted".to_string(),
-                )
-            })?;
-        let max_rows = self
-            .limits
-            .max_rows
-            .get()
-            .checked_sub(usage.rows)
-            .and_then(NonZeroUsize::new)
-            .ok_or_else(|| {
-                RelationalError::Admission(
-                    "authoritative relational index row budget is exhausted".to_string(),
-                )
-            })?;
-        let max_bytes = self
-            .limits
-            .max_bytes
-            .get()
-            .checked_sub(usage.logical_bytes)
-            .and_then(NonZeroUsize::new)
-            .ok_or_else(|| {
-                RelationalError::Admission(
-                    "authoritative relational index byte budget is exhausted".to_string(),
-                )
-            })?;
+        Ok(())
+    }
+
+    fn remaining_read_limits(
+        &self,
+        allow_zero_work: bool,
+    ) -> Result<RelationalIndexReadLimits, RelationalError> {
+        self.check_health()?;
+        let usage = self.usage.borrow();
+        let positive_envelope = |limit: usize, used: usize, resource: &str| {
+            limit
+                .checked_sub(used)
+                .and_then(|remaining| {
+                    NonZeroUsize::new(if allow_zero_work {
+                        remaining.max(1)
+                    } else {
+                        remaining
+                    })
+                })
+                .ok_or_else(|| {
+                    RelationalError::Admission(format!(
+                        "authoritative relational index {resource} budget is exhausted"
+                    ))
+                })
+        };
+        let max_pages =
+            positive_envelope(self.limits.max_pages.get(), usage.logical_pages, "page")?;
+        // Native traversal and tombstone merge need a finite candidate window
+        // independent of remaining output rows. Every final locator still
+        // charges the unchanged cumulative owner before its visitor runs.
+        let max_rows = if allow_zero_work {
+            self.limits.max_rows
+        } else {
+            positive_envelope(self.limits.max_rows.get(), usage.rows, "row")?
+        };
+        let max_bytes =
+            positive_envelope(self.limits.max_bytes.get(), usage.logical_bytes, "byte")?;
         Ok(RelationalIndexReadLimits {
             max_pages,
             max_rows,
@@ -98,12 +107,35 @@ impl AuthoritativeReadLedger {
     }
 
     pub(super) fn begin_read(&self) -> Result<AuthoritativeReadAttempt<'_>, RelationalError> {
-        Ok(AuthoritativeReadAttempt {
+        Ok(self.begin_read_with_limits(self.remaining_limits()?))
+    }
+
+    /// Native reads may return without work in an exhausted resource dimension.
+    /// A positive native envelope represents zero only for API compatibility;
+    /// every actual charge still checks this owner's unchanged, true allowance.
+    pub(super) fn begin_native_read(
+        &self,
+    ) -> Result<AuthoritativeReadAttempt<'_>, RelationalError> {
+        Ok(self.begin_read_with_limits(self.native_operation_limits()?))
+    }
+
+    pub(super) fn native_operation_limits(
+        &self,
+    ) -> Result<RelationalIndexReadLimits, RelationalError> {
+        self.remaining_read_limits(true)
+    }
+
+    fn begin_read_with_limits(
+        &self,
+        limits: RelationalIndexReadLimits,
+    ) -> AuthoritativeReadAttempt<'_> {
+        AuthoritativeReadAttempt {
             ledger: self,
-            limits: self.remaining_limits()?,
+            limits,
             recorded: false,
             charged: RefCell::new(AuthoritativeReadUsage::default()),
-        })
+            budget_refused_before_work: Cell::new(false),
+        }
     }
 
     #[cfg(test)]
@@ -115,29 +147,59 @@ impl AuthoritativeReadLedger {
     }
 
     fn charge_usage(&self, delta: AuthoritativeReadUsage) -> Result<(), RelationalError> {
-        let mut usage = self.usage.borrow_mut();
+        let next = self
+            .proposed_usage(delta)
+            .map_err(|error| map_constraint_read_error(error.into_error()))?;
+        *self.usage.borrow_mut() = next;
+        Ok(())
+    }
+
+    fn proposed_usage(
+        &self,
+        delta: AuthoritativeReadUsage,
+    ) -> Result<AuthoritativeReadUsage, IndexReadPreflightError> {
+        let usage = self.usage.borrow();
         if usage.closed_after_failed_read {
-            return Err(RelationalError::Admission(
-                "authoritative relational index read ledger is closed after a failed read"
-                    .to_string(),
+            return Err(IndexReadPreflightError::Failed(
+                RelationalIndexShadowError::Admission(
+                    "authoritative relational index read ledger is closed after a failed read"
+                        .to_string(),
+                ),
             ));
         }
-        let next = usage.add(delta)?;
+        let next = usage.add(delta).map_err(|error| {
+            IndexReadPreflightError::Failed(super::transaction::relational_read_error(error))
+        })?;
         if next.logical_pages > self.limits.max_pages.get()
             || next.logical_bytes > self.limits.max_bytes.get()
             || next.rows > self.limits.max_rows.get()
             || next.file_bytes > self.limits.max_file_bytes
         {
-            return Err(RelationalError::Admission(
-                "authoritative relational index reader exceeded its transaction budget".to_string(),
-            ));
+            return Err(IndexReadPreflightError::Budget);
         }
-        *usage = next;
-        Ok(())
+        Ok(next)
     }
 }
 
 impl AuthoritativeReadUsage {
+    fn from_charge(charge: IndexReadCharge) -> Self {
+        let mut delta = Self::default();
+        match charge {
+            IndexReadCharge::Page(bytes) => {
+                delta.logical_pages = 1;
+                delta.logical_bytes = bytes;
+            }
+            IndexReadCharge::FileBytes(bytes) => delta.file_bytes = bytes,
+            IndexReadCharge::LiveBytes(bytes) => delta.logical_bytes = bytes,
+            IndexReadCharge::Row => delta.rows = 1,
+        }
+        delta
+    }
+
+    fn has_work(self) -> bool {
+        self.logical_pages != 0 || self.logical_bytes != 0 || self.rows != 0 || self.file_bytes != 0
+    }
+
     fn from_report(report: &RelationalIndexReadViewReport) -> Result<Self, RelationalError> {
         let (backend_pages, backend_bytes, file_bytes) = match &report.backend {
             RelationalIndexReadViewBackendReport::Base(report) => {
@@ -223,14 +285,15 @@ impl AuthoritativeReadUsage {
     }
 }
 
-/// An admitted read records its complete report or closes this ledger. Typed
-/// descriptor refusal retains operation charges and health for a later retry.
-/// Other errors and unwinds cannot discard partial work and reuse allowance.
+/// Native budget refusal before this attempt accepts any work preserves health.
+/// Complete reports and typed descriptor refusal retain all charges. Unknown
+/// errors, admitted partial failures and unwind close the owner without refunds.
 pub(super) struct AuthoritativeReadAttempt<'a> {
     ledger: &'a AuthoritativeReadLedger,
     limits: RelationalIndexReadLimits,
     recorded: bool,
     charged: RefCell<AuthoritativeReadUsage>,
+    budget_refused_before_work: Cell<bool>,
 }
 
 impl AuthoritativeReadAttempt<'_> {
@@ -239,15 +302,21 @@ impl AuthoritativeReadAttempt<'_> {
     }
 
     /// Settle every admitted metadata, visitor and constraint read consistently.
-    /// Descriptor acquisition cannot discard already charged work; all other
-    /// failures leave Drop to close the ledger conservatively.
+    /// Descriptor refusal and a typed owner refusal before any work retain
+    /// health; other failures leave Drop to close the ledger conservatively.
     pub(super) fn finish<T>(
-        self,
+        mut self,
         result: Result<(T, RelationalIndexReadViewReport), RelationalIndexShadowError>,
     ) -> Result<(T, RelationalIndexReadViewReport), RelationalIndexShadowError> {
         let (value, report) = match result {
             Err(error @ RelationalIndexShadowError::FileDescriptors(_)) => {
                 self.finish_descriptor_rejection();
+                return Err(error);
+            }
+            Err(error @ RelationalIndexShadowError::Admission(_))
+                if self.budget_refused_before_work.get() && !self.charged.borrow().has_work() =>
+            {
+                self.recorded = true;
                 return Err(error);
             }
             result => result?,
@@ -277,20 +346,25 @@ impl AuthoritativeReadAttempt<'_> {
 }
 
 impl IndexReadObserver for AuthoritativeReadAttempt<'_> {
-    fn charge(&self, charge: IndexReadCharge) -> Result<(), RelationalIndexShadowError> {
-        let mut delta = AuthoritativeReadUsage::default();
-        match charge {
-            IndexReadCharge::Page(bytes) => {
-                delta.logical_pages = 1;
-                delta.logical_bytes = bytes;
-            }
-            IndexReadCharge::FileBytes(bytes) => delta.file_bytes = bytes,
-            IndexReadCharge::LiveBytes(bytes) => delta.logical_bytes = bytes,
-            IndexReadCharge::Row => delta.rows = 1,
-        }
+    fn check_charge(&self, charge: IndexReadCharge) -> Result<(), IndexReadPreflightError> {
         self.ledger
-            .charge_usage(delta)
-            .map_err(super::transaction::relational_read_error)?;
+            .proposed_usage(AuthoritativeReadUsage::from_charge(charge))
+            .map(|_| ())
+    }
+
+    fn set_budget_refusal(&self, refused: bool) {
+        self.budget_refused_before_work
+            .set(refused && !self.charged.borrow().has_work());
+    }
+
+    fn charge(&self, charge: IndexReadCharge) -> Result<(), RelationalIndexShadowError> {
+        let delta = AuthoritativeReadUsage::from_charge(charge);
+        let next = self.ledger.proposed_usage(delta).map_err(|error| {
+            self.set_budget_refusal(matches!(error, IndexReadPreflightError::Budget));
+            error.into_error()
+        })?;
+        *self.ledger.usage.borrow_mut() = next;
+        self.set_budget_refusal(false);
         let mut charged = self.charged.borrow_mut();
         *charged = charged
             .add(delta)
@@ -350,7 +424,7 @@ impl RelationalConstraintIndex for AuthoritativeRelationalConstraintIndex {
         key: &RelationalKey,
         visit: &mut dyn FnMut(&RelationalKey) -> bool,
     ) -> Result<(), RelationalError> {
-        let attempt = self.ledger.begin_read()?;
+        let attempt = self.ledger.begin_native_read()?;
         let result = self
             .view
             .visit_exact_postings_admitted(

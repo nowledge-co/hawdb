@@ -29,7 +29,9 @@ mod codec;
 mod compaction;
 mod constraints;
 mod index_shadow;
-pub(crate) use index_shadow::{IndexReadAdmission, IndexReadCharge, IndexReadObserver};
+pub(crate) use index_shadow::{
+    IndexReadAdmission, IndexReadCharge, IndexReadObserver, IndexReadPreflightError,
+};
 mod ordered_key;
 pub(crate) mod overflow;
 mod recovery;

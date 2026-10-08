@@ -32,7 +32,7 @@ impl Drop for OwnedFixture {
 }
 
 fn execute_nested_index_join(limited: bool) {
-    execute_nested_index_join_with_statement_limit(limited, None);
+    execute_nested_index_join_with_statement_limit(limited, None, limited);
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -46,6 +46,7 @@ enum StatementBudget {
 fn execute_nested_index_join_with_statement_limit(
     limited: bool,
     statement_budget: Option<StatementBudget>,
+    corrupt_inner: bool,
 ) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
@@ -123,8 +124,9 @@ fn execute_nested_index_join_with_statement_limit(
         matches!(&right.access, RelationalPhysicalAccess::Probe(access)
         if matches!(&access.access, RelationalJoinAccess::Index { name, .. } if name == "idx_merge_right_key"))
     );
-    if limited || statement_budget.is_some() {
-        // A nested inner read must reject before inspecting this unknown damage.
+    if corrupt_inner {
+        // Page/byte refusal must precede unknown damage; an admitted page's
+        // corruption remains observable even if output Row allowance is spent.
         let mut file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -174,10 +176,16 @@ fn execute_nested_index_join_with_statement_limit(
         )
         .unwrap();
     let output = execute_select(&prepared, &[], execution);
-    if limited || statement_budget.is_some() {
+    if corrupt_inner && matches!(statement_budget, Some(StatementBudget::Rows)) {
+        assert!(
+            matches!(output, Err(HawDBError::StorageIntegrity(_))),
+            "a legally admitted corrupt candidate page must fail integrity: {output:?}"
+        );
+        assert!(view.is_poisoned());
+    } else if limited || statement_budget.is_some() {
         assert!(
             matches!(output, Err(HawDBError::Execution(_))),
-            "must reject by budget before reading inner payload: {output:?}"
+            "an over-budget operation cannot deliver query results: {output:?}"
         );
         assert!(!view.is_poisoned());
     } else {
@@ -219,20 +227,25 @@ fn authoritative_indexed_outer_join_admits_nested_io_before_payload() {
 
 #[test]
 fn statement_page_budget_admits_nested_io_before_payload() {
-    execute_nested_index_join_with_statement_limit(false, Some(StatementBudget::Pages));
+    execute_nested_index_join_with_statement_limit(false, Some(StatementBudget::Pages), true);
 }
 
 #[test]
 fn statement_byte_budget_admits_nested_io_before_payload() {
-    execute_nested_index_join_with_statement_limit(false, Some(StatementBudget::Bytes));
+    execute_nested_index_join_with_statement_limit(false, Some(StatementBudget::Bytes), true);
 }
 
 #[test]
 fn statement_file_budget_admits_nested_io_before_payload() {
-    execute_nested_index_join_with_statement_limit(false, Some(StatementBudget::FileBytes));
+    execute_nested_index_join_with_statement_limit(false, Some(StatementBudget::FileBytes), true);
 }
 
 #[test]
-fn statement_row_budget_admits_nested_io_before_payload() {
-    execute_nested_index_join_with_statement_limit(false, Some(StatementBudget::Rows));
+fn statement_row_budget_rejects_nested_locator_before_result_delivery() {
+    execute_nested_index_join_with_statement_limit(false, Some(StatementBudget::Rows), false);
+}
+
+#[test]
+fn admitted_inner_corruption_preserves_integrity_cause_after_row_budget_is_spent() {
+    execute_nested_index_join_with_statement_limit(false, Some(StatementBudget::Rows), true);
 }

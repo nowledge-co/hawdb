@@ -20,7 +20,7 @@ use super::{
     RelationalIndexReadViewReport, RelationalIndexShadowError, RelationalKey,
     RelationalTransactionIndexView,
 };
-use crate::relational::{IndexReadObserver, RelationalIndexShadowReader};
+use crate::relational::{IndexReadObserver, IndexReadPreflightError, RelationalIndexShadowReader};
 use hawdb_core::RuntimeTaskContext;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -115,7 +115,7 @@ impl RelationalIndexReadContext {
         Some((|| {
             let view = view?;
             self.checkpoint()?;
-            self.remaining_limits()?;
+            self.ledger.check_health().map_err(relational_read_error)?;
             let RelationalIndexReadBackend::Base(reader) = &view.backend else {
                 unreachable!("eligible metadata counts use an immutable checkpoint reader")
             };
@@ -171,6 +171,18 @@ impl RelationalIndexReadContext {
     ) -> Result<RelationalIndexReadLimits, RelationalIndexShadowError> {
         self.ledger
             .remaining_limits()
+            .map_err(relational_read_error)
+    }
+
+    /// Positive transport limits for providers that admit every native action.
+    /// Zero page/byte allowance uses one for API compatibility. The bounded
+    /// configured row window permits tombstone filtering; the unchanged ledger
+    /// still refuses every output row or other charge beyond its true cap.
+    pub fn native_operation_limits(
+        &self,
+    ) -> Result<RelationalIndexReadLimits, RelationalIndexShadowError> {
+        self.ledger
+            .native_operation_limits()
             .map_err(relational_read_error)
     }
 
@@ -274,7 +286,10 @@ impl RelationalIndexReadContext {
             -> Result<(T, RelationalIndexReadViewReport), RelationalIndexShadowError>,
     ) -> Result<(T, RelationalIndexReadViewReport), RelationalIndexShadowError> {
         self.checkpoint()?;
-        let attempt = self.ledger.begin_read().map_err(relational_read_error)?;
+        let attempt = self
+            .ledger
+            .begin_native_read()
+            .map_err(relational_read_error)?;
         let limits = intersect_read_limits(limits, attempt.limits());
         let observer = TaskIndexReadAdmission {
             context: self,
@@ -291,6 +306,17 @@ struct TaskIndexReadAdmission<'a> {
 }
 
 impl IndexReadObserver for TaskIndexReadAdmission<'_> {
+    fn check_charge(&self, charge: IndexReadCharge) -> Result<(), IndexReadPreflightError> {
+        self.context
+            .checkpoint()
+            .map_err(IndexReadPreflightError::Failed)?;
+        self.inner.check_charge(charge)
+    }
+
+    fn set_budget_refusal(&self, refused: bool) {
+        self.inner.set_budget_refusal(refused);
+    }
+
     fn charge(&self, charge: IndexReadCharge) -> Result<(), RelationalIndexShadowError> {
         self.context.checkpoint()?;
         self.inner.charge(charge)
@@ -308,7 +334,20 @@ pub(super) struct PairedIndexReadAdmission<'a> {
 }
 
 impl IndexReadObserver for PairedIndexReadAdmission<'_> {
+    fn check_charge(&self, charge: IndexReadCharge) -> Result<(), IndexReadPreflightError> {
+        self.local.check_charge(charge)?;
+        self.outer.check_charge(charge)
+    }
+
+    fn set_budget_refusal(&self, refused: bool) {
+        self.local.set_budget_refusal(refused);
+        self.outer.set_budget_refusal(refused);
+    }
+
     fn charge(&self, charge: IndexReadCharge) -> Result<(), RelationalIndexShadowError> {
+        // Both owners must accept before either receives work; there is no
+        // payload, callback or ledger mutation between these checks.
+        IndexReadAdmission::new(self).preflight_charge(charge)?;
         self.local.charge(charge)?;
         self.outer.charge(charge)
     }

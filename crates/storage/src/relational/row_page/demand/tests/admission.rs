@@ -276,3 +276,86 @@ fn range_retains_decoded_evidence_on_failed_hydration() {
 fn overlay_retains_decoded_evidence_on_failed_hydration() {
     failed_hydration_decode_report_guard("overlay");
 }
+
+#[test]
+fn malformed_selected_value_retains_admission_without_successful_decode_or_emission() {
+    use crate::relational::row_page::{
+        decode_header, write_integrity, RowSlot, ROW_PAGE_HEADER_BYTES, ROW_SLOT_BYTES,
+        VALUE_SLOT_BYTES,
+    };
+
+    let fixture = DemandFixture::new("malformed-selected-value-report");
+    fixture
+        .reader
+        .cumulative
+        .restrict(Default::default())
+        .unwrap();
+    let task = RuntimeTaskContext::default();
+    let mut hydration = RelationalHydrationBudget::default();
+    {
+        let mut context =
+            DemandReadContext::new(&fixture.reader, Default::default(), &mut hydration, &task)
+                .unwrap();
+        let descriptor = fixture
+            .row_root
+            .read_table_page_descriptor("documents", 0)
+            .unwrap();
+        let page = context.read_page(&descriptor).unwrap();
+        let mut encoded = page.bytes.to_vec();
+        let limits = row_publication_config().page_limits;
+        let header = decode_header(&encoded, limits).unwrap();
+        let directory_start =
+            ROW_PAGE_HEADER_BYTES + header.lower_bound_len + header.upper_bound_len;
+        let row_start = directory_start + header.directory_len + header.key_payload_len;
+        let first_slot =
+            RowSlot::decode(&encoded[directory_start..directory_start + ROW_SLOT_BYTES]).unwrap();
+        let first_value_start =
+            row_start + first_slot.row_offset as usize + 4 + header.column_count * VALUE_SLOT_BYTES;
+        assert_eq!(
+            encoded[first_value_start], 2,
+            "the real fixture's selected BigInt tag"
+        );
+        encoded[first_value_start] = 99;
+        write_integrity(&mut encoded);
+        let view = RelationalRowPageView::open(&encoded, limits).unwrap();
+        let mut cursor = ProjectedRowPageCursor::new(view, 0, &[0]).unwrap();
+        assert!(cursor.peek_encoded_primary_key().unwrap().is_some());
+        let mut callbacks = 0;
+        let error = (|| {
+            let row = context.decode_row(|| {
+                cursor.next_row()?.ok_or_else(|| {
+                    RelationalRowPageError::Corrupt("row cursor lost an admitted row".to_string())
+                })
+            })?;
+            emit_base_row(&mut context, row, None, &mut |_, _| {
+                callbacks += 1;
+                true
+            })
+        })()
+        .unwrap_err();
+        assert!(
+            matches!(error, RelationalRowPageDemandReadError::Corrupt(ref message)
+            if message.contains("invalid relational row value tag")),
+            "{error}"
+        );
+        assert!(fixture.reader.is_poisoned());
+        assert_eq!(callbacks, 0);
+        assert_eq!(context.report.rows_decoded, 0);
+        assert_eq!(context.report.rows_emitted, 0);
+        let report = fixture.reader.cumulative.report().unwrap();
+        assert_eq!(report.admitted_rows, 1);
+        assert_eq!(report.demand.rows_decoded, 0);
+        assert_eq!(report.demand.rows_emitted, 0);
+        assert_eq!(report.demand.owned_rows_emitted, 0);
+        assert_eq!(report.demand.borrowed_rows_emitted, 0);
+        assert_eq!(report.demand.pages_read, 1);
+        assert_eq!(report.demand.bytes_read, PAGE_BYTES);
+        assert_eq!(report.demand.file_pages_read, 1);
+        assert_eq!(report.demand.file_bytes_read, PAGE_BYTES);
+        assert_eq!(report.demand.cache_misses, 1);
+        assert_eq!(report.demand.cache_hits, 0);
+    }
+    assert_eq!(hydration.hydrated_rows, 0);
+    assert_eq!(fixture.cache.snapshot().pinned_bytes, 0);
+    fixture.remove();
+}

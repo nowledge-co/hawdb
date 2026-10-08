@@ -51,6 +51,7 @@ STORAGE_MODELS = [
     "HawDBProjectionGenerationReplacement",
     "HawDBPropertyIndexPruning",
     "HawDBQueryMemoryLedger",
+    "HawDBRelationalIndexAttemptLifecycle",
     "HawDBRelationalIndexDemandRead",
     "HawDBRelationalIndexShadowPublication",
     "HawDBRelationalOverlayStreamingMerge",

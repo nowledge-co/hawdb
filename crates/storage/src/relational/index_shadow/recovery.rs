@@ -1323,6 +1323,7 @@ impl RelationalIndexRecoveryReader {
             }
             let encoded_len = usize::try_from(descriptor.encoded_len)
                 .map_err(|_| corrupt("recovery delta encoded length overflows usize"))?;
+            read_admission.preflight_charge(IndexReadCharge::Page(encoded_len))?;
             let total_bytes = report
                 .delta_bytes_read
                 .checked_add(encoded_len)
@@ -1521,6 +1522,7 @@ impl RelationalIndexRecoveryReader {
             }
             let encoded_len = usize::try_from(descriptor.encoded_len)
                 .map_err(|_| corrupt("recovery delta encoded length overflows usize"))?;
+            read_admission.preflight_charge(IndexReadCharge::Page(encoded_len))?;
             let total_bytes = report
                 .delta_bytes_read
                 .checked_add(encoded_len)
@@ -1715,6 +1717,7 @@ impl RelationalIndexRecoveryReader {
             }
             let encoded_len = usize::try_from(descriptor.encoded_len)
                 .map_err(|_| corrupt("recovery delta encoded length overflows usize"))?;
+            read_admission.preflight_charge(IndexReadCharge::Page(encoded_len))?;
             let total_bytes = report
                 .base
                 .bytes_read

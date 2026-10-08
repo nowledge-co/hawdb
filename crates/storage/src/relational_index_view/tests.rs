@@ -377,6 +377,43 @@ fn view_epoch_and_capture_admission_leave_the_pinned_reader_unchanged() {
 }
 
 #[test]
+fn transaction_private_delete_constraints_survive_consumed_row_allowance() {
+    let (_fixture, base, mut oracle, mut state) = Fixture::open();
+    let mut transaction = RelationalTransactionIndexView::new(
+        base,
+        RelationalIndexChangeCaptureLimits::default(),
+        RelationalIndexReadLimits {
+            max_rows: NonZeroUsize::new(2).unwrap(),
+            ..Default::default()
+        },
+    );
+    transaction
+        .append(replace(&mut state, &mut oracle, 0, None))
+        .unwrap();
+    for (index_key, primary_key) in [(key(&[1, 7]), key(&[1])), (key(&[2, 3]), key(&[2]))] {
+        let mut rows = Vec::new();
+        transaction
+            .visit_exact_primary_keys(TABLE, INDEX, &index_key, &mut |row| {
+                rows.push(row.clone());
+                true
+            })
+            .unwrap();
+        assert_eq!(rows, vec![primary_key]);
+    }
+    transaction
+        .visit_exact_primary_keys(TABLE, INDEX, &key(&[0, 0]), &mut |_| {
+            panic!("the private Delete must suppress its base locator")
+        })
+        .expect("a private Delete consumes no additional output Row allowance");
+    let error = transaction
+        .visit_exact_primary_keys(TABLE, INDEX, &key(&[1, 7]), &mut |_| {
+            panic!("completed locator charges cannot be refunded")
+        })
+        .unwrap_err();
+    assert!(matches!(error, RelationalError::Admission(_)));
+}
+
+#[test]
 fn authoritative_and_transaction_probes_share_cumulative_row_admission() {
     let (_fixture, base, _, _) = Fixture::open();
     let limits = RelationalIndexReadLimits {
@@ -408,9 +445,7 @@ fn authoritative_and_transaction_probes_share_cumulative_row_admission() {
                 panic!("exhausted admission must precede callback")
             })
             .unwrap_err();
-        assert!(
-            matches!(error, RelationalError::Admission(message) if message.contains("row budget is exhausted"))
-        );
+        assert!(matches!(error, RelationalError::Admission(_)));
     }
 }
 

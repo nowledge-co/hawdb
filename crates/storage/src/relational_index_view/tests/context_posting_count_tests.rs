@@ -251,3 +251,327 @@ fn metadata_cache_binds_equal_identity_to_the_actual_reader() {
         "switching sources drops the previous cache"
     );
 }
+
+#[test]
+fn cached_metadata_survives_exactly_exhausted_page_and_byte_allowances() {
+    for exhaust_pages in [true, false] {
+        let (fixture, _, _, _) = Fixture::open();
+        let base = uncached_view(&fixture);
+        let (_, raw) = base
+            .count_exact_postings(TABLE, INDEX, &key(&[0, 0]), Default::default())
+            .unwrap()
+            .unwrap();
+        let RelationalIndexReadViewBackendReport::Base(raw_base) = &raw.backend else {
+            panic!("base")
+        };
+        assert!(raw_base.pages_read > 0);
+        let limits = if exhaust_pages {
+            RelationalIndexReadLimits {
+                max_pages: NonZeroUsize::new(raw_base.pages_read).unwrap(),
+                ..Default::default()
+            }
+        } else {
+            RelationalIndexReadLimits {
+                max_bytes: NonZeroUsize::new(raw_base.bytes_read + raw.live_bytes_visited).unwrap(),
+                ..Default::default()
+            }
+        };
+        let cancellation = RuntimeCancellationToken::new();
+        let context = RelationalIndexReadContext::with_task(
+            limits,
+            RuntimeTaskContext::without_deadline(cancellation.clone()),
+        );
+        let target = RelationalIndexReadTarget::View(&base);
+        let (rows, first) = count(&context, target).unwrap();
+        assert_eq!(rows, 1);
+        assert!(
+            context.remaining_limits().is_err(),
+            "the actual read must exhaust its cap"
+        );
+        for _ in 0..2 {
+            let (rows, cached) = count(&context, target)
+                .expect("cached metadata requires no remaining page or byte allowance");
+            assert_eq!(rows, 1);
+            assert_eq!(cached.base_generation, first.base_generation);
+            assert_eq!(cached.visible_commit_epoch, first.visible_commit_epoch);
+            assert_eq!(cached.rows_visited, 0);
+            assert_eq!(cached.live_bytes_visited, 0);
+            let RelationalIndexReadViewBackendReport::Base(cached) = cached.backend else {
+                panic!("base")
+            };
+            assert_eq!(cached.pages_read, 0);
+            assert_eq!(cached.bytes_read, 0);
+            assert_eq!(cached.file_bytes_read, 0);
+        }
+        assert!(
+            matches!(
+                context.count_exact_postings(
+                    target,
+                    TABLE,
+                    INDEX,
+                    &key(&[0, 1]),
+                    Default::default()
+                ),
+                Some(Err(RelationalIndexShadowError::Admission(_)))
+            ),
+            "an uncached count must still admit actual work"
+        );
+        assert!(
+            context.remaining_limits().is_err(),
+            "no refund or budget reset"
+        );
+        assert!(!base.is_poisoned());
+        cancellation.cancel();
+        assert!(matches!(count(&context, target),
+            Err(RelationalIndexShadowError::Admission(message)) if message.contains("cancelled")));
+    }
+}
+
+#[test]
+fn transaction_cached_metadata_survives_each_exactly_exhausted_page_ledger() {
+    for exhaust_statement in [false, true] {
+        for exhaust_transaction in [false, true] {
+            let (fixture, _, _, _) = Fixture::open();
+            let base = uncached_view(&fixture);
+            let (_, raw) = base
+                .count_exact_postings(TABLE, INDEX, &key(&[0, 0]), Default::default())
+                .unwrap()
+                .unwrap();
+            let RelationalIndexReadViewBackendReport::Base(raw_base) = raw.backend else {
+                panic!("base")
+            };
+            let exact = RelationalIndexReadLimits {
+                max_pages: NonZeroUsize::new(raw_base.pages_read).unwrap(),
+                ..Default::default()
+            };
+            let transaction = RelationalTransactionIndexView::new(
+                base.clone(),
+                Default::default(),
+                if exhaust_transaction {
+                    exact
+                } else {
+                    Default::default()
+                },
+            );
+            let context = RelationalIndexReadContext::new(if exhaust_statement {
+                exact
+            } else {
+                Default::default()
+            });
+            let target = RelationalIndexReadTarget::Transaction(&transaction);
+            let (rows, first) = count(&context, target).unwrap();
+            assert_eq!(rows, 1);
+            let (rows, cached) = count(&context, target)
+                .expect("healthy exhausted ledgers permit zero-charge transaction cache reuse");
+            assert_eq!(rows, 1);
+            assert_eq!(cached.base_generation, first.base_generation);
+            assert_eq!(cached.visible_commit_epoch, first.visible_commit_epoch);
+            assert_eq!(cached.rows_visited, 0);
+            assert_eq!(cached.live_bytes_visited, 0);
+            let RelationalIndexReadViewBackendReport::Base(cached) = cached.backend else {
+                panic!("base")
+            };
+            assert_eq!(cached.pages_read, 0);
+            assert_eq!(cached.bytes_read, 0);
+            assert_eq!(cached.file_bytes_read, 0);
+            if exhaust_statement || exhaust_transaction {
+                assert!(matches!(
+                    context.count_exact_postings(
+                        target,
+                        TABLE,
+                        INDEX,
+                        &key(&[1, 7]),
+                        Default::default()
+                    ),
+                    Some(Err(RelationalIndexShadowError::Admission(_)))
+                ));
+            }
+            assert!(!base.is_poisoned());
+        }
+    }
+}
+
+#[test]
+fn fresh_metadata_counts_do_not_require_unused_row_allowance() {
+    for mode in ["view", "statement", "transaction", "both"] {
+        let (fixture, _, _, _) = Fixture::open();
+        let base = uncached_view(&fixture);
+        let row_limit = RelationalIndexReadLimits {
+            max_rows: NonZeroUsize::new(1).unwrap(),
+            ..Default::default()
+        };
+        let transaction = RelationalTransactionIndexView::new(
+            base.clone(),
+            Default::default(),
+            if matches!(mode, "transaction" | "both") {
+                row_limit
+            } else {
+                Default::default()
+            },
+        );
+        let context = RelationalIndexReadContext::new(if mode == "transaction" {
+            Default::default()
+        } else {
+            row_limit
+        });
+        let target = if mode == "view" {
+            RelationalIndexReadTarget::View(&base)
+        } else {
+            RelationalIndexReadTarget::Transaction(&transaction)
+        };
+        let mut initial_rows = Vec::new();
+        if mode == "transaction" {
+            transaction
+                .visit_prefix_entries(TABLE, INDEX, &key(&[0, 0]), Default::default(), |_, row| {
+                    initial_rows.push(row.clone());
+                    true
+                })
+                .unwrap();
+        } else {
+            context
+                .visit_prefix_entries(
+                    target,
+                    TABLE,
+                    INDEX,
+                    &key(&[0, 0]),
+                    Default::default(),
+                    |_, row| {
+                        initial_rows.push(row.clone());
+                        true
+                    },
+                )
+                .unwrap();
+        }
+        assert_eq!(initial_rows, vec![key(&[0])]);
+        let (rows, fresh) = context
+            .count_exact_postings(target, TABLE, INDEX, &key(&[1, 7]), Default::default())
+            .unwrap()
+            .expect("metadata traversal does not consume canonical or posting rows");
+        assert_eq!(rows, 1);
+        assert_eq!(fresh.rows_visited, 0);
+        assert_eq!(fresh.live_bytes_visited, 0);
+        let RelationalIndexReadViewBackendReport::Base(fresh) = fresh.backend else {
+            panic!("base")
+        };
+        assert!(
+            fresh.pages_read > 0,
+            "first count must perform real metadata work"
+        );
+        let mut callbacks = 0;
+        assert!(matches!(
+            context.visit_prefix_entries(
+                target,
+                TABLE,
+                INDEX,
+                &key(&[1, 7]),
+                Default::default(),
+                |_, _| {
+                    callbacks += 1;
+                    true
+                }
+            ),
+            Err(RelationalIndexShadowError::Admission(_))
+        ));
+        assert_eq!(callbacks, 0, "actual row admission remains exhausted");
+        assert!(!base.is_poisoned());
+    }
+}
+
+#[test]
+fn cached_metadata_never_reuses_a_ledger_closed_by_callback_unwind() {
+    for mode in ["view", "transaction", "both"] {
+        let (fixture, _, _, _) = Fixture::open();
+        let base = uncached_view(&fixture);
+        let transaction = RelationalTransactionIndexView::new(
+            base.clone(),
+            Default::default(),
+            Default::default(),
+        );
+        let context = RelationalIndexReadContext::new(Default::default());
+        let target = if mode == "view" {
+            RelationalIndexReadTarget::View(&base)
+        } else {
+            RelationalIndexReadTarget::Transaction(&transaction)
+        };
+        assert_eq!(count(&context, target).unwrap().0, 1);
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if mode == "transaction" {
+                transaction.visit_prefix_entries(
+                    TABLE,
+                    INDEX,
+                    &key(&[0, 0]),
+                    Default::default(),
+                    |_, _| {
+                        panic!("owned metadata health regression callback");
+                    },
+                )
+            } else {
+                context.visit_prefix_entries(
+                    target,
+                    TABLE,
+                    INDEX,
+                    &key(&[0, 0]),
+                    Default::default(),
+                    |_, _| {
+                        panic!("owned metadata health regression callback");
+                    },
+                )
+            }
+        }));
+        assert!(unwind.is_err());
+        assert!(matches!(count(&context, target),
+            Err(RelationalIndexShadowError::Admission(message)) if message.contains("ledger is closed")));
+        assert!(!base.is_poisoned());
+    }
+}
+
+#[test]
+fn paired_metadata_refusal_before_payload_preserves_both_healthy_owners() {
+    for mode in ["statement", "transaction", "both"] {
+        let (fixture, _, _, _) = Fixture::open();
+        let base = uncached_view(&fixture);
+        let measure = RelationalIndexReadContext::new(Default::default());
+        let (_, measured) = count(&measure, RelationalIndexReadTarget::View(&base)).unwrap();
+        let RelationalIndexReadViewBackendReport::Base(measured) = measured.backend else {
+            panic!("base")
+        };
+        assert!(measured.pages_read > 0);
+        let page_limit = RelationalIndexReadLimits {
+            max_pages: NonZeroUsize::new(measured.pages_read).unwrap(),
+            ..Default::default()
+        };
+        let transaction = RelationalTransactionIndexView::new(
+            base.clone(),
+            Default::default(),
+            if mode == "statement" {
+                Default::default()
+            } else {
+                page_limit
+            },
+        );
+        let context = RelationalIndexReadContext::new(if mode == "transaction" {
+            Default::default()
+        } else {
+            page_limit
+        });
+        let target = RelationalIndexReadTarget::Transaction(&transaction);
+        assert_eq!(count(&context, target).unwrap().0, 1);
+        corrupt_base_root(&fixture, &base);
+        assert!(matches!(
+            context.count_exact_postings(target, TABLE, INDEX, &key(&[1, 7]), Default::default(),),
+            Some(Err(RelationalIndexShadowError::Admission(_)))
+        ));
+        let (rows, cached) = count(&context, target)
+            .expect("a jointly refused first operation cannot close either healthy owner");
+        assert_eq!(rows, 1);
+        let RelationalIndexReadViewBackendReport::Base(cached) = cached.backend else {
+            panic!("base")
+        };
+        assert_eq!(cached.pages_read, 0);
+        assert_eq!(cached.file_bytes_read, 0);
+        assert!(
+            !base.is_poisoned(),
+            "preflight refusal does not inspect damaged payload"
+        );
+    }
+}
