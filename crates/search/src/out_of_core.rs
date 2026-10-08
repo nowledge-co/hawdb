@@ -4125,6 +4125,18 @@ mod tests {
         let data = vec![b'x'; 17 * 1024 * 1024 + 4096];
         fs::write(&path, &data).unwrap();
         let checksum = checksum_bytes(&data);
+        // Shared descriptor state and droppable test hooks are fixture owners,
+        // so initialize them before tracking this read's encoded buffer.
+        drop(
+            read_bound_artifact(
+                &path,
+                data.len() as u64,
+                checksum,
+                64 * 1024 * 1024,
+                "allocation fixture",
+            )
+            .unwrap(),
+        );
         let baseline = crate::test_allocation::live();
         let (bytes, peak) = crate::test_allocation::measure(|| {
             read_bound_artifact(
@@ -4144,6 +4156,7 @@ mod tests {
             data.len()
         );
         drop(bytes);
+        assert_eq!(crate::test_allocation::live(), baseline);
         fs::remove_dir_all(root).unwrap();
     }
 

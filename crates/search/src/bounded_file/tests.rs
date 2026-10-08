@@ -209,6 +209,12 @@ fn bound_length_mismatch_is_rejected_before_reserving_the_expected_bytes() {
     let directory = Directory::new();
     let path = directory.0.join("bound-artifact");
     fs::write(&path, b"original").unwrap();
+    // Initialize shared descriptor state and droppable test hooks before
+    // measuring the rejected read; their ownership outlasts this call.
+    assert_eq!(
+        read_bound_file(&path, 8, "bound fixture").unwrap(),
+        b"original"
+    );
     let baseline = crate::test_allocation::live();
     let (error, peak) = crate::test_allocation::measure(|| {
         read_bound_file(&path, u64::MAX, "bound fixture").unwrap_err()
@@ -216,6 +222,8 @@ fn bound_length_mismatch_is_rejected_before_reserving_the_expected_bytes() {
     assert!(error.to_string().contains("length or checksum mismatch"));
     assert!(peak.saturating_sub(baseline) < 64 * 1024);
     assert_eq!(fs::read(path).unwrap(), b"original");
+    drop(error);
+    assert_eq!(crate::test_allocation::live(), baseline);
 }
 
 struct SplitReader<'a> {

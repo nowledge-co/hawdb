@@ -697,5 +697,200 @@
     "Requested Rust allocation and native allocator statistics fall after buffer destruction while RSS remains high in the original diagnostic. This establishes the measured macOS resident-page behavior, not a universal allocator leak or a guarantee for other platforms.",
     "The missing lexical file in the first diagnostic clone failed closed. Its original failure log and corrected-clone receipts are preserved.",
     "The original full-fresh failure and intermediate337264640-byte failure remain failures. New full-fresh5GiB/K10,20GiB/K10 and20GiB/K100 tests with the original data shape,128 rounds and budgets remain required."
-  ]
+  ],
+  "allocation_fixture_owner_followup": {
+    "scope": "The two file-read allocator fixtures initialize shared descriptor state anddroppable testhooks beforemeasuring call-local buffers. Existing byte/capacity/error assertions remain; complete measured-payload release is additionally asserted. Production code is unchanged. Theoriginal full5-profile failures and independent freshprocess failure are retained.",
+    "initial_full_profiles": {
+      "state": "failed",
+      "worktree": "/private/tmp/hawdb-291-main-qualification",
+      "integrated_tree": "1761af3cc4f5e912d8c3863dfaa3e25b71e842c3",
+      "source_receipt": "/private/tmp/hawdb-291-exact-allocation-source.json",
+      "source_receipt_sha256": "77b7f93f9641eac716b4517274448df0c5b642c6708a2423cd103077e574bc0e",
+      "checks": [
+        {
+          "label": "search",
+          "command": [
+            "bazel",
+            "test",
+            "//crates/search:hawdb_search_tests",
+            "//crates/search:hawdb_search_acl_tests",
+            "//crates/search:hawdb_search_text_background_tests",
+            "//crates/search:hawdb_search_text_only_tests",
+            "//crates/search:hawdb_search_text_vector_tests",
+            "--test_output=errors"
+          ],
+          "state": "finished",
+          "log": "/private/tmp/hawdb-291-exact-allocation-search.log",
+          "pid": 49073,
+          "exit_code": 3,
+          "elapsed_seconds": 473.209179834,
+          "log_sha256": "35549a5933c5fa1e5496428ac687d4138114b8c233c162afcc1b7e66f7c4c175",
+          "test_harnesses": [
+            {
+              "target": "//crates/search:hawdb_search_tests",
+              "available": true,
+              "log": "/private/tmp/hawdb-291-exact-allocation-bazel-evidence/crates_search_hawdb_search_tests.log",
+              "sha256": "1d462800dc2b65b95fcdf303e6382acef41893f0dbf61170680674b4dca61b1f",
+              "harness_results": [
+                {
+                  "state": "ok",
+                  "passed": 787,
+                  "failed": 0,
+                  "ignored": 20
+                }
+              ]
+            },
+            {
+              "target": "//crates/search:hawdb_search_acl_tests",
+              "available": true,
+              "log": "/private/tmp/hawdb-291-exact-allocation-bazel-evidence/crates_search_hawdb_search_acl_tests.log",
+              "sha256": "72fd9949fd99b983275dee8759a951de65621506286ccb7b0b54c06ed68ee9b4",
+              "harness_results": [
+                {
+                  "state": "ok",
+                  "passed": 789,
+                  "failed": 0,
+                  "ignored": 20
+                }
+              ]
+            },
+            {
+              "target": "//crates/search:hawdb_search_text_background_tests",
+              "available": true,
+              "log": "/private/tmp/hawdb-291-exact-allocation-bazel-evidence/crates_search_hawdb_search_text_background_tests.log",
+              "sha256": "5ae0b7916ca211992e4ff0786c97caae0be5557c0e59303b05d069d663139503",
+              "harness_results": [
+                {
+                  "state": "FAILED",
+                  "passed": 724,
+                  "failed": 9,
+                  "ignored": 20
+                }
+              ]
+            },
+            {
+              "target": "//crates/search:hawdb_search_text_only_tests",
+              "available": true,
+              "log": "/private/tmp/hawdb-291-exact-allocation-bazel-evidence/crates_search_hawdb_search_text_only_tests.log",
+              "sha256": "0662939b3605566da1b4d0e4c56c1a420d1b115014bddf977dccf04a03bb8774",
+              "harness_results": [
+                {
+                  "state": "ok",
+                  "passed": 717,
+                  "failed": 0,
+                  "ignored": 20
+                }
+              ]
+            },
+            {
+              "target": "//crates/search:hawdb_search_text_vector_tests",
+              "available": true,
+              "log": "/private/tmp/hawdb-291-exact-allocation-bazel-evidence/crates_search_hawdb_search_text_vector_tests.log",
+              "sha256": "da83113ff1782c0d9dcbf1948d555571b44c8b5b3c89948fb952a8c8963ea30e",
+              "harness_results": [
+                {
+                  "state": "FAILED",
+                  "passed": 762,
+                  "failed": 9,
+                  "ignored": 20
+                }
+              ]
+            }
+          ],
+          "nonzero_selection_and_success": false
+        }
+      ]
+    },
+    "fresh_process_before": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hawdb-search",
+        "--lib",
+        "bounded_file::tests::bound_length_mismatch_is_rejected_before_reserving_the_expected_bytes",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "environment": {
+        "CARGO_TARGET_DIR": "/private/tmp/hawdb-291-main-qualification/target"
+      },
+      "parent": "dbef7cbeb4ede393af36809c4a3e0ec4c22771ed",
+      "scope": "Newtest fixture adds actualliveallocation release assertion without changing read production. Freshprocess must expose persistentStandalone initialization iftracked. Original broad failure log remainsretained.",
+      "patch_sha256": "85ea75f38e95d23653371c39dd52673707a41700d34583626c54431d32a1b154",
+      "exit_code": 101,
+      "elapsed_seconds": 36.459656333999995,
+      "log": "/private/tmp/hawdb-291-allocation-lifecycle-before.log",
+      "log_sha256": "be8a56bd440a82918e5722cf7a32df7e320faa8370e9c1bdc90927ec56199d15",
+      "test_file_sha256": "2e5fe5c624b7adc53f4ca1ab06f68bafb83aa6f3416d1c382983b8353c95e357"
+    },
+    "fresh_process_before_raw": "   Compiling hawdb-core v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/core)\n   Compiling hawdb-cgroup v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/cgroup)\n   Compiling hawdb-plan-core v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/plan-core)\n   Compiling hawdb-integrity v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/integrity)\n   Compiling hawdb-cascades v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/cascades)\n   Compiling hawdb-optimizer-vector v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/optimizer-vector)\n   Compiling hawdb-optimizer-predicate v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/optimizer-predicate)\n   Compiling hawdb-ddl v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/ddl)\n   Compiling hawdb-qos v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/qos)\n   Compiling hawdb-expression v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/expression)\n   Compiling hawdb-analytics v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/analytics)\n   Compiling hawdb-evidence v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/evidence)\n   Compiling hawdb-cypher v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/cypher)\n   Compiling hawdb-telemetry v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/telemetry)\n   Compiling hawdb-plan-cypher v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/plan-cypher)\n   Compiling hawdb-storage v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/storage)\n   Compiling hawdb-vector-projection v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/vector-projection)\n   Compiling hawdb-executor v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/executor)\n   Compiling hawdb-search v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/search)\n    Finished `test` profile [unoptimized] target(s) in 35.68s\n     Running unittests src/lib.rs (/private/tmp/hawdb-291-main-qualification/target/debug/deps/hawdb_search-b37d31b509b2a9a2)\n\nrunning 1 test\ntest bounded_file::tests::bound_length_mismatch_is_rejected_before_reserving_the_expected_bytes ... \nthread 'bounded_file::tests::bound_length_mismatch_is_rejected_before_reserving_the_expected_bytes' (32813739) panicked at crates/search/src/bounded_file/tests.rs:220:5:\nassertion `left == right` failed\n  left: 424\n right: 0\nstack backtrace:\n   0:        0x1019637d4 - <<std[7648081134ee26d8]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[318a34b566a36fe]::fmt::Display>::fmt\n   1:        0x101978c38 - core[318a34b566a36fe]::fmt::write\n   2:        0x101968cfc - <std[7648081134ee26d8]::sys::stdio::unix::Stderr as std[7648081134ee26d8]::io::Write>::write_fmt\n   3:        0x101946dd0 - std[7648081134ee26d8]::panicking::default_hook::{closure#0}\n   4:        0x10195ba28 - std[7648081134ee26d8]::panicking::default_hook\n   5:        0x10195bd50 - std[7648081134ee26d8]::panicking::panic_with_hook\n   6:        0x101946e64 - std[7648081134ee26d8]::panicking::panic_handler::{closure#0}\n   7:        0x10193c348 - std[7648081134ee26d8]::sys::backtrace::__rust_end_short_backtrace::<std[7648081134ee26d8]::panicking::panic_handler::{closure#0}, !>\n   8:        0x101947654 - __rustc[6ef78fba13ac776c]::rust_begin_unwind\n   9:        0x101996bc4 - core[318a34b566a36fe]::panicking::panic_fmt\n  10:        0x101996af8 - core[318a34b566a36fe]::panicking::assert_failed_inner\n  11:        0x101996840 - core[318a34b566a36fe]::panicking::assert_failed::<usize, usize>\n  12:        0x100ad1408 - hawdb_search[3ac58ef9cc396688]::bounded_file::tests::bound_length_mismatch_is_rejected_before_reserving_the_expected_bytes\n  13:        0x100a5eb00 - hawdb_search[3ac58ef9cc396688]::bounded_file::tests::bound_length_mismatch_is_rejected_before_reserving_the_expected_bytes::{closure#0}\n  14:        0x100ec0a74 - <hawdb_search[3ac58ef9cc396688]::bounded_file::tests::bound_length_mismatch_is_rejected_before_reserving_the_expected_bytes::{closure#0} as core[318a34b566a36fe]::ops::function::FnOnce<()>>::call_once\n  15:        0x10136083c - test[2c59eae1d55b8e96]::__rust_begin_short_backtrace::<core[318a34b566a36fe]::result::Result<(), alloc[fd24334a81e9fcd2]::string::String>, fn() -> core[318a34b566a36fe]::result::Result<(), alloc[fd24334a81e9fcd2]::string::String>>\n  16:        0x10136bc84 - test[2c59eae1d55b8e96]::run_test::{closure#0}\n  17:        0x101366b0c - std[7648081134ee26d8]::sys::backtrace::__rust_begin_short_backtrace::<test[2c59eae1d55b8e96]::run_test::{closure#1}, ()>\n  18:        0x10136e1dc - <std[7648081134ee26d8]::thread::lifecycle::spawn_unchecked<test[2c59eae1d55b8e96]::run_test::{closure#1}, ()>::{closure#1} as core[318a34b566a36fe]::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}\n  19:        0x101962a88 - <std[7648081134ee26d8]::sys::thread::unix::Thread>::new::thread_start\n  20:        0x18cf89d00 - __pthread_exit\nFAILED\n\nfailures:\n\nfailures:\n    bounded_file::tests::bound_length_mismatch_is_rejected_before_reserving_the_expected_bytes\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 806 filtered out; finished in 0.05s\n\nerror: test failed, to rerun pass `-p hawdb-search --lib`\n",
+    "corrected_isolated_tests": {
+      "rows": [
+        {
+          "label": "mismatch",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "hawdb-search",
+            "--lib",
+            "bounded_file::tests::bound_length_mismatch_is_rejected_before_reserving_the_expected_bytes",
+            "--",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1"
+          ],
+          "environment": {
+            "CARGO_TARGET_DIR": "/private/tmp/hawdb-291-main-qualification/target"
+          },
+          "exit_code": 0,
+          "elapsed_seconds": 7.1964595419999995,
+          "log": "/private/tmp/hawdb-291-allocation-lifecycle-after-mismatch.log",
+          "log_sha256": "f062e508d9d56f116ed455b555c6b7a4e6640c5efad0a4d723803ffd6cbf7473"
+        },
+        {
+          "label": "artifact",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "hawdb-search",
+            "--lib",
+            "out_of_core::tests::bound_artifact_read_retains_one_encoded_buffer",
+            "--",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1"
+          ],
+          "environment": {
+            "CARGO_TARGET_DIR": "/private/tmp/hawdb-291-main-qualification/target"
+          },
+          "exit_code": 0,
+          "elapsed_seconds": 0.1973790829999995,
+          "log": "/private/tmp/hawdb-291-allocation-lifecycle-after-artifact.log",
+          "log_sha256": "cdd36f23b6c8d01753d156d943dfa678db8d7bd0ccaf6288ec7b96050e954ecd"
+        }
+      ],
+      "source_patch_sha256": "b665a667cab54b42adc5c0c264a0365ae08769319af2825cf73236fd1f489c73"
+    },
+    "production_binding": {
+      "parent": "dbef7cbeb4ede393af36809c4a3e0ec4c22771ed",
+      "runtime_worktree": "/private/tmp/hawdb-291-main-qualification",
+      "test_fixture_worktree": "/private/tmp/hawdb-291-allocation-test-lifecycle",
+      "changed_files": [
+        "crates/search/src/bounded_file/tests.rs",
+        "crates/search/src/out_of_core.rs"
+      ],
+      "out_of_core_production_prefix_sha256": "682ce38d058267a16859c015f2356bbcc2b43e7d3cafadf2782288ea3cb033fb",
+      "out_of_core_production_prefix_identical": true,
+      "scope": "Only standalone cfg(test) fixtures change. out_of_core.rs differences occur after its sole #[cfg(test)] mod tests marker, whose module extends to EOF. All production prefix bytes remain identical; bounded_file/tests.rs is included only undercfg(test). New measurements initialize process/TLS fixture owners beforetracking operation payloads andprove completepayload release. Thefullscale source remainscleanandunchanged;this isnot a replacementbenchmark."
+    },
+    "validation_boundary": "Complete five-profile/fuzz requalification is pending on these test-only fixture corrections. Alloriginal runtime/full-scale failures remain failures untilindependently corrected qualification completes."
+  }
 }
