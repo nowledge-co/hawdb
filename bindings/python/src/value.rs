@@ -15,9 +15,9 @@
 use std::collections::BTreeMap;
 
 use hawdb::{Uuid, Value};
-use pyo3::exceptions::PyTypeError;
+use pyo3::exceptions::{PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
+use pyo3::types::{PyBytes, PyDict, PyFloat, PyList, PyTuple};
 use pyo3::IntoPyObjectExt;
 
 /// Converts a HawDB [`Value`] into an owned Python object.
@@ -54,8 +54,12 @@ pub fn value_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
 /// Converts a Python object into a HawDB [`Value`] for query parameters.
 ///
 /// `bool` is checked before `int` because Python's `bool` is a subclass of
-/// `int`. `uuid.UUID` is accepted via its string form; everything outside the
-/// listed types raises `TypeError` rather than guessing.
+/// `int`. Integers, including objects implementing `__index__`, must fit in
+/// `i64` or raise `OverflowError`. Only `float` instances become floats:
+/// `__float__` alone may round, so `Decimal` or `Fraction` raise `TypeError`
+/// instead of being stored inexactly. `uuid.UUID` is accepted via its string
+/// form; everything outside the listed types raises `TypeError` rather than
+/// guessing.
 pub fn py_to_value(object: &Bound<'_, PyAny>) -> PyResult<Value> {
     if object.is_none() {
         return Ok(Value::Null);
@@ -63,11 +67,17 @@ pub fn py_to_value(object: &Bound<'_, PyAny>) -> PyResult<Value> {
     if let Ok(item) = object.extract::<bool>() {
         return Ok(Value::Bool(item));
     }
-    if let Ok(item) = object.extract::<i64>() {
-        return Ok(Value::Int(item));
+    match object.extract::<i64>() {
+        Ok(item) => return Ok(Value::Int(item)),
+        Err(error) if error.is_instance_of::<PyOverflowError>(object.py()) => {
+            return Err(PyOverflowError::new_err(
+                "integer parameter is outside the signed 64-bit range",
+            ));
+        }
+        Err(_) => {}
     }
-    if let Ok(item) = object.extract::<f64>() {
-        return Ok(Value::Float(item));
+    if let Ok(item) = object.cast::<PyFloat>() {
+        return Ok(Value::Float(item.value()));
     }
     if let Ok(item) = object.cast::<PyBytes>() {
         return Ok(Value::Binary(item.as_bytes().to_vec()));

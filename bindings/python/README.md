@@ -67,6 +67,14 @@ db.execute("CREATE (:Memory {id: $id})", {"id": 1})
 db.close()
 ```
 
+Parameters accept `None`, `bool`, `int`, `float`, `str`, `bytes`,
+`uuid.UUID`, lists or tuples, and string-keyed dicts, nested freely. They are
+stored exactly or rejected before the statement runs: an integer outside the
+signed 64-bit range raises `OverflowError`, and any other type, including
+`Decimal`, `Fraction`, or a NumPy `float32` scalar, raises `TypeError`.
+Convert such values explicitly, for example with `float(x)` or
+`array.tolist()`.
+
 Errors raise `hawdb.exceptions` subclasses (`ParseError`, `SemanticError`,
 `StorageError`, `ExecutionError`, `ConflictError`, ...), mapped from
 `HawDBError` kinds.
