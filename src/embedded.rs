@@ -18,8 +18,9 @@ use crate::nowledge_mem::{
 };
 use crate::store::DurabilityPolicy;
 use crate::{
-    AdaptiveVectorBackendPolicy, Database, DatabaseConfig, HawDBError, QueryOutput,
-    QueryStreamOptions, Result, RuntimeCapabilities, SearchIndex, SearchRangeReadConfig, Value,
+    AdaptiveVectorBackendPolicy, Database, DatabaseConfig, DatabaseReadTransaction, HawDBError,
+    QueryOutput, QueryStreamOptions, Result, RuntimeCapabilities, SearchIndex,
+    SearchRangeReadConfig, Value,
 };
 use hawdb_core::{RuntimeCancellationReason, RuntimeTaskContext};
 use hawdb_qos::{
@@ -87,6 +88,7 @@ pub struct HawDBEmbedded {
     deployment_profile: EmbeddedDeploymentProfile,
     runtime_resources: EmbeddedRuntimeResources,
     runtime_governor: RuntimeGovernor,
+    transaction: Option<EmbeddedTransaction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -291,6 +293,7 @@ impl HawDBEmbedded {
             deployment_profile: options.deployment_profile,
             runtime_resources: setup.runtime_resources,
             runtime_governor: setup.runtime_governor,
+            transaction: None,
         })
     }
 
@@ -325,6 +328,7 @@ impl HawDBEmbedded {
             deployment_profile,
             runtime_resources: setup.runtime_resources,
             runtime_governor: setup.runtime_governor,
+            transaction: None,
         }
     }
 
@@ -417,6 +421,11 @@ impl HawDBEmbedded {
         parameters: &BTreeMap<String, Value>,
         task_context: &RuntimeTaskContext,
     ) -> std::result::Result<QueryOutput, EmbeddedQueryError> {
+        if self.transaction.is_some() {
+            return Err(EmbeddedQueryError::Database(HawDBError::Execution(
+                "a user transaction is open on this database".into(),
+            )));
+        }
         self.check_admitted_query_context(task_context)?;
         let planning_request = crate::api::runtime_planning_request(
             cypher_text.len(),
@@ -541,6 +550,101 @@ impl HawDBEmbedded {
         self.database
     }
 
+    /// Begins the engine's single user transaction on this handle, using the
+    /// same transaction state as [`Database::begin_transaction`]. While the
+    /// transaction is open, autocommit `query_*_admitted` calls fail and a
+    /// second `begin_transaction` returns an error. `commit_transaction`
+    /// publishes all staged mutations as one durable commit; a failed commit
+    /// abandons the workspace like `DatabaseTransaction::commit`.
+    /// `rollback_transaction` discards it. Statements run through
+    /// `transaction_query*` and see their own writes.
+    pub fn begin_transaction(&mut self) -> Result<()> {
+        if self.transaction.is_some() {
+            return Err(HawDBError::Execution(
+                "a user transaction is already open on this database".into(),
+            ));
+        }
+        let (runtime, state) = self.database.transaction_parts()?;
+        self.transaction = Some(EmbeddedTransaction { runtime, state });
+        Ok(())
+    }
+
+    /// Whether a user transaction is currently open on this handle.
+    pub fn transaction_active(&self) -> bool {
+        self.transaction.is_some()
+    }
+
+    /// Runs one Cypher statement inside the open user transaction.
+    pub fn transaction_query_with_params(
+        &mut self,
+        cypher_text: &str,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<QueryOutput> {
+        let transaction = self.transaction_mut()?;
+        crate::api::execute_database_transaction_query(
+            &transaction.runtime,
+            &mut transaction.state,
+            cypher_text,
+            parameters,
+            None,
+        )
+    }
+
+    /// Runs one SQL statement inside the open user transaction.
+    pub fn transaction_query_sql_with_params(
+        &mut self,
+        sql_text: &str,
+        parameters: &[Value],
+    ) -> Result<QueryOutput> {
+        let transaction = self.transaction_mut()?;
+        crate::api::execute_database_transaction_sql(
+            &transaction.runtime,
+            &mut transaction.state,
+            sql_text,
+            parameters,
+            false,
+            false,
+            None,
+        )
+        .map(|result| result.output)
+    }
+
+    /// Publishes the open transaction as one durable commit.
+    pub fn commit_transaction(&mut self) -> Result<QueryOutput> {
+        let mut transaction = self.take_transaction()?;
+        crate::api::commit_database_transaction_state(
+            &mut self.database,
+            &mut transaction.state,
+            false,
+        )
+        .map(|result| result.output)
+    }
+
+    /// Abandons the open transaction without committing.
+    pub fn rollback_transaction(&mut self) -> Result<()> {
+        self.take_transaction()?.state.rollback();
+        Ok(())
+    }
+
+    /// Pins the published branch state for a stable read scope, equivalent to
+    /// [`Database::begin_read_transaction`]. Statements that write fail with
+    /// the engine's read-transaction error.
+    pub fn begin_read_transaction(&self) -> Result<DatabaseReadTransaction> {
+        self.database.begin_read_transaction()
+    }
+
+    fn transaction_mut(&mut self) -> Result<&mut EmbeddedTransaction> {
+        self.transaction.as_mut().ok_or_else(|| {
+            HawDBError::Execution("no user transaction is open on this database".into())
+        })
+    }
+
+    fn take_transaction(&mut self) -> Result<EmbeddedTransaction> {
+        self.transaction.take().ok_or_else(|| {
+            HawDBError::Execution("no user transaction is open on this database".into())
+        })
+    }
+
     pub fn write_slow_query_log_jsonl(&self, path: impl AsRef<Path>) -> Result<()> {
         self.database.write_slow_query_log_jsonl(path)
     }
@@ -561,6 +665,16 @@ impl HawDBEmbedded {
             exit_code,
         })
     }
+}
+
+/// Owned runtime and statement state of the engine's single user
+/// transaction, parked inside [`HawDBEmbedded`] between `begin_transaction`
+/// and `commit_transaction`/`rollback_transaction`. Statement execution does
+/// not borrow the database; only commit touches it.
+#[derive(Debug)]
+struct EmbeddedTransaction {
+    runtime: crate::api::DatabaseTransactionRuntime,
+    state: crate::api::DatabaseTransactionState,
 }
 
 fn default_database_config(profile: EmbeddedDeploymentProfile) -> DatabaseConfig {
@@ -774,6 +888,50 @@ mod tests {
             error.to_string().contains("max_read_result_rows"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn transaction_commits_own_writes_and_rolls_back() {
+        let mut engine = HawDBEmbedded::open_in_memory();
+        engine.begin_transaction().unwrap();
+        assert!(engine.begin_transaction().is_err());
+        engine
+            .transaction_query_with_params("CREATE (:Item {id: 1})", &BTreeMap::new())
+            .unwrap();
+        let own_write = engine
+            .transaction_query_with_params("MATCH (i:Item) RETURN i.id AS id", &BTreeMap::new())
+            .unwrap();
+        assert_eq!(own_write.rows.len(), 1);
+        assert!(engine
+            .query_admitted("MATCH (i:Item) RETURN i.id AS id")
+            .is_err());
+
+        engine.commit_transaction().unwrap();
+        let published = engine
+            .query_admitted("MATCH (i:Item) RETURN i.id AS id")
+            .unwrap();
+        assert_eq!(published.rows.len(), 1);
+
+        engine.begin_transaction().unwrap();
+        engine
+            .transaction_query_with_params("CREATE (:Item {id: 2})", &BTreeMap::new())
+            .unwrap();
+        engine.rollback_transaction().unwrap();
+        let published = engine
+            .query_admitted("MATCH (i:Item) RETURN i.id AS id")
+            .unwrap();
+        assert_eq!(published.rows.len(), 1);
+    }
+
+    #[test]
+    fn read_transaction_rejects_writes() {
+        let mut engine = HawDBEmbedded::open_in_memory();
+        engine.query_admitted("CREATE (:Item {id: 1})").unwrap();
+
+        let mut read = engine.begin_read_transaction().unwrap();
+        let output = read.query("MATCH (i:Item) RETURN i.id AS id").unwrap();
+        assert_eq!(output.rows.len(), 1);
+        assert!(read.query("CREATE (:Item {id: 2})").is_err());
     }
 
     #[test]

@@ -17,6 +17,8 @@
 from hawdb._hawdb import (
     Database,
     QueryResult,
+    ReadTransaction,
+    Transaction,
     __version__,
     capabilities,
     open,
@@ -38,6 +40,8 @@ def __getattr__(name):
 __all__ = [
     "Database",
     "QueryResult",
+    "ReadTransaction",
+    "Transaction",
     "capabilities",
     "connect",
     "exceptions",
