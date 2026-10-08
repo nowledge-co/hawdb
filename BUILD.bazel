@@ -257,7 +257,7 @@ sh_test(
     ],
 )
 
-_HAWDB_ROW_PAGE_COMPACTION_TEST = "store_facade_tests::row_page_compaction::row_page_compaction_converges_disk_bytes_and_preserves_pinned_readers"
+_HAWDB_ROW_PAGE_COMPACTION_TEST_PREFIX = "store_facade_tests::row_page_compaction::row_page_compaction_converges_disk_bytes_and_preserves_pinned_readers"
 
 _HAWDB_STORAGE_CRASH_MATRIX_TEST = "api::tests::storage_recovery::subprocess_crash_matrix_recovers_whole_batches_and_artifact_generations"
 
@@ -382,7 +382,7 @@ rust_test(
     name = "hawdb_unit_row_page_compaction_admission_tests",
     size = "large",
     timeout = "long",
-    args = ["--skip", _HAWDB_ROW_PAGE_COMPACTION_TEST],
+    args = ["--skip", _HAWDB_ROW_PAGE_COMPACTION_TEST_PREFIX],
     crate_root = "tests/row_page_compaction.rs",
     srcs = _HAWDB_ROW_PAGE_COMPACTION_SRCS,
     crate_features = _HAWDB_DEFAULT_FEATURES,
@@ -390,21 +390,33 @@ rust_test(
     deps = _HAWDB_ROW_PAGE_COMPACTION_DEPS,
 )
 
-# Keep the full compaction/reopen workload under an independent deadline.
-rust_test(
+# Both independent residency scenarios retain the complete physical-layout
+# oracle. Separate targets let Bazel schedule them without serializing modes.
+[
+    rust_test(
+        name = "hawdb_unit_row_page_compaction_%s_tests" % mode,
+        size = "large",
+        # Retain issue #889's finite headroom for each complete scenario.
+        timeout = "eternal",
+        args = [
+            "%s_%s" % (_HAWDB_ROW_PAGE_COMPACTION_TEST_PREFIX, mode),
+            "--exact",
+        ],
+        crate_root = "tests/row_page_compaction.rs",
+        srcs = _HAWDB_ROW_PAGE_COMPACTION_SRCS,
+        crate_features = _HAWDB_DEFAULT_FEATURES,
+        edition = "2024",
+        deps = _HAWDB_ROW_PAGE_COMPACTION_DEPS,
+    )
+    for mode in ["materialized", "out_of_core"]
+]
+
+test_suite(
     name = "hawdb_unit_row_page_compaction_tests",
-    size = "large",
-    # Finite headroom before full-case timing/decomposition; see issue #889.
-    timeout = "eternal",
-    args = [
-        _HAWDB_ROW_PAGE_COMPACTION_TEST,
-        "--exact",
+    tests = [
+        ":hawdb_unit_row_page_compaction_materialized_tests",
+        ":hawdb_unit_row_page_compaction_out_of_core_tests",
     ],
-    crate_root = "tests/row_page_compaction.rs",
-    srcs = _HAWDB_ROW_PAGE_COMPACTION_SRCS,
-    crate_features = _HAWDB_DEFAULT_FEATURES,
-    edition = "2024",
-    deps = _HAWDB_ROW_PAGE_COMPACTION_DEPS,
 )
 
 rust_test(
