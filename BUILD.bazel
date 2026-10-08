@@ -333,7 +333,9 @@ rust_test(
     sh_test(
         name = "hawdb_unit_%s_tests" % partition,
         size = "large",
-        timeout = "long",
+        # Finite headroom after two 900s deadline expirations; other partitions
+        # retain their limit. Measured decomposition: https://github.com/nowledge-co/hawdb/issues/972.
+        timeout = "eternal" if partition == "concurrent" else "long",
         srcs = ["scripts/run-root-unit-partition.sh"],
         args = [
             "$(rootpath :hawdb_unit_test_binary)",
