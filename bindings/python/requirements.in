@@ -2,3 +2,5 @@
 pytest==9.1.1
 # pytest's Windows dependency, included so the same lock works on every host.
 colorama==0.4.6
+# The optional `hawdb[pydantic]` extra, for its own test target.
+pydantic==2.14.0

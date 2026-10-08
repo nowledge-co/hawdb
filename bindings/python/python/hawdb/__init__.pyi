@@ -1,4 +1,5 @@
 from hawdb._hawdb import Database, QueryResult, exceptions, open
+from hawdb import pydantic as pydantic
 
 connect = open
 

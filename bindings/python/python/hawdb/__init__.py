@@ -19,6 +19,16 @@ from hawdb._hawdb import exceptions
 
 connect = open
 
+
+def __getattr__(name):
+    # `hawdb.pydantic` needs the optional extra, so it loads on first use.
+    if name == "pydantic":
+        import importlib
+
+        return importlib.import_module("hawdb.pydantic")
+    raise AttributeError(f"module 'hawdb' has no attribute {name!r}")
+
+
 __all__ = [
     "Database",
     "QueryResult",
