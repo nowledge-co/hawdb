@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use crate::background::{CheckpointWorkContext, CheckpointWorkError};
+
+mod checkpoint_point;
 use crate::file_io::{self as fs, File};
 use crate::graph_descriptor_tree::demand::{
     GraphDescriptorTreeDemandReader, GraphDescriptorTreeReadLimits, GraphDescriptorTreeReadReport,

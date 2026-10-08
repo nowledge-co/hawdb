@@ -24,6 +24,14 @@ mod checkpoint_delta_tests;
 #[path = "graph_recovery/checkpoint_delta_related_tests.rs"]
 mod checkpoint_delta_related_tests;
 
+#[cfg(test)]
+#[path = "graph_recovery/checkpoint_native_read_tests.rs"]
+mod checkpoint_native_read_tests;
+
+#[cfg(test)]
+#[path = "graph_recovery/checkpoint_native_read_related_tests.rs"]
+mod checkpoint_native_read_related_tests;
+
 impl GraphStore {
     pub fn import_graph_snapshot_rows(
         &mut self,

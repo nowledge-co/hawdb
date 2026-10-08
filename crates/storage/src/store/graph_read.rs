@@ -105,6 +105,58 @@ impl GraphStore {
         ))
     }
 
+    pub(in crate::store) fn checkpoint_node_owned(
+        &self,
+        id: NodeId,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Option<NodeRecord>> {
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        if self.node_tombstones.contains(&id) {
+            return Ok(None);
+        }
+        if let Some(node) = self.nodes.get(&id) {
+            return Ok(Some(node.clone()));
+        }
+        self.canonical_base
+            .as_ref()
+            .map(|reader| {
+                reader
+                    .checkpoint_node(id, work)
+                    .map_err(|error| match error {
+                        CanonicalSegmentError::Work(error) => HawDBError::from_storage_error(error),
+                        error => canonical_segment_error(error),
+                    })
+            })
+            .transpose()
+            .map(Option::flatten)
+    }
+
+    pub(in crate::store) fn checkpoint_relationship_owned(
+        &self,
+        id: RelId,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<Option<RelRecord>> {
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        if self.relationship_tombstones.contains(&id) {
+            return Ok(None);
+        }
+        if let Some(relationship) = self.relationships.get(&id) {
+            return Ok(Some(relationship.clone()));
+        }
+        self.canonical_base
+            .as_ref()
+            .map(|reader| {
+                reader
+                    .checkpoint_relationship(id, work)
+                    .map_err(|error| match error {
+                        CanonicalSegmentError::Work(error) => HawDBError::from_storage_error(error),
+                        error => canonical_segment_error(error),
+                    })
+            })
+            .transpose()
+            .map(Option::flatten)
+    }
+
     pub fn node_owned(&self, id: NodeId) -> Result<Option<NodeRecord>> {
         if self.node_tombstones.contains(&id) {
             return Ok(None);

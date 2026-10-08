@@ -81,7 +81,7 @@ impl GraphStore {
                     work.checkpoint().map_err(HawDBError::from_storage_error)?;
                     if touched_nodes.insert(*id, work)?
                         && !self.nodes.contains_key(id)
-                        && let Some(node) = self.node_owned(*id)?
+                        && let Some(node) = self.checkpoint_node_owned(*id, work)?
                     {
                         bytes = bytes.saturating_add(estimate_node(&node, work)?);
                     }
@@ -95,7 +95,7 @@ impl GraphStore {
                     work.checkpoint().map_err(HawDBError::from_storage_error)?;
                     if touched_nodes.insert(*id, work)?
                         && !self.nodes.contains_key(id)
-                        && let Some(node) = self.node_owned(*id)?
+                        && let Some(node) = self.checkpoint_node_owned(*id, work)?
                     {
                         bytes = bytes
                             .saturating_add(estimate_node(&node, work)?)
@@ -122,7 +122,7 @@ impl GraphStore {
                     work.checkpoint().map_err(HawDBError::from_storage_error)?;
                     if touched_relationships.insert(*id, work)?
                         && !self.relationships.contains_key(id)
-                        && let Some(relationship) = self.relationship_owned(*id)?
+                        && let Some(relationship) = self.checkpoint_relationship_owned(*id, work)?
                     {
                         bytes = bytes
                             .saturating_add(estimate_relationship(&relationship, work)?)
@@ -138,7 +138,7 @@ impl GraphStore {
                     work.checkpoint().map_err(HawDBError::from_storage_error)?;
                     if touched_relationships.insert(*id, work)?
                         && !self.relationships.contains_key(id)
-                        && let Some(relationship) = self.relationship_owned(*id)?
+                        && let Some(relationship) = self.checkpoint_relationship_owned(*id, work)?
                     {
                         bytes = bytes
                             .saturating_add(estimate_relationship(&relationship, work)?)

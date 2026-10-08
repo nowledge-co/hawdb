@@ -206,7 +206,7 @@ fn checkpoint_units_wal_replay_delta_estimation_cancels_every_unit_and_retries_c
         .unwrap();
     let governor = governor();
     let permit = governor
-        .try_admit(RuntimeWorkRequest::background_maintenance(CEILING))
+        .try_admit(RuntimeWorkRequest::background_maintenance(CEILING).with_io_wave_slots(1))
         .unwrap();
     let scheduler = scheduler();
     let task = permit.bind_task_context(RuntimeTaskContext::default());
@@ -293,7 +293,7 @@ fn checkpoint_units_wal_replay_delta_estimation_denies_tree_memory_before_mutati
         .unwrap();
     let governor = governor();
     let permit = governor
-        .try_admit(RuntimeWorkRequest::background_maintenance(CEILING))
+        .try_admit(RuntimeWorkRequest::background_maintenance(CEILING).with_io_wave_slots(1))
         .unwrap();
     let task = permit.bind_task_context(RuntimeTaskContext::default());
     let idle = available(&task);
@@ -338,7 +338,7 @@ fn checkpoint_units_wal_replay_delta_estimation_denies_local_work_before_mutatio
         .unwrap();
     let governor = governor();
     let permit = governor
-        .try_admit(RuntimeWorkRequest::background_maintenance(CEILING))
+        .try_admit(RuntimeWorkRequest::background_maintenance(CEILING).with_io_wave_slots(1))
         .unwrap();
     let scheduler = scheduler();
     let held = scheduler
@@ -376,7 +376,7 @@ fn checkpoint_units_wal_replay_delta_estimation_preserves_exact_ordinary_limit_d
     let (directory, source, catalog) = source();
     let governor = governor();
     let permit = governor
-        .try_admit(RuntimeWorkRequest::background_maintenance(CEILING))
+        .try_admit(RuntimeWorkRequest::background_maintenance(CEILING).with_io_wave_slots(1))
         .unwrap();
     let task = permit.bind_task_context(RuntimeTaskContext::default());
     let idle = available(&task);
