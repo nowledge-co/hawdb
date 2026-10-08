@@ -15,16 +15,20 @@
 //! Shared bounded source and budgets for verified-body fixtures.
 
 use crate::{SearchDocumentHeader, SearchOutOfCoreGenerationBuildOptions};
+#[cfg(feature = "full-text-search")]
 use hawdb_core::{RuntimeMemoryReservation, RuntimeTaskContext};
 use std::collections::BTreeMap;
+#[cfg(feature = "full-text-search")]
 use std::io::{self, Read};
 use std::num::{NonZeroU64, NonZeroUsize};
 
+#[cfg(feature = "full-text-search")]
 pub(crate) struct Generated {
     pub(crate) remaining: u64,
     pub(crate) position: usize,
 }
 
+#[cfg(feature = "full-text-search")]
 impl Read for Generated {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         // Many complete repeated terms, separated by padding. The producer and
@@ -49,6 +53,7 @@ pub(crate) fn header() -> SearchDocumentHeader {
     }
 }
 
+#[cfg(feature = "full-text-search")]
 pub(crate) fn task(bytes: u64) -> RuntimeTaskContext {
     RuntimeTaskContext::default().with_memory_reservation(RuntimeMemoryReservation::new(bytes, 0))
 }

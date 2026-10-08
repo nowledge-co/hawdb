@@ -18,7 +18,9 @@ use hawdb_storage::file_io as fs;
 
 #[path = "fixtures.rs"]
 mod fixtures;
-use fixtures::{header, options, task, Generated};
+use fixtures::{header, options};
+#[cfg(feature = "full-text-search")]
+use fixtures::{task, Generated};
 
 #[cfg(feature = "full-text-search")]
 #[test]
