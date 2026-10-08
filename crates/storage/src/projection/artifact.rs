@@ -24,6 +24,9 @@ use crate::NodeId;
 use hawdb_core::{HawDBError, Result};
 use std::collections::BTreeMap;
 
+mod encoded;
+pub use encoded::CheckpointProjectedGraphText;
+
 const PROJECTED_GRAPH_ARTIFACT_VERSION: u64 = 2;
 
 /// Consume one projection at a time without materializing another graph map.
@@ -45,61 +48,52 @@ pub fn encode_projected_graph_artifacts<'a>(
         &CheckpointWorkContext::default(),
     )
     .expect("default projected graph encoding context cannot stop")
+    .into_unadmitted()
 }
 
 /// Encode prebuilt projection arrays in bounded numeric chunks. Constructing
 /// the projection is the producer's responsibility, not one codec work unit.
 #[doc(hidden)]
-pub fn encode_projected_graph_artifacts_with_work_context<'a>(
+pub fn encode_projected_graph_artifacts_with_work_context<
+    'a,
+    D: std::borrow::Borrow<ProjectedGraphArtifactData>,
+>(
     projection_epoch: u64,
     commit_epoch: u64,
-    artifacts: impl IntoIterator<
-        Item = Result<(
-            &'a str,
-            &'a ProjectedGraphDefinition,
-            ProjectedGraphArtifactData,
-        )>,
-    >,
+    artifacts: impl IntoIterator<Item = Result<(&'a str, &'a ProjectedGraphDefinition, D)>>,
     work: &CheckpointWorkContext,
-) -> Result<String> {
+) -> Result<CheckpointProjectedGraphText> {
     work.checkpoint().map_err(HawDBError::from_storage_error)?;
-    let mut body = String::new();
-    body.push_str("HAWDB_PROJECTED_GRAPHS_V1\n");
-    body.push_str(&format!(
-        "artifact_version\t{PROJECTED_GRAPH_ARTIFACT_VERSION}\n"
-    ));
-    body.push_str(&format!("projection_epoch\t{projection_epoch}\n"));
-    body.push_str(&format!("commit_epoch\t{commit_epoch}\n"));
+    let mut body = CheckpointProjectedGraphText::new();
+    body.append("HAWDB_PROJECTED_GRAPHS_V1\n", work)?;
+    body.fields(
+        format_args!("artifact_version\t{PROJECTED_GRAPH_ARTIFACT_VERSION}\n"),
+        work,
+    )?;
+    body.fields(format_args!("projection_epoch\t{projection_epoch}\n"), work)?;
+    body.fields(format_args!("commit_epoch\t{commit_epoch}\n"), work)?;
     for artifact in artifacts {
-        let (name, definition, data) = artifact?;
-        {
-            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-            body.push_str("graph\t");
-            unit.finish();
-        }
-        append_projected_name(&mut body, name, work)?;
-        append_projected_name_list(&mut body, &definition.node_labels, work)?;
-        append_projected_name_list(&mut body, &definition.rel_types, work)?;
-        {
-            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-            body.push('\t');
-            unit.finish();
-        }
+        let (name, definition, owned_data) = artifact?;
+        let data = owned_data.borrow();
+        body.append("graph\t", work)?;
+        body.hex(name, work)?;
+        body.names(&definition.node_labels, work)?;
+        body.names(&definition.rel_types, work)?;
+        body.append("\t", work)?;
         super::predicate_checkpoint::encode_into(
             &definition.relationship_predicates,
             work,
             |chunk| {
-                let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-                body.push_str(std::str::from_utf8(chunk).expect("predicate text is ASCII"));
-                unit.finish();
-                Ok(())
+                body.append(
+                    std::str::from_utf8(chunk).expect("predicate text is ASCII"),
+                    work,
+                )
             },
         )?;
-        {
-            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-            body.push_str(&format!("\t{}\t{}\n", data.node_count(), data.edge_count()));
-            unit.finish();
-        }
+        body.fields(
+            format_args!("\t{}\t{}\n", data.node_count(), data.edge_count()),
+            work,
+        )?;
         append_number_vector(
             &mut body,
             "nodes",
@@ -112,51 +106,34 @@ pub fn encode_projected_graph_artifacts_with_work_context<'a>(
             ("csc_offsets", &data.csc_offsets),
             ("csc_sources", &data.csc_sources),
         ] {
-            append_number_vector(&mut body, name, values.iter().copied(), work)?;
+            append_number_vector(
+                &mut body,
+                name,
+                values.iter().map(|value| *value as u64),
+                work,
+            )?;
         }
     }
     work.checkpoint().map_err(HawDBError::from_storage_error)?;
     Ok(body)
 }
 
+#[cfg(test)]
 fn append_projected_name(
-    output: &mut String,
+    output: &mut CheckpointProjectedGraphText,
     name: &str,
     work: &CheckpointWorkContext,
 ) -> Result<()> {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    for block in name.as_bytes().chunks(64 * 1024) {
-        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-        for byte in block {
-            output.push(char::from(HEX[usize::from(byte >> 4)]));
-            output.push(char::from(HEX[usize::from(byte & 15)]));
-        }
-        unit.finish();
-    }
-    work.checkpoint().map_err(HawDBError::from_storage_error)
+    output.hex(name, work)
 }
 
+#[cfg(test)]
 fn append_projected_name_list(
-    output: &mut String,
+    output: &mut CheckpointProjectedGraphText,
     names: &[String],
     work: &CheckpointWorkContext,
 ) -> Result<()> {
-    {
-        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-        output.push('\t');
-        unit.finish();
-    }
-    for (index, name) in names.iter().enumerate() {
-        {
-            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-            if index > 0 {
-                output.push(':');
-            }
-            unit.finish();
-        }
-        append_projected_name(output, name, work)?;
-    }
-    work.checkpoint().map_err(HawDBError::from_storage_error)
+    output.names(names, work)
 }
 
 #[cfg(test)]
@@ -237,29 +214,12 @@ fn decode_projected_name_list(input: &str, work: &CheckpointWorkContext) -> Resu
 }
 
 fn append_number_vector(
-    body: &mut String,
+    body: &mut CheckpointProjectedGraphText,
     name: &str,
-    values: impl IntoIterator<Item = impl std::fmt::Display>,
+    values: impl ExactSizeIterator<Item = u64>,
     work: &CheckpointWorkContext,
 ) -> Result<()> {
-    use std::fmt::Write;
-    let mut unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-    body.push_str(name);
-    body.push('\t');
-    for (index, value) in values.into_iter().enumerate() {
-        if index != 0 && index.is_multiple_of(1024) {
-            unit.finish();
-            unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-        }
-        if index != 0 {
-            body.push(',');
-        }
-        write!(body, "{value}").expect("writing a numeric value to String cannot fail");
-    }
-    body.push('\n');
-    unit.finish();
-    work.checkpoint().map_err(HawDBError::from_storage_error)?;
-    Ok(())
+    body.numbers(name, values, work)
 }
 
 pub fn decode_projected_graph_artifacts(
@@ -394,3 +354,6 @@ mod memory_tests;
 mod owned;
 pub(crate) use owned::CheckpointProjectedGraphRoot;
 pub use owned::{CheckpointProjectedGraphArtifact, CheckpointProjectedGraphArtifacts};
+
+#[cfg(test)]
+mod encode_memory_tests;

@@ -89,8 +89,13 @@ fn checkpoint_units_projected_graph_codec_cancels_inside_numeric_arrays() {
             })
             .unwrap_err()
         } else {
-            append_number_vector(&mut String::new(), "nodes", values.iter().copied(), &work)
-                .unwrap_err()
+            append_number_vector(
+                &mut CheckpointProjectedGraphText::new(),
+                "nodes",
+                values.iter().copied(),
+                &work,
+            )
+            .unwrap_err()
         };
         assert_eq!(
             error,
@@ -728,7 +733,7 @@ fn checkpoint_units_projected_definitions_preserve_large_unicode_and_empty_names
         vec![String::new()],
         vec![String::new(), String::new()],
     ] {
-        let mut encoded = String::new();
+        let mut encoded = CheckpointProjectedGraphText::new();
         append_projected_name_list(&mut encoded, &names, &work).unwrap();
         assert_eq!(encoded, format!("\t{}", encode_string_vec(&names)));
         assert_eq!(
@@ -753,7 +758,8 @@ fn checkpoint_units_projected_definition_names_cancel_and_preserve_legacy_errors
         let error = if decoding {
             decode_projected_name(&encoded, &work).unwrap_err()
         } else {
-            append_projected_name(&mut String::new(), &name, &work).unwrap_err()
+            append_projected_name(&mut CheckpointProjectedGraphText::new(), &name, &work)
+                .unwrap_err()
         };
         assert_eq!(
             error,
@@ -795,7 +801,8 @@ fn checkpoint_units_projected_definition_names_cancel_and_preserve_legacy_errors
         let error = if decoding {
             decode_projected_name_list(&encode_string_vec(&names), &work).unwrap_err()
         } else {
-            append_projected_name_list(&mut String::new(), &names, &work).unwrap_err()
+            append_projected_name_list(&mut CheckpointProjectedGraphText::new(), &names, &work)
+                .unwrap_err()
         };
         assert!(error.to_string().contains("checkpoint build stopped"));
         assert_eq!(probe.completed.load(Ordering::SeqCst), 7);

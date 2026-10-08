@@ -1674,9 +1674,69 @@ the prior observer retains its original greater-than-64-KiB threshold. The full
 owner, complete regression/profile/fuzz and effective empty-root-control
 qualification remain required before publication.
 
-Artifact body/producer buffers, source/candidate/
+Legacy producer input copies, source/candidate/
 cache/GC/disk/FD/cleanup, allocator/map-comparison/destruction accounting, the
 unchanged default 1057-node progress case, runtime fault/power-loss qualification
 and paired release performance remain required before full #207 acceptance.
 No production whole-owner operation admission or original workload is weakened
 by this integration.
+
+The resolved df28c037/main-0625907b integration passed its final six supported
+profiles and complete original storage/root/optimizer case union: 1390 storage
+cases (29 original ignores), 17 owner, 115 concurrent (one ignore), 29 projected
+graph (three ignores), 27 pipeline and 24 cascades cases. Required local fuzz
+actually executed and passed all 96 targets with zero cached results. A fresh
+compiled uncharged empty-root control fails the unchanged zero-allocation case.
+The integration was committed with the automatic formatting/strict Clippy hooks
+and published to the same Draft PR, with #207 still open.
+
+Controlled projected-artifact text now owns its admitted String capacity until
+its final user closes. Each replacement reserves simultaneous old/new capacity
+before exact fallible allocation, copies UTF-8 in 64 KiB units, then destroys
+old storage before releasing its permit. Name hex encoding consumes 32 KiB of
+source per unit and writes at most 64 KiB directly into admitted storage. Fixed
+scalar fields use a bounded stack buffer; numeric batches reserve their worst
+case before taking a local work permit. The ordinary API still returns plain
+String using its hardwired default context, and admitted text cannot convert
+into an uncharged owning String.
+
+The byte-identical 257 KiB Unicode/NUL name fixture genuinely fails both cases
+before correction and passes afterwards: one-byte denial precedes large name
+expansion, and complete output/readback retains the task reservation after
+execution closes. Related tests verify actual final capacity, release of growth
+and predicate scratch, overlap denial before allocation with unchanged old
+bytes, complete retry on the same governor reservation, and every actual CPU
+cancellation cut. Fresh compiled controls detect omitted capacity admission,
+early release and omission of simultaneous old/new growth.
+
+Controlled projection construction now admits selector and adjacency tree
+coverage using the existing conservative pinned B-tree bound. Vector growth
+admits old/new capacity and inventory before bounded moves. Separate temporary
+and final inventories release selector/neighbor scratch after it is destroyed;
+the returned private projection owner carries all five final adjacency arrays
+and their inventory through borrowed encoding. Duplicate edges, empty/unknown
+filters, relationship predicates and the ordinary all-label/all-type fast path
+retain their original semantics. Independent 33-node duplicate/type-filter
+fixtures genuinely fail before correction (zero charge for 2560 bytes of final
+arrays) and pass unchanged after it. An 8193-node ring checks all five complete
+arrays, a capacity lower bound greater than 512 KiB and prompt scratch release.
+Every actual CPU cut/full retry and denial/recovery reuse the same governor
+reservation, retain full source records and leave zero working bytes/I/O slots
+on cancellation or final closure. Fresh compiled controls separately omit node
+array admission, detach final admission and retain temporary adjacency debt.
+
+The new producer fixture's initial requests omitted an I/O wave reservation and
+failed at the I/O precondition; those attempts are excluded from resource-before
+evidence. The corrected request adds one real I/O wave without changing memory
+ceilings, data, complete-array, denial or lifecycle assertions, and a fresh
+before run reaches both intended failures. Allocation observation uses the
+existing greater-than-64-KiB threshold; the initial all-allocation observation
+would also include the classification/diagnostic wrapper. These preparation
+failures and frozen corrected fixtures remain archived separately.
+
+Legacy owned scan inputs still copy complete overlay records and use ordinary
+canonical decoding. Source/catalog/container-cache ownership, variable-width
+catalog lookup, allocator/map-comparison/destruction costs, and complete disk,
+FD and cleanup debt remain resource-ledger gaps. These changes do not alter
+whole-owner operation admission or establish default sustained progress,
+complete physical power-loss/refinement safety or paired release performance.

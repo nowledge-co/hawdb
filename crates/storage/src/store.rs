@@ -99,10 +99,13 @@ mod graph_apply;
 mod graph_checkpoint;
 #[path = "store/graph_checkpoint_candidate.rs"]
 mod graph_checkpoint_candidate;
+#[path = "store/graph_checkpoint_projection.rs"]
+mod graph_checkpoint_projection;
 #[doc(hidden)]
 pub use graph_checkpoint_candidate::{
     CheckpointCandidate, CheckpointDebtSnapshot, CheckpointSourceIdentity,
 };
+use graph_checkpoint_projection::checkpoint_projected_graph_from_definition;
 #[path = "store/graph_columnar_shadow.rs"]
 mod graph_columnar_shadow;
 #[path = "store/graph_commit.rs"]
@@ -2478,7 +2481,7 @@ fn encode_projected_graph_artifacts_with_work_context(
     store: &GraphStore,
     projection_epoch: u64,
     work: &crate::background::CheckpointWorkContext,
-) -> Result<String> {
+) -> Result<hawdb_storage::projection::artifact::CheckpointProjectedGraphText> {
     hawdb_storage::projection::artifact::encode_projected_graph_artifacts_with_work_context(
         projection_epoch,
         store.commit_epoch,
@@ -2489,156 +2492,6 @@ fn encode_projected_graph_artifacts_with_work_context(
         }),
         work,
     )
-}
-
-fn checkpoint_projected_graph_from_definition(
-    catalog: &Catalog,
-    store: &GraphStore,
-    definition: &ProjectedGraphDefinition,
-    work: &crate::background::CheckpointWorkContext,
-) -> Result<ProjectedGraphArtifactData> {
-    let mut labels = BTreeSet::new();
-    for name in &definition.node_labels {
-        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-        if let Some(id) = catalog.label_id(name) {
-            labels.insert(id);
-        }
-        unit.finish();
-    }
-    let mut rel_types = BTreeSet::new();
-    for name in &definition.rel_types {
-        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-        if let Some(id) = catalog.rel_type_id(name) {
-            rel_types.insert(id);
-        }
-        unit.finish();
-    }
-    let mut relationship_predicates = BTreeMap::new();
-    // Preserve the ordinary builder's all-label/all-type fast-path contract.
-    if !definition.node_labels.is_empty() || !definition.rel_types.is_empty() {
-        for (name, predicate) in &definition.relationship_predicates {
-            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-            if let Some(id) = catalog.rel_type_id(name) {
-                relationship_predicates.insert(id, predicate);
-            }
-            unit.finish();
-        }
-    }
-    if !definition.node_labels.is_empty() && labels.is_empty() {
-        return ProjectedGraphArtifactData::new_with_work_context(
-            Vec::new(),
-            vec![0],
-            Vec::new(),
-            vec![0],
-            Vec::new(),
-            work,
-        );
-    }
-    let mut nodes = Vec::new();
-    let mut source = store
-        .checkpoint_node_records_owned(work)?
-        .checkpoint_steps();
-    loop {
-        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-        let next = {
-            let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
-            source.next()
-        };
-        let Some(record) = next else {
-            unit.finish();
-            break;
-        };
-        store.poison_on_storage_error(&record);
-        let Some(node) = record? else {
-            unit.finish();
-            continue;
-        };
-        if labels.is_empty() || node.labels.iter().any(|label| labels.contains(label)) {
-            nodes.push(node.id);
-        }
-        unit.finish();
-    }
-    let mut outgoing = Vec::new();
-    let mut incoming = Vec::new();
-    for _ in &nodes {
-        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-        outgoing.push(BTreeSet::new());
-        incoming.push(BTreeSet::new());
-        unit.finish();
-    }
-    if definition.rel_types.is_empty() || !rel_types.is_empty() {
-        let mut source = store
-            .checkpoint_relationship_records_owned(work)?
-            .checkpoint_steps();
-        loop {
-            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-            let next = {
-                let _wave = work.io_wave().map_err(HawDBError::from_storage_error)?;
-                source.next()
-            };
-            let Some(record) = next else {
-                unit.finish();
-                break;
-            };
-            store.poison_on_storage_error(&record);
-            let Some(relationship) = record? else {
-                unit.finish();
-                continue;
-            };
-            let matches_type = rel_types.is_empty() || rel_types.contains(&relationship.rel_type);
-            let predicate = relationship_predicates.get(&relationship.rel_type);
-            unit.finish();
-            if !matches_type {
-                continue;
-            }
-            if let Some(predicate) = predicate
-                && !predicate.matches_with_work_context(&relationship.properties, work)?
-            {
-                continue;
-            }
-            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-            if let Ok(source) = nodes.binary_search(&relationship.source)
-                && let Ok(target) = nodes.binary_search(&relationship.target)
-            {
-                // Ordered sets preserve sorted, deduplicated analytics edges
-                // without a complete high-degree neighbor sort at finalization.
-                outgoing[source].insert(target);
-                incoming[target].insert(source);
-            }
-            unit.finish();
-        }
-    }
-    let (csr_offsets, csr_targets) = flatten_checkpoint_projection(outgoing, work)?;
-    let (csc_offsets, csc_sources) = flatten_checkpoint_projection(incoming, work)?;
-    ProjectedGraphArtifactData::new_with_work_context(
-        nodes,
-        csr_offsets,
-        csr_targets,
-        csc_offsets,
-        csc_sources,
-        work,
-    )
-}
-
-fn flatten_checkpoint_projection(
-    adjacency: Vec<BTreeSet<usize>>,
-    work: &crate::background::CheckpointWorkContext,
-) -> Result<(Vec<usize>, Vec<usize>)> {
-    let mut offsets = vec![0];
-    let mut targets = Vec::new();
-    for neighbors in adjacency {
-        let mut neighbors = neighbors.into_iter().peekable();
-        while neighbors.peek().is_some() {
-            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-            targets.extend(neighbors.by_ref().take(1024));
-            unit.finish();
-        }
-        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-        offsets.push(targets.len());
-        unit.finish();
-    }
-    work.checkpoint().map_err(HawDBError::from_storage_error)?;
-    Ok((offsets, targets))
 }
 
 fn projected_graph_from_definition(
@@ -14653,3 +14506,11 @@ mod tests {
         assert!(wal_ops_touched_records(&ddl).is_none());
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "store/graph_checkpoint_projection_memory_tests.rs"]
+mod checkpoint_projection_memory_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "store/graph_checkpoint_projection_memory_related_tests.rs"]
+mod checkpoint_projection_memory_related_tests;
