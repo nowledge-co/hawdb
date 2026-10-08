@@ -328,5 +328,5 @@ fn descriptor_budget_stops_before_appending_any_segment_payload() {
         before
     );
     assert_eq!(builder.descriptor_working_bytes, limit);
-    assert_eq!(builder.descriptor.segments.len(), 1);
+    assert_eq!(builder.descriptor.segment_count, 1);
 }

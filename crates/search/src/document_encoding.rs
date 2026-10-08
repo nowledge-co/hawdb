@@ -21,7 +21,7 @@ pub(crate) use header::{Header, HeaderSource, RecordSource};
 mod segment;
 pub(super) use segment::{SegmentEncoding, SegmentKind};
 mod descriptor;
-pub(super) use descriptor::DescriptorEncoding;
+pub(super) use descriptor::{write_segment_to, DescriptorEncoding};
 
 pub(crate) const HEX_BUFFER_BYTES: usize = 8192;
 

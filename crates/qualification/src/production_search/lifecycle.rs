@@ -69,7 +69,6 @@ pub(super) fn run_lifecycle_probes(
             !contains_hit(&upsert_before.result, &config.expected_upsert_document_id)
                 && contains_hit(&delete_before.result, &config.expected_deleted_document_id);
 
-        let bytes_before = directory_regular_file_bytes(path)?;
         let update_started = Instant::now();
         let update = SearchOutOfCoreGenerationWriter::prepare_delta(
             &old_reader,
@@ -78,7 +77,10 @@ pub(super) fn run_lifecycle_probes(
         )
         .map_err(ProductionSearchQualificationError::from_error)?;
         update_micros.push(elapsed_micros(update_started));
-        bounded_generation_update &= update.delta_report().action == "bounded_generation_update";
+        bounded_generation_update &= matches!(
+            update.delta_report().action.as_str(),
+            "incremental_segment_append" | "incremental_mutation_publish"
+        );
         max_update_peak_segment_document_bytes = max_update_peak_segment_document_bytes
             .max(update.source_read_metrics().peak_segment_document_bytes);
 
@@ -117,10 +119,9 @@ pub(super) fn run_lifecycle_probes(
         })?;
         mixed_foreground_background &= worker_succeeded;
         stale_generation &= worker_stable;
-        let bytes_after = directory_regular_file_bytes(path)?;
         checkpoint_write_amplification_per_million = checkpoint_write_amplification_per_million
             .max(ratio_per_million(
-                bytes_after.saturating_sub(bytes_before),
+                build_report.generation_bytes,
                 logical_delta_bytes,
             ));
         let reopen_started = Instant::now();
@@ -160,10 +161,15 @@ pub(super) fn run_lifecycle_probes(
     let rabitq_reader =
         SearchOutOfCoreReader::open_with_config(rabitq_corruption_path, out_of_core_config.clone())
             .map_err(ProductionSearchQualificationError::from_error)?;
-    let rabitq_generation = rabitq_reader.generation();
-    let rabitq_attached = rabitq_reader
+    let rabitq_identity = rabitq_reader
         .vector_projection_qualification_identity()
-        .is_some();
+        .ok_or_else(|| {
+            ProductionSearchQualificationError::new(
+                "production search lifecycle has no attached vector artifact",
+            )
+        })?;
+    // A delta head can retain a vector artifact from an earlier content segment.
+    let rabitq_generation = rabitq_identity.projection_generation;
     drop(rabitq_reader);
 
     let rabitq_path = rabitq_corruption_path.join(format!(
@@ -192,7 +198,7 @@ pub(super) fn run_lifecycle_probes(
     )
     .is_err();
     let corrupt_artifact_rejected =
-        rabitq_attached && corrupt_rabitq_rejected && rabitq_restored && corrupt_manifest_rejected;
+        corrupt_rabitq_rejected && rabitq_restored && corrupt_manifest_rejected;
     let process_end =
         ProcessMemorySnapshot::capture().map_err(ProductionSearchQualificationError::from_error)?;
 
@@ -294,22 +300,6 @@ fn delta_logical_bytes(delta: &SearchProjectionDelta) -> u64 {
         .map(|id| id.len() as u64)
         .fold(upserts, u64::saturating_add)
         .max(1)
-}
-
-fn directory_regular_file_bytes(path: &Path) -> Result<u64, ProductionSearchQualificationError> {
-    let mut total = 0u64;
-    let entries =
-        std::fs::read_dir(path).map_err(ProductionSearchQualificationError::from_error)?;
-    for entry in entries {
-        let entry = entry.map_err(ProductionSearchQualificationError::from_error)?;
-        let metadata = entry
-            .metadata()
-            .map_err(ProductionSearchQualificationError::from_error)?;
-        if metadata.is_file() {
-            total = total.saturating_add(metadata.len());
-        }
-    }
-    Ok(total)
 }
 
 fn ratio_per_million(numerator: u64, denominator: u64) -> u64 {

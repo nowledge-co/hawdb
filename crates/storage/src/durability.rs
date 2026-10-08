@@ -264,7 +264,8 @@ fn require_directory(file: &fs::File) -> io::Result<()> {
 /// Existing directories can be leftovers of an interrupted attempt: existence
 /// alone never replaces these barriers. The project root's own ancestry is
 /// synchronized during writable project admission.
-pub(crate) fn sync_directory_ancestors(directory: &Path) -> io::Result<()> {
+#[doc(hidden)]
+pub fn sync_directory_ancestors(directory: &Path) -> io::Result<()> {
     let context = crate::file_descriptors::context_for_path(directory)?;
     let root = context.project_root();
     let stop = (!root.as_os_str().is_empty()).then_some(root);

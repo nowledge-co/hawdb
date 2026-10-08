@@ -169,6 +169,66 @@ requested capacities under the pinned allocator-facing collection behavior,
 not process RSS; content artifacts and one-target hydration/analysis retain
 their independent limits.
 
+`SearchOutOfCoreReader::refresh` compares the complete checksummed durable
+manifest with its pinned identity before reopening. An unchanged head keeps the
+reader after checking that its referenced paths retain their admitted lengths.
+A newer head shares previously validated descriptor/layout metadata and payload,
+lexical and vector handles for content artifacts whose complete references are
+unchanged. It still
+validates new artifact references, run checksums and the aggregate visible
+closure, but can reuse target reanalysis when the run reference
+and every referenced content artifact are identical to the previously validated
+closure. Global embedding model, version and dimension must also match before
+any closure reuse. Fresh opens and changed run or target identities revalidate
+the targets.
+The typed refresh report counts opened/shared content artifacts and validated
+and reused retractions. This cache
+belongs to the reader and uses its existing closure; it adds no process-wide
+cache or persistent trust record. Artifacts must remain immutable while pinned.
+Regressed heads or changed identities at the same generation fail closed, and
+the Mem maintenance adapter detaches its serving reader after a refresh error.
+
+Incremental and compaction writers also retain an operation-local view of the
+validated input closure for post-publication cleanup discovery. The operation
+ledger admits copied manifest references and segment-handle slots before their
+allocation; descriptor/layout metadata and immutable files remain shared. The
+view survives dropping the original reader and is released with the writer.
+Cleanup rereads the durable checksummed head, validates new files and runs, and
+checks the complete closure under the inherited reader limits. Reuse requires
+the same content/run references and global embedding identity as reader refresh.
+Regressed or changed same-generation heads and missing referenced files fail
+validation, retain artifacts and request cleanup retry. Ordinary cleanup without
+an input view and ordinary fresh opens still validate the entire closure.
+This removes a second resident copy of corpus metadata during writer cleanup;
+manifest/run decoding and complete closure checks still depend on history size.
+
+A [same-snapshot macOS diagnostic](benchmarks/search_incremental_cleanup_macos_2026_10_08.json)
+records one changed-document publication against a complete 327,749-document,
+384-dimensional snapshot. Writer-local reuse reduces the measured lifetime RSS
+peak from 283,525,120 to 152,453,120 bytes with identical 47,302 published artifact
+bytes under the same 256 MiB reservation. The old result exceeds admission.
+The report retains source hashes, the typed prototype, configuration, process
+counters and measurement limits. This is diagnostic evidence; full-build and
+sustained scale acceptance remain pending.
+
+Immutable artifact reads validate the exact manifest-bound length against the
+opened file before reserving one encoded buffer. Bounded reads, EOF and checksum
+checks still reject truncation, growth and replacement inconsistencies. Mutable
+markers without a bound length retain progressive allocation. Lexical manifest
+block decoding moves validated records from temporary nodes into one exact
+final directory; the existing decode admission covers their overlap and the
+serialized format is unchanged. These paths avoid geometric reallocations of
+corpus-sized buffers, which retained resident pages in the measured macOS runs.
+
+The [allocation and cold-open diagnostic](benchmarks/search_bound_artifact_reads_macos_2026_10_08.json)
+retains genuine failing allocation regressions and all original measurements.
+The same complete immutable base with 32 cold seed publications and a K10
+replacement reached 691,470,336 bytes originally, 337,264,640 with exact file
+buffers alone, and 157,319,168 after both corrections. Fresh construction is
+excluded from that diagnostic. The original full 20 GiB sustained run failed
+its 256 MiB RSS budget despite completing all 128 updates and merges; complete
+fresh scale qualification on the corrected source remains pending.
+
 In `Preferred` mode, only a typed compressed-search resource-budget error
 restarts exact scalar scoring with the same visibility, candidate set and task
 context. Reports include `compressed_vector_budget_exceeded`; `Required`
@@ -261,6 +321,64 @@ lexical artifact bytes and requires the published bytes to stay below the
 existing closure size. This is a deterministic structural guard for `K`-sized
 updates; it is not the representative tens-of-GB benchmark or a process-RSS
 qualification.
+
+For an uncompacted-history comparison, set
+`HAWDB_SEARCH_MUTATION_BENCH_COMPACTION_EVERY=0` and run the same release fixture
+with `HAWDB_SEARCH_MUTATION_BENCH_REUSE_VALIDATION=0` (fresh-open reference) and
+`=1` (pinned refresh). Each round reports refresh time and the cached path's
+validated/reused target counts, alongside artifact bytes, count assertions and
+RSS. The default remains compaction every round; both modes use the same writer
+and integrity validation, and disabling compaction is measurement configuration
+for this developer benchmark, not a production maintenance policy.
+Uncompacted histories retain more immutable files. Record the OS descriptor
+limit and `HAWDB_SEARCH_MUTATION_BENCH_OPEN_FILES` separately; the latter selects
+the fixture's finite project descriptor admission (default 256). Descriptor
+exhaustion remains a failed measurement and must be retained alongside any run
+using a larger explicit descriptor admission. The memory budget is independent.
+
+The benchmark sets a 64 MiB uncompressed segment limit through typed build
+options. Its 128-document range cap may bind first; neither limit bounds retained
+metadata across ranges. The operation memory admission remains 256 MiB by
+default. Override it with
+`HAWDB_SEARCH_MUTATION_BENCH_SEGMENT_BYTES` and record the emitted limit alongside
+the memory and descriptor budgets. A segment byte limit is not an operation
+memory limit; the memory ledger still rejects work that exceeds its admission.
+
+`HAWDB_SEARCH_MUTATION_BENCH_LEXICAL_BUILD_MEMORY_BYTES` selects the typed lexical
+build batch admission (default 32 MiB). Record it independently from the complete
+operation reservation. The qualification configuration uses 8 MiB batches with
+an unchanged 256 MiB operation reservation; allocator and reader overhead still
+require actual RSS measurements. A 327680-document, 512-byte-body diagnostic
+using the earlier 32 MiB batch and copied metadata completed its ledger checks
+but reached 321568768 resident bytes, exceeding that reservation. Retain that
+failed RSS evidence alongside the shared-metadata, 8 MiB diagnostic; the latter
+writes identical full/replacement/delete artifact bytes and peaks at 173064192
+bytes. This diagnostic is not the large-body sustained vector qualification.
+
+Set `HAWDB_SEARCH_MUTATION_BENCH_VECTOR_DIMENSIONS` to include deterministic
+ordinal/column-hashed embeddings (default zero means no embeddings). The JSON
+records the dimension, vector count, dense vector payload bytes and RaBitQ
+artifact bytes so a text-only scale run cannot be presented as vector scale
+evidence. Use the same dimensions and admission in both comparison modes.
+
+Completed document-range descriptors are encoded into a private spool as they
+are produced. The builder releases their owned ID and metadata summaries before
+starting the next range. Final descriptor output validates the spool length and
+checksum, streams the existing V3 grammar, and synchronizes the complete output
+before publication. The descriptor's cumulative admission and encoded-file limit
+remain enforced; the spool does not weaken the operation memory ledger. Layout
+metadata remains separately admitted. The many-range regression completes 500
+ranges for 1,000 documents under a 16 MiB operation budget and verifies every
+persisted ID summary. The pre-streaming implementation fails this exact fixture
+at document 310 after retaining 155 completed ranges.
+
+The benchmark replaces K existing documents with changed text and embeddings
+before measuring its K-document delete checkpoint. It records replacement
+artifact, dense-vector and RaBitQ bytes, source reads, elapsed time and RSS
+separately. Sustained rounds then replace one existing document and insert one
+interleaved ID, with their configured compaction cadence. Compare both K phases
+at fixed corpus size; a delete-only measurement cannot establish vector rewrite
+costs.
 
 The reproducible benchmark `search_mutation` supplies that measurement hook. It
 builds a complete immutable generation, applies `K` delete mutations through

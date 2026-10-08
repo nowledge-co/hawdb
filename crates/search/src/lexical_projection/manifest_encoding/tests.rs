@@ -144,6 +144,48 @@ fn manifest_retains_an_interior_term_length_for_reader_admission() {
 }
 
 #[test]
+fn manifest_decode_limits_directory_allocation_overlap() {
+    let _serial = crate::test_allocation::serial();
+    let count = 1025;
+    let mut body = manifest(Vec::new());
+    let header_len = ARTIFACT_HEADER.len() as u64 + 8;
+    body.blocks = (0..count)
+        .map(|ordinal| BlockDescriptor {
+            block_id: ordinal as u64,
+            kind: BlockKind::Documents,
+            min_key: format!("memory:{ordinal:016x}"),
+            max_key: format!("memory:{ordinal:016x}"),
+            offset: header_len + ordinal as u64 * 64,
+            length: 64,
+            checksum: 0,
+            entry_count: 1,
+            ordinal_start: ordinal as u64,
+        })
+        .collect();
+    body.document_count = count as u64;
+    body.total_document_len = count as u64;
+    body.artifact_len = header_len + count as u64 * 64;
+    let bytes = body.encode(DEFAULT_MAX_MANIFEST_BYTES).unwrap();
+    let baseline = crate::test_allocation::live();
+    let (decoded, peak) = crate::test_allocation::measure(|| ManifestBody::decode(&bytes).unwrap());
+    assert_eq!(decoded, body);
+    let strings: usize = body
+        .blocks
+        .iter()
+        .map(|block| block.min_key.len() + block.max_key.len())
+        .sum();
+    let bound = count
+        * (2 * std::mem::size_of::<BlockDescriptor>() + 2 * std::mem::size_of::<usize>())
+        + strings
+        + 8192;
+    let peak = peak.saturating_sub(baseline);
+    assert!(
+        peak <= bound,
+        "lexical directory allocated {peak} bytes, exceeding {bound} for {count} blocks"
+    );
+}
+
+#[test]
 fn decode_preserves_checksum_and_schema_rejection() {
     let body = manifest(vec!["term".into()]);
     let encoded = body.encode(DEFAULT_MAX_MANIFEST_BYTES).unwrap();

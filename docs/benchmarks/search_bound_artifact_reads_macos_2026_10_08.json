@@ -1,0 +1,896 @@
+{
+  "issue": "https://github.com/nowledge-co/hawdb/issues/291",
+  "state": "diagnostic_only_full_fresh_scale_qualification_pending",
+  "problem": "The unchanged256MiB fresh20GiB/K10 sustained run at29f54b9b completed128 updates and128 real merges but reached736591872 resident bytes. No inspector was attached. The result remains a failed RSS qualification.",
+  "correction": {
+    "immutable_encoded_artifacts": "Validate the exact manifest-bound length against the admitted open file before reserving that length once. Retain bounded reads, final EOF check, checksum validation and original diagnostics. Mutable/unbound files retain progressive growth.",
+    "lexical_block_directory": "Decode complete validated records into temporary linked nodes, then move their ownership into one exact-capacity Vec. Serialized bytes and the existing three-slot-per-record decode admission are unchanged."
+  },
+  "source": {
+    "candidate_parent": "29f54b9b8bb1bb98fb05fd44758fe414b37f053a",
+    "main_parent": "51315823800aaaf63d0be36e7a00aab1ec9906de",
+    "corrected_files_sha256": {
+      "crates/search/src/bounded_file.rs": "cf606d8db760e963f16c72fee492fcfe3918108261d40a927b6ff9727282da0c",
+      "crates/search/src/bounded_file/tests.rs": "95d3face50c46c27dbdd6026b7c44803afae1ab28bc9e37c0ce09d27a7eeeed8",
+      "crates/search/src/out_of_core.rs": "f59d437b1c7b045a0d23244e7bcd89bc26b7c750402c5843ceb2c802f70c6fa6",
+      "crates/search/src/lexical_projection.rs": "41f5f1244552ef94d5e80c1bf0ebaeaa0c5ddbd9671f5ce503e9d2ab49fb07c1",
+      "crates/search/src/lexical_projection/manifest_encoding.rs": "19194c07302824a30aebd5459cc7e4ec4014b14068bbf1e41338ffa911c2a10a",
+      "crates/search/src/lexical_projection/manifest_encoding/tests.rs": "c41358ce08f831bd92d5c3a473fa1f7f60a87f68bcd1b5f4cebdd24ea10c49fa",
+      "crates/search/src/lexical_projection/build_manifest.rs": "18e76d1e5c2b0113ba72d5b43469a2c758d5f09b984905e20fb2dfb4042c6b83"
+    },
+    "binding": "Uncommitted combined main tree plus these corrected files; a later commit preserves their contents."
+  },
+  "host": {
+    "os": "macOS27.0.1",
+    "architecture": "aarch64-apple-darwin",
+    "processor": "Apple M3 Max",
+    "ram_bytes": 137438953472,
+    "filesystem": "APFS, internal Apple SSD",
+    "rust": "1.97.1",
+    "profile": "release opt-level3/codegen-units1/thinLTO",
+    "cache_state": "Uncontrolled; independent processes in chronological order. No isolated latency improvement claim.",
+    "inspectors": "No vmmap/sample/debugger attached."
+  },
+  "configuration": {
+    "operation_reservation_bytes": 268435456,
+    "lexical_build_memory_bytes": 8388608,
+    "max_segment_uncompressed_bytes": 67108864,
+    "project_fd_limit": 1024,
+    "os_soft_fd_limit": 4096
+  },
+  "isolated_buffer_diagnostic": {
+    "compile_receipt": {
+      "source_sha256": "607de4dffa3842a8a60ff61354265cc63310352831983764bbdf6a29c6359920",
+      "included_source_sha256": "acfb117fb07f8dd3cb2d7c2daa80dc8cda340046e8b6fd944722319574b59149",
+      "command": [
+        "rustc",
+        "--edition=2021",
+        "/private/tmp/hawdb-291-bounded-read-memory-probe.rs",
+        "-o",
+        "/private/tmp/hawdb-291-bounded-read-memory-probe",
+        "-C",
+        "opt-level=3",
+        "-C",
+        "codegen-units=1",
+        "-C",
+        "lto=thin",
+        "-L",
+        "dependency=/private/tmp/hawdb-291-cleanup-review/target/release/deps",
+        "--extern",
+        "hawdb=/private/tmp/hawdb-291-cleanup-review/target/release/libhawdb.rlib",
+        "--extern",
+        "hawdb_storage=/private/tmp/hawdb-291-cleanup-review/target/release/deps/libhawdb_storage-e7682c6753862f14.rlib",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/crc32c-9f5ef7df5eeb6164/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/crc32fast-d2f69ff0655b4e94/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/crc32fast-fccfe057f242020a/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/crossbeam-deque-8d58581f7824aab4/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/crossbeam-epoch-dfb0a33f1c414c13/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/crossbeam-utils-f08ad3edf09acef1/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/crunchy-ebc8c1a5f70a63a8/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/fst-b09a165355350dbb/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/generic-array-3b1500e96b1cdfa4/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/getrandom-c7dba2882e45ef6c/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/libc-1971d36cd6e3d2cc/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/libc-cdab7a87fb2bd880/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/num-traits-860cdef936d591f4/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/object-4d99c2dbf1baa848/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/proc-macro2-33a4d35c9e712667/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/psm-9efbc1038d23ff76/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/quote-bf308e79b7929186/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/rayon-core-81e3004f2cebab2d/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/serde-2f4ba1a6d047b6ce/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/serde_core-a0f038f455ef79d8/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/serde_json-882cfce87901d054/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/sha2-asm-3a4e7d24875be915/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/stacker-d1032bdddf31b59d/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/zmij-fdc95ab2beaafff6/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/zstd-safe-4e956889136ba2ed/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/zstd-safe-ed6688b1857d2c67/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/zstd-sys-3ca7a0718801b478/out",
+        "-L",
+        "native=/private/tmp/hawdb-291-cleanup-review/target/release/build/zstd-sys-f770cf02dd273553/out"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 3.6747037920000003,
+      "stderr": "warning: unused imports: `RuntimeMemoryReservation`, `RuntimeTaskContext`, `SearchDocument`, `SearchOutOfCoreGenerationBuildOptions`, `SearchOutOfCoreGenerationWriter`, `SearchOutOfCoreReader`, `SearchProjectionDelta`, `SearchProjectionKind`, and `SearchProjectionRow`\n --> /private/tmp/hawdb-291-bounded-read-memory-probe.rs:1:35\n  |\n1 | ...ot,RuntimeMemoryReservation,RuntimeTaskContext,SearchDocument,SearchOutOfCoreGenerationBuildOptions,SearchOutOfCoreGenerationWriter,SearchOutOfCoreReader,SearchProjectionDelta,SearchProjectionKind,SearchProjectionRow};\n  |       ^^^^^^^^^^^^^^^^^^^^^^^^ ^^^^^^^^^^^^^^^^^^ ^^^^^^^^^^^^^^ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ ^^^^^^^^^^^^^^^^^^^^^ ^^^^^^^^^^^^^^^^^^^^^ ^^^^^^^^^^^^^^^^^^^^ ^^^^^^^^^^^^^^^^^^^\n  |\n  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default\n\nwarning: unused imports: `SystemTime`, `UNIX_EPOCH`, `collections::BTreeMap`, `num::NonZeroU64`, and `path::PathBuf`\n --> /private/tmp/hawdb-291-bounded-read-memory-probe.rs:2:46\n  |\n2 | ...m},collections::BTreeMap,num::NonZeroU64,path::PathBuf,sync::atomic::{AtomicBool,AtomicUsize,Ordering},time::{Instant,SystemTime,UNIX_EPOCH}};\n  |       ^^^^^^^^^^^^^^^^^^^^^ ^^^^^^^^^^^^^^^ ^^^^^^^^^^^^^                                                                ^^^^^^^^^^ ^^^^^^^^^^\n\nwarning: static `DONE` is never used\n  --> /private/tmp/hawdb-291-bounded-read-memory-probe.rs:16:8\n   |\n16 | static DONE:AtomicBool=AtomicBool::new(false);\n   |        ^^^^\n   |\n   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: static `PHASE` is never used\n  --> /private/tmp/hawdb-291-bounded-read-memory-probe.rs:17:8\n   |\n17 | static PHASE:AtomicUsize=AtomicUsize::new(0);\n   |        ^^^^^\n\nwarning: 4 warnings emitted\n\n",
+      "libraries": {
+        "hawdb": {
+          "rlib": "/private/tmp/hawdb-291-cleanup-review/target/release/libhawdb.rlib",
+          "features": [
+            "background-maintenance",
+            "default",
+            "full-text-search",
+            "graph-analytics",
+            "tokio-runtime",
+            "vector-search"
+          ],
+          "sha256": "0121315e028af47291b370bc147d46384ad0c563b3902adf8846cab49c8cda0d"
+        },
+        "hawdb_storage": {
+          "rlib": "/private/tmp/hawdb-291-cleanup-review/target/release/deps/libhawdb_storage-e7682c6753862f14.rlib",
+          "features": [
+            "artifact-mmap"
+          ],
+          "sha256": "c916a677f630464029a9643d983c42d19b75e9b43cc49ab84465dd5aa5d4f072"
+        }
+      },
+      "scope": "Unmodified production bounded_file.rs included in standalone crate versus metadata-length exact allocation. Read-only 17,871,776-byte original descriptor, 40 repeats each in independent processes. Diagnostic allocator/native counters; no qualification/production change.",
+      "binary_sha256": "1b699e81f45dc46d2bfba14c7a9efde1478f177f2bfb3fe44f5370f4c80ee676"
+    },
+    "input": "/private/tmp/hawdb-291-cleanup-rss-snapshot-1791409211067621000/search_projection_segments.1.hawdb",
+    "input_sha256": "4346685045a4997c008fc82a16dc1b5cc5b987ef9dd07ed9be4bf22d26672175",
+    "rows": [
+      {
+        "mode": "bounded",
+        "command": [
+          "/private/tmp/hawdb-291-bounded-read-memory-probe",
+          "bounded",
+          "/private/tmp/hawdb-291-cleanup-rss-snapshot-1791409211067621000/search_projection_segments.1.hawdb"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 0.715598541,
+        "log": "/private/tmp/hawdb-291-bounded-read-memory-bounded.log",
+        "log_sha256": "ed7680d0dfc2859d106032ff1e25a0d5ae6a999bb8d9c3f4b4510cdbfea6c67d",
+        "first": "phase=before_reads ordinal=0 resident_bytes=5685248 resident_peak=5685248 rust_live=861 rust_peak=933 malloc_live=71408 malloc_allocated=16777216 malloc_blocks=795 elapsed_millis=0",
+        "last": "phase=dropped_buffer ordinal=39 resident_bytes=723697664 resident_peak=723697664 rust_live=2373 rust_peak=17874149 malloc_live=72944 malloc_allocated=20971520 malloc_blocks=801 elapsed_millis=130"
+      },
+      {
+        "mode": "exact",
+        "command": [
+          "/private/tmp/hawdb-291-bounded-read-memory-probe",
+          "exact",
+          "/private/tmp/hawdb-291-cleanup-rss-snapshot-1791409211067621000/search_projection_segments.1.hawdb"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 0.09473549999999997,
+        "log": "/private/tmp/hawdb-291-bounded-read-memory-exact.log",
+        "log_sha256": "df6056e5f11e7a47d64dc01f27c5eb2ff7eef4227de357b4d9123870b4e8dd2a",
+        "first": "phase=before_reads ordinal=0 resident_bytes=5685248 resident_peak=5685248 rust_live=859 rust_peak=931 malloc_live=71408 malloc_allocated=16777216 malloc_blocks=795 elapsed_millis=0",
+        "last": "phase=dropped_buffer ordinal=39 resident_bytes=23756800 resident_peak=23756800 rust_live=2371 rust_peak=17874147 malloc_live=72944 malloc_allocated=16777216 malloc_blocks=801 elapsed_millis=89"
+      }
+    ]
+  },
+  "allocation_regressions": {
+    "bound_artifact_before": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hawdb-search",
+        "--lib",
+        "out_of_core::tests::bound_artifact_read_retains_one_encoded_buffer",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "integrated_index_tree": "03757c2b4b2db0e0b08f8d7e463778d7966751f3",
+      "test_source_sha256": "93927a30d8978b73191ecd9fa7b972a092de9f8678d86c118479cb3662c32b82",
+      "bounded_file_source_sha256": "acfb117fb07f8dd3cb2d7c2daa80dc8cda340046e8b6fd944722319574b59149",
+      "patch_sha256": "03c2ff34e53be79ec0783850b3cc42c6caec9e6f44bf8cd10425e83a8715b176",
+      "scope": "New real allocator overlap regression against original production read path. Runtime unchanged; test-only diff. No budgets/assertions/timeouts reduced.",
+      "exit_code": 101,
+      "elapsed_seconds": 70.506115208,
+      "log": "/private/tmp/hawdb-291-bound-artifact-before.log",
+      "log_sha256": "066668c2034b6f1ca47ed40d74f82d0bd3a6474334cdac1a51a40a26b41eed9f",
+      "preserved_test_source": "/private/tmp/hawdb-291-bound-artifact-before-source.rs"
+    },
+    "bound_artifact_before_raw": {
+      "local_path": "/private/tmp/hawdb-291-bound-artifact-before.log",
+      "sha256": "066668c2034b6f1ca47ed40d74f82d0bd3a6474334cdac1a51a40a26b41eed9f",
+      "contents": "   Compiling memchr v2.8.3\n   Compiling hawdb-storage v0.4.0 (/private/tmp/hawdb-291-main-qualification/crates/storage)\n   Compiling no_std_io2 v0.9.4\n   Compiling libflate_lz77 v2.3.0\n   Compiling libflate v2.3.1\n   Compiling include-flate-compress v0.3.4\n   Compiling include-flate-codegen v0.3.4\n   Compiling include-flate v0.3.4\n   Compiling jieba-rs v0.11.0\n   Compiling hawdb-executor v0.4.0 (/private/tmp/hawdb-291-main-qualification/crates/executor)\n   Compiling hawdb-vector-projection v0.4.0 (/private/tmp/hawdb-291-main-qualification/crates/vector-projection)\n   Compiling hawdb-search v0.4.0 (/private/tmp/hawdb-291-main-qualification/crates/search)\n    Finished `test` profile [unoptimized] target(s) in 1m 07s\n     Running unittests src/lib.rs (target/debug/deps/hawdb_search-b37d31b509b2a9a2)\n\nrunning 1 test\ntest out_of_core::tests::bound_artifact_read_retains_one_encoded_buffer ... \nthread 'out_of_core::tests::bound_artifact_read_retains_one_encoded_buffer' (32658437) panicked at crates/search/src/out_of_core.rs:4141:9:\nbound artifact retained 34607104 allocated bytes for 17829888 encoded bytes\nstack backtrace:\n   0:        0x105c4fbe8 - <<std[7648081134ee26d8]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[318a34b566a36fe]::fmt::Display>::fmt\n   1:        0x105c6504c - core[318a34b566a36fe]::fmt::write\n   2:        0x105c55110 - <std[7648081134ee26d8]::sys::stdio::unix::Stderr as std[7648081134ee26d8]::io::Write>::write_fmt\n   3:        0x105c331e4 - std[7648081134ee26d8]::panicking::default_hook::{closure#0}\n   4:        0x105c47e3c - std[7648081134ee26d8]::panicking::default_hook\n   5:        0x105c48164 - std[7648081134ee26d8]::panicking::panic_with_hook\n   6:        0x105c33278 - std[7648081134ee26d8]::panicking::panic_handler::{closure#0}\n   7:        0x105c2875c - std[7648081134ee26d8]::sys::backtrace::__rust_end_short_backtrace::<std[7648081134ee26d8]::panicking::panic_handler::{closure#0}, !>\n   8:        0x105c33a68 - __rustc[6ef78fba13ac776c]::rust_begin_unwind\n   9:        0x105c82f6c - core[318a34b566a36fe]::panicking::panic_fmt\n  10:        0x1051856a8 - hawdb_search[3ac58ef9cc396688]::out_of_core::tests::bound_artifact_read_retains_one_encoded_buffer\n  11:        0x104bd10f8 - hawdb_search[3ac58ef9cc396688]::out_of_core::tests::bound_artifact_read_retains_one_encoded_buffer::{closure#0}\n  12:        0x104c38b58 - <hawdb_search[3ac58ef9cc396688]::out_of_core::tests::bound_artifact_read_retains_one_encoded_buffer::{closure#0} as core[318a34b566a36fe]::ops::function::FnOnce<()>>::call_once\n  13:        0x10564cca8 - test[2c59eae1d55b8e96]::__rust_begin_short_backtrace::<core[318a34b566a36fe]::result::Result<(), alloc[fd24334a81e9fcd2]::string::String>, fn() -> core[318a34b566a36fe]::result::Result<(), alloc[fd24334a81e9fcd2]::string::String>>\n  14:        0x1056580f0 - test[2c59eae1d55b8e96]::run_test::{closure#0}\n  15:        0x105652f78 - std[7648081134ee26d8]::sys::backtrace::__rust_begin_short_backtrace::<test[2c59eae1d55b8e96]::run_test::{closure#1}, ()>\n  16:        0x10565a648 - <std[7648081134ee26d8]::thread::lifecycle::spawn_unchecked<test[2c59eae1d55b8e96]::run_test::{closure#1}, ()>::{closure#1} as core[318a34b566a36fe]::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}\n  17:        0x105c4ee9c - <std[7648081134ee26d8]::sys::thread::unix::Thread>::new::thread_start\n  18:        0x18cf89d00 - __pthread_exit\nFAILED\n\nfailures:\n\nfailures:\n    out_of_core::tests::bound_artifact_read_retains_one_encoded_buffer\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 803 filtered out; finished in 1.51s\n\nerror: test failed, to rerun pass `-p hawdb-search --lib`\n"
+    },
+    "directory_before": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hawdb-search",
+        "--lib",
+        "lexical_projection::manifest_encoding::tests::manifest_decode_limits_directory_allocation_overlap",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "test_source_sha256": "7cbedb957022007e4298947b733e2095e45ef4faef4c6e4384ce6c36f95ef089",
+      "test_source_copy": "/private/tmp/hawdb-291-lexical-directory-before-tests.rs",
+      "production_source_sha256": {
+        "crates/search/src/lexical_projection.rs": "2e414d9cb46aad84beab68be2db034e358073c8d470b77815d85ec075335cf55",
+        "crates/search/src/lexical_projection/manifest_encoding.rs": "57ac502bb2b2cdd3039b2b6ed20559e4db340858b87144c658dc4dbefd03c6d4"
+      },
+      "scope": "Valid1025-block complete manifest decoded through original serde Vec path; real requested allocation overlap regression. Existing bound-artifact correction present but directory decoder unchanged.",
+      "exit_code": 101,
+      "elapsed_seconds": 4.9132605,
+      "log": "/private/tmp/hawdb-291-lexical-directory-before.log",
+      "log_sha256": "3349695fdbfc21009436416627768e4ecf0e1890cf3c060906a2bea35a4a5e43"
+    },
+    "directory_before_raw": {
+      "local_path": "/private/tmp/hawdb-291-lexical-directory-before.log",
+      "sha256": "3349695fdbfc21009436416627768e4ecf0e1890cf3c060906a2bea35a4a5e43",
+      "contents": "   Compiling hawdb-search v0.4.0 (/private/tmp/hawdb-291-main-qualification/crates/search)\n    Finished `test` profile [unoptimized] target(s) in 4.00s\n     Running unittests src/lib.rs (target/debug/deps/hawdb_search-b37d31b509b2a9a2)\n\nrunning 1 test\ntest lexical_projection::manifest_encoding::tests::manifest_decode_limits_directory_allocation_overlap ... \nthread 'lexical_projection::manifest_encoding::tests::manifest_decode_limits_directory_allocation_overlap' (32680475) panicked at crates/search/src/lexical_projection/manifest_encoding/tests.rs:183:5:\nlexical directory allocated 342137 bytes, exceeding 268542 for 1025 blocks\nstack backtrace:\n   0:        0x10407291c - <<std[7648081134ee26d8]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[318a34b566a36fe]::fmt::Display>::fmt\n   1:        0x104087d80 - core[318a34b566a36fe]::fmt::write\n   2:        0x104077e44 - <std[7648081134ee26d8]::sys::stdio::unix::Stderr as std[7648081134ee26d8]::io::Write>::write_fmt\n   3:        0x104055f18 - std[7648081134ee26d8]::panicking::default_hook::{closure#0}\n   4:        0x10406ab70 - std[7648081134ee26d8]::panicking::default_hook\n   5:        0x10406ae98 - std[7648081134ee26d8]::panicking::panic_with_hook\n   6:        0x104055fac - std[7648081134ee26d8]::panicking::panic_handler::{closure#0}\n   7:        0x10404b490 - std[7648081134ee26d8]::sys::backtrace::__rust_end_short_backtrace::<std[7648081134ee26d8]::panicking::panic_handler::{closure#0}, !>\n   8:        0x10405679c - __rustc[6ef78fba13ac776c]::rust_begin_unwind\n   9:        0x1040a5ca0 - core[318a34b566a36fe]::panicking::panic_fmt\n  10:        0x1039b6d84 - hawdb_search[3ac58ef9cc396688]::lexical_projection::manifest_encoding::tests::manifest_decode_limits_directory_allocation_overlap\n  11:        0x1039786b0 - hawdb_search[3ac58ef9cc396688]::lexical_projection::manifest_encoding::tests::manifest_decode_limits_directory_allocation_overlap::{closure#0}\n  12:        0x103876998 - <hawdb_search[3ac58ef9cc396688]::lexical_projection::manifest_encoding::tests::manifest_decode_limits_directory_allocation_overlap::{closure#0} as core[318a34b566a36fe]::ops::function::FnOnce<()>>::call_once\n  13:        0x103a6f9dc - test[2c59eae1d55b8e96]::__rust_begin_short_backtrace::<core[318a34b566a36fe]::result::Result<(), alloc[fd24334a81e9fcd2]::string::String>, fn() -> core[318a34b566a36fe]::result::Result<(), alloc[fd24334a81e9fcd2]::string::String>>\n  14:        0x103a7ae24 - test[2c59eae1d55b8e96]::run_test::{closure#0}\n  15:        0x103a75cac - std[7648081134ee26d8]::sys::backtrace::__rust_begin_short_backtrace::<test[2c59eae1d55b8e96]::run_test::{closure#1}, ()>\n  16:        0x103a7d37c - <std[7648081134ee26d8]::thread::lifecycle::spawn_unchecked<test[2c59eae1d55b8e96]::run_test::{closure#1}, ()>::{closure#1} as core[318a34b566a36fe]::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}\n  17:        0x104071bd0 - <std[7648081134ee26d8]::sys::thread::unix::Thread>::new::thread_start\n  18:        0x18cf89d00 - __pthread_exit\nFAILED\n\nfailures:\n\nfailures:\n    lexical_projection::manifest_encoding::tests::manifest_decode_limits_directory_allocation_overlap\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 806 filtered out; finished in 0.06s\n\nerror: test failed, to rerun pass `-p hawdb-search --lib`\n"
+    },
+    "corrected_focused_checks": {
+      "state": "passed",
+      "source_freeze": "/private/tmp/hawdb-291-bound-read-directory-freeze.json",
+      "rows": [
+        {
+          "label": "artifact",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "hawdb-search",
+            "--lib",
+            "out_of_core::tests::bound_artifact_read_retains_one_encoded_buffer",
+            "--",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1"
+          ],
+          "exit_code": 0,
+          "elapsed_seconds": 4.707382084,
+          "log": "/private/tmp/hawdb-291-bound-read-directory-artifact.log",
+          "log_sha256": "cbcb0de6adeb6da3fe5998c5e53c93cc91bd07920612653b7cec0be0626b1aba",
+          "harnesses": [
+            {
+              "passed": 1,
+              "failed": 0,
+              "ignored": 0
+            }
+          ]
+        },
+        {
+          "label": "bounded",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "hawdb-search",
+            "--lib",
+            "bounded_file::tests::",
+            "--",
+            "--nocapture",
+            "--test-threads=1"
+          ],
+          "exit_code": 0,
+          "elapsed_seconds": 1.6454788750000002,
+          "log": "/private/tmp/hawdb-291-bound-read-directory-bounded.log",
+          "log_sha256": "44ba7d51a94e71630b4c2f7dd292d923d3b4273a1f46911642f7254883ae2fe3",
+          "harnesses": [
+            {
+              "passed": 18,
+              "failed": 0,
+              "ignored": 1
+            }
+          ]
+        },
+        {
+          "label": "manifest",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "hawdb-search",
+            "--lib",
+            "lexical_projection::manifest_encoding::tests::",
+            "--",
+            "--nocapture",
+            "--test-threads=1"
+          ],
+          "exit_code": 0,
+          "elapsed_seconds": 0.16628879100000038,
+          "log": "/private/tmp/hawdb-291-bound-read-directory-manifest.log",
+          "log_sha256": "653862479ee2cf0f29b9a3d5fd9b2ce6ee070425f3d571f54939eea7c859ef8d",
+          "harnesses": [
+            {
+              "passed": 8,
+              "failed": 0,
+              "ignored": 1
+            }
+          ]
+        },
+        {
+          "label": "build-manifest",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "hawdb-search",
+            "--lib",
+            "lexical_projection::build_manifest::tests::",
+            "--",
+            "--nocapture",
+            "--test-threads=1"
+          ],
+          "exit_code": 0,
+          "elapsed_seconds": 0.39029624999999957,
+          "log": "/private/tmp/hawdb-291-bound-read-directory-build-manifest.log",
+          "log_sha256": "fab9f97bab3b11ee4186da50981525438ef7a37f65640047a7dae13306fbb8ec",
+          "harnesses": [
+            {
+              "passed": 8,
+              "failed": 0,
+              "ignored": 0
+            }
+          ]
+        },
+        {
+          "label": "release",
+          "command": [
+            "cargo",
+            "build",
+            "--locked",
+            "--release",
+            "--lib",
+            "--message-format=json"
+          ],
+          "exit_code": 0,
+          "elapsed_seconds": 41.240187375,
+          "log": "/private/tmp/hawdb-291-bound-read-directory-release.log",
+          "log_sha256": "785d406347261d880e824cec6e94fa5900bd926a3bad018ef224803e239c59fd",
+          "harnesses": []
+        }
+      ],
+      "source_unchanged": true,
+      "release_library_sha256": "537d2388f7335f581821c0aaf80174cb4b838197ab6943114c33ee9eba05f80b"
+    }
+  },
+  "cold_open_diagnostics": [
+    {
+      "variant": "original",
+      "peak_resident_bytes": 691470336,
+      "within_256MiB_reservation": false,
+      "receipt": {
+        "state": "finished",
+        "command": [
+          "/private/tmp/hawdb-291-fresh-memory-phase-probe",
+          "327680",
+          "/private/tmp/hawdb-291-cold-seed-initial-diagnostic-1791420376458108000"
+        ],
+        "log": "/private/tmp/hawdb-291-memory-phase-cold-seed-retry-1.log",
+        "compile_receipt_sha256": "0c46f95063ad3a10456711b5ed34a9be980099c1a1655c83b95d2ab567a6d03c",
+        "fixture_receipt_sha256": "44d5f023a9b5ad7e514e10d712caa42378cee12d7c2ed61ee9f0dbd470f9acd2",
+        "original_failure_log": "/private/tmp/hawdb-291-memory-phase-cold-seed.log",
+        "original_failure_log_sha256": "f910396719f75384bfb43ae8e5bcf6490b4e53c2cd11e496ba549c65a3f2f393",
+        "scope": "Complete immutable-base cold32seed diagnostic only; excludes fresh initial construction. Missing lexical artifact in initial clone corrected; original failure retained. All runtime/settings/prototype are identical.",
+        "pid": 35604,
+        "exit_code": 0,
+        "elapsed_seconds": 10.053413916,
+        "log_sha256": "0ef536d4bd6ab739d5a31d568d5f593108f49237b79ce38cbbfa3b3f2ab300df"
+      },
+      "raw_log": {
+        "local_path": "/private/tmp/hawdb-291-memory-phase-cold-seed-retry-1.log",
+        "sha256": "0ef536d4bd6ab739d5a31d568d5f593108f49237b79ce38cbbfa3b3f2ab300df",
+        "contents": "fixture=/private/tmp/hawdb-291-cold-seed-initial-diagnostic-1791420376458108000 documents=327680 body_bytes=65536 dimension=384 budget=268435456 saved_initial=true\nphase=before_build ordinal=0 resident_bytes=6078464 resident_peak=6078464 rust_live=3032 rust_peak=3032 malloc_live=73824 malloc_allocated=16777216 malloc_blocks=805 elapsed_millis=0\nphase=after_initial_open ordinal=0 resident_bytes=145342464 resident_peak=145342464 rust_live=38554446 rust_peak=64062210 malloc_live=45025584 malloc_allocated=65028096 malloc_blocks=521104 elapsed_millis=105\nphase=seed_prepared ordinal=0 resident_bytes=145571840 resident_peak=145571840 rust_live=38582502 rust_peak=64062210 malloc_live=45054544 malloc_allocated=65028096 malloc_blocks=521365 elapsed_millis=112\nphase=seed_finished ordinal=0 resident_bytes=146259968 resident_peak=146259968 rust_live=38554606 rust_peak=64062210 malloc_live=45042064 malloc_allocated=65028096 malloc_blocks=521277 elapsed_millis=255\nphase=seed_reader_dropped ordinal=0 resident_bytes=54181888 resident_peak=146259968 rust_live=68904 rust_peak=64062210 malloc_live=255232 malloc_allocated=58720256 malloc_blocks=3933 elapsed_millis=263\nphase=seed_reopened ordinal=0 resident_bytes=146522112 resident_peak=146522112 rust_live=38563931 rust_peak=64063629 malloc_live=45068944 malloc_allocated=65044480 malloc_blocks=521527 elapsed_millis=358\nphase=seed_prepared ordinal=1 resident_bytes=146538496 resident_peak=146538496 rust_live=38592627 rust_peak=64063629 malloc_live=45098592 malloc_allocated=65044480 malloc_blocks=521794 elapsed_millis=365\nphase=seed_finished ordinal=1 resident_bytes=146702336 resident_peak=146718720 rust_live=38563931 rust_peak=64063629 malloc_live=45101680 malloc_allocated=65044480 malloc_blocks=522697 elapsed_millis=536\nphase=seed_reader_dropped ordinal=1 resident_bytes=54624256 resident_peak=146718720 rust_live=68904 rust_peak=64063629 malloc_live=304288 malloc_allocated=58720256 malloc_blocks=5273 elapsed_millis=545\nphase=seed_reopened ordinal=1 resident_bytes=146800640 resident_peak=146800640 rust_live=38573263 rust_peak=64064893 malloc_live=45110272 malloc_allocated=65060864 malloc_blocks=522669 elapsed_millis=642\nphase=seed_prepared ordinal=2 resident_bytes=146849792 resident_peak=146849792 rust_live=38602663 rust_peak=64064893 malloc_live=45139664 malloc_allocated=65060864 malloc_blocks=522872 elapsed_millis=650\nphase=seed_finished ordinal=2 resident_bytes=146931712 resident_peak=146948096 rust_live=38573263 rust_peak=64064893 malloc_live=45110272 malloc_allocated=65060864 malloc_blocks=522669 elapsed_millis=797\nphase=seed_reader_dropped ordinal=2 resident_bytes=78741504 resident_peak=146948096 rust_live=68904 rust_peak=64064893 malloc_live=304288 malloc_allocated=58720256 malloc_blocks=5273 elapsed_millis=803\nphase=seed_reopened ordinal=2 resident_bytes=164904960 resident_peak=164904960 rust_live=38582595 rust_peak=64066156 malloc_live=45119904 malloc_allocated=65077248 malloc_blocks=522706 elapsed_millis=899\nphase=seed_prepared ordinal=3 resident_bytes=164937728 resident_peak=164937728 rust_live=38612699 rust_peak=64066156 malloc_live=45149920 malloc_allocated=65077248 malloc_blocks=522916 elapsed_millis=905\nphase=seed_finished ordinal=3 resident_bytes=164954112 resident_peak=164970496 rust_live=38582595 rust_peak=64066156 malloc_live=45119904 malloc_allocated=65077248 malloc_blocks=522706 elapsed_millis=1048\nphase=seed_reader_dropped ordinal=3 resident_bytes=96747520 resident_peak=164970496 rust_live=68904 rust_peak=64066156 malloc_live=304288 malloc_allocated=58720256 malloc_blocks=5273 elapsed_millis=1055\nphase=seed_reopened ordinal=3 resident_bytes=182878208 resident_peak=182878208 rust_live=38593719 rust_peak=64068955 malloc_live=45131328 malloc_allocated=65093632 malloc_blocks=522743 elapsed_millis=1153\nphase=seed_prepared ordinal=4 resident_bytes=182878208 resident_peak=182878208 rust_live=38624527 rust_peak=64068955 malloc_live=45162224 malloc_allocated=65093632 malloc_blocks=522960 elapsed_millis=1160\nphase=seed_finished ordinal=4 resident_bytes=182943744 resident_peak=182960128 rust_live=38593719 rust_peak=64068955 malloc_live=45131328 malloc_allocated=65093632 malloc_blocks=522743 elapsed_millis=1297\nphase=seed_reader_dropped ordinal=4 resident_bytes=114720768 resident_peak=182960128 rust_live=68904 rust_peak=64068955 malloc_live=304288 malloc_allocated=58720256 malloc_blocks=5273 elapsed_millis=1303\nphase=seed_reopened ordinal=4 resident_bytes=200867840 resident_peak=200867840 rust_live=38603051 rust_peak=64070218 malloc_live=45140960 malloc_allocated=65110016 malloc_blocks=522780 elapsed_millis=1397\nphase=seed_prepared ordinal=5 resident_bytes=200884224 resident_peak=200884224 rust_live=38634563 rust_peak=64070218 malloc_live=45172736 malloc_allocated=65110016 malloc_blocks=523004 elapsed_millis=1402\nphase=seed_finished ordinal=5 resident_bytes=200933376 resident_peak=200949760 rust_live=38603051 rust_peak=64070218 malloc_live=45140960 malloc_allocated=65110016 malloc_blocks=522780 elapsed_millis=1538\nphase=seed_reader_dropped ordinal=5 resident_bytes=132694016 resident_peak=200949760 rust_live=68904 rust_peak=64070218 malloc_live=304288 malloc_allocated=58720256 malloc_blocks=5273 elapsed_millis=1545\nphase=seed_reopened ordinal=5 resident_bytes=218841088 resident_peak=218841088 rust_live=38612375 rust_peak=64071482 malloc_live=45150592 malloc_allocated=65126400 malloc_blocks=522817 elapsed_millis=1640\nphase=seed_prepared ordinal=6 resident_bytes=218857472 resident_peak=218857472 rust_live=38644591 rust_peak=64071482 malloc_live=45183248 malloc_allocated=65126400 malloc_blocks=523048 elapsed_millis=1647\nphase=seed_finished ordinal=6 resident_bytes=218873856 resident_peak=218890240 rust_live=38612375 rust_peak=64071482 malloc_live=45150592 malloc_allocated=65126400 malloc_blocks=522817 elapsed_millis=1782\nphase=seed_reader_dropped ordinal=6 resident_bytes=150618112 resident_peak=218890240 rust_live=68904 rust_peak=64071482 malloc_live=304288 malloc_allocated=58720256 malloc_blocks=5273 elapsed_millis=1787\nphase=seed_reopened ordinal=6 resident_bytes=236797952 resident_peak=236797952 rust_live=38621699 rust_peak=64072743 malloc_live=45160224 malloc_allocated=65142784 malloc_blocks=522854 elapsed_millis=1881\nphase=seed_prepared ordinal=7 resident_bytes=236814336 resident_peak=236814336 rust_live=38654619 rust_peak=64072743 malloc_live=45193248 malloc_allocated=65142784 malloc_blocks=523092 elapsed_millis=1887\nphase=seed_finished ordinal=7 resident_bytes=236830720 resident_peak=236847104 rust_live=38621699 rust_peak=64072743 malloc_live=45160224 malloc_allocated=65142784 malloc_blocks=522854 elapsed_millis=2027\nphase=seed_reader_dropped ordinal=7 resident_bytes=168558592 resident_peak=236847104 rust_live=68904 rust_peak=64072743 malloc_live=304288 malloc_allocated=58720256 malloc_blocks=5273 elapsed_millis=2033\nphase=seed_reopened ordinal=7 resident_bytes=254738432 resident_peak=254738432 rust_live=38634607 rust_peak=64077080 malloc_live=45173440 malloc_allocated=65159168 malloc_blocks=522891 elapsed_millis=2129\nphase=seed_prepared ordinal=8 resident_bytes=254738432 resident_peak=254738432 rust_live=38668231 rust_peak=64077080 malloc_live=45207408 malloc_allocated=65159168 malloc_blocks=523136 elapsed_millis=2137\nphase=seed_finished ordinal=8 resident_bytes=254803968 resident_peak=254820352 rust_live=38634607 rust_peak=64077080 malloc_live=45173440 malloc_allocated=65159168 malloc_blocks=522891 elapsed_millis=2279\nphase=seed_reader_dropped ordinal=8 resident_bytes=186515456 resident_peak=254820352 rust_live=68904 rust_peak=64077080 malloc_live=304288 malloc_allocated=58720256 malloc_blocks=5273 elapsed_millis=2286\nphase=seed_reopened ordinal=8 resident_bytes=272728064 resident_peak=272728064 rust_live=38643948 rust_peak=64078360 malloc_live=45183072 malloc_allocated=65175552 malloc_blocks=522928 elapsed_millis=2381\nphase=seed_prepared ordinal=9 resident_bytes=272760832 resident_peak=272760832 rust_live=38678283 rust_peak=64078360 malloc_live=45217856 malloc_allocated=65175552 malloc_blocks=523180 elapsed_millis=2388\nphase=seed_finished ordinal=9 resident_bytes=272793600 resident_peak=272809984 rust_live=38643948 rust_peak=64078360 malloc_live=45183072 malloc_allocated=65175552 malloc_blocks=522928 elapsed_millis=2532\nphase=seed_reader_dropped ordinal=9 resident_bytes=204488704 resident_peak=272809984 rust_live=68904 rust_peak=64078360 malloc_live=304288 malloc_allocated=58720256 malloc_blocks=5273 elapsed_millis=2539\nphase=seed_reopened ordinal=9 resident_bytes=290701312 resident_peak=290701312 rust_live=38653289 rust_peak=64079635 malloc_live=45192704 malloc_allocated=65191936 malloc_blocks=522965 elapsed_millis=2635\nphase=seed_prepared ordinal=10 resident_bytes=290717696 resident_peak=290717696 rust_live=38688338 rust_peak=64079635 malloc_live=45228944 malloc_allocated=65191936 malloc_blocks=523224 elapsed_millis=2642\nphase=seed_finished ordinal=10 resident_bytes=290750464 resident_peak=290766848 rust_live=38653289 rust_peak=64079635 malloc_live=45192704 malloc_allocated=65191936 malloc_blocks=522965 elapsed_millis=2786\nphase=seed_reader_dropped ordinal=10 resident_bytes=222429184 resident_peak=290766848 rust_live=68904 rust_peak=64079635 malloc_live=304288 malloc_allocated=58720256 malloc_blocks=5273 elapsed_millis=2793\nphase=seed_reopened ordinal=10 resident_bytes=308658176 resident_peak=308658176 rust_live=38662630 rust_peak=64080916 malloc_live=45202336 malloc_allocated=65208320 malloc_blocks=523002 elapsed_millis=2890\nphase=seed_prepared ordinal=11 resident_bytes=308674560 resident_peak=308674560 rust_live=38698390 rust_peak=64080916 malloc_live=45238880 malloc_allocated=65208320 malloc_blocks=523268 elapsed_millis=2897\nphase=seed_finished ordinal=11 resident_bytes=308690944 resident_peak=308707328 rust_live=38662630 rust_peak=64080916 malloc_live=45202336 malloc_allocated=65208320 malloc_blocks=523002 elapsed_millis=3039\nphase=seed_reader_dropped ordinal=11 resident_bytes=240353280 resident_peak=308707328 rust_live=68904 rust_peak=64080916 malloc_live=304288 malloc_allocated=58720256 malloc_blocks=5273 elapsed_millis=3046\nphase=seed_reopened ordinal=11 resident_bytes=326598656 resident_peak=326598656 rust_live=38671971 rust_peak=64082195 malloc_live=45211968 malloc_allocated=65224704 malloc_blocks=523039 elapsed_millis=3143\nphase=seed_prepared ordinal=12 resident_bytes=326598656 resident_peak=326598656 rust_live=38708442 rust_peak=64082195 malloc_live=45248944 malloc_allocated=65224704 malloc_blocks=523312 elapsed_millis=3150\nphase=seed_finished ordinal=12 resident_bytes=327630848 resident_peak=327647232 rust_live=38671971 rust_peak=64082195 malloc_live=45211968 malloc_allocated=73613312 malloc_blocks=523039 elapsed_millis=3290\nphase=seed_reader_dropped ordinal=12 resident_bytes=259276800 resident_peak=327647232 rust_live=68904 rust_peak=64082195 malloc_live=304288 malloc_allocated=67108864 malloc_blocks=5273 elapsed_millis=3297\nphase=seed_reopened ordinal=12 resident_bytes=348078080 resident_peak=348078080 rust_live=38681312 rust_peak=64083472 malloc_live=45221600 malloc_allocated=73629696 malloc_blocks=523076 elapsed_millis=3398\nphase=seed_prepared ordinal=13 resident_bytes=348078080 resident_peak=348078080 rust_live=38718494 rust_peak=64083472 malloc_live=45259904 malloc_allocated=73629696 malloc_blocks=523356 elapsed_millis=3404\nphase=seed_finished ordinal=13 resident_bytes=348078080 resident_peak=348094464 rust_live=38681312 rust_peak=64083472 malloc_live=45221600 malloc_allocated=73629696 malloc_blocks=523076 elapsed_millis=3542\nphase=seed_reader_dropped ordinal=13 resident_bytes=279707648 resident_peak=348094464 rust_live=68904 rust_peak=64083472 malloc_live=304288 malloc_allocated=67108864 malloc_blocks=5273 elapsed_millis=3549\nphase=seed_reopened ordinal=13 resident_bytes=365985792 resident_peak=365985792 rust_live=38690653 rust_peak=64084750 malloc_live=45231232 malloc_allocated=73646080 malloc_blocks=523113 elapsed_millis=3646\nphase=seed_prepared ordinal=14 resident_bytes=365985792 resident_peak=365985792 rust_live=38728546 rust_peak=64084750 malloc_live=45269968 malloc_allocated=73646080 malloc_blocks=523400 elapsed_millis=3652\nphase=seed_finished ordinal=14 resident_bytes=366051328 resident_peak=366067712 rust_live=38690653 rust_peak=64084750 malloc_live=45231232 malloc_allocated=77840384 malloc_blocks=523113 elapsed_millis=3791\nphase=seed_reader_dropped ordinal=14 resident_bytes=297664512 resident_peak=366067712 rust_live=68904 rust_peak=64084750 malloc_live=304288 malloc_allocated=71303168 malloc_blocks=5273 elapsed_millis=3798\nphase=seed_reopened ordinal=14 resident_bytes=383975424 resident_peak=383975424 rust_live=38699994 rust_peak=64086027 malloc_live=45240864 malloc_allocated=77856768 malloc_blocks=523150 elapsed_millis=3895\nphase=seed_prepared ordinal=15 resident_bytes=383975424 resident_peak=383975424 rust_live=38738598 rust_peak=64086027 malloc_live=45279904 malloc_allocated=77856768 malloc_blocks=523444 elapsed_millis=3902\nphase=seed_finished ordinal=15 resident_bytes=383975424 resident_peak=383991808 rust_live=38699994 rust_peak=64086027 malloc_live=45240864 malloc_allocated=77856768 malloc_blocks=523150 elapsed_millis=4038\nphase=seed_reader_dropped ordinal=15 resident_bytes=315572224 resident_peak=383991808 rust_live=68904 rust_peak=64086027 malloc_live=304288 malloc_allocated=71303168 malloc_blocks=5273 elapsed_millis=4043\nphase=seed_reopened ordinal=15 resident_bytes=401883136 resident_peak=401883136 rust_live=38716503 rust_peak=64093449 malloc_live=45257664 malloc_allocated=77594624 malloc_blocks=523187 elapsed_millis=4139\nphase=seed_prepared ordinal=16 resident_bytes=401883136 resident_peak=401883136 rust_live=38755818 rust_peak=64093449 malloc_live=45298288 malloc_allocated=77594624 malloc_blocks=523488 elapsed_millis=4146\nphase=seed_finished ordinal=16 resident_bytes=401883136 resident_peak=401899520 rust_live=38716503 rust_peak=64093449 malloc_live=45257664 malloc_allocated=77594624 malloc_blocks=523187 elapsed_millis=4282\nphase=seed_reader_dropped ordinal=16 resident_bytes=333463552 resident_peak=401899520 rust_live=68904 rust_peak=64093449 malloc_live=304288 malloc_allocated=71303168 malloc_blocks=5273 elapsed_millis=4289\nphase=seed_reopened ordinal=16 resident_bytes=419790848 resident_peak=419790848 rust_live=38725844 rust_peak=64094726 malloc_live=45267296 malloc_allocated=77611008 malloc_blocks=523224 elapsed_millis=4386\nphase=seed_prepared ordinal=17 resident_bytes=419790848 resident_peak=419790848 rust_live=38765870 rust_peak=64094726 malloc_live=45308224 malloc_allocated=77611008 malloc_blocks=523532 elapsed_millis=4392\nphase=seed_finished ordinal=17 resident_bytes=419823616 resident_peak=419840000 rust_live=38725844 rust_peak=64094726 malloc_live=45267296 malloc_allocated=77611008 malloc_blocks=523224 elapsed_millis=4531\nphase=seed_reader_dropped ordinal=17 resident_bytes=351387648 resident_peak=419840000 rust_live=68904 rust_peak=64094726 malloc_live=304288 malloc_allocated=71303168 malloc_blocks=5273 elapsed_millis=4538\nphase=seed_reopened ordinal=17 resident_bytes=437731328 resident_peak=437731328 rust_live=38735185 rust_peak=64096006 malloc_live=45276928 malloc_allocated=77627392 malloc_blocks=523261 elapsed_millis=4636\nphase=seed_prepared ordinal=18 resident_bytes=437731328 resident_peak=437731328 rust_live=38775922 rust_peak=64096006 malloc_live=45319184 malloc_allocated=77627392 malloc_blocks=523576 elapsed_millis=4642\nphase=seed_finished ordinal=18 resident_bytes=437780480 resident_peak=437796864 rust_live=38735185 rust_peak=64096006 malloc_live=45276928 malloc_allocated=77627392 malloc_blocks=523261 elapsed_millis=4782\nphase=seed_reader_dropped ordinal=18 resident_bytes=369328128 resident_peak=437796864 rust_live=68904 rust_peak=64096006 malloc_live=304288 malloc_allocated=71303168 malloc_blocks=5273 elapsed_millis=4788\nphase=seed_reopened ordinal=18 resident_bytes=455688192 resident_peak=455688192 rust_live=38744526 rust_peak=64097283 malloc_live=45286560 malloc_allocated=77643776 malloc_blocks=523298 elapsed_millis=4886\nphase=seed_prepared ordinal=19 resident_bytes=455688192 resident_peak=455688192 rust_live=38785974 rust_peak=64097283 malloc_live=45329120 malloc_allocated=77643776 malloc_blocks=523620 elapsed_millis=4894\nphase=timer ordinal=22 resident_bytes=455688192 resident_peak=455704576 rust_live=38819889 rust_peak=64097283 malloc_live=45367104 malloc_allocated=77643776 malloc_blocks=523789 elapsed_millis=5010\nphase=seed_finished ordinal=19 resident_bytes=455704576 resident_peak=455720960 rust_live=38744526 rust_peak=64097283 malloc_live=45286560 malloc_allocated=77643776 malloc_blocks=523298 elapsed_millis=5029\nphase=seed_reader_dropped ordinal=19 resident_bytes=387235840 resident_peak=455720960 rust_live=68904 rust_peak=64097283 malloc_live=304288 malloc_allocated=71303168 malloc_blocks=5273 elapsed_millis=5035\nphase=seed_reopened ordinal=19 resident_bytes=473612288 resident_peak=473612288 rust_live=38753867 rust_peak=64098562 malloc_live=45296192 malloc_allocated=77660160 malloc_blocks=523335 elapsed_millis=5133\nphase=seed_prepared ordinal=20 resident_bytes=473612288 resident_peak=473612288 rust_live=38796026 rust_peak=64098562 malloc_live=45339312 malloc_allocated=77660160 malloc_blocks=523664 elapsed_millis=5140\nphase=seed_finished ordinal=20 resident_bytes=473628672 resident_peak=473645056 rust_live=38753867 rust_peak=64098562 malloc_live=45296192 malloc_allocated=77660160 malloc_blocks=523335 elapsed_millis=5277\nphase=seed_reader_dropped ordinal=20 resident_bytes=405143552 resident_peak=473645056 rust_live=68904 rust_peak=64098562 malloc_live=304288 malloc_allocated=71303168 malloc_blocks=5273 elapsed_millis=5284\nphase=seed_reopened ordinal=20 resident_bytes=491536384 resident_peak=491536384 rust_live=38763208 rust_peak=64099840 malloc_live=45305824 malloc_allocated=77676544 malloc_blocks=523372 elapsed_millis=5384\nphase=seed_prepared ordinal=21 resident_bytes=491536384 resident_peak=491536384 rust_live=38806078 rust_peak=64099840 malloc_live=45351296 malloc_allocated=77676544 malloc_blocks=523708 elapsed_millis=5392\nphase=seed_finished ordinal=21 resident_bytes=491552768 resident_peak=491569152 rust_live=38763208 rust_peak=64099840 malloc_live=45305824 malloc_allocated=77676544 malloc_blocks=523372 elapsed_millis=5528\nphase=seed_reader_dropped ordinal=21 resident_bytes=423051264 resident_peak=491569152 rust_live=68904 rust_peak=64099840 malloc_live=304288 malloc_allocated=71303168 malloc_blocks=5273 elapsed_millis=5534\nphase=seed_reopened ordinal=21 resident_bytes=509460480 resident_peak=509460480 rust_live=38772549 rust_peak=64101120 malloc_live=45315456 malloc_allocated=77692928 malloc_blocks=523409 elapsed_millis=5632\nphase=seed_prepared ordinal=22 resident_bytes=509460480 resident_peak=509460480 rust_live=38816130 rust_peak=64101120 malloc_live=45361232 malloc_allocated=77692928 malloc_blocks=523752 elapsed_millis=5639\nphase=seed_finished ordinal=22 resident_bytes=509526016 resident_peak=509542400 rust_live=38772549 rust_peak=64101120 malloc_live=45315456 malloc_allocated=77692928 malloc_blocks=523409 elapsed_millis=5772\nphase=seed_reader_dropped ordinal=22 resident_bytes=441008128 resident_peak=509542400 rust_live=68904 rust_peak=64101120 malloc_live=304288 malloc_allocated=71303168 malloc_blocks=5273 elapsed_millis=5778\nphase=seed_reopened ordinal=22 resident_bytes=527433728 resident_peak=527433728 rust_live=38781890 rust_peak=64102399 malloc_live=45325088 malloc_allocated=77709312 malloc_blocks=523446 elapsed_millis=5875\nphase=seed_prepared ordinal=23 resident_bytes=527433728 resident_peak=527433728 rust_live=38826182 rust_peak=64102399 malloc_live=45371168 malloc_allocated=77709312 malloc_blocks=523796 elapsed_millis=5882\nphase=seed_finished ordinal=23 resident_bytes=527450112 resident_peak=527466496 rust_live=38781890 rust_peak=64102399 malloc_live=45325088 malloc_allocated=77709312 malloc_blocks=523446 elapsed_millis=6018\nphase=seed_reader_dropped ordinal=23 resident_bytes=458915840 resident_peak=527466496 rust_live=68904 rust_peak=64102399 malloc_live=304288 malloc_allocated=71303168 malloc_blocks=5273 elapsed_millis=6024\nphase=seed_reopened ordinal=23 resident_bytes=545357824 resident_peak=545357824 rust_live=38791231 rust_peak=64103679 malloc_live=45334720 malloc_allocated=77725696 malloc_blocks=523483 elapsed_millis=6123\nphase=seed_prepared ordinal=24 resident_bytes=545357824 resident_peak=545357824 rust_live=38836234 rust_peak=64103679 malloc_live=45381360 malloc_allocated=77725696 malloc_blocks=523840 elapsed_millis=6130\nphase=seed_finished ordinal=24 resident_bytes=545357824 resident_peak=545374208 rust_live=38791231 rust_peak=64103679 malloc_live=45334720 malloc_allocated=77725696 malloc_blocks=523483 elapsed_millis=6268\nphase=seed_reader_dropped ordinal=24 resident_bytes=476807168 resident_peak=545374208 rust_live=68904 rust_peak=64103679 malloc_live=304288 malloc_allocated=71303168 malloc_blocks=5273 elapsed_millis=6275\nphase=seed_reopened ordinal=24 resident_bytes=563265536 resident_peak=563265536 rust_live=38800572 rust_peak=64104957 malloc_live=45344352 malloc_allocated=77742080 malloc_blocks=523520 elapsed_millis=6374\nphase=seed_prepared ordinal=25 resident_bytes=563265536 resident_peak=563265536 rust_live=38846286 rust_peak=64104957 malloc_live=45391296 malloc_allocated=77742080 malloc_blocks=523884 elapsed_millis=6380\nphase=seed_finished ordinal=25 resident_bytes=563265536 resident_peak=563281920 rust_live=38800572 rust_peak=64104957 malloc_live=45344352 malloc_allocated=77742080 malloc_blocks=523520 elapsed_millis=6520\nphase=seed_reader_dropped ordinal=25 resident_bytes=494698496 resident_peak=563281920 rust_live=68904 rust_peak=64104957 malloc_live=304288 malloc_allocated=71303168 malloc_blocks=5273 elapsed_millis=6526\nphase=seed_reopened ordinal=25 resident_bytes=581173248 resident_peak=581173248 rust_live=38809913 rust_peak=64106236 malloc_live=45353984 malloc_allocated=77758464 malloc_blocks=523557 elapsed_millis=6626\nphase=seed_prepared ordinal=26 resident_bytes=581173248 resident_peak=581173248 rust_live=38856338 rust_peak=64106236 malloc_live=45403280 malloc_allocated=77758464 malloc_blocks=523928 elapsed_millis=6635\nphase=seed_finished ordinal=26 resident_bytes=581255168 resident_peak=581271552 rust_live=38809913 rust_peak=64106236 malloc_live=45353984 malloc_allocated=77758464 malloc_blocks=523557 elapsed_millis=6785\nphase=seed_reader_dropped ordinal=26 resident_bytes=512671744 resident_peak=581271552 rust_live=68904 rust_peak=64106236 malloc_live=304288 malloc_allocated=71303168 malloc_blocks=5273 elapsed_millis=6792\nphase=seed_reopened ordinal=26 resident_bytes=599162880 resident_peak=599162880 rust_live=38819254 rust_peak=64107512 malloc_live=45363616 malloc_allocated=77774848 malloc_blocks=523594 elapsed_millis=6892\nphase=seed_prepared ordinal=27 resident_bytes=599162880 resident_peak=599162880 rust_live=38866390 rust_peak=64107512 malloc_live=45413216 malloc_allocated=77774848 malloc_blocks=523972 elapsed_millis=6899\nphase=seed_finished ordinal=27 resident_bytes=599195648 resident_peak=599212032 rust_live=38819254 rust_peak=64107512 malloc_live=45363616 malloc_allocated=77774848 malloc_blocks=523594 elapsed_millis=7038\nphase=seed_reader_dropped ordinal=27 resident_bytes=530595840 resident_peak=599212032 rust_live=68904 rust_peak=64107512 malloc_live=304288 malloc_allocated=71303168 malloc_blocks=5273 elapsed_millis=7045\nphase=seed_reopened ordinal=27 resident_bytes=617103360 resident_peak=617103360 rust_live=38828595 rust_peak=64108790 malloc_live=45373248 malloc_allocated=77791232 malloc_blocks=523631 elapsed_millis=7145\nphase=seed_prepared ordinal=28 resident_bytes=617103360 resident_peak=617103360 rust_live=38876442 rust_peak=64108790 malloc_live=45423408 malloc_allocated=77791232 malloc_blocks=524016 elapsed_millis=7152\nphase=seed_finished ordinal=28 resident_bytes=617103360 resident_peak=617119744 rust_live=38828595 rust_peak=64108790 malloc_live=45373248 malloc_allocated=77791232 malloc_blocks=523631 elapsed_millis=7290\nphase=seed_reader_dropped ordinal=28 resident_bytes=548487168 resident_peak=617119744 rust_live=68904 rust_peak=64108790 malloc_live=304288 malloc_allocated=71303168 malloc_blocks=5273 elapsed_millis=7297\nphase=seed_reopened ordinal=28 resident_bytes=635011072 resident_peak=635011072 rust_live=38837936 rust_peak=64110073 malloc_live=45382880 malloc_allocated=77807616 malloc_blocks=523668 elapsed_millis=7397\nphase=seed_prepared ordinal=29 resident_bytes=635011072 resident_peak=635011072 rust_live=38886494 rust_peak=64110073 malloc_live=45433344 malloc_allocated=77807616 malloc_blocks=524060 elapsed_millis=7403\nphase=seed_finished ordinal=29 resident_bytes=635027456 resident_peak=635043840 rust_live=38837936 rust_peak=64110073 malloc_live=45382880 malloc_allocated=77807616 malloc_blocks=523668 elapsed_millis=7539\nphase=seed_reader_dropped ordinal=29 resident_bytes=566394880 resident_peak=635043840 rust_live=68904 rust_peak=64110073 malloc_live=304288 malloc_allocated=71303168 malloc_blocks=5273 elapsed_millis=7545\nphase=seed_reopened ordinal=29 resident_bytes=652935168 resident_peak=652935168 rust_live=38847277 rust_peak=64111350 malloc_live=45392512 malloc_allocated=77824000 malloc_blocks=523705 elapsed_millis=7643\nphase=seed_prepared ordinal=30 resident_bytes=652935168 resident_peak=652935168 rust_live=38896546 rust_peak=64111350 malloc_live=45443280 malloc_allocated=77824000 malloc_blocks=524104 elapsed_millis=7650\nphase=seed_finished ordinal=30 resident_bytes=652951552 resident_peak=652967936 rust_live=38847277 rust_peak=64111350 malloc_live=45392512 malloc_allocated=77824000 malloc_blocks=523705 elapsed_millis=7787\nphase=seed_reader_dropped ordinal=30 resident_bytes=584302592 resident_peak=652967936 rust_live=68904 rust_peak=64111350 malloc_live=304288 malloc_allocated=71303168 malloc_blocks=5273 elapsed_millis=7794\nphase=seed_reopened ordinal=30 resident_bytes=670908416 resident_peak=670908416 rust_live=38856618 rust_peak=64112628 malloc_live=45402144 malloc_allocated=77840384 malloc_blocks=523742 elapsed_millis=7894\nphase=seed_prepared ordinal=31 resident_bytes=670908416 resident_peak=670908416 rust_live=38906598 rust_peak=64112628 malloc_live=45453216 malloc_allocated=77840384 malloc_blocks=524148 elapsed_millis=7901\nphase=seed_finished ordinal=31 resident_bytes=670908416 resident_peak=670924800 rust_live=38856618 rust_peak=64112628 malloc_live=45402144 malloc_allocated=77840384 malloc_blocks=523742 elapsed_millis=8040\nphase=seed_reader_dropped ordinal=31 resident_bytes=602243072 resident_peak=670924800 rust_live=68904 rust_peak=64112628 malloc_live=304288 malloc_allocated=71303168 malloc_blocks=5273 elapsed_millis=8046\nphase=seed_reopened ordinal=31 resident_bytes=688816128 resident_peak=688816128 rust_live=38880295 rust_peak=64126196 malloc_live=45426112 malloc_allocated=77856768 malloc_blocks=523779 elapsed_millis=8147\nphase=K10_prepared ordinal=10 resident_bytes=691355648 resident_peak=691355648 rust_live=38933634 rust_peak=64126196 malloc_live=45499408 malloc_allocated=82051072 malloc_blocks=524716 elapsed_millis=8690\nphase=K10_finished ordinal=10 resident_bytes=691437568 resident_peak=691453952 rust_live=38880295 rust_peak=64126196 malloc_live=45442496 malloc_allocated=82051072 malloc_blocks=524291 elapsed_millis=9436\nphase=K10_refreshed ordinal=10 resident_bytes=691470336 resident_peak=691470336 rust_live=38893034 rust_peak=64126196 malloc_live=45452736 malloc_allocated=82051072 malloc_blocks=524257 elapsed_millis=9961\nphase=final_reader_dropped ordinal=10 resident_bytes=622772224 resident_peak=691470336 rust_live=68904 rust_peak=64126196 malloc_live=320672 malloc_allocated=75497472 malloc_blocks=5785 elapsed_millis=9966\ndiagnostic_complete fixture=/private/tmp/hawdb-291-cold-seed-initial-diagnostic-1791420376458108000\n"
+      }
+    },
+    {
+      "variant": "exact_file_only",
+      "peak_resident_bytes": 337264640,
+      "within_256MiB_reservation": false,
+      "receipt": {
+        "state": "finished",
+        "command": [
+          "/private/tmp/hawdb-291-bound-artifact-cold-seed-probe",
+          "327680",
+          "/private/tmp/hawdb-291-bound-artifact-cold-seed-fixture-1791421281374053000"
+        ],
+        "source_compile_receipt": "/private/tmp/hawdb-291-bound-artifact-cold-seed-compile.json",
+        "compile_receipt_sha256": "998850026b8ffb2b9c8d03998eff087ce21be0f4eaf84ba39d8112d61d8ffa45",
+        "log": "/private/tmp/hawdb-291-bound-artifact-cold-seed.log",
+        "scope": "Diagnostic only. Same prototype/20GiB immutable base/384D/32coldseed opens/K10/budgets; fresh construction excluded. New release includes currentmain combination, whose prior tests and sources are separately recorded. Independent bounded-buffer experiment isolates allocation cause. No universal/fullscale qualification claim.",
+        "pid": 40436,
+        "exit_code": 0,
+        "elapsed_seconds": 15.690549082999999,
+        "log_sha256": "c81e1f6254381c19db7d89b5d5e9e6bdcdcd37b33161859a2de07201effcc362"
+      },
+      "raw_log": {
+        "local_path": "/private/tmp/hawdb-291-bound-artifact-cold-seed.log",
+        "sha256": "c81e1f6254381c19db7d89b5d5e9e6bdcdcd37b33161859a2de07201effcc362",
+        "contents": "fixture=/private/tmp/hawdb-291-bound-artifact-cold-seed-fixture-1791421281374053000 documents=327680 body_bytes=65536 dimension=384 budget=268435456 saved_initial=true\nphase=before_build ordinal=0 resident_bytes=6062080 resident_peak=6062080 rust_live=3048 rust_peak=3048 malloc_live=73872 malloc_allocated=16777216 malloc_blocks=805 elapsed_millis=0\nphase=after_initial_open ordinal=0 resident_bytes=144474112 resident_peak=144474112 rust_live=38554470 rust_peak=64062262 malloc_live=45025776 malloc_allocated=60866560 malloc_blocks=521113 elapsed_millis=130\nphase=seed_prepared ordinal=0 resident_bytes=144719872 resident_peak=144719872 rust_live=38582558 rust_peak=64062262 malloc_live=45055056 malloc_allocated=60866560 malloc_blocks=521392 elapsed_millis=142\nphase=seed_finished ordinal=0 resident_bytes=145571840 resident_peak=145571840 rust_live=38554630 rust_peak=64062262 malloc_live=45058608 malloc_allocated=65060864 malloc_blocks=522309 elapsed_millis=335\nphase=seed_reader_dropped ordinal=0 resident_bytes=53493760 resident_peak=145571840 rust_live=68920 rust_peak=64062262 malloc_live=271632 malloc_allocated=58720256 malloc_blocks=4956 elapsed_millis=341\nphase=seed_reopened ordinal=0 resident_bytes=145801216 resident_peak=145801216 rust_live=38563959 rust_peak=64063681 malloc_live=45068848 malloc_allocated=65093632 malloc_blocks=522356 elapsed_millis=436\nphase=seed_prepared ordinal=1 resident_bytes=145850368 resident_peak=145850368 rust_live=38592687 rust_peak=64063681 malloc_live=45098096 malloc_allocated=65093632 malloc_blocks=522593 elapsed_millis=452\nphase=seed_finished ordinal=1 resident_bytes=145932288 resident_peak=145948672 rust_live=38563959 rust_peak=64063681 malloc_live=45101520 malloc_allocated=65093632 malloc_blocks=522672 elapsed_millis=683\nphase=seed_reader_dropped ordinal=1 resident_bytes=53854208 resident_peak=145948672 rust_live=68920 rust_peak=64063681 malloc_live=304336 malloc_allocated=58720256 malloc_blocks=5273 elapsed_millis=690\nphase=seed_reopened ordinal=1 resident_bytes=146096128 resident_peak=146096128 rust_live=38573295 rust_peak=64064945 malloc_live=45127584 malloc_allocated=65126400 malloc_blocks=522880 elapsed_millis=790\nphase=seed_prepared ordinal=2 resident_bytes=146096128 resident_peak=146096128 rust_live=38602727 rust_peak=64064945 malloc_live=45149072 malloc_allocated=65126400 malloc_blocks=523034 elapsed_millis=802\nphase=seed_finished ordinal=2 resident_bytes=146161664 resident_peak=146178048 rust_live=38573295 rust_peak=64064945 malloc_live=45127584 malloc_allocated=65126400 malloc_blocks=522880 elapsed_millis=1067\nphase=seed_reader_dropped ordinal=2 resident_bytes=77971456 resident_peak=146178048 rust_live=68920 rust_peak=64064945 malloc_live=320656 malloc_allocated=58720256 malloc_blocks=5443 elapsed_millis=1072\nphase=seed_reopened ordinal=2 resident_bytes=154533888 resident_peak=154533888 rust_live=38582631 rust_peak=64066208 malloc_live=45128688 malloc_allocated=69337088 malloc_blocks=522828 elapsed_millis=1170\nphase=seed_prepared ordinal=3 resident_bytes=154632192 resident_peak=154632192 rust_live=38612767 rust_peak=64066208 malloc_live=45167120 malloc_allocated=77725696 malloc_blocks=523159 elapsed_millis=1188\nphase=seed_finished ordinal=3 resident_bytes=154664960 resident_peak=154681344 rust_live=38582631 rust_peak=64066208 malloc_live=45137328 malloc_allocated=77725696 malloc_blocks=522918 elapsed_millis=1440\nphase=seed_reader_dropped ordinal=3 resident_bytes=86458368 resident_peak=154681344 rust_live=68920 rust_peak=64066208 malloc_live=320656 malloc_allocated=71303168 malloc_blocks=5443 elapsed_millis=1450\nphase=seed_reopened ordinal=3 resident_bytes=160808960 resident_peak=160808960 rust_live=38593759 rust_peak=64069007 malloc_live=45140224 malloc_allocated=77742080 malloc_blocks=522866 elapsed_millis=1548\nphase=seed_prepared ordinal=4 resident_bytes=160825344 resident_peak=160825344 rust_live=38624599 rust_peak=64069007 malloc_live=45179536 malloc_allocated=77742080 malloc_blocks=523204 elapsed_millis=1556\nphase=seed_finished ordinal=4 resident_bytes=160890880 resident_peak=160907264 rust_live=38593759 rust_peak=64069007 malloc_live=45148864 malloc_allocated=77742080 malloc_blocks=522956 elapsed_millis=1773\nphase=seed_reader_dropped ordinal=4 resident_bytes=92667904 resident_peak=160907264 rust_live=68920 rust_peak=64069007 malloc_live=320656 malloc_allocated=71303168 malloc_blocks=5443 elapsed_millis=1779\nphase=seed_reopened ordinal=4 resident_bytes=167870464 resident_peak=167870464 rust_live=38603095 rust_peak=64070270 malloc_live=45149968 malloc_allocated=77758464 malloc_blocks=522904 elapsed_millis=1874\nphase=seed_prepared ordinal=5 resident_bytes=167870464 resident_peak=167870464 rust_live=38634639 rust_peak=64070270 malloc_live=45190160 malloc_allocated=77758464 malloc_blocks=523249 elapsed_millis=1881\nphase=seed_finished ordinal=5 resident_bytes=167870464 resident_peak=167886848 rust_live=38603095 rust_peak=64070270 malloc_live=45158608 malloc_allocated=77758464 malloc_blocks=522994 elapsed_millis=2114\nphase=seed_reader_dropped ordinal=5 resident_bytes=99631104 resident_peak=167886848 rust_live=68920 rust_peak=64070270 malloc_live=320656 malloc_allocated=71303168 malloc_blocks=5443 elapsed_millis=2123\nphase=seed_reopened ordinal=5 resident_bytes=173965312 resident_peak=173965312 rust_live=38612423 rust_peak=64071534 malloc_live=45159712 malloc_allocated=77774848 malloc_blocks=522942 elapsed_millis=2219\nphase=seed_prepared ordinal=6 resident_bytes=173998080 resident_peak=173998080 rust_live=38644671 rust_peak=64071534 malloc_live=45200784 malloc_allocated=77774848 malloc_blocks=523294 elapsed_millis=2229\nphase=seed_finished ordinal=6 resident_bytes=174030848 resident_peak=174047232 rust_live=38612423 rust_peak=64071534 malloc_live=45168352 malloc_allocated=77774848 malloc_blocks=523032 elapsed_millis=2484\nphase=seed_reader_dropped ordinal=6 resident_bytes=105775104 resident_peak=174047232 rust_live=68920 rust_peak=64071534 malloc_live=320656 malloc_allocated=71303168 malloc_blocks=5443 elapsed_millis=2489\nphase=seed_reopened ordinal=6 resident_bytes=180338688 resident_peak=180338688 rust_live=38621751 rust_peak=64072795 malloc_live=45169456 malloc_allocated=77791232 malloc_blocks=522980 elapsed_millis=2585\nphase=seed_prepared ordinal=7 resident_bytes=180338688 resident_peak=180338688 rust_live=38654703 rust_peak=64072795 malloc_live=45210896 malloc_allocated=77791232 malloc_blocks=523339 elapsed_millis=2593\nphase=seed_finished ordinal=7 resident_bytes=180355072 resident_peak=180371456 rust_live=38621751 rust_peak=64072795 malloc_live=45178096 malloc_allocated=77791232 malloc_blocks=523070 elapsed_millis=2852\nphase=seed_reader_dropped ordinal=7 resident_bytes=112082944 resident_peak=180371456 rust_live=68920 rust_peak=64072795 malloc_live=320656 malloc_allocated=71303168 malloc_blocks=5443 elapsed_millis=2857\nphase=seed_reopened ordinal=7 resident_bytes=186449920 resident_peak=186449920 rust_live=38634663 rust_peak=64077132 malloc_live=45182784 malloc_allocated=77807616 malloc_blocks=523018 elapsed_millis=2954\nphase=seed_prepared ordinal=8 resident_bytes=186449920 resident_peak=186449920 rust_live=38668319 rust_peak=64077132 malloc_live=45225168 malloc_allocated=77807616 malloc_blocks=523384 elapsed_millis=2964\nphase=seed_finished ordinal=8 resident_bytes=186515456 resident_peak=186531840 rust_live=38634663 rust_peak=64077132 malloc_live=45191424 malloc_allocated=77807616 malloc_blocks=523108 elapsed_millis=3209\nphase=seed_reader_dropped ordinal=8 resident_bytes=118226944 resident_peak=186531840 rust_live=68920 rust_peak=64077132 malloc_live=320656 malloc_allocated=71303168 malloc_blocks=5443 elapsed_millis=3214\nphase=seed_reopened ordinal=8 resident_bytes=192643072 resident_peak=192643072 rust_live=38644008 rust_peak=64078412 malloc_live=45192528 malloc_allocated=77824000 malloc_blocks=523056 elapsed_millis=3314\nphase=seed_prepared ordinal=9 resident_bytes=192659456 resident_peak=192659456 rust_live=38678375 rust_peak=64078412 malloc_live=45235728 malloc_allocated=77824000 malloc_blocks=523429 elapsed_millis=3325\nphase=seed_finished ordinal=9 resident_bytes=192675840 resident_peak=192692224 rust_live=38644008 rust_peak=64078412 malloc_live=45201168 malloc_allocated=77824000 malloc_blocks=523146 elapsed_millis=3555\nphase=seed_reader_dropped ordinal=9 resident_bytes=124370944 resident_peak=192692224 rust_live=68920 rust_peak=64078412 malloc_live=320656 malloc_allocated=71303168 malloc_blocks=5443 elapsed_millis=3561\nphase=seed_reopened ordinal=9 resident_bytes=198770688 resident_peak=198770688 rust_live=38653353 rust_peak=64079687 malloc_live=45202272 malloc_allocated=77840384 malloc_blocks=523094 elapsed_millis=3660\nphase=seed_prepared ordinal=10 resident_bytes=198803456 resident_peak=198803456 rust_live=38688434 rust_peak=64079687 malloc_live=45246928 malloc_allocated=77840384 malloc_blocks=523474 elapsed_millis=3672\nphase=seed_finished ordinal=10 resident_bytes=198852608 resident_peak=198868992 rust_live=38653353 rust_peak=64079687 malloc_live=45210912 malloc_allocated=82034688 malloc_blocks=523184 elapsed_millis=3924\nphase=seed_reader_dropped ordinal=10 resident_bytes=130531328 resident_peak=198868992 rust_live=68920 rust_peak=64079687 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=3929\nphase=seed_reopened ordinal=10 resident_bytes=204947456 resident_peak=204947456 rust_live=38662698 rust_peak=64080968 malloc_live=45212016 malloc_allocated=82051072 malloc_blocks=523132 elapsed_millis=4030\nphase=seed_prepared ordinal=11 resident_bytes=204963840 resident_peak=204963840 rust_live=38698490 rust_peak=64080968 malloc_live=45256976 malloc_allocated=82051072 malloc_blocks=523519 elapsed_millis=4040\nphase=seed_finished ordinal=11 resident_bytes=204980224 resident_peak=204996608 rust_live=38662698 rust_peak=64080968 malloc_live=45220656 malloc_allocated=82051072 malloc_blocks=523222 elapsed_millis=4285\nphase=seed_reader_dropped ordinal=11 resident_bytes=136642560 resident_peak=204996608 rust_live=68920 rust_peak=64080968 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=4290\nphase=seed_reopened ordinal=11 resident_bytes=211075072 resident_peak=211075072 rust_live=38672043 rust_peak=64082247 malloc_live=45221760 malloc_allocated=81788928 malloc_blocks=523170 elapsed_millis=4386\nphase=seed_prepared ordinal=12 resident_bytes=211091456 resident_peak=211091456 rust_live=38708546 rust_peak=64082247 malloc_live=45267152 malloc_allocated=81788928 malloc_blocks=523564 elapsed_millis=4394\nphase=seed_finished ordinal=12 resident_bytes=211124224 resident_peak=211140608 rust_live=38672043 rust_peak=64082247 malloc_live=45230400 malloc_allocated=81788928 malloc_blocks=523260 elapsed_millis=4619\nphase=seed_reader_dropped ordinal=12 resident_bytes=142770176 resident_peak=211140608 rust_live=68920 rust_peak=64082247 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=4628\nphase=seed_reopened ordinal=12 resident_bytes=217219072 resident_peak=217219072 rust_live=38681388 rust_peak=64083524 malloc_live=45231504 malloc_allocated=81805312 malloc_blocks=523208 elapsed_millis=4726\nphase=seed_prepared ordinal=13 resident_bytes=217219072 resident_peak=217219072 rust_live=38718602 rust_peak=64083524 malloc_live=45278224 malloc_allocated=81805312 malloc_blocks=523609 elapsed_millis=4732\nphase=seed_finished ordinal=13 resident_bytes=217235456 resident_peak=217251840 rust_live=38681388 rust_peak=64083524 malloc_live=45240144 malloc_allocated=81805312 malloc_blocks=523298 elapsed_millis=4905\nphase=seed_reader_dropped ordinal=13 resident_bytes=148865024 resident_peak=217251840 rust_live=68920 rust_peak=64083524 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=4910\nphase=seed_reopened ordinal=13 resident_bytes=223330304 resident_peak=223330304 rust_live=38690733 rust_peak=64084802 malloc_live=45241248 malloc_allocated=81821696 malloc_blocks=523246 elapsed_millis=5008\nphase=timer ordinal=16 resident_bytes=223330304 resident_peak=223330304 rust_live=38690733 rust_peak=64084802 malloc_live=45241248 malloc_allocated=81821696 malloc_blocks=523246 elapsed_millis=5010\nphase=seed_prepared ordinal=14 resident_bytes=223363072 resident_peak=223363072 rust_live=38728658 rust_peak=64084802 malloc_live=45288400 malloc_allocated=81821696 malloc_blocks=523654 elapsed_millis=5016\nphase=seed_finished ordinal=14 resident_bytes=223412224 resident_peak=223428608 rust_live=38690733 rust_peak=64084802 malloc_live=45249888 malloc_allocated=81821696 malloc_blocks=523336 elapsed_millis=5276\nphase=seed_reader_dropped ordinal=14 resident_bytes=155025408 resident_peak=223428608 rust_live=68920 rust_peak=64084802 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=5282\nphase=seed_reopened ordinal=14 resident_bytes=229523456 resident_peak=229523456 rust_live=38700078 rust_peak=64086079 malloc_live=45250992 malloc_allocated=81838080 malloc_blocks=523284 elapsed_millis=5383\nphase=seed_prepared ordinal=15 resident_bytes=229523456 resident_peak=229523456 rust_live=38738714 rust_peak=64086079 malloc_live=45298448 malloc_allocated=81838080 malloc_blocks=523699 elapsed_millis=5398\nphase=seed_finished ordinal=15 resident_bytes=229523456 resident_peak=229539840 rust_live=38700078 rust_peak=64086079 malloc_live=45259632 malloc_allocated=81838080 malloc_blocks=523374 elapsed_millis=5653\nphase=seed_reader_dropped ordinal=15 resident_bytes=161120256 resident_peak=229539840 rust_live=68920 rust_peak=64086079 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=5663\nphase=seed_reopened ordinal=15 resident_bytes=235618304 resident_peak=235618304 rust_live=38716591 rust_peak=64093501 malloc_live=45267904 malloc_allocated=81854464 malloc_blocks=523322 elapsed_millis=5760\nphase=seed_prepared ordinal=16 resident_bytes=235618304 resident_peak=235618304 rust_live=38755938 rust_peak=64093501 malloc_live=45316944 malloc_allocated=81854464 malloc_blocks=523744 elapsed_millis=5768\nphase=seed_finished ordinal=16 resident_bytes=235618304 resident_peak=235634688 rust_live=38716591 rust_peak=64093501 malloc_live=45276544 malloc_allocated=81854464 malloc_blocks=523412 elapsed_millis=5996\nphase=seed_reader_dropped ordinal=16 resident_bytes=167198720 resident_peak=235634688 rust_live=68920 rust_peak=64093501 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=6002\nphase=seed_reopened ordinal=16 resident_bytes=241713152 resident_peak=241713152 rust_live=38725936 rust_peak=64094778 malloc_live=45277648 malloc_allocated=81870848 malloc_blocks=523360 elapsed_millis=6103\nphase=seed_prepared ordinal=17 resident_bytes=241729536 resident_peak=241729536 rust_live=38765994 rust_peak=64094778 malloc_live=45326992 malloc_allocated=81870848 malloc_blocks=523789 elapsed_millis=6110\nphase=seed_finished ordinal=17 resident_bytes=241729536 resident_peak=241745920 rust_live=38725936 rust_peak=64094778 malloc_live=45286288 malloc_allocated=81870848 malloc_blocks=523450 elapsed_millis=6297\nphase=seed_reader_dropped ordinal=17 resident_bytes=173293568 resident_peak=241745920 rust_live=68920 rust_peak=64094778 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=6303\nphase=seed_reopened ordinal=17 resident_bytes=247824384 resident_peak=247824384 rust_live=38735281 rust_peak=64096058 malloc_live=45287392 malloc_allocated=81887232 malloc_blocks=523398 elapsed_millis=6405\nphase=seed_prepared ordinal=18 resident_bytes=247824384 resident_peak=247824384 rust_live=38776050 rust_peak=64096058 malloc_live=45338064 malloc_allocated=81887232 malloc_blocks=523834 elapsed_millis=6416\nphase=seed_finished ordinal=18 resident_bytes=247889920 resident_peak=247906304 rust_live=38735281 rust_peak=64096058 malloc_live=45296032 malloc_allocated=81887232 malloc_blocks=523488 elapsed_millis=6671\nphase=seed_reader_dropped ordinal=18 resident_bytes=179437568 resident_peak=247906304 rust_live=68920 rust_peak=64096058 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=6677\nphase=seed_reopened ordinal=18 resident_bytes=254001152 resident_peak=254001152 rust_live=38744626 rust_peak=64097335 malloc_live=45297136 malloc_allocated=81903616 malloc_blocks=523436 elapsed_millis=6774\nphase=seed_prepared ordinal=19 resident_bytes=254001152 resident_peak=254001152 rust_live=38786106 rust_peak=64097335 malloc_live=45348112 malloc_allocated=81903616 malloc_blocks=523879 elapsed_millis=6787\nphase=seed_finished ordinal=19 resident_bytes=254001152 resident_peak=254017536 rust_live=38744626 rust_peak=64097335 malloc_live=45305776 malloc_allocated=81903616 malloc_blocks=523526 elapsed_millis=7040\nphase=seed_reader_dropped ordinal=19 resident_bytes=185532416 resident_peak=254017536 rust_live=68920 rust_peak=64097335 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=7046\nphase=seed_reopened ordinal=19 resident_bytes=260096000 resident_peak=260096000 rust_live=38753971 rust_peak=64098614 malloc_live=45306880 malloc_allocated=81920000 malloc_blocks=523474 elapsed_millis=7144\nphase=seed_prepared ordinal=20 resident_bytes=260096000 resident_peak=260096000 rust_live=38796162 rust_peak=64098614 malloc_live=45358416 malloc_allocated=81920000 malloc_blocks=523924 elapsed_millis=7154\nphase=seed_finished ordinal=20 resident_bytes=260128768 resident_peak=260145152 rust_live=38753971 rust_peak=64098614 malloc_live=45315520 malloc_allocated=81920000 malloc_blocks=523564 elapsed_millis=7388\nphase=seed_reader_dropped ordinal=20 resident_bytes=191643648 resident_peak=260145152 rust_live=68920 rust_peak=64098614 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=7394\nphase=seed_reopened ordinal=20 resident_bytes=266223616 resident_peak=266223616 rust_live=38763316 rust_peak=64099892 malloc_live=45316624 malloc_allocated=81936384 malloc_blocks=523512 elapsed_millis=7493\nphase=seed_prepared ordinal=21 resident_bytes=266240000 resident_peak=266240000 rust_live=38806218 rust_peak=64099892 malloc_live=45370512 malloc_allocated=81936384 malloc_blocks=523969 elapsed_millis=7503\nphase=seed_finished ordinal=21 resident_bytes=266256384 resident_peak=266272768 rust_live=38763316 rust_peak=64099892 malloc_live=45325264 malloc_allocated=81936384 malloc_blocks=523602 elapsed_millis=7698\nphase=seed_reader_dropped ordinal=21 resident_bytes=197754880 resident_peak=266272768 rust_live=68920 rust_peak=64099892 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=7703\nphase=seed_reopened ordinal=21 resident_bytes=272351232 resident_peak=272351232 rust_live=38772661 rust_peak=64101172 malloc_live=45326368 malloc_allocated=81952768 malloc_blocks=523550 elapsed_millis=7803\nphase=seed_prepared ordinal=22 resident_bytes=272351232 resident_peak=272351232 rust_live=38816274 rust_peak=64101172 malloc_live=45380560 malloc_allocated=81952768 malloc_blocks=524014 elapsed_millis=7809\nphase=seed_finished ordinal=22 resident_bytes=272416768 resident_peak=272433152 rust_live=38772661 rust_peak=64101172 malloc_live=45335008 malloc_allocated=81952768 malloc_blocks=523640 elapsed_millis=8057\nphase=seed_reader_dropped ordinal=22 resident_bytes=203898880 resident_peak=272433152 rust_live=68920 rust_peak=64101172 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=8062\nphase=seed_reopened ordinal=22 resident_bytes=278511616 resident_peak=278511616 rust_live=38782006 rust_peak=64102451 malloc_live=45336112 malloc_allocated=81969152 malloc_blocks=523588 elapsed_millis=8162\nphase=seed_prepared ordinal=23 resident_bytes=278511616 resident_peak=278511616 rust_live=38826330 rust_peak=64102451 malloc_live=45390608 malloc_allocated=81969152 malloc_blocks=524059 elapsed_millis=8172\nphase=seed_finished ordinal=23 resident_bytes=278544384 resident_peak=278560768 rust_live=38782006 rust_peak=64102451 malloc_live=45344752 malloc_allocated=81969152 malloc_blocks=523678 elapsed_millis=8431\nphase=seed_reader_dropped ordinal=23 resident_bytes=210010112 resident_peak=278560768 rust_live=68920 rust_peak=64102451 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=8437\nphase=seed_reopened ordinal=23 resident_bytes=284639232 resident_peak=284639232 rust_live=38791351 rust_peak=64103731 malloc_live=45345856 malloc_allocated=81985536 malloc_blocks=523626 elapsed_millis=8534\nphase=seed_prepared ordinal=24 resident_bytes=284639232 resident_peak=284639232 rust_live=38836386 rust_peak=64103731 malloc_live=45400912 malloc_allocated=81985536 malloc_blocks=524104 elapsed_millis=8727\nphase=seed_finished ordinal=24 resident_bytes=284655616 resident_peak=284672000 rust_live=38791351 rust_peak=64103731 malloc_live=45354496 malloc_allocated=81985536 malloc_blocks=523716 elapsed_millis=9598\nphase=seed_reader_dropped ordinal=24 resident_bytes=216104960 resident_peak=284672000 rust_live=68920 rust_peak=64103731 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=9603\nphase=seed_reopened ordinal=24 resident_bytes=290750464 resident_peak=290750464 rust_live=38800696 rust_peak=64105009 malloc_live=45355600 malloc_allocated=82001920 malloc_blocks=523664 elapsed_millis=9708\nphase=seed_prepared ordinal=25 resident_bytes=290750464 resident_peak=290750464 rust_live=38846442 rust_peak=64105009 malloc_live=45410960 malloc_allocated=82001920 malloc_blocks=524149 elapsed_millis=9716\nphase=seed_finished ordinal=25 resident_bytes=290750464 resident_peak=290766848 rust_live=38800696 rust_peak=64105009 malloc_live=45364240 malloc_allocated=82001920 malloc_blocks=523754 elapsed_millis=9943\nphase=seed_reader_dropped ordinal=25 resident_bytes=222183424 resident_peak=290766848 rust_live=68920 rust_peak=64105009 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=9949\nphase=timer ordinal=28 resident_bytes=228261888 resident_peak=290766848 rust_live=63057562 rust_peak=64105009 malloc_live=69811696 malloc_allocated=106496000 malloc_blocks=520840 elapsed_millis=10021\nphase=seed_reopened ordinal=25 resident_bytes=296845312 resident_peak=296845312 rust_live=38810041 rust_peak=64106288 malloc_live=45365344 malloc_allocated=82018304 malloc_blocks=523702 elapsed_millis=10050\nphase=seed_prepared ordinal=26 resident_bytes=296845312 resident_peak=296845312 rust_live=38856498 rust_peak=64106288 malloc_live=45423056 malloc_allocated=82018304 malloc_blocks=524194 elapsed_millis=10060\nphase=seed_finished ordinal=26 resident_bytes=296910848 resident_peak=296927232 rust_live=38810041 rust_peak=64106288 malloc_live=45373984 malloc_allocated=82018304 malloc_blocks=523792 elapsed_millis=10239\nphase=seed_reader_dropped ordinal=26 resident_bytes=228327424 resident_peak=296927232 rust_live=68920 rust_peak=64106288 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=10244\nphase=seed_reopened ordinal=26 resident_bytes=303005696 resident_peak=303005696 rust_live=38819386 rust_peak=64107564 malloc_live=45375088 malloc_allocated=82034688 malloc_blocks=523740 elapsed_millis=10346\nphase=seed_prepared ordinal=27 resident_bytes=303005696 resident_peak=303005696 rust_live=38866554 rust_peak=64107564 malloc_live=45433104 malloc_allocated=82034688 malloc_blocks=524239 elapsed_millis=10357\nphase=seed_finished ordinal=27 resident_bytes=303005696 resident_peak=303022080 rust_live=38819386 rust_peak=64107564 malloc_live=45383728 malloc_allocated=82034688 malloc_blocks=523830 elapsed_millis=10627\nphase=seed_reader_dropped ordinal=27 resident_bytes=234405888 resident_peak=303022080 rust_live=68920 rust_peak=64107564 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=10632\nphase=seed_reopened ordinal=27 resident_bytes=309100544 resident_peak=309100544 rust_live=38828731 rust_peak=64108842 malloc_live=45384832 malloc_allocated=82051072 malloc_blocks=523778 elapsed_millis=10737\nphase=seed_prepared ordinal=28 resident_bytes=309100544 resident_peak=309100544 rust_live=38876610 rust_peak=64108842 malloc_live=45443408 malloc_allocated=82051072 malloc_blocks=524284 elapsed_millis=10749\nphase=seed_finished ordinal=28 resident_bytes=309100544 resident_peak=309116928 rust_live=38828731 rust_peak=64108842 malloc_live=45393472 malloc_allocated=82051072 malloc_blocks=523868 elapsed_millis=10966\nphase=seed_reader_dropped ordinal=28 resident_bytes=240484352 resident_peak=309116928 rust_live=68920 rust_peak=64108842 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=10976\nphase=seed_reopened ordinal=28 resident_bytes=315195392 resident_peak=315195392 rust_live=38838076 rust_peak=64110125 malloc_live=45394576 malloc_allocated=81788928 malloc_blocks=523816 elapsed_millis=11077\nphase=seed_prepared ordinal=29 resident_bytes=315195392 resident_peak=315195392 rust_live=38886666 rust_peak=64110125 malloc_live=45453456 malloc_allocated=81788928 malloc_blocks=524329 elapsed_millis=11086\nphase=seed_finished ordinal=29 resident_bytes=315195392 resident_peak=315211776 rust_live=38838076 rust_peak=64110125 malloc_live=45403216 malloc_allocated=81788928 malloc_blocks=523906 elapsed_millis=11308\nphase=seed_reader_dropped ordinal=29 resident_bytes=246562816 resident_peak=315211776 rust_live=68920 rust_peak=64110125 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=11314\nphase=seed_reopened ordinal=29 resident_bytes=321290240 resident_peak=321290240 rust_live=38847421 rust_peak=64111402 malloc_live=45404320 malloc_allocated=81805312 malloc_blocks=523854 elapsed_millis=11415\nphase=seed_prepared ordinal=30 resident_bytes=321290240 resident_peak=321290240 rust_live=38896722 rust_peak=64111402 malloc_live=45463504 malloc_allocated=81805312 malloc_blocks=524374 elapsed_millis=11428\nphase=seed_finished ordinal=30 resident_bytes=321290240 resident_peak=321306624 rust_live=38847421 rust_peak=64111402 malloc_live=45412960 malloc_allocated=81805312 malloc_blocks=523944 elapsed_millis=11621\nphase=seed_reader_dropped ordinal=30 resident_bytes=252641280 resident_peak=321306624 rust_live=68920 rust_peak=64111402 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=11630\nphase=seed_reopened ordinal=30 resident_bytes=327434240 resident_peak=327434240 rust_live=38856766 rust_peak=64112680 malloc_live=45414064 malloc_allocated=81821696 malloc_blocks=523892 elapsed_millis=11733\nphase=seed_prepared ordinal=31 resident_bytes=327434240 resident_peak=327434240 rust_live=38906778 rust_peak=64112680 malloc_live=45473552 malloc_allocated=81821696 malloc_blocks=524419 elapsed_millis=11747\nphase=seed_finished ordinal=31 resident_bytes=327450624 resident_peak=327467008 rust_live=38856766 rust_peak=64112680 malloc_live=45422704 malloc_allocated=81821696 malloc_blocks=523982 elapsed_millis=12034\nphase=seed_reader_dropped ordinal=31 resident_bytes=258785280 resident_peak=327467008 rust_live=68920 rust_peak=64112680 malloc_live=320656 malloc_allocated=75497472 malloc_blocks=5443 elapsed_millis=12039\nphase=seed_reopened ordinal=31 resident_bytes=333545472 resident_peak=333545472 rust_live=38880447 rust_peak=64126248 malloc_live=45438144 malloc_allocated=81838080 malloc_blocks=523930 elapsed_millis=12142\nphase=K10_prepared ordinal=10 resident_bytes=336084992 resident_peak=336084992 rust_live=38933818 rust_peak=64126248 malloc_live=45519408 malloc_allocated=81838080 malloc_blocks=524976 elapsed_millis=12850\nphase=K10_finished ordinal=10 resident_bytes=336166912 resident_peak=336183296 rust_live=38880447 rust_peak=64126248 malloc_live=45463168 malloc_allocated=81838080 malloc_blocks=524532 elapsed_millis=13755\nphase=K10_refreshed ordinal=10 resident_bytes=337264640 resident_peak=337264640 rust_live=38893190 rust_peak=64126248 malloc_live=45476208 malloc_allocated=86032384 malloc_blocks=524585 elapsed_millis=14399\nphase=final_reader_dropped ordinal=10 resident_bytes=268566528 resident_peak=337264640 rust_live=68920 rust_peak=64126248 malloc_live=337040 malloc_allocated=79691776 malloc_blocks=5955 elapsed_millis=14405\ndiagnostic_complete fixture=/private/tmp/hawdb-291-bound-artifact-cold-seed-fixture-1791421281374053000\n"
+      }
+    },
+    {
+      "variant": "exact_file_and_directory",
+      "peak_resident_bytes": 157319168,
+      "within_256MiB_reservation": true,
+      "receipt": {
+        "state": "finished",
+        "compile_command": [
+          "rustc",
+          "--edition=2021",
+          "/private/tmp/hawdb-291-fresh-memory-phase-probe.rs",
+          "-o",
+          "/private/tmp/hawdb-291-bound-read-directory-cold-probe",
+          "-C",
+          "opt-level=3",
+          "-C",
+          "codegen-units=1",
+          "-C",
+          "lto=thin",
+          "-L",
+          "dependency=/private/tmp/hawdb-291-main-qualification/target/release/deps",
+          "--extern",
+          "hawdb=/private/tmp/hawdb-291-main-qualification/target/release/libhawdb.rlib",
+          "--extern",
+          "hawdb_storage=/private/tmp/hawdb-291-main-qualification/target/release/deps/libhawdb_storage-e7682c6753862f14.rlib",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/crc32c-9f5ef7df5eeb6164/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/crc32fast-d2f69ff0655b4e94/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/crc32fast-fccfe057f242020a/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/crossbeam-deque-8d58581f7824aab4/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/crossbeam-epoch-dfb0a33f1c414c13/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/crossbeam-utils-f08ad3edf09acef1/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/crunchy-ebc8c1a5f70a63a8/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/fst-b09a165355350dbb/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/generic-array-3b1500e96b1cdfa4/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/getrandom-c7dba2882e45ef6c/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/libc-1971d36cd6e3d2cc/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/libc-cdab7a87fb2bd880/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/num-traits-860cdef936d591f4/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/object-4d99c2dbf1baa848/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/proc-macro2-33a4d35c9e712667/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/psm-9efbc1038d23ff76/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/quote-bf308e79b7929186/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/rayon-core-81e3004f2cebab2d/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/serde-2f4ba1a6d047b6ce/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/serde_core-a0f038f455ef79d8/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/serde_json-882cfce87901d054/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/sha2-asm-3a4e7d24875be915/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/stacker-d1032bdddf31b59d/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/zmij-fdc95ab2beaafff6/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/zstd-safe-4e956889136ba2ed/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/zstd-safe-ed6688b1857d2c67/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/zstd-sys-3ca7a0718801b478/out",
+          "-L",
+          "native=/private/tmp/hawdb-291-main-qualification/target/release/build/zstd-sys-f770cf02dd273553/out"
+        ],
+        "compile_exit_code": 0,
+        "compile_seconds": 9.931942708000001,
+        "compiler_stderr": "",
+        "source_sha256": "9a3f4d273ca7697fdcf90c93ff156fe41f6b27acff5614f2b5769aec3835163e",
+        "libraries": {
+          "hawdb": {
+            "path": "/private/tmp/hawdb-291-main-qualification/target/release/libhawdb.rlib",
+            "sha256": "537d2388f7335f581821c0aaf80174cb4b838197ab6943114c33ee9eba05f80b",
+            "features": [
+              "background-maintenance",
+              "default",
+              "full-text-search",
+              "graph-analytics",
+              "tokio-runtime",
+              "vector-search"
+            ]
+          },
+          "hawdb_storage": {
+            "path": "/private/tmp/hawdb-291-main-qualification/target/release/deps/libhawdb_storage-e7682c6753862f14.rlib",
+            "sha256": "ddd125d00cd11769924f32fe822ab18d30339976c97eec39247bb0e4d752fe8c",
+            "features": [
+              "artifact-mmap"
+            ]
+          }
+        },
+        "fixture": "/private/tmp/hawdb-291-bound-read-directory-cold-fixture-1791422082160451000",
+        "fixture_head_sha256": "d0d825e336609212789cf31cb53c1a6b6024c5400564228741cf4cfa4a31d7ae",
+        "cloned_files": [
+          {
+            "name": "search_projection_segments.1.hawdb",
+            "length": 17871776
+          },
+          {
+            "name": "search_projection_segment_payloads.1.hawdb",
+            "length": 702917862
+          },
+          {
+            "name": "search_projection_metadata_payloads.1.hawdb",
+            "length": 1851268
+          },
+          {
+            "name": "search_projection_vector_payloads.1.hawdb",
+            "length": 610039636
+          },
+          {
+            "name": "search_projection_out_of_core_layout.1.hawdb",
+            "length": 555428
+          },
+          {
+            "name": "search_lexical.manifest.1.hawdb",
+            "length": 6056177
+          },
+          {
+            "name": "search_rabitq.1.hawdb",
+            "length": 68199976
+          },
+          {
+            "name": "search_lexical.1.hawdb",
+            "length": 40676033
+          }
+        ],
+        "source_freeze_sha256": "240d2b609160d342b068c99315af36a999342e1dfe5b39906d42f57ce5234049",
+        "scope": "Same complete20GiB/384D immutable base and same internal counted prototype;32coldseed publications/reopens andK10 update. Fresh construction excluded. Uncommitted currentmain+bothallocationcorrections. No process inspectors; uncontrolledcache/host. Original andintermediatefailures retained. Not fullscalequalification.",
+        "binary_sha256": "ad28b45cc4d0f379e5eff34c212fcbc80157ff01baa517e43b176e12ac035798",
+        "command": [
+          "/private/tmp/hawdb-291-bound-read-directory-cold-probe",
+          "327680",
+          "/private/tmp/hawdb-291-bound-read-directory-cold-fixture-1791422082160451000"
+        ],
+        "log": "/private/tmp/hawdb-291-bound-read-directory-cold.log",
+        "os_fd_limits": [
+          4096,
+          9223372036854775807
+        ],
+        "pid": 45528,
+        "exit_code": 0,
+        "elapsed_seconds": 25.735746125,
+        "log_sha256": "ecdc55d710c0804473e1016cdb96fe78e93f84394c2009249d63d016bf0b5e65"
+      },
+      "raw_log": {
+        "local_path": "/private/tmp/hawdb-291-bound-read-directory-cold.log",
+        "sha256": "ecdc55d710c0804473e1016cdb96fe78e93f84394c2009249d63d016bf0b5e65",
+        "contents": "fixture=/private/tmp/hawdb-291-bound-read-directory-cold-fixture-1791422082160451000 documents=327680 body_bytes=65536 dimension=384 budget=268435456 saved_initial=true\nphase=before_build ordinal=0 resident_bytes=6062080 resident_peak=6062080 rust_live=3052 rust_peak=3052 malloc_live=73872 malloc_allocated=16777216 malloc_blocks=805 elapsed_millis=0\nphase=after_initial_open ordinal=0 resident_bytes=148078592 resident_peak=148078592 rust_live=35704620 rust_peak=64178891 malloc_live=42206880 malloc_allocated=74809344 malloc_blocks=521203 elapsed_millis=137\nphase=seed_prepared ordinal=0 resident_bytes=148324352 resident_peak=148324352 rust_live=35732716 rust_peak=64178891 malloc_live=42234656 malloc_allocated=74809344 malloc_blocks=521392 elapsed_millis=200\nphase=seed_finished ordinal=0 resident_bytes=149078016 resident_peak=149078016 rust_live=35704780 rust_peak=64178891 malloc_live=42223360 malloc_allocated=74809344 malloc_blocks=521376 elapsed_millis=610\nphase=seed_reader_dropped ordinal=0 resident_bytes=56999936 resident_peak=149078016 rust_live=68924 rust_peak=64178891 malloc_live=271632 malloc_allocated=71303168 malloc_blocks=4079 elapsed_millis=616\nphase=seed_reopened ordinal=0 resident_bytes=150290432 resident_peak=150290432 rust_live=35713918 rust_peak=64180310 malloc_live=42233200 malloc_allocated=79003648 malloc_blocks=521433 elapsed_millis=711\nphase=seed_prepared ordinal=1 resident_bytes=150306816 resident_peak=150306816 rust_live=35742654 rust_peak=64180310 malloc_live=42261664 malloc_allocated=79003648 malloc_blocks=521628 elapsed_millis=754\nphase=seed_finished ordinal=1 resident_bytes=150519808 resident_peak=150519808 rust_live=35713918 rust_peak=64180310 malloc_live=42249584 malloc_allocated=79003648 malloc_blocks=522457 elapsed_millis=1147\nphase=seed_reader_dropped ordinal=1 resident_bytes=58441728 resident_peak=150519808 rust_live=68924 rust_peak=64180310 malloc_live=288016 malloc_allocated=75497472 malloc_blocks=5103 elapsed_millis=1160\nphase=seed_reopened ordinal=1 resident_bytes=151617536 resident_peak=151617536 rust_live=35723063 rust_peak=64181574 malloc_live=42258416 malloc_allocated=79003648 malloc_blocks=522456 elapsed_millis=1262\nphase=seed_prepared ordinal=2 resident_bytes=151650304 resident_peak=151650304 rust_live=35752503 rust_peak=64181574 malloc_live=42287152 malloc_allocated=79003648 malloc_blocks=522620 elapsed_millis=1284\nphase=seed_finished ordinal=2 resident_bytes=152092672 resident_peak=152109056 rust_live=35723063 rust_peak=64181574 malloc_live=42258416 malloc_allocated=79003648 malloc_blocks=522456 elapsed_millis=1687\nphase=seed_reader_dropped ordinal=2 resident_bytes=83902464 resident_peak=152109056 rust_live=68924 rust_peak=64181574 malloc_live=288016 malloc_allocated=75497472 malloc_blocks=5103 elapsed_millis=1692\nphase=seed_reopened ordinal=2 resident_bytes=152158208 resident_peak=152158208 rust_live=35732208 rust_peak=64182837 malloc_live=42267856 malloc_allocated=79003648 malloc_blocks=522493 elapsed_millis=1787\nphase=seed_prepared ordinal=3 resident_bytes=152207360 resident_peak=152207360 rust_live=35762352 rust_peak=64182837 malloc_live=42297216 malloc_allocated=79003648 malloc_blocks=522664 elapsed_millis=1805\nphase=seed_finished ordinal=3 resident_bytes=152371200 resident_peak=152387584 rust_live=35732208 rust_peak=64182837 malloc_live=42267856 malloc_allocated=79003648 malloc_blocks=522493 elapsed_millis=2109\nphase=seed_reader_dropped ordinal=3 resident_bytes=84164608 resident_peak=152387584 rust_live=68924 rust_peak=64182837 malloc_live=288016 malloc_allocated=75497472 malloc_blocks=5103 elapsed_millis=2114\nphase=seed_reopened ordinal=3 resident_bytes=152633344 resident_peak=152633344 rust_live=35743145 rust_peak=64185636 malloc_live=42279088 malloc_allocated=79003648 malloc_blocks=522530 elapsed_millis=2209\nphase=seed_prepared ordinal=4 resident_bytes=152649728 resident_peak=152649728 rust_live=35773993 rust_peak=64185636 malloc_live=42309328 malloc_allocated=79003648 malloc_blocks=522708 elapsed_millis=2224\nphase=seed_finished ordinal=4 resident_bytes=152715264 resident_peak=152731648 rust_live=35743145 rust_peak=64185636 malloc_live=42279088 malloc_allocated=79003648 malloc_blocks=522530 elapsed_millis=2593\nphase=seed_reader_dropped ordinal=4 resident_bytes=84492288 resident_peak=152731648 rust_live=68924 rust_peak=64185636 malloc_live=288016 malloc_allocated=75497472 malloc_blocks=5103 elapsed_millis=2599\nphase=seed_reopened ordinal=4 resident_bytes=152813568 resident_peak=152813568 rust_live=35752290 rust_peak=64186899 malloc_live=42288528 malloc_allocated=79003648 malloc_blocks=522567 elapsed_millis=2694\nphase=seed_prepared ordinal=5 resident_bytes=152829952 resident_peak=152829952 rust_live=35783842 rust_peak=64186899 malloc_live=42319648 malloc_allocated=79003648 malloc_blocks=522752 elapsed_millis=2722\nphase=seed_finished ordinal=5 resident_bytes=152862720 resident_peak=152879104 rust_live=35752290 rust_peak=64186899 malloc_live=42288528 malloc_allocated=79003648 malloc_blocks=522567 elapsed_millis=3112\nphase=seed_reader_dropped ordinal=5 resident_bytes=84623360 resident_peak=152879104 rust_live=68924 rust_peak=64186899 malloc_live=288016 malloc_allocated=75497472 malloc_blocks=5103 elapsed_millis=3117\nphase=seed_reopened ordinal=5 resident_bytes=152879104 resident_peak=152879104 rust_live=35761427 rust_peak=64188163 malloc_live=42297968 malloc_allocated=79003648 malloc_blocks=522604 elapsed_millis=3213\nphase=seed_prepared ordinal=6 resident_bytes=152895488 resident_peak=152895488 rust_live=35793683 rust_peak=64188163 malloc_live=42329968 malloc_allocated=79003648 malloc_blocks=522796 elapsed_millis=3221\nphase=seed_finished ordinal=6 resident_bytes=152928256 resident_peak=152944640 rust_live=35761427 rust_peak=64188163 malloc_live=42297968 malloc_allocated=79003648 malloc_blocks=522604 elapsed_millis=3585\nphase=seed_reader_dropped ordinal=6 resident_bytes=84672512 resident_peak=152944640 rust_live=68924 rust_peak=64188163 malloc_live=288016 malloc_allocated=75497472 malloc_blocks=5103 elapsed_millis=3596\nphase=seed_reopened ordinal=6 resident_bytes=152961024 resident_peak=152961024 rust_live=35770564 rust_peak=64189424 malloc_live=42307408 malloc_allocated=79003648 malloc_blocks=522641 elapsed_millis=3691\nphase=seed_prepared ordinal=7 resident_bytes=152961024 resident_peak=152961024 rust_live=35803524 rust_peak=64189424 malloc_live=42339776 malloc_allocated=79003648 malloc_blocks=522840 elapsed_millis=3731\nphase=seed_finished ordinal=7 resident_bytes=152993792 resident_peak=153010176 rust_live=35770564 rust_peak=64189424 malloc_live=42307408 malloc_allocated=79003648 malloc_blocks=522641 elapsed_millis=4151\nphase=seed_reader_dropped ordinal=7 resident_bytes=84721664 resident_peak=153010176 rust_live=68924 rust_peak=64189424 malloc_live=288016 malloc_allocated=75497472 malloc_blocks=5103 elapsed_millis=4161\nphase=seed_reopened ordinal=7 resident_bytes=153010176 resident_peak=153010176 rust_live=35783285 rust_peak=64193761 malloc_live=42320432 malloc_allocated=79003648 malloc_blocks=522678 elapsed_millis=4257\nphase=seed_prepared ordinal=8 resident_bytes=153010176 resident_peak=153010176 rust_live=35816949 rust_peak=64193761 malloc_live=42353744 malloc_allocated=79003648 malloc_blocks=522884 elapsed_millis=4303\nphase=seed_finished ordinal=8 resident_bytes=153075712 resident_peak=153092096 rust_live=35783285 rust_peak=64193761 malloc_live=42320432 malloc_allocated=79003648 malloc_blocks=522678 elapsed_millis=4745\nphase=seed_reader_dropped ordinal=8 resident_bytes=84787200 resident_peak=153092096 rust_live=68924 rust_peak=64193761 malloc_live=288016 malloc_allocated=75497472 malloc_blocks=5103 elapsed_millis=4751\nphase=seed_reopened ordinal=8 resident_bytes=153092096 resident_peak=153092096 rust_live=35792439 rust_peak=64195041 malloc_live=42329872 malloc_allocated=79003648 malloc_blocks=522715 elapsed_millis=4851\nphase=seed_prepared ordinal=9 resident_bytes=153124864 resident_peak=153124864 rust_live=35826814 rust_peak=64195041 malloc_live=42364000 malloc_allocated=79003648 malloc_blocks=522928 elapsed_millis=4873\nphase=timer ordinal=12 resident_bytes=153124864 resident_peak=153141248 rust_live=35821310 rust_peak=64195041 malloc_live=42358672 malloc_allocated=79003648 malloc_blocks=522943 elapsed_millis=5015\nphase=seed_finished ordinal=9 resident_bytes=153141248 resident_peak=153157632 rust_live=35792439 rust_peak=64195041 malloc_live=42329872 malloc_allocated=79003648 malloc_blocks=522715 elapsed_millis=5296\nphase=seed_reader_dropped ordinal=9 resident_bytes=84836352 resident_peak=153157632 rust_live=68924 rust_peak=64195041 malloc_live=288016 malloc_allocated=75497472 malloc_blocks=5103 elapsed_millis=5301\nphase=seed_reopened ordinal=9 resident_bytes=153157632 resident_peak=153157632 rust_live=35801593 rust_peak=64196316 malloc_live=42339312 malloc_allocated=79003648 malloc_blocks=522752 elapsed_millis=5405\nphase=seed_prepared ordinal=10 resident_bytes=153174016 resident_peak=153174016 rust_live=35836682 rust_peak=64196316 malloc_live=42374896 malloc_allocated=79003648 malloc_blocks=522972 elapsed_millis=5479\nphase=seed_finished ordinal=10 resident_bytes=153223168 resident_peak=153239552 rust_live=35801593 rust_peak=64196316 malloc_live=42339312 malloc_allocated=83197952 malloc_blocks=522752 elapsed_millis=5830\nphase=seed_reader_dropped ordinal=10 resident_bytes=84901888 resident_peak=153239552 rust_live=68924 rust_peak=64196316 malloc_live=288016 malloc_allocated=79691776 malloc_blocks=5103 elapsed_millis=5839\nphase=seed_reopened ordinal=10 resident_bytes=153239552 resident_peak=153239552 rust_live=35810747 rust_peak=64197597 malloc_live=42348752 malloc_allocated=83197952 malloc_blocks=522789 elapsed_millis=5935\nphase=seed_prepared ordinal=11 resident_bytes=153255936 resident_peak=153255936 rust_live=35846547 rust_peak=64197597 malloc_live=42384640 malloc_allocated=83197952 malloc_blocks=523016 elapsed_millis=5948\nphase=seed_finished ordinal=11 resident_bytes=153272320 resident_peak=153288704 rust_live=35810747 rust_peak=64197597 malloc_live=42348752 malloc_allocated=83197952 malloc_blocks=522789 elapsed_millis=6224\nphase=seed_reader_dropped ordinal=11 resident_bytes=84934656 resident_peak=153288704 rust_live=68924 rust_peak=64197597 malloc_live=288016 malloc_allocated=79691776 malloc_blocks=5103 elapsed_millis=6233\nphase=seed_reopened ordinal=11 resident_bytes=153288704 resident_peak=153288704 rust_live=35819901 rust_peak=64198876 malloc_live=42358192 malloc_allocated=83197952 malloc_blocks=522826 elapsed_millis=6330\nphase=seed_prepared ordinal=12 resident_bytes=153305088 resident_peak=153305088 rust_live=35856412 rust_peak=64198876 malloc_live=42394512 malloc_allocated=83197952 malloc_blocks=523060 elapsed_millis=6352\nphase=seed_finished ordinal=12 resident_bytes=153337856 resident_peak=153354240 rust_live=35819901 rust_peak=64198876 malloc_live=42358192 malloc_allocated=83197952 malloc_blocks=522826 elapsed_millis=6674\nphase=seed_reader_dropped ordinal=12 resident_bytes=84983808 resident_peak=153354240 rust_live=68924 rust_peak=64198876 malloc_live=288016 malloc_allocated=79691776 malloc_blocks=5103 elapsed_millis=6684\nphase=seed_reopened ordinal=12 resident_bytes=153354240 resident_peak=153354240 rust_live=35829055 rust_peak=64200153 malloc_live=42367632 malloc_allocated=83197952 malloc_blocks=522863 elapsed_millis=6780\nphase=seed_prepared ordinal=13 resident_bytes=153354240 resident_peak=153354240 rust_live=35866277 rust_peak=64200153 malloc_live=42405280 malloc_allocated=83197952 malloc_blocks=523104 elapsed_millis=6794\nphase=seed_finished ordinal=13 resident_bytes=153370624 resident_peak=153387008 rust_live=35829055 rust_peak=64200153 malloc_live=42367632 malloc_allocated=83197952 malloc_blocks=522863 elapsed_millis=7151\nphase=seed_reader_dropped ordinal=13 resident_bytes=85000192 resident_peak=153387008 rust_live=68924 rust_peak=64200153 malloc_live=288016 malloc_allocated=79691776 malloc_blocks=5103 elapsed_millis=7160\nphase=seed_reopened ordinal=13 resident_bytes=153387008 resident_peak=153387008 rust_live=35838209 rust_peak=64201431 malloc_live=42377072 malloc_allocated=83197952 malloc_blocks=522900 elapsed_millis=7257\nphase=seed_prepared ordinal=14 resident_bytes=153387008 resident_peak=153387008 rust_live=35876142 rust_peak=64201431 malloc_live=42415152 malloc_allocated=83197952 malloc_blocks=523148 elapsed_millis=7271\nphase=seed_finished ordinal=14 resident_bytes=153436160 resident_peak=153452544 rust_live=35838209 rust_peak=64201431 malloc_live=42377072 malloc_allocated=83197952 malloc_blocks=522900 elapsed_millis=7664\nphase=seed_reader_dropped ordinal=14 resident_bytes=85049344 resident_peak=153452544 rust_live=68924 rust_peak=64201431 malloc_live=288016 malloc_allocated=79691776 malloc_blocks=5103 elapsed_millis=7674\nphase=seed_reopened ordinal=14 resident_bytes=153468928 resident_peak=153468928 rust_live=35847363 rust_peak=64202708 malloc_live=42386512 malloc_allocated=83197952 malloc_blocks=522937 elapsed_millis=7772\nphase=seed_prepared ordinal=15 resident_bytes=153468928 resident_peak=153468928 rust_live=35886007 rust_peak=64202708 malloc_live=42424896 malloc_allocated=83197952 malloc_blocks=523192 elapsed_millis=7813\nphase=seed_finished ordinal=15 resident_bytes=153468928 resident_peak=153485312 rust_live=35847363 rust_peak=64202708 malloc_live=42386512 malloc_allocated=83197952 malloc_blocks=522937 elapsed_millis=8237\nphase=seed_reader_dropped ordinal=15 resident_bytes=85065728 resident_peak=153485312 rust_live=68924 rust_peak=64202708 malloc_live=288016 malloc_allocated=79691776 malloc_blocks=5103 elapsed_millis=8247\nphase=seed_reopened ordinal=15 resident_bytes=153485312 resident_peak=153485312 rust_live=35863685 rust_peak=64210130 malloc_live=42403120 malloc_allocated=83197952 malloc_blocks=522974 elapsed_millis=8343\nphase=seed_prepared ordinal=16 resident_bytes=153485312 resident_peak=153485312 rust_live=35903040 rust_peak=64210130 malloc_live=42443088 malloc_allocated=83197952 malloc_blocks=523236 elapsed_millis=8384\nphase=seed_finished ordinal=16 resident_bytes=153518080 resident_peak=153534464 rust_live=35863685 rust_peak=64210130 malloc_live=42403120 malloc_allocated=83197952 malloc_blocks=522974 elapsed_millis=8768\nphase=seed_reader_dropped ordinal=16 resident_bytes=85098496 resident_peak=153534464 rust_live=68924 rust_peak=64210130 malloc_live=288016 malloc_allocated=79691776 malloc_blocks=5103 elapsed_millis=8773\nphase=seed_reopened ordinal=16 resident_bytes=153534464 resident_peak=153534464 rust_live=35872839 rust_peak=64211407 malloc_live=42412560 malloc_allocated=83197952 malloc_blocks=523011 elapsed_millis=8869\nphase=seed_prepared ordinal=17 resident_bytes=153550848 resident_peak=153550848 rust_live=35912905 rust_peak=64211407 malloc_live=42452832 malloc_allocated=83197952 malloc_blocks=523280 elapsed_millis=8895\nphase=seed_finished ordinal=17 resident_bytes=153550848 resident_peak=153567232 rust_live=35872839 rust_peak=64211407 malloc_live=42412560 malloc_allocated=83197952 malloc_blocks=523011 elapsed_millis=9166\nphase=seed_reader_dropped ordinal=17 resident_bytes=85114880 resident_peak=153567232 rust_live=68924 rust_peak=64211407 malloc_live=288016 malloc_allocated=79691776 malloc_blocks=5103 elapsed_millis=9176\nphase=seed_reopened ordinal=17 resident_bytes=153567232 resident_peak=153567232 rust_live=35881993 rust_peak=64212687 malloc_live=42422000 malloc_allocated=83197952 malloc_blocks=523048 elapsed_millis=9275\nphase=seed_prepared ordinal=18 resident_bytes=153567232 resident_peak=153567232 rust_live=35922770 rust_peak=64212687 malloc_live=42463600 malloc_allocated=83197952 malloc_blocks=523324 elapsed_millis=9284\nphase=seed_finished ordinal=18 resident_bytes=153632768 resident_peak=153649152 rust_live=35881993 rust_peak=64212687 malloc_live=42422000 malloc_allocated=83197952 malloc_blocks=523048 elapsed_millis=9547\nphase=seed_reader_dropped ordinal=18 resident_bytes=85180416 resident_peak=153649152 rust_live=68924 rust_peak=64212687 malloc_live=288016 malloc_allocated=79691776 malloc_blocks=5103 elapsed_millis=9558\nphase=seed_reopened ordinal=18 resident_bytes=153649152 resident_peak=153649152 rust_live=35891147 rust_peak=64213964 malloc_live=42431440 malloc_allocated=83197952 malloc_blocks=523085 elapsed_millis=9657\nphase=seed_prepared ordinal=19 resident_bytes=153649152 resident_peak=153649152 rust_live=35932635 rust_peak=64213964 malloc_live=42473344 malloc_allocated=83197952 malloc_blocks=523368 elapsed_millis=9680\nphase=seed_finished ordinal=19 resident_bytes=153681920 resident_peak=153698304 rust_live=35891147 rust_peak=64213964 malloc_live=42431440 malloc_allocated=83197952 malloc_blocks=523085 elapsed_millis=9948\nphase=seed_reader_dropped ordinal=19 resident_bytes=85213184 resident_peak=153698304 rust_live=68924 rust_peak=64213964 malloc_live=288016 malloc_allocated=79691776 malloc_blocks=5103 elapsed_millis=9954\nphase=timer ordinal=22 resident_bytes=85213184 resident_peak=153698304 rust_live=61248771 rust_peak=64215243 malloc_live=67798096 malloc_allocated=107347968 malloc_blocks=522517 elapsed_millis=10030\nphase=seed_reopened ordinal=19 resident_bytes=153698304 resident_peak=153698304 rust_live=35900301 rust_peak=64215243 malloc_live=42440880 malloc_allocated=83197952 malloc_blocks=523122 elapsed_millis=10053\nphase=seed_prepared ordinal=20 resident_bytes=153698304 resident_peak=153698304 rust_live=35942500 rust_peak=64215243 malloc_live=42483344 malloc_allocated=83197952 malloc_blocks=523412 elapsed_millis=10070\nphase=seed_finished ordinal=20 resident_bytes=153714688 resident_peak=153731072 rust_live=35900301 rust_peak=64215243 malloc_live=42440880 malloc_allocated=83197952 malloc_blocks=523122 elapsed_millis=10429\nphase=seed_reader_dropped ordinal=20 resident_bytes=85229568 resident_peak=153731072 rust_live=68924 rust_peak=64215243 malloc_live=288016 malloc_allocated=79691776 malloc_blocks=5103 elapsed_millis=10440\nphase=seed_reopened ordinal=20 resident_bytes=153731072 resident_peak=153731072 rust_live=35909455 rust_peak=64216521 malloc_live=42450320 malloc_allocated=83197952 malloc_blocks=523159 elapsed_millis=10543\nphase=seed_prepared ordinal=21 resident_bytes=153747456 resident_peak=153747456 rust_live=35952365 rust_peak=64216521 malloc_live=42495136 malloc_allocated=83197952 malloc_blocks=523456 elapsed_millis=10602\nphase=seed_finished ordinal=21 resident_bytes=153747456 resident_peak=153763840 rust_live=35909455 rust_peak=64216521 malloc_live=42450320 malloc_allocated=83197952 malloc_blocks=523159 elapsed_millis=11073\nphase=seed_reader_dropped ordinal=21 resident_bytes=85245952 resident_peak=153763840 rust_live=68924 rust_peak=64216521 malloc_live=288016 malloc_allocated=79691776 malloc_blocks=5103 elapsed_millis=11083\nphase=seed_reopened ordinal=21 resident_bytes=153763840 resident_peak=153763840 rust_live=35918609 rust_peak=64217801 malloc_live=42459760 malloc_allocated=83197952 malloc_blocks=523196 elapsed_millis=11187\nphase=seed_prepared ordinal=22 resident_bytes=153763840 resident_peak=153763840 rust_live=35962230 rust_peak=64217801 malloc_live=42504880 malloc_allocated=83197952 malloc_blocks=523500 elapsed_millis=11225\nphase=seed_finished ordinal=22 resident_bytes=153845760 resident_peak=153862144 rust_live=35918609 rust_peak=64217801 malloc_live=42459760 malloc_allocated=87392256 malloc_blocks=523196 elapsed_millis=11629\nphase=seed_reader_dropped ordinal=22 resident_bytes=85327872 resident_peak=153862144 rust_live=68924 rust_peak=64217801 malloc_live=288016 malloc_allocated=83886080 malloc_blocks=5103 elapsed_millis=11639\nphase=seed_reopened ordinal=22 resident_bytes=153862144 resident_peak=153862144 rust_live=35927763 rust_peak=64219080 malloc_live=42469200 malloc_allocated=87392256 malloc_blocks=523233 elapsed_millis=11739\nphase=seed_prepared ordinal=23 resident_bytes=153862144 resident_peak=153862144 rust_live=35972095 rust_peak=64219080 malloc_live=42514624 malloc_allocated=87392256 malloc_blocks=523544 elapsed_millis=11778\nphase=seed_finished ordinal=23 resident_bytes=153862144 resident_peak=153878528 rust_live=35927763 rust_peak=64219080 malloc_live=42469200 malloc_allocated=87392256 malloc_blocks=523233 elapsed_millis=12205\nphase=seed_reader_dropped ordinal=23 resident_bytes=85327872 resident_peak=153878528 rust_live=68924 rust_peak=64219080 malloc_live=288016 malloc_allocated=83886080 malloc_blocks=5103 elapsed_millis=12215\nphase=seed_reopened ordinal=23 resident_bytes=153878528 resident_peak=153878528 rust_live=35936917 rust_peak=64220360 malloc_live=42478640 malloc_allocated=87392256 malloc_blocks=523270 elapsed_millis=12315\nphase=seed_prepared ordinal=24 resident_bytes=153878528 resident_peak=153878528 rust_live=35981960 rust_peak=64220360 malloc_live=42524624 malloc_allocated=87392256 malloc_blocks=523588 elapsed_millis=12333\nphase=seed_finished ordinal=24 resident_bytes=153894912 resident_peak=153911296 rust_live=35936917 rust_peak=64220360 malloc_live=42478640 malloc_allocated=87392256 malloc_blocks=523270 elapsed_millis=12618\nphase=seed_reader_dropped ordinal=24 resident_bytes=85344256 resident_peak=153911296 rust_live=68924 rust_peak=64220360 malloc_live=288016 malloc_allocated=83886080 malloc_blocks=5103 elapsed_millis=12623\nphase=seed_reopened ordinal=24 resident_bytes=153911296 resident_peak=153911296 rust_live=35946071 rust_peak=64221638 malloc_live=42488080 malloc_allocated=87392256 malloc_blocks=523307 elapsed_millis=12725\nphase=seed_prepared ordinal=25 resident_bytes=153911296 resident_peak=153911296 rust_live=35991825 rust_peak=64221638 malloc_live=42534368 malloc_allocated=87392256 malloc_blocks=523632 elapsed_millis=12735\nphase=seed_finished ordinal=25 resident_bytes=153944064 resident_peak=153960448 rust_live=35946071 rust_peak=64221638 malloc_live=42488080 malloc_allocated=87392256 malloc_blocks=523307 elapsed_millis=13116\nphase=seed_reader_dropped ordinal=25 resident_bytes=85377024 resident_peak=153960448 rust_live=68924 rust_peak=64221638 malloc_live=288016 malloc_allocated=83886080 malloc_blocks=5103 elapsed_millis=13126\nphase=seed_reopened ordinal=25 resident_bytes=153960448 resident_peak=153960448 rust_live=35955225 rust_peak=64222917 malloc_live=42497520 malloc_allocated=87392256 malloc_blocks=523344 elapsed_millis=13230\nphase=seed_prepared ordinal=26 resident_bytes=153960448 resident_peak=153960448 rust_live=36001690 rust_peak=64222917 malloc_live=42546160 malloc_allocated=87392256 malloc_blocks=523676 elapsed_millis=13268\nphase=seed_finished ordinal=26 resident_bytes=154025984 resident_peak=154042368 rust_live=35955225 rust_peak=64222917 malloc_live=42497520 malloc_allocated=87392256 malloc_blocks=523344 elapsed_millis=13629\nphase=seed_reader_dropped ordinal=26 resident_bytes=85442560 resident_peak=154042368 rust_live=68924 rust_peak=64222917 malloc_live=288016 malloc_allocated=83886080 malloc_blocks=5103 elapsed_millis=13635\nphase=seed_reopened ordinal=26 resident_bytes=154042368 resident_peak=154042368 rust_live=35964379 rust_peak=64224193 malloc_live=42506960 malloc_allocated=87392256 malloc_blocks=523381 elapsed_millis=13735\nphase=seed_prepared ordinal=27 resident_bytes=154042368 resident_peak=154042368 rust_live=36011555 rust_peak=64224193 malloc_live=42555904 malloc_allocated=87392256 malloc_blocks=523720 elapsed_millis=13752\nphase=seed_finished ordinal=27 resident_bytes=154042368 resident_peak=154058752 rust_live=35964379 rust_peak=64224193 malloc_live=42506960 malloc_allocated=87392256 malloc_blocks=523381 elapsed_millis=14182\nphase=seed_reader_dropped ordinal=27 resident_bytes=85442560 resident_peak=154058752 rust_live=68924 rust_peak=64224193 malloc_live=288016 malloc_allocated=83886080 malloc_blocks=5103 elapsed_millis=14193\nphase=seed_reopened ordinal=27 resident_bytes=154058752 resident_peak=154058752 rust_live=35973533 rust_peak=64225471 malloc_live=42516400 malloc_allocated=87392256 malloc_blocks=523418 elapsed_millis=14292\nphase=seed_prepared ordinal=28 resident_bytes=154058752 resident_peak=154058752 rust_live=36021420 rust_peak=64225471 malloc_live=42565904 malloc_allocated=87392256 malloc_blocks=523764 elapsed_millis=14308\nphase=seed_finished ordinal=28 resident_bytes=154058752 resident_peak=154075136 rust_live=35973533 rust_peak=64225471 malloc_live=42516400 malloc_allocated=87392256 malloc_blocks=523418 elapsed_millis=14641\nphase=seed_reader_dropped ordinal=28 resident_bytes=85442560 resident_peak=154075136 rust_live=68924 rust_peak=64225471 malloc_live=288016 malloc_allocated=83886080 malloc_blocks=5103 elapsed_millis=14651\nphase=seed_reopened ordinal=28 resident_bytes=154075136 resident_peak=154075136 rust_live=35982687 rust_peak=64226754 malloc_live=42525840 malloc_allocated=87392256 malloc_blocks=523455 elapsed_millis=14757\nphase=seed_prepared ordinal=29 resident_bytes=154075136 resident_peak=154075136 rust_live=36031285 rust_peak=64226754 malloc_live=42575648 malloc_allocated=87392256 malloc_blocks=523808 elapsed_millis=14796\nphase=timer ordinal=32 resident_bytes=154075136 resident_peak=154091520 rust_live=36025762 rust_peak=64226754 malloc_live=42570272 malloc_allocated=87392256 malloc_blocks=523830 elapsed_millis=15040\nphase=seed_finished ordinal=29 resident_bytes=154075136 resident_peak=154091520 rust_live=35982687 rust_peak=64226754 malloc_live=42525840 malloc_allocated=87392256 malloc_blocks=523455 elapsed_millis=15261\nphase=seed_reader_dropped ordinal=29 resident_bytes=85442560 resident_peak=154091520 rust_live=68924 rust_peak=64226754 malloc_live=288016 malloc_allocated=83886080 malloc_blocks=5103 elapsed_millis=15273\nphase=seed_reopened ordinal=29 resident_bytes=154091520 resident_peak=154091520 rust_live=35991841 rust_peak=64228031 malloc_live=42535280 malloc_allocated=87392256 malloc_blocks=523492 elapsed_millis=15372\nphase=seed_prepared ordinal=30 resident_bytes=154091520 resident_peak=154091520 rust_live=36041150 rust_peak=64228031 malloc_live=42585392 malloc_allocated=87392256 malloc_blocks=523852 elapsed_millis=15414\nphase=seed_finished ordinal=30 resident_bytes=154091520 resident_peak=154107904 rust_live=35991841 rust_peak=64228031 malloc_live=42535280 malloc_allocated=87392256 malloc_blocks=523492 elapsed_millis=15792\nphase=seed_reader_dropped ordinal=30 resident_bytes=85442560 resident_peak=154107904 rust_live=68924 rust_peak=64228031 malloc_live=288016 malloc_allocated=83886080 malloc_blocks=5103 elapsed_millis=15802\nphase=seed_reopened ordinal=30 resident_bytes=154107904 resident_peak=154107904 rust_live=36000995 rust_peak=64229309 malloc_live=42544720 malloc_allocated=87392256 malloc_blocks=523529 elapsed_millis=15902\nphase=seed_prepared ordinal=31 resident_bytes=154107904 resident_peak=154107904 rust_live=36051015 rust_peak=64229309 malloc_live=42595136 malloc_allocated=87392256 malloc_blocks=523896 elapsed_millis=15935\nphase=seed_finished ordinal=31 resident_bytes=154124288 resident_peak=154140672 rust_live=36000995 rust_peak=64229309 malloc_live=42544720 malloc_allocated=87392256 malloc_blocks=523529 elapsed_millis=16325\nphase=seed_reader_dropped ordinal=31 resident_bytes=85458944 resident_peak=154140672 rust_live=68924 rust_peak=64229309 malloc_live=288016 malloc_allocated=83886080 malloc_blocks=5103 elapsed_millis=16335\nphase=seed_reopened ordinal=31 resident_bytes=154140672 resident_peak=154140672 rust_live=36024485 rust_peak=64242877 malloc_live=42568496 malloc_allocated=87392256 malloc_blocks=523566 elapsed_millis=16445\nphase=K10_prepared ordinal=10 resident_bytes=157138944 resident_peak=157138944 rust_live=36077864 rust_peak=64242877 malloc_live=42641104 malloc_allocated=87392256 malloc_blocks=524463 elapsed_millis=18360\nphase=K10_finished ordinal=10 resident_bytes=157302784 resident_peak=157319168 rust_live=36024485 rust_peak=64242877 malloc_live=42584880 malloc_allocated=91586560 malloc_blocks=524078 elapsed_millis=19751\nphase=timer ordinal=100 resident_bytes=157319168 resident_peak=157319168 rust_live=36126166 rust_peak=64242877 malloc_live=42698784 malloc_allocated=91586560 malloc_blocks=524303 elapsed_millis=20051\nphase=K10_refreshed ordinal=10 resident_bytes=157319168 resident_peak=157319168 rust_live=36037133 rust_peak=64242877 malloc_live=42595056 malloc_allocated=91586560 malloc_blocks=524044 elapsed_millis=20495\nphase=final_reader_dropped ordinal=10 resident_bytes=88621056 resident_peak=157319168 rust_live=68924 rust_peak=64242877 malloc_live=304400 malloc_allocated=88080384 malloc_blocks=5615 elapsed_millis=20506\ndiagnostic_complete fixture=/private/tmp/hawdb-291-bound-read-directory-cold-fixture-1791422082160451000\n"
+      }
+    }
+  ],
+  "prototype": {
+    "local_path": "/private/tmp/hawdb-291-fresh-memory-phase-probe.rs",
+    "sha256": "9a3f4d273ca7697fdcf90c93ff156fe41f6b27acff5614f2b5769aec3835163e",
+    "contents": "use hawdb::{ProcessMemorySnapshot,RuntimeMemoryReservation,RuntimeTaskContext,SearchDocument,SearchOutOfCoreGenerationBuildOptions,SearchOutOfCoreGenerationWriter,SearchOutOfCoreReader,SearchProjectionDelta,SearchProjectionKind,SearchProjectionRow};\nuse std::{alloc::{GlobalAlloc,Layout,System},collections::BTreeMap,num::NonZeroU64,path::PathBuf,sync::atomic::{AtomicBool,AtomicUsize,Ordering},time::{Instant,SystemTime,UNIX_EPOCH}};\nstruct Counted;\nstatic LIVE:AtomicUsize=AtomicUsize::new(0);\nstatic PEAK:AtomicUsize=AtomicUsize::new(0);\nfn add(n:usize){let used=LIVE.fetch_add(n,Ordering::Relaxed)+n;PEAK.fetch_max(used,Ordering::Relaxed);}\nunsafe impl GlobalAlloc for Counted {\n unsafe fn alloc(&self,l:Layout)->*mut u8{let p=System.alloc(l);if !p.is_null(){add(l.size());}p}\n unsafe fn alloc_zeroed(&self,l:Layout)->*mut u8{let p=System.alloc_zeroed(l);if !p.is_null(){add(l.size());}p}\n unsafe fn dealloc(&self,p:*mut u8,l:Layout){System.dealloc(p,l);LIVE.fetch_sub(l.size(),Ordering::Relaxed);}\n unsafe fn realloc(&self,p:*mut u8,l:Layout,n:usize)->*mut u8{let q=System.realloc(p,l,n);if !q.is_null(){LIVE.fetch_sub(l.size(),Ordering::Relaxed);add(n);}q}\n}\n#[global_allocator] static ALLOCATOR:Counted=Counted;\n#[repr(C)] #[derive(Default)] struct MallocStats {blocks_in_use:u32,size_in_use:usize,max_size_in_use:usize,size_allocated:usize}\nextern \"C\" {fn malloc_zone_statistics(zone:*mut std::ffi::c_void,stats:*mut MallocStats);}\nstatic DONE:AtomicBool=AtomicBool::new(false);\nstatic PHASE:AtomicUsize=AtomicUsize::new(0);\nfn report(label:&str,ordinal:usize,started:Instant){let mem=ProcessMemorySnapshot::capture().unwrap();let mut malloc=MallocStats::default();unsafe{malloc_zone_statistics(std::ptr::null_mut(),&mut malloc);}println!(\"phase={label} ordinal={ordinal} resident_bytes={} resident_peak={} rust_live={} rust_peak={} malloc_live={} malloc_allocated={} malloc_blocks={} elapsed_millis={}\",mem.resident_bytes,mem.peak_resident_bytes,LIVE.load(Ordering::Relaxed),PEAK.load(Ordering::Relaxed),malloc.size_in_use,malloc.size_allocated,malloc.blocks_in_use,started.elapsed().as_millis());}\nfn options()->SearchOutOfCoreGenerationBuildOptions{SearchOutOfCoreGenerationBuildOptions{lexical_build_memory_bytes:NonZeroU64::new(8*1024*1024).unwrap(),max_segment_uncompressed_bytes:NonZeroU64::new(64*1024*1024).unwrap(),..Default::default()}}\nfn task()->RuntimeTaskContext{RuntimeTaskContext::default().with_memory_reservation(RuntimeMemoryReservation::new(256*1024*1024,0))}\nfn embedding(ordinal:usize)->Option<Vec<f32>>{Some((0..384).map(|col|{let mut n=(ordinal as u64).wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(col);n=(n^(n>>30)).wrapping_mul(0xbf58476d1ce4e5b9);n=(n^(n>>27)).wrapping_mul(0x94d049bb133111eb);n^=n>>31;(n>>40) as f32/8388608.0-1.0}).collect())}\nfn metadata()->BTreeMap<String,String>{BTreeMap::from([(\"kind\".into(),\"memory\".into()),(\"space_id\".into(),\"default\".into())])}\nfn row(n:usize,body:&str)->SearchProjectionRow{SearchProjectionRow{kind:SearchProjectionKind::Memory,external_id:format!(\"{:016x}\",n*2),title:format!(\"Document {n}\"),body:body.into(),embedding:embedding(n),source_id:None,metadata:metadata()}}\nfn main(){let mut args=std::env::args().skip(1);let count:usize=args.next().unwrap().parse().unwrap();let saved=args.next();let root=saved.as_ref().map(PathBuf::from).unwrap_or_else(||PathBuf::from(format!(\"/private/tmp/hawdb-291-fresh-memory-phase-fixture-{}\",SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos())));let _fd=hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire(&root,1024).unwrap();let started=Instant::now();println!(\"fixture={} documents={count} body_bytes=65536 dimension=384 budget=268435456 saved_initial={}\",root.display(),saved.is_some());report(\"before_build\",0,started);\nlet observer=std::thread::spawn(move||{while !DONE.load(Ordering::Relaxed){std::thread::sleep(std::time::Duration::from_secs(5));if !DONE.load(Ordering::Relaxed){report(\"timer\",PHASE.load(Ordering::Relaxed),started);}}});\nlet mut body=\"bounded-search-mutation \".repeat(65536/24+1);body.truncate(65536);\nif saved.is_none(){let mut w=SearchOutOfCoreGenerationWriter::create_with_context(&root,options(),task()).unwrap();for n in 0..count {w.push(SearchDocument{id:format!(\"memory:{:016x}\",n*2),title:format!(\"Document {n}\"),content:body.clone(),embedding:embedding(n),metadata:metadata()}).unwrap();if n%8192==0{report(\"pushed\",n,started);}}report(\"before_finish\",count,started);PHASE.store(1,Ordering::Relaxed);let build=w.finish().unwrap();assert_eq!(build.document_count,count);println!(\"initial_artifacts={} document_payload={} vectors={} lexical={} rabitq={}\",build.generation_bytes,build.document_payload_bytes,build.vector_payload_bytes,build.lexical_artifact_bytes,build.rabitq_artifact_bytes);report(\"after_finish\",count,started);}\nPHASE.store(2,Ordering::Relaxed);let mut reader=SearchOutOfCoreReader::open(&root).unwrap();assert_eq!(reader.document_count(),count);assert_eq!(reader.generation(),1);report(\"after_initial_open\",0,started);\nfor seed in 0..32{PHASE.store(seed+3,Ordering::Relaxed);let u=SearchOutOfCoreGenerationWriter::prepare_delta_with_context(&reader,SearchProjectionDelta{upserts:vec![row(count+seed,&body)],..Default::default()},options(),task()).unwrap();report(\"seed_prepared\",seed,started);let(_,b,_)=u.finish().unwrap();assert!(!b.cleanup_retry_required);report(\"seed_finished\",seed,started);drop(reader);report(\"seed_reader_dropped\",seed,started);reader=SearchOutOfCoreReader::open(&root).unwrap();assert_eq!(reader.document_count(),count+seed+1);report(\"seed_reopened\",seed,started);}\nPHASE.store(100,Ordering::Relaxed);let upserts=(0..10).map(|n|{let mut r=row(n,&body);r.title=format!(\"Updated document {n}\");r.body.push_str(\" changed\");r.embedding=embedding(count+n);r}).collect();let u=SearchOutOfCoreGenerationWriter::prepare_delta_with_context(&reader,SearchProjectionDelta{upserts,..Default::default()},options(),task()).unwrap();report(\"K10_prepared\",10,started);let(_,b,_)=u.finish().unwrap();assert!(!b.cleanup_retry_required);report(\"K10_finished\",10,started);reader.refresh().unwrap();report(\"K10_refreshed\",10,started);drop(reader);report(\"final_reader_dropped\",10,started);DONE.store(true,Ordering::Relaxed);observer.join().unwrap();println!(\"diagnostic_complete fixture={}\",root.display());}\n"
+  },
+  "buffer_prototype": {
+    "local_path": "/private/tmp/hawdb-291-bounded-read-memory-probe.rs",
+    "sha256": "607de4dffa3842a8a60ff61354265cc63310352831983764bbdf6a29c6359920",
+    "contents": "use hawdb::{ProcessMemorySnapshot,RuntimeMemoryReservation,RuntimeTaskContext,SearchDocument,SearchOutOfCoreGenerationBuildOptions,SearchOutOfCoreGenerationWriter,SearchOutOfCoreReader,SearchProjectionDelta,SearchProjectionKind,SearchProjectionRow};\nuse std::{alloc::{GlobalAlloc,Layout,System},collections::BTreeMap,num::NonZeroU64,path::PathBuf,sync::atomic::{AtomicBool,AtomicUsize,Ordering},time::{Instant,SystemTime,UNIX_EPOCH}};\nstruct Counted;\nstatic LIVE:AtomicUsize=AtomicUsize::new(0);\nstatic PEAK:AtomicUsize=AtomicUsize::new(0);\nfn add(n:usize){let used=LIVE.fetch_add(n,Ordering::Relaxed)+n;PEAK.fetch_max(used,Ordering::Relaxed);}\nunsafe impl GlobalAlloc for Counted {\n unsafe fn alloc(&self,l:Layout)->*mut u8{let p=System.alloc(l);if !p.is_null(){add(l.size());}p}\n unsafe fn alloc_zeroed(&self,l:Layout)->*mut u8{let p=System.alloc_zeroed(l);if !p.is_null(){add(l.size());}p}\n unsafe fn dealloc(&self,p:*mut u8,l:Layout){System.dealloc(p,l);LIVE.fetch_sub(l.size(),Ordering::Relaxed);}\n unsafe fn realloc(&self,p:*mut u8,l:Layout,n:usize)->*mut u8{let q=System.realloc(p,l,n);if !q.is_null(){LIVE.fetch_sub(l.size(),Ordering::Relaxed);add(n);}q}\n}\n#[global_allocator] static ALLOCATOR:Counted=Counted;\n#[repr(C)] #[derive(Default)] struct MallocStats {blocks_in_use:u32,size_in_use:usize,max_size_in_use:usize,size_allocated:usize}\nextern \"C\" {fn malloc_zone_statistics(zone:*mut std::ffi::c_void,stats:*mut MallocStats);}\nstatic DONE:AtomicBool=AtomicBool::new(false);\nstatic PHASE:AtomicUsize=AtomicUsize::new(0);\nfn report(label:&str,ordinal:usize,started:Instant){let mem=ProcessMemorySnapshot::capture().unwrap();let mut malloc=MallocStats::default();unsafe{malloc_zone_statistics(std::ptr::null_mut(),&mut malloc);}println!(\"phase={label} ordinal={ordinal} resident_bytes={} resident_peak={} rust_live={} rust_peak={} malloc_live={} malloc_allocated={} malloc_blocks={} elapsed_millis={}\",mem.resident_bytes,mem.peak_resident_bytes,LIVE.load(Ordering::Relaxed),PEAK.load(Ordering::Relaxed),malloc.size_in_use,malloc.size_allocated,malloc.blocks_in_use,started.elapsed().as_millis());}\n\nmod error {pub use hawdb::{HawDBError,Result};}\n#[path=\"/private/tmp/hawdb-291-cleanup-review/crates/search/src/bounded_file.rs\"] mod bounded_file;\nfn exact(path:&std::path::Path,length:usize)->Vec<u8>{use std::io::Read;let mut file=hawdb_storage::file_io::File::open(path).unwrap();assert_eq!(file.metadata().unwrap().len(),length as u64);let mut bytes=Vec::new();bytes.try_reserve_exact(length).unwrap();let mut buffer=[0u8;8192];while bytes.len()<length{let count=buffer.len().min(length-bytes.len());file.read_exact(&mut buffer[..count]).unwrap();bytes.extend_from_slice(&buffer[..count]);}assert_eq!(file.read(&mut buffer[..1]).unwrap(),0);bytes}\nfn main(){let args=std::env::args().collect::<Vec<_>>();let mode=&args[1];let path=std::path::Path::new(&args[2]);let length=std::fs::metadata(path).unwrap().len() as usize;let started=Instant::now();report(\"before_reads\",0,started);let mut prior=None;for iteration in 0..40{let bytes=if mode==\"bounded\"{bounded_file::read_bounded_file(path,length as u64).unwrap()}else{assert_eq!(mode,\"exact\");exact(path,length)};assert_eq!(bytes.len(),length);let sum=bytes.iter().fold(0u64,|sum,b|sum.wrapping_add(*b as u64));if let Some(p)=prior{assert_eq!(p,sum);}prior=Some(sum);report(\"live_buffer\",iteration,started);drop(bytes);report(\"dropped_buffer\",iteration,started);}println!(\"read_memory_complete mode={mode} length={length} content_sum={}\",prior.unwrap());}\n"
+  },
+  "full_fresh_failed_audit": {
+    "candidate_commit": "29f54b9b8bb1bb98fb05fd44758fe414b37f053a",
+    "qualified_source_hashes_match_commit": true,
+    "frozen_worktree_source_unchanged": true,
+    "driver_terminal_source_receipt_valid": true,
+    "all_three_cells_passed": false,
+    "cells": [
+      {
+        "label": "d81920-k10",
+        "state": "passed",
+        "checks": {
+          "successful_exit_and_log_hashes": true,
+          "raw_result_matches_logged_result": true,
+          "fixture_shape": true,
+          "vector_fixture": true,
+          "explicit_resource_configuration": true,
+          "sustained_rounds_and_merges": true,
+          "expected_visible_counts": true,
+          "complete_peak_and_steady_rss": true,
+          "new_bytes_smaller_than_full": true
+        },
+        "logical_corpus_bytes": 5368709120,
+        "touches": 10,
+        "full_artifact_bytes": 362009531,
+        "upsert_artifact_bytes": 87051,
+        "delete_artifact_bytes": 38720,
+        "upsert_vector_payload_bytes": 18236,
+        "upsert_rabitq_artifact_bytes": 2847,
+        "upsert_source_hydrated_documents": 0,
+        "delete_source_hydrated_documents": 0,
+        "peak_resident_bytes": 77938688,
+        "max_steady_resident_bytes": 77545472,
+        "rounds": 128,
+        "merges": 128,
+        "sustained_checkpoint_bytes": 6802167,
+        "sustained_merge_artifact_bytes": 7791779,
+        "sustained_merge_source_bytes": 2598108,
+        "sustained_artifact_write_amplification": 0.849946349631739,
+        "elapsed_seconds": 1012.6348540782928,
+        "scratch_allocated_highwater_bytes": 11496140800,
+        "raw_stdout_sha256": "701e21ded6e4fb12a2fec65a1fd2dde3e3e708c4012dbf1d4d8cd9d57124a05a",
+        "raw_stderr_sha256": "ffcc83825462b9601fc5827a967246f923d9a527e63fe606b62e2a6956c671e7",
+        "raw_result_sha256": "100cf98d75412440c35e8ebd70b480765dbe7266aff005d92fa0f85710e6a3af"
+      },
+      {
+        "label": "d327680-k10",
+        "state": "failed",
+        "checks": {
+          "successful_exit_and_log_hashes": true,
+          "raw_result_matches_logged_result": true,
+          "fixture_shape": true,
+          "vector_fixture": true,
+          "explicit_resource_configuration": true,
+          "sustained_rounds_and_merges": true,
+          "expected_visible_counts": true,
+          "complete_peak_and_steady_rss": false,
+          "new_bytes_smaller_than_full": true
+        },
+        "logical_corpus_bytes": 21474836480,
+        "touches": 10,
+        "full_artifact_bytes": 1448169531,
+        "upsert_artifact_bytes": 86990,
+        "delete_artifact_bytes": 38736,
+        "upsert_vector_payload_bytes": 18205,
+        "upsert_rabitq_artifact_bytes": 2844,
+        "upsert_source_hydrated_documents": 0,
+        "delete_source_hydrated_documents": 0,
+        "peak_resident_bytes": 736591872,
+        "max_steady_resident_bytes": 736575488,
+        "rounds": 128,
+        "merges": 128,
+        "sustained_checkpoint_bytes": 6803480,
+        "sustained_merge_artifact_bytes": 7802434,
+        "sustained_merge_source_bytes": 2597167,
+        "sustained_artifact_write_amplification": 0.8506433617977696,
+        "elapsed_seconds": 5197.727942943573,
+        "scratch_allocated_highwater_bytes": 46007517184,
+        "raw_stdout_sha256": "5d88514a5b9edeb96bd63131a6af872b7cc814d7ace34eb6ddc2d8e4f2ec22fb",
+        "raw_stderr_sha256": "1309a9b588629d33719a98c24ad26bfd172d15c29b2ecac6480c231739e6cdff",
+        "raw_result_sha256": "6bd7d5cb3bd27d6e80e449b485b83a524fda9174cc7f7e87d9d11c083182f907"
+      },
+      {
+        "label": "d327680-k100",
+        "state": "failed",
+        "exit_code": 101,
+        "log_hashes_match": true
+      }
+    ]
+  },
+  "limits": [
+    "The cold fixture reconstructs a private generation1 head from the complete immutable327680-document/65536-byte-body/384-dimensional base. The ordinary reader fully validates it; this is not an original published head or a new full construction.",
+    "Each cold diagnostic publishes32 seeds with ordinary cold reopens, then a K10 replacement and refresh. It does not run the complete128-round qualification.",
+    "The original library and corrected library also differ by the recorded main integration. The independent buffer experiment and genuine allocator regressions isolate the two causes; the whole-library diagnostic does not isolate other main changes.",
+    "Requested Rust allocation and native allocator statistics fall after buffer destruction while RSS remains high in the original diagnostic. This establishes the measured macOS resident-page behavior, not a universal allocator leak or a guarantee for other platforms.",
+    "The missing lexical file in the first diagnostic clone failed closed. Its original failure log and corrected-clone receipts are preserved.",
+    "The original full-fresh failure and intermediate337264640-byte failure remain failures. New full-fresh5GiB/K10,20GiB/K10 and20GiB/K100 tests with the original data shape,128 rounds and budgets remain required."
+  ],
+  "allocation_fixture_owner_followup": {
+    "scope": "The two file-read allocator fixtures initialize shared descriptor state anddroppable testhooks beforemeasuring call-local buffers. Existing byte/capacity/error assertions remain; complete measured-payload release is additionally asserted. Production code is unchanged. Theoriginal full5-profile failures and independent freshprocess failure are retained.",
+    "initial_full_profiles": {
+      "state": "failed",
+      "worktree": "/private/tmp/hawdb-291-main-qualification",
+      "integrated_tree": "1761af3cc4f5e912d8c3863dfaa3e25b71e842c3",
+      "source_receipt": "/private/tmp/hawdb-291-exact-allocation-source.json",
+      "source_receipt_sha256": "77b7f93f9641eac716b4517274448df0c5b642c6708a2423cd103077e574bc0e",
+      "checks": [
+        {
+          "label": "search",
+          "command": [
+            "bazel",
+            "test",
+            "//crates/search:hawdb_search_tests",
+            "//crates/search:hawdb_search_acl_tests",
+            "//crates/search:hawdb_search_text_background_tests",
+            "//crates/search:hawdb_search_text_only_tests",
+            "//crates/search:hawdb_search_text_vector_tests",
+            "--test_output=errors"
+          ],
+          "state": "finished",
+          "log": "/private/tmp/hawdb-291-exact-allocation-search.log",
+          "pid": 49073,
+          "exit_code": 3,
+          "elapsed_seconds": 473.209179834,
+          "log_sha256": "35549a5933c5fa1e5496428ac687d4138114b8c233c162afcc1b7e66f7c4c175",
+          "test_harnesses": [
+            {
+              "target": "//crates/search:hawdb_search_tests",
+              "available": true,
+              "log": "/private/tmp/hawdb-291-exact-allocation-bazel-evidence/crates_search_hawdb_search_tests.log",
+              "sha256": "1d462800dc2b65b95fcdf303e6382acef41893f0dbf61170680674b4dca61b1f",
+              "harness_results": [
+                {
+                  "state": "ok",
+                  "passed": 787,
+                  "failed": 0,
+                  "ignored": 20
+                }
+              ]
+            },
+            {
+              "target": "//crates/search:hawdb_search_acl_tests",
+              "available": true,
+              "log": "/private/tmp/hawdb-291-exact-allocation-bazel-evidence/crates_search_hawdb_search_acl_tests.log",
+              "sha256": "72fd9949fd99b983275dee8759a951de65621506286ccb7b0b54c06ed68ee9b4",
+              "harness_results": [
+                {
+                  "state": "ok",
+                  "passed": 789,
+                  "failed": 0,
+                  "ignored": 20
+                }
+              ]
+            },
+            {
+              "target": "//crates/search:hawdb_search_text_background_tests",
+              "available": true,
+              "log": "/private/tmp/hawdb-291-exact-allocation-bazel-evidence/crates_search_hawdb_search_text_background_tests.log",
+              "sha256": "5ae0b7916ca211992e4ff0786c97caae0be5557c0e59303b05d069d663139503",
+              "harness_results": [
+                {
+                  "state": "FAILED",
+                  "passed": 724,
+                  "failed": 9,
+                  "ignored": 20
+                }
+              ]
+            },
+            {
+              "target": "//crates/search:hawdb_search_text_only_tests",
+              "available": true,
+              "log": "/private/tmp/hawdb-291-exact-allocation-bazel-evidence/crates_search_hawdb_search_text_only_tests.log",
+              "sha256": "0662939b3605566da1b4d0e4c56c1a420d1b115014bddf977dccf04a03bb8774",
+              "harness_results": [
+                {
+                  "state": "ok",
+                  "passed": 717,
+                  "failed": 0,
+                  "ignored": 20
+                }
+              ]
+            },
+            {
+              "target": "//crates/search:hawdb_search_text_vector_tests",
+              "available": true,
+              "log": "/private/tmp/hawdb-291-exact-allocation-bazel-evidence/crates_search_hawdb_search_text_vector_tests.log",
+              "sha256": "da83113ff1782c0d9dcbf1948d555571b44c8b5b3c89948fb952a8c8963ea30e",
+              "harness_results": [
+                {
+                  "state": "FAILED",
+                  "passed": 762,
+                  "failed": 9,
+                  "ignored": 20
+                }
+              ]
+            }
+          ],
+          "nonzero_selection_and_success": false
+        }
+      ]
+    },
+    "fresh_process_before": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hawdb-search",
+        "--lib",
+        "bounded_file::tests::bound_length_mismatch_is_rejected_before_reserving_the_expected_bytes",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "environment": {
+        "CARGO_TARGET_DIR": "/private/tmp/hawdb-291-main-qualification/target"
+      },
+      "parent": "dbef7cbeb4ede393af36809c4a3e0ec4c22771ed",
+      "scope": "Newtest fixture adds actualliveallocation release assertion without changing read production. Freshprocess must expose persistentStandalone initialization iftracked. Original broad failure log remainsretained.",
+      "patch_sha256": "85ea75f38e95d23653371c39dd52673707a41700d34583626c54431d32a1b154",
+      "exit_code": 101,
+      "elapsed_seconds": 36.459656333999995,
+      "log": "/private/tmp/hawdb-291-allocation-lifecycle-before.log",
+      "log_sha256": "be8a56bd440a82918e5722cf7a32df7e320faa8370e9c1bdc90927ec56199d15",
+      "test_file_sha256": "2e5fe5c624b7adc53f4ca1ab06f68bafb83aa6f3416d1c382983b8353c95e357"
+    },
+    "fresh_process_before_raw": "   Compiling hawdb-core v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/core)\n   Compiling hawdb-cgroup v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/cgroup)\n   Compiling hawdb-plan-core v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/plan-core)\n   Compiling hawdb-integrity v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/integrity)\n   Compiling hawdb-cascades v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/cascades)\n   Compiling hawdb-optimizer-vector v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/optimizer-vector)\n   Compiling hawdb-optimizer-predicate v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/optimizer-predicate)\n   Compiling hawdb-ddl v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/ddl)\n   Compiling hawdb-qos v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/qos)\n   Compiling hawdb-expression v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/expression)\n   Compiling hawdb-analytics v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/analytics)\n   Compiling hawdb-evidence v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/evidence)\n   Compiling hawdb-cypher v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/cypher)\n   Compiling hawdb-telemetry v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/telemetry)\n   Compiling hawdb-plan-cypher v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/plan-cypher)\n   Compiling hawdb-storage v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/storage)\n   Compiling hawdb-vector-projection v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/vector-projection)\n   Compiling hawdb-executor v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/executor)\n   Compiling hawdb-search v0.4.0 (/private/tmp/hawdb-291-allocation-test-lifecycle/crates/search)\n    Finished `test` profile [unoptimized] target(s) in 35.68s\n     Running unittests src/lib.rs (/private/tmp/hawdb-291-main-qualification/target/debug/deps/hawdb_search-b37d31b509b2a9a2)\n\nrunning 1 test\ntest bounded_file::tests::bound_length_mismatch_is_rejected_before_reserving_the_expected_bytes ... \nthread 'bounded_file::tests::bound_length_mismatch_is_rejected_before_reserving_the_expected_bytes' (32813739) panicked at crates/search/src/bounded_file/tests.rs:220:5:\nassertion `left == right` failed\n  left: 424\n right: 0\nstack backtrace:\n   0:        0x1019637d4 - <<std[7648081134ee26d8]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[318a34b566a36fe]::fmt::Display>::fmt\n   1:        0x101978c38 - core[318a34b566a36fe]::fmt::write\n   2:        0x101968cfc - <std[7648081134ee26d8]::sys::stdio::unix::Stderr as std[7648081134ee26d8]::io::Write>::write_fmt\n   3:        0x101946dd0 - std[7648081134ee26d8]::panicking::default_hook::{closure#0}\n   4:        0x10195ba28 - std[7648081134ee26d8]::panicking::default_hook\n   5:        0x10195bd50 - std[7648081134ee26d8]::panicking::panic_with_hook\n   6:        0x101946e64 - std[7648081134ee26d8]::panicking::panic_handler::{closure#0}\n   7:        0x10193c348 - std[7648081134ee26d8]::sys::backtrace::__rust_end_short_backtrace::<std[7648081134ee26d8]::panicking::panic_handler::{closure#0}, !>\n   8:        0x101947654 - __rustc[6ef78fba13ac776c]::rust_begin_unwind\n   9:        0x101996bc4 - core[318a34b566a36fe]::panicking::panic_fmt\n  10:        0x101996af8 - core[318a34b566a36fe]::panicking::assert_failed_inner\n  11:        0x101996840 - core[318a34b566a36fe]::panicking::assert_failed::<usize, usize>\n  12:        0x100ad1408 - hawdb_search[3ac58ef9cc396688]::bounded_file::tests::bound_length_mismatch_is_rejected_before_reserving_the_expected_bytes\n  13:        0x100a5eb00 - hawdb_search[3ac58ef9cc396688]::bounded_file::tests::bound_length_mismatch_is_rejected_before_reserving_the_expected_bytes::{closure#0}\n  14:        0x100ec0a74 - <hawdb_search[3ac58ef9cc396688]::bounded_file::tests::bound_length_mismatch_is_rejected_before_reserving_the_expected_bytes::{closure#0} as core[318a34b566a36fe]::ops::function::FnOnce<()>>::call_once\n  15:        0x10136083c - test[2c59eae1d55b8e96]::__rust_begin_short_backtrace::<core[318a34b566a36fe]::result::Result<(), alloc[fd24334a81e9fcd2]::string::String>, fn() -> core[318a34b566a36fe]::result::Result<(), alloc[fd24334a81e9fcd2]::string::String>>\n  16:        0x10136bc84 - test[2c59eae1d55b8e96]::run_test::{closure#0}\n  17:        0x101366b0c - std[7648081134ee26d8]::sys::backtrace::__rust_begin_short_backtrace::<test[2c59eae1d55b8e96]::run_test::{closure#1}, ()>\n  18:        0x10136e1dc - <std[7648081134ee26d8]::thread::lifecycle::spawn_unchecked<test[2c59eae1d55b8e96]::run_test::{closure#1}, ()>::{closure#1} as core[318a34b566a36fe]::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}\n  19:        0x101962a88 - <std[7648081134ee26d8]::sys::thread::unix::Thread>::new::thread_start\n  20:        0x18cf89d00 - __pthread_exit\nFAILED\n\nfailures:\n\nfailures:\n    bounded_file::tests::bound_length_mismatch_is_rejected_before_reserving_the_expected_bytes\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 806 filtered out; finished in 0.05s\n\nerror: test failed, to rerun pass `-p hawdb-search --lib`\n",
+    "corrected_isolated_tests": {
+      "rows": [
+        {
+          "label": "mismatch",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "hawdb-search",
+            "--lib",
+            "bounded_file::tests::bound_length_mismatch_is_rejected_before_reserving_the_expected_bytes",
+            "--",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1"
+          ],
+          "environment": {
+            "CARGO_TARGET_DIR": "/private/tmp/hawdb-291-main-qualification/target"
+          },
+          "exit_code": 0,
+          "elapsed_seconds": 7.1964595419999995,
+          "log": "/private/tmp/hawdb-291-allocation-lifecycle-after-mismatch.log",
+          "log_sha256": "f062e508d9d56f116ed455b555c6b7a4e6640c5efad0a4d723803ffd6cbf7473"
+        },
+        {
+          "label": "artifact",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "hawdb-search",
+            "--lib",
+            "out_of_core::tests::bound_artifact_read_retains_one_encoded_buffer",
+            "--",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1"
+          ],
+          "environment": {
+            "CARGO_TARGET_DIR": "/private/tmp/hawdb-291-main-qualification/target"
+          },
+          "exit_code": 0,
+          "elapsed_seconds": 0.1973790829999995,
+          "log": "/private/tmp/hawdb-291-allocation-lifecycle-after-artifact.log",
+          "log_sha256": "cdd36f23b6c8d01753d156d943dfa678db8d7bd0ccaf6288ec7b96050e954ecd"
+        }
+      ],
+      "source_patch_sha256": "b665a667cab54b42adc5c0c264a0365ae08769319af2825cf73236fd1f489c73"
+    },
+    "production_binding": {
+      "parent": "dbef7cbeb4ede393af36809c4a3e0ec4c22771ed",
+      "runtime_worktree": "/private/tmp/hawdb-291-main-qualification",
+      "test_fixture_worktree": "/private/tmp/hawdb-291-allocation-test-lifecycle",
+      "changed_files": [
+        "crates/search/src/bounded_file/tests.rs",
+        "crates/search/src/out_of_core.rs"
+      ],
+      "out_of_core_production_prefix_sha256": "682ce38d058267a16859c015f2356bbcc2b43e7d3cafadf2782288ea3cb033fb",
+      "out_of_core_production_prefix_identical": true,
+      "scope": "Only standalone cfg(test) fixtures change. out_of_core.rs differences occur after its sole #[cfg(test)] mod tests marker, whose module extends to EOF. All production prefix bytes remain identical; bounded_file/tests.rs is included only undercfg(test). New measurements initialize process/TLS fixture owners beforetracking operation payloads andprove completepayload release. Thefullscale source remainscleanandunchanged;this isnot a replacementbenchmark."
+    },
+    "validation_boundary": "Complete five-profile/fuzz requalification is pending on these test-only fixture corrections. Alloriginal runtime/full-scale failures remain failures untilindependently corrected qualification completes."
+  }
+}
