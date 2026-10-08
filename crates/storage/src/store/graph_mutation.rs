@@ -16,6 +16,9 @@
 
 use super::*;
 
+#[path = "graph_mutation/checkpoint_capture.rs"]
+mod checkpoint_capture;
+
 fn wal_ops_contain_relational_transaction(ops: &[WalOp]) -> bool {
     ops.iter().any(|op| match op {
         WalOp::Relational { .. } => true,
@@ -1358,8 +1361,16 @@ impl GraphStore {
         &self,
         ops: &[WalOp],
     ) -> Result<Option<hawdb_storage::relational::RelationalPrimaryKeyChangeCapture>> {
+        self.relational_primary_key_changes_from_wal_ops_with_work_context(ops, None)
+    }
+
+    pub(super) fn relational_primary_key_changes_from_wal_ops_with_work_context(
+        &self,
+        ops: &[WalOp],
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Result<Option<hawdb_storage::relational::RelationalPrimaryKeyChangeCapture>> {
         let mut captures = Vec::new();
-        collect_relational_primary_key_changes_from_wal_ops(ops, &mut captures)?;
+        collect_relational_primary_key_changes_from_wal_ops(ops, &mut captures, work)?;
         if captures.len() > 1 {
             return Ok(Some(
                 hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
@@ -1851,10 +1862,22 @@ fn omit_internal_search_projection_relational_changes(
 fn collect_relational_primary_key_changes_from_wal_ops(
     ops: &[WalOp],
     captures: &mut Vec<hawdb_storage::relational::RelationalPrimaryKeyChangeCapture>,
+    work: Option<&crate::background::CheckpointWorkContext>,
 ) -> Result<()> {
     for op in ops {
+        let unit = work
+            .map(|work| work.start_unit().map_err(HawDBError::from_storage_error))
+            .transpose()?;
         match op {
             WalOp::Relational { record } => {
+                // This unit controls traversal to the record. Its codec's
+                // allocations and interior loops are a separate boundary.
+                if let Some(unit) = unit {
+                    unit.finish();
+                }
+                if let Some(work) = work {
+                    work.checkpoint().map_err(HawDBError::from_storage_error)?;
+                }
                 let batch = decode_relational_wal_batch(record, RelationalDecodeLimits::wal())
                     .map_err(HawDBError::from_storage_error)?;
                 captures.push(batch.primary_key_changes.unwrap_or(
@@ -1863,17 +1886,32 @@ fn collect_relational_primary_key_changes_from_wal_ops(
                     },
                 ));
             }
-            WalOp::RelationalSnapshot { .. } => captures.push(
-                hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
-                    reason:
-                        hawdb_storage::relational::RelationalPrimaryKeyChangeRebuildReason::SnapshotReplacement,
-                },
-            ),
-            WalOp::Batch(ops) => {
-                collect_relational_primary_key_changes_from_wal_ops(ops, captures)?;
+            WalOp::RelationalSnapshot { .. } => {
+                captures.push(
+                    hawdb_storage::relational::RelationalPrimaryKeyChangeCapture::RequiresRebuild {
+                        reason:
+                            hawdb_storage::relational::RelationalPrimaryKeyChangeRebuildReason::SnapshotReplacement,
+                    },
+                );
+                if let Some(unit) = unit {
+                    unit.finish();
+                }
             }
-            _ => {}
+            WalOp::Batch(ops) => {
+                if let Some(unit) = unit {
+                    unit.finish();
+                }
+                collect_relational_primary_key_changes_from_wal_ops(ops, captures, work)?;
+            }
+            _ => {
+                if let Some(unit) = unit {
+                    unit.finish();
+                }
+            }
         }
+    }
+    if let Some(work) = work {
+        work.checkpoint().map_err(HawDBError::from_storage_error)?;
     }
     Ok(())
 }

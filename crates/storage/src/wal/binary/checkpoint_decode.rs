@@ -38,6 +38,24 @@ mod map_memory_tests;
 #[cfg(test)]
 mod map_related_tests;
 
+#[cfg(test)]
+mod replay_work_tests;
+
+#[cfg(test)]
+mod replay_related_tests;
+
+#[cfg(test)]
+mod replay_scan_tests;
+
+#[cfg(test)]
+mod replay_scan_related_tests;
+
+#[cfg(test)]
+mod replay_search_scan_tests;
+
+#[cfg(test)]
+mod replay_search_related_tests;
+
 pub(crate) fn decode_binary_wal_record_with_work_context(
     bytes: &[u8],
     work: &CheckpointWorkContext,

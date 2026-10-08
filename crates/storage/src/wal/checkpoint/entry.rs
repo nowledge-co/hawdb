@@ -50,6 +50,6 @@ impl CheckpointWalEntry {
         // Install retained ownership before mutation. Even a partial failed
         // application must keep moved values admitted until the runtime drops.
         store.retain_decoded_checkpoint_memory(&mut self.memory, work)?;
-        store.apply_replayed_wal_transaction(catalog, self.entry.op)
+        store.apply_replayed_checkpoint_wal_transaction(catalog, self.entry.op, work)
     }
 }

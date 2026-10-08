@@ -1181,6 +1181,60 @@ complete cleanup and sealing resources remain separate gaps. These focused
 ownership checks do not establish a complete working-set bound or qualify
 default sustained progress.
 
+Checkpoint-record replay now admits each leaf WAL operation separately
+and checks cancellation between replay phases and
+before publishing the transaction epoch. Ordinary recovery retains its existing
+path. An unchanged real-governor/local-QoS regression applied all 1057 graph
+mutations but observed only 12 inventory-transfer work units before correction;
+it now requires at least one admitted replay unit per mutation. This narrows the
+replay control gap without enabling per-unit admission for the automatic owner.
+Replay pre-scans, search capture, index backfills, individual-operation copies,
+allocations and destruction still need complete resource/time qualification.
+
+The relational change-capture pre-scan now admits each visited WAL operation
+and checks cancellation before entering a relational codec. A genuine late
+corruption regression visited 1057 operations with zero admitted scan units;
+the unchanged regression now passes. Related tests cancel all 1058 actual
+visits before any graph, catalog or changefeed mutation and fully retry on the
+same governor reservation, preserving ordinary complete graph/changefeed
+results. This controls traversal between records; relational codec interior
+loops and allocations, search-neighbor traversal and delta estimation remain
+separate gaps. It does not change the production owner operation limit.
+
+Private replay search capture now traverses operations, every cached
+relationship before filtering, and output entries with cancellation checks.
+The ordinary capture path remains independent. Two unchanged regressions
+reproduce 1057 neighbors with only two work units and cancellation arriving
+after the label mutation; both now pass. Related coverage compares complete
+graph/changefeed results for both relationship directions, document-ID updates
+and relationship deletion, cancels every actual unit with same-reservation
+retry, and covers a 1057-relationship nonmatching prefix. Collection allocation,
+document-ID formatting, relational normalization, log trimming and uncached
+source coverage still need complete resource/time qualification. This traversal
+correction does not authorize production per-unit owner admission.
+
+Private checkpoint replay now admits out-of-core delta-estimation visits to
+each operation, property and nested value. Its insertion-only touched-ID trees
+reserve pinned Rust 1.97.1 node coverage before insertion and keep those leases
+until scratch destruction. Ordinary admission remains the independent reference,
+including duplicate IDs, saturating arithmetic and exact limit diagnostics.
+Two unchanged real out-of-core regressions previously estimated 1057 operations
+or 1057 nested values before rejection with zero admitted work units; both now
+pass. Related coverage cancels every actual replay unit, compares complete graph,
+relationship, catalog and changefeed results, and fully retries after cancellation
+or local-work/memory denial on the same governor reservation. Scratch availability
+returns to its measured baseline. Mounted-record hydration, allocator rounding
+and latency, cleanup latency and complete replay/candidate ownership remain
+separate gaps; these controls do not enable production per-unit owner admission.
+
+The ordinary binary format still rejects nested batches. Three initial related
+fixtures requested that unsupported encoding and failed before replay; the
+original inputs and complete failures are archived. The corrected fixtures
+flatten the identical seven leaf mutations into one accepted wire transaction
+and retain the original nested input as an explicit rejection check.
+Partially mutated private runtimes are discarded after cancellation; this does
+not claim rollback within that private runtime or prove authoritative recovery.
+
 The row-page publisher's complete cancellation matrix repeatedly recreated and
 synchronized the identical durable source for every CPU/I/O cut. Two full
 current-main commands and one unchanged isolated diagnostic reached the existing
