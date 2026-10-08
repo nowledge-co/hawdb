@@ -368,6 +368,11 @@ pub(super) fn prepare(
     // Keep dimension-only identity even when this batch has no vectors.
     writer.embedding_dimension = reader.manifest.embedding_dimension;
     writer.expected_active_generation = Some(reader.generation());
+    writer.cleanup_reuse = Some(super::super::reuse::ValidatedArtifacts::capture(
+        reader,
+        &memory,
+        &writer.task_context,
+    )?);
     writer.active_manifest_update = Some(ActiveManifestUpdate::Compact {
         expected_generation: reader.generation(),
         first_segment_id: selection.first_segment_id,

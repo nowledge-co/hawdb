@@ -24,6 +24,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod search_projection;
+
 struct Fixture {
     root: PathBuf,
     model: PowerLossModel,

@@ -97,8 +97,9 @@ impl DecodePlan {
             strings = add(strings, value.len())?;
             largest = largest.max(value.len());
         }
-        // serde Vec uses geometric growth (minimum four slots); include both
-        // old and replacement capacities. String visitors copy decoded slices.
+        // Temporary record nodes coexist with the exact final Vec. Three slots
+        // per record cover both payloads and node links, including small inputs.
+        // String visitors copy decoded slices once and transfer their ownership.
         let blocks = mul(
             mul(body.blocks.len().max(4), 3)?,
             size_of::<BlockDescriptor>(),

@@ -14,7 +14,7 @@
 
 use super::*;
 use crate::build_control::{checkpoint, CheckedWriter};
-use crate::{SearchSegmentDescriptor, SearchSegmentPayloadRange};
+use crate::{SearchSegmentDescriptor, SearchSegmentDescriptorEntry, SearchSegmentPayloadRange};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_integrity::Crc32cHasher;
 use std::io::Write as _;
@@ -122,52 +122,86 @@ fn write_body(sink: &mut impl DocumentSink, descriptor: &SearchSegmentDescriptor
     writeln!(sink, "target_documents\t{}", descriptor.target_documents)?;
     writeln!(sink, "document_count\t{}", descriptor.document_count)?;
     for segment in &descriptor.segments {
-        let range = segment.payload_range.unwrap_or(SearchSegmentPayloadRange {
-            artifact_id: 0,
-            offset: 0,
-            length: 0,
-            checksum: 0,
-        });
-        write!(sink, "segment\t{}\t", segment.segment_id)?;
-        sink.write_hex(&segment.first_document_id)?;
-        sink.write_char('\t')?;
-        sink.write_hex(&segment.last_document_id)?;
-        writeln!(
-            sink,
-            "\t{}\t{}\t{}\t{}\t{}",
-            segment.document_count, range.artifact_id, range.offset, range.length, range.checksum
-        )?;
-        for (field, summary) in &segment.metadata {
-            sink.write_str("field\t")?;
-            sink.write_hex(field)?;
-            write!(sink, "\t{}\t", summary.present_count)?;
-            for (index, value) in summary.values.iter().enumerate() {
-                if index != 0 {
-                    sink.write_char(',')?;
-                }
-                sink.write_hex(value)?;
-            }
-            sink.write_char('\t')?;
-            if let Some(range) = summary.numeric_range {
-                write!(sink, "{}\t{}", range.min, range.max)?;
-            } else {
-                sink.write_char('\t')?;
-            }
-            sink.write_char('\t')?;
-            if let Some(range) = summary.timestamp_range {
-                write!(
-                    sink,
-                    "{}\t{}",
-                    range.min_epoch_millis, range.max_epoch_millis
-                )?;
-            } else {
-                sink.write_char('\t')?;
-            }
-            sink.write_char('\n')?;
-        }
+        write_segment(sink, segment)?;
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests;
+
+/// Streams one descriptor entry with the same grammar as the complete descriptor.
+pub(crate) fn write_segment_to(
+    writer: &mut impl io::Write,
+    segment: &SearchSegmentDescriptorEntry,
+    task: &RuntimeTaskContext,
+) -> Result<u64> {
+    checkpoint(task)?;
+    let mut length = EncodedLength::default();
+    write_segment(
+        &mut CheckedSink {
+            sink: &mut length,
+            task: Some(task),
+        },
+        segment,
+    )
+    .map_err(|_| checkpoint(task).err().unwrap_or_else(size_overflow))?;
+    let mut output = CheckedWriter::new(writer, Some(task));
+    IoSink {
+        writer: &mut output,
+        error: None,
+        remaining: length.0,
+    }
+    .write_checked(|sink| write_segment(sink, segment))?;
+    Ok(length.0 as u64)
+}
+
+fn write_segment(
+    sink: &mut impl DocumentSink,
+    segment: &SearchSegmentDescriptorEntry,
+) -> fmt::Result {
+    let range = segment.payload_range.unwrap_or(SearchSegmentPayloadRange {
+        artifact_id: 0,
+        offset: 0,
+        length: 0,
+        checksum: 0,
+    });
+    write!(sink, "segment\t{}\t", segment.segment_id)?;
+    sink.write_hex(&segment.first_document_id)?;
+    sink.write_char('\t')?;
+    sink.write_hex(&segment.last_document_id)?;
+    writeln!(
+        sink,
+        "\t{}\t{}\t{}\t{}\t{}",
+        segment.document_count, range.artifact_id, range.offset, range.length, range.checksum
+    )?;
+    for (field, summary) in &segment.metadata {
+        sink.write_str("field\t")?;
+        sink.write_hex(field)?;
+        write!(sink, "\t{}\t", summary.present_count)?;
+        for (index, value) in summary.values.iter().enumerate() {
+            if index != 0 {
+                sink.write_char(',')?;
+            }
+            sink.write_hex(value)?;
+        }
+        sink.write_char('\t')?;
+        if let Some(range) = summary.numeric_range {
+            write!(sink, "{}\t{}", range.min, range.max)?;
+        } else {
+            sink.write_char('\t')?;
+        }
+        sink.write_char('\t')?;
+        if let Some(range) = summary.timestamp_range {
+            write!(
+                sink,
+                "{}\t{}",
+                range.min_epoch_millis, range.max_epoch_millis
+            )?;
+        } else {
+            sink.write_char('\t')?;
+        }
+        sink.write_char('\n')?;
+    }
+    Ok(())
+}

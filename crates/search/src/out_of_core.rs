@@ -34,7 +34,7 @@ use super::{
     FULL_REINDEX_MARKER, METADATA_REPAIR_MARKER, SEARCH_SEGMENT_DESCRIPTOR_FILE,
     SEARCH_SEGMENT_PAYLOAD_FILE,
 };
-use crate::bounded_file::read_bounded_file;
+use crate::bounded_file::{read_bound_file, read_bounded_file};
 use crate::error::{HawDBError, Result};
 #[cfg(test)]
 use crate::{decode_search_segment_documents_bounded, validate_search_segment_documents};
@@ -60,6 +60,7 @@ mod verified_body;
 pub use verified_body::{SearchBodyReadOptions, SearchVerifiedBody};
 pub(crate) mod mutation_run;
 mod publish_lease;
+mod reuse;
 mod vector_serving;
 pub use generation_writer::{
     GovernedSearchGenerationUpdate, GovernedSearchGenerationWriter,
@@ -230,14 +231,14 @@ pub struct SearchOutOfCoreReader {
 /// The current manifest selects one group. Keeping the artifact closure separate
 /// from reader-wide identity and admission state is the boundary needed for
 /// incremental segment publication.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct SearchOutOfCoreSegmentReader {
     content_segment_id: u64,
-    descriptor: SearchSegmentDescriptor,
+    descriptor: Arc<SearchSegmentDescriptor>,
     payload: Arc<File>,
     metadata_payload: Arc<File>,
     vector_payload: Arc<File>,
-    layout: SearchOutOfCoreLayoutBody,
+    layout: Arc<SearchOutOfCoreLayoutBody>,
     lexical_projection: Arc<LexicalProjectionReader>,
     #[cfg(feature = "vector-search")]
     rabitq_projection: Option<Arc<hawdb_vector_projection::FileProjection>>,
@@ -249,7 +250,7 @@ pub(super) struct PublishedOutOfCoreProjection {
     pub(super) bytes_written: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SearchOutOfCoreManifestBody<S = String> {
     format: S,
@@ -271,7 +272,7 @@ struct SearchOutOfCoreManifestBody<S = String> {
 /// Segment-local identity stays with the files it validates. The active
 /// manifest owns the logical projection identity and will eventually select
 /// multiple entries as an incremental segment set.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, bound(deserialize = "S: Deserialize<'de>"))]
 struct SearchOutOfCoreSegmentManifest<S = String> {
     segment_id: u64,
@@ -316,7 +317,7 @@ struct SearchOutOfCoreSegmentManifest<S = String> {
 /// The artifact carries the target-specific retractions that will later drive
 /// shared visibility and live corpus statistics. Its identity remains separate
 /// from content segments because a delete may publish no replacement content.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, bound(deserialize = "S: Deserialize<'de>"))]
 struct SearchOutOfCoreMutationRunManifest<S = String> {
     generation: u64,
@@ -700,6 +701,53 @@ impl SearchOutOfCoreLayoutBody {
 }
 
 impl SearchOutOfCoreSegmentReader {
+    fn validate_pinned_paths(
+        &self,
+        root: &Path,
+        manifest: &SearchOutOfCoreSegmentManifest,
+    ) -> Result<()> {
+        let lexical_file =
+            crate::lexical_projection::artifact_file(self.lexical_projection.generation());
+        for (file, expected_len) in [
+            (manifest.descriptor_file.as_str(), manifest.descriptor_len),
+            (manifest.payload_file.as_str(), manifest.payload_len),
+            (
+                manifest.metadata_payload_file.as_str(),
+                manifest.metadata_payload_len,
+            ),
+            (
+                manifest.vector_payload_file.as_str(),
+                manifest.vector_payload_len,
+            ),
+            (manifest.layout_file.as_str(), manifest.layout_len),
+            (
+                manifest.lexical_manifest_file.as_str(),
+                manifest.lexical_manifest_len,
+            ),
+            (
+                lexical_file.as_str(),
+                self.lexical_projection.artifact_len(),
+            ),
+        ] {
+            if fs::metadata(root.join(file))?.len() != expected_len {
+                return Err(HawDBError::Storage(
+                    "pinned search artifact length changed".into(),
+                ));
+            }
+        }
+        if let Some((file, expected_len)) = manifest
+            .rabitq_artifact_file
+            .as_deref()
+            .zip(manifest.rabitq_artifact_len)
+            && fs::metadata(root.join(file))?.len() != expected_len
+        {
+            return Err(HawDBError::Storage(
+                "pinned RaBitQ artifact length changed".into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn open(
         root: &Path,
         config: &SearchOutOfCoreConfig,
@@ -841,11 +889,11 @@ impl SearchOutOfCoreSegmentReader {
 
         Ok(Self {
             content_segment_id: manifest.segment_id,
-            descriptor,
+            descriptor: Arc::new(descriptor),
             payload: Arc::new(payload),
             metadata_payload: Arc::new(metadata_payload),
             vector_payload: Arc::new(vector_payload),
-            layout,
+            layout: Arc::new(layout),
             lexical_projection,
             #[cfg(feature = "vector-search")]
             rabitq_projection,
@@ -1016,6 +1064,61 @@ impl SearchOutOfCoreReader {
         self.manifest.generation
     }
 
+    /// Attaches a newer durable head, sharing unchanged immutable content handles.
+    ///
+    /// Retained content paths and lengths are checked before their handles are
+    /// reused. Changed heads decode and checksum every mutation run; target
+    /// reanalysis is reused only for the same run and exact content references,
+    /// with an unchanged global embedding identity. Fresh opens validate the
+    /// complete closure. Published artifacts must remain immutable while readers
+    /// exist. On failure this reader retains its previously pinned generation.
+    pub fn refresh(&mut self) -> Result<SearchOutOfCoreRefreshReport> {
+        let bytes = read_bounded_file(
+            &self.root.join(OUT_OF_CORE_MANIFEST_FILE),
+            MAX_OUT_OF_CORE_MANIFEST_BYTES,
+        )?;
+        let manifest = SearchOutOfCoreManifestBody::decode(&bytes)?;
+        if manifest == self.manifest {
+            for (segment, reference) in self.segments.iter().zip(&manifest.segments) {
+                segment.validate_pinned_paths(&self.root, reference)?;
+            }
+            for run in &manifest.mutation_runs {
+                if fs::metadata(self.root.join(&run.file))?.len() != run.len {
+                    return Err(HawDBError::Storage(
+                        "pinned mutation-run artifact length changed".into(),
+                    ));
+                }
+            }
+            return Ok(SearchOutOfCoreRefreshReport {
+                generation: manifest.generation,
+                generation_changed: false,
+                validated_retractions: 0,
+                reused_retractions: self.visibility.retractions().count(),
+                opened_content_segments: 0,
+                reused_content_segments: self.segments.len(),
+            });
+        }
+        if manifest.generation <= self.manifest.generation {
+            return Err(HawDBError::Storage(
+                "search durable head regressed or changed an existing generation".into(),
+            ));
+        }
+        let closure = load_artifact_closure_for_manifest(
+            &self.root,
+            &self.config,
+            &self.analyzer_lexicon,
+            self.lexical_term_policy,
+            self.lexical_source_policy,
+            manifest,
+            Some(reuse::View::from_reader(self)),
+        )?;
+        let report = closure.refresh;
+        self.manifest = closure.manifest;
+        self.segments = closure.segments;
+        self.visibility = closure.visibility;
+        Ok(report)
+    }
+
     #[cfg(all(test, feature = "full-text-search"))]
     pub(crate) fn artifact_count(&self) -> usize {
         self.manifest.segments.len()
@@ -1025,9 +1128,33 @@ impl SearchOutOfCoreReader {
         self.manifest.source_graph_commit_epoch
     }
 
-    pub(super) fn can_append_after(&self, first_document_id: &str) -> Result<bool> {
+    pub(super) fn can_append_after(
+        &self,
+        first_document_id: &str,
+        memory: &crate::build_memory::BuildMemory,
+        task: &hawdb_core::RuntimeTaskContext,
+    ) -> Result<bool> {
+        let mut generations = Vec::new();
+        let mut generation_memory = memory.retained.reserve(0)?;
+        crate::build_memory::reserve_capacity(
+            &mut generations,
+            self.manifest.segments.len(),
+            &mut generation_memory,
+        )?;
+        for segment in &self.manifest.segments {
+            crate::build_control::checkpoint(task)?;
+            generations.push(segment.generation);
+        }
+        generations.sort_unstable();
+        if generations.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(HawDBError::Storage(
+                "search generation contains duplicate document content artifacts".into(),
+            ));
+        }
         let mut previous_last_document_id = None;
+        let mut ordered = true;
         for artifact in &self.segments {
+            crate::build_control::checkpoint(task)?;
             let descriptor_first = artifact.descriptor.segments.first();
             let descriptor_last = artifact.descriptor.segments.last();
             let lexical_bounds = artifact.lexical_projection.document_id_bounds();
@@ -1047,15 +1174,15 @@ impl SearchOutOfCoreReader {
                 if previous_last_document_id
                     .is_some_and(|previous| previous >= segment.first_document_id.as_str())
                 {
-                    return Err(HawDBError::Storage(
-                        "search generation update requires manifest artifacts with globally ordered, non-overlapping document ranges"
-                            .to_string(),
-                    ));
+                    ordered = false;
                 }
                 previous_last_document_id = Some(segment.last_document_id.as_str());
             }
         }
-        Ok(previous_last_document_id.is_none_or(|previous| previous < first_document_id))
+        Ok(
+            ordered
+                && previous_last_document_id.is_none_or(|previous| previous < first_document_id),
+        )
     }
 
     pub fn import_source_graph_commit_epoch(&self) -> Option<u64> {
@@ -2599,6 +2726,24 @@ fn file_len_checksum_streaming(path: &Path) -> Result<(u64, u64)> {
 
 // Cleanup needs the validated artifact closure even when its format is not
 // ready for serving. This helper cannot construct a public query reader.
+struct LoadedArtifactClosure {
+    manifest: SearchOutOfCoreManifestBody,
+    segments: Vec<SearchOutOfCoreSegmentReader>,
+    visibility: mutation_run::MutationVisibility,
+    refresh: SearchOutOfCoreRefreshReport,
+}
+
+/// Target-validation work performed while attaching a durable search head.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchOutOfCoreRefreshReport {
+    pub generation: u64,
+    pub generation_changed: bool,
+    pub validated_retractions: usize,
+    pub reused_retractions: usize,
+    pub opened_content_segments: usize,
+    pub reused_content_segments: usize,
+}
+
 fn load_artifact_closure(
     root: &Path,
     config: &SearchOutOfCoreConfig,
@@ -2613,10 +2758,58 @@ fn load_artifact_closure(
     let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
     let manifest_bytes = read_bounded_file(&manifest_path, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
     let manifest = SearchOutOfCoreManifestBody::decode(&manifest_bytes)?;
+    let closure = load_artifact_closure_for_manifest(
+        root,
+        config,
+        analyzer_lexicon,
+        lexical_term_policy,
+        lexical_source_policy,
+        manifest,
+        None,
+    )?;
+    Ok((closure.manifest, closure.segments, closure.visibility))
+}
+
+fn load_artifact_closure_for_manifest(
+    root: &Path,
+    config: &SearchOutOfCoreConfig,
+    analyzer_lexicon: &SearchAnalyzerLexicon,
+    lexical_term_policy: SearchLexicalTermPolicy,
+    lexical_source_policy: SearchLexicalSourcePolicy,
+    manifest: SearchOutOfCoreManifestBody,
+    previous: Option<reuse::View<'_>>,
+) -> Result<LoadedArtifactClosure> {
+    let previous = previous.filter(|reader| {
+        reader.manifest.embedding_dimension == manifest.embedding_dimension
+            && reader.manifest.embedding_model == manifest.embedding_model
+            && reader.manifest.embedding_version == manifest.embedding_version
+    });
+    let mut refresh = SearchOutOfCoreRefreshReport {
+        generation: manifest.generation,
+        generation_changed: true,
+        validated_retractions: 0,
+        reused_retractions: 0,
+        opened_content_segments: 0,
+        reused_content_segments: 0,
+    };
     let segments = manifest
         .segments
         .iter()
         .map(|segment| {
+            if let Some(previous) = previous
+                && let Some(position) = previous
+                    .manifest
+                    .segments
+                    .iter()
+                    .position(|reference| reference == segment)
+            {
+                previous.segments[position].validate_pinned_paths(root, segment)?;
+                refresh.reused_content_segments += 1;
+                // Share immutable descriptor/layout metadata as well as file
+                // handles, avoiding a corpus-sized ID-summary copy per refresh.
+                return Ok(previous.segments[position].clone());
+            }
+            refresh.opened_content_segments += 1;
             SearchOutOfCoreSegmentReader::open(
                 root,
                 config,
@@ -2656,19 +2849,42 @@ fn load_artifact_closure(
         )?);
     }
     mutation_run::validate_closure(&manifest, &mutation_runs)?;
+    let targets_to_validate = mutation_runs
+        .iter()
+        .zip(&manifest.mutation_runs)
+        .filter_map(|(run, reference)| {
+            let reusable = previous.is_some_and(|reader| {
+                reader.manifest.mutation_runs.contains(reference)
+                    && run.entries().iter().all(|entry| {
+                        let target = manifest
+                            .segments
+                            .iter()
+                            .find(|segment| segment.segment_id == entry.target_segment_id);
+                        target.is_some_and(|target| reader.manifest.segments.contains(target))
+                    })
+            });
+            if reusable {
+                refresh.reused_retractions += run.entries().len();
+                None
+            } else {
+                refresh.validated_retractions += run.entries().len();
+                Some(run)
+            }
+        });
     mutation_run::validate_targets(
         root,
         &segments,
-        &mutation_runs,
+        targets_to_validate,
         config,
         analyzer_lexicon,
         lexical_source_policy,
     )?;
-    Ok((
+    Ok(LoadedArtifactClosure {
         manifest,
         segments,
-        mutation_run::MutationVisibility::from_validated_runs(mutation_runs),
-    ))
+        visibility: mutation_run::MutationVisibility::from_validated_runs(mutation_runs),
+        refresh,
+    })
 }
 
 pub(super) struct PublishedArtifactGenerations {
@@ -2678,21 +2894,72 @@ pub(super) struct PublishedArtifactGenerations {
     pub(super) rabitq_generations: BTreeSet<u64>,
 }
 
+pub(super) fn validate_resident_snapshot_identity(index: &SearchIndex, root: &Path) -> Result<()> {
+    let path = root.join(OUT_OF_CORE_MANIFEST_FILE);
+    if !fs::try_exists(&path)? {
+        return Ok(());
+    }
+    let bytes = read_bounded_file(&path, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
+    let manifest = SearchOutOfCoreManifestBody::decode(&bytes)?;
+    let embedding = index.embedding_manifest.as_ref();
+    if manifest.document_count != index.documents.len()
+        || manifest.documents_digest != lexical_documents_digest(&index.documents)
+        || manifest.source_graph_commit_epoch != index.source_graph_commit_epoch
+        || manifest.import_source_graph_commit_epoch != index.import_source_graph_commit_epoch
+        || manifest.embedding_dimension != index.embedding_dimension
+        || manifest.embedding_model.as_deref() != embedding.map(|identity| identity.model.as_str())
+        || manifest.embedding_version.as_deref()
+            != embedding.and_then(|identity| identity.version.as_deref())
+    {
+        return Err(HawDBError::Storage(
+            "resident search snapshot does not match the published immutable projection; use incremental maintenance or rebuild from the authoritative source".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn published_artifact_generations(
     root: &Path,
     analyzer_lexicon: &SearchAnalyzerLexicon,
+) -> Result<Option<PublishedArtifactGenerations>> {
+    published_artifact_generations_with_reuse(root, analyzer_lexicon, None)
+}
+
+fn published_artifact_generations_with_reuse(
+    root: &Path,
+    analyzer_lexicon: &SearchAnalyzerLexicon,
+    previous: Option<&reuse::ValidatedArtifacts>,
 ) -> Result<Option<PublishedArtifactGenerations>> {
     let manifest_path = root.join(OUT_OF_CORE_MANIFEST_FILE);
     if !fs::try_exists(&manifest_path)? {
         return Ok(None);
     }
-    let (manifest, _segments, _visibility) = load_artifact_closure(
+    let manifest_bytes = read_bounded_file(&manifest_path, MAX_OUT_OF_CORE_MANIFEST_BYTES)?;
+    let manifest = SearchOutOfCoreManifestBody::decode(&manifest_bytes)?;
+    let view = previous.map(reuse::ValidatedArtifacts::view);
+    if let Some(view) = view
+        && (manifest.generation < view.manifest.generation
+            || (manifest.generation == view.manifest.generation && &manifest != view.manifest))
+    {
+        return Err(HawDBError::Storage(
+            "search cleanup head regressed or changed an existing generation".into(),
+        ));
+    }
+    let default_config = SearchOutOfCoreConfig::default();
+    let closure = load_artifact_closure_for_manifest(
         root,
-        &SearchOutOfCoreConfig::default(),
+        previous.map_or(&default_config, |previous| &previous.config),
         analyzer_lexicon,
-        SearchLexicalTermPolicy::default(),
-        SearchLexicalSourcePolicy::default(),
+        previous.map_or(SearchLexicalTermPolicy::default(), |previous| {
+            previous.term_policy
+        }),
+        previous.map_or(SearchLexicalSourcePolicy::default(), |previous| {
+            previous.source_policy
+        }),
+        manifest,
+        view,
     )?;
+    let manifest = &closure.manifest;
     let mut lexical_generations = BTreeSet::new();
     let mut out_of_core_generations = BTreeSet::new();
     let mut rabitq_generations = BTreeSet::new();
@@ -3660,7 +3927,7 @@ fn read_bound_artifact(
             "{name} exceeds the manifest read budget"
         )));
     }
-    let bytes = read_bounded_file(path, expected_len)?;
+    let bytes = read_bound_file(path, expected_len, name)?;
     if bytes.len() as u64 != expected_len || checksum_bytes(&bytes) != expected_checksum {
         return Err(HawDBError::Storage(format!(
             "{name} length or checksum mismatch"
@@ -3847,6 +4114,50 @@ mod tests {
             metadata_filters: BTreeMap::new(),
             policy_epoch: None,
         }
+    }
+
+    #[test]
+    fn bound_artifact_read_retains_one_encoded_buffer() {
+        let _serial = crate::test_allocation::serial();
+        let root = test_dir("bound-artifact-allocation");
+        let path = root.join("artifact");
+        // Cross the final geometric growth boundary of a large descriptor.
+        let data = vec![b'x'; 17 * 1024 * 1024 + 4096];
+        fs::write(&path, &data).unwrap();
+        let checksum = checksum_bytes(&data);
+        // Shared descriptor state and droppable test hooks are fixture owners,
+        // so initialize them before tracking this read's encoded buffer.
+        drop(
+            read_bound_artifact(
+                &path,
+                data.len() as u64,
+                checksum,
+                64 * 1024 * 1024,
+                "allocation fixture",
+            )
+            .unwrap(),
+        );
+        let baseline = crate::test_allocation::live();
+        let (bytes, peak) = crate::test_allocation::measure(|| {
+            read_bound_artifact(
+                &path,
+                data.len() as u64,
+                checksum,
+                64 * 1024 * 1024,
+                "allocation fixture",
+            )
+            .unwrap()
+        });
+        assert_eq!(bytes, data);
+        let peak = peak.saturating_sub(baseline);
+        assert!(
+            peak <= data.len() + 64 * 1024,
+            "bound artifact retained {peak} allocated bytes for {} encoded bytes",
+            data.len()
+        );
+        drop(bytes);
+        assert_eq!(crate::test_allocation::live(), baseline);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -4339,7 +4650,7 @@ mod tests {
         .unwrap_err();
         assert!(error
             .to_string()
-            .contains("globally ordered, non-overlapping document ranges"));
+            .contains("duplicate document content artifacts"));
         assert_eq!(fs::read(&manifest_path).unwrap(), bytes);
         fs::remove_dir_all(path).unwrap();
     }
@@ -4704,6 +5015,311 @@ mod tests {
     #[cfg(feature = "full-text-search")]
     fn mutation_reader_for_test(path: &Path) -> SearchOutOfCoreReader {
         SearchOutOfCoreReader::open(path).unwrap()
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
+    fn reader_refresh_validates_only_new_retractions_without_compaction() {
+        let path = test_dir("refresh-uncompacted-history");
+        let mut writer =
+            SearchOutOfCoreGenerationWriter::create(&path, Default::default()).unwrap();
+        writer.push(document(0, "team")).unwrap();
+        writer.push(document(1, "team")).unwrap();
+        writer.finish().unwrap();
+        let mut reader = SearchOutOfCoreReader::open(&path).unwrap();
+        let original_payload = reader.primary_segment().payload.clone();
+        let original_descriptor = reader.primary_segment().descriptor.clone();
+        let original_layout = reader.primary_segment().layout.clone();
+        for round in 0..24 {
+            let row = crate::SearchProjectionRow {
+                kind: crate::SearchProjectionKind::Memory,
+                external_id: "000".into(),
+                title: format!("graph revision {round}"),
+                body: "graph refresh history ".repeat(32),
+                embedding: Some(vec![1.0, round as f32]),
+                source_id: None,
+                metadata: BTreeMap::new(),
+            };
+            SearchOutOfCoreGenerationWriter::prepare_delta(
+                &reader,
+                crate::SearchProjectionDelta {
+                    upserts: vec![row.clone()],
+                    ..Default::default()
+                },
+                Default::default(),
+            )
+            .unwrap()
+            .finish()
+            .unwrap();
+            let report = reader.refresh().unwrap();
+            assert!(report.generation_changed);
+            assert_eq!(report.validated_retractions, 1);
+            assert_eq!(report.reused_retractions, round);
+            assert_eq!(report.opened_content_segments, 1);
+            assert_eq!(report.reused_content_segments, round + 1);
+            assert!(Arc::ptr_eq(
+                &original_payload,
+                &reader.primary_segment().payload
+            ));
+            assert!(Arc::ptr_eq(
+                &original_descriptor,
+                &reader.primary_segment().descriptor
+            ));
+            assert!(Arc::ptr_eq(
+                &original_layout,
+                &reader.primary_segment().layout
+            ));
+            assert_eq!(reader.manifest.mutation_runs.len(), round + 1);
+            assert_eq!(reader.document_count(), 2);
+            assert_eq!(
+                reader
+                    .hydrate_documents(&["memory:000".into()])
+                    .unwrap()
+                    .documents,
+                vec![row.into_document()]
+            );
+            let fresh = SearchOutOfCoreReader::open(&path).unwrap();
+            assert_search_parity(
+                &fresh
+                    .search_with_options("graph", None, SearchMode::Text, options(10, None))
+                    .unwrap()
+                    .result,
+                &reader
+                    .search_with_options("graph", None, SearchMode::Text, options(10, None))
+                    .unwrap()
+                    .result,
+            );
+            let unchanged = reader.refresh().unwrap();
+            assert!(!unchanged.generation_changed);
+            assert_eq!(unchanged.validated_retractions, 0);
+            assert_eq!(unchanged.reused_retractions, round + 1);
+            assert_eq!(unchanged.opened_content_segments, 0);
+            assert_eq!(unchanged.reused_content_segments, round + 2);
+        }
+        drop(reader);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
+    fn reader_refresh_rejects_fabricated_new_retractions_and_retains_its_pin() {
+        let path = test_dir("refresh-fabricated-target");
+        let old = document(0, "team");
+        publish_two_artifact_manifest(&path, old.clone(), document(1, "team"));
+        let mut reader = SearchOutOfCoreReader::open(&path).unwrap();
+        let generation = reader.generation();
+        let expected = reader
+            .search_with_options("graph", None, SearchMode::Text, options(10, None))
+            .unwrap()
+            .result;
+        install_edited_mutation_run(&path, &old, 0, generation + 1, |entry| {
+            entry.document_id = "memory:missing".into();
+        });
+        let error = reader.refresh().unwrap_err();
+        assert!(
+            error.to_string().contains("target document is absent"),
+            "{error}"
+        );
+        assert_eq!(reader.generation(), generation);
+        assert_search_parity(
+            &expected,
+            &reader
+                .search_with_options("graph", None, SearchMode::Text, options(10, None))
+                .unwrap()
+                .result,
+        );
+        assert!(SearchOutOfCoreReader::open(&path).is_err());
+        drop(reader);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "full-text-search")]
+    fn reader_refresh_revalidates_a_changed_run_at_a_known_run_generation() {
+        let path = test_dir("refresh-changed-run-identity");
+        let old = document(0, "team");
+        publish_two_artifact_manifest(&path, old.clone(), document(1, "team"));
+        install_delete_mutation_run(&path, &old, 0, 3);
+        let mut reader = SearchOutOfCoreReader::open(&path).unwrap();
+        let generation = reader.generation();
+        let mut manifest = reader.manifest.clone();
+        let reference = &mut manifest.mutation_runs[0];
+        let mut entry = reader.visibility.retractions().next().unwrap().clone();
+        entry.retraction.lexical_document_len += 1;
+        let bytes = mutation_run::SearchMutationRunBody::new(
+            reference.generation,
+            reference.analyzer_digest,
+            vec![entry],
+        )
+        .unwrap()
+        .encode()
+        .unwrap();
+        // Keep the run generation, target and aggregate document identity. Only
+        // the immutable run fingerprint changes in this corruption fixture.
+        fs::write(path.join(&reference.file), &bytes).unwrap();
+        reference.len = bytes.len() as u64;
+        reference.checksum = checksum_bytes(&bytes);
+        manifest.generation += 1;
+        fs::write(
+            path.join(OUT_OF_CORE_MANIFEST_FILE),
+            manifest.encode().unwrap(),
+        )
+        .unwrap();
+        let error = reader.refresh().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("does not match its target document"),
+            "{error}"
+        );
+        assert_eq!(reader.generation(), generation);
+        assert_eq!(reader.document_count(), 1);
+        assert!(SearchOutOfCoreReader::open(&path).is_err());
+        drop(reader);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn reader_refresh_revalidates_changed_content_references() {
+        let path = test_dir("refresh-changed-content-reference");
+        let mut writer =
+            SearchOutOfCoreGenerationWriter::create(&path, Default::default()).unwrap();
+        writer.push(document(0, "team")).unwrap();
+        writer.finish().unwrap();
+        let mut reader = SearchOutOfCoreReader::open(&path).unwrap();
+        let generation = reader.generation();
+        let mut manifest = reader.manifest.clone();
+        manifest.generation += 1;
+        manifest.segments[0].payload_len += 1;
+        fs::write(
+            path.join(OUT_OF_CORE_MANIFEST_FILE),
+            manifest.encode().unwrap(),
+        )
+        .unwrap();
+        assert!(reader.refresh().is_err());
+        assert_eq!(reader.generation(), generation);
+        assert!(SearchOutOfCoreReader::open(&path).is_err());
+        drop(reader);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn reader_refresh_rejects_missing_pinned_payload_and_lexical_paths() {
+        let path = test_dir("refresh-missing-pinned-paths");
+        let mut writer =
+            SearchOutOfCoreGenerationWriter::create(&path, Default::default()).unwrap();
+        writer.push(document(0, "team")).unwrap();
+        writer.finish().unwrap();
+        let mut reader = SearchOutOfCoreReader::open(&path).unwrap();
+        let generation = reader.generation();
+        let files = [
+            reader.manifest.segments[0].payload_file.clone(),
+            crate::lexical_projection::artifact_file(
+                reader.primary_segment().lexical_projection.generation(),
+            ),
+        ];
+        for file in files {
+            let original = path.join(file);
+            let retained = path.join("retained-missing-artifact");
+            fs::rename(&original, &retained).unwrap();
+            assert!(reader.refresh().is_err());
+            let mut manifest = reader.manifest.clone();
+            manifest.generation += 1;
+            fs::write(
+                path.join(OUT_OF_CORE_MANIFEST_FILE),
+                manifest.encode().unwrap(),
+            )
+            .unwrap();
+            assert!(reader.refresh().is_err());
+            assert_eq!(reader.generation(), generation);
+            fs::rename(retained, original).unwrap();
+            fs::write(
+                path.join(OUT_OF_CORE_MANIFEST_FILE),
+                reader.manifest.encode().unwrap(),
+            )
+            .unwrap();
+        }
+        drop(reader);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "vector-search")]
+    fn reader_refresh_revalidates_changed_global_embedding_identity() {
+        let path = test_dir("refresh-embedding-identity");
+        let mut writer =
+            SearchOutOfCoreGenerationWriter::create(&path, Default::default()).unwrap();
+        writer.push(document(0, "team")).unwrap();
+        let report = writer.finish().unwrap();
+        assert!(report.rabitq_artifact_bytes > 0);
+        let mut reader = SearchOutOfCoreReader::open(&path).unwrap();
+        let generation = reader.generation();
+        for field in 0..3 {
+            let mut manifest = reader.manifest.clone();
+            manifest.generation += 1;
+            match field {
+                0 => manifest.embedding_model = Some("changed-model".into()),
+                1 => manifest.embedding_version = Some("changed-version".into()),
+                2 => manifest.embedding_dimension = Some(3),
+                _ => unreachable!(),
+            }
+            fs::write(
+                path.join(OUT_OF_CORE_MANIFEST_FILE),
+                manifest.encode().unwrap(),
+            )
+            .unwrap();
+            let error = reader.refresh().unwrap_err();
+            assert!(error.to_string().contains("RaBitQ identity"), "{error}");
+            assert_eq!(reader.generation(), generation);
+            assert!(SearchOutOfCoreReader::open(&path).is_err());
+        }
+        drop(reader);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn reader_refresh_rejects_regressed_and_reused_head_generations() {
+        let path = test_dir("refresh-head-identity");
+        let mut writer =
+            SearchOutOfCoreGenerationWriter::create(&path, Default::default()).unwrap();
+        writer.push(document(0, "team")).unwrap();
+        writer.finish().unwrap();
+        let manifest_path = path.join(OUT_OF_CORE_MANIFEST_FILE);
+        let old_bytes = fs::read(&manifest_path).unwrap();
+        let mut reader = SearchOutOfCoreReader::open(&path).unwrap();
+        SearchOutOfCoreGenerationWriter::prepare_delta(
+            &reader,
+            crate::SearchProjectionDelta {
+                deletes: vec![document(0, "team").id],
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap()
+        .finish()
+        .unwrap();
+        reader.refresh().unwrap();
+        let generation = reader.generation();
+        let current_bytes = fs::read(&manifest_path).unwrap();
+        fs::write(&manifest_path, old_bytes).unwrap();
+        let error = reader.refresh().unwrap_err();
+        assert!(
+            error.to_string().contains("durable head regressed"),
+            "{error}"
+        );
+        assert_eq!(reader.generation(), generation);
+        let mut changed = SearchOutOfCoreManifestBody::decode(&current_bytes).unwrap();
+        changed.source_graph_commit_epoch = Some(123);
+        fs::write(&manifest_path, changed.encode().unwrap()).unwrap();
+        let error = reader.refresh().unwrap_err();
+        assert!(
+            error.to_string().contains("changed an existing generation"),
+            "{error}"
+        );
+        assert_eq!(reader.generation(), generation);
+        fs::write(&manifest_path, current_bytes).unwrap();
+        drop(reader);
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
