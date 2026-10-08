@@ -1391,3 +1391,31 @@ waiting on that lock, cached handle/map allocations, captured registration and
 root ownership still need complete lifetime accounting and release performance
 qualification. This does not enable production per-unit whole-owner admission
 or establish the default sustained-load or complete resource gates.
+
+Canonical source/snapshot readers now share their immutable manifest rather
+than copying the property dictionary, including the durable reader cloned into
+a checkpoint source. The real eight-capture fixture previously added 17825248
+dictionary bytes for 1057 property names. Complete old-snapshot rows survive
+writer mutation and closure, and ordinary reopen retains all newer rows. This
+removes that measured metadata copy; other capture maps, shadow state, root
+registrations and retained working capacity still need complete accounting.
+
+Private cold immutable validation now releases the opening mutex before
+scratch admission, reads and hashes. A shared validation guard protects its
+source until a verified cache owner exists; retirement tries the exclusive
+guard and returns `WouldBlock` while validation is active. This guard covers
+the project's active checkpoint validations conservatively, so unrelated
+retirement can also defer. Ordinary cold reads retain their existing opening
+serialization. A foreground reader may verify the same object concurrently;
+checkpoint publication reuses that complete verified handle and closes its
+redundant native descriptor outside the cache locks. Such duplicate temporary
+opens remain subject to the shared FD budget.
+
+Paused real I/O tests prove foreground progress, retirement deferral, verified
+same-object handle reuse and actual object-sweep source retention followed by
+successful retry. They keep the actual governor's memory and I/O reservation,
+one local operation per unit, and full immutable bytes as the independent
+reference. These interleavings do not establish release commit/read p99,
+complete cache/registration/cleanup accounting, supported-platform power-loss
+qualification or default sustained checkpoint progress. Production whole-owner
+admission and the original default-progress fixture remain unchanged.

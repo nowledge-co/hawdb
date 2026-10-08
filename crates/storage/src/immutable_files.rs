@@ -21,12 +21,16 @@ use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 static NEXT_ALIAS_CANDIDATE: AtomicU64 = AtomicU64::new(0);
 
 mod checkpoint;
 pub(crate) use checkpoint::CheckpointImmutableFileError;
+
+#[cfg(test)]
+#[path = "immutable_files/checkpoint_lock_tests.rs"]
+mod checkpoint_lock_tests;
 
 struct AliasCandidate(PathBuf);
 
@@ -61,6 +65,9 @@ pub(crate) struct ImmutableFileHandles {
     handles: Mutex<BTreeMap<ObjectReference, Arc<File>>>,
     bindings: Mutex<BTreeMap<PathBuf, ImmutableFileBinding>>,
     opening: Mutex<()>,
+    // Private checkpoint validation keeps objects protected after releasing
+    // the short cache-opening lock. Retirement can defer without waiting.
+    checkpoint_validation: RwLock<()>,
 }
 
 impl ImmutableFileHandles {
@@ -70,6 +77,7 @@ impl ImmutableFileHandles {
             handles: Mutex::new(BTreeMap::new()),
             bindings: Mutex::new(BTreeMap::new()),
             opening: Mutex::new(()),
+            checkpoint_validation: RwLock::new(()),
         }
     }
 
@@ -108,6 +116,16 @@ impl ImmutableFileHandles {
             .opening
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let _validation = match self.checkpoint_validation.try_write() {
+            Ok(validation) => validation,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "immutable checkpoint validation is active",
+                ));
+            }
+        };
         let mut handles = self
             .handles
             .lock()

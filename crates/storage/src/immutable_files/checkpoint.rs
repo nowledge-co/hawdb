@@ -39,6 +39,19 @@ impl CheckpointImmutableFileError {
 }
 
 impl ImmutableFileHandles {
+    fn try_checkpoint_opening(
+        &self,
+        work: &CheckpointWorkContext,
+    ) -> Result<std::sync::MutexGuard<'_, ()>, CheckpointImmutableFileError> {
+        match self.opening.try_lock() {
+            Ok(opening) => Ok(opening),
+            Err(std::sync::TryLockError::Poisoned(error)) => Ok(error.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => Err(work
+                .record_failure(CheckpointWorkError::Contended("immutable file validation"))
+                .into()),
+        }
+    }
+
     /// A cold captured read validates the entire object in bounded waves. A
     /// failed or stopped validation never publishes a partially verified handle.
     /// Cache/registration allocations still need separate lifetime admission.
@@ -63,18 +76,18 @@ impl ImmutableFileHandles {
                 return Ok(file);
             }
         }
-        // Do not block a checkpoint task behind another object's validation.
-        // Retain the existing opening/retirement serialization while validating;
-        // cancellation releases it. Foreground lock latency remains a separate
-        // qualification gate until opening ownership is shared incrementally.
-        let _opening = {
+        // Protect validation from retirement, but release the opening lock
+        // before scratch admission, native reads and hashes. Foreground reads
+        // can open other objects while this task yields between bounded units.
+        let _validation = {
             let unit = work.start_unit()?;
-            let opening = match self.opening.try_lock() {
-                Ok(opening) => opening,
+            let opening = self.try_checkpoint_opening(work)?;
+            let validation = match self.checkpoint_validation.try_read() {
+                Ok(validation) => validation,
                 Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
                 Err(std::sync::TryLockError::WouldBlock) => {
                     return Err(work
-                        .record_failure(CheckpointWorkError::Contended("immutable file validation"))
+                        .record_failure(CheckpointWorkError::Contended("immutable file retirement"))
                         .into());
                 }
             };
@@ -84,13 +97,14 @@ impl ImmutableFileHandles {
                 .unwrap_or_else(|error| error.into_inner())
                 .get(&binding.reference)
                 .cloned();
+            drop(opening);
             unit.finish();
             work.checkpoint()?;
             if let Some(file) = cached {
                 self.state.record_cache_hit();
                 return Ok(file);
             }
-            opening
+            validation
         };
         self.state.record_cache_miss();
         // Admit the hash scratch before opening a native descriptor. Include the
@@ -164,11 +178,24 @@ impl ImmutableFileHandles {
         work.checkpoint()?;
         drop(scratch);
         let unit = work.start_unit()?;
-        let file = Arc::new(file);
-        self.handles
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(binding.reference, file.clone());
+        let mut candidate = Some(file);
+        let file = {
+            let _opening = self.try_checkpoint_opening(work)?;
+            let mut handles = self
+                .handles
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(file) = handles.get(&binding.reference) {
+                file.clone()
+            } else {
+                let file = Arc::new(candidate.take().expect("validated candidate is present"));
+                handles.insert(binding.reference, file.clone());
+                file
+            }
+        };
+        // A foreground reader may have published the same verified identity.
+        // Close the redundant native file after releasing both cache locks.
+        drop(candidate);
         unit.finish();
         work.checkpoint()?;
         Ok(file)
