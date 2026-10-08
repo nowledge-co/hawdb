@@ -2534,6 +2534,15 @@ fn selector_matches(branch: &storage::BranchRecord, selector: &BranchSelector) -
     }
 }
 
+// Deleted receipts retain names but no longer reserve them. Preserve
+// historical lookup only when no current incarnation owns the name.
+pub(super) fn prefer_current_branch<T>(
+    matching: impl Iterator<Item = T>,
+    is_deleted: impl FnMut(&T) -> bool,
+) -> Option<T> {
+    matching.min_by_key(is_deleted)
+}
+
 fn resolve_branch_record<'a>(
     catalog: &'a storage::Catalog,
     selector: &BranchSelector,
@@ -2544,11 +2553,9 @@ fn resolve_branch_record<'a>(
         .filter(|branch| selector_matches(branch, selector));
     match selector {
         BranchSelector::Id(_) => matching.next(),
-        // Deleted receipts retain names but no longer reserve them. Preserve
-        // historical lookup only when no current incarnation owns the name.
-        BranchSelector::Name(_) => {
-            matching.min_by_key(|branch| branch.state == storage::BranchState::Deleted)
-        }
+        BranchSelector::Name(_) => prefer_current_branch(matching, |branch| {
+            branch.state == storage::BranchState::Deleted
+        }),
     }
 }
 
