@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Allocation ownership for live append capture. RelationalRow clones share
-//! their immutable values; source retention is a separate resource obligation.
+//! Row-array ownership for live capture and private append compaction.
+//! RelationalRow clones share immutable values. Source retention and the
+//! compaction decoder's element allocations are separate resource obligations.
 //! Allocator rounding/latency and variable-width comparison remain assumptions.
 
 use super::*;
@@ -46,8 +47,14 @@ impl PartialEq<Vec<AppendTableRow>> for CheckpointAppendRows {
     }
 }
 
+impl PartialEq for CheckpointAppendRows {
+    fn eq(&self, other: &Self) -> bool {
+        self.rows == other.rows
+    }
+}
+
 impl CheckpointAppendRows {
-    pub(super) fn new(
+    pub(in crate::append_table) fn new(
         capacity: usize,
         work: &CheckpointWorkContext,
     ) -> Result<Self, AppendTableError> {
@@ -64,7 +71,7 @@ impl CheckpointAppendRows {
         Ok(output)
     }
 
-    pub(super) fn unadmitted(rows: Vec<AppendTableRow>) -> Self {
+    pub(in crate::append_table) fn unadmitted(rows: Vec<AppendTableRow>) -> Self {
         Self {
             rows,
             memory: None,
@@ -72,7 +79,7 @@ impl CheckpointAppendRows {
         }
     }
 
-    pub(super) fn push_clone(
+    pub(in crate::append_table) fn push_clone(
         &mut self,
         row: &AppendTableRow,
         work: &CheckpointWorkContext,
@@ -106,6 +113,48 @@ impl CheckpointAppendRows {
             });
             unit.finish();
         }
+        work.checkpoint().map_err(work_error)
+    }
+
+    /// The caller owns the element allocations separately and admits its row
+    /// work unit. This operation never grows the admitted backing array.
+    pub(in crate::append_table) fn push_owned(
+        &mut self,
+        row: AppendTableRow,
+    ) -> Result<(), AppendTableError> {
+        if self.rows.len() == self.rows.capacity() {
+            return Err(inconsistent_batches());
+        }
+        self.rows.push(row);
+        Ok(())
+    }
+
+    pub(in crate::append_table) fn as_mut_slice(&mut self) -> &mut [AppendTableRow] {
+        &mut self.rows
+    }
+
+    pub(in crate::append_table) fn append_owned(
+        &mut self,
+        mut incoming: Self,
+        work: &CheckpointWorkContext,
+    ) -> Result<(), AppendTableError> {
+        if incoming.len() > self.rows.capacity() - self.rows.len() {
+            return Err(inconsistent_batches());
+        }
+        // Transfer element leases before moving their data. Both inventories
+        // remain intact on transfer rejection; moved values stay owned even if
+        // a later row unit is cancelled. Incoming array capacity remains alive
+        // until its actual IntoIter backing allocation has been destroyed.
+        self.allocations
+            .append(&mut incoming.allocations, work)
+            .map_err(work_error)?;
+        let input = std::mem::take(&mut incoming.rows).into_iter();
+        for row in input {
+            let unit = work.start_unit().map_err(work_error)?;
+            self.push_owned(row)?;
+            unit.finish();
+        }
+        drop(incoming);
         work.checkpoint().map_err(work_error)
     }
 }

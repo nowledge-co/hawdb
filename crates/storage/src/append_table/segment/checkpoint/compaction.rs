@@ -15,8 +15,9 @@
 //! Cooperative reads for private append compaction.
 
 use super::*;
-use crate::append_table::checkpoint::CompactionFailure as Failure;
+use crate::append_table::checkpoint::{CheckpointAppendRows, CompactionFailure as Failure};
 use crate::append_table::segment;
+use crate::background::CheckpointBytes;
 use crate::relational::decode_relational_row_payload;
 use std::io::{Cursor, Read};
 
@@ -26,7 +27,7 @@ impl AppendSegmentReader {
         descriptor: &AppendSegmentBlockDescriptor,
         max_payload_bytes: usize,
         work: &CheckpointWorkContext,
-    ) -> Result<Vec<AppendTableRow>, Failure> {
+    ) -> Result<CheckpointAppendRows, Failure> {
         let start = self
             .payload_start
             .checked_add(segment::to_usize(
@@ -40,7 +41,7 @@ impl AppendSegmentReader {
         let end = start.checked_add(len).ok_or_else(|| {
             AppendTableError::Corruption("append block length overflow".to_string())
         })?;
-        let mut compressed = Vec::with_capacity(len);
+        let mut compressed = CheckpointBytes::new(len, work)?;
         let mut position = start;
         while position < end {
             let unit = work.start_unit()?;
@@ -49,12 +50,26 @@ impl AppendSegmentReader {
             } else {
                 None
             };
+            // Acquisition itself may observe or trigger cancellation. Recheck
+            // before allocating or reading the admitted chunk.
+            work.checkpoint()?;
             let chunk_len = (end - position).min(64 * 1024);
+            let chunk_memory = work.reserve_memory(chunk_len)?;
             let chunk = self.source.read_range(position, chunk_len)?;
-            compressed.extend_from_slice(&chunk);
+            if chunk.capacity() != chunk_len {
+                return Err(work
+                    .record_failure(crate::background::CheckpointWorkError::Allocation {
+                        bytes: chunk.capacity() as u64,
+                        reason: "append source read exceeds admitted chunk capacity".into(),
+                    })
+                    .into());
+            }
             position += chunk_len;
             drop(wave);
             unit.finish();
+            compressed.append(&chunk, work)?;
+            drop(chunk);
+            drop(chunk_memory);
         }
         let digest = work.integrity(&compressed)?;
         if digest.crc32c.get() != descriptor.payload_crc32c
@@ -74,7 +89,7 @@ impl AppendSegmentReader {
         }
         let unit = work.start_unit()?;
         let decoder =
-            zstd::stream::read::Decoder::new(Cursor::new(&compressed)).map_err(|error| {
+            zstd::stream::read::Decoder::new(Cursor::new(&*compressed)).map_err(|error| {
                 AppendTableError::Corruption(format!(
                     "failed to open append block decoder: {error}"
                 ))
@@ -83,19 +98,19 @@ impl AppendSegmentReader {
             .unwrap_or(u64::MAX)
             .saturating_add(1);
         let mut decoder = decoder.take(limit);
-        let mut decoded = Vec::with_capacity(expected);
         unit.finish();
+        let mut decoded = CheckpointBytes::new(expected, work)?;
         let mut chunk = [0_u8; 64 * 1024];
         loop {
             let unit = work.start_unit()?;
             let count = decoder.read(&mut chunk).map_err(|error| {
                 AppendTableError::Corruption(format!("failed to decompress append block: {error}"))
             })?;
-            decoded.extend_from_slice(&chunk[..count]);
             unit.finish();
             if count == 0 {
                 break;
             }
+            decoded.append(&chunk[..count], work)?;
         }
         if decoded.len() != expected {
             return Err(AppendTableError::Corruption(format!(
@@ -114,7 +129,7 @@ fn decode_block(
     max_payload_bytes: usize,
     config: AppendSegmentConfig,
     work: &CheckpointWorkContext,
-) -> Result<Vec<AppendTableRow>, Failure> {
+) -> Result<CheckpointAppendRows, Failure> {
     let unit = work.start_unit()?;
     let mut decoder = segment::Decoder::new(decoded);
     let row_count = decoder.count(config.max_rows, "append block rows")?;
@@ -125,18 +140,17 @@ fn decode_block(
         ))
         .into());
     }
-    let mut rows = Vec::with_capacity(row_count);
-    let mut prior = None;
     let mut value_count = 0usize;
     let mut references = BTreeMap::new();
     unit.finish();
+    let mut rows = CheckpointAppendRows::new(row_count, work)?;
     for _ in 0..row_count {
         let unit = work.start_unit()?;
         let key = segment::decode_append_key(
             decoder.bytes(config.max_key_bytes, "append order key")?,
             false,
         )?;
-        if prior.as_ref().is_some_and(|prior| prior >= &key) {
+        if rows.last().is_some_and(|prior| prior.order_key >= key) {
             return Err(AppendTableError::Corruption(
                 "append block order keys are duplicated or unordered".to_string(),
             )
@@ -174,13 +188,12 @@ fn decode_block(
             unit.finish();
         }
         let unit = work.start_unit()?;
-        rows.push(AppendTableRow {
+        rows.push_owned(AppendTableRow {
             table: descriptor.table.clone(),
             partition_key: descriptor.partition_key.clone(),
-            order_key: key.clone(),
+            order_key: key,
             row,
-        });
-        prior = Some(key);
+        })?;
         unit.finish();
     }
     let unit = work.start_unit()?;
@@ -208,7 +221,7 @@ fn decode_block(
         unit.finish();
     }
     decoder.finish("append block")?;
-    if prior.as_ref() != Some(&descriptor.max_order_key) {
+    if rows.last().map(|row| &row.order_key) != Some(&descriptor.max_order_key) {
         return Err(AppendTableError::Corruption(
             "append block maximum order key differs from its descriptor".to_string(),
         )
@@ -238,7 +251,7 @@ fn decode_block(
         ..RelationalHydrationBudget::default()
     };
     let mut hydrated: BTreeMap<Sha256Digest, RelationalValue> = BTreeMap::new();
-    for row in &mut rows {
+    for row in rows.as_mut_slice() {
         let mut values = Vec::with_capacity(row.row.values().len());
         for value in row.row.values() {
             let unit = work.start_unit()?;

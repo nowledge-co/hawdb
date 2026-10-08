@@ -1458,8 +1458,78 @@ store candidate test, exact initial array denial, measured sort overlap, typed
 memory denial and complete retry under the same actual reservation, and every
 actual CPU cancellation point across Unicode/binary and 1057-column partition
 keys. Scoped strict profiles, wrong controls and full qualification remain
-required. Compaction still uses its existing unleased Vec path; source/shared
+required. Compaction ownership was a separate follow-up; source/shared
 row retention, variable-width sorting/comparison, schema/segment/decode buffers,
 allocator rounding/latency and complete publication/cleanup resources remain
 separate gaps. This correction does not enable whole-owner per-unit admission
 or qualify default sustained progress or full issue acceptance.
+
+Private append compaction now retains admitted row-array capacity through block
+collection, prior-generation sorting, incoming live-row cloning, final sorting
+and segment publication. The prior sort preserves reserved room for incoming
+rows, so appending cannot silently grow the array. Run/heap/input/output capacity
+uses the same allocation-owning sorter as live capture, and decoded block arrays
+stay charged until their actual backing allocations are destroyed. Incoming
+element inventories transfer before their data, preserving ownership on failure.
+Ordinary compaction still constructs its independent rows and sorts; only the
+private plan's internal transport retains resource ownership.
+
+Compressed blocks and decoded byte buffers use admitted fallible exact capacity.
+Source read chunks reserve their complete capacity before the physical read and
+stay charged while copied into the compressed buffer. I/O grants are rechecked
+for cancellation before allocation/read. Nested decoder work errors propagate
+their typed cause to the enclosing task; only data budget failures may defer
+compaction. A memory or work rejection cannot silently publish an incremental
+candidate instead. Row/key/overflow decoder interiors, value hydration/cloning,
+reference maps, Zstd internal allocations, retained source/shared values and
+variable-width comparisons still need independent resource ownership and bounds.
+
+Two real-governor regressions genuinely fail before the correction: the unchanged
+2071-row fixture completes under a one-byte memory allowance, and its live result
+loses admission after task/source closure. Their complete corrected original test
+bodies are retained byte-for-byte. Earlier fixture setup attempts omitted the
+required I/O wave declaration and are archived separately, not counted as these
+memory regressions. Nine focused compaction cases pass, retaining all original
+data limits, CPU cuts, I/O cuts, reference publication bytes and complete reopen
+assertions. Added tests measure overlapping sort capacities, reject decoded-block
+memory after actual governor-backed I/O, return all partial working capacity and
+I/O slots on every actual I/O wave and the original representative CPU cuts, and
+fully retry each attempt on the same admitted reservation. Scoped profiles,
+deliberate wrong ownership/deferral controls and complete qualification remain
+required. This is not a complete candidate ledger and does not change production
+whole-owner admission or qualify default sustained progress, power-loss safety,
+release performance or full issue acceptance.
+
+The sorting peak also receives an independent measurement with all 2071 reference
+rows. A first actually compiled scratch-undercharge control passed the combined
+pipeline peak check because decoder buffers masked the missing sort capacity.
+That attempt is retained as an ineffective control; the isolated sort measurement
+is required in addition to complete compaction results and the existing denial,
+cancellation and retry assertions. It does not reduce any original case or budget.
+
+The unmodified 320-write delta-pressure owner case later failed during the full
+owner matrix (13 pass/1 fail) at a projected 14842 bytes under its 16 KiB cap.
+Its independent single-case rerun passed, which does not qualify that matrix.
+The publication barrier previously admitted more foreground work while a soft
+pressure trigger was pending in Idle, and while the selected generation was
+being retired outside the gate. Controlled worker pauses expose both gaps.
+The barrier now gives a pending pressure-triggered owner one attempt before
+admitting further near-limit work, and waits for off-gate retirement when new
+pressure needs its headroom. An attempt sequence releases pending waiters after
+admission denial rather than making them wait for successive unavailable
+reservations. Active sync groups and explicitly suspended/stopping idle owners
+remain able to proceed. This retains the existing soft threshold, maximum-record
+reserve and whole-owner admission, without proving a general delta expansion,
+foreground latency or default-resource progress bound.
+
+Three additional facade regressions pause the actual owner outside the
+publication mutex, exercise the original 16 KiB cap and 512-byte value shape,
+and observe the foreground wait phase. The two progress cases retain all 320
+values across automatic generations and normal reopen; the denial case requires
+a single foreground call to return after a one-byte governor rejects background
+admission. All three fail on the preceding owner (0 pass/3 fail) and the same
+complete fixture passes after correction (3 pass/0 fail, 129.30 harness seconds).
+The original full owner/concurrency/fuzz matrix and supported-profile
+qualification remain pending; the complete failed matrix and its isolated pass
+remain evidence. The original owner test module, whole-owner prepare/retire
+paths, candidate estimator and append files are unchanged by this correction.

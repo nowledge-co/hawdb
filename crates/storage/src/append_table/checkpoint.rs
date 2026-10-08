@@ -20,7 +20,7 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 
 mod memory;
-use memory::CheckpointAppendRows;
+pub(super) use memory::CheckpointAppendRows;
 
 const SORT_ROWS_PER_UNIT: usize = 1024;
 
@@ -103,13 +103,21 @@ fn inconsistent_batches() -> AppendTableError {
     )
 }
 
-pub(super) fn sort_rows_with_work_context(
+#[cfg(test)]
+fn sort_rows_with_work_context(
     rows: Vec<AppendTableRow>,
     work: &CheckpointWorkContext,
 ) -> Result<Vec<AppendTableRow>, AppendTableError> {
-    // The existing compaction API still returns an unleased Vec. Live capture
-    // retains its typed owner directly; compaction ownership remains separate.
+    // Preserve the original raw-sort cancellation fixture. Private capture and
+    // compaction both retain their allocation-owning result directly.
     Ok(sort_captured_rows(CheckpointAppendRows::unadmitted(rows), work, false)?.rows)
+}
+
+pub(super) fn sort_owned_rows_with_work_context(
+    rows: CheckpointAppendRows,
+    work: &CheckpointWorkContext,
+) -> Result<CheckpointAppendRows, AppendTableError> {
+    sort_captured_rows(rows, work, true)
 }
 
 fn scratch_capacity<T>(
@@ -133,6 +141,9 @@ fn sort_captured_rows(
     admitted: bool,
 ) -> Result<CheckpointAppendRows, AppendTableError> {
     let row_count = rows.len();
+    // Compaction leaves admitted room for the incoming live rows. Preserve it
+    // through the prior-generation sort instead of growing its Vec afterward.
+    let output_capacity = rows.rows.capacity();
     let run_count = row_count.div_ceil(SORT_ROWS_PER_UNIT);
     // Leases outlive all scratch buffers, also on a cancellation/error unwind.
     let mut scratch = CheckpointAllocationOwner::default();
@@ -163,11 +174,11 @@ fn sort_captured_rows(
     }
     let unit = work.start_unit().map_err(work_error)?;
     let memory = if admitted {
-        memory::reserve_capacity::<AppendTableRow>(row_count, work)?
+        memory::reserve_capacity::<AppendTableRow>(output_capacity, work)?
     } else {
         None
     };
-    let mut sorted = memory::allocate_capacity(row_count, work)?;
+    let mut sorted = memory::allocate_capacity(output_capacity, work)?;
     unit.finish();
     while !heap.is_empty() {
         let unit = work.start_unit().map_err(work_error)?;

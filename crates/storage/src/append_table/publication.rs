@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::checkpoint::CheckpointAppendRows;
 use crate::background::CheckpointWorkContext;
 
 mod checkpoint;
@@ -175,7 +176,7 @@ pub struct AppendPublisher;
 #[derive(Debug)]
 struct AppendCompactionPlan {
     due: bool,
-    checkpoint_rows: Option<Vec<AppendTableRow>>,
+    checkpoint_rows: Option<CheckpointAppendRows>,
 }
 
 fn plan_compaction(
@@ -222,7 +223,7 @@ fn plan_compaction(
     }
     Ok(AppendCompactionPlan {
         due,
-        checkpoint_rows,
+        checkpoint_rows: checkpoint_rows.map(CheckpointAppendRows::unadmitted),
     })
 }
 

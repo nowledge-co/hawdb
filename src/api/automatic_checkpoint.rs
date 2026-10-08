@@ -60,6 +60,25 @@ impl PrefixSealProbe {
     }
 }
 
+#[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+#[derive(Debug)]
+struct OwnerPauseProbe {
+    paused: std::sync::mpsc::Sender<()>,
+    resume: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+#[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+impl OwnerPauseProbe {
+    fn observe(&self) {
+        self.paused.send(()).expect("owner pause observer stopped");
+        self.resume
+            .lock()
+            .expect("owner pause observer poisoned")
+            .recv_timeout(Duration::from_secs(15))
+            .expect("owner pause observer stopped");
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct Source {
     store: GraphStore,
@@ -132,6 +151,7 @@ pub(super) struct State {
     latest: Option<Source>,
     last_identity: Option<CheckpointSourceIdentity>,
     sync_group_active: bool,
+    attempts_started: u64,
     debt: Option<CheckpointDebtSnapshot>,
     selected: Option<Selected>,
     retired: Option<Retired>,
@@ -140,6 +160,12 @@ pub(super) struct State {
     report: AutomaticCheckpointReport,
     #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
     prefix_seal_probe: Option<Arc<PrefixSealProbe>>,
+    #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+    idle_start_probe: Option<Arc<OwnerPauseProbe>>,
+    #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+    retirement_probe: Option<Arc<OwnerPauseProbe>>,
+    #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+    frontend_wait_probe: Option<std::sync::mpsc::Sender<Phase>>,
 }
 
 #[derive(Debug, Default)]
@@ -162,12 +188,29 @@ impl Control {
     pub(super) fn lock_frontend(&self) -> Result<MutexGuard<'_, State>> {
         self.ensure_healthy()?;
         let mut state = self.lock()?;
+        let observed_attempts = state.attempts_started;
         while state.phase == Phase::Finalizing
             || (state.phase == Phase::Draining && !state.sync_group_active)
             || (state.phase == Phase::Preparing
                 && !state.sync_group_active
                 && needs_headroom(&state))
+            || (state.phase == Phase::Retiring
+                && !state.sync_group_active
+                && pressure_pending(&state)
+                && needs_headroom(&state))
+            || (state.phase == Phase::Idle
+                && state.enabled
+                && !state.stopping
+                && state.suspensions == 0
+                && !state.sync_group_active
+                && state.attempts_started == observed_attempts
+                && pressure_pending(&state)
+                && needs_headroom(&state))
         {
+            #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+            if let Some(probe) = &state.frontend_wait_probe {
+                let _ = probe.send(state.phase);
+            }
             state = self.changed.wait(state).map_err(|_| Self::poisoned())?;
         }
         self.ensure_healthy()?;
@@ -461,7 +504,21 @@ fn run(
                 .unwrap_or_else(|error| error.into_inner());
             loop {
                 if let Some(retired) = state.retired.take() {
+                    #[cfg(all(
+                        test,
+                        feature = "background-maintenance",
+                        not(target_arch = "wasm32")
+                    ))]
+                    let probe = state.retirement_probe.take();
                     drop(state);
+                    #[cfg(all(
+                        test,
+                        feature = "background-maintenance",
+                        not(target_arch = "wasm32")
+                    ))]
+                    if let Some(probe) = probe {
+                        probe.observe();
+                    }
                     retire(retired, &pins);
                     state = control
                         .state
@@ -483,6 +540,24 @@ fn run(
                     && !state.sync_group_active
                     && due
                 {
+                    #[cfg(all(
+                        test,
+                        feature = "background-maintenance",
+                        not(target_arch = "wasm32")
+                    ))]
+                    if let Some(probe) = state.idle_start_probe.take() {
+                        drop(state);
+                        probe.observe();
+                        state = control
+                            .state
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner());
+                        continue;
+                    }
+                    // A pending foreground waiter gives this owner one attempt.
+                    // Denial must release it instead of repeatedly waiting on
+                    // an unavailable background reservation.
+                    state.attempts_started = state.attempts_started.wrapping_add(1);
                     state.phase = Phase::Preparing;
                     state.report.preparing = true;
                     let task = RuntimeTaskContext::default();
@@ -684,25 +759,35 @@ fn near_limit(bytes: u64, limit: u64, reserve: u64) -> bool {
     bytes >= defer.saturating_sub(reserve)
 }
 
+fn pressure_pending(state: &State) -> bool {
+    state.latest.is_some()
+        && state.debt.is_some_and(|debt| {
+            !debt.read_only
+                && debt.commit_epoch > debt.checkpoint_commit_epoch
+                && soft_pressure(debt)
+        })
+}
+
+fn soft_pressure(debt: CheckpointDebtSnapshot) -> bool {
+    [
+        (debt.wal_bytes, debt.max_wal_bytes),
+        (debt.delta_bytes, debt.max_delta_bytes),
+    ]
+    .into_iter()
+    .any(|(bytes, limit)| {
+        limit.is_some_and(|limit| {
+            u128::from(bytes) * 1_000_000
+                >= u128::from(limit)
+                    * u128::from(hawdb_storage::pressure::STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION)
+        })
+    })
+}
+
 fn due(source: &Source, max_age: Duration) -> bool {
     source.store.checkpoint_debt_snapshot().is_some_and(|debt| {
-        if debt.read_only || debt.commit_epoch <= debt.checkpoint_commit_epoch {
-            return false;
-        }
-        [
-            (debt.wal_bytes, debt.max_wal_bytes),
-            (debt.delta_bytes, debt.max_delta_bytes),
-        ]
-        .into_iter()
-        .any(|(bytes, limit)| {
-            limit.is_some_and(|limit| {
-                u128::from(bytes) * 1_000_000
-                    >= u128::from(limit)
-                        * u128::from(
-                            hawdb_storage::pressure::STORAGE_PRESSURE_SOFT_RATIO_PER_MILLION,
-                        )
-            })
-        }) || u128::from(debt.wal_age_millis) >= max_age.as_millis()
+        !debt.read_only
+            && debt.commit_epoch > debt.checkpoint_commit_epoch
+            && (soft_pressure(debt) || u128::from(debt.wal_age_millis) >= max_age.as_millis())
     })
 }
 
@@ -1514,4 +1599,6 @@ mod tests {
         );
         assert!(read_only.automatic_checkpoint_report().unwrap().is_none());
     }
+
+    mod headroom;
 }

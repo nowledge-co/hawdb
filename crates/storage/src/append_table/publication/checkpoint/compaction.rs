@@ -13,12 +13,15 @@
 // limitations under the License.
 
 //! Private compaction keeps work rejection distinct from data-budget deferral.
-//! Block I/O, decompression and row traversal use cooperative boundaries. The
-//! individual row/key decoder and overflow decoder retain their existing limits;
-//! these limits do not establish a hard candidate memory ledger.
+//! Row arrays and sorting retain their admitted capacity through publication.
+//! Block I/O and decompression retain admitted byte buffers. Individual row/key
+//! and overflow element allocations still need their own resource ownership.
 
 use super::*;
-use crate::append_table::checkpoint::{sort_rows_with_work_context, CompactionFailure as Failure};
+use crate::append_table::checkpoint::{
+    sort_owned_rows_with_work_context, CompactionFailure as Failure,
+};
+use crate::background::CheckpointOperationError;
 
 pub(in crate::append_table::publication) fn plan_compaction(
     previous: Option<&AppendGenerationReader>,
@@ -61,6 +64,7 @@ pub(in crate::append_table::publication) fn plan_compaction(
         previous,
         config.max_compaction_rows - rows.len(),
         config.max_compaction_payload_bytes - live_payload_bytes,
+        rows.len(),
         work,
     )
     .map_err(Failure::into_append)?
@@ -69,11 +73,9 @@ pub(in crate::append_table::publication) fn plan_compaction(
         return Ok(deferred());
     };
     for row in rows {
-        let unit = work.start_unit().map_err(work_error)?;
-        checkpoint_rows.push(row.clone());
-        unit.finish();
+        checkpoint_rows.push_clone(row, work)?;
     }
-    let checkpoint_rows = sort_rows_with_work_context(checkpoint_rows, work)?;
+    let checkpoint_rows = sort_owned_rows_with_work_context(checkpoint_rows, work)?;
     work.checkpoint().map_err(work_error)?;
     Ok(AppendCompactionPlan {
         due,
@@ -85,8 +87,9 @@ fn checkpoint_rows(
     previous: &AppendGenerationReader,
     max_rows: usize,
     max_payload_bytes: usize,
+    live_rows: usize,
     work: &CheckpointWorkContext,
-) -> Result<Option<Vec<AppendTableRow>>, Failure> {
+) -> Result<Option<CheckpointAppendRows>, Failure> {
     let mut expected_rows = 0usize;
     for segment in previous.segments.iter() {
         for descriptor in segment.descriptors() {
@@ -103,25 +106,38 @@ fn checkpoint_rows(
         work.checkpoint()?;
         return Ok(None);
     }
-    let mut rows = Vec::with_capacity(expected_rows);
+    let capacity = expected_rows
+        .checked_add(live_rows)
+        .ok_or_else(|| AppendTableError::Admission("append row count overflow".to_string()))?;
+    let mut rows = CheckpointAppendRows::new(capacity, work)?;
     let mut payload_bytes = 0usize;
     for segment in previous.segments.iter() {
         for descriptor in segment.descriptors() {
-            let block = match segment.checkpoint_block_with_work_context(
-                descriptor,
-                max_payload_bytes.saturating_sub(payload_bytes),
-                work,
-            ) {
+            // Preserve typed work failures through existing decoder error
+            // adapters. Only a data limit may defer compaction; memory, local
+            // admission and cancellation must abort the complete candidate.
+            let block = match work.classify(|work| {
+                segment.checkpoint_block_with_work_context(
+                    descriptor,
+                    max_payload_bytes.saturating_sub(payload_bytes),
+                    work,
+                )
+            }) {
                 Ok(block) => block,
                 // Only a data decoder's configured budget can defer compaction.
                 // Work admission and cancellation must abort this candidate.
-                Err(Failure::Data(AppendTableError::Admission(_))) => {
+                Err(CheckpointOperationError::Operation(Failure::Data(
+                    AppendTableError::Admission(_),
+                ))) => {
                     work.checkpoint()?;
                     return Ok(None);
                 }
-                Err(error) => return Err(error),
+                Err(CheckpointOperationError::Operation(error)) => return Err(error),
+                Err(CheckpointOperationError::Work(error)) => {
+                    return Err(work.record_failure(error).into());
+                }
             };
-            for row in block {
+            for row in block.iter() {
                 let unit = work.start_unit()?;
                 let Ok(row_bytes) = crate::append_table::estimated_row_bytes(&row.row) else {
                     work.checkpoint()?;
@@ -134,12 +150,12 @@ fn checkpoint_rows(
                         return Ok(None);
                     }
                 };
-                rows.push(row);
                 unit.finish();
             }
+            rows.append_owned(block, work)?;
         }
     }
-    let rows = sort_rows_with_work_context(rows, work).map_err(Failure::Data)?;
+    let rows = sort_owned_rows_with_work_context(rows, work).map_err(Failure::Data)?;
     if rows.len() != expected_rows {
         return Err(AppendTableError::Corruption(
             "append checkpoint rows overlap or regress".to_string(),

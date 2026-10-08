@@ -262,6 +262,11 @@ impl BranchRuntimeCell {
             .map_err(|_| HawDBError::StorageIntegrity("checkpoint owner started twice".into()))
     }
 
+    #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+    pub(super) fn checkpoint_control_for_test(&self) -> Arc<Control> {
+        Arc::clone(&self.publication)
+    }
+
     pub(super) fn automatic_checkpoint_report(
         &self,
     ) -> Result<Option<super::AutomaticCheckpointReport>> {

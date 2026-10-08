@@ -23,6 +23,8 @@ use hawdb_qos::{
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
+mod memory;
+
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Self {
