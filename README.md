@@ -9,16 +9,22 @@ HawDB is an embedded knowledge and context database. It keeps the facts an agent
 
 Graph structure, relational rows, lexical search, and vector search share one engine. A retrieval request takes search candidates, filters them, walks the authorized graph, reranks with a typed score, and hydrates the result from the canonical snapshot.
 
-HawDB is written in Rust, version 0.4.0, and licensed under Apache-2.0. It is the local knowledge plane Nowledge embeds. The library is the product: any host that needs a durable context layer opens it the same way.
+HawDB is written in Rust and licensed under Apache-2.0. It is built for Nowledge Mem, currently in nightly integration. The library is the product: any host that needs a durable context layer opens it the same way.
 
 The site and in-browser playground are at [hawdb.ai](https://hawdb.ai). Their source is [nowledge-co/hawdb-website](https://github.com/nowledge-co/hawdb-website).
 
 ## Install
 
-HawDB is a Rust library. The repository pins Rust 1.97.1.
+HawDB is a Rust library. Published releases are on crates.io. The repository pins Rust 1.97.1.
 
 ```toml
 [dependencies]
+hawdb = "0.4"
+```
+
+To follow the repository tip instead of a release:
+
+```toml
 hawdb = { git = "https://github.com/nowledge-co/hawdb" }
 ```
 
@@ -47,10 +53,9 @@ fn main() -> hawdb::Result<()> {
     note.insert("title".into(), Value::String("Graph foundations".into()));
 
     let mut tx = db.begin_transaction()?;
-    tx.query_with_params("CREATE (:Note {title: $title})", &note)?;
-    tx.query(
-        "MATCH (note:Note {title: 'Graph foundations'})
-         CREATE (note)-[:MENTIONS]->(:Entity {name: 'context layer'})",
+    tx.query_with_params(
+        "CREATE (:Note {title: $title})-[:MENTIONS]->(:Entity {name: 'context layer'})",
+        &note,
     )?;
     tx.commit()?;
 
@@ -63,6 +68,8 @@ fn main() -> hawdb::Result<()> {
     Ok(())
 }
 ```
+
+The same program is [`examples/open_database.rs`](examples/open_database.rs). The relationship is created in that statement together with both endpoints.
 
 `Database::new` opens an in-memory database with the same query API. Parameterized statements are the application interface. `EXPLAIN` returns the physical plan chosen by the Cascades-style optimizer.
 
@@ -129,7 +136,7 @@ host process
 
 Lexical, vector, and analytics data are projections. Identity and authorization live on the canonical snapshot, and retrieval rebinds to that snapshot before it returns rows.
 
-Vector search is native Rust. The portable scalar kernel is the qualified query path. AVX2, and NEON outside Arm, fail closed until a native kernel is qualified. Segment scans are opt-in under a caller-supplied concurrency limit and memory budget. HawDB does not start a global vector-search thread pool. The encoding, recovery, and readiness contract is [`docs/specs/RABITQ_VECTOR_PROJECTION_SPEC.md`](docs/specs/RABITQ_VECTOR_PROJECTION_SPEC.md).
+Vector search is native Rust. Only the portable scalar kernel is qualified. An AVX2 request fails closed. A NEON request fails closed off Arm, and on Arm it runs on the scalar kernel. Segment scans are opt-in under a caller-supplied concurrency limit and memory budget. HawDB does not start a global vector-search thread pool. The encoding, recovery, and readiness contract is [`docs/specs/RABITQ_VECTOR_PROJECTION_SPEC.md`](docs/specs/RABITQ_VECTOR_PROJECTION_SPEC.md).
 
 ## Query languages
 
@@ -273,7 +280,7 @@ Alongside the models, the repository keeps differential fuzzing, crash-recovery 
 
 ## Scope
 
-HawDB 0.4.0 is a single-process embedded engine.
+HawDB is a single-process embedded engine.
 
 - One database directory, one writer lease, one process.
 - Cypher covers the statements listed above. That is the executed surface, and it is smaller than the whole of openCypher.
