@@ -14,7 +14,13 @@
 
 """HawDB Python bindings: embed the database directly from Python."""
 
-from hawdb._hawdb import Database, QueryResult, __version__, open
+from hawdb._hawdb import (
+    Database,
+    QueryResult,
+    __version__,
+    capabilities,
+    open,
+)
 from hawdb._hawdb import exceptions
 
 connect = open
@@ -22,6 +28,7 @@ connect = open
 __all__ = [
     "Database",
     "QueryResult",
+    "capabilities",
     "connect",
     "exceptions",
     "open",

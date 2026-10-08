@@ -39,6 +39,30 @@ uv pip install maturin pytest
 maturin develop
 ```
 
+### Lite profile
+
+Constrained hosts — including the Pyodide/JupyterLite build — can link the
+extension against the minimal engine instead of the default feature set:
+
+```bash
+maturin build --no-default-features --features lite
+# or inside the venv: maturin develop --no-default-features --features lite
+```
+
+Lite is a build profile of the same package, not a second API: `open`,
+`execute`, `execute_sql`, and `QueryResult` behave the same. Statements that
+need a capability the minimal engine does not carry (full-text search, vector
+search, graph analytics, background maintenance) raise
+`hawdb.exceptions.CapabilityError` instead of silently returning an empty
+result. `hawdb.capabilities()` reports which capability flags were compiled
+into the extension as a read-only mapping:
+
+```python
+import hawdb
+
+hawdb.capabilities()["full_text_search"]   # False on a lite build
+```
+
 ## Usage
 
 ```python
