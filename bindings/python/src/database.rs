@@ -31,14 +31,28 @@ use crate::value::{py_dict_to_params, py_to_value, value_to_py};
 /// `execute` call runs one statement and commits on success. The
 /// embedded facade applies its own query admission and result budgets,
 /// so statements keep HawDB's bounded-resource behavior.
+///
+/// `Database()` opens an empty in-memory database; `Database(path)` opens
+/// a durable project directory.
 #[pyclass(module = "hawdb", name = "Database", unsendable)]
 pub struct Database {
     inner: Option<HawDBEmbedded>,
-    path: PathBuf,
+    path: Option<PathBuf>,
 }
 
 impl Database {
-    fn open_impl(path: PathBuf, read_only: bool) -> PyResult<Self> {
+    fn open_impl(path: Option<PathBuf>, read_only: bool) -> PyResult<Self> {
+        let Some(path) = path else {
+            if read_only {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "read_only requires a database path",
+                ));
+            }
+            return Ok(Self {
+                inner: Some(HawDBEmbedded::open_in_memory()),
+                path: None,
+            });
+        };
         let inner = if read_only {
             let config = DatabaseConfig {
                 read_only: true,
@@ -60,7 +74,7 @@ impl Database {
         match inner {
             Ok(inner) => Ok(Self {
                 inner: Some(inner),
-                path,
+                path: Some(path),
             }),
             Err(error) => Err(format_hawdb_error(&error)),
         }
@@ -76,15 +90,16 @@ impl Database {
 #[pymethods]
 impl Database {
     #[new]
-    #[pyo3(signature = (path, read_only = false))]
-    fn new(path: PathBuf, read_only: bool) -> PyResult<Self> {
+    #[pyo3(signature = (path = None, read_only = false))]
+    fn new(path: Option<PathBuf>, read_only: bool) -> PyResult<Self> {
         Self::open_impl(path, read_only)
     }
 
-    /// Filesystem path this database is bound to.
+    /// Project path this database is bound to, or None for an in-memory
+    /// database.
     #[getter]
-    fn path(&self) -> String {
-        self.path.display().to_string()
+    fn path(&self) -> Option<String> {
+        self.path.as_ref().map(|path| path.display().to_string())
     }
 
     /// Whether the database still has a live handle.
@@ -165,7 +180,10 @@ impl Database {
         } else {
             "closed"
         };
-        format!("hawdb.Database({:?}, {})", self.path.display(), state)
+        match &self.path {
+            Some(path) => format!("hawdb.Database({:?}, {})", path.display(), state),
+            None => format!("hawdb.Database(<in-memory>, {})", state),
+        }
     }
 }
 
@@ -270,14 +288,18 @@ impl QueryResult {
     }
 }
 
-/// Opens a HawDB database at `path`, creating it if needed.
+/// Opens a HawDB database, creating a durable project at `path` if needed.
 ///
-/// Pass `read_only=True` to reject writes and open an existing database
-/// read-only.
+/// Called without `path` it returns an empty in-memory database: no project
+/// directory is created and closing the handle discards all data.
+/// `read_only=True` requires a path and opens an existing database read-only.
 #[pyfunction]
-#[pyo3(signature = (path, read_only = false))]
-pub fn open(path: PathBuf, read_only: bool) -> PyResult<Database> {
-    if !read_only && !path.exists() {
+#[pyo3(signature = (path = None, read_only = false))]
+pub fn open(path: Option<PathBuf>, read_only: bool) -> PyResult<Database> {
+    if let Some(path) = &path
+        && !read_only
+        && !path.exists()
+    {
         // HawDB creates the database on open; surface a hint only when the
         // parent directory is missing so a typo fails loudly instead of
         // creating a stray directory tree.
