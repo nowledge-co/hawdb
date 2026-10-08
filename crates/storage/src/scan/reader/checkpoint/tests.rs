@@ -19,6 +19,8 @@ use hawdb_qos::{
     RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeWorkRequest,
 };
 
+mod immutable_handle;
+
 struct Fixture {
     reader: FileSegmentRangeReader,
     range: SegmentReadRange,

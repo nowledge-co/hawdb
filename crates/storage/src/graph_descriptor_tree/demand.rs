@@ -36,6 +36,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+mod checkpoint;
+
 const DEFAULT_MAX_READ_PAGES: u64 = 4_096;
 const DEFAULT_MAX_READ_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_MAX_READ_DESCRIPTORS: u64 = 1_048_576;
@@ -102,6 +104,7 @@ pub(crate) struct GraphDescriptorTreeDemandReader {
     store_id: StoreId,
     representation: RepresentationKind,
     poisoned: Arc<AtomicBool>,
+    checkpoint_reader: Arc<crate::scan::FileSegmentRangeReader>,
 }
 
 impl Debug for GraphDescriptorTreeDemandReader {
@@ -135,6 +138,11 @@ impl GraphDescriptorTreeDemandReader {
             }
             GraphDescriptorKind::PropertySpill => RepresentationKind::PropertySpillDescriptorPage,
         };
+        let mut checkpoint_reader = crate::scan::FileSegmentRangeReader::new();
+        checkpoint_reader.register(
+            root.page_artifact_id,
+            root_reader.paths.page_artifact.clone(),
+        );
         Ok(Self {
             root,
             page_artifact: root_reader.paths.page_artifact.clone(),
@@ -143,6 +151,7 @@ impl GraphDescriptorTreeDemandReader {
             store_id,
             representation,
             poisoned: Arc::new(AtomicBool::new(false)),
+            checkpoint_reader: Arc::new(checkpoint_reader),
         })
     }
 

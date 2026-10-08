@@ -715,6 +715,11 @@ fn checkpoint_units_relational_publication_cancels_every_io_preserves_evidence_a
         }
     };
     for wave in 1..=waves {
+        // Recapture the source so cold I/O waves match the measured baseline.
+        let state =
+            decode_relational_checkpoint_file(&source, RelationalDecodeLimits::checkpoint())
+                .unwrap()
+                .state;
         let fixture = Fixture::new();
         let path = fixture.root.join(relational_checkpoint_generation_file(17));
         let temporary = path.with_extension("hawdb.tmp");
@@ -776,6 +781,11 @@ fn checkpoint_units_relational_publication_cancels_every_io_preserves_evidence_a
         assert_eq!(fixture.project.metrics().reserved, 0);
     }
     for limit in [1, 7, units / 2, units - 1] {
+        // Recapture the source so cold I/O waves match the measured baseline.
+        let state =
+            decode_relational_checkpoint_file(&source, RelationalDecodeLimits::checkpoint())
+                .unwrap()
+                .state;
         let fixture = Fixture::new();
         let path = fixture.root.join(relational_checkpoint_generation_file(17));
         let local = scheduler();
@@ -809,6 +819,10 @@ fn checkpoint_units_relational_publication_cancels_every_io_preserves_evidence_a
         retry.assert_released(&local);
         assert_recovered(&path);
     }
+    // The final lost-response cut uses the same cold source cost as the baseline.
+    let state = decode_relational_checkpoint_file(&source, RelationalDecodeLimits::checkpoint())
+        .unwrap()
+        .state;
     let fixture = Fixture::new();
     let path = fixture.root.join(relational_checkpoint_generation_file(17));
     let local = scheduler();

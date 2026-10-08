@@ -198,6 +198,8 @@ pub enum CheckpointWorkError {
     Admission(QosAdmission),
     Io(RuntimeIoWaveError),
     Memory(RuntimeMemoryError),
+    FileDescriptors(hawdb_core::error::FileDescriptorError),
+    Contended(&'static str),
     Allocation { bytes: u64, reason: String },
 }
 
@@ -217,6 +219,15 @@ impl Display for CheckpointWorkError {
             Self::Memory(error) => {
                 write!(formatter, "checkpoint memory admission deferred: {error}")
             }
+            Self::FileDescriptors(error) => {
+                write!(
+                    formatter,
+                    "checkpoint descriptor admission deferred: {error}"
+                )
+            }
+            Self::Contended(resource) => {
+                write!(formatter, "checkpoint resource is busy: {resource}")
+            }
             Self::Allocation { bytes, reason } => write!(
                 formatter,
                 "checkpoint allocation of {bytes} bytes failed: {reason}"
@@ -232,6 +243,8 @@ impl Error for CheckpointWorkError {
             Self::Io(error) => Some(error),
             Self::Admission(_) => None,
             Self::Memory(error) => Some(error),
+            Self::FileDescriptors(error) => Some(error),
+            Self::Contended(_) => None,
             Self::Allocation { .. } => None,
         }
     }

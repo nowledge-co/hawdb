@@ -15,6 +15,8 @@
 use crate::background::{CheckpointWorkContext, CheckpointWorkError};
 
 mod checkpoint_decode;
+#[cfg(test)]
+mod checkpoint_metadata_tests;
 mod checkpoint_point;
 
 use crate::file_io::{self as fs, File};
@@ -1493,7 +1495,8 @@ type CanonicalDescriptorSeekResult =
 #[derive(Debug, Clone)]
 pub struct CanonicalSegmentReader {
     path: PathBuf,
-    manifest: CanonicalSegmentManifest,
+    // Captured readers retain immutable metadata without copying its dictionary.
+    manifest: Arc<CanonicalSegmentManifest>,
     range_reader: FileSegmentRangeReader,
     descriptor_reader: GraphDescriptorTreeDemandReader,
     property_spills: Option<PropertySpillReader>,
@@ -1601,7 +1604,7 @@ impl CanonicalSegmentReader {
         range_reader.register(manifest.artifact_id, path.clone());
         Ok(Self {
             path,
-            manifest,
+            manifest: Arc::new(manifest),
             range_reader,
             descriptor_reader,
             property_spills,

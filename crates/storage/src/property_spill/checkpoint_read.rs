@@ -50,18 +50,16 @@ impl PropertySpillReader {
         if id >= self.manifest.value_count {
             return Ok(None);
         }
-        // Descriptor/cache interiors remain part of the metadata ledger. No
-        // serving spill-block cache or untracked Arc value is allocated here.
-        let unit = work.start_unit()?;
-        let wave = work.io_wave()?;
+        // Admit descriptor traversal independently from payload hydration.
         let mut selected = None;
         let mut error = None;
-        let read = self.descriptor_reader.scan_from(
+        let read = self.descriptor_reader.checkpoint_scan_from(
             &id.to_be_bytes(),
             GraphDescriptorTreeReadLimits {
                 max_descriptors: NonZeroU64::new(1).expect("one spill block"),
                 ..Default::default()
             },
+            work,
             |key, value| {
                 match PropertySpillBlockDescriptor::decode_descriptor_tree_entry(key, value) {
                     Ok(block) => selected = Some(block),
@@ -70,12 +68,15 @@ impl PropertySpillReader {
                 Ok(GraphDescriptorTreeScanControl::Stop)
             },
         );
-        drop(wave);
         if let Some(error) = error {
             return Err(error);
         }
-        read?;
-        unit.finish();
+        read.map_err(|error| match error {
+            crate::graph_descriptor_tree::GraphDescriptorTreeError::Work(error) => {
+                PropertySpillError::Work(error)
+            }
+            error => PropertySpillError::DescriptorTree(error),
+        })?;
         work.checkpoint()?;
         let descriptor = selected.ok_or_else(|| {
             PropertySpillError::Corrupt(format!(

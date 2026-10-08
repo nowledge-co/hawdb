@@ -13,10 +13,24 @@
 // limitations under the License.
 
 //! Private checkpoint point reads admit segment bytes and every record visit.
-//! Decoded records retain separate ownership; metadata/cache interiors remain gaps.
+//! Descriptor pages and decoded records retain separate allocation ownership.
 
 use super::*;
+use crate::background::CheckpointAllocationOwner;
 use crate::scan::CheckpointRangeReadError;
+
+struct CheckpointDescriptor {
+    descriptor: CanonicalSegmentDescriptor,
+    _memory: CheckpointAllocationOwner,
+}
+
+impl std::ops::Deref for CheckpointDescriptor {
+    type Target = CanonicalSegmentDescriptor;
+
+    fn deref(&self) -> &Self::Target {
+        &self.descriptor
+    }
+}
 
 impl CanonicalSegmentReader {
     pub(crate) fn checkpoint_node(
@@ -66,15 +80,7 @@ impl CanonicalSegmentReader {
         self.ensure_healthy()?;
         let result = (|| {
             work.checkpoint()?;
-            let (descriptor, _) = {
-                let unit = work.start_unit()?;
-                let wave = work.io_wave()?;
-                let result = self.find_descriptor_for_id(kind, id);
-                drop(wave);
-                let descriptor = result?;
-                unit.finish();
-                descriptor
-            };
+            let descriptor = self.checkpoint_descriptor_for_id(kind, id, work)?;
             work.checkpoint()?;
             let Some(descriptor) = descriptor else {
                 return Ok(None);
@@ -123,5 +129,61 @@ impl CanonicalSegmentReader {
         // source. Physical corruption retains the ordinary fail-closed policy.
         self.poison_on_physical_failure(&result);
         result
+    }
+
+    fn checkpoint_descriptor_for_id(
+        &self,
+        kind: CanonicalSegmentKind,
+        id: u64,
+        work: &CheckpointWorkContext,
+    ) -> Result<Option<CheckpointDescriptor>, CanonicalSegmentError> {
+        let mut lower_bound = [0; 9];
+        lower_bound[0] = kind.tag();
+        lower_bound[1..].copy_from_slice(&id.to_be_bytes());
+        let mut selected = None;
+        let mut decode_error = None;
+        let mut memory = CheckpointAllocationOwner::default();
+        let read = self.descriptor_reader.checkpoint_scan_from(
+            &lower_bound,
+            GraphDescriptorTreeReadLimits {
+                max_descriptors: NonZeroU64::MIN,
+                ..Default::default()
+            },
+            work,
+            |key, value| {
+                // Bloom word arrays are the descriptor's only heap payload.
+                // Their encoded bytes include every word and dominate their
+                // exact owned capacities. Retain this bound through hydration.
+                memory.reserve(value.len(), work)?;
+                match CanonicalSegmentDescriptor::decode_descriptor_tree_entry(key, value) {
+                    Ok(descriptor) => selected = Some(descriptor),
+                    Err(error) => decode_error = Some(error),
+                }
+                Ok(GraphDescriptorTreeScanControl::Stop)
+            },
+        );
+        if let Some(error) = decode_error {
+            return Err(error);
+        }
+        read.map_err(|error| match error {
+            GraphDescriptorTreeError::Work(error) => CanonicalSegmentError::Work(error),
+            error => CanonicalSegmentError::DescriptorTree(error),
+        })?;
+        match selected {
+            Some(descriptor) if descriptor.kind < kind => Err(CanonicalSegmentError::Corrupt(
+                "canonical checkpoint descriptor seek moved backwards across kinds".into(),
+            )),
+            Some(descriptor)
+                if descriptor.kind == kind
+                    && descriptor.min_record_id <= id
+                    && id <= descriptor.max_record_id =>
+            {
+                Ok(Some(CheckpointDescriptor {
+                    descriptor,
+                    _memory: memory,
+                }))
+            }
+            Some(_) | None => Ok(None),
+        }
     }
 }

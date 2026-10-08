@@ -1355,3 +1355,39 @@ columnar-shadow parity, the full cancellation/fault/model/platform matrix and
 paired release performance qualification are also incomplete. Whole-candidate
 memory estimates and narrow idle tests do not prove these requirements.
 No full issue completion is claimed.
+
+Checkpoint canonical and property-spill point seeks now use a separate admitted
+descriptor traversal. Captured page reads retain their input bytes and bounded
+copy scratch, bypass the serving descriptor cache, and validate both CRC32C and
+SHA256 against the selecting reference. The page codec borrows every leaf and
+interior field, admits each validation before filtering, and retains an admitted
+entry-range index instead of allocating a full second decoded page. Selected
+child bounds retain their own allocation leases through descent; canonical
+descriptor Bloom word arrays retain an encoded-size upper bound through record
+hydration. Page, byte, height and result limits remain enforced, and only physical
+damage poisons the source. Work cancellation or resource denial can retry the
+same captured source and governor reservation.
+
+The private visited-page vector has capacity bounded by the smaller of the
+selected root's page count and the caller's page limit. This admits its complete
+capacity before traversal and prevents duplicate physical pages without an
+untracked tree allocation. It can conservatively reserve for pages that a point
+seek does not visit. Recursive descent retains parent input/index allocations
+until its child completes; the admitted tree-height and page limits bound this
+overlap. Descriptor/root registration and its captured metadata, persistent
+file-handle ownership, the ordinary serving cache and its host memory budget,
+overlay/index mutation ownership, and the complete candidate/temporary/cleanup
+ledger remain separate qualification gaps. This scoped traversal does not
+authorize production per-unit whole-owner admission or complete issue #207.
+
+Cold captured immutable-object reads now validate identity in at most 64 KiB
+read and hash units, using the owner's actual I/O and working-memory admission.
+The complete length and identity digest must match before a handle enters the
+shared cache; requested-range bytes alone cannot establish object identity.
+Descriptor budget/OS-limit rejection remains a typed recoverable work failure.
+Checkpoint acquisition defers when another cold open holds the opening lock.
+The ordinary opening/retirement serialization remains intact; foreground
+waiting on that lock, cached handle/map allocations, captured registration and
+root ownership still need complete lifetime accounting and release performance
+qualification. This does not enable production per-unit whole-owner admission
+or establish the default sustained-load or complete resource gates.

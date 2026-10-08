@@ -17,6 +17,7 @@
 
 use super::*;
 use crate::background::{CheckpointBytes, CheckpointWorkContext, CheckpointWorkError};
+use crate::immutable_files::CheckpointImmutableFileError;
 
 #[cfg(test)]
 mod tests;
@@ -76,24 +77,37 @@ impl FileSegmentRangeReader {
                 length: range.length.get(),
             })?;
         let registration;
-        let shared;
         {
             let unit = work.start_unit()?;
-            let _wave = work.io_wave()?;
             registration = artifact
                 .registration()
-                .map_err(|source| range_io_error(range, source))?;
-            shared = registration
-                .binding
-                .as_ref()
-                .map(|binding| registration.handles.get(binding, &registration.context))
-                .transpose()
-                .map_err(|source| range_io_error(range, source))?;
-            if shared.is_none() && artifact.file.get().is_none() {
+                .map_err(|source| checkpoint_range_io_error(range, source, work))?;
+            unit.finish();
+        }
+        let shared = match registration.binding.as_ref() {
+            Some(binding) => Some(
+                registration
+                    .handles
+                    .checkpoint_get(binding, &registration.context, work)
+                    .map_err(|error| match error {
+                        CheckpointImmutableFileError::Io(source) => {
+                            CheckpointRangeReadError::Read(range_io_error(range, source))
+                        }
+                        CheckpointImmutableFileError::Work(error) => {
+                            CheckpointRangeReadError::Work(error)
+                        }
+                    })?,
+            ),
+            None => None,
+        };
+        if shared.is_none() {
+            let unit = work.start_unit()?;
+            if artifact.file.get().is_none() {
+                let _wave = work.io_wave()?;
                 let opened = crate::file_io::OpenOptions::new()
                     .read(true)
                     .open_with_context(&artifact.path, &registration.context)
-                    .map_err(|source| range_io_error(range, source))?;
+                    .map_err(|source| checkpoint_range_io_error(range, source, work))?;
                 let _ = artifact.file.set(opened);
             }
             unit.finish();
@@ -124,7 +138,7 @@ impl FileSegmentRangeReader {
                     )
                 })?;
                 read_exact_at(file, &mut scratch.as_mut_slice()[..end - start], offset)
-                    .map_err(|source| range_io_error(range, source))?;
+                    .map_err(|source| checkpoint_range_io_error(range, source, work))?;
                 unit.finish();
             }
             // The append owns a separate bounded unit; release read admission
@@ -146,5 +160,18 @@ impl FileSegmentRangeReader {
         }
         work.checkpoint()?;
         Ok(payload)
+    }
+}
+
+fn checkpoint_range_io_error(
+    range: &SegmentReadRange,
+    source: std::io::Error,
+    work: &CheckpointWorkContext,
+) -> CheckpointRangeReadError {
+    match hawdb_core::error::file_descriptor_error(&source) {
+        Some(error) => CheckpointRangeReadError::Work(
+            work.record_failure(CheckpointWorkError::FileDescriptors(error)),
+        ),
+        None => CheckpointRangeReadError::Read(range_io_error(range, source)),
     }
 }

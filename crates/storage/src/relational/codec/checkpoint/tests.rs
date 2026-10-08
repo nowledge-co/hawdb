@@ -292,6 +292,8 @@ fn checkpoint_units_relational_image_cancels_each_read_wave_and_cpu_then_retries
     let waves = probe.io_waves.load(Ordering::SeqCst);
     probe.assert_released(&local);
     for wave in 1..=waves {
+        // Each measured cold cut retains a fresh native-handle lookup.
+        let state = fixture.file_state();
         let probe = Arc::new(CheckpointWorkProbe::default());
         probe.cancel_on_io_wave.store(wave, Ordering::SeqCst);
         let error = encode(
@@ -311,6 +313,8 @@ fn checkpoint_units_relational_image_cancels_each_read_wave_and_cpu_then_retries
         );
     }
     for limit in [1, 17, 511, 1025, units / 2, units - 1, units] {
+        // Each measured cold cut retains a fresh native-handle lookup.
+        let state = fixture.file_state();
         let probe = Arc::new(CheckpointWorkProbe::default());
         probe.cancel_after.store(limit, Ordering::SeqCst);
         let error = encode(

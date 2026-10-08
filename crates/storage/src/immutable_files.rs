@@ -25,6 +25,9 @@ use std::sync::{Arc, Mutex};
 
 static NEXT_ALIAS_CANDIDATE: AtomicU64 = AtomicU64::new(0);
 
+mod checkpoint;
+pub(crate) use checkpoint::CheckpointImmutableFileError;
+
 struct AliasCandidate(PathBuf);
 
 impl Drop for AliasCandidate {
@@ -384,6 +387,37 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn checkpoint_units_immutable_handle_contended_opening_defers_and_retries() {
+        use crate::background::{CheckpointWorkContext, CheckpointWorkError};
+        let fixture = Fixture::new();
+        let path = fixture.mount("checkpoint.page");
+        let handles = &fixture.project.immutable_handles;
+        let binding = handles.binding(&path).unwrap().unwrap();
+        let context = crate::file_descriptors::context_for_path(&path).unwrap();
+        let work = CheckpointWorkContext::default();
+        let opening = handles.opening.lock().unwrap();
+        assert!(matches!(
+            handles.checkpoint_get(&binding, &context, &work),
+            Err(CheckpointImmutableFileError::Work(
+                CheckpointWorkError::Contended("immutable file validation")
+            ))
+        ));
+        assert_eq!(fixture.project.metrics().open, 0);
+        drop(opening);
+        let file = handles.checkpoint_get(&binding, &context, &work).unwrap();
+        let mut borrowed = file.as_ref();
+        borrowed.seek(SeekFrom::Start(0)).unwrap();
+        let mut bytes = Vec::new();
+        borrowed.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, fixture.bytes);
+        assert_eq!(fixture.project.metrics().cached_handles, 1);
+        assert_eq!(handles.evict_idle(1), 0);
+        drop(file);
+        assert_eq!(handles.evict_idle(1), 1);
+        assert_eq!(fixture.project.metrics().open, 0);
     }
 
     #[test]
