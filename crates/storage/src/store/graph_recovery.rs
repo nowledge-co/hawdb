@@ -17,6 +17,14 @@
 use super::*;
 
 #[cfg(test)]
+#[path = "graph_recovery/checkpoint_capture_shadow_tests.rs"]
+mod checkpoint_capture_shadow_tests;
+
+#[cfg(test)]
+#[path = "graph_recovery/checkpoint_capture_projection_tests.rs"]
+mod checkpoint_capture_projection_tests;
+
+#[cfg(test)]
 #[path = "graph_recovery/checkpoint_capture_metadata_tests.rs"]
 mod checkpoint_capture_metadata_tests;
 

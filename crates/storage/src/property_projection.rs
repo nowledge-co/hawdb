@@ -1993,7 +1993,7 @@ pub struct PersistentPropertyProjectionScrubReport {
 #[derive(Debug, Clone)]
 pub struct PersistentPropertyProjectionReader {
     path: PathBuf,
-    manifest: PersistentPropertyProjectionManifest,
+    manifest: Arc<PersistentPropertyProjectionManifest>,
     descriptor_reader: GraphDescriptorTreeDemandReader,
     range_reader: FileSegmentRangeReader,
     max_block_bytes: NonZeroU64,
@@ -2063,7 +2063,7 @@ impl PersistentPropertyProjectionReader {
         range_reader.register(manifest.artifact_id, path.clone());
         Ok(Self {
             path,
-            manifest,
+            manifest: Arc::new(manifest),
             descriptor_reader,
             range_reader,
             max_block_bytes,

@@ -1419,3 +1419,19 @@ reference. These interleavings do not establish release commit/read p99,
 complete cache/registration/cleanup accounting, supported-platform power-loss
 qualification or default sustained checkpoint progress. Production whole-owner
 admission and the original default-progress fixture remain unchanged.
+
+Published column-group catalogs now share their immutable manifest and loaded
+table directories across public clones and captured checkpoint sources. The
+real out-of-core fixture retains 1057 streamed single-row groups; eight captures
+previously added 1827376 directory payload bytes. This measurement deduplicates
+live allocations by address and excludes spare vector/string capacity, so it
+is a physical lower bound rather than a complete allocator or admission ledger.
+The original probe assertions compare complete source rows and manifest
+identity. Lifecycle coverage verifies every old group payload and label set,
+full artifact scrub, writer mutation and closure, complete latest ordinary
+reopen, and native FD release. Sharing preserves owned public manifests,
+persisted encodings, equality and recovery validation. Dirty-table sets,
+publication builders, root registration/GC, captured range maps, retained
+capacity and complete candidate resources still need separate accounting.
+This ownership correction does not enable production per-unit owner admission
+or establish default sustained progress, power-loss or release performance.
