@@ -801,7 +801,8 @@ pub(super) fn execute_branch_sql_at_path(
             let selector = branch_selector_from_sql(&statement.selector, parameters)?;
             let branch = branches
                 .into_iter()
-                .find(|branch| branch_matches_selector(branch, &selector))
+                .filter(|branch| branch_matches_selector(branch, &selector))
+                .min_by_key(|branch| branch.state == super::BranchLifecycleState::Deleted)
                 .ok_or_else(|| HawDBError::Semantic("branch does not exist".to_string()))?;
             vec![branch_info_row(&branch)?]
         }
