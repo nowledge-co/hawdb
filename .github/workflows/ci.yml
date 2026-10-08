@@ -170,6 +170,7 @@ jobs:
             export RUST_TEST_THREADS=1
           fi
           bash scripts/cargo-test-required.sh --locked -p hawdb-search --features acl --lib out_of_core::
+          bash scripts/cargo-test-required.sh --locked -p hawdb-search --features acl --test generation_source_policy
 
       - name: Capture Windows storage lifecycle evidence
         if: matrix.os == 'windows-latest'
