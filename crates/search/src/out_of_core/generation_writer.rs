@@ -85,6 +85,20 @@ pub use governed::{
 const STAGE_METADATA_FILE: &str = "search_projection_metadata_payloads.stage.hawdb";
 const STAGE_VECTOR_FILE: &str = "search_projection_vector_payloads.stage.hawdb";
 
+fn generation_changed(expected: u64, actual: u64) -> HawDBError {
+    if actual > expected {
+        HawDBError::TransactionConflict {
+            read_epoch: expected,
+            committed_epoch: actual,
+            key: "search projection base changed".into(),
+        }
+    } else {
+        HawDBError::StorageIntegrity(format!(
+            "search projection generation regressed: expected {expected}, got {actual}"
+        ))
+    }
+}
+
 /// Explicit admission limits and immutable identity for a streaming out-of-core build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchOutOfCoreGenerationBuildOptions {
@@ -217,6 +231,7 @@ pub struct SearchOutOfCoreGenerationWriter {
     metadata_field_bytes: u64,
     expected_active_generation: Option<u64>,
     active_manifest_update: Option<ActiveManifestUpdate>,
+    cleanup_reuse: Option<super::reuse::ValidatedArtifacts>,
     mutations: Option<delta::mutation::Prepared>,
     poisoned: bool,
     needs_chinese_analyzer: bool,
@@ -250,7 +265,7 @@ impl std::fmt::Debug for SearchOutOfCoreGenerationWriter {
 }
 
 impl SearchOutOfCoreGenerationWriter {
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(test, target_os = "linux", feature = "full-text-search"))]
     pub(in crate::out_of_core) fn memory_for_test(&self) -> BuildMemory {
         self.memory.clone()
     }
@@ -351,6 +366,16 @@ impl SearchOutOfCoreGenerationWriter {
         let root = context_memory::OwnedPath::copy(root.as_ref(), &memory, &task_context)?;
         io::GenerationIo::new(&memory, &task_context)
             .native(&[&root], || fs::create_dir_all(&root))??;
+        let io = io::GenerationIo::new(&memory, &task_context);
+        let _project = io.native(&[&root], || {
+            hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_component(&root, true)
+        })??;
+        // Publishing files within this directory does not persist the new
+        // directory's name in its parent. Cover its installation before any
+        // generation can be acknowledged, including interrupted creations.
+        io.native(&[&root], || {
+            hawdb_storage::durability::sync_directory_ancestors(&root)
+        })??;
         let mut stage = StageDirectory::create(&root, &memory, &task_context)?;
         let disk_reservation = options
             .max_spool_bytes
@@ -409,6 +434,7 @@ impl SearchOutOfCoreGenerationWriter {
             metadata_field_bytes,
             expected_active_generation: None,
             active_manifest_update: None,
+            cleanup_reuse: None,
             mutations: None,
             poisoned: false,
             needs_chinese_analyzer: false,
@@ -498,8 +524,8 @@ impl SearchOutOfCoreGenerationWriter {
     /// Prepares an update governed by the task until finish or drop.
     ///
     /// Uses the same operation contract as [`Self::create_with_context`],
-    /// including input conversion, strict append publication or ordered base
-    /// hydration, and retained reports.
+    /// including input conversion, strict append or target-bound mutation
+    /// publication, and retained reports.
     /// The reader's term policy, manifest budget and generation identity are
     /// captured during preparation. Later reader changes do not affect the
     /// update, and a newer active generation makes its publication fail.
@@ -659,9 +685,14 @@ impl SearchOutOfCoreGenerationWriter {
         if let Some(expected) = self.expected_active_generation {
             let actual = discovery::active(&self.root, &self.memory, &self.task_context)?;
             if actual != Some(expected) {
-                return Err(HawDBError::Storage(format!(
-                    "search generation update base changed before publication: expected {expected}, got {actual:?}"
-                )));
+                return Err(actual.map_or_else(
+                    || {
+                        HawDBError::StorageIntegrity(
+                            "published search generation disappeared".into(),
+                        )
+                    },
+                    |actual| generation_changed(expected, actual),
+                ));
             }
         }
 
@@ -728,8 +759,11 @@ impl SearchOutOfCoreGenerationWriter {
             &self.memory,
         );
         let cleanup_generations = if self.active_manifest_update.is_some() {
-            match super::published_artifact_generations(&self.root, &self.options.analyzer_lexicon)
-            {
+            match super::published_artifact_generations_with_reuse(
+                &self.root,
+                &self.options.analyzer_lexicon,
+                self.cleanup_reuse.as_ref(),
+            ) {
                 Ok(Some(retained)) => SearchProjectionGenerations {
                     lexical: Some(lexical_generation),
                     out_of_core: Some(retained.active_generation),

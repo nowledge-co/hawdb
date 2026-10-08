@@ -130,6 +130,11 @@ incarnation. Deleting or renaming `main` is rejected in P0. Rename is a catalog
 operation with atomic old-name removal/new-name reservation; it changes neither
 UUID nor lineage and is not required in the initial facade API.
 
+After name reuse, name-based inspection, selection, and create-source resolution
+refer to the non-`Deleted` record that currently reserves that name, regardless
+of UUID sort order. Exact UUID lookup and deletion still refer to the original
+identity, including its retained tombstone and idempotency receipt.
+
 Use three distinct counters, with checked overflow and no wraparound:
 
 | Token | Meaning and comparison scope |

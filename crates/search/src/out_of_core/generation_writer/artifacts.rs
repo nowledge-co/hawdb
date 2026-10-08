@@ -22,14 +22,12 @@ use super::{SearchOutOfCoreGenerationBuildOptions, STAGE_METADATA_FILE, STAGE_VE
 use crate::build_control::{checkpoint, temporary::RemoveOnDrop};
 use crate::build_memory::path::OwnedPath;
 use crate::build_memory::{checked_mul, grow_slots, BuildMemory, SPOOL_BUFFER_BYTES};
-use crate::document_encoding::{
-    DescriptorEncoding, SegmentEncoding, SegmentKind, HEX_BUFFER_BYTES,
-};
+use crate::document_encoding::{SegmentEncoding, SegmentKind, HEX_BUFFER_BYTES};
 use crate::error::{HawDBError, Result};
 #[cfg(test)]
 use crate::{build_memory::AdmittedDocument, SearchDocument};
 use crate::{
-    SearchSegmentDescriptor, SearchSegmentDescriptorEntry, SearchSegmentPayloadRange,
+    SearchSegmentDescriptorEntry, SearchSegmentPayloadRange,
     SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS, SEARCH_SEGMENT_PAYLOAD_ARTIFACT_ID,
     SEARCH_SEGMENT_PAYLOAD_FILE,
 };
@@ -41,6 +39,8 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 mod descriptor;
+mod descriptor_spool;
+use descriptor_spool::DescriptorSpool;
 mod document;
 use crate::document_encoding::{HeaderSource, RecordSource};
 use document::SegmentDocument;
@@ -63,7 +63,7 @@ pub(super) struct SegmentArtifactBuilder<'a> {
     memory: BuildMemory,
     task: RuntimeTaskContext,
     segment_encoded_bytes: u64,
-    descriptor: SearchSegmentDescriptor,
+    descriptor: DescriptorSpool,
     layouts: Vec<SearchOutOfCoreSegmentLayout>,
     document_offset: u64,
     metadata_offset: u64,
@@ -155,6 +155,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
         let descriptor_memory = memory.retained.reserve(0)?;
         let layout_memory = memory.retained.reserve(OUT_OF_CORE_LAYOUT_FORMAT.len())?;
         let paths = paths::Paths::new(stage, &memory, &task)?;
+        let descriptor = DescriptorSpool::new(stage, &memory, &task)?;
         Ok(Self {
             descriptor_path: paths.descriptor,
             descriptor_temporary: paths.temporary,
@@ -173,11 +174,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
             memory,
             task,
             segment_encoded_bytes: 0,
-            descriptor: SearchSegmentDescriptor {
-                target_documents: SEARCH_FILTER_SEGMENT_TARGET_DOCUMENTS,
-                document_count: 0,
-                segments: Vec::new(),
-            },
+            descriptor,
             layouts: Vec::new(),
             document_offset: 0,
             metadata_offset: 0,
@@ -211,8 +208,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
             checkpoint(&self.task)?;
             file.sync_all()?;
         }
-        self.descriptor.document_count = document_count;
-        let descriptor_bytes = self.write_descriptor()?;
+        let descriptor_bytes = self.write_descriptor(document_count)?;
         Ok(SegmentArtifactOutput {
             layout: SearchOutOfCoreLayoutBody {
                 format: OUT_OF_CORE_LAYOUT_FORMAT.to_string(),
@@ -311,9 +307,8 @@ impl<'a> SegmentArtifactBuilder<'a> {
         if self.documents.is_empty() {
             return Ok(());
         }
-        grow_slots(&mut self.descriptor.segments, &mut self.descriptor_memory)?;
         grow_slots(&mut self.layouts, &mut self.layout_memory)?;
-        let segment_id = self.descriptor.segments.len() as u64;
+        let segment_id = self.descriptor.segment_count;
         let (mut descriptor, projected_descriptor_bytes) = descriptor::build_with_context(
             segment_id,
             &self.documents,
@@ -387,7 +382,15 @@ impl<'a> SegmentArtifactBuilder<'a> {
             Some(&self.task),
         )?;
         self.descriptor_working_bytes = projected_descriptor_bytes;
-        self.descriptor.segments.push(descriptor);
+        self.descriptor.push(
+            &descriptor,
+            &self.memory,
+            &self.task,
+            self.options.max_descriptor_working_bytes.get(),
+        )?;
+        drop(descriptor);
+        self.descriptor_memory
+            .shrink(self.descriptor_memory.bytes());
         self.layouts.push(SearchOutOfCoreSegmentLayout {
             segment_id,
             vector_ordinal_base,
@@ -404,23 +407,24 @@ impl<'a> SegmentArtifactBuilder<'a> {
         Ok(())
     }
 
-    fn write_descriptor(&self) -> Result<u64> {
+    fn write_descriptor(&mut self, document_count: usize) -> Result<u64> {
         checkpoint(&self.task)?;
         let _io_memory = self
             .memory
             .spool
             .reserve(SPOOL_BUFFER_BYTES + HEX_BUFFER_BYTES + 32)?;
-        let encoding = DescriptorEncoding::new_with_context(
-            &self.descriptor,
-            self.options.max_descriptor_working_bytes.get(),
-            Some(&self.task),
-        )?;
+        let descriptor_bytes;
         {
             let mut file = BufWriter::with_capacity(
                 SPOOL_BUFFER_BYTES,
                 File::create(&self.descriptor_temporary)?,
             );
-            encoding.write_to(&mut file)?;
+            descriptor_bytes = self.descriptor.write_descriptor(
+                &mut file,
+                document_count,
+                self.options.max_descriptor_working_bytes.get(),
+                &self.task,
+            )?;
             file.flush()?;
             file.get_ref().sync_all()?;
         }
@@ -429,7 +433,7 @@ impl<'a> SegmentArtifactBuilder<'a> {
         crate::durable_replace_file(&self.descriptor_temporary, &self.descriptor_path)?;
         temporary_guard.disarm();
         checkpoint(&self.task)?;
-        Ok(encoding.len() as u64)
+        Ok(descriptor_bytes)
     }
 
     fn encode_segment_payload(

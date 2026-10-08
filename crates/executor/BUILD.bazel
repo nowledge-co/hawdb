@@ -220,6 +220,8 @@ rust_test(
 rust_test(
     name = "hawdb_sort_merge_account_fuzz_tests",
     size = "small",
+    # The containing local campaign exceeded the inherited 60-second deadline.
+    timeout = "moderate",
     args = [
         "blocking::sort::tests::sort_merge_account_differential_campaign",
         "--exact",
