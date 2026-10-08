@@ -25,7 +25,7 @@ use hawdb_core::{RuntimeCancellationReason, RuntimeTaskContext};
 use hawdb_qos::{
     IoConcurrencyBudget, ProcessMemoryPolicy, RuntimeAdmissionError, RuntimeGovernor,
     RuntimeGovernorConfig, RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot,
-    StorageDeviceProfile,
+    StorageDeviceProfile, StorageMediaKind,
 };
 #[cfg(test)]
 use hawdb_readiness::embedded_query_path::EMBEDDED_QUERY_PATH_READINESS_PROTOCOL;
@@ -192,6 +192,51 @@ impl HawDBEmbeddedOpenOptions {
     }
 }
 
+/// Governor and resource view assembled the same way for durable and
+/// in-memory opens, so both handles admit queries under identical policy.
+struct EmbeddedRuntimeSetup {
+    runtime_governor: RuntimeGovernor,
+    runtime_resources: EmbeddedRuntimeResources,
+}
+
+fn embedded_runtime_setup(
+    deployment_profile: EmbeddedDeploymentProfile,
+    storage_device: StorageDeviceProfile,
+    storage_io: Option<IoConcurrencyBudget>,
+    resource_snapshot: Option<RuntimeResourceSnapshot>,
+    governor_config: Option<RuntimeGovernorConfig>,
+    process_memory_policy: Option<ProcessMemoryPolicy>,
+) -> EmbeddedRuntimeSetup {
+    let resource_snapshot_pinned = resource_snapshot.is_some();
+    let resource_snapshot = resource_snapshot.unwrap_or_else(RuntimeResourceSnapshot::detect);
+    let cpu = resource_snapshot.cpu;
+    let storage_io =
+        storage_io.unwrap_or_else(|| default_io_budget(deployment_profile, storage_device));
+    let governor_config =
+        governor_config.unwrap_or_else(|| default_runtime_governor_config(deployment_profile));
+    let runtime_governor = match process_memory_policy {
+        Some(policy) => RuntimeGovernor::new_with_process_memory_policy(
+            governor_config,
+            resource_snapshot,
+            storage_io,
+            policy,
+        ),
+        None => RuntimeGovernor::new(governor_config, resource_snapshot, storage_io),
+    };
+    if resource_snapshot_pinned {
+        runtime_governor.pin_resources();
+    }
+    EmbeddedRuntimeSetup {
+        runtime_governor,
+        runtime_resources: EmbeddedRuntimeResources {
+            cpu,
+            memory: resource_snapshot.memory,
+            storage_device,
+            storage_io,
+        },
+    }
+}
+
 impl HawDBEmbedded {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_with_options(HawDBEmbeddedOpenOptions::new(path.as_ref().to_path_buf()))
@@ -223,50 +268,64 @@ impl HawDBEmbedded {
         options: HawDBEmbeddedOpenOptions,
         process_memory_policy: Option<ProcessMemoryPolicy>,
     ) -> Result<Self> {
-        let resource_snapshot_pinned = options.resource_snapshot.is_some();
-        let resource_snapshot = options
-            .resource_snapshot
-            .unwrap_or_else(RuntimeResourceSnapshot::detect);
-        let cpu = resource_snapshot.cpu;
         let storage_device = options
             .storage_device
             .unwrap_or_else(|| StorageDeviceProfile::detect(&options.path));
-        let storage_io = options
-            .storage_io
-            .unwrap_or_else(|| default_io_budget(options.deployment_profile, storage_device));
-        let governor_config = options
-            .runtime_governor_config
-            .unwrap_or_else(|| default_runtime_governor_config(options.deployment_profile));
-        let runtime_governor = match process_memory_policy {
-            Some(policy) => RuntimeGovernor::new_with_process_memory_policy(
-                governor_config,
-                resource_snapshot,
-                storage_io,
-                policy,
-            ),
-            None => RuntimeGovernor::new(governor_config, resource_snapshot, storage_io),
-        };
-        if resource_snapshot_pinned {
-            runtime_governor.pin_resources();
-        }
+        let setup = embedded_runtime_setup(
+            options.deployment_profile,
+            storage_device,
+            options.storage_io,
+            options.resource_snapshot,
+            options.runtime_governor_config,
+            process_memory_policy,
+        );
         let mut database = Database::open_with_durability_and_config(
             &options.path,
             options.durability,
             options.config,
         )?;
-        database.set_runtime_governor(runtime_governor.clone());
+        database.set_runtime_governor(setup.runtime_governor.clone());
         Ok(Self {
             path: options.path,
             database,
             deployment_profile: options.deployment_profile,
-            runtime_resources: EmbeddedRuntimeResources {
-                cpu,
-                memory: resource_snapshot.memory,
-                storage_device,
-                storage_io,
-            },
-            runtime_governor,
+            runtime_resources: setup.runtime_resources,
+            runtime_governor: setup.runtime_governor,
         })
+    }
+
+    /// Opens an empty in-memory database behind the same runtime governor and
+    /// admission path as [`HawDBEmbedded::open`].
+    ///
+    /// The database wraps `Database::new()`-style construction: no project
+    /// path, no WAL, and no data survives `drop`. On
+    /// `wasm32-unknown-unknown`, where persistent `open` returns a storage
+    /// error, this is the constructor hosts use.
+    pub fn open_in_memory() -> Self {
+        Self::open_in_memory_with_config(DatabaseConfig::default())
+    }
+
+    /// Opens an in-memory database with an explicit `DatabaseConfig`,
+    /// mirroring `Database::new_with_config` plus the embedded runtime
+    /// governor.
+    ///
+    /// The handle always uses the `SharedHost` deployment profile. Its
+    /// storage device is reported as `StorageMediaKind::Memory`; there is no
+    /// device to discover and no durability policy to apply.
+    pub fn open_in_memory_with_config(config: DatabaseConfig) -> Self {
+        let deployment_profile = EmbeddedDeploymentProfile::SharedHost;
+        let storage_device = StorageDeviceProfile::host_provided(StorageMediaKind::Memory, None);
+        let setup =
+            embedded_runtime_setup(deployment_profile, storage_device, None, None, None, None);
+        let mut database = Database::new_with_config(config);
+        database.set_runtime_governor(setup.runtime_governor.clone());
+        Self {
+            path: PathBuf::new(),
+            database,
+            deployment_profile,
+            runtime_resources: setup.runtime_resources,
+            runtime_governor: setup.runtime_governor,
+        }
     }
 
     pub fn open_nowledge_mem(
@@ -275,8 +334,15 @@ impl HawDBEmbedded {
         NowledgeMemEmbeddedStore::open_with_options(options)
     }
 
+    /// Returns the durable project path, or an empty path for an in-memory
+    /// database opened with [`HawDBEmbedded::open_in_memory`].
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Whether this handle was opened in memory and has no durable path.
+    pub fn is_in_memory(&self) -> bool {
+        self.path.as_os_str().is_empty()
     }
 
     pub fn deployment_profile(&self) -> EmbeddedDeploymentProfile {
@@ -669,6 +735,45 @@ mod tests {
         assert!(options.config.runtime_capabilities.vector_search);
         assert!(!options.config.runtime_capabilities.graph_analytics);
         assert!(!options.config.runtime_capabilities.background_maintenance);
+    }
+
+    #[test]
+    fn in_memory_open_admits_queries_and_drops_data() {
+        let mut engine = HawDBEmbedded::open_in_memory();
+
+        assert!(engine.is_in_memory());
+        assert!(engine.path().as_os_str().is_empty());
+        engine.query_admitted("CREATE (:Memory {id: 1})").unwrap();
+        let output = engine
+            .query_admitted("MATCH (m:Memory) RETURN m.id AS id")
+            .unwrap();
+        assert_eq!(output.rows.len(), 1);
+        drop(engine);
+
+        let mut reopened = HawDBEmbedded::open_in_memory();
+        assert!(reopened
+            .query_admitted("MATCH (m:Memory) RETURN m.id AS id")
+            .unwrap()
+            .rows
+            .is_empty());
+    }
+
+    #[test]
+    fn in_memory_open_honors_database_config_budgets() {
+        let mut engine = HawDBEmbedded::open_in_memory_with_config(DatabaseConfig {
+            max_read_result_rows: Some(1),
+            ..DatabaseConfig::default()
+        });
+        engine.query_admitted("CREATE (:Memory {id: 1})").unwrap();
+        engine.query_admitted("CREATE (:Memory {id: 2})").unwrap();
+
+        let error = engine
+            .query_admitted("MATCH (m:Memory) RETURN m.id AS id")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("max_read_result_rows"),
+            "{error}"
+        );
     }
 
     #[test]
