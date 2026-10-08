@@ -12,6 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Embedded database facade.
+//!
+//! # Memory allocation
+//!
+//! HawDB does not install a global allocator or depend on an allocator
+//! implementation. The final host binary or WASM `cdylib` selects its Rust
+//! allocator with `#[global_allocator]`; HawDB's Rust allocations inherit that
+//! choice. Without an explicit host selection, Rust's target default applies.
+//! Allocator selection is module-wide, not a per-`Database` setting. HawDB's
+//! Zstd contexts also use that selection through explicit allocation callbacks.
+//! Mappings and independently linked native dependencies have separate ownership.
+
 pub mod analytics;
 pub mod api;
 pub mod compat;

@@ -89,6 +89,16 @@ artifacts.
 For the current composition/dependency inventory and reproducible external-host
 footprint measurements, see [the composition baseline](docs/COMPOSITION_BASELINE.md).
 
+### Host-owned memory allocator
+
+HawDB does not install or bundle a custom allocator. The final host binary or
+WASM `cdylib` chooses its Rust allocator with `#[global_allocator]`, and HawDB's
+Rust allocations and Zstd context workspaces use that choice. Without host
+injection, Rust's target default applies. Mem's server selects `mimalloc`;
+embedding HawDB in that binary reuses
+the existing selection. See [the allocator contract](docs/ALLOCATORS.md) for
+native/WASM examples, ownership boundaries, and verification commands.
+
 ### Bazel validation
 
 For the experimental in-memory browser WASM target, see [the WASM guide](docs/WASM.md).
