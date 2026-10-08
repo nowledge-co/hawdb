@@ -55,6 +55,18 @@ db.execute_sql("SELECT 1")
 db.close()
 ```
 
+`hawdb.open()` without a path returns an empty in-memory database for tests,
+notebooks, and other hosts that already hold their data. It answers the same
+`execute` / `execute_sql` calls through the same embedded admission path;
+`close()` discards everything and a later `open()` does not see it.
+`db.path` is `None` for in-memory handles.
+
+```python
+db = hawdb.open()
+db.execute("CREATE (:Memory {id: $id})", {"id": 1})
+db.close()
+```
+
 Errors raise `hawdb.exceptions` subclasses (`ParseError`, `SemanticError`,
 `StorageError`, `ExecutionError`, `ConflictError`, ...), mapped from
 `HawDBError` kinds.
@@ -119,6 +131,11 @@ or plain `Enum` field raises `TypeError`, and an `int` outside 64 bits raises
 ```bash
 pytest tests/
 ```
+
+`conftest.py` parametrizes statement-level tests over both backends: a
+file-backed project under `tmp_path` and the in-memory `hawdb.open()`.
+`test_stubs.py` keeps the hand-written `_hawdb.pyi` signatures in sync with
+the compiled module's runtime signatures.
 
 Without Pydantic installed, the extra's tests skip and the rest prove that
 `import hawdb` does not need it. Install `pydantic` to run them. Bazel runs the
