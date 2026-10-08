@@ -217,22 +217,40 @@ which depends on it.
   while the summed per-block bounds of the cursors that can still reach it
   stay strictly below the floor, so a skipped document cannot displace a
   retained one and the retained window (ids and scores) is identical to
-  exhaustive evaluation. When no cursor can reach the floor the pass stops and
-  leaves those blocks unread.
+  exhaustive evaluation. A current-block bound expires at that block's last
+  ordinal: every jump stops no later than one past the earliest active block
+  boundary, where the cursors refresh their bounds. A later block may contain
+  a larger term frequency. Failure to find a pivot therefore advances to this
+  boundary; it does not by itself terminate the pass.
 
   **Soundness argument.** For term cursor `t` and posting block `b`, let
   `U(t,b)` be the header-derived BM25 contribution bound and let `F` be the
   current lowest score in a full top-`k` heap. The header invariants establish
   `score_t(d) ≤ U(t,b)` for every document `d` in `b`; document filtering only
-  removes candidates. Therefore, if the pivot's reachable cursors satisfy
-  `Σ_t U(t,b_t) < F`, every document in the skipped range has total score
-  strictly below `F` and cannot enter the retained window. If the inequality
-  is not strict, the range remains eligible and is decoded. By induction over
-  cursor advances, every omitted range is ineligible at the floor that caused
-  the skip, while every eligible range is evaluated by the exhaustive scorer;
-  the retained IDs, scores, and tie order are consequently unchanged. This is
-  a source-linked deductive proof over the checked frame headers, not a
-  machine-checked refinement of the Rust implementation.
+  removes candidates. The implementation sums prefix bounds in the scorer's
+  term order, so monotonic floating-point addition preserves each nonnegative
+  component's bound without assuming addition is associative. These prefix
+  bounds are monotone as more cursors become reachable; binary search finds
+  the first prefix whose bound is not strictly below `F` in `O(m log m)` bound
+  work for `m` active terms, using the existing cursor-order buffer.
+
+  Let `B` be one past the minimum last ordinal of all active materialized
+  blocks. Below both the pivot and `B`, no cursor crosses its bound's validity
+  interval. A prefix bound strictly below `F` therefore excludes every skipped
+  document. Equality remains eligible and is scored. If no pivot exists, the
+  same argument excludes documents below `B` only. Global termination instead
+  requires a separate bound for all remaining blocks: each encoded frequency
+  is at most `u32::MAX`, and BM25 with that frequency and document length zero
+  bounds every remaining contribution. This bound is also summed in scorer
+  term order, and termination requires it to be strictly below `F`.
+
+  By induction over these bounded cursor advances, every omitted range is
+  ineligible at the floor that caused the skip, while every eligible range is
+  evaluated by the exhaustive scorer. Mini-delta overrides are excluded from
+  the physical postings and scored exhaustively after the base pass. The
+  retained IDs, score bits, and tie order are consequently unchanged. This is
+  a source-linked soundness argument over checked frame headers and the
+  current scorer, not a machine-checked refinement of the Rust implementation.
 - **Fallback.** Candidate postings below
   `LexicalProjectionConfig::pruning_min_postings` are scored exhaustively:
   short doclists gain nothing from bound checks.
@@ -246,7 +264,14 @@ which depends on it.
   callback; `term_block_bounds_match_decoded_postings` pins the header-only
   bounds against decoded postings; and
   `short_doclists_fall_back_to_exhaustive_scoring` covers the threshold
-  fallback. The ignored developer measurement
+  fallback. Two late-frequency regressions cover an absent pivot and a pivot
+  beyond the current block. The seeded
+  `block_max_randomized_filtered_overlay_matches_exhaustive_and_rebuilt`
+  campaign compares exact IDs and score bits across filters, rank windows,
+  CJK terms, updates, deletes, and inserts, including an independently rebuilt
+  live projection. `block_max_stream_seek_skips_intermediate_payloads` checks
+  that seeking reads frame headers without decoding intermediate payloads.
+  The ignored developer measurement
   `block_max_pruning_measurement_on_a_large_doclist` records skipped blocks,
   postings, bytes, and wall clock for a 16k-document hot-term doclist. The
   corpus-shaped CJK measurement

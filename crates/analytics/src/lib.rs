@@ -14,8 +14,10 @@
 
 use hawdb_core::ids::{NodeId, NodeRecord, RelRecord};
 use hawdb_core::{HawDBError, LabelId, RelTypeId, Result, RuntimeTaskContext};
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+
+mod streaming;
+pub use streaming::{AnalyticsEdgeSource, GraphAdjacency, StreamingGraph};
 
 const ALGORITHM_CHECKPOINT_INTERVAL: usize = 1024;
 const LOUVAIN_NODE_STATE_BYTES: usize = 384;
@@ -474,7 +476,9 @@ impl ProjectedGraph {
         let node_count = self.nodes.len();
         let rank_bytes = node_count.saturating_mul(std::mem::size_of::<f64>());
         let result_bytes = estimated_vec_bytes::<PageRankScore>(node_count);
-        let algorithm_peak_bytes = rank_bytes.saturating_add(result_bytes);
+        let algorithm_peak_bytes = rank_bytes
+            .saturating_add(estimated_vec_bytes::<usize>(node_count))
+            .saturating_add(result_bytes);
         GraphAlgorithmMemoryEstimate {
             projection_bytes: self.memory_estimate.estimated_bytes,
             algorithm_peak_bytes,
@@ -531,62 +535,19 @@ impl ProjectedGraph {
         options: PageRankOptions,
         task_context: Option<&RuntimeTaskContext>,
     ) -> Result<Vec<PageRankScore>> {
-        algorithm_checkpoint(task_context)?;
         if !self.layout.stores_outgoing() {
-            return Ok(Vec::new());
-        }
-        let node_count = self.nodes.len();
-        if node_count == 0 {
-            return Ok(Vec::new());
-        }
-
-        let damping = options.damping.clamp(0.0, 1.0);
-        let mut ranks = vec![1.0 / node_count as f64; node_count];
-        for _ in 0..options.iterations {
             algorithm_checkpoint(task_context)?;
-            let mut dangling = 0.0;
-            for (index, rank) in ranks.iter().enumerate() {
-                algorithm_checkpoint_periodically(task_context, index)?;
-                if self.out_degree(index) == 0 {
-                    dangling += rank;
-                }
-            }
-            let mut next = vec![(1.0 - damping) / node_count as f64; node_count];
-            let dangling_share = damping * dangling / node_count as f64;
-            for score in &mut next {
-                *score += dangling_share;
-            }
-
-            for (source, rank) in ranks.iter().enumerate() {
-                algorithm_checkpoint_periodically(task_context, source)?;
-                let out_degree = self.out_degree(source);
-                if out_degree == 0 {
-                    continue;
-                }
-                let contribution = damping * rank / out_degree as f64;
-                for (edge_ordinal, target) in self.outgoing_target_indexes(source).enumerate() {
-                    algorithm_checkpoint_periodically(task_context, edge_ordinal)?;
-                    next[target] += contribution;
-                }
-            }
-            ranks = next;
+            return Ok(Vec::new());
         }
-
-        let mut scores = self
-            .nodes
-            .iter()
-            .copied()
-            .zip(ranks)
-            .map(|(node, score)| PageRankScore { node, score })
-            .collect::<Vec<_>>();
-        scores.sort_unstable_by(|left, right| {
-            right
-                .score
-                .total_cmp(&left.score)
-                .then_with(|| left.node.cmp(&right.node))
-        });
-        algorithm_checkpoint(task_context)?;
-        Ok(scores)
+        streaming::page_rank(
+            &ResidentAdjacency {
+                graph: self,
+                materialized: None,
+                undirected: false,
+            },
+            options,
+            task_context,
+        )
     }
 
     pub fn louvain_communities(&self, options: LouvainOptions) -> Vec<CommunityAssignment> {
@@ -667,137 +628,20 @@ impl ProjectedGraph {
         task_context: Option<&RuntimeTaskContext>,
     ) -> Result<Vec<CommunityAssignment>> {
         algorithm_checkpoint(task_context)?;
-        let node_count = self.nodes.len();
-        if node_count == 0 {
-            return Ok(Vec::new());
-        }
-
-        let materialized_adjacency = if self.layout != ProjectionLayout::Undirected {
+        let materialized = if self.layout != ProjectionLayout::Undirected {
             Some(self.undirected_adjacency(task_context)?)
         } else {
             None
         };
-        let mut degrees = Vec::with_capacity(node_count);
-        for node in 0..node_count {
-            algorithm_checkpoint_periodically(task_context, node)?;
-            let mut degree = 0usize;
-            for (edge_ordinal, _) in self
-                .undirected_neighbor_indexes(node, materialized_adjacency.as_deref())
-                .enumerate()
-            {
-                algorithm_checkpoint_periodically(task_context, edge_ordinal)?;
-                degree = degree.saturating_add(1);
-            }
-            degrees.push(degree as f64);
-        }
-        let total_degree = degrees.iter().sum::<f64>();
-        if total_degree == 0.0 {
-            return Ok(self
-                .nodes
-                .iter()
-                .copied()
-                .map(|node| CommunityAssignment {
-                    node,
-                    community: node,
-                })
-                .collect());
-        }
-
-        let mut communities = (0..node_count).collect::<Vec<_>>();
-        let mut community_degrees = degrees.clone();
-        for _ in 0..options.max_iterations {
-            algorithm_checkpoint(task_context)?;
-            let mut changed = false;
-            for node in 0..node_count {
-                algorithm_checkpoint_periodically(task_context, node)?;
-                let current = communities[node];
-                let node_degree = degrees[node];
-                community_degrees[current] -= node_degree;
-
-                let mut candidates = BTreeSet::from([current]);
-                for (edge_ordinal, neighbor) in self
-                    .undirected_neighbor_indexes(node, materialized_adjacency.as_deref())
-                    .enumerate()
-                {
-                    algorithm_checkpoint_periodically(task_context, edge_ordinal)?;
-                    candidates.insert(communities[neighbor]);
-                }
-
-                let mut best = current;
-                let mut best_gain = 0.0;
-                for (candidate_ordinal, candidate) in candidates.into_iter().enumerate() {
-                    algorithm_checkpoint_periodically(task_context, candidate_ordinal)?;
-                    let mut links_to_candidate = 0usize;
-                    for (edge_ordinal, neighbor) in self
-                        .undirected_neighbor_indexes(node, materialized_adjacency.as_deref())
-                        .enumerate()
-                    {
-                        algorithm_checkpoint_periodically(task_context, edge_ordinal)?;
-                        links_to_candidate = links_to_candidate
-                            .saturating_add(usize::from(communities[neighbor] == candidate));
-                    }
-                    let links_to_candidate = links_to_candidate as f64;
-                    let gain = links_to_candidate
-                        - (node_degree * community_degrees[candidate] / total_degree);
-                    match gain.total_cmp(&best_gain) {
-                        Ordering::Greater => {
-                            best = candidate;
-                            best_gain = gain;
-                        }
-                        Ordering::Equal => {
-                            let candidate_representative = community_representative(
-                                candidate,
-                                &communities,
-                                &self.nodes,
-                                task_context,
-                            )?;
-                            let best_representative = community_representative(
-                                best,
-                                &communities,
-                                &self.nodes,
-                                task_context,
-                            )?;
-                            if candidate_representative < best_representative {
-                                best = candidate;
-                                best_gain = gain;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                community_degrees[best] += node_degree;
-                if best != current {
-                    communities[node] = best;
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-
-        let mut representatives = BTreeMap::<usize, NodeId>::new();
-        for (index, community) in communities.iter().copied().enumerate() {
-            algorithm_checkpoint_periodically(task_context, index)?;
-            representatives
-                .entry(community)
-                .and_modify(|node| *node = (*node).min(self.nodes[index]))
-                .or_insert(self.nodes[index]);
-        }
-
-        let output = self
-            .nodes
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(index, node)| CommunityAssignment {
-                node,
-                community: representatives[&communities[index]],
-            })
-            .collect();
-        algorithm_checkpoint(task_context)?;
-        Ok(output)
+        streaming::single_level_louvain(
+            &ResidentAdjacency {
+                graph: self,
+                materialized,
+                undirected: true,
+            },
+            options,
+            task_context,
+        )
     }
 
     fn contract_by_communities(
@@ -897,10 +741,6 @@ impl ProjectedGraph {
         })
     }
 
-    fn out_degree(&self, index: usize) -> usize {
-        self.offsets[index + 1] - self.offsets[index]
-    }
-
     fn outgoing_target_indexes(&self, index: usize) -> impl Iterator<Item = usize> + '_ {
         self.targets[self.offsets[index]..self.offsets[index + 1]]
             .iter()
@@ -973,6 +813,31 @@ impl ProjectedGraph {
     }
 }
 
+struct ResidentAdjacency<'a> {
+    graph: &'a ProjectedGraph,
+    materialized: Option<Vec<BTreeSet<usize>>>,
+    undirected: bool,
+}
+
+impl GraphAdjacency for ResidentAdjacency<'_> {
+    fn nodes(&self) -> &[NodeId] {
+        &self.graph.nodes
+    }
+
+    fn read_neighbors(&self, index: usize, neighbors: &mut Vec<usize>) -> Result<()> {
+        neighbors.clear();
+        if self.undirected {
+            neighbors.extend(
+                self.graph
+                    .undirected_neighbor_indexes(index, self.materialized.as_deref()),
+            );
+        } else {
+            neighbors.extend(self.graph.outgoing_target_indexes(index));
+        }
+        Ok(())
+    }
+}
+
 impl ProjectedGraphExecution for ProjectedGraph {
     fn page_rank_with_context(
         &self,
@@ -989,23 +854,6 @@ impl ProjectedGraphExecution for ProjectedGraph {
     ) -> Result<Vec<HierarchicalCommunityAssignment>> {
         self.hierarchical_louvain_communities_with_context_internal(options, task_context)
     }
-}
-
-fn community_representative(
-    community: usize,
-    assignments: &[usize],
-    nodes: &[NodeId],
-    task_context: Option<&RuntimeTaskContext>,
-) -> Result<NodeId> {
-    let mut representative = None;
-    for (index, assigned) in assignments.iter().enumerate() {
-        algorithm_checkpoint_periodically(task_context, index)?;
-        if *assigned == community {
-            representative =
-                Some(representative.map_or(nodes[index], |node: NodeId| node.min(nodes[index])));
-        }
-    }
-    Ok(representative.unwrap_or(nodes[community]))
 }
 
 fn estimated_vec_bytes<T>(item_count: usize) -> usize {

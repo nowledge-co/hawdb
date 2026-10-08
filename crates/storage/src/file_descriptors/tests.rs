@@ -389,7 +389,7 @@ fn mutable_reopen_invalidates_only_future_readers_of_a_logical_path() {
     assert_eq!(fixture.project.metrics().high_water, 2);
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn run_descriptor_child(test_name: &str) -> bool {
     const CHILD_MARKER: &str = "HAWDB_FD_QUALIFICATION_CHILD";
     if std::env::var(CHILD_MARKER).as_deref() == Ok(test_name) {
@@ -423,7 +423,24 @@ fn native_descriptor_count() -> usize {
         .unwrap()
 }
 
-#[cfg(unix)]
+#[cfg(windows)]
+fn native_descriptor_count() -> usize {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        #[link_name = "GetCurrentProcess"]
+        fn current_process() -> *mut std::ffi::c_void;
+        #[link_name = "GetProcessHandleCount"]
+        fn process_handle_count(process: *mut std::ffi::c_void, count: *mut u32) -> i32;
+    }
+    let mut count = 0;
+    // SAFETY: The pseudo-handle refers to this process without opening a handle;
+    // count points to writable DWORD-sized storage for the duration of the call.
+    let success = unsafe { process_handle_count(current_process(), &mut count) };
+    assert_ne!(success, 0, "{}", std::io::Error::last_os_error());
+    usize::try_from(count).unwrap()
+}
+
+#[cfg(any(unix, windows))]
 #[test]
 fn immutable_logical_files_do_not_retain_a_native_descriptor_per_alias() {
     if run_descriptor_child("file_descriptors::tests::immutable_logical_files_do_not_retain_a_native_descriptor_per_alias") {
@@ -460,6 +477,64 @@ fn immutable_logical_files_do_not_retain_a_native_descriptor_per_alias() {
     assert_eq!(&bytes, b"abc");
     assert_eq!(native_descriptor_count(), before + 1);
     assert_eq!(fixture.project.metrics().high_water, 1);
+    drop(files);
+    drop(binding);
+    drop(fixture);
+    assert_eq!(native_descriptor_count(), before);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_sharing_violation_returns_quota_and_native_handles_for_retry() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    if run_descriptor_child("file_descriptors::tests::windows_sharing_violation_returns_quota_and_native_handles_for_retry") {
+        return;
+    }
+    let fixture = Fixture::new(2);
+    let path = fixture.root.join("data");
+    std::fs::write(&path, b"unchanged").unwrap();
+    let before = native_descriptor_count();
+    // This host-owned handle causes a real CreateFile sharing violation after
+    // engine quota acquisition without consuming the engine's reservation.
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&path)
+        .unwrap();
+    assert_eq!(native_descriptor_count(), before + 1);
+    let reservation = fixture.project.reserve(1).unwrap();
+    let expected = fixture.project.metrics();
+    assert_eq!((expected.open, expected.reserved), (0, 1));
+    for _ in 0..3 {
+        for error in [
+            File::open(&path).unwrap_err(),
+            File::create(&path).unwrap_err(),
+        ] {
+            assert_eq!(error.raw_os_error(), Some(32));
+            assert_eq!(file_descriptor_error(&error), None);
+            let observed = fixture.project.metrics();
+            assert_eq!((observed.open, observed.reserved), (0, 1));
+            assert_eq!(observed.budget_rejections, expected.budget_rejections);
+            assert_eq!(observed.os_limit_rejections, expected.os_limit_rejections);
+            assert!(observed.high_water <= observed.limit);
+            assert_eq!(native_descriptor_count(), before + 1);
+        }
+    }
+    drop(held);
+    assert_eq!(native_descriptor_count(), before);
+    let mut reopened = File::open(&path).unwrap();
+    let mut contents = String::new();
+    reopened.read_to_string(&mut contents).unwrap();
+    assert_eq!(contents, "unchanged");
+    assert_eq!(native_descriptor_count(), before + 1);
+    assert_eq!(fixture.project.metrics().open, 1);
+    drop(reopened);
+    assert_eq!(fixture.project.metrics().reserved, 1);
+    drop(reservation);
+    assert_eq!(fixture.project.metrics().open, 0);
+    assert_eq!(fixture.project.metrics().reserved, 0);
+    assert_eq!(native_descriptor_count(), before);
 }
 
 #[cfg(target_os = "linux")]

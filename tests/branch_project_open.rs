@@ -24,6 +24,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
+#[path = "branch_project_open/name_reuse.rs"]
+mod name_reuse;
+
+#[path = "branch_project_open/qualification.rs"]
+mod qualification;
+
 struct Project(PathBuf);
 impl Project {
     fn new() -> Self {

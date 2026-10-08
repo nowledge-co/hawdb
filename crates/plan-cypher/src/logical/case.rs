@@ -205,10 +205,14 @@ mod tests {
     #[test]
     fn case_shape_specialization_respects_projected_column_shadowing() {
         let statement = hawdb_cypher::parse("MATCH (n:Item) RETURN CASE WHEN lower(n.name) = 'first' THEN 0 WHEN lower(n.name) = 'second' THEN 0 WHEN list_contains(n.aliases, 'alias') THEN 1 ELSE 2 END").unwrap();
-        let Statement::MatchReturn(query) = statement else {
+        let Statement::Pipeline(query) = statement else {
             panic!("expected MATCH");
         };
-        let ReturnExpressionKind::Value(expression) = &query.returns[0].expression.kind else {
+        let hawdb_cypher::ClauseKind::Return(projection) = &query.clauses.last().unwrap().kind
+        else {
+            panic!("expected a concluding RETURN clause");
+        };
+        let ReturnExpressionKind::Value(expression) = &projection.items[0].expression.kind else {
             panic!("expected scalar");
         };
         let scope = BTreeSet::from(["n".to_string()]);

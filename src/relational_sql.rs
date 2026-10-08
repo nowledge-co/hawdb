@@ -23,13 +23,13 @@ pub(crate) use hawdb_relational::{
 #[path = "relational_sql/query.rs"]
 mod query;
 
-pub use hawdb_optimizer::{
+pub use hawdb_optimizer_relational::{
     RelationalJoinPlanningAttempt, RelationalJoinPlanningBudget, RelationalJoinPlanningCost,
     RelationalJoinPlanningDirective, RelationalJoinPlanningFallbackClass,
     RelationalJoinPlanningOutcome, RelationalJoinPlanningReason, RelationalJoinPlanningStatus,
     RelationalJoinPlanningStrategy,
 };
-pub use hawdb_optimizer::{
+pub use hawdb_optimizer_relational::{
     RelationalOperatorCardinalityProfile, RelationalOperatorId, RelationalOperatorKind,
 };
 pub use hawdb_sql::RelationalSqlStageTimings;
@@ -3447,7 +3447,7 @@ mod tests {
         assert_eq!(join.table, "profile_parents");
         assert_eq!(
             join.access_path.kind,
-            hawdb_optimizer::RelationalAccessPathKind::PrimaryKey
+            hawdb_optimizer_relational::RelationalAccessPathKind::PrimaryKey
         );
         assert_eq!(join.estimated_rows, 3);
         assert_eq!(join.actual_rows, Some(3));
@@ -4478,7 +4478,7 @@ mod tests {
                 RelationalRowReadMode::CanonicalMemory,
             ),
             RelationalQueryResourceContext::new(
-                hawdb_optimizer::RelationalJoinEnumerationConfig::default(),
+                hawdb_optimizer_relational::RelationalJoinEnumerationConfig::default(),
                 query_limits(2, 4 * 1024),
                 &hawdb_executor::ExecutionMemoryConfig::default(),
                 None,

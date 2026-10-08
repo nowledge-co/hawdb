@@ -27,6 +27,7 @@ use std::num::NonZeroUsize;
 
 mod differential;
 mod store;
+mod streaming;
 
 fn nz(value: usize) -> NonZeroUsize {
     NonZeroUsize::new(value).unwrap()
@@ -44,6 +45,9 @@ struct Fixture {
     fail_node_at: Option<usize>,
     fail_rel_scan: Option<usize>,
     cancel_after_nodes: Option<RuntimeCancellationToken>,
+    adjacency_visits: Cell<usize>,
+    fail_adjacency_at: Option<usize>,
+    cancel_adjacency_at: Option<(usize, RuntimeCancellationToken)>,
 }
 
 impl Fixture {
@@ -95,6 +99,9 @@ impl Fixture {
             fail_node_at: None,
             fail_rel_scan: None,
             cancel_after_nodes: None,
+            adjacency_visits: Cell::new(0),
+            fail_adjacency_at: None,
+            cancel_adjacency_at: None,
         }
     }
 
@@ -403,7 +410,7 @@ fn projection_budget_is_inclusive_and_stops_before_more_node_reads() {
 #[test]
 fn storage_scan_failure_and_early_stop_preserve_adapter_control() {
     let mut fixture = Fixture::new();
-    let source = GraphExecutionProjectionSource(&fixture);
+    let source = GraphExecutionProjectionSource(&fixture, None);
     assert_eq!(
         source
             .visit_projection_nodes(&mut |_| ProjectionScanControl::Stop)
@@ -487,7 +494,8 @@ fn definition_predicate_and_cancellation_keep_existing_precedence() {
             .unwrap_err()
             .to_string()
             .contains("runtime task stopped: cancelled"));
-        assert!(fixture.node_scans.get() > 0 && fixture.rel_scans.get() > 0);
+        assert!(fixture.node_scans.get() > 0);
+        assert_eq!(fixture.rel_scans.get(), usize::from(!cancel_before));
         assert!(output.batches.is_empty() && output.reports.blocking_memory.is_empty());
     }
 }
@@ -499,12 +507,12 @@ fn projection_scratch_and_binding_admission_fail_without_partial_rows() {
     let projection = graph.memory_estimate().estimated_bytes;
     let scratch = graph.page_rank_memory_estimate().algorithm_peak_bytes;
     for (block, query, fragment, reports) in [
-        (1, 1024 * 1024, "analytics projection layout", 0),
+        (1, 1024 * 1024, "streaming node scan", 1),
         (64 * 1024, projection - 1, "exceeding query_memory_bytes", 0),
         (
             projection + scratch - 1,
             1024 * 1024,
-            "scratch and result state",
+            "streaming node scan",
             1,
         ),
         (

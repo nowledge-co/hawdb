@@ -13,16 +13,215 @@
 // limitations under the License.
 
 use super::*;
-use hawdb_search::{
-    SearchDocument, SearchMode, SearchOutOfCoreGenerationWriter, SearchOutOfCoreReader,
+use crate::{
+    SearchDocument, SearchOutOfCoreGenerationWriter, SearchOutOfCoreReader,
     SearchOutOfCoreSegmentCompactionPolicy, SearchProjectionDelta, SearchProjectionKind,
-    SearchProjectionRow, SearchQueryOptions, SearchResultSet,
+    SearchProjectionRow,
 };
+use hawdb_search::{SearchMode, SearchQueryOptions, SearchResultSet};
 use std::num::{NonZeroU64, NonZeroUsize};
 
-const MANIFEST: &str = "search_projection.out_of_core.manifest.hawdb";
+const MANIFEST: &str = "search/search_projection.out_of_core.manifest.hawdb";
 
-fn row(number: usize) -> SearchProjectionRow {
+fn row(id: &str, body: &str) -> SearchProjectionRow {
+    SearchProjectionRow {
+        kind: SearchProjectionKind::Memory,
+        external_id: id.into(),
+        title: id.into(),
+        body: body.into(),
+        embedding: Some(vec![0.25, 0.75]),
+        source_id: None,
+        metadata: BTreeMap::new(),
+    }
+}
+
+fn documents(reader: &SearchOutOfCoreReader, ids: &[&str]) -> Vec<SearchDocument> {
+    reader
+        .hydrate_documents(
+            &ids.iter()
+                .map(|id| format!("memory:{id}"))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+        .documents
+}
+
+fn bootstrap(path: &Path) -> SearchOutOfCoreReader {
+    let mut writer = SearchOutOfCoreGenerationWriter::create(path, Default::default()).unwrap();
+    writer.push(row("a", "old a").into_document()).unwrap();
+    writer.push(row("z", "old z").into_document()).unwrap();
+    writer.finish().unwrap();
+    SearchOutOfCoreReader::open(path).unwrap()
+}
+
+fn mutate(reader: &SearchOutOfCoreReader) {
+    SearchOutOfCoreGenerationWriter::prepare_delta(
+        reader,
+        SearchProjectionDelta {
+            upserts: vec![row("m", "inserted m"), row("z", "replaced z")],
+            deletes: vec!["memory:a".into()],
+            max_operations: Some(3),
+            source_graph_commit_epoch: Some(11),
+        },
+        Default::default(),
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
+}
+
+fn plans(snapshot: &PowerLossSnapshot) -> (Vec<CrashPlan>, usize) {
+    let mut plans = publication_fault_plans(snapshot);
+    let complete = snapshot.persist_all_plan();
+    let mut torn = 0;
+    if let Some(path) = snapshot.observed_path() {
+        for write in snapshot.uncovered_writes(path).unwrap() {
+            if write.length < 2 {
+                continue;
+            }
+            for bytes in [0..1, write.length / 2..write.length] {
+                let mut plan = complete.clone();
+                plan.persistence
+                    .retain(|operation| *operation != PersistOperation::Whole(write.operation));
+                plan.persistence.push(PersistOperation::TornWrite {
+                    operation: write.operation,
+                    bytes,
+                });
+                plans.push(plan);
+                torn += 1;
+            }
+        }
+    }
+    (plans, torn)
+}
+
+fn qualify(compaction: bool) {
+    for (event, boundary, relative_path) in [
+        (IoEvent::Write, ObservationBoundary::After, "search"),
+        (IoEvent::Rename, ObservationBoundary::Before, MANIFEST),
+        (IoEvent::Rename, ObservationBoundary::After, MANIFEST),
+    ] {
+        let mut fixture = Fixture::new();
+        let path = fixture.root.join("search");
+        let mut reader = bootstrap(&path);
+        let bootstrap_image = fixture
+            .model
+            .capture()
+            .unwrap()
+            .crash(&CrashPlan::default())
+            .unwrap();
+        assert!(
+            bootstrap_image.bytes(Path::new(MANIFEST)).is_some(),
+            "acknowledged bootstrap manifest must survive: directories={:?}",
+            bootstrap_image.directory_paths().collect::<Vec<_>>()
+        );
+        if compaction {
+            mutate(&reader);
+            reader = SearchOutOfCoreReader::open(&path).unwrap();
+        }
+        let old_generation = reader.generation();
+        let old_epoch = reader.source_graph_commit_epoch();
+        let old_documents = documents(&reader, if compaction { &["m", "z"] } else { &["a", "z"] });
+        fixture
+            .model
+            .observe(ObservationPoint {
+                event,
+                relative_path: relative_path.into(),
+                boundary,
+                skip_matches: 0,
+                include_descendants: event == IoEvent::Write,
+                keep_last: false,
+            })
+            .unwrap();
+        if compaction {
+            let policy = SearchOutOfCoreSegmentCompactionPolicy::new(
+                NonZeroUsize::new(2).unwrap(),
+                NonZeroU64::new(256 * 1024 * 1024).unwrap(),
+            )
+            .unwrap();
+            assert!(SearchOutOfCoreGenerationWriter::compact_segments(
+                &reader,
+                policy,
+                Default::default(),
+            )
+            .unwrap()
+            .is_some());
+        } else {
+            mutate(&reader);
+        }
+        let published = SearchOutOfCoreReader::open(&path).unwrap();
+        let new_generation = published.generation();
+        let new_epoch = published.source_graph_commit_epoch();
+        let new_documents = documents(&published, &["m", "z"]);
+        assert!(new_generation > old_generation);
+        assert_eq!(new_epoch, Some(11));
+        let acknowledged = fixture.model.capture().unwrap();
+        let snapshot = fixture
+            .model
+            .take_observation()
+            .unwrap()
+            .expect("real publication IO must be recorded");
+        drop(published);
+        drop(reader);
+        let (plans, torn) = plans(&snapshot);
+        eprintln!(
+            "search-power-publication-v1 compaction={compaction} event={event:?} boundary={boundary:?} plans={} torn={torn}",
+            plans.len()
+        );
+        if event == IoEvent::Write {
+            assert!(
+                torn > 0,
+                "the actual unsynchronized write must exercise torn images"
+            );
+        }
+        for plan in plans {
+            let image = fixture.image(&snapshot, &plan);
+            let recovered =
+                SearchOutOfCoreReader::open(image.join("search")).unwrap_or_else(|error| {
+                    panic!("complete publication closure required: {error}; plan={plan:?}")
+                });
+            if event == IoEvent::Write {
+                assert_eq!(recovered.generation(), old_generation);
+            }
+            if recovered.generation() == old_generation {
+                assert_eq!(recovered.source_graph_commit_epoch(), old_epoch);
+                assert_eq!(
+                    documents(
+                        &recovered,
+                        if compaction { &["m", "z"] } else { &["a", "z"] }
+                    ),
+                    old_documents
+                );
+            } else {
+                assert_eq!(recovered.generation(), new_generation);
+                assert_eq!(recovered.source_graph_commit_epoch(), new_epoch);
+                assert_eq!(documents(&recovered, &["m", "z"]), new_documents);
+            }
+            assert_eq!(recovered.document_count(), 2);
+        }
+        // A response can be lost after the durable publication has completed.
+        // Losing all uncovered writes must still retain its entire closure.
+        let image = fixture.image(&acknowledged, &CrashPlan::default());
+        let recovered = SearchOutOfCoreReader::open(image.join("search")).unwrap();
+        assert_eq!(recovered.generation(), new_generation);
+        assert_eq!(recovered.source_graph_commit_epoch(), Some(11));
+        assert_eq!(documents(&recovered, &["m", "z"]), new_documents);
+    }
+}
+
+#[test]
+fn incremental_publication_survives_lost_torn_and_reordered_writes() {
+    qualify(false);
+}
+
+#[test]
+fn overlapping_compaction_survives_lost_torn_and_reordered_writes() {
+    qualify(true);
+}
+
+const COMPONENT_MANIFEST: &str = "search_projection.out_of_core.manifest.hawdb";
+
+fn component_row(number: usize) -> SearchProjectionRow {
     SearchProjectionRow {
         kind: SearchProjectionKind::Memory,
         external_id: format!("{number:06}"),
@@ -35,7 +234,7 @@ fn row(number: usize) -> SearchProjectionRow {
 }
 
 fn document(number: usize) -> SearchDocument {
-    row(number).into_document()
+    component_row(number).into_document()
 }
 
 #[test]
@@ -102,6 +301,40 @@ fn retry_covers_existing_unsynchronized_component_ancestry() {
     assert!(project.metrics().high_water <= project.metrics().limit);
 }
 
+#[test]
+fn external_symlink_root_preserves_writer_and_reader_behavior() {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let unique = format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    );
+    let project_root = MaterializedImage(
+        std::env::temp_dir().join(format!("hawdb-search-symlink-project-{unique}")),
+    );
+    let target_root = MaterializedImage(
+        std::env::temp_dir().join(format!("hawdb-search-symlink-target-{unique}")),
+    );
+    std::fs::create_dir_all(&project_root).unwrap();
+    std::fs::create_dir_all(&target_root).unwrap();
+    let _project = ProjectFileDescriptors::acquire(&project_root, 32).unwrap();
+    let root = project_root.join("search");
+    std::os::unix::fs::symlink(&target_root, &root).unwrap();
+    assert!(!std::fs::canonicalize(&root)
+        .unwrap()
+        .starts_with(std::fs::canonicalize(&project_root).unwrap()));
+
+    let expected = document(0);
+    let mut writer = SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
+    writer.push(expected.clone()).unwrap();
+    let generation = writer.finish().unwrap().generation;
+    for path in [&root, &target_root.0] {
+        let reader = SearchOutOfCoreReader::open(path).unwrap();
+        assert_eq!(reader.generation(), generation);
+        assert_complete(&reader, std::slice::from_ref(&expected));
+    }
+}
+
 fn with_reserved_descriptors(project: &ProjectFileDescriptors, count: usize, work: impl FnOnce()) {
     // Reservations are thread-local operation inventories. Hold unrelated host
     // capacity on another thread so the writer cannot borrow that inventory.
@@ -131,7 +364,7 @@ fn append(root: &Path) {
     SearchOutOfCoreGenerationWriter::prepare_delta(
         &reader,
         SearchProjectionDelta {
-            upserts: vec![row(2)],
+            upserts: vec![component_row(2)],
             ..Default::default()
         },
         Default::default(),
@@ -142,7 +375,7 @@ fn append(root: &Path) {
 }
 
 fn replacement() -> SearchProjectionRow {
-    let mut replacement = row(0);
+    let mut replacement = component_row(0);
     replacement.title = "Graph replacement".into();
     replacement.body = "Graph current replacement generation".into();
     replacement.embedding = Some(vec![0.1, 1.0]);
@@ -152,7 +385,7 @@ fn replacement() -> SearchProjectionRow {
     replacement
 }
 
-fn mutate(root: &Path) {
+fn mutate_component(root: &Path) {
     let reader = SearchOutOfCoreReader::open(root).unwrap();
     SearchOutOfCoreGenerationWriter::prepare_delta(
         &reader,
@@ -297,7 +530,7 @@ fn qualify_publication(publication: Publication) {
         }
         let mut fixture = Fixture::new();
         let root = fixture.root.join("search");
-        let selector = Path::new("search").join(MANIFEST);
+        let selector = Path::new("search").join(COMPONENT_MANIFEST);
         let mut writer =
             SearchOutOfCoreGenerationWriter::create(&root, Default::default()).unwrap();
         writer.push(document(0)).unwrap();
@@ -307,9 +540,9 @@ fn qualify_publication(publication: Publication) {
             append(&root);
         }
         if matches!(publication, Publication::Compaction) {
-            mutate(&root);
+            mutate_component(&root);
         }
-        let before = std::fs::read(root.join(MANIFEST)).unwrap();
+        let before = std::fs::read(root.join(COMPONENT_MANIFEST)).unwrap();
         let old = SearchOutOfCoreReader::open(&root).unwrap();
         assert_complete(&old, &expected_documents(publication, false));
         fixture
@@ -329,7 +562,7 @@ fn qualify_publication(publication: Publication) {
             .unwrap();
         match publication {
             Publication::Append => append(&root),
-            Publication::Mutation => mutate(&root),
+            Publication::Mutation => mutate_component(&root),
             Publication::Compaction => {
                 let report = SearchOutOfCoreGenerationWriter::compact_segments(
                     &old,
@@ -347,7 +580,7 @@ fn qualify_publication(publication: Publication) {
         }
         let cut = fixture.model.take_observation().unwrap().unwrap();
         let acknowledged = fixture.model.capture().unwrap();
-        let after = std::fs::read(root.join(MANIFEST)).unwrap();
+        let after = std::fs::read(root.join(COMPONENT_MANIFEST)).unwrap();
         assert_ne!(
             before, after,
             "publication must replace the active selector"

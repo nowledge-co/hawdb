@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use super::*;
-use crate::build_memory::{checked_add, checked_mul, document_bytes, MAP_ENTRY_BYTES};
+#[cfg(test)]
+use crate::build_memory::document_bytes;
+use crate::build_memory::{checked_add, checked_mul, MAP_ENTRY_BYTES};
 use std::mem::size_of;
 
 pub(super) struct Admission<'a> {
@@ -88,6 +90,7 @@ impl<'a> Admission<'a> {
         self.lease.shrink(bytes);
     }
 
+    #[cfg(test)]
     pub(super) fn finish(&mut self, document: &SearchDocument) -> Result<()> {
         self.checkpoint()?;
         let actual = document_bytes(document)?;

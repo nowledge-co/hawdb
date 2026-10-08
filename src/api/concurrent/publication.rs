@@ -90,7 +90,156 @@ mod tests {
     use super::*;
     use std::num::{NonZeroU64, NonZeroUsize};
     use std::sync::{mpsc, Condvar, Mutex};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+
+    fn assert_branch_ddl_snapshot(snapshot: &DatabaseReadTransaction, before: u64) -> bool {
+        let rows = snapshot
+            .query_sql("SELECT id, body FROM records ORDER BY id")
+            .unwrap();
+        assert_eq!(rows.rows[0]["id"], Value::Int(1));
+        assert_eq!(rows.rows[0]["body"], Value::String("old".into()));
+        let tags = snapshot.query_sql("SELECT tag FROM records ORDER BY id");
+        match snapshot.commit_epoch() {
+            epoch if epoch == before => {
+                assert_eq!(rows.rows.len(), 1);
+                let error = tags.unwrap_err();
+                assert!(
+                    matches!(&error, crate::HawDBError::Semantic(message)
+                        if message == "unknown relational column tag"),
+                    "unexpected old-schema error: {error:?}"
+                );
+                false
+            }
+            epoch if epoch == before + 1 => {
+                assert_eq!(rows.rows.len(), 2);
+                assert_eq!(rows.rows[1]["id"], Value::Int(2));
+                assert_eq!(rows.rows[1]["body"], Value::String("new".into()));
+                let tags = tags.unwrap();
+                assert_eq!(tags.rows.len(), 2);
+                assert_eq!(tags.rows[0]["tag"], Value::Null);
+                assert_eq!(tags.rows[1]["tag"], Value::String("committed".into()));
+                true
+            }
+            epoch => {
+                panic!("unexpected publication epoch {epoch}, expected {before} or its successor")
+            }
+        }
+    }
+
+    #[test]
+    fn branch_ddl_and_data_publish_as_one_view_to_concurrent_snapshot_readers() {
+        for durability in [
+            crate::DurabilityPolicy::SyncOnEveryWrite,
+            crate::DurabilityPolicy::SyncOnCheckpoint,
+        ] {
+            let path = std::env::temp_dir().join(format!(
+                "hawdb-branch-ddl-publication-{}",
+                hawdb_core::generate_uuidv7().unwrap()
+            ));
+            let mut database = Database::open_with_durability(&path, durability).unwrap();
+            database
+                .query_sql("CREATE TABLE records (id BIGINT PRIMARY KEY, body TEXT)")
+                .unwrap();
+            database
+                .query_sql("INSERT INTO records (id, body) VALUES (1, 'old')")
+                .unwrap();
+            let revision = database.commit_epoch().unwrap();
+            database
+                .query_sql_with_params(
+                    "CREATE BRANCH child FROM main AT REVISION $1 REQUEST KEY 'publication-child'",
+                    &[Value::Int(i64::try_from(revision).unwrap())],
+                )
+                .unwrap();
+            database.query_sql("USE BRANCH child").unwrap();
+            let db = database.into_concurrent();
+            let old = db.begin_read_transaction().unwrap();
+            let before = old.commit_epoch();
+            assert!(!assert_branch_ddl_snapshot(&old, before));
+            let (staged, stage_events) = mpsc::channel();
+            let (release, release_events) = mpsc::channel();
+            let writer_db = db.clone();
+            let writer = std::thread::spawn(move || {
+                writer_db.with_autocommit_exclusive(|database| {
+                    let mut transaction = database.begin_transaction()?;
+                    transaction.query_sql("ALTER TABLE records ADD COLUMN tag TEXT")?;
+                    transaction.query_sql(
+                        "INSERT INTO records (id, body, tag) VALUES (2, 'new', 'committed')",
+                    )?;
+                    staged.send(()).unwrap();
+                    release_events
+                        .recv_timeout(Duration::from_secs(30))
+                        .unwrap();
+                    let result = transaction.commit()?;
+                    // The live store has committed, while CommitGuard still
+                    // retains the previous concurrent read publication.
+                    staged.send(()).unwrap();
+                    release_events
+                        .recv_timeout(Duration::from_secs(30))
+                        .unwrap();
+                    Ok(result)
+                })
+            });
+            stage_events.recv_timeout(Duration::from_secs(30)).unwrap();
+            let (observed, observations) = mpsc::channel();
+            let (committed, committed_events) = mpsc::channel();
+            let reader_db = db.clone();
+            let reader = std::thread::spawn(move || {
+                for _ in 0..32 {
+                    let snapshot = reader_db.begin_read_transaction().unwrap();
+                    assert!(!assert_branch_ddl_snapshot(&snapshot, before));
+                }
+                observed.send(()).unwrap();
+                let deadline = Instant::now() + Duration::from_secs(30);
+                let mut held_commit_reads = 0;
+                loop {
+                    let commit_held = committed_events.try_recv().is_ok();
+                    let snapshot = reader_db.begin_read_transaction().unwrap();
+                    if assert_branch_ddl_snapshot(&snapshot, before) {
+                        assert!(held_commit_reads >= 32);
+                        break;
+                    }
+                    if commit_held || held_commit_reads != 0 {
+                        held_commit_reads += 1;
+                        if held_commit_reads == 32 {
+                            observed.send(()).unwrap();
+                        }
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "publication did not become visible"
+                    );
+                    std::thread::yield_now();
+                }
+            });
+            observations.recv_timeout(Duration::from_secs(30)).unwrap();
+            release.send(()).unwrap();
+            stage_events.recv_timeout(Duration::from_secs(30)).unwrap();
+            committed.send(()).unwrap();
+            observations.recv_timeout(Duration::from_secs(30)).unwrap();
+            release.send(()).unwrap();
+            writer.join().unwrap().unwrap();
+            reader.join().unwrap();
+            assert!(!assert_branch_ddl_snapshot(&old, before));
+            assert!(assert_branch_ddl_snapshot(
+                &db.begin_read_transaction().unwrap(),
+                before,
+            ));
+            drop(old);
+            drop(db);
+            let mut reopened = Database::open_with_durability(&path, durability).unwrap();
+            assert!(!assert_branch_ddl_snapshot(
+                &reopened.begin_read_transaction().unwrap(),
+                before,
+            ));
+            reopened.query_sql("USE BRANCH child").unwrap();
+            assert!(assert_branch_ddl_snapshot(
+                &reopened.begin_read_transaction().unwrap(),
+                before,
+            ));
+            drop(reopened);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
 
     fn count(snapshot: &mut DatabaseReadTransaction) -> (i64, i64) {
         let graph = snapshot

@@ -24,13 +24,16 @@ pub use hawdb_evidence::{
     PRODUCTION_QUALIFICATION_POLICY_VERSION,
 };
 use hawdb_integrity::checksum_u64;
-use hawdb_optimizer::{
+use hawdb_optimizer_predicate::{
     normalize_search_enum_value, push_search_predicates, search_field_is_enum_like,
-    select_adaptive_vector_backend, AdaptiveVectorBackend, AdaptiveVectorBackendDecision,
-    AdaptiveVectorBackendInput, AdaptiveVectorBackendPolicy, SearchPredicate, SearchPredicateOp,
-    SearchPredicateSet, SearchScalarValue, SearchScanPredicateSupport, VectorCompressionPreference,
+    SearchPredicate, SearchPredicateOp, SearchPredicateSet, SearchScalarValue,
+    SearchScanPredicateSupport,
 };
-use hawdb_plan_cypher::{VectorBackendSelectionReason, VectorCandidateSource};
+use hawdb_optimizer_vector::{
+    select_adaptive_vector_backend, AdaptiveVectorBackend, AdaptiveVectorBackendDecision,
+    AdaptiveVectorBackendInput, AdaptiveVectorBackendPolicy, VectorCompressionPreference,
+};
+use hawdb_plan_core::{VectorBackendSelectionReason, VectorCandidateSource};
 use hawdb_qos::{
     BackgroundWorkHint, BackgroundWorkPlan, LocalQosPolicy, LocalQosScheduler, LocalQosState,
     QosAdmission, WorkClass, WorkRequest,
@@ -205,9 +208,9 @@ pub use out_of_core::{
     SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreGenerationUpdate,
     SearchOutOfCoreGenerationWriter, SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics,
     SearchOutOfCoreMutationWriter, SearchOutOfCoreOutput, SearchOutOfCoreReader,
-    SearchOutOfCoreSegmentCompaction, SearchOutOfCoreSegmentCompactionPolicy,
-    SearchOutOfCoreSegmentCompactionReport, SearchOutOfCoreSegmentCompactionStopReason,
-    SearchStagingCleanupReport, SearchVerifiedBody,
+    SearchOutOfCoreRefreshReport, SearchOutOfCoreSegmentCompaction,
+    SearchOutOfCoreSegmentCompactionPolicy, SearchOutOfCoreSegmentCompactionReport,
+    SearchOutOfCoreSegmentCompactionStopReason, SearchStagingCleanupReport, SearchVerifiedBody,
 };
 // These are internal ownership seams. Hosts continue to use the embedded facade.
 #[doc(hidden)]
@@ -1487,6 +1490,7 @@ impl SearchIndex {
                 error
             }
         })?;
+        out_of_core::validate_resident_snapshot_identity(&index, path)?;
         if index.consumer_binding.is_some() != registered {
             return Err(HawDBError::Storage(
                 "projection consumer lifecycle does not match snapshot binding".into(),
@@ -5872,7 +5876,7 @@ impl SearchFilterSegmentSummary {
     fn values_may_match_not_in(
         &self,
         field: &str,
-        excluded_values: &BTreeSet<hawdb_optimizer::SearchScalarValue>,
+        excluded_values: &BTreeSet<hawdb_optimizer_predicate::SearchScalarValue>,
     ) -> bool {
         let present_count = self.present_counts.get(field).copied().unwrap_or_default();
         if present_count < self.document_count {
@@ -6160,7 +6164,7 @@ impl SearchSegmentDescriptorEntry {
     fn values_may_match_not_in(
         &self,
         field: &str,
-        excluded_values: &BTreeSet<hawdb_optimizer::SearchScalarValue>,
+        excluded_values: &BTreeSet<hawdb_optimizer_predicate::SearchScalarValue>,
     ) -> bool {
         let Some(summary) = self.metadata.get(field) else {
             return true;
@@ -12733,27 +12737,25 @@ mod tests {
     #[test]
     fn search_projection_probe_blocks_on_invalid_cleanup_generation_identity() {
         let path = unique_test_dir("search_projection_cleanup_invalid_manifest");
-        {
-            let mut index = SearchIndex::open(&path).unwrap();
-            index
-                .apply_embedding_manifest(SearchEmbeddingManifest {
-                    model: "bge-m3".to_string(),
-                    version: Some("local".to_string()),
-                    dimension: 2,
-                })
-                .unwrap();
-            index
-                .apply_projection_delta(SearchProjectionDelta {
-                    upserts: nowledge_probe_rows(),
-                    deletes: Vec::new(),
-                    max_operations: None,
-                    source_graph_commit_epoch: Some(7),
-                })
-                .unwrap();
-            index.checkpoint().unwrap();
-            index.checkpoint().unwrap();
-            index.checkpoint().unwrap();
-        }
+        let mut index = SearchIndex::open(&path).unwrap();
+        index
+            .apply_embedding_manifest(SearchEmbeddingManifest {
+                model: "bge-m3".to_string(),
+                version: Some("local".to_string()),
+                dimension: 2,
+            })
+            .unwrap();
+        index
+            .apply_projection_delta(SearchProjectionDelta {
+                upserts: nowledge_probe_rows(),
+                deletes: Vec::new(),
+                max_operations: None,
+                source_graph_commit_epoch: Some(7),
+            })
+            .unwrap();
+        index.checkpoint().unwrap();
+        index.checkpoint().unwrap();
+        index.checkpoint().unwrap();
         let stale_artifact = path.join("search_projection_segments.1.hawdb");
         std::fs::write(&stale_artifact, b"stale generation").unwrap();
         std::fs::write(
@@ -12762,8 +12764,8 @@ mod tests {
         )
         .unwrap();
 
-        let index = SearchIndex::open(&path).unwrap();
-        let report = index.projection_cleanup_report();
+        assert!(SearchIndex::open(&path).is_err());
+        let report = index.retry_projection_cleanup(SearchProjectionCleanupOptions::default());
         let probe = index.nowledge_search_projection_probe_json(SearchProjectionProbeOptions {
             active_embedding_model: Some("bge-m3".to_string()),
             active_embedding_dimension: Some(2),

@@ -136,6 +136,7 @@ enum DocumentMemory {
 }
 
 impl AdmittedDocument {
+    #[cfg(test)]
     pub(crate) fn from_admitted_parts(document: SearchDocument, memory: QueryMemoryLease) -> Self {
         Self {
             document,

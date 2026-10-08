@@ -59,15 +59,12 @@ impl OwnedPath {
         resolve: impl FnOnce(&Path) -> std::io::Result<PathBuf>,
     ) -> Result<Self> {
         checkpoint(task)?;
-        let lease = memory.retained.reserve(Self::resolution_bytes(path)?)?;
-        let value = resolve(path)?;
-        Self::finish(value, lease, task)
-    }
-
-    pub(crate) fn resolution_bytes(path: &Path) -> Result<usize> {
         // Cover the native extended Windows path representation, its UTF-8
         // result and overlapping conversion buffers before resolving aliases.
-        add(4 * 32_768 * 3, super::reserved::native_path::bytes(path)?)
+        let bytes = add(4 * 32_768 * 3, super::reserved::native_path::bytes(path)?)?;
+        let lease = memory.retained.reserve(bytes)?;
+        let value = resolve(path)?;
+        Self::finish(value, lease, task)
     }
 
     #[cfg(test)]

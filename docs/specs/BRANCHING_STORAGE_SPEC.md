@@ -130,6 +130,11 @@ incarnation. Deleting or renaming `main` is rejected in P0. Rename is a catalog
 operation with atomic old-name removal/new-name reservation; it changes neither
 UUID nor lineage and is not required in the initial facade API.
 
+After name reuse, name-based inspection, selection, and create-source resolution
+refer to the non-`Deleted` record that currently reserves that name, regardless
+of UUID sort order. Exact UUID lookup and deletion still refer to the original
+identity, including its retained tombstone and idempotency receipt.
+
 Use three distinct counters, with checked overflow and no wraparound:
 
 | Token | Meaning and comparison scope |
@@ -1173,6 +1178,20 @@ operations conservatively account for temporary handle capacity, so these
 metrics are admission counts, not an exact process-wide native-handle census.
 This is a source-level conservation argument, not a machine-checked proof of
 the complete runtime.
+
+The subprocess-isolated `immutable_logical_files_do_not_retain_a_native_descriptor_per_alias`
+regression samples native descriptors on Unix and process executive handles via
+`GetProcessHandleCount` on Windows. It compares 128 logical aliases with one
+physical cache handle, then eviction, cold reopen and complete owner release.
+The Windows-only `windows_sharing_violation_returns_quota_and_native_handles_for_retry`
+regression holds one host-owned file with sharing disabled. Repeated admitted
+read/create attempts must return the native sharing error, preserve the file,
+return quota and leak no handle; releasing the host handle permits a complete
+read and returns the process count to baseline. These are bounded fixture
+measurements, not an ownership census of arbitrary host/native-library handles.
+Native Windows execution is required in addition to cross-target Clippy.
+Cross-project alias-probe isolation and additional namespace schedules remain
+tracked by [#819](https://github.com/nowledge-co/hawdb/issues/819).
 
 `USE BRANCH` retains a target reservation through recovery and facade validation.
 The current reservation covers three lock/WAL handles, the bounded shared read

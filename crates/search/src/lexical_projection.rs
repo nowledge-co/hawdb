@@ -267,6 +267,7 @@ struct ManifestBody {
     legacy_posting_bytes: u64,
     posting_bytes: u64,
     max_term_bytes: u64,
+    #[serde(deserialize_with = "manifest_encoding::deserialize_blocks")]
     blocks: Vec<BlockDescriptor>,
 }
 
@@ -1514,35 +1515,69 @@ impl LexicalProjectionReader {
                 // until their summed per-block bounds reach the retained floor.
                 // Every document below that pivot scores below the floor, so
                 // advancing the cursors past it cannot change the top-k.
-                let mut upper = 0.0;
-                let mut pivot = None;
-                for &(candidate, index) in &order {
-                    upper +=
-                        streams[index].block_upper_bound(stream_idf[index], average_document_len);
-                    if upper >= floor {
-                        pivot = Some(candidate);
-                        break;
-                    }
-                }
-                match pivot {
-                    // No cursor can reach the floor: the remaining documents
-                    // cannot enter the retained window, so every unread block
-                    // stays unread.
-                    None => {
+                // Prefix bounds are monotone. Binary search keeps the bound
+                // work O(m log m) for m active terms, without another buffer.
+                let pivot_index = order.partition_point(|&(candidate, _)| {
+                    // Use the scorer's term order so floating-point addition
+                    // preserves the componentwise contribution bound.
+                    let upper =
+                        streams
+                            .iter()
+                            .zip(&stream_idf)
+                            .fold(0.0, |upper, (stream, &idf)| {
+                                if stream
+                                    .peeked
+                                    .as_ref()
+                                    .is_some_and(|posting| posting.ordinal <= candidate)
+                                {
+                                    upper + stream.block_upper_bound(idf, average_document_len)
+                                } else {
+                                    upper
+                                }
+                            });
+                    upper < floor
+                });
+                let pivot = order.get(pivot_index).map(|&(candidate, _)| candidate);
+                // A current-block bound says nothing about a later block's
+                // frequency. Only a bound valid for every remaining posting
+                // can terminate the pass rather than advance to a boundary.
+                if pivot.is_none() {
+                    let remaining_upper =
+                        streams
+                            .iter()
+                            .zip(&stream_idf)
+                            .fold(0.0, |upper, (stream, &idf)| {
+                                if stream.peeked.is_some() {
+                                    upper
+                                        + bm25_term_upper_bound(idf, u32::MAX, average_document_len)
+                                } else {
+                                    upper
+                                }
+                            });
+                    if remaining_upper < floor {
                         for stream in &streams {
                             blocks_skipped = blocks_skipped.saturating_add(stream.unread_blocks());
                         }
                         break;
                     }
-                    Some(pivot) if pivot > ordinal => {
-                        for &(candidate, index) in &order {
-                            if candidate < pivot {
-                                streams[index].skip_to(pivot)?;
-                            }
+                }
+                let boundary = order
+                    .iter()
+                    .filter_map(|&(_, index)| streams[index].bounds.map(|bounds| bounds.last))
+                    .min()
+                    .unwrap_or(ordinal)
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        HawDBError::Storage("lexical block ordinal boundary overflow".to_string())
+                    })?;
+                let target = pivot.map_or(boundary, |pivot| pivot.min(boundary));
+                if target > ordinal {
+                    for &(candidate, index) in &order {
+                        if candidate < target {
+                            streams[index].skip_to(target)?;
                         }
-                        continue;
                     }
-                    Some(_) => {}
+                    continue;
                 }
             }
             group.clear();
@@ -1700,14 +1735,25 @@ impl<'a> TermPostingStream<'a> {
     /// Drops postings below `target`, skipping whole blocks whose frame-header
     /// bound cannot reach it without decoding their payloads.
     fn skip_to(&mut self, target: u64) -> Result<()> {
+        if self
+            .peeked
+            .as_ref()
+            .is_some_and(|posting| posting.ordinal >= target)
+        {
+            return Ok(());
+        }
+        self.peeked = None;
+        if self.bounds.is_some_and(|bounds| bounds.last < target) {
+            self.current = Vec::new().into_iter();
+        }
         loop {
-            while let Some(posting) = self.peek()? {
+            if let Some(posting) = self.current.next() {
                 if posting.ordinal >= target {
+                    self.peeked = Some(posting);
                     return Ok(());
                 }
-                self.peeked = None;
-            }
-            if !self.load_next_block_above(target)? {
+            } else if !self.load_next_block_above(target)? {
+                self.bounds = None;
                 return Ok(());
             }
         }
@@ -3190,6 +3236,7 @@ mod tests {
 
     #[cfg(feature = "full-text-search")]
     mod checkpoint;
+    mod pruning;
     mod robustness;
 
     fn projection_root(name: &str) -> PathBuf {
@@ -3896,6 +3943,81 @@ mod tests {
         drop(rebuilt);
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(rebuilt_root).unwrap();
+    }
+
+    fn assert_late_frequency_pruning(sparse_term: bool) {
+        let root = projection_root(if sparse_term {
+            "block-max-pivot-boundary"
+        } else {
+            "block-max-later-frequency"
+        });
+        fs::create_dir_all(&root).unwrap();
+        let config = pruning_config(4);
+        let analyzer = SearchAnalyzerLexicon::default();
+        let documents = (0..4096)
+            .map(|index| {
+                let frequency = match index {
+                    0 | 1 => 20,
+                    4094 => 40,
+                    _ => 1,
+                };
+                let mut content = format!("{}{}", "graph ".repeat(64), "rare ".repeat(frequency));
+                if sparse_term && index == 4095 {
+                    content.push_str("beta ");
+                }
+                document(&format!("doc-{index:04}"), "title", &content)
+            })
+            .collect::<Vec<_>>();
+        let reader = LexicalProjectionWriter::new(config)
+            .write(&root, 1, Some(7), 11, 13, documents.iter(), &analyzer)
+            .unwrap();
+        assert!(reader.posting_blocks("rare").count() >= 3);
+        let mut terms = BTreeSet::from(["rare".to_string()]);
+        if sparse_term {
+            terms.insert("beta".to_string());
+        }
+        let rank_window = if sparse_term { 2 } else { 1 };
+        let statistics =
+            LexicalCorpusStatistics::aggregate([reader.as_ref()], &terms, config.max_term_bytes)
+                .unwrap();
+        let exhaustive = reader
+            .score_with_global_statistics_and_pruning(
+                &terms,
+                config.max_term_bytes,
+                Some(rank_window),
+                &statistics,
+                false,
+                |_| Ok(true),
+            )
+            .unwrap();
+        assert_eq!(exhaustive.scores.len(), rank_window);
+        assert!(exhaustive.scores.contains_key("doc-4094"));
+        if sparse_term {
+            assert!(exhaustive.scores.contains_key("doc-4095"));
+        }
+        let pruned = reader
+            .score_with_global_statistics_and_pruning(
+                &terms,
+                config.max_term_bytes,
+                Some(rank_window),
+                &statistics,
+                true,
+                |_| Ok(true),
+            )
+            .unwrap();
+        assert_eq!(pruned.scores, exhaustive.scores);
+        drop(reader);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn block_max_pruning_keeps_higher_frequency_hits_in_later_blocks() {
+        assert_late_frequency_pruning(false);
+    }
+
+    #[test]
+    fn block_max_pruning_limits_pivots_to_current_block_boundaries() {
+        assert_late_frequency_pruning(true);
     }
 
     #[test]

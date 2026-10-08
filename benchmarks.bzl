@@ -37,6 +37,7 @@ HAWDB_MANUAL_BENCHMARKS = [
     "branch_catalog_inspection",
     "concurrent_snapshot_reads",
     "concurrent_writers",
+    "graph_analytics",
 ]
 
 def hawdb_benchmark_binaries(crate_features):

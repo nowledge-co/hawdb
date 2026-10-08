@@ -24,6 +24,11 @@ _CARGO_WORKSPACE_PACKAGES = [
     "crates/fuzz",
     "crates/integrity",
     "crates/optimizer",
+    "crates/optimizer-graph",
+    "crates/optimizer-relational",
+    "crates/optimizer-predicate",
+    "crates/optimizer-vector",
+    "crates/plan-core",
     "crates/plan-cache",
     "crates/plan-cypher",
     "crates/qos",
@@ -103,6 +108,8 @@ sh_test(
 sh_test(
     name = "storage_tla_evidence_script_test",
     size = "small",
+    # Evidence fixture collection exceeded the inherited 60-second deadline.
+    timeout = "moderate",
     srcs = ["scripts/check-storage-tla.test.sh"],
     data = [
         "scripts/check-storage-tla.sh",
@@ -140,6 +147,7 @@ _HAWDB_COMMON_BASE_DEPS = [
     "//crates/fuzz-contracts:hawdb_fuzz_contracts",
     "//crates/integrity:hawdb_integrity",
     "//crates/optimizer:hawdb_optimizer",
+    "//crates/optimizer-relational:hawdb_optimizer_relational",
     "//crates/plan-cache:hawdb_plan_cache",
     "//crates/plan-cypher:hawdb_plan_cypher",
     "//crates/qos:hawdb_qos",
@@ -305,18 +313,11 @@ sh_test(
 )
 
 rust_test(
-    name = "hawdb_unit_fast_tests",
-    # The remaining root tests can still exceed the 300-second default under
-    # Prow contention even after the crash matrix and compaction are isolated.
+    name = "hawdb_unit_test_binary",
     size = "large",
-    # Temporary headroom for measured decomposition; see issue #870.
-    timeout = "eternal",
-    args = [
-        "--skip",
-        _HAWDB_STORAGE_CRASH_MATRIX_TEST,
-        "--skip",
-        _HAWDB_ROW_PAGE_COMPACTION_TEST,
-    ],
+    # Partition runners share private transaction hooks and one compilation.
+    # This executable is data, not an additional aggregate execution.
+    tags = ["manual"],
     crate = ":hawdb",
     crate_features = _HAWDB_DEFAULT_FEATURES,
     edition = "2024",
@@ -328,23 +329,82 @@ rust_test(
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
+[
+    sh_test(
+        name = "hawdb_unit_%s_tests" % partition,
+        size = "large",
+        timeout = "long",
+        srcs = ["scripts/run-root-unit-partition.sh"],
+        args = [
+            "$(rootpath :hawdb_unit_test_binary)",
+            partition,
+            "--skip",
+            _HAWDB_STORAGE_CRASH_MATRIX_TEST,
+        ],
+        data = [":hawdb_unit_test_binary"],
+    )
+    for partition in ["general", "concurrent", "analytics", "recovery"]
+]
+
+sh_test(
+    name = "root_unit_partition_script_test",
+    size = "small",
+    srcs = ["scripts/run-root-unit-partition.test.sh"],
+    data = ["scripts/run-root-unit-partition.sh"],
+)
+
+test_suite(
+    name = "hawdb_unit_fast_tests",
+    tests = [
+        ":hawdb_unit_general_tests",
+        ":hawdb_unit_concurrent_tests",
+        ":hawdb_unit_analytics_tests",
+        ":hawdb_unit_recovery_tests",
+        ":hawdb_unit_row_page_compaction_admission_tests",
+    ],
+)
+
+_HAWDB_ROW_PAGE_COMPACTION_SRCS = [
+    "tests/row_page_compaction.rs",
+    "tests/row_page_compaction/mod.rs",
+    "tests/row_page_compaction/row_page_compaction.rs",
+    "src/store_facade_tests/paths.rs",
+]
+
+_HAWDB_ROW_PAGE_COMPACTION_DEPS = [
+    ":hawdb",
+    "//crates/core:hawdb_core",
+    "//crates/qos:hawdb_qos",
+    "//crates/storage:hawdb_storage",
+]
+
+rust_test(
+    name = "hawdb_unit_row_page_compaction_admission_tests",
+    size = "large",
+    timeout = "long",
+    args = ["--skip", _HAWDB_ROW_PAGE_COMPACTION_TEST],
+    crate_root = "tests/row_page_compaction.rs",
+    srcs = _HAWDB_ROW_PAGE_COMPACTION_SRCS,
+    crate_features = _HAWDB_DEFAULT_FEATURES,
+    edition = "2024",
+    deps = _HAWDB_ROW_PAGE_COMPACTION_DEPS,
+)
+
 # Keep the full compaction/reopen workload under an independent deadline.
 rust_test(
     name = "hawdb_unit_row_page_compaction_tests",
     size = "large",
+    # Finite headroom before full-case timing/decomposition; see issue #889.
+    timeout = "eternal",
     args = [
         _HAWDB_ROW_PAGE_COMPACTION_TEST,
         "--exact",
     ],
-    crate = ":hawdb",
+    crate_root = "tests/row_page_compaction.rs",
+    srcs = _HAWDB_ROW_PAGE_COMPACTION_SRCS,
     crate_features = _HAWDB_DEFAULT_FEATURES,
     edition = "2024",
-    aliases = aliases(
-        normal_dev = True,
-        proc_macro_dev = True,
-    ),
-    deps = all_crate_deps(normal_dev = True),
-    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    deps = _HAWDB_ROW_PAGE_COMPACTION_DEPS,
 )
 
 rust_test(
@@ -486,6 +546,7 @@ test_suite(
         ":hawdb_search_lexical_corpus_qualification_tests",
         ":hawdb_wasm_playground_bridge_tests",
         ":hawdb_unit_fast_tests",
+        ":root_unit_partition_script_test",
         ":hawdb_unit_row_page_compaction_tests",
         ":hawdb_unit_storage_crash_matrix_tests",
     ],
@@ -508,11 +569,16 @@ rust_test(
     deps = [":hawdb_minimal"] + all_crate_deps(normal = True),
 )
 
+_BRANCH_PROJECT_OPEN_SRCS = glob([
+    "tests/branch_project_open.rs",
+    "tests/branch_project_open/**/*.rs",
+])
+
 rust_test(
     name = "hawdb_branch_project_open_tests",
     crate_root = "tests/branch_project_open.rs",
     crate_features = _HAWDB_DEFAULT_FEATURES,
-    srcs = ["tests/branch_project_open.rs"],
+    srcs = _BRANCH_PROJECT_OPEN_SRCS,
     edition = "2024",
     deps = [":hawdb", "//crates/storage:hawdb_storage"],
 )
@@ -520,7 +586,7 @@ rust_test(
 rust_test(
     name = "hawdb_branch_project_open_minimal_tests",
     crate_root = "tests/branch_project_open.rs",
-    srcs = ["tests/branch_project_open.rs"],
+    srcs = _BRANCH_PROJECT_OPEN_SRCS,
     edition = "2024",
     deps = [":hawdb_minimal", "//crates/storage:hawdb_storage"],
 )
@@ -605,9 +671,9 @@ sh_test(
     data = [":hawdb_storage_crash_recovery_tests"],
 )
 
-alias(
+test_suite(
     name = "hawdb_system_sql_loom_tests",
-    actual = "//crates/system-sql:hawdb_system_sql_loom_tests",
+    tests = ["//crates/system-sql:hawdb_system_sql_loom_tests"],
 )
 
 # Matches `cargo test -p hawdb --features acl --lib` for the storage crash

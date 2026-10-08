@@ -23,7 +23,7 @@ use crate::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
 use hawdb_integrity::Crc32cHasher;
-use hawdb_storage::durability::{durable_replace_file, sync_directory};
+use hawdb_storage::durability::durable_replace_file;
 use hawdb_storage::file_io::{self as fs, File, OpenOptions};
 #[cfg(test)]
 use std::cell::Cell;
@@ -108,25 +108,6 @@ impl<'a> GenerationIo<'a> {
 
     pub(super) fn length(&self, path: &Path) -> Result<u64> {
         Ok(self.native(&[path], || fs::metadata(path))??.len())
-    }
-
-    pub(super) fn sync_root_namespace(&self, root: &Path, project_root: &Path) -> Result<()> {
-        let outside_project =
-            || HawDBError::Storage("search root is outside its project directory".into());
-        if !root.starts_with(project_root) {
-            return Err(outside_project());
-        }
-        let mut directory = root;
-        loop {
-            // Syncing a new directory does not persist its name in its parent.
-            // Writable project admission covers the project's own ancestry;
-            // borrowed component roots must cover every intervening name too.
-            self.native(&[directory], || sync_directory(directory))??;
-            if directory == project_root {
-                return Ok(());
-            }
-            directory = directory.parent().ok_or_else(outside_project)?;
-        }
     }
 
     pub(super) fn read(&self, path: &Path, max_bytes: u64) -> Result<AdmittedBytes> {
