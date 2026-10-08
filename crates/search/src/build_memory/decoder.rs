@@ -19,8 +19,9 @@ use crate::build_memory::{checked_add as add, BuildMemory};
 use crate::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::QueryMemoryLease;
+use hawdb_storage::compression::DecompressionContext;
 use std::io::{self, BufRead, Read};
-use zstd::zstd_safe::{DCtx, InBuffer, OutBuffer, ResetDirective};
+use zstd::zstd_safe::{InBuffer, OutBuffer};
 
 // zstd 1.5.7 DCtx includes its entropy tables and fixed block scratch. Its
 // streaming in/out allocation is admitted separately from each frame header.
@@ -30,7 +31,7 @@ const DEFAULT_MAX_WINDOW: u64 = (1 << 27) + 1;
 
 pub(crate) struct Decoder<'a, R> {
     input: R,
-    context: DCtx<'static>,
+    context: DecompressionContext,
     header: [u8; 18],
     position: usize,
     length: usize,
@@ -51,10 +52,7 @@ impl<'a, R: BufRead> Decoder<'a, R> {
         super::compression::require_qualified_zstd("decode admission")?;
         let context_memory = memory.spool.reserve(CONTEXT_BYTES)?;
         let buffer_memory = memory.spool.reserve(0)?;
-        let mut context = DCtx::try_create().ok_or_else(|| {
-            HawDBError::Execution("cannot allocate search hydration decoder".into())
-        })?;
-        context.init().map_err(native_error)?;
+        let context = DecompressionContext::new()?;
         if context.sizeof() > CONTEXT_BYTES {
             return Err(HawDBError::Execution(
                 "search hydration decoder context exceeded admission".into(),
@@ -101,9 +99,7 @@ impl<'a, R: BufRead> Decoder<'a, R> {
         self.buffer_memory
             .grow(required.saturating_sub(self.buffer_memory.bytes()))
             .map_err(io::Error::other)?;
-        self.context
-            .reset(ResetDirective::SessionOnly)
-            .map_err(native_error)?;
+        self.context.reset()?;
         self.position = 0;
         self.boundary = false;
         Ok(true)
@@ -130,10 +126,7 @@ impl<R: BufRead> Read for Decoder<'_, R> {
             let mut input = InBuffer::around(input);
             let limit = output.len().min(8192);
             let mut output = OutBuffer::around(&mut output[..limit]);
-            let remaining = self
-                .context
-                .decompress_stream(&mut output, &mut input)
-                .map_err(native_error)?;
+            let remaining = self.context.decompress_stream(&mut output, &mut input)?;
             let consumed = input.pos();
             let written = output.pos();
             if header {
@@ -162,10 +155,6 @@ impl<R: BufRead> Read for Decoder<'_, R> {
             }
         }
     }
-}
-
-fn native_error(code: usize) -> io::Error {
-    io::Error::other(zstd::zstd_safe::get_error_name(code))
 }
 
 fn frame_buffer_bytes(header: &[u8]) -> Result<usize> {

@@ -208,9 +208,9 @@ pub use out_of_core::{
     SearchOutOfCoreGenerationBuildReport, SearchOutOfCoreGenerationUpdate,
     SearchOutOfCoreGenerationWriter, SearchOutOfCoreHydrationOutput, SearchOutOfCoreMetrics,
     SearchOutOfCoreMutationWriter, SearchOutOfCoreOutput, SearchOutOfCoreReader,
-    SearchOutOfCoreSegmentCompaction, SearchOutOfCoreSegmentCompactionPolicy,
-    SearchOutOfCoreSegmentCompactionReport, SearchOutOfCoreSegmentCompactionStopReason,
-    SearchStagingCleanupReport, SearchVerifiedBody,
+    SearchOutOfCoreRefreshReport, SearchOutOfCoreSegmentCompaction,
+    SearchOutOfCoreSegmentCompactionPolicy, SearchOutOfCoreSegmentCompactionReport,
+    SearchOutOfCoreSegmentCompactionStopReason, SearchStagingCleanupReport, SearchVerifiedBody,
 };
 // These are internal ownership seams. Hosts continue to use the embedded facade.
 #[doc(hidden)]
@@ -1490,6 +1490,7 @@ impl SearchIndex {
                 error
             }
         })?;
+        out_of_core::validate_resident_snapshot_identity(&index, path)?;
         if index.consumer_binding.is_some() != registered {
             return Err(HawDBError::Storage(
                 "projection consumer lifecycle does not match snapshot binding".into(),
@@ -7592,8 +7593,9 @@ fn split_checksum(text: &str) -> Result<(&str, u64)> {
 }
 
 fn encode_search_snapshot_text(text: &str) -> Result<Vec<u8>> {
-    let compressed = zstd::stream::encode_all(text.as_bytes(), SEARCH_COMPRESSION_LEVEL)
-        .map_err(|error| HawDBError::Storage(format!("zstd compression failed: {error}")))?;
+    let compressed =
+        hawdb_storage::compression::encode_all(text.as_bytes(), SEARCH_COMPRESSION_LEVEL)
+            .map_err(|error| HawDBError::Storage(format!("zstd compression failed: {error}")))?;
     let compressed_checksum = checksum_bytes(&compressed);
     let uncompressed_checksum = checksum_bytes(text.as_bytes());
     let header = search_snapshot_compression_header(
@@ -7746,11 +7748,12 @@ fn decode_search_snapshot_text_bounded(
             "search projection uncompressed payload requires {expected_uncompressed_len} bytes, exceeding {max_uncompressed_bytes}"
         )));
     }
-    let decoder = zstd::stream::read::Decoder::new(Cursor::new(payload)).map_err(|error| {
-        HawDBError::Storage(format!(
-            "search projection zstd decompression failed: {error}"
-        ))
-    })?;
+    let decoder =
+        hawdb_storage::compression::Decoder::new(Cursor::new(payload)).map_err(|error| {
+            HawDBError::Storage(format!(
+                "search projection zstd decompression failed: {error}"
+            ))
+        })?;
     let mut decoded = Vec::with_capacity(expected_uncompressed_len.min(1024 * 1024));
     // The declaration has already passed reader admission. Probe one byte past
     // it to reject understated lengths without inflating up to the reader limit.
@@ -12736,27 +12739,25 @@ mod tests {
     #[test]
     fn search_projection_probe_blocks_on_invalid_cleanup_generation_identity() {
         let path = unique_test_dir("search_projection_cleanup_invalid_manifest");
-        {
-            let mut index = SearchIndex::open(&path).unwrap();
-            index
-                .apply_embedding_manifest(SearchEmbeddingManifest {
-                    model: "bge-m3".to_string(),
-                    version: Some("local".to_string()),
-                    dimension: 2,
-                })
-                .unwrap();
-            index
-                .apply_projection_delta(SearchProjectionDelta {
-                    upserts: nowledge_probe_rows(),
-                    deletes: Vec::new(),
-                    max_operations: None,
-                    source_graph_commit_epoch: Some(7),
-                })
-                .unwrap();
-            index.checkpoint().unwrap();
-            index.checkpoint().unwrap();
-            index.checkpoint().unwrap();
-        }
+        let mut index = SearchIndex::open(&path).unwrap();
+        index
+            .apply_embedding_manifest(SearchEmbeddingManifest {
+                model: "bge-m3".to_string(),
+                version: Some("local".to_string()),
+                dimension: 2,
+            })
+            .unwrap();
+        index
+            .apply_projection_delta(SearchProjectionDelta {
+                upserts: nowledge_probe_rows(),
+                deletes: Vec::new(),
+                max_operations: None,
+                source_graph_commit_epoch: Some(7),
+            })
+            .unwrap();
+        index.checkpoint().unwrap();
+        index.checkpoint().unwrap();
+        index.checkpoint().unwrap();
         let stale_artifact = path.join("search_projection_segments.1.hawdb");
         std::fs::write(&stale_artifact, b"stale generation").unwrap();
         std::fs::write(
@@ -12765,8 +12766,8 @@ mod tests {
         )
         .unwrap();
 
-        let index = SearchIndex::open(&path).unwrap();
-        let report = index.projection_cleanup_report();
+        assert!(SearchIndex::open(&path).is_err());
+        let report = index.retry_projection_cleanup(SearchProjectionCleanupOptions::default());
         let probe = index.nowledge_search_projection_probe_json(SearchProjectionProbeOptions {
             active_embedding_model: Some("bge-m3".to_string()),
             active_embedding_dimension: Some(2),

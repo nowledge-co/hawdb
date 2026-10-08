@@ -111,7 +111,7 @@ fn compress(
     let error =
         |error| RelationalError::Durability(format!("failed to compress overflow value: {error}"));
     let unit = work.start_unit().map_err(work_error)?;
-    let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), level).map_err(error)?;
+    let mut encoder = crate::compression::Encoder::new(Vec::new(), level).map_err(error)?;
     unit.finish();
     for chunk in raw.chunks(64 * 1024) {
         let unit = work.start_unit().map_err(work_error)?;

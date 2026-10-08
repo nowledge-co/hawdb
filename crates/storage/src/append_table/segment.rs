@@ -258,12 +258,14 @@ impl AppendSegmentWriter {
                     config.max_decoded_block_bytes
                 )));
             }
-            let compressed = zstd::stream::encode_all(raw.as_slice(), config.compression_level)
-                .map_err(|error| {
-                    AppendTableError::Corruption(format!(
-                        "failed to compress append segment block: {error}"
-                    ))
-                })?;
+            let compressed =
+                crate::compression::encode_all(raw.as_slice(), config.compression_level).map_err(
+                    |error| {
+                        AppendTableError::Corruption(format!(
+                            "failed to compress append segment block: {error}"
+                        ))
+                    },
+                )?;
             if compressed.len() > config.max_compressed_block_bytes {
                 return Err(AppendTableError::Admission(format!(
                     "append block contains {} compressed bytes, exceeding limit {}",
@@ -924,7 +926,7 @@ impl AppendSegmentReader {
                     self.config.max_decoded_block_bytes
                 )));
             }
-            let decoder = zstd::stream::read::Decoder::new(Cursor::new(compressed.as_slice()))
+            let decoder = crate::compression::Decoder::new(Cursor::new(compressed.as_slice()))
                 .map_err(|error| {
                     AppendTableError::Corruption(format!(
                         "failed to open append block decoder: {error}"

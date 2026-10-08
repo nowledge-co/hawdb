@@ -1533,3 +1533,150 @@ The original full owner/concurrency/fuzz matrix and supported-profile
 qualification remain pending; the complete failed matrix and its isolated pass
 remain evidence. The original owner test module, whole-owner prepare/retire
 paths, candidate estimator and append files are unchanged by this correction.
+
+Latest-main integration is being prepared against eb4f6ef. The initial merge
+with projected-artifact v2 exposed missing relationship-predicate fields in the
+private WAL codec and added fixtures. The prototype retains both artifact v1
+reading and v2 predicates, preserves ordinary WAL field 4 and its duplicate-field
+diagnostic, and keeps all preceding name/vector/line work loops. Legacy fixture
+initializers add empty predicate maps; CRLF parity now covers both wire fixtures.
+No original case, assertion, seed, CPU/I/O cut, workload or budget is removed.
+This integration remains unpublished and does not qualify full issue acceptance.
+The private WAL path now counts the borrowed typed predicate tree without cloning
+values or materializing text, then emits through an admitted scratch allocation
+of at most 64 KiB. Its callbacks release the local unit before writing into the
+already admitted output. Nested hex expansion, scalar bit encodings, map ordering
+and the independent ordinary codec's complete bytes remain unchanged.
+
+The checkpoint WAL predicate decoder admits temporary text, leaf buffers, vector
+capacities and conservative pinned-toolchain map nodes into the record's retained
+inventory. It validates hex/UTF-8 and scans delimiters/numbers in bounded chunks,
+moves decoded leaves into typed predicates without cloning them, and releases
+temporary text only after destroying the allocation. WAL field 4 borrows the
+record after bounded UTF-8 validation instead of duplicating the whole encoded
+field. Duplicate-field and malformed-record error priority remain identical to
+the independent ordinary decoder. The returned record retains allocation leases
+through execution and source closure. Map comparisons, allocator latency, error
+strings and destruction still need whole-candidate resource/time qualification.
+
+Both encoder resource cases fail on the preceding prototype (0 pass/2 fail) and
+pass after correction (2 pass/0 fail) with the same 257 KiB binary payload and
+memory ceilings. The first scratch diagnostic assertion omitted the existing
+24-byte governor lease payload: its requested-byte expectation was corrected
+from 65536 to 65560, with no ceiling, case or other assertion change. A fresh
+corrected before build still fails both cases; the initial fixture and failed
+attempt remain archived. Two independent, freshly compiled wrong controls fail
+the same cases when counting materializes text or scratch admission is omitted.
+All ten WAL encoding cases and thirteen projected-artifact cases pass, retaining
+the existing explicitly ignored differential campaign.
+
+Both decoder resource cases genuinely fail before this change (0 pass/2 fail)
+and the byte-identical complete fixture passes afterwards (2 pass/0 fail).
+Thirty-five WAL decoder/replay cases pass, including all nine value variants,
+legacy diagnostic/tolerance parity, malformed/duplicate record priority, every
+actual cancellation unit with full retry on the same reservation, and actual
+record retention after source/task closure. Independently compiled hex-buffer
+undercharge and record-lifetime controls each fail their corresponding unchanged
+case. Formatting, native workspace/all-targets/all-features strict Clippy, minimal
+native and browser WASM strict profiles, hook installation and all-file hooks
+pass on this combined source. These scoped results do not replace the complete
+latest-main regression/fuzz matrix.
+
+Controlled projected-artifact decoding now uses the shared admitted predicate
+parser, bounded hex/UTF-8/delimiter/numeric traversal, and admitted name/vector
+capacity growth and map-node coverage. Its ownership-bearing result retains the
+inventory with all five arrays and the complete predicate. Removing one decoded
+artifact returns another ownership-bearing result. Ordinary v1/v2 decode keeps
+its original plain-map contract under the default, unadmitted context.
+
+Preparation admits and constructs nonempty shared map roots before publication.
+An empty cache uses an inline discriminant and a static empty map; preparation
+and cloning create no heap allocation or retained task memory reservation.
+PreparedCheckpoint transfers that root once into the private candidate or strict
+publication path; candidate selection transfers the prepared runtime. Captured
+sources and snapshots clone the root and its inventory without duplicating the
+payloads. Cache invalidation preserves per-name status and old snapshots through
+an immutable address-keyed bit trie. Entry addresses identify objects in the
+retained immutable map and are never dereferenced. Strictly decreasing branch
+bits bound insertion/lookup/drop depth by usize::BITS; each copied trie cell is
+admitted before allocation in controlled replay. Invalidated payloads remain
+retained and charged until the base's last owner closes. Inventory metadata and
+superseded trie coverage can remain conservatively reserved until root closure.
+Ordinary foreground registration retains its default-context behavior and does
+not independently establish a hard admission contract for its new metadata.
+
+Both original artifact resource cases genuinely fail before correction (0 pass/
+2 fail) and their byte-identical 257 KiB payload, complete-array assertions and
+memory ceilings pass afterwards (2 pass/0 fail). Twenty-one artifact cases pass
+with the original one explicitly ignored campaign, including an independent
+8193-node five-array capacity lower bound and a separate root-cell increment,
+owning removal, snapshot/invalidation lifetime, one-byte root/invalidation
+rejection, and every actual CPU cut/full same-reservation retry in the declared
+fixtures. Five candidate/framing cases and thirty-five WAL decode/replay cases
+pass. A real materialized 17-node/17-edge candidate verifies exact root address
+transfer, complete graph/array equality, status invalidation, snapshot/capture
+retention, normal reopen, and final governor release after execution closes.
+Four fresh, actually compiled controls each fail the intended unchanged case
+when array capacity, root cells or invalidation cells are uncharged, or decoded
+inventory is released early. Shared replay continues through the original WAL
+failpoint/poison entry; the first specialization bypassed it and failed one of
+35 original cases. That failed receipt remains archived separately from the
+corrected complete 35-case pass.
+
+The new lifecycle fixture initially expected a stale unrelated cache to survive
+reopen. Ordinary recovery intentionally excludes all caches at older commit
+epochs; its new reopen expectation was corrected while retaining the complete
+record, live-cache, address, snapshot and governor assertions. This does not
+change any original resource fixture or ordinary recovery behavior.
+
+The combined integration is prepared with parents df28c037 and main 0625907b,
+including main's independently merged #974 concurrent-test timeout configuration.
+Its first complete storage regression passed 1381 cases but failed three, with
+29 original ignores. Controlled metadata omitted main's relationship-predicate
+field, the overflow validator retained the older Zstd decoder backend and its
+diagnostics, and recovered projection caches were consequently absent. After
+the metadata correction, the unchanged reopen case exposed a second producer
+defect: controlled graph construction had not applied relationship predicates.
+The observed cache held two edges where the original case required one.
+
+Controlled metadata now emits the complete predicate field through the admitted
+bounded encoder. Controlled overflow compression and validation use main's
+Rust-allocator Zstd streams while retaining the existing chunk boundaries.
+Controlled projection construction evaluates borrowed predicates with a local
+permit per tree node or 64 KiB comparison, avoiding unbounded variable-width
+property, string, binary, list and map comparisons. Missing/null, float total
+ordering and mixed numeric semantics match the independent ordinary evaluator.
+The ordinary builder's existing all-label/all-type fast path remains unchanged.
+Producer maps/arrays, catalog lookup and recursion-stack coverage remain ledger
+gaps; bounded predicate evaluation does not qualify those allocations.
+
+The three unchanged failing cases pass in the targeted corrected-source rerun.
+Additional full-byte metadata/nested-predicate, complete five-array producer,
+value-semantic parity and every-actual-unit cancellation/retry cases pass. Wide
+comparison work and the complete final regression/profile/fuzz matrix remain
+required before publication. The original storage inventory is recovered from
+the compiled preceding published commit rather than inferred from interleaved
+subprocess stdout. Main renamed the frozen artifact case to cover v1 reads and
+v2 writes; its complete legacy decoding and empty/4096-node coverage remains.
+No original case, ignore, ceiling, seed or workload is removed for qualification.
+
+That first corrected storage run passed 1389 cases with all 29 original ignores,
+and its compiled inventory preserves every preceding published storage case.
+The subsequent complete owner group passed 16 cases but failed the original
+governor-recovery case: an empty cache root unnecessarily allocated an Arc and
+retained the task's whole 128 MiB reservation after suspension. Empty roots now
+allocate nothing, rather than detaching an uncharged heap object or changing
+the original zero-reservation expectation. A new one-byte empty-root fixture
+genuinely fails before correction and passes unchanged afterwards. Opt-in native
+observation counts every heap allocation in empty preparation/cloning, while
+the prior observer retains its original greater-than-64-KiB threshold. The full
+22-case artifact group passes with its original one ignored campaign. Final
+owner, complete regression/profile/fuzz and effective empty-root-control
+qualification remain required before publication.
+
+Artifact body/producer buffers, source/candidate/
+cache/GC/disk/FD/cleanup, allocator/map-comparison/destruction accounting, the
+unchanged default 1057-node progress case, runtime fault/power-loss qualification
+and paired release performance remain required before full #207 acceptance.
+No production whole-owner operation admission or original workload is weakened
+by this integration.

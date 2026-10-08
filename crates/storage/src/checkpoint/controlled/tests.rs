@@ -209,6 +209,7 @@ impl Fixture {
                 ProjectedGraphDefinition {
                     node_labels: vec!["Memory-界".into(), "".into()],
                     rel_types: vec!["LINK-界".into()],
+                    relationship_predicates: Default::default(),
                 },
             )]),
         }
@@ -268,6 +269,93 @@ fn checkpoint_units_metadata_body_matches_ordinary_bytes_and_complete_decode() {
     );
     assert_eq!(catalog.labels().count(), fixture.catalog.labels().count());
     assert_eq!(decoded.projected_graphs, fixture.projected);
+}
+
+#[test]
+fn checkpoint_units_metadata_predicates_match_complete_bytes_and_cancel_each_unit() {
+    use crate::projection::ProjectedRelationshipPredicate;
+
+    let fixture = Fixture {
+        catalog: Catalog::default(),
+        statistics: GraphStatistics::default(),
+        changes: Vec::new(),
+        projected: BTreeMap::from([(
+            "MemoryGraph-界".into(),
+            ProjectedGraphDefinition {
+                node_labels: vec!["Memory".into()],
+                rel_types: vec!["LINK".into()],
+                relationship_predicates: BTreeMap::from([(
+                    "LINK".into(),
+                    ProjectedRelationshipPredicate::And(vec![
+                        ProjectedRelationshipPredicate::Gte {
+                            property: "confidence".into(),
+                            value: Value::Float(0.7),
+                        },
+                        ProjectedRelationshipPredicate::Eq {
+                            property: "payload-界".into(),
+                            value: Value::Map(BTreeMap::from([(
+                                "nested".into(),
+                                Value::List(vec![
+                                    Value::Binary(vec![0x9f; 8193]),
+                                    Value::String("\0é界🦀".repeat(1025)),
+                                ]),
+                            )])),
+                        },
+                    ]),
+                )]),
+            },
+        )]),
+    };
+    let image = fixture.image();
+    let expected = encode_checkpoint_body_with_changes(&image, 17, fixture.changes.iter()).unwrap();
+    let local = scheduler();
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    let actual = encode_checkpoint_body_with_work_context(
+        &image,
+        17,
+        fixture.changes.iter(),
+        &probe.context(local.clone()),
+    )
+    .unwrap();
+    assert_eq!(actual, expected);
+    let total = probe.completed.load(Ordering::SeqCst);
+    assert!(total > 16, "nested predicate must cross multiple chunks");
+    assert_eq!(probe.peak_units.load(Ordering::SeqCst), 1);
+    probe.assert_released(&local);
+    let mut catalog = Catalog::default();
+    let mut decoded = DecodedCheckpoint::default();
+    parse_checkpoint(&actual, &mut catalog, &mut decoded).unwrap();
+    assert_eq!(decoded.projected_graphs, fixture.projected);
+
+    for limit in 1..=total {
+        let cancelled = Arc::new(CheckpointWorkProbe::default());
+        cancelled.cancel_after.store(limit, Ordering::SeqCst);
+        let error = encode_checkpoint_body_with_work_context(
+            &image,
+            17,
+            fixture.changes.iter(),
+            &cancelled.context(local.clone()),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "storage error: checkpoint build stopped: cancelled"
+        );
+        assert_eq!(cancelled.completed.load(Ordering::SeqCst), limit);
+        cancelled.assert_released(&local);
+    }
+    let retry = Arc::new(CheckpointWorkProbe::default());
+    assert_eq!(
+        encode_checkpoint_body_with_work_context(
+            &image,
+            17,
+            fixture.changes.iter(),
+            &retry.context(local.clone()),
+        )
+        .unwrap(),
+        expected
+    );
+    retry.assert_released(&local);
 }
 
 #[test]

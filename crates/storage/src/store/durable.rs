@@ -43,10 +43,9 @@ pub(super) use manifest::DurableManifest;
 
 use super::{
     cleanup_abandoned_checkpoint_preparations, derived_repair, doctor, has_storage_artifacts,
-    source_scan, store_id_for_path, CheckpointStatisticsState, ProjectedGraphArtifact,
-    CANONICAL_MANIFEST_MAX_BYTES, MANIFEST_FILE, PROJECTED_GRAPHS_FILE,
-    PROPERTY_PROJECTION_MANIFEST_MAX_BYTES, PROPERTY_SPILL_MANIFEST_MAX_BYTES,
-    STABLE_ID_MAPPING_FILE, WAL_BINARY_FILE_HEADER_BYTES,
+    source_scan, store_id_for_path, CheckpointStatisticsState, CANONICAL_MANIFEST_MAX_BYTES,
+    MANIFEST_FILE, PROJECTED_GRAPHS_FILE, PROPERTY_PROJECTION_MANIFEST_MAX_BYTES,
+    PROPERTY_SPILL_MANIFEST_MAX_BYTES, STABLE_ID_MAPPING_FILE, WAL_BINARY_FILE_HEADER_BYTES,
 };
 use crate::error::{HawDBError, Result};
 use crate::file_io::{self as fs, File};
@@ -69,7 +68,6 @@ use hawdb_storage::{
     stable_identity::{StableIdentityMappingError, StableIdentityMappingReader},
     telemetry::StorageTelemetrySink,
 };
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -186,7 +184,8 @@ pub struct PreparedCheckpoint {
     pub(super) source_wal_bytes: u64,
     pub(super) generation: u64,
     pub(super) checkpoint_out_of_core: bool,
-    pub(super) projected_graph_artifacts: BTreeMap<String, ProjectedGraphArtifact>,
+    pub(super) projected_graph_artifacts:
+        Option<crate::projection::artifact::CheckpointProjectedGraphRoot>,
     pub(super) publish_projected_graph_artifacts: bool,
     pub(super) source_scan_publication: Option<source_scan::SourceScanPublication>,
     pub(super) checkpoint_statistics: CheckpointStatisticsState,

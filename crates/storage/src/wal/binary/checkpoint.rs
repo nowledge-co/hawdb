@@ -119,6 +119,25 @@ impl<'a> Output<'a> {
         self.bytes(field, value.as_bytes())
     }
 
+    fn predicates(
+        &mut self,
+        field: u32,
+        values: &BTreeMap<String, crate::projection::ProjectedRelationshipPredicate>,
+    ) -> Result<()> {
+        let work = self.work;
+        let length = crate::projection::predicate_checkpoint::encoded_len(values, work)?;
+        self.tag(field, WIRE_TYPE_LEN)?;
+        self.varint(length as u64)?;
+        match self.destination {
+            Destination::Count(_) => self.add_count(length),
+            Destination::Bytes(_) => {
+                crate::projection::predicate_checkpoint::encode_into(values, work, |chunk| {
+                    self.raw(chunk)
+                })
+            }
+        }
+    }
+
     fn message(
         &mut self,
         field: u32,
@@ -434,6 +453,7 @@ fn encode_op_body(op: &WalOp, out: &mut Output<'_>) -> Result<u64> {
             name,
             node_labels,
             rel_types,
+            relationship_predicates,
         } => {
             out.string(1, name)?;
             for label in node_labels {
@@ -442,6 +462,7 @@ fn encode_op_body(op: &WalOp, out: &mut Output<'_>) -> Result<u64> {
             for rel_type in rel_types {
                 out.string(3, rel_type)?;
             }
+            out.predicates(4, relationship_predicates)?;
             OP_PROJECT_GRAPH
         }
         WalOp::MarkInitialImportSource { source_fingerprint } => {

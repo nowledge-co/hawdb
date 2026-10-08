@@ -20,8 +20,10 @@ mod checkpoint;
 #[cfg(test)]
 pub(crate) use checkpoint::tests::CheckpointWorkProbe;
 pub(crate) use checkpoint::CheckpointOperationError;
+pub(crate) use checkpoint::{
+    checkpoint_decode_allocation, CheckpointBytes, CheckpointDecodeContext, CheckpointWorkUnit,
+};
 pub(crate) use checkpoint::{CheckpointAllocationOwner, CheckpointAllocationToken};
-pub(crate) use checkpoint::{CheckpointBytes, CheckpointWorkUnit};
 #[doc(hidden)]
 pub use checkpoint::{CheckpointSharedBytes, CheckpointWorkContext, CheckpointWorkError};
 pub(crate) use checkpoint::{CheckpointSharedValues, CheckpointValues};

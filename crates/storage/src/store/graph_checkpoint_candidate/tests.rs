@@ -23,6 +23,9 @@ use hawdb_qos::{
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[path = "tests/projection_memory.rs"]
+mod projection_memory;
+
 #[derive(Debug)]
 struct CountingWaves {
     admitted: RuntimeTaskContext,

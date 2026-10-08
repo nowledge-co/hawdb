@@ -13,9 +13,11 @@
 // limitations under the License.
 
 use super::*;
+use crate::projection::ProjectedRelationshipPredicate;
 use crate::text::{
     decode_string, decode_string_vec, decode_u64_vec, encode_string, encode_string_vec,
 };
+use hawdb_core::Value;
 
 fn checkpoint_unit_scheduler() -> hawdb_qos::LocalQosScheduler {
     hawdb_qos::LocalQosScheduler::new(hawdb_qos::LocalQosPolicy {
@@ -141,7 +143,7 @@ fn checkpoint_units_projected_graph_validates_chunk_boundary_offsets_and_indexes
     }
 }
 
-const FIXTURE: &str = concat!(
+const V1_FIXTURE: &str = concat!(
     "HAWDB_PROJECTED_GRAPHS_V1\n",
     "artifact_version\t1\n",
     "projection_epoch\t7\n",
@@ -154,10 +156,24 @@ const FIXTURE: &str = concat!(
     "csc_sources\t0,1\n",
 );
 
+const V2_FIXTURE: &str = concat!(
+    "HAWDB_PROJECTED_GRAPHS_V1\n",
+    "artifact_version\t2\n",
+    "projection_epoch\t7\n",
+    "commit_epoch\t11\n",
+    "graph\t47\t4d656d6f7279:456e74697479\t4c494e4b53\tm\t2\t2\n",
+    "nodes\t4,9\n",
+    "csr_offsets\t0,1,2\n",
+    "csr_targets\t1,1\n",
+    "csc_offsets\t0,0,2\n",
+    "csc_sources\t0,1\n",
+);
+
 fn definition() -> ProjectedGraphDefinition {
     ProjectedGraphDefinition {
         node_labels: vec!["Memory".into(), "Entity".into()],
         rel_types: vec!["LINKS".into()],
+        relationship_predicates: BTreeMap::new(),
     }
 }
 
@@ -210,7 +226,7 @@ fn reference_body(
     // list helpers to derive the expected bytes.
     let mut rows = vec![
         vec!["HAWDB_PROJECTED_GRAPHS_V1".into()],
-        vec!["artifact_version".into(), "1".into()],
+        vec!["artifact_version".into(), "2".into()],
         vec!["projection_epoch".into(), projection_epoch.to_string()],
         vec!["commit_epoch".into(), commit_epoch.to_string()],
         vec![
@@ -228,6 +244,7 @@ fn reference_body(
                 .map(|s| reference_hex(s))
                 .collect::<Vec<_>>()
                 .join(":"),
+            "m".into(),
             data.nodes.len().to_string(),
             data.csr_targets.len().to_string(),
         ],
@@ -291,11 +308,11 @@ fn replace_graph_field(body: &str, field: usize, value: &str) -> String {
 }
 
 #[test]
-fn frozen_v1_bytes_and_empty_artifact_roundtrip() {
+fn frozen_v1_reads_and_v2_writes_roundtrip() {
     let data = edge_bag_data(vec![NodeId(4), NodeId(9)], &[(0, 1), (1, 1)]);
-    assert_eq!(encode_one("G", &definition(), &data), FIXTURE);
+    assert_eq!(encode_one("G", &definition(), &data), V2_FIXTURE);
     assert_eq!(
-        decode_projected_graph_artifacts(FIXTURE).unwrap(),
+        decode_projected_graph_artifacts(V2_FIXTURE).unwrap(),
         (
             11,
             BTreeMap::from([(
@@ -310,20 +327,53 @@ fn frozen_v1_bytes_and_empty_artifact_roundtrip() {
         )
     );
     assert_eq!(
+        decode_projected_graph_artifacts(V1_FIXTURE).unwrap(),
+        decode_projected_graph_artifacts(V2_FIXTURE).unwrap()
+    );
+    assert_eq!(
         encode_projected_graph_artifacts(0, u64::MAX, []),
-        "HAWDB_PROJECTED_GRAPHS_V1\nartifact_version\t1\nprojection_epoch\t0\ncommit_epoch\t18446744073709551615\n",
+        "HAWDB_PROJECTED_GRAPHS_V1\nartifact_version\t2\nprojection_epoch\t0\ncommit_epoch\t18446744073709551615\n",
     );
     for count in [0, 1, 4096] {
         let data = edge_bag_data((0..count).map(NodeId).collect(), &[]);
         let empty = ProjectedGraphDefinition {
             node_labels: vec![],
             rel_types: vec![],
+            relationship_predicates: BTreeMap::new(),
         };
         let text = encode_one("", &empty, &data);
         let (_, decoded) = decode_projected_graph_artifacts(&text).unwrap();
         assert_eq!(decoded[""].data, data);
         assert_eq!(decoded[""].definition, empty);
     }
+}
+
+#[test]
+fn relationship_predicates_round_trip_through_v2_artifacts() {
+    let data = edge_bag_data(vec![NodeId(4), NodeId(9)], &[(0, 1)]);
+    let definition = ProjectedGraphDefinition {
+        node_labels: vec!["Entity".into()],
+        rel_types: vec!["RELATES_TO".into()],
+        relationship_predicates: BTreeMap::from([(
+            "RELATES_TO".into(),
+            ProjectedRelationshipPredicate::And(vec![
+                ProjectedRelationshipPredicate::Gte {
+                    property: "confidence".into(),
+                    value: Value::Float(0.7),
+                },
+                ProjectedRelationshipPredicate::Gte {
+                    property: "strength".into(),
+                    value: Value::Float(0.5),
+                },
+            ]),
+        )]),
+    };
+
+    let text = encode_one("EntityTopicGraph", &definition, &data);
+    let (_, decoded) = decode_projected_graph_artifacts(&text).unwrap();
+
+    assert_eq!(decoded["EntityTopicGraph"].definition, definition);
+    assert_eq!(decoded["EntityTopicGraph"].data, data);
 }
 
 #[test]
@@ -338,16 +388,16 @@ fn decoding_tolerance_and_input_order_are_preserved() {
     assert!(text.find("graph\t7a\t").unwrap() < text.find("graph\t61\t").unwrap());
     assert_eq!(decode_projected_graph_artifacts(&text).unwrap().1.len(), 2);
     for text in [
-        FIXTURE.replace('\n', "\r\n"),
-        format!("{FIXTURE}\n\n"),
-        FIXTURE.trim_end_matches('\n').into(),
-        FIXTURE.replace("artifact_version\t1", "artifact_version\t+001"),
-        FIXTURE.replace("nodes\t4,9", "nodes\t+004,09"),
-        FIXTURE.replace("4d656d6f7279", "4D656D6F7279"),
+        V2_FIXTURE.replace('\n', "\r\n"),
+        format!("{V2_FIXTURE}\n\n"),
+        V2_FIXTURE.trim_end_matches('\n').into(),
+        V2_FIXTURE.replace("artifact_version\t2", "artifact_version\t+002"),
+        V2_FIXTURE.replace("nodes\t4,9", "nodes\t+004,09"),
+        V2_FIXTURE.replace("4d656d6f7279", "4D656D6F7279"),
     ] {
         assert_eq!(
             decode_projected_graph_artifacts(&text).unwrap(),
-            decode_projected_graph_artifacts(FIXTURE).unwrap()
+            decode_projected_graph_artifacts(V2_FIXTURE).unwrap()
         );
     }
     let replacement = edge_bag_data(vec![NodeId(u64::MAX)], &[]);
@@ -411,12 +461,16 @@ fn malformed_headers_fields_and_structure_report_original_errors() {
         (8, "csc_offsets"),
         (9, "csc_sources"),
     ] {
-        let truncated = FIXTURE.lines().take(index).collect::<Vec<_>>().join("\n");
+        let truncated = V2_FIXTURE
+            .lines()
+            .take(index)
+            .collect::<Vec<_>>()
+            .join("\n");
         assert_storage_error(
             decode_projected_graph_artifacts(&truncated),
             &format!("missing projected graph artifact {label} line"),
         );
-        let malformed = replace_line(FIXTURE, index, "unknown\t0");
+        let malformed = replace_line(V2_FIXTURE, index, "unknown\t0");
         assert_storage_error(
             decode_projected_graph_artifacts(&malformed),
             "invalid projected graph artifact line: unknown\t0",
@@ -425,8 +479,8 @@ fn malformed_headers_fields_and_structure_report_original_errors() {
     for (index, raw, expected) in [
         (
             1,
-            "artifact_version\t2",
-            "unsupported projected graph artifact version: 2",
+            "artifact_version\t3",
+            "unsupported projected graph artifact version: 3",
         ),
         (
             1,
@@ -472,25 +526,25 @@ fn malformed_headers_fields_and_structure_report_original_errors() {
         ),
     ] {
         assert_storage_error(
-            decode_projected_graph_artifacts(&replace_line(FIXTURE, index, raw)),
+            decode_projected_graph_artifacts(&replace_line(V2_FIXTURE, index, raw)),
             expected,
         );
     }
     for (field, raw, expected) in [
-        (4, "3", "projected graph artifact node count mismatch for G"),
-        (5, "3", "projected graph artifact edge count mismatch for G"),
-        (4, "-1", "invalid projected graph artifact node count: -1"),
-        (5, "bad", "invalid projected graph artifact edge count: bad"),
+        (5, "3", "projected graph artifact node count mismatch for G"),
+        (6, "3", "projected graph artifact edge count mismatch for G"),
+        (5, "-1", "invalid projected graph artifact node count: -1"),
+        (6, "bad", "invalid projected graph artifact edge count: bad"),
     ] {
         assert_storage_error(
-            decode_projected_graph_artifacts(&replace_graph_field(FIXTURE, field, raw)),
+            decode_projected_graph_artifacts(&replace_graph_field(V2_FIXTURE, field, raw)),
             expected,
         );
     }
     // Field parsing precedes count checks, and count checks precede structural
     // validation. Duplicate graph names cannot hide a malformed earlier entry.
     let count_and_offsets =
-        replace_graph_field(&replace_line(FIXTURE, 6, "csr_offsets\t1"), 4, "3");
+        replace_graph_field(&replace_line(V2_FIXTURE, 6, "csr_offsets\t1"), 5, "3");
     assert_storage_error(
         decode_projected_graph_artifacts(&count_and_offsets),
         "projected graph artifact node count mismatch for G",
@@ -500,7 +554,7 @@ fn malformed_headers_fields_and_structure_report_original_errors() {
         decode_projected_graph_artifacts(&bad_index),
         "invalid projected graph artifact index: bad",
     );
-    let duplicate = count_and_offsets + &FIXTURE.lines().skip(4).collect::<Vec<_>>().join("\n");
+    let duplicate = count_and_offsets + &V2_FIXTURE.lines().skip(4).collect::<Vec<_>>().join("\n");
     assert_storage_error(
         decode_projected_graph_artifacts(&duplicate),
         "projected graph artifact node count mismatch for G",
@@ -518,7 +572,7 @@ fn checksum_footer_split_preserves_last_match_and_whitespace() {
         ("checksum\t1\n", 2)
     );
     assert_storage_error(
-        split_projected_graph_artifact_checksum(FIXTURE),
+        split_projected_graph_artifact_checksum(V2_FIXTURE),
         "projected graph artifact missing checksum footer",
     );
     assert_storage_error(
@@ -564,6 +618,7 @@ fn run_campaign(seeds: u64, steps: usize) -> usize {
                 } else {
                     vec!["\0:\t\n".into()]
                 },
+                relationship_predicates: BTreeMap::new(),
             };
             let projection_epoch = next_random(&mut state);
             let commit_epoch = next_random(&mut state);
@@ -594,11 +649,11 @@ fn run_campaign(seeds: u64, steps: usize) -> usize {
             checks += 1;
             let mutations = [
                 replace_line(&expected, 0, "HAWDB_PROJECTED_GRAPHS_V0"),
-                replace_line(&expected, 1, "artifact_version\t2"),
+                replace_line(&expected, 1, "artifact_version\t3"),
                 replace_line(&expected, 2, "projection_epoch\t-1"),
                 replace_line(&expected, 3, "commit_epoch\t18446744073709551616"),
-                replace_graph_field(&expected, 4, &(count + 1).to_string()),
-                replace_graph_field(&expected, 5, &(edges.len() + 1).to_string()),
+                replace_graph_field(&expected, 5, &(count + 1).to_string()),
+                replace_graph_field(&expected, 6, &(edges.len() + 1).to_string()),
                 replace_line(&expected, 6, "csr_offsets\t1"),
                 replace_line(&expected, 8, "csc_offsets\t1"),
                 replace_line(&expected, 5, "nodes\t18446744073709551616"),
@@ -644,6 +699,7 @@ fn checkpoint_units_projected_definitions_preserve_large_unicode_and_empty_names
     let definition = ProjectedGraphDefinition {
         node_labels: vec![String::new(), name.clone(), "nul\0:tab\t".to_string()],
         rel_types: (0..4096).map(|index| format!("type-{index}")).collect(),
+        relationship_predicates: Default::default(),
     };
     let data = edge_bag_data(Vec::new(), &[]);
     let scheduler = checkpoint_unit_scheduler();
@@ -792,11 +848,13 @@ fn checkpoint_units_projected_text_boundaries_match_standard_splits() {
             );
         }
     }
-    let crlf = FIXTURE.replace('\n', "\r\n");
-    assert_eq!(
-        decode_projected_graph_artifacts_with_work_context(&crlf, &work).unwrap(),
-        decode_projected_graph_artifacts(FIXTURE).unwrap()
-    );
+    for fixture in [V1_FIXTURE, V2_FIXTURE] {
+        let crlf = fixture.replace('\n', "\r\n");
+        let (actual_epoch, actual) =
+            decode_projected_graph_artifacts_with_work_context(&crlf, &work).unwrap();
+        let (expected_epoch, expected) = decode_projected_graph_artifacts(fixture).unwrap();
+        assert_eq!((actual_epoch, &*actual), (expected_epoch, &expected));
+    }
     probe.assert_released(&scheduler);
 }
 

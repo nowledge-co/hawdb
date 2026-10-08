@@ -336,11 +336,22 @@ pub(crate) fn encode_checkpoint_body_with_work_context<'a>(
     }
     for (name, definition) in image.projected_graphs {
         body.write(format_args!(
-            "project_graph\t{}\t{}\t{}\n",
+            "project_graph\t{}\t{}\t{}\t",
             encode_string(name)?,
             encode_string_vec(&definition.node_labels)?,
             encode_string_vec(&definition.rel_types)?
         ))?;
+        crate::projection::predicate_checkpoint::encode_into(
+            &definition.relationship_predicates,
+            work,
+            |chunk| {
+                body.write(format_args!(
+                    "{}",
+                    std::str::from_utf8(chunk).expect("predicate text is ASCII")
+                ))
+            },
+        )?;
+        body.write(format_args!("\n"))?;
     }
     work.checkpoint().map_err(HawDBError::from_storage_error)?;
     Ok(body.output)

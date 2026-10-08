@@ -292,3 +292,9 @@ fn checkpoint_units_wal_payload_preserves_invalid_value_and_nested_batch_diagnos
         assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+mod predicate;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod predicate_related;

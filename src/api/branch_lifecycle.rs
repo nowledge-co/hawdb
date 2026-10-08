@@ -2534,6 +2534,31 @@ fn selector_matches(branch: &storage::BranchRecord, selector: &BranchSelector) -
     }
 }
 
+// Deleted receipts retain names but no longer reserve them. Preserve
+// historical lookup only when no current incarnation owns the name.
+pub(super) fn prefer_current_branch<T>(
+    matching: impl Iterator<Item = T>,
+    is_deleted: impl FnMut(&T) -> bool,
+) -> Option<T> {
+    matching.min_by_key(is_deleted)
+}
+
+fn resolve_branch_record<'a>(
+    catalog: &'a storage::Catalog,
+    selector: &BranchSelector,
+) -> Option<&'a storage::BranchRecord> {
+    let mut matching = catalog
+        .branches
+        .iter()
+        .filter(|branch| selector_matches(branch, selector));
+    match selector {
+        BranchSelector::Id(_) => matching.next(),
+        BranchSelector::Name(_) => prefer_current_branch(matching, |branch| {
+            branch.state == storage::BranchState::Deleted
+        }),
+    }
+}
+
 fn request_fingerprint(request: &BranchCreateRequest) -> [u8; 32] {
     let parent = match &request.parent {
         BranchSelector::Id(id) => ("id", id.to_string()),
@@ -2690,10 +2715,7 @@ impl Database {
                 .map_err(BranchLifecycleError::storage)?;
         }
         let catalog = self.read_branch_catalog()?;
-        let record = catalog
-            .branches
-            .iter()
-            .find(|record| selector_matches(record, &selector))
+        let record = resolve_branch_record(&catalog, &selector)
             .cloned()
             .ok_or(BranchLifecycleError::UnknownBranch)?;
         if record.state != storage::BranchState::Ready {
@@ -2994,17 +3016,8 @@ impl Database {
         selector: BranchSelector,
     ) -> Result<BranchInfo, BranchLifecycleError> {
         let catalog = self.read_branch_catalog()?;
-        let branch = match selector {
-            BranchSelector::Id(id) => catalog
-                .branches
-                .iter()
-                .find(|branch| branch.id.as_uuid() == id),
-            BranchSelector::Name(name) => catalog
-                .branches
-                .iter()
-                .find(|branch| branch.name.as_str() == name),
-        }
-        .ok_or(BranchLifecycleError::UnknownBranch)?;
+        let branch = resolve_branch_record(&catalog, &selector)
+            .ok_or(BranchLifecycleError::UnknownBranch)?;
         Ok(branch_info(branch))
     }
 
@@ -3044,10 +3057,7 @@ impl Database {
         self.ensure_branch_writable()?;
         let path = self.branch_catalog_path()?;
         let catalog = self.read_branch_catalog()?;
-        let branch = catalog
-            .branches
-            .iter()
-            .find(|branch| selector_matches(branch, &selector))
+        let branch = resolve_branch_record(&catalog, &selector)
             .cloned()
             .ok_or(BranchLifecycleError::UnknownBranch)?;
         if branch.name.as_str() == "main" {
@@ -3127,10 +3137,7 @@ impl Database {
             }
             None => storage::BranchName::generated_agent(branch_id),
         };
-        let parent = catalog
-            .branches
-            .iter()
-            .find(|branch| selector_matches(branch, &request.parent))
+        let parent = resolve_branch_record(&catalog, &request.parent)
             .ok_or(BranchLifecycleError::UnknownBranch)?;
         let create = storage::CreateRequest {
             id: branch_id,
@@ -3224,10 +3231,7 @@ impl Database {
                 }
             }
         }
-        let parent = catalog
-            .branches
-            .iter()
-            .find(|branch| selector_matches(branch, &request.parent))
+        let parent = resolve_branch_record(&catalog, &request.parent)
             .ok_or(BranchLifecycleError::UnknownBranch)?;
         if parent.state != storage::BranchState::Ready {
             return Err(BranchLifecycleError::Transition(

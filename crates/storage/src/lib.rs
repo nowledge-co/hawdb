@@ -16,6 +16,9 @@
 // after moving in: its sources predate the move and are kept verbatim.
 extern crate self as hawdb_storage;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod test_allocator;
+
 pub use hawdb_core::error::{HawDBError, Result};
 pub use hawdb_core::value::Value;
 
@@ -45,6 +48,8 @@ pub mod checkpoint;
 #[doc(hidden)]
 pub mod checkpoint_closure;
 pub mod column_group;
+#[doc(hidden)]
+pub mod compression;
 pub mod config;
 #[doc(hidden)]
 pub mod consistency;

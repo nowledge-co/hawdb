@@ -494,10 +494,13 @@ pub(crate) fn encode_checkpoint_body_with_changes<'a>(
     }
     for (name, definition) in image.projected_graphs {
         body.push_str(&format!(
-            "project_graph\t{}\t{}\t{}\n",
+            "project_graph\t{}\t{}\t{}\t{}\n",
             encode_string(name),
             encode_string_vec(&definition.node_labels),
-            encode_string_vec(&definition.rel_types)
+            encode_string_vec(&definition.rel_types),
+            crate::projection::encode_projected_relationship_predicates(
+                &definition.relationship_predicates
+            )
         ));
     }
     Ok(body)
@@ -1163,6 +1166,21 @@ pub fn parse_checkpoint(
                     ProjectedGraphDefinition {
                         node_labels: decode_string_vec(raw_node_labels)?,
                         rel_types: decode_string_vec(raw_rel_types)?,
+                        relationship_predicates: BTreeMap::new(),
+                    },
+                );
+            }
+            ["project_graph", raw_name, raw_node_labels, raw_rel_types, raw_relationship_predicates] =>
+            {
+                state.projected_graphs.insert(
+                    decode_string(raw_name)?,
+                    ProjectedGraphDefinition {
+                        node_labels: decode_string_vec(raw_node_labels)?,
+                        rel_types: decode_string_vec(raw_rel_types)?,
+                        relationship_predicates:
+                            crate::projection::decode_projected_relationship_predicates(
+                                raw_relationship_predicates,
+                            )?,
                     },
                 );
             }

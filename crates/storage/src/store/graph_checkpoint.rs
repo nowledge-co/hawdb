@@ -553,7 +553,10 @@ impl GraphStore {
             }
         };
         let (projected_graph_artifacts, artifacts) = if checkpoint_out_of_core {
-            (None, BTreeMap::new())
+            (
+                None,
+                crate::projection::artifact::CheckpointProjectedGraphRoot::empty(work)?,
+            )
         } else {
             let encoded = encode_projected_graph_artifacts_with_work_context(
                 catalog,
@@ -564,7 +567,7 @@ impl GraphStore {
             let (_, artifacts) = hawdb_storage::projection::artifact::decode_projected_graph_artifacts_with_work_context(
                 &encoded, work,
             )?;
-            (Some(encoded), artifacts)
+            (Some(encoded), artifacts.into_root(work)?)
         };
         let source_scan_projection = (!checkpoint_out_of_core)
             .then(|| {
@@ -1130,7 +1133,7 @@ impl GraphStore {
                 source_wal_bytes: durable.wal_bytes,
                 generation,
                 checkpoint_out_of_core,
-                projected_graph_artifacts: artifacts,
+                projected_graph_artifacts: Some(artifacts),
                 publish_projected_graph_artifacts: projected_graph_artifacts.is_some(),
                 source_scan_publication,
                 checkpoint_statistics: CheckpointStatisticsState::with_work_context(
@@ -1330,7 +1333,9 @@ impl GraphStore {
         prepared: &mut PreparedCheckpoint,
     ) -> Result<()> {
         self.projected_graph_artifacts =
-            std::mem::take(&mut prepared.projected_graph_artifacts).into();
+            prepared.projected_graph_artifacts.take().ok_or_else(|| {
+                HawDBError::Storage("prepared projection root was already adopted".into())
+            })?;
         self.checkpoint_statistics = prepared.checkpoint_statistics.clone();
         if let Some(relational_state) = prepared.checkpoint_relational_state.take() {
             self.relational_state = relational_state;

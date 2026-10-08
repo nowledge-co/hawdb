@@ -22,6 +22,13 @@ use super::*;
 use crate::background::{CheckpointOperationError, CheckpointWorkContext, CheckpointWorkError};
 
 mod map_memory;
+use crate::projection::predicate_checkpoint::decode as predicate;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod predicate_memory_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod predicate_related_tests;
 
 #[cfg(test)]
 mod tests;
@@ -94,32 +101,7 @@ pub(crate) fn decode_binary_wal_record_with_work_context(
     }
 }
 
-struct DecodeContext {
-    work: CheckpointWorkContext,
-    memory: std::cell::RefCell<crate::background::CheckpointAllocationOwner>,
-}
-
-impl std::ops::Deref for DecodeContext {
-    type Target = CheckpointWorkContext;
-    fn deref(&self) -> &Self::Target {
-        &self.work
-    }
-}
-
-impl DecodeContext {
-    fn reserve(&self, bytes: usize) -> Result<crate::background::CheckpointAllocationToken> {
-        self.memory
-            .borrow_mut()
-            .reserve(bytes, self)
-            .map_err(HawDBError::from_storage_error)
-    }
-    fn find(&self, address: usize) -> Result<crate::background::CheckpointAllocationToken> {
-        self.memory
-            .borrow()
-            .find(address, self)
-            .map_err(HawDBError::from_storage_error)
-    }
-}
+type DecodeContext = crate::background::CheckpointDecodeContext;
 
 fn allocation(error: impl std::fmt::Display, bytes: usize, work: &DecodeContext) -> HawDBError {
     HawDBError::from_storage_error(work.record_failure(CheckpointWorkError::Allocation {
@@ -385,6 +367,24 @@ impl<'a, 'w> OpFields<'a, 'w> {
             }
         }
         Ok(out)
+    }
+    fn unique_borrowed_string(&self, id: u32, duplicate: &str) -> Result<Option<&'a str>> {
+        let mut output = None;
+        let mut fields = self.iter();
+        while let Some(field) = fields.next()? {
+            if let Field::String(found, bytes) = field
+                && found == id
+            {
+                if output.is_some() {
+                    return Err(HawDBError::Storage(duplicate.to_string()));
+                }
+                // SAFETY: OpFields::parse validated every string field with
+                // visit_utf8 in bounded chunks. This borrows the same immutable
+                // record bytes and does not validate or copy the whole field.
+                output = Some(unsafe { std::str::from_utf8_unchecked(bytes) });
+            }
+        }
+        Ok(output)
     }
     fn required_varint(&self, id: u32, name: &str) -> Result<u64> {
         let mut fields = self.iter();
@@ -797,11 +797,20 @@ fn decode_op_body(op_code: u64, body: &[u8], work: &DecodeContext) -> Result<Wal
             })
         }
         OP_PROJECT_GRAPH => {
-            let fields = OpFields::parse(body, &[1, 2, 3], &[], work)?;
+            let fields = OpFields::parse(body, &[1, 2, 3, 4], &[], work)?;
+            let encoded_predicates = fields.unique_borrowed_string(
+                4,
+                "projected graph WAL has duplicate relationship predicate fields",
+            )?;
+            let relationship_predicates = encoded_predicates
+                .map(|encoded| predicate::decode(encoded, work))
+                .transpose()?
+                .unwrap_or_default();
             Ok(WalOp::ProjectGraph {
                 name: fields.required_string(1, "projected graph name")?,
                 node_labels: fields.strings_for(2)?,
                 rel_types: fields.strings_for(3)?,
+                relationship_predicates,
             })
         }
         OP_MARK_INITIAL_IMPORT_SOURCE => {

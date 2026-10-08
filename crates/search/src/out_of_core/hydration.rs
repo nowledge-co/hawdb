@@ -279,7 +279,7 @@ fn read_envelope<T>(
         )?;
         read_inflated(decoder, expected_len, select)
     } else {
-        let decoder = zstd::stream::read::Decoder::with_buffer(compressed_input)?;
+        let decoder = hawdb_storage::compression::Decoder::with_buffer(compressed_input)?;
         read_inflated(decoder, expected_len, select)
     };
     if let Some(admission) = admission {

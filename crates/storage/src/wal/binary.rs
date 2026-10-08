@@ -72,7 +72,7 @@
 //! | 21   | SetRelationshipProperty                   | 1 id:varint, 2 property:str, 3 value:msg                               |
 //! | 22   | DeleteNode                                | 1 id:varint                                                            |
 //! | 23   | DeleteRelationship                        | 1 id:varint                                                            |
-//! | 24   | ProjectGraph                              | 1 name:str, 2 node_label:str (repeated), 3 rel_type:str (repeated)     |
+//! | 24   | ProjectGraph                              | 1 name:str, 2 node_label:str (repeated), 3 rel_type:str (repeated), 4 relationship_predicates:str |
 //! | 25   | MarkInitialImportSource                   | 1 source_fingerprint:str                                               |
 //! | 26   | Relational                                | 1 record:bytes                                                         |
 //! | 27   | RelationalSnapshot                        | 1 record:bytes                                                         |
@@ -657,6 +657,7 @@ fn encode_op_body(op: &WalOp) -> Result<(u64, Vec<u8>)> {
             name,
             node_labels,
             rel_types,
+            relationship_predicates,
         } => {
             encode_string_field(1, name, &mut body);
             for label in node_labels {
@@ -665,6 +666,13 @@ fn encode_op_body(op: &WalOp) -> Result<(u64, Vec<u8>)> {
             for rel_type in rel_types {
                 encode_string_field(3, rel_type, &mut body);
             }
+            encode_string_field(
+                4,
+                &crate::projection::encode_projected_relationship_predicates(
+                    relationship_predicates,
+                ),
+                &mut body,
+            );
             OP_PROJECT_GRAPH
         }
         WalOp::MarkInitialImportSource { source_fingerprint } => {
@@ -957,11 +965,23 @@ fn decode_op_body(op_code: u64, body: &[u8]) -> Result<WalOp> {
             })
         }
         OP_PROJECT_GRAPH => {
-            let mut fields = OpFields::parse(body, &[1, 2, 3], &[])?;
+            let mut fields = OpFields::parse(body, &[1, 2, 3, 4], &[])?;
+            let encoded_predicates = fields.strings_for(4);
+            let relationship_predicates = match encoded_predicates.as_slice() {
+                [] => BTreeMap::new(),
+                [encoded] => crate::projection::decode_projected_relationship_predicates(encoded)?,
+                _ => {
+                    return Err(HawDBError::Storage(
+                        "projected graph WAL has duplicate relationship predicate fields"
+                            .to_string(),
+                    ));
+                }
+            };
             Ok(WalOp::ProjectGraph {
                 name: fields.required_string(1, "projected graph name")?,
                 node_labels: fields.strings_for(2),
                 rel_types: fields.strings_for(3),
+                relationship_predicates,
             })
         }
         OP_MARK_INITIAL_IMPORT_SOURCE => {
@@ -1351,7 +1371,14 @@ mod tests {
         samples.push(WalOp::ProjectGraph {
             name: "mem".to_string(),
             node_labels: vec!["Memory".to_string(), "Entity".to_string()],
-            rel_types: Vec::new(),
+            rel_types: vec!["RELATES_TO".to_string()],
+            relationship_predicates: BTreeMap::from([(
+                "RELATES_TO".to_string(),
+                crate::projection::ProjectedRelationshipPredicate::Gte {
+                    property: "confidence".to_string(),
+                    value: Value::Float(0.7),
+                },
+            )]),
         });
         samples.push(WalOp::MarkInitialImportSource {
             source_fingerprint: "sha256:abcdef".to_string(),

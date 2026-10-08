@@ -15,7 +15,7 @@
 use super::*;
 use crate::{
     GraphAnalyticsAlgorithm, GraphAnalyticsFreshness, GraphAnalyticsRequest, LouvainOptions,
-    PageRankOptions,
+    LouvainProcedureOptions, PageRankOptions, PageRankProcedureOptions,
 };
 use std::num::NonZeroUsize;
 
@@ -38,6 +38,91 @@ fn fixture(db: &mut Database) {
 
 fn ranks(db: &mut Database) -> Vec<BTreeMap<String, Value>> {
     db.query("MATCH (n:Memory) RETURN n.id AS id, n.rank AS rank, n.rank_computed_at_commit_epoch AS source, n.rank_published_at_commit_epoch AS published ORDER BY n.id").unwrap().rows.into_rows()
+}
+
+#[test]
+fn typed_analytics_binds_nondefault_options_like_ordinary_calls() {
+    for (algorithm, query, column) in [
+        (
+            GraphAnalyticsAlgorithm::PageRankProcedure(PageRankProcedureOptions {
+                iterations: 8,
+                damping: 0.4,
+                tolerance: 50.0,
+                normalize_initial: false,
+            }),
+            "CALL page_rank('graph', maxIterations := 8, dampingFactor := 0.4, tolerance := 50.0, normalizeInitial := false) RETURN node, pagerank_score",
+            "pagerank_score",
+        ),
+        (
+            GraphAnalyticsAlgorithm::LouvainProcedure(LouvainProcedureOptions {
+                hierarchy: true,
+                max_iterations: 3,
+                max_levels: 2,
+                resolution: 5.0,
+            }),
+            "CALL louvain('graph', maxIterations := 3, maxLevels := 2, resolution := 5.0) RETURN node, level, louvain_id",
+            "louvain_id",
+        ),
+    ] {
+        let mut db = Database::new();
+        fixture(&mut db);
+        let ordinary = db.query(query).unwrap();
+        let mut expected = BTreeMap::new();
+        for row in &ordinary.rows {
+            let Value::Int(node) = row["node"] else { panic!("invalid node") };
+            let level = row.get("level").cloned().unwrap_or(Value::Int(0));
+            let Value::Int(level) = level else { panic!("invalid level") };
+            let entry = expected.entry(node).or_insert((level, row[column].clone()));
+            if level > entry.0 { *entry = (level, row[column].clone()); }
+        }
+        let prepared = db.prepare_graph_analytics(request(algorithm), None).unwrap();
+        assert_eq!(prepared.execution_report().output_rows, ordinary.rows.len());
+        db.publish_graph_analytics(&prepared, "rank", None).unwrap();
+        let published = db.query("MATCH (n:Memory) RETURN id(n) AS node, n.rank AS value").unwrap();
+        assert_eq!(published.rows.len(), expected.len());
+        for row in &published.rows {
+            let Value::Int(node) = row["node"] else { panic!("invalid node") };
+            assert_eq!(row["value"], expected[&node].1);
+        }
+    }
+}
+
+#[test]
+fn typed_analytics_rejects_invalid_options_before_staging() {
+    let mut db = Database::new();
+    fixture(&mut db);
+    let epoch = db.commit_epoch().unwrap();
+    for (algorithm, message) in [
+        (
+            GraphAnalyticsAlgorithm::PageRank(PageRankOptions {
+                damping: 1.0,
+                ..PageRankOptions::default()
+            }),
+            "damping",
+        ),
+        (
+            GraphAnalyticsAlgorithm::PageRankProcedure(PageRankProcedureOptions {
+                tolerance: f64::NAN,
+                ..PageRankProcedureOptions::default()
+            }),
+            "tolerance",
+        ),
+        (
+            GraphAnalyticsAlgorithm::LouvainProcedure(LouvainProcedureOptions {
+                resolution: 0.0,
+                ..LouvainProcedureOptions::default()
+            }),
+            "resolution",
+        ),
+    ] {
+        assert!(db
+            .prepare_graph_analytics(request(algorithm), None)
+            .unwrap_err()
+            .to_string()
+            .contains(message));
+        assert_eq!(db.commit_epoch().unwrap(), epoch);
+        assert_eq!(ranks(&mut db)[0]["rank"], Value::Int(-1));
+    }
 }
 
 #[test]
@@ -122,7 +207,7 @@ fn louvain_publication_writes_only_the_highest_level_per_original_node() {
     db.query("CALL project_graph('graph', ['Memory'], ['LINK'])")
         .unwrap();
     let hierarchy = db
-        .query("CALL louvain('graph', maxIterations := 20, maxLevels := 3) RETURN node, level, louvain_id")
+        .query("CALL louvain('graph', maxIterations := 20, maxLevels := 3, resolution := 0.1) RETURN node, level, louvain_id")
         .unwrap();
     let mut expected = BTreeMap::new();
     let mut initial = BTreeMap::new();
@@ -145,10 +230,14 @@ fn louvain_publication_writes_only_the_highest_level_per_original_node() {
     assert!(expected
         .iter()
         .any(|(node, (_, value))| initial[node] != *value));
-    let mut options = request(GraphAnalyticsAlgorithm::Louvain(LouvainOptions {
-        max_iterations: 20,
-        max_levels: 3,
-    }));
+    let mut options = request(GraphAnalyticsAlgorithm::LouvainProcedure(
+        LouvainProcedureOptions {
+            max_iterations: 20,
+            max_levels: 3,
+            resolution: 0.1,
+            hierarchy: true,
+        },
+    ));
     // Raw hierarchy output remains bounded; retained state fits only eight rows.
     options.max_rows = NonZeroUsize::new(hierarchy.rows.len()).unwrap();
     options.max_staged_bytes = NonZeroUsize::new(1024 + 128 * 8).unwrap();
@@ -518,7 +607,7 @@ fn rss_child() {
     let mut records = Vec::new();
     for (algorithm, columns, count) in [
         ("page_rank", "node, pagerank_score", 128),
-        ("louvain", "node, level, louvain_id", 256),
+        ("louvain", "node, level, louvain_id", 128),
     ] {
         let bytes_before = db
             .storage_residency_report()
@@ -630,4 +719,460 @@ fn persistent_edges_stream_with_bounded_rss_in_an_isolated_process() {
     let evidence = std::fs::read_to_string(path.join("analytics-rss.json")).unwrap();
     eprintln!("persistent-analytics-rss {evidence}");
     std::fs::remove_dir_all(path).unwrap();
+}
+
+fn runtime_admission_governor(
+    memory_bytes: u64,
+    policy: Option<hawdb_qos::ProcessMemoryPolicy>,
+) -> hawdb_qos::RuntimeGovernor {
+    let config = hawdb_qos::RuntimeGovernorConfig {
+        memory_budget_bytes: Some(memory_bytes),
+        background_task_limit: NonZeroUsize::new(1),
+        ..hawdb_qos::RuntimeGovernorConfig::shared_host()
+    };
+    let resources = hawdb_qos::RuntimeResourceSnapshot::from_parts(
+        hawdb_qos::RuntimeResourceBudget::from_limits(NonZeroUsize::new(8).unwrap(), None, None),
+        hawdb_qos::RuntimeMemorySnapshot::from_limits(
+            Some(8 << 30),
+            Some(8 << 30),
+            None,
+            None,
+            None,
+        ),
+    );
+    match policy {
+        Some(policy) => hawdb_qos::RuntimeGovernor::new_with_process_memory_policy(
+            config,
+            resources,
+            hawdb_qos::IoConcurrencyBudget::new(8, 2),
+            policy,
+        ),
+        None => hawdb_qos::RuntimeGovernor::new(
+            config,
+            resources,
+            hawdb_qos::IoConcurrencyBudget::new(8, 2),
+        ),
+    }
+}
+
+fn assert_runtime_idle(governor: &hawdb_qos::RuntimeGovernor, retained_bytes: u64) {
+    let snapshot = governor.snapshot();
+    assert_eq!(snapshot.active_foreground_tasks, 0);
+    assert_eq!(snapshot.active_background_tasks, 0);
+    assert_eq!(snapshot.active_blocking_tasks, 0);
+    assert_eq!(snapshot.active_cpu_slots, 0);
+    assert_eq!(snapshot.active_foreground_io_slots, 0);
+    assert_eq!(snapshot.active_background_io_slots, 0);
+    assert_eq!(snapshot.queued_admission_waiters, 0);
+    assert_eq!(snapshot.admitted_memory_bytes, retained_bytes);
+    assert_eq!(snapshot.admissions, snapshot.completions);
+}
+
+#[test]
+fn runtime_admission_rejects_staging_larger_than_the_complete_caller_budget() {
+    let mut db = Database::new();
+    fixture(&mut db);
+    let before = ranks(&mut db);
+    let epoch = db.commit_epoch().unwrap();
+    let context = hawdb_core::RuntimeTaskContext::default().with_memory_reservation(
+        hawdb_core::RuntimeMemoryReservation::new(32 * 1024 * 1024, 64 * 1024),
+    );
+    let mut options = request(GraphAnalyticsAlgorithm::PageRank(PageRankOptions::default()));
+    options.max_staged_bytes = NonZeroUsize::new(64 * 1024 * 1024).unwrap();
+    assert!(db.prepare_graph_analytics(options, Some(&context)).is_err());
+    assert_eq!(ranks(&mut db), before);
+    assert_eq!(db.commit_epoch().unwrap(), epoch);
+}
+
+#[test]
+fn runtime_admission_query_and_staging_share_the_caller_budget() {
+    let mut db = Database::new();
+    fixture(&mut db);
+    let epoch = db.commit_epoch().unwrap();
+    let caller_bytes = 64 * 1024 * 1024;
+    let staged_bytes = 32 * 1024 * 1024;
+    let context = hawdb_core::RuntimeTaskContext::default().with_memory_reservation(
+        hawdb_core::RuntimeMemoryReservation::new(caller_bytes, 64 * 1024),
+    );
+    let mut options = request(GraphAnalyticsAlgorithm::PageRank(PageRankOptions::default()));
+    options.max_staged_bytes = NonZeroUsize::new(staged_bytes).unwrap();
+    let prepared = db.prepare_graph_analytics(options, Some(&context)).unwrap();
+    let report = &prepared
+        .execution_report()
+        .execution_profile
+        .pipeline_memory_report;
+    assert_eq!(prepared.row_count(), 2);
+    assert!(report.query_memory_budget_bytes as u64 + staged_bytes as u64 <= caller_bytes);
+    assert_eq!(db.commit_epoch().unwrap(), epoch);
+}
+
+#[test]
+fn runtime_admission_larger_caller_reservation_keeps_the_configured_budget() {
+    let mut db = Database::new();
+    fixture(&mut db);
+    let configured_bytes = db.config.execution_memory.query_memory_bytes.get();
+    let context = hawdb_core::RuntimeTaskContext::default().with_memory_reservation(
+        hawdb_core::RuntimeMemoryReservation::new(512 * 1024 * 1024, 64 * 1024),
+    );
+    let options = request(GraphAnalyticsAlgorithm::PageRank(PageRankOptions::default()));
+    let staged_bytes = options.max_staged_bytes.get();
+    let prepared = db.prepare_graph_analytics(options, Some(&context)).unwrap();
+    let report = &prepared
+        .execution_report()
+        .execution_profile
+        .pipeline_memory_report;
+    assert!(report.query_memory_budget_bytes + staged_bytes <= configured_bytes);
+}
+
+#[test]
+fn runtime_admission_busy_background_slot_rejects_preparation() {
+    let mut db = Database::new();
+    fixture(&mut db);
+    let before = ranks(&mut db);
+    let epoch = db.commit_epoch().unwrap();
+    let governor = runtime_admission_governor(512 * 1024 * 1024, None);
+    db.set_runtime_governor(governor.clone());
+    let held = governor
+        .try_admit(hawdb_qos::RuntimeWorkRequest::background_maintenance(1024))
+        .unwrap();
+    assert!(db
+        .prepare_graph_analytics(
+            request(GraphAnalyticsAlgorithm::PageRank(PageRankOptions::default())),
+            None,
+        )
+        .is_err());
+    assert_eq!(governor.snapshot().active_background_tasks, 1);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 1024);
+    assert_eq!(ranks(&mut db), before);
+    assert_eq!(db.commit_epoch().unwrap(), epoch);
+    drop(held);
+    assert_runtime_idle(&governor, 0);
+}
+
+#[test]
+fn runtime_admission_retained_results_release_slots_and_bound_multiple_preparations() {
+    let mut config = DatabaseConfig::default();
+    config.execution_memory.query_memory_bytes = NonZeroUsize::new(32 * 1024 * 1024).unwrap();
+    let mut db = Database::new_with_config(config);
+    fixture(&mut db);
+    let epoch = db.commit_epoch().unwrap();
+    let staging_bytes = 16 * 1024 * 1024;
+    let governor = runtime_admission_governor(32 * 1024 * 1024 + 64 * 1024, None);
+    db.set_runtime_governor(governor.clone());
+    let mut options = request(GraphAnalyticsAlgorithm::PageRank(PageRankOptions::default()));
+    options.max_staged_bytes = NonZeroUsize::new(staging_bytes).unwrap();
+    let first = db.prepare_graph_analytics(options.clone(), None).unwrap();
+    assert_runtime_idle(&governor, staging_bytes as u64);
+    assert_eq!(governor.snapshot().admissions, 1);
+    assert!(db.prepare_graph_analytics(options.clone(), None).is_err());
+    assert_runtime_idle(&governor, staging_bytes as u64);
+    assert_eq!(first.row_count(), 2);
+    assert_eq!(db.commit_epoch().unwrap(), epoch);
+    drop(first);
+    assert_runtime_idle(&governor, 0);
+    let next = db.prepare_graph_analytics(options, None).unwrap();
+    assert_runtime_idle(&governor, staging_bytes as u64);
+    drop(next);
+    assert_runtime_idle(&governor, 0);
+}
+
+#[test]
+fn runtime_admission_busy_publication_preserves_values_epochs_and_wal_in_both_residencies() {
+    for residency in [
+        crate::StorageResidencyMode::Materialized,
+        crate::StorageResidencyMode::OutOfCore,
+    ] {
+        let path = unique_test_dir("analytics_runtime_admission");
+        let config = DatabaseConfig {
+            storage_residency_mode: residency,
+            ..DatabaseConfig::default()
+        };
+        let mut db = Database::open_with_config(&path, config.clone()).unwrap();
+        fixture(&mut db);
+        db.checkpoint().unwrap();
+        drop(db);
+        let mut db = Database::open_with_config(&path, config).unwrap();
+        assert_eq!(
+            db.storage_residency_report().unwrap().out_of_core,
+            residency == crate::StorageResidencyMode::OutOfCore,
+        );
+        let before = ranks(&mut db);
+        let epoch = db.commit_epoch().unwrap();
+        let wal = std::fs::read(active_wal_path(&path)).unwrap();
+        let governor = runtime_admission_governor(512 * 1024 * 1024, None);
+        db.set_runtime_governor(governor.clone());
+        let prepared = db
+            .prepare_graph_analytics(
+                request(GraphAnalyticsAlgorithm::PageRank(PageRankOptions::default())),
+                None,
+            )
+            .unwrap();
+        let held = governor
+            .try_admit(hawdb_qos::RuntimeWorkRequest::background_maintenance(1024))
+            .unwrap();
+        assert!(db.publish_graph_analytics(&prepared, "rank", None).is_err());
+        assert_eq!(ranks(&mut db), before);
+        assert_eq!(db.commit_epoch().unwrap(), epoch);
+        assert_eq!(std::fs::read(active_wal_path(&path)).unwrap(), wal);
+        assert_eq!(
+            db.graph_analytics_publication_status("graph", "rank")
+                .unwrap()
+                .freshness,
+            GraphAnalyticsFreshness::Unavailable
+        );
+        drop(held);
+        assert_runtime_idle(&governor, 32 * 1024);
+        let admissions = governor.snapshot().admissions;
+        let published = db.publish_graph_analytics(&prepared, "rank", None).unwrap();
+        assert_eq!(published.freshness, GraphAnalyticsFreshness::Fresh);
+        assert_runtime_idle(&governor, 32 * 1024);
+        assert_eq!(governor.snapshot().admissions, admissions + 1);
+        let values = ranks(&mut db);
+        assert!(values
+            .iter()
+            .all(|row| matches!(row["rank"], Value::Float(_))));
+        drop(prepared);
+        assert_runtime_idle(&governor, 0);
+        drop(db);
+        let mut reopened = Database::open_with_config(
+            &path,
+            DatabaseConfig {
+                read_only: true,
+                storage_residency_mode: residency,
+                ..DatabaseConfig::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            reopened.storage_residency_report().unwrap().out_of_core,
+            residency == crate::StorageResidencyMode::OutOfCore,
+        );
+        assert_eq!(ranks(&mut reopened), values);
+        assert_eq!(
+            reopened
+                .graph_analytics_publication_status("graph", "rank")
+                .unwrap(),
+            published
+        );
+        drop(reopened);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[test]
+fn runtime_admission_failure_and_parent_controls_do_not_leak_resources() {
+    let mut db = Database::new();
+    fixture(&mut db);
+    let before = ranks(&mut db);
+    let epoch = db.commit_epoch().unwrap();
+    let governor = runtime_admission_governor(512 * 1024 * 1024, None);
+    db.set_runtime_governor(governor.clone());
+    for bound in 0..3 {
+        let mut options = request(GraphAnalyticsAlgorithm::PageRank(PageRankOptions::default()));
+        match bound {
+            0 => options.max_rows = NonZeroUsize::MIN,
+            1 => options.max_payload_bytes = NonZeroUsize::MIN,
+            _ => options.max_staged_bytes = NonZeroUsize::new(1024).unwrap(),
+        }
+        let admissions = governor.snapshot().admissions;
+        assert!(db.prepare_graph_analytics(options, None).is_err());
+        assert_runtime_idle(&governor, 0);
+        assert_eq!(governor.snapshot().admissions, admissions + 1);
+    }
+    let cancellation = hawdb_core::RuntimeCancellationToken::new();
+    cancellation.cancel();
+    for context in [
+        hawdb_core::RuntimeTaskContext::without_deadline(cancellation),
+        hawdb_core::RuntimeTaskContext::with_timeout(std::time::Duration::ZERO),
+        hawdb_core::RuntimeTaskContext::default().with_memory_reservation(
+            hawdb_core::RuntimeMemoryReservation::new(32 * 1024 * 1024, 0),
+        ),
+    ] {
+        assert!(db
+            .prepare_graph_analytics(
+                request(GraphAnalyticsAlgorithm::PageRank(PageRankOptions::default())),
+                Some(&context),
+            )
+            .is_err());
+        assert_runtime_idle(&governor, 0);
+    }
+    assert_eq!(ranks(&mut db), before);
+    assert_eq!(db.commit_epoch().unwrap(), epoch);
+}
+
+#[test]
+fn runtime_admission_retained_results_remain_charged_to_the_shared_process_policy() {
+    let policy = hawdb_qos::ProcessMemoryPolicy::new(hawdb_qos::ProcessMemoryPolicyConfig::new(
+        std::num::NonZeroU64::new(512 * 1024 * 1024).unwrap(),
+    ));
+    policy.update(hawdb_qos::ProcessMemorySnapshot {
+        capabilities: hawdb_qos::ProcessMemoryCapabilities {
+            resident_memory: true,
+            ..Default::default()
+        },
+        resident_bytes: 1024,
+        peak_resident_bytes: 1024,
+        total_page_faults: None,
+        minor_page_faults: None,
+        major_page_faults: None,
+    });
+    let governor = runtime_admission_governor(512 * 1024 * 1024, Some(policy.clone()));
+    let mut db = Database::new();
+    fixture(&mut db);
+    db.set_runtime_governor(governor.clone());
+    let options = request(GraphAnalyticsAlgorithm::PageRank(PageRankOptions::default()));
+    let prepared = db.prepare_graph_analytics(options.clone(), None).unwrap();
+    assert_eq!(policy.snapshot().unobserved_reserved_bytes, 32 * 1024);
+    assert_runtime_idle(&governor, 32 * 1024);
+    policy.clear_sample();
+    assert!(db.prepare_graph_analytics(options, None).is_err());
+    assert_runtime_idle(&governor, 32 * 1024);
+    drop(prepared);
+    assert_eq!(policy.snapshot().unobserved_reserved_bytes, 0);
+    assert_runtime_idle(&governor, 0);
+}
+
+fn runtime_admission_busy_resource(kind: u8, code: &str) {
+    let mut db = Database::new();
+    fixture(&mut db);
+    let before = ranks(&mut db);
+    let epoch = db.commit_epoch().unwrap();
+    let governor = runtime_admission_governor(512 * 1024 * 1024, None);
+    let governor = if kind == 1 {
+        hawdb_qos::RuntimeGovernor::new(
+            hawdb_qos::RuntimeGovernorConfig {
+                memory_budget_bytes: Some(512 * 1024 * 1024),
+                background_task_limit: NonZeroUsize::new(2),
+                ..hawdb_qos::RuntimeGovernorConfig::shared_host()
+            },
+            governor.snapshot().resources,
+            hawdb_qos::IoConcurrencyBudget::new(8, 2),
+        )
+    } else {
+        governor
+    };
+    db.set_runtime_governor(governor.clone());
+    let options = request(GraphAnalyticsAlgorithm::PageRank(PageRankOptions::default()));
+    let prepared = db.prepare_graph_analytics(options.clone(), None).unwrap();
+    let limits = governor.snapshot().limits;
+    let (count, held_request) = match kind {
+        0 => (
+            1,
+            hawdb_qos::RuntimeWorkRequest::foreground_query(0, 0)
+                .with_cpu_slots(limits.effective_cpu_slots.get())
+                .with_blocking(false),
+        ),
+        1 => (
+            1,
+            hawdb_qos::RuntimeWorkRequest::io(
+                hawdb_qos::RuntimeWorkPriority::Background,
+                limits.background_io_depth.get(),
+                0,
+            ),
+        ),
+        _ => (
+            limits.blocking_task_limit.get(),
+            hawdb_qos::RuntimeWorkRequest::foreground_query(0, 0).with_cpu_slots(0),
+        ),
+    };
+    let held: Vec<_> = (0..count)
+        .map(|_| governor.try_admit(held_request).unwrap())
+        .collect();
+    let busy = governor.snapshot();
+    assert!(db
+        .prepare_graph_analytics(options, None)
+        .unwrap_err()
+        .to_string()
+        .contains(code));
+    assert!(db
+        .publish_graph_analytics(&prepared, "rank", None)
+        .unwrap_err()
+        .to_string()
+        .contains(code));
+    let rejected = governor.snapshot();
+    assert_eq!(
+        rejected.active_foreground_tasks,
+        busy.active_foreground_tasks
+    );
+    assert_eq!(
+        rejected.active_background_tasks,
+        busy.active_background_tasks
+    );
+    assert_eq!(rejected.active_blocking_tasks, busy.active_blocking_tasks);
+    assert_eq!(rejected.active_cpu_slots, busy.active_cpu_slots);
+    assert_eq!(
+        rejected.active_foreground_io_slots,
+        busy.active_foreground_io_slots
+    );
+    assert_eq!(
+        rejected.active_background_io_slots,
+        busy.active_background_io_slots
+    );
+    assert_eq!(rejected.admitted_memory_bytes, busy.admitted_memory_bytes);
+    assert_eq!(rejected.admissions, busy.admissions);
+    assert_eq!(rejected.completions, busy.completions);
+    assert_eq!(ranks(&mut db), before);
+    assert_eq!(db.commit_epoch().unwrap(), epoch);
+    drop(held);
+    assert_runtime_idle(&governor, 32 * 1024);
+    drop(prepared);
+    assert_runtime_idle(&governor, 0);
+}
+
+#[test]
+fn runtime_admission_busy_cpu_rejects_both_phases_without_revoking_foreground_work() {
+    runtime_admission_busy_resource(0, "cpu_saturated");
+}
+
+#[test]
+fn runtime_admission_busy_background_io_rejects_both_phases_without_revoking_existing_work() {
+    runtime_admission_busy_resource(1, "io_saturated");
+}
+
+#[test]
+fn runtime_admission_busy_blocking_pool_rejects_both_phases_without_revoking_foreground_work() {
+    runtime_admission_busy_resource(2, "blocking_task_saturated");
+}
+
+#[test]
+fn runtime_admission_publication_checks_the_complete_caller_budget_before_mutation() {
+    for governed in [false, true] {
+        let mut db = Database::new();
+        fixture(&mut db);
+        let governor = runtime_admission_governor(512 * 1024 * 1024, None);
+        if governed {
+            db.set_runtime_governor(governor.clone());
+        }
+        let prepared = db
+            .prepare_graph_analytics(
+                request(GraphAnalyticsAlgorithm::PageRank(PageRankOptions::default())),
+                None,
+            )
+            .unwrap();
+        let before = ranks(&mut db);
+        let epoch = db.commit_epoch().unwrap();
+        let context = hawdb_core::RuntimeTaskContext::default().with_memory_reservation(
+            hawdb_core::RuntimeMemoryReservation::new(32 * 1024 * 1024, 64 * 1024),
+        );
+        assert!(db
+            .publish_graph_analytics(&prepared, "rank", Some(&context))
+            .unwrap_err()
+            .to_string()
+            .contains("caller memory reservation"));
+        assert_eq!(ranks(&mut db), before);
+        assert_eq!(db.commit_epoch().unwrap(), epoch);
+        assert_runtime_idle(&governor, if governed { 32 * 1024 } else { 0 });
+        let context = hawdb_core::RuntimeTaskContext::default().with_memory_reservation(
+            hawdb_core::RuntimeMemoryReservation::new(256 * 1024 * 1024, 64 * 1024),
+        );
+        assert_eq!(
+            db.publish_graph_analytics(&prepared, "rank", Some(&context))
+                .unwrap()
+                .freshness,
+            GraphAnalyticsFreshness::Fresh
+        );
+        assert_runtime_idle(&governor, if governed { 32 * 1024 } else { 0 });
+        drop(prepared);
+        assert_runtime_idle(&governor, 0);
+    }
 }

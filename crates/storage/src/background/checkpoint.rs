@@ -353,3 +353,6 @@ pub(crate) mod tests {
         }
     }
 }
+
+mod decode;
+pub(crate) use decode::{allocation as checkpoint_decode_allocation, CheckpointDecodeContext};

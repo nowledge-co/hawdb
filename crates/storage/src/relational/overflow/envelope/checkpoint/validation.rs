@@ -59,7 +59,7 @@ pub(crate) fn validate_overflow_envelope_with_work_context(
         OVERFLOW_CODEC_ZSTD => {
             let unit = work.start_unit().map_err(work_error)?;
             let decoder =
-                zstd::stream::read::Decoder::new(Cursor::new(payload)).map_err(|error| {
+                crate::compression::Decoder::new(Cursor::new(payload)).map_err(|error| {
                     RelationalError::Corruption(format!(
                         "failed to initialize overflow decoder: {error}"
                     ))

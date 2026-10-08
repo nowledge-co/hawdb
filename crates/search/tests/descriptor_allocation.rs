@@ -61,14 +61,18 @@ fn round_trip(bytes: usize, report: bool) -> usize {
 #[test]
 fn generation_descriptor_avoids_materializing_hex_dictionary() {
     // Initialize shared analyzer state before observing allocator requests.
-    round_trip(1024, false);
+    let baseline_bytes = 1024;
+    round_trip(baseline_bytes, false);
+    let baseline = round_trip(baseline_bytes, true);
     let results = [1024 * 1024, 3 * 1024 * 1024].map(|bytes| (bytes, round_trip(bytes, true)));
     for (bytes, requested) in results {
-        // Keep the already admitted source/dictionary and analyzer costs. This
-        // fixture budget excludes the old descriptor hex/body/footer copies.
+        // Host accounting now includes fixed native Zstd workspaces. Exclude
+        // the warmed small-input floor while retaining the per-byte budget for
+        // source/dictionary and analyzer costs, without hex/body/footer copies.
+        let growth = requested.saturating_sub(baseline);
         assert!(
-            requested <= bytes * 12,
-            "source={bytes}, requested={requested}"
+            growth <= (bytes - baseline_bytes) * 12,
+            "source={bytes}, requested={requested}, baseline={baseline}, growth={growth}"
         );
     }
 }

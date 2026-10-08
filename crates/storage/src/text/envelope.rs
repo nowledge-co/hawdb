@@ -84,7 +84,7 @@ pub fn encode_durable_text_with_work_context(
 }
 
 fn encode_zstd_durable_text(text: &str) -> Result<Vec<u8>> {
-    let compressed = zstd::stream::encode_all(text.as_bytes(), DEFAULT_COMPRESSION_LEVEL)
+    let compressed = crate::compression::encode_all(text.as_bytes(), DEFAULT_COMPRESSION_LEVEL)
         .map_err(|error| HawDBError::Storage(format!("zstd compression failed: {error}")))?;
     let compressed_checksum = checksum_bytes(&compressed);
     let uncompressed_checksum = checksum_bytes(text.as_bytes());
@@ -208,7 +208,7 @@ fn decode_compressed_durable_text(
     let decode_limit = max_decoded_bytes
         .unwrap_or(expected_uncompressed_len as u64)
         .min(usize::MAX as u64);
-    let mut decoder = zstd::stream::read::Decoder::new(Cursor::new(payload)).map_err(|error| {
+    let mut decoder = crate::compression::Decoder::new(Cursor::new(payload)).map_err(|error| {
         HawDBError::Storage(format!("{name} zstd decompression failed: {error}"))
     })?;
     let initial_capacity = expected_uncompressed_len.min(8 * 1024 * 1024);

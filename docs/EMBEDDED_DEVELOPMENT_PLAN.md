@@ -1510,14 +1510,17 @@ Current implemented slice:
 - immutable in-memory CSR/CSC projected graph snapshots derived from the
   canonical graph store or a read-transaction snapshot
 - optional node-label and relationship-type filtering for projected graph
-  construction
+  construction, including the Nowledge node-map form and persisted relationship
+  property predicates for literal equality and inclusive lower bounds joined by
+  `AND`
 - WAL/checkpoint-persisted projected graph definitions; algorithm calls rebuild
   CSR/CSC snapshots from the canonical graph state at execution time
 - checkpoint-generated projected graph artifacts with node IDs, CSR outgoing
   adjacency, CSC incoming adjacency, atomic replacement, and checksum
   validation/discard on recovery
-- projected graph artifact format versioning, projection epochs, and public
-  status reporting for reusable/stale artifact state
+- projected graph artifact format versioning, including V1 reads and V2
+  relationship-predicate persistence, projection epochs, and public status
+  reporting for reusable/stale artifact state
 - execution-path reuse of cached projected graph artifacts when commit epoch and
   projected graph definition still match the active store
 - explicit background rebuild API that refreshes projected graph artifacts
@@ -1528,11 +1531,16 @@ Current implemented slice:
   reporting; the queue is intentionally synchronous and caller-driven for the
   embedded engine
 - Kuzu-style Cypher procedure entry points:
-  `CALL project_graph('Graph', ['Label'], ['TYPE'])`,
-  `CALL page_rank('Graph', dampingFactor := 0.85, maxIterations := 20)
-  RETURN node, pagerank_score`, and
-  `CALL louvain('Graph') RETURN node, louvain_id`
-- hierarchical Louvain execution with `maxLevels := N` and optional
+  `CALL project_graph('Graph', {'Label': ''}, {'TYPE': 'r.weight >= 0.5'})`,
+  `CALL page_rank('Graph', dampingFactor := 0.85, maxIterations := 20,
+  tolerance := 0.0000001, normalizeInitial := true)
+  RETURN node, node_id, node_label, pagerank_score`, and
+  `CALL louvain('Graph', maxPhases := 20, resolution := 1.0)
+  RETURN node, node_id, node_label, louvain_id`; the optional identity columns
+  are resolved inside the bounded procedure execution rather than through
+  caller-side per-result scans
+- hierarchical Louvain execution with `maxLevels := N` or `maxPhases := N`,
+  configurable resolution, and optional
   `RETURN node, level, louvain_id`
 - PageRank scoring over projected snapshots with dangling-node redistribution
 - reverse traversal over incoming CSC sources for analytics and compatibility

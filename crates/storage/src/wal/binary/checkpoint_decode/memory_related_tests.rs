@@ -121,6 +121,7 @@ fn checkpoint_units_wal_decode_memory_runtime_and_cow_snapshot_retain_admission(
             name: name.clone(),
             node_labels: labels.clone(),
             rel_types: types.clone(),
+            relationship_predicates: Default::default(),
         },
     };
     let bytes = encode_binary_wal_record(&entry, 19).unwrap();
@@ -271,6 +272,7 @@ fn checkpoint_units_wal_decode_memory_cancel_every_unit_fully_retries_same_gover
             name: "graph".into(),
             node_labels: vec!["first".into(), "second".into()],
             rel_types: vec!["EDGE".into()],
+            relationship_predicates: Default::default(),
         },
     };
     let bytes = encode_binary_wal_record(&entry, 19).unwrap();
@@ -341,11 +343,13 @@ fn checkpoint_units_wal_decode_memory_partial_replay_retains_moved_data_and_snap
                 name: "first".into(),
                 node_labels: labels.clone(),
                 rel_types: Vec::new(),
+                relationship_predicates: Default::default(),
             },
             WalOp::ProjectGraph {
                 name: "unapplied".into(),
                 node_labels: vec!["second".repeat(1000)],
                 rel_types: Vec::new(),
+                relationship_predicates: Default::default(),
             },
         ]),
     };
@@ -469,11 +473,13 @@ fn checkpoint_units_wal_decode_memory_late_corruption_releases_earlier_allocatio
                 name: "first".into(),
                 node_labels: vec!["wide".repeat(40_000)],
                 rel_types: Vec::new(),
+                relationship_predicates: Default::default(),
             },
             WalOp::ProjectGraph {
                 name: "second".into(),
                 node_labels: vec!["truncated".into()],
                 rel_types: Vec::new(),
+                relationship_predicates: Default::default(),
             },
         ]),
     };
@@ -519,6 +525,7 @@ fn checkpoint_units_wal_decode_memory_pressure_defers_and_recovers_same_admissio
                 name: "graph".into(),
                 node_labels: vec!["first".into()],
                 rel_types: Vec::new(),
+                relationship_predicates: Default::default(),
             },
         },
         19,

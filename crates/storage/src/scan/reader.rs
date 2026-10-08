@@ -777,12 +777,14 @@ mod tests {
     };
     use std::num::NonZeroUsize;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::sync::Barrier;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[derive(Default)]
     struct ConcurrencyTrackingReader {
         active: AtomicUsize,
         peak: AtomicUsize,
+        rendezvous: Option<Barrier>,
     }
 
     #[derive(Debug, Default)]
@@ -834,8 +836,25 @@ mod tests {
         fn read_range(&self, range: &SegmentReadRange) -> Result<SegmentBytes, SegmentReadError> {
             let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
             self.peak.fetch_max(active, Ordering::AcqRel);
-            std::thread::sleep(Duration::from_millis(10));
+            if let Some(rendezvous) = &self.rendezvous {
+                rendezvous.wait();
+            }
             self.active.fetch_sub(1, Ordering::AcqRel);
+            Ok(vec![0; range.length.get() as usize].into())
+        }
+    }
+
+    struct IoSlotCheckingReader {
+        active_slots: Arc<AtomicUsize>,
+        expected_slots: usize,
+    }
+
+    impl SegmentRangeReader for IoSlotCheckingReader {
+        fn read_range(&self, range: &SegmentReadRange) -> Result<SegmentBytes, SegmentReadError> {
+            assert_eq!(
+                self.active_slots.load(Ordering::Acquire),
+                self.expected_slots
+            );
             Ok(vec![0; range.length.get() as usize].into())
         }
     }
@@ -902,7 +921,11 @@ mod tests {
 
     #[test]
     fn shared_pool_bounds_parallel_range_reads() {
-        let reader = ConcurrencyTrackingReader::default();
+        // Each pair must overlap even when a worker starts late under CI load.
+        let reader = ConcurrencyTrackingReader {
+            rendezvous: Some(Barrier::new(2)),
+            ..Default::default()
+        };
         let ranges = (0..8)
             .map(|segment_id| SegmentReadRange::new(1, segment_id, segment_id, NonZeroU64::MIN))
             .collect::<Vec<_>>();
@@ -970,34 +993,43 @@ mod tests {
 
     #[test]
     fn runtime_io_slots_are_held_only_while_the_read_wave_is_live() {
-        let reader = ConcurrencyTrackingReader::default();
         let ranges = (0..2)
             .map(|segment_id| SegmentReadRange::new(1, segment_id, segment_id, NonZeroU64::MIN))
             .collect::<Vec<_>>();
         let schedule = SegmentReadScheduler::new(NonZeroUsize::new(2).unwrap(), NonZeroU64::MIN)
             .schedule(ranges);
         let pool = SegmentReadPool::new(NonZeroUsize::new(2).unwrap()).unwrap();
-        let controller = Arc::new(RecordingIoWaveController::default());
-        let context = RuntimeTaskContext::default()
-            .with_admitted_parallelism(NonZeroUsize::new(2).unwrap())
-            .with_io_wave_controller(controller.clone() as Arc<dyn RuntimeIoWaveController>);
+        // Slot lifetime is the same whether the admitted reads run serially or
+        // in parallel; worker scheduling must not determine this assertion.
+        for parallelism in 1..=2 {
+            let controller = Arc::new(RecordingIoWaveController::default());
+            let reader = IoSlotCheckingReader {
+                active_slots: Arc::clone(&controller.active_slots),
+                expected_slots: 2,
+            };
+            let context = RuntimeTaskContext::default()
+                .with_admitted_parallelism(NonZeroUsize::new(parallelism).unwrap())
+                .with_io_wave_controller(controller.clone() as Arc<dyn RuntimeIoWaveController>);
+            let mut consumed = 0;
 
-        SegmentReadExecutor::with_pool(NonZeroU64::new(2).unwrap(), pool)
-            .execute_with_context(&reader, &schedule, &context, |_| {
-                assert_eq!(controller.active_slots.load(Ordering::Acquire), 0);
-                Ok::<(), std::convert::Infallible>(())
-            })
-            .unwrap();
+            SegmentReadExecutor::with_pool(NonZeroU64::new(2).unwrap(), pool.clone())
+                .execute_with_context(&reader, &schedule, &context, |_| {
+                    assert_eq!(controller.active_slots.load(Ordering::Acquire), 0);
+                    consumed += 1;
+                    Ok::<(), std::convert::Infallible>(())
+                })
+                .unwrap();
 
-        assert_eq!(reader.peak.load(Ordering::Acquire), 2);
-        assert_eq!(controller.active_slots.load(Ordering::Acquire), 0);
-        assert_eq!(
-            *controller
-                .acquired_slots
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-            vec![2]
-        );
+            assert_eq!(consumed, 2);
+            assert_eq!(controller.active_slots.load(Ordering::Acquire), 0);
+            assert_eq!(
+                *controller
+                    .acquired_slots
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                vec![2]
+            );
+        }
     }
 
     #[test]

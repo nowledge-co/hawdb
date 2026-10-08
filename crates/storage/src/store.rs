@@ -814,7 +814,7 @@ pub struct GraphStore {
     full_text_property_index: FullTextPropertyIndex,
     relationship_property_index: RelationshipPropertyIndex,
     projected_graphs: CowSegment<BTreeMap<String, ProjectedGraphDefinition>>,
-    projected_graph_artifacts: CowSegment<BTreeMap<String, ProjectedGraphArtifact>>,
+    projected_graph_artifacts: crate::projection::artifact::CheckpointProjectedGraphRoot,
     stable_id_mapping: CowSegment<StoreStableIdMapping>,
     initial_import_source_fingerprint: Option<String>,
     search_projection_database_identity: Option<hawdb_core::Uuid>,
@@ -1744,7 +1744,7 @@ impl GraphStore {
             full_text_property_index: CowSegmentedMap::default(),
             relationship_property_index: CowSegmentedMap::default(),
             projected_graphs: CowSegment::default(),
-            projected_graph_artifacts: CowSegment::default(),
+            projected_graph_artifacts: Default::default(),
             stable_id_mapping: CowSegment::default(),
             initial_import_source_fingerprint: None,
             search_projection_database_identity: None,
@@ -2275,8 +2275,9 @@ impl GraphStore {
             name: name.to_string(),
             node_labels: definition.node_labels.clone(),
             rel_types: definition.rel_types.clone(),
+            relationship_predicates: definition.relationship_predicates.clone(),
         })?;
-        self.apply_project_graph_definition(name.to_string(), definition);
+        self.apply_project_graph_definition(name.to_string(), definition)?;
         self.finish_non_relational_commit();
         Ok(())
     }
@@ -2512,6 +2513,17 @@ fn checkpoint_projected_graph_from_definition(
         }
         unit.finish();
     }
+    let mut relationship_predicates = BTreeMap::new();
+    // Preserve the ordinary builder's all-label/all-type fast-path contract.
+    if !definition.node_labels.is_empty() || !definition.rel_types.is_empty() {
+        for (name, predicate) in &definition.relationship_predicates {
+            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+            if let Some(id) = catalog.rel_type_id(name) {
+                relationship_predicates.insert(id, predicate);
+            }
+            unit.finish();
+        }
+    }
     if !definition.node_labels.is_empty() && labels.is_empty() {
         return ProjectedGraphArtifactData::new_with_work_context(
             Vec::new(),
@@ -2573,8 +2585,19 @@ fn checkpoint_projected_graph_from_definition(
                 unit.finish();
                 continue;
             };
-            if (rel_types.is_empty() || rel_types.contains(&relationship.rel_type))
-                && let Ok(source) = nodes.binary_search(&relationship.source)
+            let matches_type = rel_types.is_empty() || rel_types.contains(&relationship.rel_type);
+            let predicate = relationship_predicates.get(&relationship.rel_type);
+            unit.finish();
+            if !matches_type {
+                continue;
+            }
+            if let Some(predicate) = predicate
+                && !predicate.matches_with_work_context(&relationship.properties, work)?
+            {
+                continue;
+            }
+            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+            if let Ok(source) = nodes.binary_search(&relationship.source)
                 && let Ok(target) = nodes.binary_search(&relationship.target)
             {
                 // Ordered sets preserve sorted, deduplicated analytics edges
@@ -2645,7 +2668,29 @@ fn projected_graph_from_definition(
         }
         return ProjectedGraph::from_store_labels_without_edges(store, &label_ids);
     }
-    ProjectedGraph::from_store_labels_and_rel_types(store, &label_ids, &rel_type_ids)
+    let relationship_predicates = definition
+        .relationship_predicates
+        .iter()
+        .filter_map(|(rel_type, predicate)| {
+            catalog
+                .rel_type_id(rel_type)
+                .map(|rel_type_id| (rel_type_id, predicate))
+        })
+        .collect::<BTreeMap<_, _>>();
+    ProjectedGraph::try_from_store_labels_and_rel_types_with_filters_and_layout(
+        store,
+        &label_ids,
+        &rel_type_ids,
+        |_| true,
+        |relationship| {
+            relationship_predicates
+                .get(&relationship.rel_type)
+                .is_none_or(|predicate| predicate.matches(&relationship.properties))
+        },
+        crate::analytics::ProjectionLayout::Bidirectional,
+        crate::analytics::ProjectionMemoryBudget::unlimited(),
+    )
+    .expect("unlimited checkpoint projection is admitted")
 }
 
 fn validate_changed_node_uniqueness(
@@ -3537,6 +3582,7 @@ mod tests {
     use hawdb_storage::{
         config::{DurabilityPolicy, StorageResidencyMode, WalReplayConfig},
         mutation::{GraphMutation, MutationLimits, RelationshipPropertyUpdate},
+        projection::ProjectedRelationshipPredicate,
         relational::{
             RelationalColumnSchema, RelationalHydrationBudget, RelationalInsertMode, RelationalKey,
             RelationalRow, RelationalScalarType, RelationalTableSchema, RelationalTransaction,
@@ -9775,6 +9821,7 @@ mod tests {
                     .iter()
                     .map(|rel_type| (*rel_type).to_string())
                     .collect(),
+                relationship_predicates: Default::default(),
             };
             let ids = (0..1025)
                 .filter(|id| {
@@ -9843,6 +9890,148 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_units_projected_build_applies_predicates_and_preserves_all_adjacency_arrays() {
+        use super::ProjectedGraphArtifactData;
+        use crate::background::CheckpointWorkProbe;
+        use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::default();
+        let nodes = (0..4)
+            .map(|_| {
+                store
+                    .create_node(&mut catalog, "Memory", BTreeMap::new())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        for (source, target, kind, confidence, tag) in [
+            (0, 1, "LINK", 0.7, "yes"),
+            (0, 2, "LINK", 0.69, "yes"),
+            (1, 3, "LINK", 0.8, "no"),
+            (3, 0, "BACK", 0.1, "no"),
+            (3, 0, "LINK", 0.9, "yes"),
+        ] {
+            store
+                .create_relationship(
+                    &mut catalog,
+                    nodes[source],
+                    nodes[target],
+                    kind,
+                    BTreeMap::from([
+                        ("confidence".into(), Value::Float(confidence)),
+                        ("tag".into(), Value::String(tag.into())),
+                    ]),
+                )
+                .unwrap();
+        }
+        let identity = store.checkpoint_source_identity();
+        let local = LocalQosScheduler::new(LocalQosPolicy {
+            max_background_operations: Some(1),
+            max_total_background_operations: Some(1),
+            ..LocalQosPolicy::default()
+        });
+        for (labels, kinds) in [
+            (vec!["Memory"], vec!["LINK", "BACK"]),
+            (vec![], vec!["LINK"]),
+            (vec!["Memory"], vec![]),
+            (vec![], vec![]),
+        ] {
+            let definition = ProjectedGraphDefinition {
+                node_labels: labels.iter().map(|name| (*name).into()).collect(),
+                rel_types: kinds.iter().map(|name| (*name).into()).collect(),
+                relationship_predicates: BTreeMap::from([
+                    (
+                        "LINK".into(),
+                        ProjectedRelationshipPredicate::And(vec![
+                            ProjectedRelationshipPredicate::Gte {
+                                property: "confidence".into(),
+                                value: Value::Float(0.7),
+                            },
+                            ProjectedRelationshipPredicate::Eq {
+                                property: "tag".into(),
+                                value: Value::String("yes".into()),
+                            },
+                        ]),
+                    ),
+                    (
+                        "Missing".into(),
+                        ProjectedRelationshipPredicate::Eq {
+                            property: "missing".into(),
+                            value: Value::Null,
+                        },
+                    ),
+                ]),
+            };
+            let expected = if labels.is_empty() && kinds.is_empty() {
+                // The ordinary all-label/all-type fast path ignores predicates.
+                ProjectedGraphArtifactData::new(
+                    nodes.clone(),
+                    vec![0, 2, 3, 3, 4],
+                    vec![1, 2, 3, 0],
+                    vec![0, 1, 2, 3, 4],
+                    vec![3, 0, 0, 1],
+                )
+                .unwrap()
+            } else {
+                ProjectedGraphArtifactData::new(
+                    nodes.clone(),
+                    vec![0, 1, 1, 1, 2],
+                    vec![1, 0],
+                    vec![0, 1, 2, 2, 2],
+                    vec![3, 0],
+                )
+                .unwrap()
+            };
+            let probe = Arc::new(CheckpointWorkProbe::default());
+            let actual = super::checkpoint_projected_graph_from_definition(
+                &catalog,
+                &store,
+                &definition,
+                &probe.context(local.clone()),
+            )
+            .unwrap();
+            assert_eq!(actual, expected);
+            let ordinary = super::projected_graph_from_definition(&catalog, &store, &definition);
+            assert_eq!(actual.nodes, ordinary.nodes());
+            assert_eq!(actual.csr_offsets, ordinary.csr_offsets());
+            assert_eq!(actual.csr_targets, ordinary.csr_targets());
+            assert_eq!(actual.csc_offsets, ordinary.csc_offsets());
+            assert_eq!(actual.csc_sources, ordinary.csc_sources());
+            let total = probe.completed.load(Ordering::SeqCst);
+            probe.assert_released(&local);
+            for cut in 1..=total {
+                let cancelled = Arc::new(CheckpointWorkProbe::default());
+                cancelled.cancel_after.store(cut, Ordering::SeqCst);
+                let error = super::checkpoint_projected_graph_from_definition(
+                    &catalog,
+                    &store,
+                    &definition,
+                    &cancelled.context(local.clone()),
+                )
+                .unwrap_err();
+                assert!(error.to_string().contains("checkpoint build stopped"));
+                assert_eq!(cancelled.completed.load(Ordering::SeqCst), cut);
+                cancelled.assert_released(&local);
+                assert_eq!(store.checkpoint_source_identity(), identity);
+            }
+            let retry = Arc::new(CheckpointWorkProbe::default());
+            assert_eq!(
+                super::checkpoint_projected_graph_from_definition(
+                    &catalog,
+                    &store,
+                    &definition,
+                    &retry.context(local.clone()),
+                )
+                .unwrap(),
+                expected
+            );
+            retry.assert_released(&local);
+        }
+    }
+
+    #[test]
     fn checkpoint_units_projected_build_cancels_capture_hydration_and_flatten_then_retries() {
         use crate::background::CheckpointWorkProbe;
         use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
@@ -9854,6 +10043,7 @@ mod tests {
         let definition = ProjectedGraphDefinition {
             node_labels: Vec::new(),
             rel_types: Vec::new(),
+            relationship_predicates: Default::default(),
         };
         let identity = store.checkpoint_source_identity();
         let scheduler = LocalQosScheduler::new(LocalQosPolicy {
@@ -10723,6 +10913,7 @@ mod tests {
                     crate::projection::ProjectedGraphDefinition {
                         node_labels: Vec::new(),
                         rel_types: Vec::new(),
+                        relationship_predicates: Default::default(),
                     },
                 )
                 .unwrap();
@@ -10854,6 +11045,7 @@ mod tests {
                     &crate::projection::ProjectedGraphDefinition {
                         node_labels: Vec::new(),
                         rel_types: Vec::new(),
+                        relationship_predicates: Default::default(),
                     },
                 )
                 .expect("successful retry must reopen current projected arrays");
@@ -12732,6 +12924,13 @@ mod tests {
         let definition = ProjectedGraphDefinition {
             node_labels: vec!["Memory".to_string()],
             rel_types: vec!["LINKS".to_string()],
+            relationship_predicates: BTreeMap::from([(
+                "LINKS".to_string(),
+                ProjectedRelationshipPredicate::Gte {
+                    property: "confidence".to_string(),
+                    value: Value::Float(0.7),
+                },
+            )]),
         };
         {
             let mut catalog = Catalog::default();
@@ -12742,8 +12941,26 @@ mod tests {
             let target = store
                 .create_node(&mut catalog, "Memory", properties([("id", Value::Int(2))]))
                 .unwrap();
+            let excluded = store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(3))]))
+                .unwrap();
             store
-                .create_relationship(&mut catalog, source, target, "LINKS", BTreeMap::new())
+                .create_relationship(
+                    &mut catalog,
+                    source,
+                    target,
+                    "LINKS",
+                    properties([("confidence", Value::Float(0.7))]),
+                )
+                .unwrap();
+            store
+                .create_relationship(
+                    &mut catalog,
+                    source,
+                    excluded,
+                    "LINKS",
+                    properties([("confidence", Value::Float(0.69))]),
+                )
                 .unwrap();
             store
                 .register_projected_graph("MemoryGraph", definition.clone())
@@ -12758,7 +12975,7 @@ mod tests {
             let artifact = store
                 .projected_graph_artifact("MemoryGraph", &definition)
                 .unwrap();
-            assert_eq!(artifact.node_count(), 2);
+            assert_eq!(artifact.node_count(), 3);
             assert_eq!(artifact.edge_count(), 1);
         }
         std::fs::remove_dir_all(path).unwrap();
@@ -12770,6 +12987,7 @@ mod tests {
         let definition = ProjectedGraphDefinition {
             node_labels: vec!["Memory".to_string()],
             rel_types: vec!["LINKS".to_string()],
+            relationship_predicates: BTreeMap::new(),
         };
         {
             let mut catalog = Catalog::default();

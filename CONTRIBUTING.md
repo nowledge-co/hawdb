@@ -7,6 +7,21 @@ recoverable storage. Start with the [architecture](docs/ARCHITECTURE.md),
 [AGENTS.md](AGENTS.md) records the repository's architecture and integration
 constraints and also applies to code produced with an assistant.
 
+## Website and playground
+
+The public site and browser playground are [hawdb.ai](https://hawdb.ai). Landing
+page copy, the deployed playground, and the wasm-bindgen bridge that consumes
+this engine live in
+[nowledge-co/hawdb-website](https://github.com/nowledge-co/hawdb-website).
+Change those there. This repository keeps the engine and the in-tree
+development playground under `examples/wasm-playground/`.
+
+That website pins a specific HawDB git revision. A pull request that changes
+the facade it binds — `Database::new`, `query`, `query_with_params`,
+`query_sql`, and `Value` — should say so in the description, so the website
+repository can bump the pin and re-check the playground. The in-tree WASM
+contract is [docs/WASM.md](docs/WASM.md).
+
 ## Opening an issue
 
 Search open and closed issues before filing a new one. Choose the closest form:

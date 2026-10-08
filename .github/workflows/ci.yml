@@ -146,6 +146,12 @@ jobs:
       - name: Test ordinary project opening and pending recovery
         shell: bash
         run: |
+          set -euo pipefail
+          # Until #819 isolates Windows alias probes, exhausted project fixtures
+          # must not overlap unrelated existing-project admission.
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            export RUST_TEST_THREADS=1
+          fi
           bash scripts/cargo-test-required.sh --locked -p hawdb --test branch_project_open
           bash scripts/cargo-test-required.sh --locked -p hawdb --no-default-features --test branch_project_open
 
@@ -158,7 +164,8 @@ jobs:
         run: cargo test -p hawdb --features acl --lib api::tests::storage_recovery
 
       - name: Test row-page compaction and reclamation
-        run: cargo test -p hawdb --features acl --lib row_page_compaction
+        shell: bash
+        run: bash scripts/cargo-test-required.sh --locked -p hawdb --features acl --test row_page_compaction
 
       - name: Test out-of-core search projection I/O
         shell: bash
@@ -170,6 +177,7 @@ jobs:
             export RUST_TEST_THREADS=1
           fi
           bash scripts/cargo-test-required.sh --locked -p hawdb-search --features acl --lib out_of_core::
+          bash scripts/cargo-test-required.sh --locked -p hawdb-search --features acl --test generation_source_policy
 
       - name: Capture Windows storage lifecycle evidence
         if: matrix.os == 'windows-latest'

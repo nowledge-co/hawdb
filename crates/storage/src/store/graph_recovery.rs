@@ -392,7 +392,7 @@ impl GraphStore {
         self.basic_statistics = decoded.basic_statistics.into();
         self.checkpoint_statistics = decoded.checkpoint_statistics.into();
         for (name, definition) in decoded.projected_graphs {
-            self.apply_project_graph_definition(name, definition);
+            self.apply_project_graph_definition(name, definition)?;
         }
         if !decoded.nodes.is_empty() || !decoded.relationships.is_empty() {
             // Applying inline records rebuilds the basic counts. The decoded
@@ -952,6 +952,9 @@ impl GraphStore {
                     self.apply_replayed_checkpoint_operations(catalog, operation, work)?;
                 }
                 Ok(())
+            }
+            operation @ WalOp::ProjectGraph { .. } => {
+                self.apply_wal_op_with_work_context(catalog, operation, Some(work))
             }
             operation => {
                 let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;

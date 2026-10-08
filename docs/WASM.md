@@ -16,10 +16,24 @@ Construct `Database::new()` or `Database::new_with_config(...)`, then use
 starts empty. The database lasts only as long as the WASM instance.
 `Database::open*` rejects persistent storage on this target.
 
+The consumer also owns allocator selection in its final WASM `cdylib`.
+HawDB does not register an allocator or pull a native allocator into this
+target. A host may inject a WASM-compatible `GlobalAlloc` implementation with
+`#[global_allocator]`; without one, Rust's target default applies. Native Mem's
+`mimalloc` selection does not carry across into a separate WASM module. See
+[the allocator contract](ALLOCATORS.md) for target-gated host configuration and
+the portable host-allocator regression.
+
 The development example in `examples/wasm_playground.rs` supplies a thin
 wasm-bindgen query bridge (#734). `examples/wasm-playground/` supplies the page
 and a single **Dedicated Web Worker** (#735). It runs on the user's device,
 not in Cloudflare Workers. Neither is a production browser SDK.
+
+The deployed site and playground are [hawdb.ai](https://hawdb.ai), built from
+[nowledge-co/hawdb-website](https://github.com/nowledge-co/hawdb-website).
+That repository is the consuming frontend: it pins a HawDB revision and binds
+`Database::new`, `query`, `query_sql`, and `Value`. The pages below describe
+the in-tree development example, which is separate from that deployment.
 
 ## Query playground
 
@@ -172,6 +186,19 @@ The common tests also run natively:
 ```sh
 cargo test --locked -p hawdb --no-default-features --test in_memory_portable
 bazel test //:hawdb_in_memory_portable_tests
+```
+
+`tests/host_allocator.rs` is a separate consumer with an instrumented global
+allocator. It checks graph/SQL allocation and database/result deallocation
+through the public facade, plus Zstd context/workspace allocation and release,
+on native and browser WASM builds. Keeping it separate
+preserves the target-default allocator coverage in `in_memory_portable`.
+
+```sh
+CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
+  WASM_BINDGEN_USE_BROWSER=1 \
+  cargo test --locked -p hawdb --no-default-features \
+    --target wasm32-unknown-unknown --test host_allocator
 ```
 
 Run the affected native Bazel tests and the local fuzz checks required by

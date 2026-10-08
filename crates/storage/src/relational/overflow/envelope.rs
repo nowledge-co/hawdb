@@ -234,7 +234,7 @@ fn decode_zstd(
     uncompressed_bytes: usize,
     task_context: Option<&hawdb_core::RuntimeTaskContext>,
 ) -> Result<Vec<u8>, RelationalError> {
-    let decoder = zstd::stream::read::Decoder::new(Cursor::new(payload)).map_err(|error| {
+    let decoder = crate::compression::Decoder::new(Cursor::new(payload)).map_err(|error| {
         RelationalError::Corruption(format!("failed to initialize overflow decoder: {error}"))
     })?;
     let read_limit = uncompressed_bytes
@@ -327,7 +327,7 @@ fn decode_scalar_type(tag: u8) -> Result<RelationalScalarType, RelationalError> 
 }
 
 fn compress(raw: &[u8], compression_level: i32) -> Result<Vec<u8>, RelationalError> {
-    zstd::stream::encode_all(raw, compression_level).map_err(|error| {
+    crate::compression::encode_all(raw, compression_level).map_err(|error| {
         RelationalError::Durability(format!("failed to compress overflow value: {error}"))
     })
 }

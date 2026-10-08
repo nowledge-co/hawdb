@@ -98,8 +98,9 @@ pub(super) fn write_search_snapshot<'a>(
     let mut compressed_guard = TemporaryFile::new(compressed_path.clone());
     let compressed_file = File::create(&compressed_path)?;
     let counted = CountingChecksumWriter::new(compressed_file);
-    let mut encoder = zstd::stream::write::Encoder::new(counted, SEARCH_COMPRESSION_LEVEL)
-        .map_err(|error| HawDBError::Storage(format!("zstd compression failed: {error}")))?;
+    let mut encoder =
+        hawdb_storage::compression::Encoder::new(counted, SEARCH_COMPRESSION_LEVEL)
+            .map_err(|error| HawDBError::Storage(format!("zstd compression failed: {error}")))?;
     let mut body_checksum = Crc32cHasher::new();
     let mut uncompressed_checksum = Crc32cHasher::new();
     let mut uncompressed_bytes = 0u64;

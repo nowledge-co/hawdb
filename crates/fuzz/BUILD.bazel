@@ -229,6 +229,8 @@ rust_binary(
 rust_test(
     name = "hawdb_append_fuzz_cli_tests",
     size = "small",
+    # The containing local campaign exceeded the inherited 60-second deadline.
+    timeout = "moderate",
     crate_root = "src/append_main.rs",
     srcs = ["src/append_main.rs"],
     edition = "2024",

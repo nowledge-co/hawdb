@@ -45,6 +45,7 @@ fn checkpoint_units_projected_graph_publication_cancels_at_every_io_and_retries(
     let definition = ProjectedGraphDefinition {
         node_labels: vec!["Memory".into()],
         rel_types: vec!["LINKS".into()],
+        relationship_predicates: Default::default(),
     };
     let body = crate::projection::artifact::encode_projected_graph_artifacts(
         41,

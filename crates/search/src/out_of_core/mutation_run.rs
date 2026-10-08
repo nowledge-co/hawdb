@@ -519,15 +519,16 @@ pub(super) fn validate_closure(
 /// Checksums and aggregate identity alone cannot prove that a target exists or
 /// that its term/length contribution is exact. Stage one version at a time and
 /// compare spillable contributions without retaining a complete body or term set.
-pub(super) fn validate_targets(
+pub(super) fn validate_targets<'a>(
     root: &Path,
     segments: &[SearchOutOfCoreSegmentReader],
-    runs: &[SearchMutationRun],
+    runs: impl Iterator<Item = &'a SearchMutationRun>,
     config: &SearchOutOfCoreConfig,
     analyzer: &SearchAnalyzerLexicon,
     source_policy: crate::SearchLexicalSourcePolicy,
 ) -> Result<()> {
-    if runs.is_empty() {
+    let mut runs = runs.peekable();
+    if runs.peek().is_none() {
         return Ok(());
     }
     let task = hawdb_core::RuntimeTaskContext::default().with_memory_reservation(
@@ -548,7 +549,7 @@ pub(super) fn validate_targets(
         &memory,
         &task,
     )?;
-    for entry in runs.iter().flat_map(SearchMutationRun::entries) {
+    for entry in runs.flat_map(SearchMutationRun::entries) {
         let missing = || {
             HawDBError::Storage(
                 "search mutation-run target document is absent from its content segment".into(),

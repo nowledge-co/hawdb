@@ -297,9 +297,25 @@ impl GraphStore {
         &mut self,
         name: String,
         definition: ProjectedGraphDefinition,
-    ) {
-        self.projected_graph_artifacts.remove(&name);
+    ) -> Result<()> {
+        self.apply_project_graph_definition_with_work_context(
+            name,
+            definition,
+            &crate::background::CheckpointWorkContext::default(),
+        )
+    }
+
+    pub(super) fn apply_project_graph_definition_with_work_context(
+        &mut self,
+        name: String,
+        definition: ProjectedGraphDefinition,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<()> {
+        self.projected_graph_artifacts.invalidate(&name, work)?;
+        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
         self.projected_graphs.insert(name, definition);
+        unit.finish();
+        work.checkpoint().map_err(HawDBError::from_storage_error)
     }
 
     pub(super) fn apply_set_node_property(
@@ -488,7 +504,16 @@ impl GraphStore {
     }
 
     pub(super) fn apply_wal_op(&mut self, catalog: &mut Catalog, op: WalOp) -> Result<()> {
-        let result = self.apply_wal_op_inner(catalog, op);
+        self.apply_wal_op_with_work_context(catalog, op, None)
+    }
+
+    pub(super) fn apply_wal_op_with_work_context(
+        &mut self,
+        catalog: &mut Catalog,
+        op: WalOp,
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Result<()> {
+        let result = self.apply_wal_op_inner(catalog, op, work);
         if result.is_err() && self.durable.is_some() {
             self.post_wal_apply_poisoned
                 .store(true, AtomicOrdering::Release);
@@ -496,7 +521,12 @@ impl GraphStore {
         result
     }
 
-    fn apply_wal_op_inner(&mut self, catalog: &mut Catalog, op: WalOp) -> Result<()> {
+    fn apply_wal_op_inner(
+        &mut self,
+        catalog: &mut Catalog,
+        op: WalOp,
+        work: Option<&crate::background::CheckpointWorkContext>,
+    ) -> Result<()> {
         wal_apply_failpoint()?;
         match op {
             WalOp::CreateNodeLabel { label } => {
@@ -702,14 +732,18 @@ impl GraphStore {
                 name,
                 node_labels,
                 rel_types,
+                relationship_predicates,
             } => {
-                self.apply_project_graph_definition(
-                    name,
-                    ProjectedGraphDefinition {
-                        node_labels,
-                        rel_types,
-                    },
-                );
+                let definition = ProjectedGraphDefinition {
+                    node_labels,
+                    rel_types,
+                    relationship_predicates,
+                };
+                if let Some(work) = work {
+                    self.apply_project_graph_definition_with_work_context(name, definition, work)?;
+                } else {
+                    self.apply_project_graph_definition(name, definition)?;
+                }
             }
             WalOp::MarkInitialImportSource { source_fingerprint } => {
                 self.initial_import_source_fingerprint = Some(source_fingerprint);
@@ -794,7 +828,7 @@ impl GraphStore {
             }
             WalOp::Batch(ops) => {
                 for op in ops {
-                    self.apply_wal_op(catalog, op)?;
+                    self.apply_wal_op_with_work_context(catalog, op, work)?;
                 }
             }
         }

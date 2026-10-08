@@ -555,6 +555,7 @@ fn read_and_projection_plans_are_not_storage_mutations() {
             name: "graph".into(),
             node_labels: vec![],
             rel_types: vec![],
+            relationship_predicates: BTreeMap::new(),
         },
         PhysicalPlan::SeqNodeScan {
             variable: "n".into(),

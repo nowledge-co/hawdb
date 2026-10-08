@@ -76,6 +76,18 @@ pub(super) fn copy(
     memory: &BuildMemory,
     task: &RuntimeTaskContext,
 ) -> Result<SearchOutOfCoreMetrics> {
+    let mut previous = None;
+    let ordered = reader.segments[selection.start..selection.end]
+        .iter()
+        .flat_map(|artifact| &artifact.descriptor.segments)
+        .all(|segment| {
+            let ordered = previous.is_none_or(|last| last < segment.first_document_id.as_str());
+            previous = Some(segment.last_document_id.as_str());
+            ordered
+        });
+    if !ordered {
+        return merge::copy(reader, selection, writer, memory, task);
+    }
     let path = crate::build_memory::path::OwnedPath::join(
         &writer.stage.path,
         Path::new("compaction-source.body"),
@@ -151,3 +163,5 @@ pub(super) fn copy(
     metrics.streamed_body_bytes = consumer.bytes;
     Ok(metrics)
 }
+
+mod merge;
