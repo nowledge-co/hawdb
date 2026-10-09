@@ -86,6 +86,11 @@ that domain. Target capacity is reserved before recovery; unopened logical
 artifact aliases retain no native handle. This bounds one project's charged
 descriptors, not all host libraries or independent projects in the process;
 an OS-level descriptor rejection remains possible and is reported explicitly.
+Native Unix project acquisition ensures the process soft limit covers the
+project budget plus 64 host handles within the unchanged hard limit, or fails
+with a typed OS-limit error. This process-limit adjustment and the immutable
+cache's LRU order are implementation policies outside the descriptor-count
+conservation argument.
 
 Catalog-backed GC serializes metadata through sweep and conservatively defers
 all reclamation while any branch lease remains active. The admitted store and

@@ -1157,14 +1157,30 @@ immutable storage.
 
 ### Current descriptor integration boundary
 
-`DatabaseConfig::max_open_files` supplies a finite default of 1024. The budget
-does not pre-open files or raise the process OS limit; hosts can select a lower
-shared ceiling to leave capacity for their other libraries. Storage file,
+`DatabaseConfig::max_open_files` supplies a finite default of 1024 without
+pre-opening files. On native Unix, project acquisition reads `RLIMIT_NOFILE`
+and raises its soft limit when needed to cover the configured budget plus
+64 host-owned handles, capped by the existing hard limit. It never lowers an
+already higher soft limit or changes the hard limit. If the effective soft
+limit remains insufficient, acquisition fails before project installation
+with `FileDescriptorError::OsLimit`, reporting the requested allowance and
+observed soft/hard limits. Hosts can select a lower project budget explicitly.
+`FileDescriptorMetrics::os_soft_limit` reports the current native Unix soft
+limit; other platforms return `None` and perform no process-limit adjustment.
+The 64-handle headroom is not a reservation or a bound on other host libraries
+and independent projects. Hosts account for aggregate process usage and
+synchronize any external changes to process limits.
+
+Storage file,
 directory-iterator, clone, ownership-lock, and WAL operations use the admitted
 file wrapper. Independently acquired canonical project contexts share the
 budget and reject conflicting configuration. Immutable checkpoint bindings
 retain logical file references; their cache uses the complete object identity,
-validates content on cold open, retains active reads, and evicts idle handles.
+validates content on cold open, retains active reads, and evicts idle handles
+in least-recently-used order. Hits and inserts advance a per-cache monotonic
+access tick. Capacity pressure sorts idle entries by their last use; active
+read Arcs are never eviction candidates, and removed files close outside the
+cache lock.
 Clones share a logical sequential cursor, while separately opened references
 and positioned reads preserve their own offsets. Mutable path opens invalidate
 future immutable bindings without changing references captured by snapshots.

@@ -337,8 +337,14 @@ extended as later lifecycle states land.
 
 ## Compaction
 
-The default shared project FD budget is 1024. It is admission capacity, not
-pre-opened handles or a process-wide OS limit. A host retaining old snapshots
+The default shared project FD budget is 1024. It does not pre-open handles.
+On native Unix, project acquisition raises the process soft descriptor limit
+when needed to cover the budget plus 64 handles for the host, preserving the
+hard limit and any already higher soft limit. An insufficient effective limit
+returns a typed `FileDescriptorError::OsLimit` with the requested allowance and
+observed soft/hard limits. `FileDescriptorMetrics::os_soft_limit` reports the
+current native Unix soft limit; it is unavailable on other platforms.
+A host retaining old snapshots
 must budget their handles alongside the new generation and temporary publication
 files. Compaction reduces the active owner's fan-out; old readers keep their
 complete immutable closures until released, so merging does not immediately
@@ -451,7 +457,8 @@ and integrity validation, and disabling compaction is measurement configuration
 for this developer benchmark, not a production maintenance policy.
 Uncompacted histories retain more immutable files. Record the OS descriptor
 limit and `HAWDB_SEARCH_MUTATION_BENCH_OPEN_FILES` separately; the latter selects
-the fixture's finite project descriptor admission (default 256). Descriptor
+the fixture's finite project descriptor admission (default 1024, matching the
+library default). Descriptor
 exhaustion remains a failed measurement and must be retained alongside any run
 using a larger explicit descriptor admission. The memory budget is independent.
 

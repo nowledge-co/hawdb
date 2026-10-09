@@ -266,6 +266,129 @@ fn shared_immutable_handles_evict_only_idle_files_and_revalidate_on_reopen() {
 }
 
 #[test]
+fn immutable_handle_pressure_evicts_the_least_recently_used_idle_file() {
+    let fixture = Fixture::new(3);
+    let context = context_for_path(&fixture.root).unwrap();
+    let mut bindings = [
+        fixture.binding("first", b"first"),
+        fixture.binding("second", b"second"),
+        fixture.binding("third", b"third"),
+    ];
+    // Make the previously used key-order policy choose a hot entry.
+    bindings.sort_by_key(|binding| binding.reference);
+    let handles = bindings.each_ref().map(|binding| {
+        fixture
+            .project
+            .immutable_handles
+            .get(binding, &context)
+            .unwrap()
+    });
+    for binding in &bindings[..2] {
+        drop(
+            fixture
+                .project
+                .immutable_handles
+                .get(binding, &context)
+                .unwrap(),
+        );
+    }
+    let observers = handles.each_ref().map(Arc::downgrade);
+    drop(handles);
+    let pressure = File::create(fixture.root.join("pressure")).unwrap();
+    assert!(observers[0].upgrade().is_some());
+    assert!(observers[1].upgrade().is_some());
+    assert!(observers[2].upgrade().is_none());
+    assert_eq!(fixture.project.metrics().cached_handles, 2);
+    assert_eq!(fixture.project.metrics().cache_evictions, 1);
+    assert_eq!(fixture.project.metrics().open, 3);
+    drop(pressure);
+}
+
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+fn descriptor_os_limits() -> libc::rlimit {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: limit points to writable, correctly sized storage.
+    assert_eq!(
+        unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
+        0
+    );
+    limit
+}
+
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[test]
+fn project_admission_raises_the_os_soft_limit_without_lowering_it() {
+    if run_descriptor_child(
+        "file_descriptors::tests::project_admission_raises_the_os_soft_limit_without_lowering_it",
+    ) {
+        return;
+    }
+    let original = descriptor_os_limits();
+    let lowered = libc::rlimit {
+        rlim_cur: 64,
+        rlim_max: original.rlim_max,
+    };
+    // SAFETY: This isolated child lowers only its own soft limit.
+    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lowered) }, 0);
+    let fixture = Fixture::new(128);
+    let raised = descriptor_os_limits();
+    let requested = 128 + super::os_limit::HOST_HEADROOM;
+    assert_eq!(raised.rlim_cur, libc::rlim_t::try_from(requested).unwrap());
+    assert_eq!(raised.rlim_max, original.rlim_max);
+    assert_eq!(
+        fixture.project.metrics().os_soft_limit,
+        Some(u64::try_from(requested).unwrap())
+    );
+    assert_eq!(fixture.project.metrics().limit, 128);
+    assert_eq!(fixture.project.metrics().open, 0);
+    let smaller = Fixture::new(16);
+    assert_eq!(descriptor_os_limits().rlim_cur, raised.rlim_cur);
+    assert_eq!(
+        smaller.project.metrics().os_soft_limit,
+        fixture.project.metrics().os_soft_limit
+    );
+}
+
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[test]
+fn project_admission_reports_the_os_hard_limit_without_installing_a_root() {
+    if run_descriptor_child("file_descriptors::tests::project_admission_reports_the_os_hard_limit_without_installing_a_root") {
+        return;
+    }
+    let restricted = libc::rlimit {
+        rlim_cur: 64,
+        rlim_max: 96,
+    };
+    // SAFETY: Lowering the hard limit is confined to this expendable child.
+    assert_eq!(
+        unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &restricted) },
+        0
+    );
+    let root = std::env::temp_dir().join(format!("hawdb-fd-hard-limit-{}", std::process::id()));
+    let requested = 64 + super::os_limit::HOST_HEADROOM;
+    assert_eq!(
+        ProjectFileDescriptors::acquire(&root, 64).unwrap_err(),
+        HawDBError::FileDescriptors(FileDescriptorError::OsLimit {
+            requested,
+            os_code: None,
+            soft: Some(96),
+            hard: Some(96),
+        })
+    );
+    assert!(!root.exists());
+    assert_eq!(descriptor_os_limits().rlim_cur, 96);
+    assert_eq!(descriptor_os_limits().rlim_max, 96);
+    let retry = ProjectFileDescriptors::acquire(&root, 16).unwrap();
+    assert_eq!(retry.metrics().limit, 16);
+    assert_eq!((retry.metrics().open, retry.metrics().reserved), (0, 0));
+    drop(retry);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn immutable_identity_includes_kind_version_and_project() {
     let fixture = Fixture::new(3);
     let context = context_for_path(&fixture.root).unwrap();
@@ -602,6 +725,7 @@ fn native_os_limit_releases_descriptor_reservations_for_retry() {
     // SAFETY: Only the isolated child lowers its soft limit, preserving the
     // hard limit so Drop can restore the original configuration.
     assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+    expected.os_soft_limit = fixture.project.metrics().os_soft_limit;
 
     // Host-owned handles consume the OS allowance without consuming the
     // engine's reserved quota. Engine admission must succeed before native IO.
@@ -624,6 +748,8 @@ fn native_os_limit_releases_descriptor_reservations_for_retry() {
             Some(FileDescriptorError::OsLimit {
                 requested: 1,
                 os_code: Some(libc::EMFILE),
+                soft: None,
+                hard: None,
             })
         );
         expected.os_limit_rejections += 1;

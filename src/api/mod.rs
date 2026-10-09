@@ -306,7 +306,9 @@ pub struct DatabaseConfig {
     /// Checkpoint compaction resets the chain; default is 256.
     pub max_branch_sealed_wal_intervals: usize,
     /// Finite shared ceiling for all engine-owned project file descriptors.
-    /// Defaults to 1024; increasing it does not pre-open files or raise OS limits.
+    /// Defaults to 1024 without pre-opening files. Native Unix acquisition raises
+    /// the process soft limit to cover this budget plus 64 host-owned handles,
+    /// preserving the hard limit and failing if it cannot cover the request.
     /// Independent contexts for one canonical project must request the same value.
     pub max_open_files: usize,
     pub max_wal_quarantine_bytes: u64,

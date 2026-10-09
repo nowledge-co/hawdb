@@ -24,8 +24,10 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 
+mod os_limit;
+
 /// Shared project admission ceiling; capacity is charged only when used.
-/// Host-owned handles and the OS descriptor limit remain independent.
+/// Native Unix acquisition ensures process headroom without changing the hard limit.
 pub const DEFAULT_MAX_OPEN_FILES: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +52,8 @@ impl DescriptorKind {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FileDescriptorMetrics {
     pub limit: usize,
+    /// Current process soft limit on native Unix; unavailable on other platforms.
+    pub os_soft_limit: Option<u64>,
     pub admitted_runtimes: usize,
     pub open: usize,
     pub reserved: usize,
@@ -165,6 +169,7 @@ impl BudgetState {
             .unwrap_or_else(|error| error.into_inner());
         FileDescriptorMetrics {
             limit: self.limit,
+            os_soft_limit: os_limit::current_soft_limit(),
             admitted_runtimes: counts.admitted_runtimes,
             open: counts.open.iter().sum(),
             reserved: counts.reserved,
@@ -308,6 +313,7 @@ impl ProjectFileDescriptors {
                 FileDescriptorError::InvalidBudget { limit },
             ));
         }
+        os_limit::ensure_capacity(limit)?;
         let lexical = absolute_path(root)?;
         let mut projects = PROJECTS.lock().unwrap_or_else(|error| error.into_inner());
         projects.retain(|_, state| state.strong_count() != 0);
