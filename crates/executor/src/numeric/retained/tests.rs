@@ -94,7 +94,19 @@ fn seal_and_retain_preserve_every_allocation_and_sparse_selection() {
     let ids_ptr = builder.node_ids.as_ref().unwrap().as_ptr();
     let mask_ptr = builder.validity.as_ptr();
     let selection_ptr = builder.selection.as_ptr();
+    let producer_ranges = builder.buffer_provenance();
     let batch = builder.seal(Some(1)).unwrap();
+    let sealed_ranges = batch.buffer_provenance();
+    assert_eq!(producer_ranges[..3], sealed_ranges[..3]);
+    let selection = sealed_ranges[3].unwrap();
+    assert_eq!(selection.identity, producer_ranges[3].unwrap().identity);
+    assert_eq!(
+        selection.retained_capacity_bytes,
+        producer_ranges[3].unwrap().retained_capacity_bytes
+    );
+    assert_eq!(selection.byte_offset, 0);
+    assert_eq!(selection.byte_length, 4);
+    assert!(selection.retained_capacity_bytes >= 20);
     assert_eq!(int_values(&batch), &[1, 0, 3, 0, 5]);
     assert_eq!(int_values(&batch).as_ptr(), values_ptr);
     assert_eq!(batch.values().1, identity);
@@ -106,6 +118,7 @@ fn seal_and_retain_preserve_every_allocation_and_sparse_selection() {
     assert_eq!(batch.source_constructed_bytes(), 80);
     let before = governor.retained_result_snapshot();
     let view = batch.try_retain(24).unwrap();
+    assert_eq!(view.buffer_provenance(), sealed_ranges);
     assert_eq!(int_values(&view).as_ptr(), values_ptr);
     assert_eq!(view.node_ids().unwrap().0.as_ptr(), ids_ptr);
     assert_eq!(view.validity_buffer().unwrap().0.as_ptr(), mask_ptr);

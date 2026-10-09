@@ -105,6 +105,63 @@ pub struct LendingNumericScan {
     pub needs_node_ids: bool,
 }
 
+/// Existing numeric plan eligibility, borrowed only during cursor preparation.
+#[derive(Debug, Clone, Copy)]
+pub struct RetainedNumericPlan<'a> {
+    pub fragment: NumericFragment<'a>,
+    pub projections: &'a [Projection],
+    pub offset: usize,
+    pub limit: Option<usize>,
+}
+
+pub fn try_prepare_retained_numeric_plan<'a>(
+    plan: &'a PhysicalPlan,
+    catalog: &Catalog,
+) -> Option<RetainedNumericPlan<'a>> {
+    let (plan, offset, limit) = match plan {
+        PhysicalPlan::LimitExec {
+            offset,
+            limit,
+            input,
+        } => (input.as_ref(), *offset, *limit),
+        plan => (plan, 0, None),
+    };
+    let (fragment, projections) = match plan {
+        PhysicalPlan::ProjectExec { items, input } => {
+            (NumericFragment::try_prepare(items, input, catalog)?, items)
+        }
+        PhysicalPlan::NodeProjectionScanExec {
+            variable,
+            label,
+            access,
+            predicate: Some(predicate),
+            items,
+            ..
+        } if access.is_label_scan() => (
+            NumericFragment::try_prepare_parts(items, variable, label, predicate, catalog)?,
+            items,
+        ),
+        _ => return None,
+    };
+    if projections.is_empty()
+        || !projections
+            .iter()
+            .all(|projection| match &projection.expression {
+                ProjectionExpression::Id { .. } => true,
+                ProjectionExpression::Property { property, .. } => property == fragment.property,
+                _ => false,
+            })
+    {
+        return None;
+    }
+    Some(RetainedNumericPlan {
+        fragment,
+        projections,
+        offset,
+        limit,
+    })
+}
+
 struct NumericBatchEmitter<'plan, 'task, 'observer, 'emit> {
     fragment: NumericFragment<'plan>,
     items: &'plan [Projection],

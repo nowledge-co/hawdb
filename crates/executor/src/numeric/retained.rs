@@ -68,6 +68,44 @@ pub struct NumericBufferIdentity {
     pub generation: u64,
 }
 
+/// Visible range within one native allocation. Capacity remains charged even
+/// when filtering/limit exposes a small or empty result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NumericBufferProvenance {
+    pub identity: NumericBufferIdentity,
+    pub retained_capacity_bytes: usize,
+    pub byte_offset: usize,
+    pub byte_length: usize,
+}
+
+fn provenance<T>(values: &Vec<T>, identity: NumericBufferIdentity) -> NumericBufferProvenance {
+    NumericBufferProvenance {
+        identity,
+        retained_capacity_bytes: values.capacity() * std::mem::size_of::<T>(),
+        byte_offset: 0,
+        byte_length: values.len() * std::mem::size_of::<T>(),
+    }
+}
+
+fn buffer_provenance(
+    values: &NumericValueBuffer,
+    node_ids: &Option<Vec<u64>>,
+    validity: &Vec<u64>,
+    selection: &Vec<u32>,
+    identities: [NumericBufferIdentity; 4],
+) -> [Option<NumericBufferProvenance>; 4] {
+    let values = match values {
+        NumericValueBuffer::Int(values) => provenance(values, identities[0]),
+        NumericValueBuffer::Float(values) => provenance(values, identities[0]),
+    };
+    [
+        Some(values),
+        node_ids.as_ref().map(|ids| provenance(ids, identities[1])),
+        (!validity.is_empty()).then(|| provenance(validity, identities[2])),
+        Some(provenance(selection, identities[3])),
+    ]
+}
+
 impl NumericBufferIdentity {
     fn new() -> Result<Self> {
         let allocation = NEXT_ALLOCATION
@@ -89,6 +127,9 @@ pub enum RetainedNumericValues<'a> {
     Float(&'a [f64]),
 }
 
+/// Prepaid owner metadata, released after the final immutable payload.
+pub trait NumericBatchOwner: std::fmt::Debug + Send + Sync {}
+
 /// Mutable first representation. No row maps or `Vec<Value>` are staged here.
 #[derive(Debug)]
 pub struct RetainedNumericBuilder<'plan> {
@@ -101,6 +142,8 @@ pub struct RetainedNumericBuilder<'plan> {
     rows: usize,
     failed: bool,
     identities: [NumericBufferIdentity; 4],
+    owner: Option<Arc<dyn NumericBatchOwner>>,
+    owner_metadata_capacity: usize,
     account: QueryMemoryAccount,
     memory: QueryMemoryLease,
     runtime: RuntimeRetainedResult,
@@ -114,6 +157,8 @@ struct NumericStorage {
     selection: Vec<u32>,
     rows: usize,
     identities: [NumericBufferIdentity; 4],
+    // Drop after payload/selection and before their capacity reservations.
+    _owner: Option<Arc<dyn NumericBatchOwner>>,
     account: QueryMemoryAccount,
     // Drop payload before releasing its query-ledger charge.
     _memory: QueryMemoryLease,
@@ -153,6 +198,20 @@ impl<'plan> RetainedNumericBuilder<'plan> {
         account: QueryMemoryAccount,
         permit: &RuntimePermit,
     ) -> RetainedResult<Self> {
+        Self::new_with_metadata(fragment, rows, needs_node_ids, account, permit, 0, 0)
+    }
+
+    /// Adapter-owned unique metadata stays charged with the buffer owner;
+    /// independently owned view metadata stays charged with each view.
+    pub fn new_with_metadata(
+        fragment: NumericFragment<'plan>,
+        rows: NonZeroUsize,
+        needs_node_ids: bool,
+        account: QueryMemoryAccount,
+        permit: &RuntimePermit,
+        owner_metadata_bytes: usize,
+        view_metadata_bytes: usize,
+    ) -> RetainedResult<Self> {
         if !matches!(
             fragment.property_type,
             PropertyType::Int | PropertyType::Float
@@ -160,11 +219,12 @@ impl<'plan> RetainedNumericBuilder<'plan> {
             return Err(HawDBError::Execution("unsupported retained numeric type".into()).into());
         }
         let bytes = Self::required_capacity_bytes(rows, needs_node_ids)
+            .and_then(|bytes| bytes.checked_add(owner_metadata_bytes))
             .ok_or_else(|| HawDBError::Execution("retained numeric size overflow".into()))?;
-        let runtime = permit.reserve_retained_result(
-            bytes as u64,
-            std::mem::size_of::<RetainedNumericBatch>() as u64,
-        )?;
+        let view_bytes = std::mem::size_of::<RetainedNumericBatch>()
+            .checked_add(view_metadata_bytes)
+            .ok_or_else(|| HawDBError::Execution("retained numeric size overflow".into()))?;
+        let runtime = permit.reserve_retained_result(bytes as u64, view_bytes as u64)?;
         let native_overhead =
             RuntimeRetainedResult::owner_overhead_bytes() + runtime.handle_bytes();
         let memory = account.reserve(
@@ -188,10 +248,25 @@ impl<'plan> RetainedNumericBuilder<'plan> {
             rows: 0,
             failed: false,
             identities,
+            owner: None,
+            owner_metadata_capacity: owner_metadata_bytes,
             account,
             memory,
             runtime,
         })
+    }
+
+    /// Attach metadata only after its unique allocation has been prepaid.
+    pub fn attach_owner<T: NumericBatchOwner + 'static>(&mut self, owner: Arc<T>) -> Result<()> {
+        let bytes = std::mem::size_of::<T>() + 2 * std::mem::size_of::<usize>();
+        if self.owner.is_some() || bytes > self.owner_metadata_capacity {
+            self.failed = true;
+            return Err(HawDBError::Execution(
+                "numeric owner metadata was not admitted".into(),
+            ));
+        }
+        self.owner = Some(owner);
+        Ok(())
     }
 
     pub fn push_node(&mut self, node: &NodeRecord) -> Result<()> {
@@ -253,6 +328,17 @@ impl<'plan> RetainedNumericBuilder<'plan> {
         (values_view(&self.values), self.identities[0])
     }
 
+    /// Values, optional node IDs, optional validity, and selection, in order.
+    pub fn buffer_provenance(&self) -> [Option<NumericBufferProvenance>; 4] {
+        buffer_provenance(
+            &self.values,
+            &self.node_ids,
+            &self.validity,
+            &self.selection,
+            self.identities,
+        )
+    }
+
     /// Filtering creates only the prepaid selection; sealing moves each Vec
     /// into an Arc-owned structure without converting it to `Arc<[T]>`.
     pub fn seal(mut self, selected_limit: Option<usize>) -> RetainedResult<RetainedNumericBatch> {
@@ -284,6 +370,7 @@ impl<'plan> RetainedNumericBuilder<'plan> {
                 selection: self.selection,
                 rows: self.rows,
                 identities: self.identities,
+                _owner: self.owner,
                 account: self.account,
                 _memory: self.memory,
             }),
@@ -309,6 +396,17 @@ fn validity_view(rows: usize, words: &[u64]) -> ValidityView<'_> {
 }
 
 impl RetainedNumericBatch {
+    /// Values, optional node IDs, optional validity, and selection, in order.
+    pub fn buffer_provenance(&self) -> [Option<NumericBufferProvenance>; 4] {
+        buffer_provenance(
+            &self.storage.values,
+            &self.storage.node_ids,
+            &self.storage.validity,
+            &self.storage.selection,
+            self.storage.identities,
+        )
+    }
+
     pub fn physical_rows(&self) -> usize {
         self.storage.rows
     }

@@ -183,6 +183,11 @@ pub use api::{
     HAWDB_LIGHTNING_RELATIONAL_STREAM_FORMAT_VERSION, SLOW_QUERY_LOG_EVENT_PROTOCOL,
     STORAGE_RESOURCE_PROFILE_PROTOCOL,
 };
+pub use api::{
+    RetainedColumnRole, RetainedColumnSchema, RetainedColumnType, RetainedColumnValues,
+    RetainedQueryBatch, RetainedQueryCursor, RetainedQueryError, RetainedQueryOptions,
+    RetainedQueryProfile, RetainedQueryStatus,
+};
 pub use background_maintenance_evidence::nowledge_background_maintenance_evidence_json;
 pub use blackbox::{
     blackbox_readiness_from_manifest_json, blackbox_report, blackbox_report_json,
@@ -292,6 +297,11 @@ pub use hawdb_core::{
     DEFAULT_GRAPH_RAG_MAX_PROPERTIES_PER_SUBJECT, DEFAULT_GRAPH_RAG_MAX_RELATIONSHIP_TYPES,
     DEFAULT_GRAPH_RAG_MAX_ROUTES, GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL, MAX_GRAPH_RAG_QUERY_LIMIT,
 };
+pub use hawdb_executor::numeric::retained::{
+    NumericBufferIdentity as RetainedBufferIdentity,
+    NumericBufferProvenance as RetainedBufferProvenance,
+};
+pub use hawdb_executor::ValidityView as RetainedValidityView;
 pub use hawdb_optimizer::{
     AdaptiveVectorBackendPolicy, Distribution, GroupId, Memo as OptimizerMemo,
     MemoGroup as OptimizerMemoGroup, PhysicalProperties, RequiredProperties,

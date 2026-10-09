@@ -393,7 +393,11 @@ impl QueryMemoryAccount {
         .unwrap()
     }
 
-    pub(crate) fn available_bytes(&self) -> usize {
+    /// Remaining capacity in both this account and its shared query root.
+    /// This is a sizing observation; the following reservation still arbitrates
+    /// concurrent owners and can fail without advancing the producer.
+    #[doc(hidden)]
+    pub fn available_bytes(&self) -> usize {
         let state = lock_recover(&self.ledger.inner.state);
         let account = &state.accounts[&self.account_id];
         account.budget_bytes.saturating_sub(account.used_bytes).min(

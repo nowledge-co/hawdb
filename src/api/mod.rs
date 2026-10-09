@@ -99,6 +99,12 @@ mod explain_format_tests;
 mod observability;
 mod plan_cache;
 mod query_runtime;
+mod retained_query;
+pub use retained_query::{
+    RetainedColumnRole, RetainedColumnSchema, RetainedColumnType, RetainedColumnValues,
+    RetainedQueryBatch, RetainedQueryCursor, RetainedQueryError, RetainedQueryOptions,
+    RetainedQueryProfile, RetainedQueryStatus,
+};
 mod resource_profile;
 mod runtime_cell;
 mod schema_guidance;
@@ -254,6 +260,7 @@ pub struct Database {
     derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue,
     telemetry: Option<Arc<dyn TelemetrySink>>,
     runtime_governor: Option<hawdb_qos::RuntimeGovernor>,
+    retained_runtime: Arc<retained_query::RetainedRuntime>,
 }
 
 pub(crate) struct DatabaseCheckpointSource {
@@ -829,6 +836,7 @@ pub struct DatabaseReadTransaction<S: crate::executor::ExecutionStore = GraphSto
     projection_relational: Option<ProjectionRelationalReadSnapshot>,
     task_context: Option<hawdb_core::RuntimeTaskContext>,
     _pin: Arc<ReaderPin>,
+    retained_runtime: Arc<retained_query::RetainedRuntime>,
 }
 
 /// An immutable canonical view that can create independent query contexts.
@@ -874,6 +882,7 @@ impl DatabaseReadSnapshot {
             projection_relational: None,
             task_context,
             _pin: Arc::clone(&source._pin),
+            retained_runtime: Arc::clone(&source.retained_runtime),
         })
     }
 }
@@ -969,6 +978,7 @@ impl Default for Database {
             derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
+            retained_runtime: Arc::new(retained_query::RetainedRuntime::default()),
             branch_create_recovery: None,
         }
     }
@@ -1066,6 +1076,7 @@ impl Database {
             derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
+            retained_runtime: Arc::new(retained_query::RetainedRuntime::default()),
             branch_create_recovery: None,
         }
     }
@@ -1243,6 +1254,7 @@ impl Database {
             derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
+            retained_runtime: Arc::new(retained_query::RetainedRuntime::default()),
             branch_create_recovery: None,
         };
         if database.config.read_only {
@@ -1356,6 +1368,7 @@ impl Database {
             derived_artifact_jobs: hawdb_artifact::DerivedArtifactJobQueue::default(),
             telemetry: None,
             runtime_governor: None,
+            retained_runtime: Arc::new(retained_query::RetainedRuntime::default()),
             branch_create_recovery,
         })
     }
@@ -1663,6 +1676,7 @@ impl Database {
                 projection_relational,
                 task_context,
                 _pin: Arc::new(pin),
+                retained_runtime: Arc::clone(&self.retained_runtime),
             }
         })
     }
@@ -2291,6 +2305,7 @@ impl Database {
     /// embedding layers that own the governor (`HawDBEmbedded`,
     /// `NowledgeMemGraph`); a second governor is never constructed here.
     pub fn set_runtime_governor(&mut self, governor: hawdb_qos::RuntimeGovernor) {
+        self.retained_runtime.configure(governor.clone());
         if let Some(telemetry) = &self.telemetry {
             governor.set_telemetry_sink(Some(runtime_telemetry_sink(telemetry.clone())));
         }

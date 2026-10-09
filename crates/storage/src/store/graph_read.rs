@@ -27,6 +27,10 @@ enum RangeRecord<'a> {
 #[path = "graph_read/ordered_range_tests.rs"]
 mod ordered_range_tests;
 
+#[cfg(test)]
+#[path = "graph_read/retained_scan_tests.rs"]
+mod retained_scan_tests;
+
 impl GraphStore {
     pub fn canonical_node_from_segments(&self, id: NodeId) -> Result<Option<NodeRecord>> {
         self.durable
@@ -495,6 +499,26 @@ impl GraphStore {
         self.nodes
             .values()
             .filter(move |node| label_id.map(|id| node.labels.contains(&id)).unwrap_or(true))
+    }
+
+    /// A resumable borrowed source for a demanded retained numeric batch.
+    /// Refuses sources requiring canonical decoding instead of exposing just
+    /// their in-memory overlay. The caller bounds each demanded iterator step.
+    pub fn try_scan_materialized_nodes_after(
+        &self,
+        label_id: Option<LabelId>,
+        after: Option<NodeId>,
+    ) -> Result<Option<impl Iterator<Item = &NodeRecord>>> {
+        self.ensure_usable()?;
+        if self.is_out_of_core() || self.canonical_base.is_some() {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.nodes
+                .iter_after(after)
+                .map(|(_, node)| node)
+                .filter(move |node| label_id.is_none_or(|id| node.labels.contains(&id))),
+        ))
     }
 
     pub fn scan_nodes_with_filter_pruning<'a>(

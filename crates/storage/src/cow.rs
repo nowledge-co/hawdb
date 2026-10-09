@@ -316,6 +316,20 @@ impl<K: Ord, V> CowSegmentedMap<K, V> {
         self.segments.iter().flat_map(|segment| segment.iter())
     }
 
+    /// Resume ordered borrowed delivery without rescanning the preceding pages.
+    /// Range bounds are consumed during iterator creation, not retained as
+    /// references into mutable cursor state. Values remain in their COW pages.
+    pub fn iter_after(&self, after: Option<K>) -> impl Iterator<Item = (&K, &V)> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let start = after
+            .as_ref()
+            .and_then(|key| self.segment_index(key))
+            .unwrap_or(0);
+        self.segments[start..].iter().flat_map(move |segment| {
+            segment.range((after.as_ref().map_or(Unbounded, Excluded), Unbounded))
+        })
+    }
+
     pub fn keys(&self) -> impl Iterator<Item = &K> {
         self.iter().map(|(key, _)| key)
     }
@@ -324,6 +338,10 @@ impl<K: Ord, V> CowSegmentedMap<K, V> {
         self.iter().map(|(_, value)| value)
     }
 }
+
+#[cfg(test)]
+#[path = "cow/retained_scan_tests.rs"]
+mod retained_scan_tests;
 
 impl<K: Ord + Clone + CowPageWeight, V: Clone + CowPageWeight> CowSegmentedMap<K, V> {
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {

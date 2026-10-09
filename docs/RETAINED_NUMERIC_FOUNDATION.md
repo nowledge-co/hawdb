@@ -1,10 +1,11 @@
-# Retained numeric ownership foundation
+# Experimental retained numeric delivery
 
-This implements ownership and admission building blocks for
+This implements ownership building blocks and an experimental native cursor for
 [issue #987](https://github.com/nowledge-co/hawdb/issues/987), under the
 [columnar interchange proposal](specs/ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md).
-It does not expose a strict query cursor, language view, or Arrow export.
-The complete proposal and #987 remain unfinished. Production hosts continue
+Source snapshot/planning workspace qualification, language views and Arrow
+export remain incomplete. The complete proposal and #987 remain unfinished.
+Production hosts continue
 to use the root `hawdb` facade; this internal executor module is not a new
 integration surface.
 
@@ -76,6 +77,70 @@ release of its query and runtime capacity charges.
 It is not a claim that source access or the whole query performs no copies.
 There is no qualified source-reuse capability.
 
+## Root cursor and bounded pulls
+
+`Database::query_with_params_retained` and
+`DatabaseReadTransaction::into_retained_query` expose the experimental contract
+through the root facade. Eligibility comes from the existing optimized physical
+plan and public numeric property descriptor. Supported plans have one label,
+one integer/float comparison and projections of that same property or `id(n)`,
+with optional SKIP/LIMIT. Repeated property projections share their payload.
+For example, declare `CREATE NODE TABLE Item` and
+`CREATE PROPERTY ON NODE TABLE Item(score) TYPE INT` before querying
+`MATCH (n:Item) WHERE n.score >= $min RETURN n.score, id(n)` with a parameter map.
+An undeclared property, another projection or plan shape refuses explicitly.
+Property columns are nullable Int64/Float64; identity columns are non-null UInt64
+with an explicit node-identity role. This identity schema does not advertise
+ordinary row-value signed-integer or graph-frontier qualification.
+
+The default is two distinct live payload slots, zero prefetch, at most 1,024
+inspected source records and 1 MiB admitted capacity per pull. Database batch
+configuration can restrict these maxima further. Unrelated-label records count
+toward the inspected-record bound; a filtered-empty batch is not EOF. The
+materialized source resumes by ordered node ID over the original immutable
+copy-on-write pages. Persistent canonical/overlay sources and source-reuse
+requests return `CopyRequired`.
+
+Pulling is serialized by Rust's mutable cursor borrow. Slot/byte/handle pressure
+returns a retryable error before source advancement, without waiting for a
+same-thread consumer to release its own view. A larger explicitly configured
+slot count remains subject to the shared byte/handle allowance. View retention
+does not consume an additional distinct slot. The slot releases after final
+payload destruction, even if the original batch wrapper dropped earlier.
+The control owner and first batch require at least two shared handles. A
+one-handle configuration fails with `WorkingUnitTooLarge` before creating the
+control owner or binding the governor instead of returning permanently
+unresolvable backpressure. The host can correct that rejected configuration;
+once a valid governor binds, replacement cannot multiply its allowance.
+
+SKIP/LIMIT expose a range of the selection allocation without gathering values.
+Provenance includes allocation ID, generation, retained capacity and visible
+byte range; a small selection still charges its full owner. Result row and
+selected-payload limits apply cumulatively and caller options cannot raise the
+database limits. Every batch remains provisional until successful terminal
+completion. Terminal errors repeat as errors, never EOF; status changes remain
+visible through earlier independently retained batches. Cursor/database close
+and cancellation release the source without revoking produced values.
+
+The database and all its read snapshots share one retained governor binding,
+chosen at the first eligible cursor. Configure the governor before that first
+cursor; later ordinary-governor replacement does not create a second retained
+allowance. Native batches retain schema/status and admitted payload owners,
+without retaining the database, source iterator or read pin. CPU permits are
+released between pulls. Profiles retain inspected/constructed/selected work even
+when a later delivery budget fails; emitted rows/bytes include successful
+deliveries only.
+
+This is not yet a qualified whole-operation memory bound. Root cursor creation
+still uses the existing read-snapshot and optimizer paths, whose catalog,
+statistics, source-pin and planning workspace allocations need a complete
+admission/capacity audit. The direct database entrypoint avoids cloning unrelated
+slow-query and statement-summary history, but that does not resolve the remaining
+workspace gate. Current counters cover numeric source construction, selection
+and native payload handoff; they do not establish a complete allocator/RSS or
+foreign-adapter copy profile. Use the ordinary APIs for unsupported workloads;
+the experimental retained API never silently materializes those workloads.
+
 ## Evidence and remaining work
 
 The executor Cargo unit suite passes 323 tests with 16 existing ignored local
@@ -87,10 +152,15 @@ The QoS suite passes 92 tests, including concurrent shared-handle admission and
 process-policy failures after work-permit closure. These are building-block
 tests, not full query or cross-language qualification.
 
-Remaining #987 work includes a root-facade eligible-plan contract, bounded
-resumable demand source, default two-slot/no-prefetch cursor, typed refusal and
-terminal/provisional state, cumulative result limits, range/alignment descriptors
-and complete copy/resource profiles, C/purego/Python read-only owners, module
+Native cursor regressions additionally cover two-slot and shared-handle pressure,
+retry without source advancement, snapshot publication/close, cancellation and
+read-pin release, SKIP/LIMIT range identity, nullable float IEEE bits, fixed empty
+schemas, terminal cumulative budgets and bounded sparse-label source work.
+Explicitly increasing slots from two to four cannot bypass shared handles;
+larger cursor row/payload options cannot bypass database limits.
+
+Remaining #987 work includes source/planning workspace admission, complete
+copy/resource/performance profiles, C/purego/Python read-only owners, module
 lifetime, and compatible Arrow export/refusal. The representative large-size
 baseline and measured bulk boundary in #976 also remain incomplete. UTF-8,
 binary, packed boolean, UUID, recursive layouts, SIMD, graph and FTS extensions
