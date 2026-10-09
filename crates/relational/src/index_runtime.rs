@@ -186,7 +186,7 @@ pub struct RelationalIndexExecutionEvidence {
     pub index: String,
     /// All reported index reads, including planning metadata counts.
     pub lookups: usize,
-    /// Planning counts, including successful zero-I/O count-cache reuse.
+    /// Planning count attempts, including refusals and zero-I/O cache reuse.
     pub metadata_count_lookups: usize,
     pub demand_paged_lookups: usize,
     pub authoritative_lookups: usize,
@@ -366,6 +366,18 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
             }
             Some(Err(RelationalIndexShadowError::FileDescriptors(error))) => {
                 Err(HawDBError::FileDescriptors(error))
+            }
+            Some(Err(RelationalIndexShadowError::Admission(_)))
+                if matches!(self.mode, RelationalIndexReadMode::DemandPaged(_)) =>
+            {
+                self.record_metadata_fallback(table, index, "metadata_count_admission_rejected")?;
+                Ok(None)
+            }
+            Some(Err(RelationalIndexShadowError::MissingIndex { .. }))
+                if matches!(self.mode, RelationalIndexReadMode::DemandPaged(_)) =>
+            {
+                self.record_metadata_fallback(table, index, "metadata_count_missing_index")?;
+                Ok(None)
             }
             Some(Err(error @ RelationalIndexShadowError::Admission(_))) => {
                 Err(HawDBError::Execution(error.to_string()))
@@ -834,6 +846,22 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
             1,
             "canonical fallback count",
         )?;
+        evidence.fallback_reasons.insert(reason);
+        Ok(())
+    }
+
+    fn record_metadata_fallback(
+        &self,
+        table: &str,
+        index: &str,
+        reason: &'static str,
+    ) -> Result<()> {
+        let mut state = self.context.state.borrow_mut();
+        let evidence = Self::evidence_mut(&mut state, table, index);
+        evidence.lookups = checked_add(evidence.lookups, 1, "index lookup count")?;
+        evidence.metadata_count_lookups =
+            checked_add(evidence.metadata_count_lookups, 1, "index metadata count")?;
+        // Declining a planning count is not an executed canonical fallback.
         evidence.fallback_reasons.insert(reason);
         Ok(())
     }

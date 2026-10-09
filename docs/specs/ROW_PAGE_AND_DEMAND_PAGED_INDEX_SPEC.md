@@ -474,7 +474,14 @@ identify data from independent databases. The cache strongly retains one actual
 checkpoint reader; changing that reader discards earlier counts and key payload.
 Cache entries and retained key payload remain bounded by statement page/byte
 limits. Cache reuse reports zero page/file work and visits no canonical rows.
-Planning metadata admission/read failures fail the statement closed. Ordinary
+Unique full-key candidates use their bounded 0/1 estimate without metadata I/O.
+In `DemandPaged` mode, metadata admission refusal or a missing optional index
+MUST decline the count and record a planning-specific fallback reason. This
+permits statistics-based planning, not an unavailable execution source.
+Authoritative metadata counts still fail closed on those errors. Corruption,
+durability, stale generation, descriptor rejection, cancellation, and deadline
+errors MUST remain errors in every mode. Admitted failed work MUST NOT be
+refunded, and declining a count MUST NOT reset or reopen its ledger. Ordinary
 EXPLAIN preserves its independent planning-task behavior and reports metadata
 work without claiming executed operator rows or backend probes. Total read
 lookups and I/O include planning; a separate metadata-count counter identifies
@@ -501,6 +508,11 @@ once. File-page counts still describe selected page slots. A retained warm
 descriptor performs no additional validation read, and a decoded page-cache
 hit consumes no file bytes. Budget refusal keeps the backing healthy; an
 admitted integrity failure poisons the selected reader.
+The default index file-byte allowance is 16 MiB. A mounted artifact larger than
+that allowance cannot pass cold whole-object validation, even for a selective
+point read; handle eviction restores that cold cost. Hosts needing this workload
+must admit validation plus the selected slots through typed resource limits.
+Warm-handle evidence does not qualify cold access under the default allowance.
 Cold recovery delta reads check the opened handle's length against its selected
 descriptor before reading payload. They read at most that exact admitted length
 and recheck the handle afterwards; an oversized or concurrently resized delta
@@ -2215,6 +2227,11 @@ RSS hard watermark may reject new work even when logical accounting claims
 headroom.
 
 ## Derived projections
+
+Projection-generation batches retain separate logical-page evidence but do not
+consume canonical row-page admission. Their selected rows and payload bytes
+consume the shared row and byte allowances, including mixed and nested reads;
+this distinction does not grant an independent row or byte budget.
 
 Column groups, deletion vectors, BM25, vector ANN, statistics, and analytics
 artifacts are selected by source commit epoch, schema identity, algorithm/index

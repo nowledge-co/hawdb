@@ -13,6 +13,9 @@
 // limitations under the License.
 
 use super::*;
+use crate::relational::index_shadow::demand_read::{IndexReadObserver, IndexReadPreflightError};
+use std::cell::Cell;
+use std::rc::Rc;
 
 struct OwnedPayload(PathBuf);
 
@@ -53,6 +56,7 @@ struct CountingFile {
     read_calls: usize,
     bytes_read: usize,
     largest_request: usize,
+    admitted_bytes: Option<Rc<Cell<usize>>>,
 }
 
 impl CountingFile {
@@ -64,18 +68,33 @@ impl CountingFile {
             read_calls: 0,
             bytes_read: 0,
             largest_request: 0,
+            admitted_bytes: None,
         }
     }
 
     fn read_payload(&mut self, encoded_len: usize) -> Result<Vec<u8>, RelationalIndexShadowError> {
-        read_recovery_delta_payload(self, encoded_len, |reader| {
-            reader.file.metadata().map(|metadata| metadata.len())
-        })
+        self.read_payload_admitted(encoded_len, IndexReadAdmission::default())
+    }
+
+    fn read_payload_admitted(
+        &mut self,
+        encoded_len: usize,
+        admission: IndexReadAdmission<'_>,
+    ) -> Result<Vec<u8>, RelationalIndexShadowError> {
+        read_recovery_delta_payload(
+            self,
+            encoded_len,
+            |reader| reader.file.metadata().map(|metadata| metadata.len()),
+            admission,
+        )
     }
 }
 
 impl Read for CountingFile {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(admitted) = &self.admitted_bytes {
+            assert!(admitted.get() >= self.bytes_read + buffer.len());
+        }
         if let Some(length) = self.resize_on_read.take() {
             std::fs::OpenOptions::new()
                 .write(true)
@@ -88,6 +107,71 @@ impl Read for CountingFile {
         self.bytes_read += bytes_read;
         Ok(bytes_read)
     }
+}
+
+struct FileAdmission {
+    bytes: Rc<Cell<usize>>,
+    reject: bool,
+}
+
+impl IndexReadObserver for FileAdmission {
+    fn check_charge(&self, _charge: IndexReadCharge) -> Result<(), IndexReadPreflightError> {
+        if self.reject {
+            Err(IndexReadPreflightError::Budget)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn set_budget_refusal(&self, _refused: bool) {}
+
+    fn charge(&self, charge: IndexReadCharge) -> Result<(), RelationalIndexShadowError> {
+        self.check_charge(charge)
+            .map_err(IndexReadPreflightError::into_error)?;
+        let IndexReadCharge::FileBytes(bytes) = charge else {
+            panic!("payload admission must charge file bytes")
+        };
+        self.bytes.set(self.bytes.get() + bytes);
+        Ok(())
+    }
+
+    fn file_budget(&self, requested: usize) -> Result<usize, RelationalIndexShadowError> {
+        Ok(requested)
+    }
+}
+
+#[test]
+fn recovery_payload_charges_file_bytes_before_io_and_keeps_failed_read_charges() {
+    for resize in [None, Some(255)] {
+        let fixture = OwnedPayload::new(&vec![0x39; 256]);
+        let mut reader = CountingFile::open(&fixture, resize);
+        let bytes = Rc::new(Cell::new(0));
+        reader.admitted_bytes = Some(Rc::clone(&bytes));
+        let observer = FileAdmission {
+            bytes: Rc::clone(&bytes),
+            reject: false,
+        };
+        let result = reader.read_payload_admitted(256, IndexReadAdmission::new(&observer));
+        assert_eq!(result.is_ok(), resize.is_none());
+        assert_eq!(bytes.get(), 256);
+        assert_eq!(reader.bytes_read, resize.unwrap_or(256) as usize);
+    }
+}
+
+#[test]
+fn recovery_payload_admission_refusal_precedes_io() {
+    let fixture = OwnedPayload::new(&vec![0x39; 256]);
+    let mut reader = CountingFile::open(&fixture, None);
+    let observer = FileAdmission {
+        bytes: Rc::new(Cell::new(0)),
+        reject: true,
+    };
+    assert!(matches!(
+        reader.read_payload_admitted(256, IndexReadAdmission::new(&observer)),
+        Err(RelationalIndexShadowError::Admission(_))
+    ));
+    assert_eq!(reader.read_calls, 0);
+    assert_eq!(observer.bytes.get(), 0);
 }
 
 #[test]

@@ -330,6 +330,29 @@ impl RelationalIndexStoreReader for Reader {
         matches!(self.source, Source::View(_))
     }
 
+    fn relational_index_exact_posting_count_with_context(
+        &self,
+        table: &str,
+        index: &str,
+        key: &RelationalKey,
+        limits: RelationalIndexReadLimits,
+        context: &RelationalIndexReadContext,
+    ) -> Option<std::result::Result<(u64, RelationalIndexReadViewReport), RelationalIndexShadowError>>
+    {
+        match &self.source {
+            Source::View(view) => context.count_exact_postings(
+                hawdb_storage::relational_index_view::RelationalIndexReadTarget::View(view),
+                table,
+                index,
+                key,
+                limits,
+            ),
+            Source::Script { .. } => self
+                .attempt(|_, _| true)
+                .map(|result| result.map(|report| (report.rows_visited as u64, report))),
+        }
+    }
+
     fn visit_relational_index_read_view_prefix_entries_with_context(
         &self,
         table: &str,

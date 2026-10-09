@@ -28,6 +28,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_unique_index(false)
+    }
+
+    fn with_unique_index(unique: bool) -> Self {
         let directory = std::env::temp_dir().join(format!(
             "hawdb-exact-count-planning-{}",
             hawdb_core::generate_uuidv7().unwrap()
@@ -50,6 +54,17 @@ impl Fixture {
             ] {
                 let transaction =
                     compile_relational_statement_sql(sql, &[], store.relational_state()).unwrap();
+                store
+                    .commit_relational_transaction(&mut catalog, transaction)
+                    .unwrap();
+            }
+            if unique {
+                let transaction = compile_relational_statement_sql(
+                    "CREATE UNIQUE INDEX docs_unique_id ON docs (id)",
+                    &[],
+                    store.relational_state(),
+                )
+                .unwrap();
                 store
                     .commit_relational_transaction(&mut catalog, transaction)
                     .unwrap();
@@ -177,6 +192,80 @@ fn planning_metadata_and_execution_share_one_statement_page_allowance() {
         matches!(output, Err(HawDBError::Execution(_))),
         "metadata consumes the statement allowance before execution: {output:?}"
     );
+}
+
+#[test]
+fn demand_paged_metadata_refusal_keeps_a_legal_primary_key_plan_available() {
+    let fixture = Fixture::new();
+    let output = execute_relational_query_sql_with_runtime(
+        "SELECT id FROM docs WHERE id = $1 AND bucket = $2",
+        &[Value::Int(0), Value::Int(0)],
+        fixture.store().relational_state(),
+        RelationalQueryReadModes::new(
+            RelationalIndexReadMode::DemandPaged(fixture.store()),
+            RelationalRowReadMode::CanonicalMemory,
+        ),
+        RelationalQueryLimits {
+            index_read: RelationalIndexReadLimits {
+                max_file_bytes: 0,
+                ..Default::default()
+            },
+            ..batched_index_join_limits()
+        },
+        &hawdb_executor::ExecutionMemoryConfig::default(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(output.rows.len(), 1);
+    assert_eq!(output.rows[0]["id"], Value::Int(0));
+    assert_eq!(
+        output.access_path.kind,
+        RelationalAccessPathKind::PrimaryKey
+    );
+    let evidence = &output.index_execution_evidence[0];
+    assert_eq!(evidence.lookups, 1);
+    assert_eq!(evidence.metadata_count_lookups, 1);
+    assert_eq!(evidence.canonical_fallback_lookups, 0);
+    assert_eq!(evidence.runtime_path(), "not_executed");
+    assert!(evidence
+        .fallback_reasons
+        .contains("metadata_count_admission_rejected"));
+}
+
+#[test]
+fn unique_full_key_planning_does_not_spend_index_read_allowance() {
+    let fixture = Fixture::with_unique_index(true);
+    for prefix in ["", "EXPLAIN ", "EXPLAIN ANALYZE "] {
+        let output = execute_relational_query_sql_with_runtime(
+            &format!("{prefix}SELECT id, bucket FROM docs WHERE id = $1"),
+            &[Value::Int(40)],
+            fixture.store().relational_state(),
+            RelationalQueryReadModes::new(
+                RelationalIndexReadMode::Authoritative(fixture.store()),
+                RelationalRowReadMode::CanonicalMemory,
+            ),
+            RelationalQueryLimits {
+                index_read: RelationalIndexReadLimits {
+                    max_file_bytes: 0,
+                    ..Default::default()
+                },
+                ..batched_index_join_limits()
+            },
+            &hawdb_executor::ExecutionMemoryConfig::default(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            output.access_path.kind,
+            RelationalAccessPathKind::PrimaryKey
+        );
+        assert_eq!(output.access_path.estimated_rows, 1);
+        assert!(output.index_execution_evidence.is_empty());
+        if prefix.is_empty() {
+            assert_eq!(output.rows.len(), 1);
+            assert_eq!(output.rows[0]["id"], Value::Int(40));
+        }
+    }
 }
 
 #[test]

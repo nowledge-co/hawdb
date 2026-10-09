@@ -14,6 +14,59 @@
 
 use super::*;
 
+#[test]
+fn metadata_count_fallback_preserves_planning_purpose_and_mode_authority() {
+    for (outcome, reason) in [
+        (Outcome::Admission, "metadata_count_admission_rejected"),
+        (Outcome::Missing, "metadata_count_missing_index"),
+    ] {
+        let reader = Reader::script(outcome, false);
+        for authoritative in [false, true] {
+            let runtime = RelationalIndexRuntime::new(
+                if authoritative {
+                    RelationalIndexReadMode::Authoritative(&reader)
+                } else {
+                    RelationalIndexReadMode::DemandPaged(&reader)
+                },
+                Default::default(),
+            );
+            let result = runtime.exact_posting_count(TABLE, INDEX, &key(&[0, 0]));
+            if authoritative {
+                assert!(result.is_err(), "{outcome:?}: {result:?}");
+                assert!(runtime.evidence().is_empty());
+            } else {
+                assert_eq!(result.unwrap(), None);
+                let evidence = runtime.evidence();
+                assert_eq!(evidence.len(), 1);
+                assert_eq!(evidence[0].lookups, 1);
+                assert_eq!(evidence[0].metadata_count_lookups, 1);
+                assert_eq!(evidence[0].canonical_fallback_lookups, 0);
+                assert_eq!(evidence[0].demand_paged_lookups, 0);
+                assert_eq!(evidence[0].authoritative_lookups, 0);
+                assert_eq!(evidence[0].fallback_reasons, BTreeSet::from([reason]));
+            }
+        }
+    }
+}
+
+#[test]
+fn metadata_count_integrity_errors_fail_closed_in_every_mode() {
+    for outcome in [Outcome::Corrupt, Outcome::Durability, Outcome::Stale] {
+        let reader = Reader::script(outcome, false);
+        for mode in [
+            RelationalIndexReadMode::DemandPaged(&reader),
+            RelationalIndexReadMode::Authoritative(&reader),
+        ] {
+            let runtime = RelationalIndexRuntime::new(mode, Default::default());
+            assert!(matches!(
+                runtime.exact_posting_count(TABLE, INDEX, &key(&[0, 0])),
+                Err(HawDBError::StorageIntegrity(_))
+            ));
+            assert!(runtime.evidence().is_empty());
+        }
+    }
+}
+
 /// A persistent provider that implements only the original report-based seam.
 struct LegacyOnlyReader<'a>(&'a Reader);
 

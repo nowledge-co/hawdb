@@ -291,7 +291,7 @@ pub(super) fn index_access_candidate(
         match state.index_prefix_cardinality_at_most(table, &name, &key, *cardinality_limit) {
             Some(rows) => rows,
             None if !state.materialized_index_postings_resident() => {
-                let exact_count = if prefix_len == columns.len() {
+                let exact_count = if !unique && prefix_len == columns.len() {
                     planning
                         .index_runtime
                         .map(|runtime| runtime.exact_posting_count(table, &name, &key))

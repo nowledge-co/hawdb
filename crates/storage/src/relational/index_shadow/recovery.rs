@@ -1852,12 +1852,14 @@ impl RelationalIndexRecoveryReader {
             RelationalIndexShadowError::from_io("open relational index recovery delta page", error)
         })
         .and_then(|mut file| {
-            read_recovery_delta_payload(&mut file, encoded_len, |file| {
-                file.metadata().map(|metadata| metadata.len())
-            })
+            read_recovery_delta_payload(
+                &mut file,
+                encoded_len,
+                |file| file.metadata().map(|metadata| metadata.len()),
+                read_admission,
+            )
         })
         .and_then(|encoded| {
-            read_admission.charge(IndexReadCharge::FileBytes(encoded_len))?;
             let digest = digest_encoded_delta_page(&encoded)?;
             if digest != descriptor.digest {
                 return Err(corrupt(
@@ -1910,13 +1912,14 @@ impl RelationalIndexRecoveryReader {
     }
 }
 
-// The manifest length has already passed logical and physical admission.
-// Inspect the opened handle before payload I/O, and never read an extra byte
-// to detect growth: even concurrent length drift must stay within that allowance.
+// The manifest length has passed the bounded read envelope. Validate the opened
+// handle, then charge the owner before allocation or payload I/O. Never read an
+// extra byte to detect growth: length drift must stay within that allowance.
 fn read_recovery_delta_payload<R: Read>(
     file: &mut R,
     encoded_len: usize,
     mut file_len: impl FnMut(&R) -> std::io::Result<u64>,
+    read_admission: IndexReadAdmission<'_>,
 ) -> Result<Vec<u8>, RelationalIndexShadowError> {
     let expected_len = u64::try_from(encoded_len)
         .map_err(|_| admission("recovery delta encoded length does not fit u64"))?;
@@ -1928,6 +1931,7 @@ fn read_recovery_delta_payload<R: Read>(
             "recovery delta page length disagrees with manifest",
         ));
     }
+    read_admission.charge(IndexReadCharge::FileBytes(encoded_len))?;
     let mut encoded = vec![0; encoded_len];
     file.read_exact(&mut encoded).map_err(|error| {
         if error.kind() == std::io::ErrorKind::UnexpectedEof {

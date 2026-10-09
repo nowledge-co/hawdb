@@ -45,8 +45,9 @@ For 100 rows, a full scan costs 304. A non-covering 90-row index costs 542; a
 covering one costs 272. A one-row non-covering index costs 8, while a direct
 primary-key lookup costs 4. The distinction exists before skyline pruning,
 access selection and join enumeration. Resident posting lists supply exact
-prefix counts where available. For nonresident indexes, a fixed complete key
-uses the selected unchanged checkpoint's metadata count when the provider
+prefix counts where available. Unique complete keys retain the bounded 0/1
+estimate without a planning count read. For nonresident nonunique indexes, a
+fixed complete key uses the selected unchanged checkpoint's metadata count when the provider
 supports shared operation admission. Partial keys, unknown outer join keys,
 matching live/private changes, recovery backends and unsupported providers
 retain fresh prefix NDV average fanout, then table rows when statistics are
@@ -123,9 +124,16 @@ the whole immutable object; those physical bytes are admitted and reported.
 Preparation and execution move one owned index context through the pinned
 planning snapshot. Logical and physical allowance, cancellation, selected-view
 identity and accumulated reports survive that move; execution receives no new
-allowance. Budget/read failures abort planning, and admitted incomplete reads
-close the context. Ordinary `EXPLAIN` retains its existing independent planning
-task; SELECT and EXPLAIN ANALYZE retain the caller's task.
+allowance. In `DemandPaged` mode, an admission refusal or missing optional index
+declines the planning count and retains the unique/NDV/table-row estimate.
+This does not guarantee execution fallback: a selected index still needs an
+available admitted reader or a valid materialized posting source. Authoritative
+counts fail closed on those errors; corruption, durability, stale generation,
+descriptor errors, cancellation, and deadlines remain errors in every mode.
+Failed attempts keep admitted charges and the existing ledger-close behavior;
+declining a count does not reset or reopen the allowance. Ordinary `EXPLAIN`
+retains its existing independent planning task; SELECT and EXPLAIN ANALYZE
+retain the caller's task.
 
 Only successful eligible counts enter the statement-local cache. Every reuse
 rechecks eligibility, known poison, identity and ledger health. Reuse performs
@@ -142,7 +150,10 @@ not hardware latency estimates.
 
 The total `lookups` includes metadata counts. `metadata_count_lookups` (rendered
 as `metadata_counts` in EXPLAIN) identifies those planning reads separately,
-including zero-I/O cached counts. Backend, range and early-stop counters describe
+including refused optional counts and zero-I/O cached counts. Planning refusals
+have `metadata_count_admission_rejected` or `metadata_count_missing_index`
+reasons; they do not increment executed canonical-fallback counters.
+Backend, range and early-stop counters describe
 execution probes only. Ordinary EXPLAIN therefore reports metadata I/O and
 `runtime_path=not_executed`, without inflating an executed backend counter.
 Both read purposes retain the same statement budget and identity accounting.
@@ -152,3 +163,10 @@ records all twenty 256-row comparisons and every first/warm profile. Its complet
 results and plan assertions pass, while non-point latency regressions relative
 to the paired unindexed scan remain explicit. It does not replace full-scale
 release calibration or establish a uniformly faster access policy.
+
+The snapshot full-scan page estimate uses average page occupancy and the
+descriptor's capped candidate rows. A small `LIMIT` can reduce that modeled
+work even when a low-selectivity residual filter needs to visit many more input
+rows. This is a cost-model limitation, not permission to stop a scan early or
+omit execution admission; selectivity-aware input-visit calibration remains
+separate work.
