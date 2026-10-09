@@ -1807,25 +1807,25 @@ impl Database {
             ));
         }
         let mut external = executor::NoExternalReadOperator;
-        let mut branch_runtime_access = self.runtime.get_mut()?;
-        let branch_runtime = &mut *branch_runtime_access;
-        let profiled = executor::execute_with_request(
-            executor::ExecutionRequest::new(
-                &optimized.physical_plan,
-                parameters,
-                &self.config.execution_memory,
+        let profiled = {
+            let branch_runtime = self.runtime.get_read_mut()?;
+            executor::execute_with_request(
+                executor::ExecutionRequest::new(
+                    &optimized.physical_plan,
+                    parameters,
+                    &self.config.execution_memory,
+                )
+                .with_output_limits(
+                    self.config.max_read_result_rows,
+                    self.config.max_read_result_payload_bytes,
+                ),
+                executor::ExecutionResources::new(
+                    &mut branch_runtime.catalog,
+                    &mut branch_runtime.store,
+                    &mut external,
+                ),
             )
-            .with_output_limits(
-                self.config.max_read_result_rows,
-                self.config.max_read_result_payload_bytes,
-            ),
-            executor::ExecutionResources::new(
-                &mut branch_runtime.catalog,
-                &mut branch_runtime.store,
-                &mut external,
-            ),
-        );
-        drop(branch_runtime_access);
+        };
         self.runtime.get()?.store.poison_on_storage_error(&profiled);
         let profiled = profiled?;
         Ok(ExplainAnalyzeOutput {

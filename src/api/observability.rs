@@ -386,6 +386,12 @@ impl Database {
             }
             self.runtime.get()?.store.ensure_usable()?;
             super::reject_locking_select_without_manager(prepared.statement(), false)?;
+            if matches!(
+                prepared.statement(),
+                crate::sql::SqlStatement::Select(_) | crate::sql::SqlStatement::Explain(_)
+            ) {
+                self.runtime.get_read_mut()?;
+            }
             if hawdb_relational::system_schema::statement_writes_system_schema_registry(
                 prepared.statement(),
             ) {
@@ -403,8 +409,7 @@ impl Database {
                 let slow_queries = self.slow_query_log.borrow().snapshot();
                 let statement_summaries = self.statement_summary.borrow().snapshot();
                 return {
-                    let mut branch_runtime_access = self.runtime.get_mut()?;
-                    let branch_runtime = &mut *branch_runtime_access;
+                    let branch_runtime = self.runtime.get_read_mut()?;
                     system_sql::query_sql_with_params(
                         sql_text,
                         parameters,

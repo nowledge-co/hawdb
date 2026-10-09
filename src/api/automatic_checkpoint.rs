@@ -22,7 +22,7 @@ use hawdb_qos::{
 };
 use hawdb_storage::store::{CheckpointCandidate, CheckpointDebtSnapshot, CheckpointSourceIdentity};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -174,6 +174,8 @@ pub(super) struct State {
     retirement_probe: Option<Arc<OwnerPauseProbe>>,
     #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
     frontend_wait_probe: Option<std::sync::mpsc::Sender<Phase>>,
+    #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+    preparation_error_probe: Option<std::sync::mpsc::Sender<String>>,
 }
 
 #[derive(Debug, Default)]
@@ -181,6 +183,7 @@ pub(super) struct Control {
     state: Mutex<State>,
     changed: Condvar,
     failed: AtomicBool,
+    handoff_ready: AtomicBool,
 }
 
 impl Control {
@@ -263,12 +266,15 @@ impl Control {
         let Some(selected) = state.selected.take() else {
             return Ok(());
         };
+        self.handoff_ready.store(false, Ordering::Release);
         let old = match store.adopt_selected_checkpoint(selected.store, selected.expected) {
             Ok(old) => old,
             Err(error) => {
                 state.phase = Phase::Idle;
                 state.stopping = true;
                 state.report.waiting_for_handoff = false;
+                state.report.failed_attempts += 1;
+                self.failed.store(true, Ordering::Release);
                 self.changed.notify_all();
                 return Err(error);
             }
@@ -283,6 +289,26 @@ impl Control {
         state.report.waiting_for_handoff = false;
         self.changed.notify_all();
         Ok(())
+    }
+
+    pub(super) fn adopt_for_read(&self, store: &mut GraphStore) -> Result<()> {
+        self.ensure_healthy()?;
+        if !self.handoff_ready.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        // Publication never mutates the admitted frontend. A read can retain
+        // that generation if the owner is busy; reclamation waits for adoption.
+        let mut state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(TryLockError::WouldBlock) => return Ok(()),
+            Err(TryLockError::Poisoned(_)) => return Err(Self::poisoned()),
+        };
+        self.ensure_healthy()?;
+        self.adopt(&mut state, store)
+    }
+
+    pub(super) fn has_pending_handoff(&self) -> bool {
+        self.handoff_ready.load(Ordering::Acquire)
     }
 
     pub(super) fn suspend(self: &Arc<Self>) -> Result<Suspension> {
@@ -474,6 +500,7 @@ impl Owner {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             let selected = state.selected.take();
+            self.control.handoff_ready.store(false, Ordering::Release);
             if selected.is_some() {
                 // Disk authority has moved, but the old frontend has not
                 // adopted it. Discarding this handoff must fail closed.
@@ -615,6 +642,14 @@ fn run(
                     .unwrap_or_else(|error| error.into_inner());
                 if result.is_err() {
                     state.report.deferred_attempts += 1;
+                    #[cfg(all(
+                        test,
+                        feature = "background-maintenance",
+                        not(target_arch = "wasm32")
+                    ))]
+                    if let (Some(probe), Err(error)) = (&state.preparation_error_probe, &result) {
+                        let _ = probe.send(error.to_string());
+                    }
                 }
                 if state.latest.is_none() {
                     state.latest = Some(source);
@@ -736,6 +771,7 @@ fn run(
             state.report.preparing = false;
             state.report.waiting_for_handoff = true;
             state.report.completed_checkpoints += 1;
+            control.handoff_ready.store(true, Ordering::Release);
             control.changed.notify_all();
         } else {
             if candidate.can_continue_from(&source.store) {
@@ -903,6 +939,9 @@ fn retire(retired: Retired, pins: &Mutex<ReaderPins>) {
 
 #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
 mod tests {
+    mod read_gate;
+    mod read_handoff;
+
     use super::*;
     use crate::Database;
     use std::path::PathBuf;

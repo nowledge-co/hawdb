@@ -65,8 +65,8 @@ pub(super) struct BranchRuntimeCell {
     admitted: OnceLock<Box<AdmittedBranchRuntime>>,
     pending: Option<DeferredBranchAdmission>,
     admission: Mutex<()>,
-    // Mutable frontend access and background selector publication share this
-    // barrier. Read-only references still borrow the stable frontend bundle.
+    // Mutations and background selector publication share this barrier.
+    // Reads borrow the stable frontend and only try to adopt a ready handoff.
     publication: Arc<Control>,
     automatic: OnceLock<Option<Owner>>,
     automatic_start: Mutex<()>,
@@ -187,6 +187,17 @@ impl BranchRuntimeCell {
         })
     }
 
+    pub(super) fn get_read_mut(&mut self) -> Result<&mut AdmittedBranchRuntime> {
+        self.get()?;
+        let runtime = self.admitted.get_mut().map(Box::as_mut).ok_or_else(|| {
+            HawDBError::StorageIntegrity("completed branch admission has no mutable runtime".into())
+        })?;
+        self.publication.adopt_for_read(&mut runtime.store)?;
+        // &mut self exclusively owns the frontend. Read execution may update
+        // its local caches without holding the owner's publication mutex.
+        Ok(runtime)
+    }
+
     pub(super) fn peek(&self) -> Option<&AdmittedBranchRuntime> {
         self.admitted.get().map(Box::as_ref)
     }
@@ -262,9 +273,13 @@ impl BranchRuntimeCell {
             .map_err(|_| HawDBError::StorageIntegrity("checkpoint owner started twice".into()))
     }
 
+    pub(super) fn checkpoint_control(&self) -> Arc<Control> {
+        Arc::clone(&self.publication)
+    }
+
     #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
     pub(super) fn checkpoint_control_for_test(&self) -> Arc<Control> {
-        Arc::clone(&self.publication)
+        self.checkpoint_control()
     }
 
     pub(super) fn automatic_checkpoint_report(

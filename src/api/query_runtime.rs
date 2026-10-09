@@ -697,8 +697,7 @@ impl Database {
                     None,
                 )
             } else {
-                let mut branch_runtime_access = self.runtime.get_mut()?;
-                let branch_runtime = &mut *branch_runtime_access;
+                let branch_runtime = self.runtime.get_read_mut()?;
                 let profiled = executor::execute_with_request(
                     executor::ExecutionRequest::new(
                         &optimized.physical_plan,
@@ -783,8 +782,7 @@ impl Database {
                     "EXPLAIN ANALYZE only supports read queries".to_string(),
                 ));
             }
-            let mut branch_runtime_access = self.runtime.get_mut()?;
-            let branch_runtime = &mut *branch_runtime_access;
+            let branch_runtime = self.runtime.get_read_mut()?;
             let profiled = executor::execute_with_request(
                 executor::ExecutionRequest::new(
                     &optimized.physical_plan,
