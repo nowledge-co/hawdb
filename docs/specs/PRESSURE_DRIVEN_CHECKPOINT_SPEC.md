@@ -54,12 +54,15 @@ protocol.
 After preparation, capture a completed source prefix at epoch C and next LSN N.
 Read exactly the byte interval from B to the captured complete length. Validate
 the same WAL header identity, contiguous LSNs [L,N), complete transaction frames,
-and C-S = N-L. An append beyond the captured length is invisible to that pass.
+per-record commit epochs [S+1,C], and C-S = N-L. An append beyond the captured length is invisible to that pass.
 A missing, truncated, corrupt, or changed captured source fails closed.
 
 Reframe the suffix into the private candidate WAL with its new generation and
 start LSN L. Fragment generation tags, block positions, and checksums must be
-encoded again; copying old-generation framed bytes is invalid. Use a bounded
+encoded again; copying old-generation framed bytes is invalid. Preserve the
+validated raw transaction payload, including accepted noncanonical wire encodings,
+rather than decoding and re-encoding its envelope. Reject an unexpected recorded
+epoch before writing any candidate fragment. Use a bounded
 record cursor that seeks to the captured boundary instead of rescanning the
 already checkpointed prefix. It may reread one preceding framing block.
 
@@ -2093,3 +2096,38 @@ writer/spill/descriptor work-unit boundaries, source state, FD/disk/cleanup debt
 allocator/free latency and whole-candidate admission remain separate gaps.
 Default-owner sustained progress and its frozen whole-candidate operation
 estimate remain unresolved.
+
+
+## Verbatim suffix transfer and streaming framing
+
+Candidate catch-up retains the original admitted payload alongside its decoded
+transaction. It validates each recorded epoch and the contiguous LSN/byte interval
+before writing. The payload length and SHA-256 from the captured record advance
+the recovery digest only after complete transaction application. An accepted
+noncanonical opcode encoding must survive byte-for-byte; a valid physical checksum
+with the wrong commit epoch fails closed without normalizing the source history.
+
+Physical framing borrows that payload and emits one at-most-32-KiB body plus a
+15-byte stack header and at most 14 bytes of first-block padding. A constant-time
+checked size calculation enforces the complete WAL budget before the first write.
+Each fragment computes its generation-bound checksum under a local work unit and
+is written under the actual I/O reservation. The ordinary replay cancellation
+check follows each write, preserving its execution-error diagnostic before the
+stream checks for another fragment. The complete attempted fragment
+boundary is recorded before any of its parts are written, so a partial write or
+cancellation remains within the existing known-tail truncation protocol. Source
+prefix counters advance only after the whole transaction applies. Payload memory
+drops before decoded application; decoded ownership follows the existing transfer
+boundary. No complete re-encoded payload or framed-output buffer is allocated.
+
+The preceding admitted payload encoder and buffered framer remain test-only
+references; their original fixtures and limits are retained. Streaming fixtures
+compare all 32,768 block positions and fragment/generation/empty-record boundaries
+with the independent ordinary framer, cancel every completed fragment unit and
+retry the same input, and write a multi-block native file under a real one-byte
+working-memory reservation. That last fixture scopes its claim to the framing
+step: borrowed input, decoding, replay state, descriptors and file ownership need
+their own ledger. A separate deterministic differential campaign is local-only
+and runs through the Bazel fuzz suite. These guards do not qualify default
+sustained progress, complete resource bounds, foreground latency, the remaining
+copied codecs, or physical power-loss behavior.

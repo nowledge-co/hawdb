@@ -16,7 +16,7 @@
 
 pub mod binary;
 mod checkpoint;
-pub(crate) use checkpoint::CheckpointWalRecordCursor;
+pub(crate) use checkpoint::{CheckpointWalCursorEvent, CheckpointWalRecordCursor};
 pub mod frame;
 pub mod group_commit;
 use crate::file_io::{self as fs, File, OpenOptions};

@@ -83,7 +83,7 @@ fn checkpoint_units_wal_decode_actual_cursor_splits_a_batch_beyond_default_opera
     )
     .unwrap();
     let recovered = match cursor.next().unwrap() {
-        WalCursorEvent::Entry {
+        CheckpointWalCursorEvent::Entry {
             entry,
             payload_len,
             payload_sha256,
@@ -99,7 +99,10 @@ fn checkpoint_units_wal_decode_actual_cursor_splits_a_batch_beyond_default_opera
         binary::encode_binary_wal_record(&recovered, 19).unwrap(),
         payload
     );
-    assert!(matches!(cursor.next().unwrap(), WalCursorEvent::Eof));
+    assert!(matches!(
+        cursor.next().unwrap(),
+        CheckpointWalCursorEvent::Eof
+    ));
     assert_eq!(std::fs::read(&path).unwrap(), complete_file);
     assert_eq!(probe.peak_units.load(Ordering::SeqCst), 1);
     assert!(

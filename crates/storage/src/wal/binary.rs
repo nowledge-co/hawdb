@@ -108,8 +108,8 @@ use hawdb_core::{PropertyType, SchemaObjectState, TableKind};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+#[cfg(test)]
 mod checkpoint;
-pub(crate) use checkpoint::encode_binary_wal_record_with_work_context;
 
 mod checkpoint_decode;
 pub(crate) use checkpoint_decode::decode_binary_wal_record_with_work_context;
@@ -160,11 +160,7 @@ const ENTRY_FIELD_KEY: u32 = 1;
 const ENTRY_FIELD_VALUE: u32 = 2;
 
 pub enum BinaryWalRecordDecode<E = WalEntry> {
-    Entry {
-        entry: E,
-        #[allow(dead_code)]
-        commit_epoch: u64,
-    },
+    Entry { entry: E, commit_epoch: u64 },
     Corrupt(String),
 }
 

@@ -70,7 +70,7 @@ use std::io::Read;
 
 mod checkpoint;
 pub(crate) use checkpoint::{
-    frame_binary_wal_record_with_work_context, CheckpointBinaryWalReader, CheckpointWalReadEvent,
+    CheckpointBinaryWalReader, CheckpointWalFrameStream, CheckpointWalReadEvent,
 };
 
 pub const WAL_BINARY_MAGIC: &[u8; 8] = b"SKWALB01";

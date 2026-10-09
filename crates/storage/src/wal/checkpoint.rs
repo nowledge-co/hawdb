@@ -16,10 +16,31 @@
 //! Decoded WalOp/runtime allocation ownership requires separate qualification.
 
 use super::*;
-use crate::background::CheckpointWorkContext;
+use crate::background::{CheckpointBytes, CheckpointWorkContext};
 
 mod entry;
 pub(crate) use entry::CheckpointWalEntry;
+
+pub(crate) enum CheckpointWalCursorEvent {
+    Entry {
+        entry: CheckpointWalEntry,
+        commit_epoch: u64,
+        payload: CheckpointBytes,
+        start_offset: u64,
+        encoded_len: u64,
+        payload_len: u64,
+        payload_sha256: hawdb_integrity::Sha256Digest,
+    },
+    TornTail {
+        valid_prefix_len: u64,
+        reason: String,
+    },
+    Corrupt {
+        offset: u64,
+        reason: String,
+    },
+    Eof,
+}
 
 #[cfg(test)]
 mod tests;
@@ -84,7 +105,7 @@ impl CheckpointWalRecordCursor {
         })
     }
 
-    pub(crate) fn next(&mut self) -> Result<WalCursorEvent<CheckpointWalEntry>> {
+    pub(crate) fn next(&mut self) -> Result<CheckpointWalCursorEvent> {
         match self.reader.next_event()? {
             frame::CheckpointWalReadEvent::Record {
                 payload,
@@ -100,35 +121,42 @@ impl CheckpointWalRecordCursor {
                 let decoded =
                     binary::decode_binary_wal_record_with_work_context(&payload, &self.work);
                 match decoded? {
-                    binary::BinaryWalRecordDecode::Entry { entry, .. } => {
+                    binary::BinaryWalRecordDecode::Entry {
+                        entry,
+                        commit_epoch,
+                    } => {
                         self.work
                             .checkpoint()
                             .map_err(HawDBError::from_storage_error)?;
-                        Ok(WalCursorEvent::Entry {
+                        Ok(CheckpointWalCursorEvent::Entry {
                             entry,
+                            commit_epoch,
+                            payload,
                             start_offset,
                             encoded_len: end_offset - start_offset,
                             payload_len,
                             payload_sha256,
                         })
                     }
-                    binary::BinaryWalRecordDecode::Corrupt(reason) => Ok(WalCursorEvent::Corrupt {
-                        offset: start_offset,
-                        reason,
-                    }),
+                    binary::BinaryWalRecordDecode::Corrupt(reason) => {
+                        Ok(CheckpointWalCursorEvent::Corrupt {
+                            offset: start_offset,
+                            reason,
+                        })
+                    }
                 }
             }
             frame::CheckpointWalReadEvent::TornTail {
                 valid_prefix_len,
                 reason,
-            } => Ok(WalCursorEvent::TornTail {
+            } => Ok(CheckpointWalCursorEvent::TornTail {
                 valid_prefix_len,
                 reason,
             }),
             frame::CheckpointWalReadEvent::Corrupt { offset, reason } => {
-                Ok(WalCursorEvent::Corrupt { offset, reason })
+                Ok(CheckpointWalCursorEvent::Corrupt { offset, reason })
             }
-            frame::CheckpointWalReadEvent::Eof => Ok(WalCursorEvent::Eof),
+            frame::CheckpointWalReadEvent::Eof => Ok(CheckpointWalCursorEvent::Eof),
         }
     }
 }

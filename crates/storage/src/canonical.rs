@@ -3827,6 +3827,7 @@ pub(crate) fn validate_property_value(value: &Value) -> Result<(), CanonicalSegm
     encoded_value_len(value, 1).map(|_| ())
 }
 
+#[cfg(test)]
 pub(crate) fn validate_property_value_with_work_context(
     value: &Value,
     work: &CheckpointWorkContext,

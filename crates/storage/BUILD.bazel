@@ -39,6 +39,23 @@ rust_test(
 )
 
 rust_test(
+    name = "hawdb_storage_checkpoint_wal_verbatim_fuzz_tests",
+    size = "medium",
+    args = [
+        "wal::frame::checkpoint::stream_tests::checkpoint_wal_verbatim_stream_differential_campaign",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+    ],
+    crate = ":hawdb_storage",
+    edition = "2024",
+    tags = ["manual"],
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True),
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)
+
+rust_test(
     name = "hawdb_storage_shadow_metadata_fuzz_tests",
     size = "small",
     args = [
