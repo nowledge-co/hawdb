@@ -862,16 +862,36 @@ impl GraphStore {
         catalog: &mut Catalog,
         operation: WalOp,
     ) -> Result<()> {
-        self.apply_replayed_wal_transaction_with_work_context(catalog, operation, None)
+        self.apply_replayed_wal_transaction_with_work_context(catalog, operation, None, None, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn apply_replayed_checkpoint_wal_transaction(
         &mut self,
         catalog: &mut Catalog,
         operation: WalOp,
         work: &crate::background::CheckpointWorkContext,
     ) -> Result<()> {
-        self.apply_replayed_wal_transaction_with_work_context(catalog, operation, Some(work))
+        self.apply_replayed_checkpoint_wal_transaction_with_boundary(
+            catalog, operation, work, &mut false, None,
+        )
+    }
+
+    pub(crate) fn apply_replayed_checkpoint_wal_transaction_with_boundary(
+        &mut self,
+        catalog: &mut Catalog,
+        operation: WalOp,
+        work: &crate::background::CheckpointWorkContext,
+        mutation_started: &mut bool,
+        replay_memory: Option<&mut crate::background::CheckpointAllocationOwner>,
+    ) -> Result<()> {
+        self.apply_replayed_wal_transaction_with_work_context(
+            catalog,
+            operation,
+            Some(work),
+            Some(mutation_started),
+            replay_memory,
+        )
     }
 
     fn apply_replayed_wal_transaction_with_work_context(
@@ -879,6 +899,8 @@ impl GraphStore {
         catalog: &mut Catalog,
         operation: WalOp,
         work: Option<&crate::background::CheckpointWorkContext>,
+        mutation_started: Option<&mut bool>,
+        replay_memory: Option<&mut crate::background::CheckpointAllocationOwner>,
     ) -> Result<()> {
         let operations = match &operation {
             WalOp::Batch(operations) => operations.as_slice(),
@@ -908,6 +930,19 @@ impl GraphStore {
         };
         if let Some(work) = work {
             work.checkpoint().map_err(HawDBError::from_storage_error)?;
+        }
+        if let Some(memory) = replay_memory {
+            self.retain_decoded_checkpoint_memory(
+                memory,
+                work.expect("decoded checkpoint memory has an admitted work context"),
+            )?;
+        }
+        // Earlier admission and preflight leave schema/data intact. Projection
+        // bookkeeping below is the first mutation, before the batch's data or
+        // catalog writes; any subsequent error makes this private runtime
+        // unsafe to reuse, even if its commit epoch has not advanced.
+        if let Some(mutation_started) = mutation_started {
+            *mutation_started = true;
         }
         if let Some(work) = work {
             self.record_checkpoint_search_projection_changes_for_ops(

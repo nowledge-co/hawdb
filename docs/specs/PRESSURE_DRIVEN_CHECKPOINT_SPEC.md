@@ -106,6 +106,22 @@ After uncertain selector publication, reject further writes until ordinary
 recovery establishes authority. A successfully committed user transaction must
 not be reported as rolled back because later maintenance failed.
 
+The current owner preserves an already prepared private candidate when suffix
+catch-up or pre-publication work stops before any partial transaction mutation.
+It retains the complete replay prefix and original admission, then retries with
+a fresh task context when resources recover, without requiring another write.
+An integrity error, partial transaction mutation, or uncertain publication
+cannot enter that retry path. Explicit manual checkpoint, backup, and compaction
+abandon the unselected candidate before reusing its generation namespace;
+destruction and resource release happen outside the publication gate. Shutdown
+also releases a parked candidate even when report observers retain the owner
+control. Ordinary and concurrent manual checkpoint calls remain available while
+background memory admission is denied.
+
+This retry path still retains the existing whole-candidate reservation. It does
+not make preparation resumable, establish bounded per-unit owner admission, or
+qualify the default sustained-load envelope; those remain completion gates.
+
 Shutdown stops admission of new work, cancels or completes the owned candidate,
 joins its worker, and releases worker-owned sources, artifacts and execution
 leases. Adopted serving runtimes and live readers retain allocation leases until

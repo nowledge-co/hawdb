@@ -127,6 +127,13 @@ struct Admission {
 }
 
 #[derive(Debug)]
+struct Pending {
+    // Private state dies before its admission, including on manual invalidation.
+    candidate: CheckpointCandidate,
+    admission: Admission,
+}
+
+#[derive(Debug)]
 struct Selected {
     store: GraphStore,
     expected: CheckpointSourceIdentity,
@@ -149,6 +156,7 @@ pub(super) struct State {
     suspensions: usize,
     phase: Phase,
     latest: Option<Source>,
+    pending: Option<Pending>,
     last_identity: Option<CheckpointSourceIdentity>,
     sync_group_active: bool,
     attempts_started: u64,
@@ -285,7 +293,13 @@ impl Control {
         if let Some(task) = &state.task {
             task.cancellation().cancel();
         }
+        // Manual checkpoint/backup/compaction can reuse the same generation
+        // namespace. Finish abandoning private work before the caller proceeds.
+        // Destruction can include COW maps and staging cleanup, so do it off-gate.
+        let pending = state.pending.take();
         self.changed.notify_all();
+        drop(state);
+        drop(pending);
         Ok(Suspension {
             control: Arc::clone(self),
         })
@@ -467,6 +481,7 @@ impl Owner {
             }
             let owned = (
                 state.latest.take(),
+                state.pending.take(),
                 selected,
                 state.retired.take(),
                 state.task.take(),
@@ -497,7 +512,7 @@ fn run(
     max_age: Duration,
 ) {
     loop {
-        let (mut source, governor, task) = {
+        let (mut source, pending, governor, task) = {
             let mut state = control
                 .state
                 .lock()
@@ -538,7 +553,7 @@ fn run(
                 if state.phase == Phase::Idle
                     && state.suspensions == 0
                     && !state.sync_group_active
-                    && due
+                    && (due || state.pending.is_some())
                 {
                     #[cfg(all(
                         test,
@@ -564,6 +579,7 @@ fn run(
                     state.task = Some(task.clone());
                     break (
                         state.latest.take().expect("due source exists"),
+                        state.pending.take(),
                         state
                             .governor
                             .clone()
@@ -578,7 +594,18 @@ fn run(
                 state = next;
             }
         };
-        let attempt = prepare(&source, &scheduler, &governor, &task);
+        let attempt = match pending {
+            Some(pending) if pending.candidate.can_continue_from(&source.store) => {
+                Ok(Some((pending.candidate, pending.admission)))
+            }
+            Some(pending) => {
+                // A manual source/generation change invalidates the private
+                // prefix. Release its state off-gate before a new preparation.
+                drop(pending);
+                prepare(&source, &scheduler, &governor, &task)
+            }
+            None => prepare(&source, &scheduler, &governor, &task),
+        };
         let (mut candidate, admission) = match attempt {
             Ok(Some(work)) => work,
             result => {
@@ -711,6 +738,33 @@ fn run(
             state.report.completed_checkpoints += 1;
             control.changed.notify_all();
         } else {
+            if candidate.can_continue_from(&source.store) {
+                let mut state = control
+                    .state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if !state.stopping && state.suspensions == 0 {
+                    state.pending = Some(Pending {
+                        candidate,
+                        admission,
+                    });
+                    if state.latest.is_none() {
+                        state.latest = Some(source);
+                    }
+                    state.phase = Phase::Idle;
+                    state.task = None;
+                    state.report.preparing = false;
+                    state.report.deferred_attempts += 1;
+                    control.changed.notify_all();
+                    let (state, _) = control
+                        .changed
+                        .wait_timeout(state, RETRY_DELAY)
+                        .unwrap_or_else(|error| error.into_inner());
+                    drop(state);
+                    continue;
+                }
+                drop(state);
+            }
             // Cleanup and COW destruction precede releasing the manual owner.
             drop(candidate);
             drop(admission);
@@ -1601,4 +1655,6 @@ mod tests {
     }
 
     mod headroom;
+    mod manual;
+    mod resume;
 }

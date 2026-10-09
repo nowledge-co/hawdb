@@ -23,6 +23,9 @@ mod checkpoint_bloom_memory_tests;
 mod checkpoint_decode;
 #[cfg(test)]
 mod checkpoint_descriptor_memory_tests;
+
+#[cfg(test)]
+mod checkpoint_descriptor_tree_memory_tests;
 mod checkpoint_flush;
 #[cfg(test)]
 mod checkpoint_flush_memory_tests;
@@ -1008,8 +1011,13 @@ impl CanonicalSegmentWriter {
         work.checkpoint()?;
         let tmp_path = path.with_extension("hawdb.tmp");
         let source_commit_epoch = generation.0;
-        let descriptor_tree =
-            create_canonical_descriptor_tree(path, generation, source_commit_epoch, &work)?;
+        let descriptor_tree = create_canonical_descriptor_tree(
+            path,
+            generation,
+            source_commit_epoch,
+            &work,
+            self.source_admits,
+        )?;
         let _temporary_data = CanonicalTemporaryData {
             canonical: tmp_path.clone(),
             property_spill: None,
@@ -1113,22 +1121,38 @@ impl CanonicalSegmentWriter {
         let tmp_path = path.with_extension("hawdb.tmp");
         let spill_tmp_path = property_spill.artifact_path.with_extension("hawdb.tmp");
         let source_commit_epoch = property_spill.source_commit_epoch;
-        let descriptor_tree =
-            create_canonical_descriptor_tree(path, generation, source_commit_epoch, &work)?;
+        let descriptor_tree = create_canonical_descriptor_tree(
+            path,
+            generation,
+            source_commit_epoch,
+            &work,
+            self.source_admits,
+        )?;
         // Declared before the open writer/prepared artifacts so their handles
         // close before cleanup, including failure during spill construction.
         let _temporary_data = CanonicalTemporaryData {
             canonical: tmp_path.clone(),
             property_spill: Some(spill_tmp_path.clone()),
         };
-        let mut spill_writer = PropertySpillWriter::create_with_work_context(
-            &spill_tmp_path,
-            generation,
-            property_spill.source_commit_epoch,
-            property_spill.config,
-            property_spill.descriptor_tree,
-            work.clone(),
-        )?;
+        let mut spill_writer = if self.source_admits {
+            PropertySpillWriter::create_checkpoint(
+                &spill_tmp_path,
+                generation,
+                property_spill.source_commit_epoch,
+                property_spill.config,
+                property_spill.descriptor_tree,
+                work.clone(),
+            )?
+        } else {
+            PropertySpillWriter::create_with_work_context(
+                &spill_tmp_path,
+                generation,
+                property_spill.source_commit_epoch,
+                property_spill.config,
+                property_spill.descriptor_tree,
+                work.clone(),
+            )?
+        };
         let prepared_canonical = self.write_inner(
             &tmp_path,
             CanonicalWriteIdentity {
@@ -1424,10 +1448,16 @@ fn create_canonical_descriptor_tree(
     generation: ManifestGeneration,
     source_commit_epoch: u64,
     work: &CheckpointWorkContext,
+    checkpoint_buffers: bool,
 ) -> Result<GraphDescriptorTreeBuilder, CanonicalSegmentError> {
     let descriptor_tree = PersistentCanonicalSegmentDescriptorTree::for_artifact(path, generation);
     let (paths, config) = descriptor_tree.into_parts();
-    GraphDescriptorTreeBuilder::create_with_work_context(
+    let create = if checkpoint_buffers {
+        GraphDescriptorTreeBuilder::create_checkpoint
+    } else {
+        GraphDescriptorTreeBuilder::create_with_work_context
+    };
+    create(
         paths,
         GraphDescriptorKind::CanonicalSegment,
         generation.0,

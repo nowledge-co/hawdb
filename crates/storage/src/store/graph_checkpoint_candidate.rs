@@ -24,6 +24,18 @@ use std::io::Write;
 #[path = "graph_checkpoint_candidate/tests.rs"]
 mod checkpoint_wal_frame_tests;
 
+#[cfg(test)]
+#[path = "graph_checkpoint_candidate/unchanged_relational_tests.rs"]
+mod unchanged_relational_tests;
+
+#[cfg(test)]
+#[path = "graph_checkpoint_candidate/unchanged_relational_related_tests.rs"]
+mod unchanged_relational_related_tests;
+
+#[cfg(test)]
+#[path = "graph_checkpoint_candidate/resume_tests.rs"]
+mod resume_tests;
+
 /// Identity of the complete foreground prefix from which a worker publishes.
 /// Opaque fields prevent a facade caller from manufacturing a partial receipt.
 #[doc(hidden)]
@@ -71,11 +83,18 @@ pub struct CheckpointCandidate {
     captured_wal_bytes: u64,
     captured_next_lsn: u64,
     candidate_wal_bytes: u64,
+    // Only a completely applied record advances candidate_wal_bytes. A
+    // failed physical write may leave bytes through this attempted boundary;
+    // a fresh admitted task must truncate them before continuing.
+    wal_write_attempt_end: Option<u64>,
+    wal_sync_pending: bool,
+    replay_interrupted: bool,
     branch_root: Option<PreparedCheckpointBranchRoot>,
     owns_branch_wal: bool,
     recovery_source: Option<RelationalRecoverySourceBuilder>,
     recovery_selectors: [Option<crate::relational::PreparedRelationalRecoverySelector>; 2],
     replay_finalized: bool,
+    relational_replay_required: bool,
     failed: bool,
     retain_artifacts: bool,
     // Destruction of old COW maps may scale with the dataset. The job drops
@@ -95,6 +114,10 @@ impl std::fmt::Debug for CheckpointCandidate {
             .field("captured_next_lsn", &self.captured_next_lsn)
             .field("captured_wal_bytes", &self.captured_wal_bytes)
             .field("candidate_wal_bytes", &self.candidate_wal_bytes)
+            .field(
+                "relational_replay_required",
+                &self.relational_replay_required,
+            )
             .field("failed", &self.failed)
             .field("retain_artifacts", &self.retain_artifacts)
             .finish_non_exhaustive()
@@ -255,11 +278,15 @@ impl GraphStore {
             captured_wal_bytes: prepared.source_wal_bytes,
             captured_next_lsn: prepared.source_next_lsn,
             candidate_wal_bytes: WAL_BINARY_FILE_HEADER_BYTES as u64,
+            wal_write_attempt_end: None,
+            wal_sync_pending: false,
+            replay_interrupted: false,
             recovery_source: Some(RelationalRecoverySourceBuilder::new(
                 prepared.generation,
                 prepared.source_next_lsn,
             )),
             replay_finalized: false,
+            relational_replay_required: false,
             recovery_selectors: [None, None],
             store: Some(self.checkpoint_source()),
             catalog: Some(catalog.clone()),
@@ -525,6 +552,16 @@ impl GraphStore {
 }
 
 impl CheckpointCandidate {
+    /// Whether a stopped private attempt can continue against this complete
+    /// source. Publication uncertainty and partial mutation never qualify.
+    /// This does not admit work or modify recovery dependencies.
+    #[doc(hidden)]
+    pub fn can_continue_from(&self, source: &GraphStore) -> bool {
+        !self.retain_artifacts
+            && source.ensure_usable().is_ok()
+            && self.validate_source(source).is_ok()
+    }
+
     pub fn commit_epoch(&self) -> u64 {
         self.store.as_ref().map_or(0, GraphStore::commit_epoch)
     }
@@ -536,6 +573,12 @@ impl CheckpointCandidate {
         if self.failed {
             return Err(HawDBError::Storage(
                 "checkpoint candidate has failed".into(),
+            ));
+        }
+        if self.replay_interrupted || self.wal_sync_pending || self.wal_write_attempt_end.is_some()
+        {
+            return Err(HawDBError::Storage(
+                "checkpoint replay must resume and synchronize before finalization".into(),
             ));
         }
         if self.replay_finalized {
@@ -555,7 +598,22 @@ impl CheckpointCandidate {
             let next = self.store.as_mut().ok_or_else(|| {
                 HawDBError::Storage("checkpoint candidate has no private runtime".into())
             })?;
-            self.recovery_selectors = next.finish_private_wal_recovery(source, replayed)?;
+            if self.relational_replay_required {
+                self.recovery_selectors = next.finish_private_wal_recovery(source, replayed)?;
+            } else {
+                // The validated WAL is still durable and complete. Its
+                // non-relational commits advanced the pinned read views with
+                // empty live publications, leaving the base roots unchanged.
+                // No empty recovery manifest needs to be synchronized for
+                // every captured prefix. A later relational operation switches
+                // this same candidate to the ordinary recovery builder path.
+                if replayed != 0 {
+                    source
+                        .prefix_identity()
+                        .map_err(|reason| HawDBError::StorageIntegrity(reason.to_string()))?;
+                }
+                self.recovery_selectors = [None, None];
+            }
             next.validate_authoritative_relational_index_open()?;
             next.open_relational_row_snapshot_reader()?;
             Ok(())
@@ -650,7 +708,11 @@ impl CheckpointCandidate {
         replay_checkpoint(task)?;
         self.validate_source(source)?;
         let durable = source.durable.as_ref().expect("validated durable source");
-        if durable.next_lsn == self.captured_next_lsn {
+        if durable.next_lsn == self.captured_next_lsn
+            && !self.replay_interrupted
+            && !self.wal_sync_pending
+            && self.wal_write_attempt_end.is_none()
+        {
             return Ok(CheckpointWalTail {
                 captured_commit_epoch: source.commit_epoch,
                 captured_next_lsn: self.captured_next_lsn,
@@ -667,9 +729,16 @@ impl CheckpointCandidate {
         }
         self.replay_finalized = false;
         self.recovery_selectors = [None, None];
+        self.replay_interrupted = true;
         let result = self.catch_up_inner(source, task);
-        if result.is_err() {
+        // Resource/cancellation/I/O errors before mutation retain the last
+        // complete prefix. The apply path marks failures after mutation starts;
+        // integrity faults are terminal even when no mutation has occurred.
+        if matches!(result, Err(HawDBError::StorageIntegrity(_))) {
             self.failed = true;
+        }
+        if result.is_ok() {
+            self.replay_interrupted = false;
         }
         result
     }
@@ -697,10 +766,24 @@ impl CheckpointCandidate {
         let path = durable.wal_path.clone();
         let open_wave = replay_io_wave(task)?;
         let mut output = fs::OpenOptions::new().append(true).open(&path)?;
-        if output.metadata()?.len() != self.candidate_wal_bytes {
-            return Err(HawDBError::StorageIntegrity(
-                "private checkpoint WAL length changed".into(),
-            ));
+        let actual_bytes = output.metadata()?.len();
+        match self.wal_write_attempt_end {
+            Some(attempted_end)
+                if actual_bytes >= self.candidate_wal_bytes && actual_bytes <= attempted_end =>
+            {
+                if actual_bytes != self.candidate_wal_bytes {
+                    replay_checkpoint(task)?;
+                    self.wal_sync_pending = true;
+                    output.set_len(self.candidate_wal_bytes)?;
+                }
+                self.wal_write_attempt_end = None;
+            }
+            None if actual_bytes == self.candidate_wal_bytes => {}
+            _ => {
+                return Err(HawDBError::StorageIntegrity(
+                    "private checkpoint WAL length changed".into(),
+                ));
+            }
         }
         drop(open_wave);
         let mut bytes = self.candidate_wal_bytes;
@@ -722,8 +805,13 @@ impl CheckpointCandidate {
                 replay_checkpoint(task)?;
                 let event = cursor.next();
                 source.poison_on_storage_error(&event);
-                let entry = match event? {
-                    WalCursorEvent::Entry { entry, .. } => entry,
+                let (entry, start_offset, encoded_len) = match event? {
+                    WalCursorEvent::Entry {
+                        entry,
+                        start_offset,
+                        encoded_len,
+                        ..
+                    } => (entry, start_offset, encoded_len),
                     WalCursorEvent::Eof => break,
                     WalCursorEvent::Corrupt { reason, .. }
                     | WalCursorEvent::TornTail { reason, .. } => {
@@ -743,12 +831,57 @@ impl CheckpointCandidate {
                         "checkpoint suffix LSN is not contiguous".into(),
                     ));
                 }
+                let source_record_end = start_offset.checked_add(encoded_len).ok_or_else(|| {
+                    HawDBError::StorageIntegrity("checkpoint source WAL offset overflow".into())
+                })?;
+                let from = self
+                    .captured_wal_bytes
+                    .max(WAL_BINARY_FILE_HEADER_BYTES as u64);
+                let trailer = crate::wal::frame::WAL_BLOCK_BYTES as u64
+                    - (from - WAL_BINARY_FILE_HEADER_BYTES as u64)
+                        % crate::wal::frame::WAL_BLOCK_BYTES as u64;
+                let expected_start =
+                    if trailer < crate::wal::frame::WAL_FRAGMENT_HEADER_BYTES as u64 {
+                        from.saturating_add(trailer)
+                    } else {
+                        from
+                    };
+                if start_offset != expected_start
+                    || encoded_len == 0
+                    || source_record_end > original.wal_bytes
+                {
+                    source
+                        .integrity_poisoned
+                        .store(true, AtomicOrdering::Release);
+                    return Err(HawDBError::StorageIntegrity(
+                        "checkpoint suffix byte interval is not contiguous".into(),
+                    ));
+                }
+                let next_lsn = expected_lsn.checked_add(1).ok_or_else(|| {
+                    HawDBError::StorageIntegrity("checkpoint suffix LSN overflow".into())
+                })?;
                 // An observed corrupt source prefix remains an integrity
                 // failure even when cancellation arrives during this read.
                 replay_checkpoint(task)?;
                 let epoch = store.commit_epoch.checked_add(1).ok_or_else(|| {
                     HawDBError::StorageIntegrity("checkpoint suffix epoch overflow".into())
                 })?;
+                let relational_replay_required = self.relational_replay_required
+                    || wal_op_changes_relational_state(&entry.op, &work)?;
+                let unchanged_views = if relational_replay_required {
+                    None
+                } else {
+                    let rows = store.stage_relational_row_live_publication(epoch, None);
+                    store.require_relational_row_live_publication(epoch, &rows)?;
+                    let indexes = store.stage_relational_index_live_publication(epoch, None);
+                    if let Some(Err(unavailable)) = &indexes {
+                        return Err(HawDBError::StorageIntegrity(format!(
+                            "unchanged checkpoint index prefix cannot advance: {}",
+                            unavailable.reason
+                        )));
+                    }
+                    Some((rows, indexes))
+                };
                 let payload = crate::wal::binary::encode_binary_wal_record_with_work_context(
                     &entry, epoch, &work,
                 )?;
@@ -759,10 +892,13 @@ impl CheckpointCandidate {
                     &work,
                 )
                 .map_err(HawDBError::from_storage_error)?;
-                bytes = bytes.checked_add(framed.len() as u64).ok_or_else(|| {
+                let record_end = bytes.checked_add(framed.len() as u64).ok_or_else(|| {
                     HawDBError::Storage("checkpoint suffix bytes overflow".into())
                 })?;
-                if original.max_wal_bytes.is_some_and(|limit| bytes > limit) {
+                if original
+                    .max_wal_bytes
+                    .is_some_and(|limit| record_end > limit)
+                {
                     return Err(HawDBError::Storage(
                         "checkpoint suffix exceeds its WAL budget".into(),
                     ));
@@ -770,7 +906,10 @@ impl CheckpointCandidate {
                 for block in framed.chunks(64 * 1024) {
                     replay_checkpoint(task)?;
                     let write_wave = replay_io_wave(task)?;
+                    self.wal_write_attempt_end = Some(bytes + block.len() as u64);
+                    self.wal_sync_pending = true;
                     output.write_all(block)?;
+                    bytes += block.len() as u64;
                     drop(write_wave);
                 }
                 drop(framed);
@@ -778,16 +917,32 @@ impl CheckpointCandidate {
                 let digest = work
                     .integrity(&payload)
                     .map_err(HawDBError::from_storage_error)?;
+                let payload_len = payload.len() as u64;
+                drop(payload);
+                // The rolling digest and all three replay counters move only
+                // with a whole schema/data transaction. No database-sized
+                // rollback snapshot is taken for a partially applied record.
+                entry.replay_into_with_boundary(store, catalog, &work, &mut self.failed)?;
+                if let Some((rows, indexes)) = unchanged_views {
+                    store.publish_relational_row_live_view(rows);
+                    store.publish_relational_index_live_view(indexes);
+                }
                 self.recovery_source
                     .as_mut()
                     .expect("candidate recovery is not finalized")
-                    .record(entry.lsn, payload.len() as u64, digest.sha256)
+                    .record(expected_lsn, payload_len, digest.sha256)
                     .map_err(|reason| HawDBError::StorageIntegrity(reason.into()))?;
-                drop(payload);
-                entry.replay_into(store, catalog, &work)?;
-                expected_lsn = expected_lsn.checked_add(1).ok_or_else(|| {
-                    HawDBError::StorageIntegrity("checkpoint suffix LSN overflow".into())
-                })?;
+                expected_lsn = next_lsn;
+                let durable = store.durable.as_mut().expect("candidate is durable");
+                durable.next_lsn = next_lsn;
+                durable.wal_commit_epoch = store.commit_epoch;
+                durable.wal_bytes = record_end;
+                self.captured_wal_bytes = source_record_end;
+                self.captured_next_lsn = next_lsn;
+                self.candidate_wal_bytes = record_end;
+                self.relational_replay_required = relational_replay_required;
+                self.wal_write_attempt_end = None;
+                self.failed = false;
             }
         }
         if expected_lsn != original.next_lsn || store.commit_epoch != source.commit_epoch {
@@ -805,6 +960,7 @@ impl CheckpointCandidate {
             ));
         }
         output.sync_all()?;
+        self.wal_sync_pending = false;
         drop(sync_wave);
         replay_checkpoint(task)?;
         let durable = store.durable.as_mut().expect("candidate is durable");
@@ -823,6 +979,53 @@ impl CheckpointCandidate {
             entries: expected_lsn - prepared.source_next_lsn,
         })
     }
+}
+
+fn wal_op_changes_relational_state(
+    operation: &WalOp,
+    work: &crate::background::CheckpointWorkContext,
+) -> Result<bool> {
+    let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+    let changes = match operation {
+        WalOp::Relational { .. } | WalOp::RelationalSnapshot { .. } => true,
+        WalOp::Batch(operations) => {
+            unit.finish();
+            for operation in operations {
+                if wal_op_changes_relational_state(operation, work)? {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        }
+        WalOp::CreateNodeLabel { .. }
+        | WalOp::CreateRelationshipType { .. }
+        | WalOp::CreateNodeTable { .. }
+        | WalOp::CreateRelationshipTable { .. }
+        | WalOp::CreateProperty { .. }
+        | WalOp::AlterTableState { .. }
+        | WalOp::AlterPropertyState { .. }
+        | WalOp::GcTableDescriptor { .. }
+        | WalOp::GcPropertyDescriptor { .. }
+        | WalOp::CreateIndex { .. }
+        | WalOp::CreateCompositeIndex { .. }
+        | WalOp::CreateRangeIndex { .. }
+        | WalOp::CreateFullTextIndex { .. }
+        | WalOp::CreateUniqueConstraint { .. }
+        | WalOp::CreateNodePropertyExistsConstraint { .. }
+        | WalOp::CreateRelationshipUniqueConstraint { .. }
+        | WalOp::CreateRelationshipPropertyExistsConstraint { .. }
+        | WalOp::CreateNode { .. }
+        | WalOp::CreateRelationship { .. }
+        | WalOp::SetNodeProperty { .. }
+        | WalOp::SetRelationshipProperty { .. }
+        | WalOp::DeleteNode { .. }
+        | WalOp::DeleteRelationship { .. }
+        | WalOp::ProjectGraph { .. }
+        | WalOp::MarkInitialImportSource { .. }
+        | WalOp::Append { .. } => false,
+    };
+    unit.finish();
+    Ok(changes)
 }
 
 fn replay_checkpoint(task: &RuntimeTaskContext) -> Result<()> {

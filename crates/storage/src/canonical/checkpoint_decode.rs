@@ -25,6 +25,9 @@ use std::ptr::NonNull;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod depth_tests;
+
 #[derive(Debug)]
 pub(crate) struct CheckpointRecord<T> {
     // Destroy data before its inventory, including after execution closes.
@@ -168,6 +171,14 @@ impl<'a> Decoder<'a> {
         keys: Option<&[String]>,
     ) -> Result<BTreeMap<String, Value>, CanonicalSegmentError> {
         let unit = self.work.start_unit()?;
+        ensure_depth(depth)?;
+        // Indexed record roots supply the value depth directly. Nested maps
+        // count their map head and then each entry, as the ordinary decoder does.
+        let value_depth = if keys.is_some() {
+            depth
+        } else {
+            depth.saturating_add(1)
+        };
         let count = cursor.read_u32()? as usize;
         count_fits(cursor, count, 5)?;
         unit.finish();
@@ -189,7 +200,7 @@ impl<'a> Decoder<'a> {
             } else {
                 self.string_field(cursor)?
             };
-            let value = self.value(cursor, depth, spills)?;
+            let value = self.value(cursor, value_depth, spills)?;
             let unit = self.work.start_unit()?;
             self.tree_node::<String, Value>(output.len(), &mut admitted_nodes)?;
             if output.insert(key, value).is_some() {

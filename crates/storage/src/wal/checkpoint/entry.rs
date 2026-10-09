@@ -41,15 +41,32 @@ impl CheckpointWalEntry {
         Self { entry, memory }
     }
 
+    #[cfg(test)]
     pub(crate) fn replay_into(
-        mut self,
+        self,
         store: &mut crate::store::GraphStore,
         catalog: &mut hawdb_core::Catalog,
         work: &CheckpointWorkContext,
     ) -> Result<()> {
-        // Install retained ownership before mutation. Even a partial failed
-        // application must keep moved values admitted until the runtime drops.
-        store.retain_decoded_checkpoint_memory(&mut self.memory, work)?;
-        store.apply_replayed_checkpoint_wal_transaction(catalog, self.entry.op, work)
+        self.replay_into_with_boundary(store, catalog, work, &mut false)
+    }
+
+    pub(crate) fn replay_into_with_boundary(
+        mut self,
+        store: &mut crate::store::GraphStore,
+        catalog: &mut hawdb_core::Catalog,
+        work: &CheckpointWorkContext,
+        mutation_started: &mut bool,
+    ) -> Result<()> {
+        // Transfer ownership after admission/preflight, before the first
+        // mutation. A rejected preflight releases this record's allocations;
+        // a partial apply retains moved values until the private runtime drops.
+        store.apply_replayed_checkpoint_wal_transaction_with_boundary(
+            catalog,
+            self.entry.op,
+            work,
+            mutation_started,
+            Some(&mut self.memory),
+        )
     }
 }

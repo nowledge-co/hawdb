@@ -527,6 +527,45 @@ impl PropertySpillWriter {
         descriptor_tree: PersistentPropertySpillDescriptorTree,
         work: crate::background::CheckpointWorkContext,
     ) -> Result<Self, PropertySpillError> {
+        Self::create_inner(
+            path,
+            generation,
+            source_commit_epoch,
+            config,
+            descriptor_tree,
+            work,
+            false,
+        )
+    }
+
+    pub(crate) fn create_checkpoint(
+        path: impl Into<PathBuf>,
+        generation: ManifestGeneration,
+        source_commit_epoch: u64,
+        config: PropertySpillConfig,
+        descriptor_tree: PersistentPropertySpillDescriptorTree,
+        work: crate::background::CheckpointWorkContext,
+    ) -> Result<Self, PropertySpillError> {
+        Self::create_inner(
+            path,
+            generation,
+            source_commit_epoch,
+            config,
+            descriptor_tree,
+            work,
+            true,
+        )
+    }
+
+    fn create_inner(
+        path: impl Into<PathBuf>,
+        generation: ManifestGeneration,
+        source_commit_epoch: u64,
+        config: PropertySpillConfig,
+        descriptor_tree: PersistentPropertySpillDescriptorTree,
+        work: crate::background::CheckpointWorkContext,
+        checkpoint_buffers: bool,
+    ) -> Result<Self, PropertySpillError> {
         let unit = work.start_unit()?;
         let path = path.into();
         let (descriptor_paths, descriptor_config) = descriptor_tree.into_parts();
@@ -536,7 +575,12 @@ impl PropertySpillWriter {
         write_hashed(&mut file, &mut artifact_digest, ARTIFACT_HEADER)?;
         write_hashed(&mut file, &mut artifact_digest, &generation.0.to_le_bytes())?;
         drop(_wave);
-        let descriptor_tree = GraphDescriptorTreeBuilder::create_with_work_context(
+        let create = if checkpoint_buffers {
+            GraphDescriptorTreeBuilder::create_checkpoint
+        } else {
+            GraphDescriptorTreeBuilder::create_with_work_context
+        };
+        let descriptor_tree = create(
             descriptor_paths,
             GraphDescriptorKind::PropertySpill,
             generation.0,
