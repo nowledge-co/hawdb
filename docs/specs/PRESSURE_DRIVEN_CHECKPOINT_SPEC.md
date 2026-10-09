@@ -1790,3 +1790,61 @@ parent classification scope. An unchanged 8193-empty-row fixture first fails
 when deep admitted array growth is reported as an ordinary operation failure,
 then passes with the shared classifier correction, releases all partial state
 and retries every full record on the same real governor reservation.
+
+### Canonical manifest text ownership
+
+The controlled canonical manifest encoder returns an allocation-owning
+`CheckpointText`. It uses the same admitted text implementation as projected
+artifact encoding: exact-capacity growth reserves overlapping old/new buffers,
+UTF-8 copies use at most 64 KiB per unit, and property-key hex expansion consumes
+at most 32 KiB of source per unit. Numeric and digest displays use a fixed stack
+buffer, and the final checksum is appended without copying the complete body.
+The ordinary manifest API still returns `String` with the established wire
+layout. Controlled writes borrow the owning output through the final write.
+
+The two original frozen resource fixtures reproduce unadmitted wide-name
+expansion and detached output ownership before this correction. Related cases
+compare all encoded bytes with an independent copy of the established layout,
+including empty keys and maximum-width scalar fields, inspect actual retained
+capacity without growth debt, cancel at every observed unit with a real shared
+memory reservation and a one-unit local scheduler, and retry identical bytes.
+Invalid manifest diagnostics retain their existing priority over text admission.
+The shared text implementation retains the original frozen projection fixtures.
+
+The encoded-text cases alone do not qualify uniqueness-validation scratch or
+comparisons; those have the separate coverage below. Canonical writer dictionaries
+and payload accumulators,
+source/catalog/cache retention, allocator and destruction latency, FD/disk and
+cleanup debt remain separate resource-ledger gaps. Whole-owner admission,
+default sustained-load progress, publication parity and release-performance
+qualification remain unchanged and incomplete.
+
+### Canonical property-key uniqueness validation
+
+Controlled and ordinary canonical manifest validation now borrow key strings
+and hash them in 64 KiB units. Up to 32 fixed digest/index entries fit in bounded
+stack storage. Larger tables admit an exact-capacity temporary array before
+allocation; sorts compare only fixed-width entries in chunks of at most 1024,
+and admitted overlapping merge arrays are filled in at most 1024-entry units.
+The original property-key table and its record ids are never reordered.
+
+Digests select comparison groups rather than establish equality. Every prior
+key in a collision group receives an exact bounded byte comparison, preserving
+nonadjacent duplicates, empty strings and UTF-8 semantics. A pathological digest
+collision group can require quadratic comparisons, but each comparison remains
+cooperative and observes cancellation. Invalid binding diagnostics remain ahead
+of key validation, and the frozen small invalid-source fixture retains its
+original corruption diagnostic ahead of text admission.
+
+The original 8193-key/one-byte and 128-wide-key fixtures genuinely fail before
+correction (1365 unadmitted allocations and 129 unbounded-key units respectively)
+and pass with unchanged source, budgets and assertions. Separate cases compare
+against an independent tree oracle across inline/sort/multiple-merge boundaries,
+force digest collisions including nonadjacent repeats, cancel at every actual
+collision comparison unit, and reject second-array overlap before allocation,
+release the first array, and retry with the same reservation.
+
+These scoped scratch/CPU bounds do not establish source/candidate/cache/GC
+ownership, dictionary and writer payload accounting, allocation/free latency,
+FD/disk/cleanup debt, default sustained progress, complete publication parity,
+physical power-loss/refinement or paired release-performance qualification.

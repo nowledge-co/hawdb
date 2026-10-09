@@ -16,9 +16,16 @@ use crate::background::{CheckpointWorkContext, CheckpointWorkError};
 
 mod checkpoint_decode;
 #[cfg(test)]
+mod checkpoint_manifest_memory_related_tests;
+#[cfg(test)]
+mod checkpoint_manifest_memory_tests;
+#[cfg(test)]
 mod checkpoint_metadata_tests;
 mod checkpoint_point;
 mod checkpoint_scan;
+mod checkpoint_validation;
+#[cfg(test)]
+mod checkpoint_validation_memory_tests;
 pub(crate) use checkpoint_scan::{CheckpointCanonicalIterator, CheckpointCanonicalRecord};
 
 use crate::file_io::{self as fs, File};
@@ -504,56 +511,88 @@ impl CanonicalSegmentManifest {
                 "canonical manifest descriptor count or root binding is inconsistent".to_string(),
             ));
         }
-        let mut seen = BTreeSet::new();
-        for key in &self.property_keys {
-            let unit = work.start_unit()?;
-            if !seen.insert(key.as_str()) {
-                return Err(CanonicalSegmentError::Corrupt(
-                    "canonical manifest property keys are not unique".to_string(),
-                ));
-            }
-            unit.finish();
-        }
-        Ok(())
+        checkpoint_validation::validate(&self.property_keys, work)
     }
 
     pub fn encode(&self) -> Result<String, CanonicalSegmentError> {
         self.encode_with_work_context(&CheckpointWorkContext::default())
+            .map(crate::background::CheckpointText::into_unadmitted)
     }
 
     #[doc(hidden)]
     pub fn encode_with_work_context(
         &self,
         work: &CheckpointWorkContext,
-    ) -> Result<String, CanonicalSegmentError> {
-        self.validate_with_work_context(work)?;
-        let mut body = format!(
-            "{MANIFEST_HEADER_V1}\nrecord_layout\tproperty_key_ids\ngeneration\t{}\nsource_commit_epoch\t{}\nartifact_id\t{}\nartifact_len\t{}\nartifact_digest\t{}\nartifact_sha256\t{}\nnode_count\t{}\nrelationship_count\t{}\nsegment_count\t{}\nnode_segment_count\t{}\nrelationship_segment_count\t{}\ndescriptor_root_len\t{}\ndescriptor_root_crc32c\t{}\ndescriptor_root_sha256\t{}\n",
-            self.generation.0,
-            self.source_commit_epoch,
-            self.artifact_id,
-            self.artifact_len,
-            self.artifact_digest.0,
-            self.artifact_sha256,
-            self.node_count,
-            self.relationship_count,
-            self.segment_count,
-            self.node_segment_count,
-            self.relationship_segment_count,
-            self.descriptor_root_artifact.encoded_len,
-            self.descriptor_root_artifact.encoded_crc32c,
-            self.descriptor_root_artifact.encoded_sha256
-        );
-        for (id, key) in self.property_keys.iter().enumerate() {
-            let unit = work.start_unit()?;
-            body.push_str(&format!(
-                "property_key\t{id}\t{}\n",
-                encode_property_key_hex(key)
-            ));
-            unit.finish();
-        }
-        let checksum = work.integrity(body.as_bytes())?.crc32c.as_u64();
-        Ok(format!("{body}checksum\t{checksum}\n"))
+    ) -> Result<crate::background::CheckpointText, CanonicalSegmentError> {
+        work.classify(|work| {
+            self.validate_with_work_context(work)?;
+            let mut body = crate::background::CheckpointText::new();
+            let source =
+                |error: hawdb_core::HawDBError| CanonicalSegmentError::Source(error.to_string());
+            body.append(MANIFEST_HEADER_V1, work).map_err(source)?;
+            body.append("\nrecord_layout\tproperty_key_ids\n", work)
+                .map_err(source)?;
+            for (name, value) in [
+                ("generation", self.generation.0),
+                ("source_commit_epoch", self.source_commit_epoch),
+                ("artifact_id", self.artifact_id),
+                ("artifact_len", self.artifact_len),
+                ("artifact_digest", self.artifact_digest.0),
+            ] {
+                body.fields(format_args!("{name}\t{value}\n"), work)
+                    .map_err(source)?;
+            }
+            body.append("artifact_sha256\t", work).map_err(source)?;
+            body.fields(format_args!("{}", self.artifact_sha256), work)
+                .map_err(source)?;
+            body.append("\n", work).map_err(source)?;
+            for (name, value) in [
+                ("node_count", self.node_count),
+                ("relationship_count", self.relationship_count),
+                ("segment_count", self.segment_count),
+                ("node_segment_count", self.node_segment_count),
+                (
+                    "relationship_segment_count",
+                    self.relationship_segment_count,
+                ),
+                (
+                    "descriptor_root_len",
+                    self.descriptor_root_artifact.encoded_len,
+                ),
+                (
+                    "descriptor_root_crc32c",
+                    u64::from(self.descriptor_root_artifact.encoded_crc32c),
+                ),
+            ] {
+                body.fields(format_args!("{name}\t{value}\n"), work)
+                    .map_err(source)?;
+            }
+            body.append("descriptor_root_sha256\t", work)
+                .map_err(source)?;
+            body.fields(
+                format_args!("{}", self.descriptor_root_artifact.encoded_sha256),
+                work,
+            )
+            .map_err(source)?;
+            body.append("\n", work).map_err(source)?;
+            for (id, key) in self.property_keys.iter().enumerate() {
+                body.fields(format_args!("property_key\t{id}\t"), work)
+                    .map_err(source)?;
+                body.hex(key, work).map_err(source)?;
+                body.append("\n", work).map_err(source)?;
+            }
+            let checksum = work.integrity(body.as_bytes())?.crc32c.as_u64();
+            body.fields(format_args!("checksum\t{checksum}\n"), work)
+                .map_err(source)?;
+            work.checkpoint()?;
+            Ok(body)
+        })
+        .map_err(|error| match error {
+            crate::background::CheckpointOperationError::Work(error) => {
+                CanonicalSegmentError::Work(error)
+            }
+            crate::background::CheckpointOperationError::Operation(error) => error,
+        })
     }
 
     pub fn decode(text: &str) -> Result<Self, CanonicalSegmentError> {
@@ -4090,10 +4129,6 @@ fn parse_u32(value: &str, name: &str) -> Result<u32, CanonicalSegmentError> {
     value
         .parse()
         .map_err(|_| CanonicalSegmentError::Corrupt(format!("invalid canonical {name}: {value}")))
-}
-
-fn encode_property_key_hex(key: &str) -> String {
-    key.bytes().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn decode_property_key_hex(value: &str) -> Result<String, CanonicalSegmentError> {

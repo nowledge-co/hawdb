@@ -25,7 +25,9 @@ pub(crate) use checkpoint::{
 };
 pub(crate) use checkpoint::{CheckpointAllocationOwner, CheckpointAllocationToken};
 #[doc(hidden)]
-pub use checkpoint::{CheckpointSharedBytes, CheckpointWorkContext, CheckpointWorkError};
+pub use checkpoint::{
+    CheckpointSharedBytes, CheckpointText, CheckpointWorkContext, CheckpointWorkError,
+};
 pub(crate) use checkpoint::{CheckpointSharedValues, CheckpointValues};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
