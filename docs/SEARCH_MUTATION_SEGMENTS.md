@@ -337,14 +337,19 @@ extended as later lifecycle states land.
 
 ## Compaction
 
-The default shared project FD budget is 1024. It does not pre-open handles.
-On native Unix, project acquisition raises the process soft descriptor limit
-when needed to cover the budget plus 64 handles for the host, preserving the
-hard limit and any already higher soft limit. An insufficient effective limit
-returns a typed `FileDescriptorError::OsLimit` with the requested allowance and
-observed soft/hard limits. `FileDescriptorMetrics::os_soft_limit` reports the
-current native Unix soft limit; it is unavailable on other platforms.
-A host retaining old snapshots
+`DatabaseConfig::max_open_files` sets the shared project FD ceiling, default
+1024, without pre-opening handles. Native Unix observes the process soft
+descriptor limit and admits `min(max_open_files, soft.saturating_sub(64))`,
+leaving headroom for the host. It never changes process limits. Linux and macOS
+can therefore have different effective budgets; a soft limit of 256 admits
+192 project handles. Other platforms retain the configured admission ceiling.
+Metrics report `configured_limit`, `effective_limit`, `os_soft_limit`, and
+`os_limit_clamped`; the runtime readiness JSON exposes the reduced-capacity
+warning without making it a cutover blocker.
+
+At capacity, LRU closes only idle immutable handles. Each native read pins its
+handle for the complete I/O operation, so concurrent eviction cannot close it.
+Later reads reopen and validate an evicted object. A host retaining old snapshots
 must budget their handles alongside the new generation and temporary publication
 files. Compaction reduces the active owner's fan-out; old readers keep their
 complete immutable closures until released, so merging does not immediately

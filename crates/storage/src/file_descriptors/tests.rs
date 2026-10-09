@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{context_for_path, ProjectFileDescriptors};
+use super::{context_for_path, ProjectFileDescriptors, DEFAULT_MAX_OPEN_FILES};
 use crate::file_io::{self, File};
 use crate::immutable_files::ImmutableFileBinding;
 use crate::immutable_object::{ObjectKind, ObjectReference};
@@ -63,10 +63,14 @@ fn default_budget_admits_large_reader_reservations_without_opening_files() {
         crate::config::WalReplayConfig::default().max_open_files,
     )
     .unwrap();
-    let readers = fixture.project.reserve(300).unwrap();
+    assert_eq!(sibling.metrics().configured_limit, 1024);
+    let reader_count = 300.min(sibling.metrics().effective_limit);
+    let readers = fixture.project.reserve(reader_count).unwrap();
     assert_eq!(sibling.metrics().open, 0);
-    assert_eq!(sibling.metrics().reserved, 300);
-    let remaining = sibling.reserve(sibling.metrics().limit - 300).unwrap();
+    assert_eq!(sibling.metrics().reserved, reader_count);
+    let remaining = sibling
+        .reserve(sibling.metrics().effective_limit - reader_count)
+        .unwrap();
     let error = fixture.project.reserve(1).unwrap_err();
     assert!(matches!(
         file_descriptor_error(&error),
@@ -304,6 +308,54 @@ fn immutable_handle_pressure_evicts_the_least_recently_used_idle_file() {
     drop(pressure);
 }
 
+#[test]
+fn immutable_handle_eviction_preserves_a_concurrent_native_read() {
+    let fixture = Fixture::new(2);
+    let active = fixture.binding("active", b"active reader");
+    let idle = fixture.binding("idle", b"idle");
+    let alias = fixture.root.join("logical");
+    fixture
+        .project
+        .immutable_handles
+        .bind(&alias, active)
+        .unwrap();
+    let logical = File::open(&alias).unwrap();
+    let context = context_for_path(&fixture.root).unwrap();
+    drop(
+        fixture
+            .project
+            .immutable_handles
+            .get(&idle, &context)
+            .unwrap(),
+    );
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let reader_barrier = barrier.clone();
+    let reader = std::thread::spawn(move || {
+        logical
+            .with_native(|native| {
+                // The cache Arc is pinned for the complete native operation, even
+                // while another thread needs a slot and evicts an idle handle.
+                reader_barrier.wait();
+                reader_barrier.wait();
+                let mut native = native;
+                native.seek(SeekFrom::Start(0))?;
+                let mut bytes = [0; 13];
+                native.read_exact(&mut bytes)?;
+                Ok(bytes)
+            })
+            .unwrap()
+    });
+    barrier.wait();
+    let pressure = File::create(fixture.root.join("pressure")).unwrap();
+    assert_eq!(fixture.project.metrics().cached_handles, 1);
+    assert_eq!(fixture.project.metrics().cache_evictions, 1);
+    assert_eq!(fixture.project.metrics().open, 2);
+    barrier.wait();
+    assert_eq!(&reader.join().unwrap(), b"active reader");
+    drop(pressure);
+    assert_eq!(fixture.project.metrics().open, 1);
+}
+
 #[cfg(all(unix, not(target_arch = "wasm32")))]
 fn descriptor_os_limits() -> libc::rlimit {
     let mut limit = libc::rlimit {
@@ -320,46 +372,62 @@ fn descriptor_os_limits() -> libc::rlimit {
 
 #[cfg(all(unix, not(target_arch = "wasm32")))]
 #[test]
-fn project_admission_raises_the_os_soft_limit_without_lowering_it() {
+fn project_admission_observes_the_os_soft_limit_and_reuses_the_configured_domain() {
     if run_descriptor_child(
-        "file_descriptors::tests::project_admission_raises_the_os_soft_limit_without_lowering_it",
+        "file_descriptors::tests::project_admission_observes_the_os_soft_limit_and_reuses_the_configured_domain",
     ) {
         return;
     }
     let original = descriptor_os_limits();
     let lowered = libc::rlimit {
-        rlim_cur: 64,
+        rlim_cur: 256,
         rlim_max: original.rlim_max,
     };
     // SAFETY: This isolated child lowers only its own soft limit.
     assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lowered) }, 0);
-    let fixture = Fixture::new(128);
-    let raised = descriptor_os_limits();
-    let requested = 128 + super::os_limit::HOST_HEADROOM;
-    assert_eq!(raised.rlim_cur, libc::rlim_t::try_from(requested).unwrap());
-    assert_eq!(raised.rlim_max, original.rlim_max);
+    let fixture = Fixture::new(DEFAULT_MAX_OPEN_FILES);
+    let metrics = fixture.project.metrics();
+    let effective = 256 - super::os_limit::HOST_HEADROOM;
+    assert_eq!(descriptor_os_limits().rlim_cur, lowered.rlim_cur);
+    assert_eq!(descriptor_os_limits().rlim_max, original.rlim_max);
+    assert_eq!(metrics.os_soft_limit, Some(256));
+    assert_eq!(metrics.configured_limit, 1024);
     assert_eq!(
-        fixture.project.metrics().os_soft_limit,
-        Some(u64::try_from(requested).unwrap())
+        (metrics.limit, metrics.effective_limit),
+        (effective, effective)
     );
-    assert_eq!(fixture.project.metrics().limit, 128);
-    assert_eq!(fixture.project.metrics().open, 0);
+    assert!(metrics.os_limit_clamped);
+    assert_eq!(metrics.open, 0);
+    let sibling = ProjectFileDescriptors::acquire_existing(&fixture.root, 1024).unwrap();
+    assert_eq!(sibling.metrics(), metrics);
+    assert_eq!(
+        ProjectFileDescriptors::acquire_existing(&fixture.root, effective).unwrap_err(),
+        HawDBError::FileDescriptors(FileDescriptorError::ConfigurationConflict {
+            configured: 1024,
+            requested: effective,
+        })
+    );
+    let held = sibling.reserve(effective).unwrap();
+    assert!(matches!(
+        file_descriptor_error(&fixture.project.reserve(1).unwrap_err()),
+        Some(FileDescriptorError::BudgetExceeded { available: 0, limit, .. }) if limit == effective
+    ));
+    drop(held);
     let smaller = Fixture::new(16);
-    assert_eq!(descriptor_os_limits().rlim_cur, raised.rlim_cur);
-    assert_eq!(
-        smaller.project.metrics().os_soft_limit,
-        fixture.project.metrics().os_soft_limit
-    );
+    assert_eq!(descriptor_os_limits().rlim_cur, lowered.rlim_cur);
+    assert_eq!(smaller.project.metrics().configured_limit, 16);
+    assert_eq!(smaller.project.metrics().effective_limit, 16);
+    assert!(!smaller.project.metrics().os_limit_clamped);
 }
 
 #[cfg(all(unix, not(target_arch = "wasm32")))]
 #[test]
-fn project_admission_reports_the_os_hard_limit_without_installing_a_root() {
-    if run_descriptor_child("file_descriptors::tests::project_admission_reports_the_os_hard_limit_without_installing_a_root") {
+fn project_admission_preserves_a_low_hard_limit_and_admits_a_smaller_budget() {
+    if run_descriptor_child("file_descriptors::tests::project_admission_preserves_a_low_hard_limit_and_admits_a_smaller_budget") {
         return;
     }
     let restricted = libc::rlimit {
-        rlim_cur: 64,
+        rlim_cur: 96,
         rlim_max: 96,
     };
     // SAFETY: Lowering the hard limit is confined to this expendable child.
@@ -367,22 +435,51 @@ fn project_admission_reports_the_os_hard_limit_without_installing_a_root() {
         unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &restricted) },
         0
     );
-    let root = std::env::temp_dir().join(format!("hawdb-fd-hard-limit-{}", std::process::id()));
-    let requested = 64 + super::os_limit::HOST_HEADROOM;
+    let fixture = Fixture::new(DEFAULT_MAX_OPEN_FILES);
+    assert_eq!(descriptor_os_limits().rlim_cur, 96);
+    assert_eq!(descriptor_os_limits().rlim_max, 96);
+    assert_eq!(fixture.project.metrics().configured_limit, 1024);
+    assert_eq!(fixture.project.metrics().effective_limit, 32);
+    assert!(fixture.project.metrics().os_limit_clamped);
+    let held = fixture.project.reserve(32).unwrap();
+    assert!(fixture.project.reserve(1).is_err());
+    drop(held);
+}
+
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[test]
+fn project_admission_reports_insufficient_os_capacity_without_installing_a_root() {
+    if run_descriptor_child("file_descriptors::tests::project_admission_reports_insufficient_os_capacity_without_installing_a_root") {
+        return;
+    }
+    let restricted = libc::rlimit {
+        rlim_cur: 68,
+        rlim_max: 96,
+    };
+    // SAFETY: Both changes are confined to this expendable child.
     assert_eq!(
-        ProjectFileDescriptors::acquire(&root, 64).unwrap_err(),
+        unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &restricted) },
+        0
+    );
+    let root = std::env::temp_dir().join(format!(
+        "hawdb-fd-insufficient-limit-{}",
+        std::process::id()
+    ));
+    let requested = 8 + super::os_limit::HOST_HEADROOM;
+    assert_eq!(
+        ProjectFileDescriptors::acquire(&root, DEFAULT_MAX_OPEN_FILES).unwrap_err(),
         HawDBError::FileDescriptors(FileDescriptorError::OsLimit {
             requested,
             os_code: None,
-            soft: Some(96),
+            soft: Some(68),
             hard: Some(96),
         })
     );
     assert!(!root.exists());
-    assert_eq!(descriptor_os_limits().rlim_cur, 96);
+    assert_eq!(descriptor_os_limits().rlim_cur, 68);
     assert_eq!(descriptor_os_limits().rlim_max, 96);
-    let retry = ProjectFileDescriptors::acquire(&root, 16).unwrap();
-    assert_eq!(retry.metrics().limit, 16);
+    let retry = ProjectFileDescriptors::acquire(&root, 4).unwrap();
+    assert_eq!(retry.metrics().limit, 4);
     assert_eq!((retry.metrics().open, retry.metrics().reserved), (0, 0));
     drop(retry);
     std::fs::remove_dir_all(root).unwrap();

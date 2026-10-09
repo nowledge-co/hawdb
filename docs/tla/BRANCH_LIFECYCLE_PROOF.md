@@ -86,11 +86,13 @@ that domain. Target capacity is reserved before recovery; unopened logical
 artifact aliases retain no native handle. This bounds one project's charged
 descriptors, not all host libraries or independent projects in the process;
 an OS-level descriptor rejection remains possible and is reported explicitly.
-Native Unix project acquisition ensures the process soft limit covers the
-project budget plus 64 host handles within the unchanged hard limit, or fails
-with a typed OS-limit error. This process-limit adjustment and the immutable
-cache's LRU order are implementation policies outside the descriptor-count
-conservation argument.
+Native Unix project acquisition observes the soft limit and caps effective
+admission below it by 64 host handles. Configured and effective limits are
+reported separately; shared-domain conflicts compare the configured value.
+Insufficient minimum capacity returns a typed OS-limit error. Observation does
+not change process limits. The OS-cap calculation and immutable cache's LRU
+order are implementation policies outside the descriptor-count conservation
+argument, which uses the installed effective limit.
 
 Catalog-backed GC serializes metadata through sweep and conservatively defers
 all reclamation while any branch lease remains active. The admitted store and

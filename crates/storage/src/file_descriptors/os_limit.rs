@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Startup-only process allowance for a configured project descriptor budget.
+//! Observe process capacity without modifying host-owned resource limits.
 
 use hawdb_core::error::HawDBError;
 
@@ -24,10 +24,10 @@ mod native {
     use super::{HawDBError, HOST_HEADROOM};
     use hawdb_core::error::FileDescriptorError;
     use std::io;
-    use std::sync::Mutex;
 
-    // Serialize this library's read/raise sequence across independent projects.
-    static LIMIT_UPDATE: Mutex<()> = Mutex::new(());
+    // Leave space for lock/WAL, manifest/publication and immutable reads. A
+    // smaller explicit project quota remains supported for component fixtures.
+    const MIN_PROJECT_CAPACITY: usize = 8;
 
     fn value<T: Into<u64>>(limit: T) -> u64 {
         limit.into()
@@ -54,34 +54,18 @@ mod native {
         Ok(limit)
     }
 
-    pub(super) fn ensure_capacity(budget: usize) -> Result<(), HawDBError> {
-        let invalid =
-            || HawDBError::FileDescriptors(FileDescriptorError::InvalidBudget { limit: budget });
-        let requested = budget.checked_add(HOST_HEADROOM).ok_or_else(invalid)?;
-        let required = libc::rlim_t::try_from(requested).map_err(|_| invalid())?;
-        let _update = LIMIT_UPDATE
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+    pub(super) fn effective_limit(budget: usize) -> Result<usize, HawDBError> {
+        let minimum = budget.min(MIN_PROJECT_CAPACITY);
+        let requested = minimum + HOST_HEADROOM;
         let current = read().map_err(|error| rejected(None, requested, error.raw_os_error()))?;
-        if current.rlim_cur >= required {
-            return Ok(());
+        let allowance = usize::try_from(value(current.rlim_cur))
+            .unwrap_or(usize::MAX)
+            .saturating_sub(HOST_HEADROOM);
+        let effective = budget.min(allowance);
+        if effective < minimum {
+            return Err(rejected(Some(current), requested, None));
         }
-        let raised = libc::rlimit {
-            rlim_cur: required.min(current.rlim_max),
-            rlim_max: current.rlim_max,
-        };
-        // SAFETY: raised is initialized; the hard limit is unchanged and this
-        // library serializes its own updates. Hosts synchronize external changes.
-        let os_code = if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) } == 0 {
-            None
-        } else {
-            io::Error::last_os_error().raw_os_error()
-        };
-        let effective = read().map_err(|error| rejected(None, requested, error.raw_os_error()))?;
-        if effective.rlim_cur < required {
-            return Err(rejected(Some(effective), requested, os_code));
-        }
-        Ok(())
+        Ok(effective)
     }
 
     pub(super) fn current_soft_limit() -> Option<u64> {
@@ -89,15 +73,14 @@ mod native {
     }
 }
 
-pub(super) fn ensure_capacity(budget: usize) -> Result<(), HawDBError> {
+pub(super) fn effective_limit(budget: usize) -> Result<usize, HawDBError> {
     #[cfg(all(unix, not(target_arch = "wasm32")))]
     {
-        native::ensure_capacity(budget)
+        native::effective_limit(budget)
     }
     #[cfg(not(all(unix, not(target_arch = "wasm32"))))]
     {
-        let _ = budget;
-        Ok(())
+        Ok(budget)
     }
 }
 
