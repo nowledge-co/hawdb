@@ -1,4 +1,5 @@
 use super::*;
+mod notifications;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 fn pause() -> (Arc<OwnerPauseProbe>, Receiver<()>, Sender<()>) {

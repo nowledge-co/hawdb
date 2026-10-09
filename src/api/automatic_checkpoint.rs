@@ -68,6 +68,13 @@ struct OwnerPauseProbe {
 }
 
 #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+#[derive(Debug)]
+struct RetryWaitProbe {
+    waiting: std::sync::mpsc::Sender<()>,
+    woken: std::sync::mpsc::Sender<bool>,
+}
+
+#[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
 impl OwnerPauseProbe {
     fn observe(&self) {
         self.paused.send(()).expect("owner pause observer stopped");
@@ -176,6 +183,10 @@ pub(super) struct State {
     frontend_wait_probe: Option<std::sync::mpsc::Sender<Phase>>,
     #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
     preparation_error_probe: Option<std::sync::mpsc::Sender<String>>,
+    #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+    owner_wait_probe: Option<std::sync::mpsc::Sender<Phase>>,
+    #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+    retry_wait_probe: Option<RetryWaitProbe>,
 }
 
 #[derive(Debug, Default)]
@@ -200,6 +211,7 @@ impl Control {
         self.ensure_healthy()?;
         let mut state = self.lock()?;
         let observed_attempts = state.attempts_started;
+        let mut notified_owner = false;
         while state.phase == Phase::Finalizing
             || (state.phase == Phase::Draining && !state.sync_group_active)
             || (state.phase == Phase::Preparing
@@ -218,6 +230,13 @@ impl Control {
                 && pressure_pending(&state)
                 && needs_headroom(&state))
         {
+            if !notified_owner {
+                // Entering pressure backoff requests an attempt immediately.
+                // The owner and this predicate share the mutex, so the wake
+                // cannot be lost between predicate evaluation and waiting.
+                self.changed.notify_all();
+                notified_owner = true;
+            }
             #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
             if let Some(probe) = &state.frontend_wait_probe {
                 let _ = probe.send(state.phase);
@@ -614,11 +633,23 @@ fn run(
                         task,
                     );
                 }
-                let (next, _) = control
-                    .changed
-                    .wait_timeout(state, RETRY_DELAY)
-                    .unwrap_or_else(|error| error.into_inner());
-                state = next;
+                #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+                if let Some(probe) = &state.owner_wait_probe {
+                    let _ = probe.send(state.phase);
+                }
+                state = match next_work_delay(&state, max_age) {
+                    Some(delay) => {
+                        control
+                            .changed
+                            .wait_timeout(state, delay)
+                            .unwrap_or_else(|error| error.into_inner())
+                            .0
+                    }
+                    None => control
+                        .changed
+                        .wait(state)
+                        .unwrap_or_else(|error| error.into_inner()),
+                };
             }
         };
         let attempt = match pending {
@@ -658,10 +689,21 @@ fn run(
                 state.task = None;
                 state.report.preparing = false;
                 control.changed.notify_all();
-                let (state, _) = control
+                #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+                let probe = state.retry_wait_probe.take();
+                #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+                if let Some(probe) = &probe {
+                    let _ = probe.waiting.send(());
+                }
+                let (state, wake) = control
                     .changed
                     .wait_timeout(state, RETRY_DELAY)
                     .unwrap_or_else(|error| error.into_inner());
+                #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+                if let Some(probe) = probe {
+                    let _ = probe.woken.send(wake.timed_out());
+                }
+                let _ = wake;
                 drop(state);
                 continue;
             }
@@ -879,6 +921,17 @@ fn due(source: &Source, max_age: Duration) -> bool {
             && debt.commit_epoch > debt.checkpoint_commit_epoch
             && (soft_pressure(debt) || u128::from(debt.wal_age_millis) >= max_age.as_millis())
     })
+}
+
+fn next_work_delay(state: &State, max_age: Duration) -> Option<Duration> {
+    if state.phase != Phase::Idle || state.suspensions != 0 || state.sync_group_active {
+        return None;
+    }
+    let debt = state.latest.as_ref()?.store.checkpoint_debt_snapshot()?;
+    if debt.read_only || debt.commit_epoch <= debt.checkpoint_commit_epoch {
+        return None;
+    }
+    Some(max_age.saturating_sub(Duration::from_millis(debt.wal_age_millis)))
 }
 
 fn prepare(
