@@ -1,0 +1,51 @@
+name: Native Bindings
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "bindings/ffi/**"
+      - "bindings/go/**"
+      - "MODULE.bazel"
+      - "BUILD.bazel"
+      - ".bazelrc"
+      - ".github/workflows/native-bindings.yml"
+  push:
+    branches: [main]
+    paths:
+      - "bindings/ffi/**"
+      - "bindings/go/**"
+      - "MODULE.bazel"
+      - "BUILD.bazel"
+      - ".bazelrc"
+      - ".github/workflows/native-bindings.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bazel:
+    name: Bazel native bindings (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    env:
+      USE_BAZEL_VERSION: "9.2.0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Bazel
+        uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+
+      - name: Build the C ABI libraries and Go package
+        run: bazel build //bindings/ffi:hawdb_ffi //bindings/ffi:hawdb_ffi_static //bindings/go:hawdb
+
+      - name: Test Go against the Bazel-built C ABI
+        run: bazel test --test_output=errors --test_arg=-test.v //bindings/go:hawdb_go_tests
