@@ -21532,6 +21532,8 @@ fn profiled_relational_sql_output(
                 RelationalSqlIndexReadProfile {
                     table: evidence.table,
                     index: evidence.index,
+                    lookups: evidence.lookups,
+                    metadata_count_lookups: evidence.metadata_count_lookups,
                     runtime_path,
                     logical_pages: evidence.logical_pages,
                     logical_bytes: evidence.logical_bytes,
