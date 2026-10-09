@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 __version__: str
 
@@ -37,5 +37,7 @@ class Database:
     def __exit__(self, *args: object) -> bool: ...
 
 def open(path: Optional[str] = None, read_only: bool = False) -> Database: ...
+def capabilities() -> Mapping[str, bool]:
+    """Engine capabilities compiled into this extension (read-only)."""
 
 class exceptions: ...

@@ -217,6 +217,8 @@ fn source(error: hawdb_core::HawDBError) -> CanonicalSegmentError {
 mod value;
 pub(super) use value::encode as encode_value;
 
+pub(super) mod accumulator;
+pub(super) mod descriptor;
 pub(super) mod record;
 
 pub(super) enum Record {

@@ -1989,3 +1989,81 @@ debt and the whole candidate still need qualification. Full-writer readback uses
 its existing descriptor/spill construction admission; only the isolated record
 codec fixtures require one local unit. Default-owner sustained progress and the
 whole-candidate operation estimate remain unresolved.
+
+### Canonical checkpoint accumulator capacity ownership
+
+The private borrowed writer retains admitted segment byte capacity, source and
+target endpoint arrays, and node-property Bloom input keys in a separate owner.
+Ordinary segment accumulation retains its existing encoding and public callback
+contract. A replacement reserves its complete new capacity while the old buffer
+is still admitted; copies and payload appends use at most 64 KiB per work unit.
+The old allocation dies before its buffer lease is released. Allocation inventory
+metadata stays admitted until the segment is consumed or abandoned. Segment data
+is destroyed before its inventory after physical flush, including failure paths.
+Record-size, ordering and count checks precede new segment byte allocation.
+
+Checkpoint spill values also admit the containing pending array. Clearing a
+flushed batch releases the value buffers but preserves both array capacity and
+its admission through reuse; destruction releases the retained capacity. Array
+growth uses the existing bounded checkpoint vector primitive and admits old/new
+overlap. Ordinary spill inputs preserve their established path.
+
+Two unchanged actual-writer probes use borrowed complete inputs with a 64 KiB
+reservation. Before correction, 4097 empty nodes allocate one large segment
+buffer before proper admission, while 2049 small spilled values allocate two
+large buffers before denial. Ordinary artifacts and complete readback are built
+before allocation observation. Related fixtures compare complete wire bytes and
+all endpoint/property-key arrays, retain admission after worker closure, deny
+each key array separately before allocation, and exercise old/new capacity
+overlap. Measured payload and replacement copy counts cover the 64 KiB boundaries.
+Every measured accumulator and pending-array CPU cancellation cut releases the
+abandoned workspace before fully retrying the same input/reservation with one
+local work unit. Separate full-writer fixtures compare complete canonical and
+spill artifacts and manifests, then read every one of 257 nodes and relationships.
+Spill flush/reuse fixtures verify exact ordinary artifact bytes and both batches.
+
+A failed multi-buffer push abandons its workspace rather than resuming partial
+bytes or endpoints. These capacity fixtures do not qualify returned descriptor
+and Bloom ownership, source state, whole writer/descriptor/spill work-unit
+boundaries, FD/disk/cleanup debt, allocator/free latency or whole-candidate
+admission. Full-writer and spill-flush checks retain their existing constructor
+and descriptor units; only isolated accumulation and pending pushes require one
+local unit. Default-owner sustained progress remains unresolved, and the frozen
+whole-candidate operation estimate is unchanged.
+
+### Returned canonical segment Bloom ownership
+
+Private admitted segment flushes reserve exact Bloom word capacity, including
+allocation inventory metadata, before allocation while segment source capacity
+is still admitted. Zero initialization uses at most 64 KiB per unit, and the
+existing 256-key insertion units preserve the ordinary Bloom layout. A private
+descriptor retains all three Bloom inventories until its final consumer closes;
+its data dies before its inventory. Ordinary public flushes and descriptor types
+retain their established encoding and return contract.
+
+Two unchanged probes prepare complete ordinary framing/readback and admitted
+source records before observation. A 65537-relationship segment genuinely fails
+both assertions before correction: an exhausted reservation still permits two
+large returned Bloom allocations, and a successful flush returns Bloom bytes
+without retaining any admission after its source dies. Denial includes simultaneous
+source/Bloom ownership and leaves the caller digest unchanged. Success compares
+complete physical bytes and encoded descriptor fields, retains admission after
+worker closure, and releases it only after destroying the returned descriptor.
+
+Related fixtures compare ordinary Blooms and all inserted keys at zero, insertion,
+zeroing and maximum-word boundaries; independently observe every zeroing and
+256-key unit; and cancel every measured Bloom CPU unit before reconstructing the
+complete input with the same reservation and one local unit. Owned node and
+relationship flushes enumerate every observed CPU and physical I/O cancellation
+point, acquire a real one-wave governor lease alongside telemetry, preserve an
+exact ordinary file prefix and initial caller digest on failure, release all
+source/result memory, and fully retry each cut. Genuine zero-wave denial then
+explicitly re-admits one wave for a complete retry. The original prior flush and
+accumulator fixtures remain unchanged.
+
+This owns returned Bloom payloads, not encoded descriptor leaf values or the
+descriptor-tree writer's pending pages and run buffers. Those payloads, complete
+writer/spill/descriptor work-unit boundaries, source state, FD/disk/cleanup debt,
+allocator/free latency and whole-candidate admission remain separate gaps.
+Default-owner sustained progress and its frozen whole-candidate operation
+estimate remain unresolved.

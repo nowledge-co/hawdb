@@ -17,7 +17,11 @@
 //! Source arrays and returned descriptor Bloom ownership are separate resources.
 
 use super::*;
+use crate::background::{
+    CheckpointAllocationOwner, CheckpointDecodeContext, CheckpointOperationError,
+};
 use hawdb_integrity::Crc32cHasher;
+use std::cell::RefCell;
 
 pub(super) fn flush(
     source: SegmentAccumulator,
@@ -25,6 +29,48 @@ pub(super) fn flush(
     artifact_digest: &mut IntegrityHasher,
     offset: u64,
     work: Option<&CheckpointWorkContext>,
+) -> Result<CanonicalSegmentDescriptor, CanonicalSegmentError> {
+    flush_inner(source, file, artifact_digest, offset, work, None)
+}
+
+pub(super) fn flush_admitted(
+    source: SegmentAccumulator,
+    file: &mut File,
+    artifact_digest: &mut IntegrityHasher,
+    offset: u64,
+    work: &CheckpointWorkContext,
+) -> Result<checkpoint_writer::descriptor::Descriptor, CanonicalSegmentError> {
+    work.classify(|work| {
+        let context = CheckpointDecodeContext {
+            work: work.clone(),
+            memory: RefCell::new(CheckpointAllocationOwner::default()),
+        };
+        let descriptor = flush_inner(
+            source,
+            file,
+            artifact_digest,
+            offset,
+            Some(work),
+            Some(&context),
+        )?;
+        Ok(checkpoint_writer::descriptor::Descriptor::new(
+            descriptor,
+            context.memory.into_inner(),
+        ))
+    })
+    .map_err(|error| match error {
+        CheckpointOperationError::Work(error) => CanonicalSegmentError::Work(error),
+        CheckpointOperationError::Operation(error) => error,
+    })
+}
+
+fn flush_inner(
+    source: SegmentAccumulator,
+    file: &mut File,
+    artifact_digest: &mut IntegrityHasher,
+    offset: u64,
+    work: Option<&CheckpointWorkContext>,
+    admission: Option<&CheckpointDecodeContext>,
 ) -> Result<CanonicalSegmentDescriptor, CanonicalSegmentError> {
     let mut header = [0u8; segment_header_len()];
     header[..8].copy_from_slice(SEGMENT_HEADER);
@@ -81,9 +127,13 @@ pub(super) fn flush(
     }
     // The ordinary Bloom layout and allocation ownership are retained here;
     // only its key insertion loop is split into cooperative fixed-size units.
-    let source_endpoint_bloom = bloom(&source.source_endpoint_keys, work)?;
-    let target_endpoint_bloom = bloom(&source.target_endpoint_keys, work)?;
-    let node_property_bloom = bloom(&source.node_property_keys, work)?;
+    let build_bloom = |keys: &[u64]| match admission {
+        Some(context) => bloom_admitted(keys, context),
+        None => bloom(keys, work),
+    };
+    let source_endpoint_bloom = build_bloom(&source.source_endpoint_keys)?;
+    let target_endpoint_bloom = build_bloom(&source.target_endpoint_keys)?;
+    let node_property_bloom = build_bloom(&source.node_property_keys)?;
     if let Some(work) = work {
         work.checkpoint()?;
     }
@@ -121,6 +171,65 @@ fn bloom(
         hash_count: BLOOM_HASHES,
     };
     unit.finish();
+    insert_keys(&mut bloom, keys, work)?;
+    Ok(bloom)
+}
+
+fn bloom_admitted(
+    keys: &[u64],
+    context: &CheckpointDecodeContext,
+) -> Result<CanonicalEndpointBloom, CanonicalSegmentError> {
+    let unit = context.start_unit()?;
+    let word_count = keys
+        .len()
+        .saturating_mul(BLOOM_BITS_PER_ITEM)
+        .div_ceil(u64::BITS as usize)
+        .clamp(BLOOM_MIN_WORDS, BLOOM_MAX_WORDS);
+    let bytes = word_count * std::mem::size_of::<u64>();
+    let token = context
+        .reserve(bytes)
+        .map_err(|error| CanonicalSegmentError::Corrupt(error.to_string()))?;
+    let mut words = Vec::new();
+    words.try_reserve_exact(word_count).map_err(|error| {
+        CanonicalSegmentError::Work(context.record_failure(CheckpointWorkError::Allocation {
+            bytes: bytes as u64,
+            reason: error.to_string(),
+        }))
+    })?;
+    if words.capacity() != word_count {
+        return Err(CanonicalSegmentError::Work(context.record_failure(
+            CheckpointWorkError::Allocation {
+                bytes: bytes as u64,
+                reason: "segment Bloom capacity differs from admitted capacity".into(),
+            },
+        )));
+    }
+    token.address(words.as_ptr() as usize);
+    unit.finish();
+    for start in (0..word_count).step_by(64 * 1024 / std::mem::size_of::<u64>()) {
+        let unit = context.start_unit()?;
+        words.resize(
+            (start + 64 * 1024 / std::mem::size_of::<u64>()).min(word_count),
+            0,
+        );
+        unit.finish();
+        context.checkpoint()?;
+    }
+    let unit = context.start_unit()?;
+    let mut bloom = CanonicalEndpointBloom {
+        words: words.into_boxed_slice(),
+        hash_count: BLOOM_HASHES,
+    };
+    unit.finish();
+    insert_keys(&mut bloom, keys, context)?;
+    Ok(bloom)
+}
+
+fn insert_keys(
+    bloom: &mut CanonicalEndpointBloom,
+    keys: &[u64],
+    work: &CheckpointWorkContext,
+) -> Result<(), CanonicalSegmentError> {
     for block in keys.chunks(256) {
         let unit = work.start_unit()?;
         for key in block {
@@ -130,8 +239,11 @@ fn bloom(
         work.checkpoint()?;
     }
     work.checkpoint()?;
-    Ok(bloom)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod descriptor_tests;

@@ -39,6 +39,30 @@ uv pip install maturin pytest
 maturin develop
 ```
 
+### Lite profile
+
+Constrained hosts — including the Pyodide/JupyterLite build — can link the
+extension against the minimal engine instead of the default feature set:
+
+```bash
+maturin build --no-default-features --features lite
+# or inside the venv: maturin develop --no-default-features --features lite
+```
+
+Lite is a build profile of the same package, not a second API: `open`,
+`execute`, `execute_sql`, and `QueryResult` behave the same. Statements that
+need a capability the minimal engine does not carry (full-text search, vector
+search, graph analytics, background maintenance) raise
+`hawdb.exceptions.CapabilityError` instead of silently returning an empty
+result. `hawdb.capabilities()` reports which capability flags were compiled
+into the extension as a read-only mapping:
+
+```python
+import hawdb
+
+hawdb.capabilities()["full_text_search"]   # False on a lite build
+```
+
 ## Usage
 
 ```python
@@ -66,6 +90,15 @@ db = hawdb.open()
 db.execute("CREATE (:Memory {id: $id})", {"id": 1})
 db.close()
 ```
+
+Parameters accept `None`, `bool`, `int`, `float`, `str`, `bytes`,
+`uuid.UUID`, lists or tuples, and string-keyed dicts, nested freely. They are
+stored exactly or rejected before the statement runs. Integers, including
+NumPy integer scalars, must fit the signed 64-bit range or raise
+`OverflowError`. NumPy `float16`/`float32` scalars widen to `float` exactly
+and are accepted. Any other type, including `Decimal`, `Fraction`, or NumPy
+`longdouble`, raises `TypeError`; convert such values explicitly, for example
+with `float(x)`.
 
 Errors raise `hawdb.exceptions` subclasses (`ParseError`, `SemanticError`,
 `StorageError`, `ExecutionError`, `ConflictError`, ...), mapped from

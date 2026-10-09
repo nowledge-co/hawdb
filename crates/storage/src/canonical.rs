@@ -14,10 +14,15 @@
 
 use crate::background::{CheckpointWorkContext, CheckpointWorkError};
 
+#[cfg(test)]
+mod checkpoint_accumulator_memory_tests;
+
 mod checkpoint_bloom;
 #[cfg(test)]
 mod checkpoint_bloom_memory_tests;
 mod checkpoint_decode;
+#[cfg(test)]
+mod checkpoint_descriptor_memory_tests;
 mod checkpoint_flush;
 #[cfg(test)]
 mod checkpoint_flush_memory_tests;
@@ -1183,11 +1188,13 @@ impl CanonicalSegmentWriter {
             PropertyKeyDictionary::default()
         };
 
-        let mut accumulator = SegmentAccumulator::new(
+        let mut accumulator = checkpoint_writer::accumulator::Accumulator::new(
             CanonicalSegmentKind::Nodes,
             generation,
             segment_id,
             self.config,
+            work.clone(),
+            self.source_admits,
         );
         let mut nodes = nodes.into_iter();
         loop {
@@ -1246,18 +1253,18 @@ impl CanonicalSegmentWriter {
                     )
                 })?;
                 segment_id = segment_id.saturating_add(1);
-                accumulator = SegmentAccumulator::new(
+                accumulator = checkpoint_writer::accumulator::Accumulator::new(
                     CanonicalSegmentKind::Nodes,
                     generation,
                     segment_id,
                     self.config,
+                    work.clone(),
+                    self.source_admits,
                 );
             }
             // Hashing owns bounded child units after callback/payload admission.
             accumulator.add_node_properties(node, self.work.as_ref())?;
-            let unit = work.start_unit()?;
             accumulator.push(node.id.0, &payload, None)?;
-            unit.finish();
         }
         if !accumulator.is_empty() {
             let descriptor = accumulator.flush_with_work_context(
@@ -1278,11 +1285,13 @@ impl CanonicalSegmentWriter {
             segment_id = segment_id.saturating_add(1);
         }
 
-        let mut accumulator = SegmentAccumulator::new(
+        let mut accumulator = checkpoint_writer::accumulator::Accumulator::new(
             CanonicalSegmentKind::Relationships,
             generation,
             segment_id,
             self.config,
+            work.clone(),
+            self.source_admits,
         );
         let mut relationships = relationships.into_iter();
         loop {
@@ -1344,20 +1353,20 @@ impl CanonicalSegmentWriter {
                         )
                     })?;
                 segment_id = segment_id.saturating_add(1);
-                accumulator = SegmentAccumulator::new(
+                accumulator = checkpoint_writer::accumulator::Accumulator::new(
                     CanonicalSegmentKind::Relationships,
                     generation,
                     segment_id,
                     self.config,
+                    work.clone(),
+                    self.source_admits,
                 );
             }
-            let unit = work.start_unit()?;
             accumulator.push(
                 relationship.id.0,
                 &payload,
                 Some((relationship.source.0, relationship.target.0)),
             )?;
-            unit.finish();
         }
         if !accumulator.is_empty() {
             let descriptor = accumulator.flush_with_work_context(

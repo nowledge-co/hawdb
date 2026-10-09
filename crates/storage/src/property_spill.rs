@@ -14,6 +14,9 @@
 
 mod checkpoint_read;
 
+#[cfg(test)]
+mod checkpoint_pending_memory_tests;
+
 use crate::file_io::{self as fs, File};
 use crate::graph_descriptor_tree::demand::{
     GraphDescriptorTreeDemandReader, GraphDescriptorTreeReadLimits, GraphDescriptorTreeReadReport,
@@ -493,6 +496,8 @@ pub struct PropertySpillWriter {
     pending_bytes: u64,
     block_count: u64,
     descriptor_tree: GraphDescriptorTreeBuilder,
+    // Retained pending capacity and values are destroyed before this inventory.
+    pending_memory: crate::background::CheckpointAllocationOwner,
 }
 
 impl PropertySpillWriter {
@@ -556,6 +561,7 @@ impl PropertySpillWriter {
             pending_bytes: 0,
             block_count: 0,
             descriptor_tree,
+            pending_memory: crate::background::CheckpointAllocationOwner::default(),
         })
     }
 
@@ -593,13 +599,37 @@ impl PropertySpillWriter {
             self.flush_block()?;
         }
         let spill_id = self.next_spill_id;
-        self.next_spill_id = self
+        let next_spill_id = self
             .next_spill_id
             .checked_add(1)
             .ok_or_else(|| PropertySpillError::Corrupt("property spill id overflow".to_string()))?;
+        if matches!(encoded_value, PropertySpillValue::Checkpoint(_))
+            || !self.pending_memory.is_empty()
+        {
+            let work = self.work.clone();
+            work.classify(|work| {
+                let context = crate::background::CheckpointDecodeContext {
+                    work: work.clone(),
+                    memory: std::cell::RefCell::new(std::mem::take(&mut self.pending_memory)),
+                };
+                let result = context
+                    .push(&mut self.pending, (spill_id, encoded_value))
+                    .map_err(|error| PropertySpillError::Corrupt(error.to_string()));
+                self.pending_memory = context.memory.into_inner();
+                result
+            })
+            .map_err(|error| match error {
+                crate::background::CheckpointOperationError::Work(error) => {
+                    PropertySpillError::Work(error)
+                }
+                crate::background::CheckpointOperationError::Operation(error) => error,
+            })?;
+        } else {
+            self.pending.push((spill_id, encoded_value));
+        }
+        self.next_spill_id = next_spill_id;
         self.value_bytes = self.value_bytes.saturating_add(value_bytes);
         self.pending_bytes = self.pending_bytes.saturating_add(record_bytes);
-        self.pending.push((spill_id, encoded_value));
         Ok(spill_id)
     }
 
