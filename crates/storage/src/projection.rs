@@ -23,6 +23,129 @@ pub mod artifact;
 pub struct ProjectedGraphDefinition {
     pub node_labels: Vec<String>,
     pub rel_types: Vec<String>,
+    pub relationship_predicates: BTreeMap<String, ProjectedRelationshipPredicate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectedRelationshipPredicate {
+    And(Vec<ProjectedRelationshipPredicate>),
+    Eq { property: String, value: Value },
+    Gte { property: String, value: Value },
+}
+
+impl ProjectedRelationshipPredicate {
+    pub fn matches(&self, properties: &BTreeMap<String, Value>) -> bool {
+        match self {
+            Self::And(predicates) => predicates
+                .iter()
+                .all(|predicate| predicate.matches(properties)),
+            Self::Eq { property, value } => properties.get(property) == Some(value),
+            Self::Gte { property, value } => properties
+                .get(property)
+                .and_then(|actual| crate::predicate::comparable_value_ordering(actual, value))
+                .is_some_and(|ordering| !ordering.is_lt()),
+        }
+    }
+}
+
+pub(crate) fn encode_projected_relationship_predicates(
+    predicates: &BTreeMap<String, ProjectedRelationshipPredicate>,
+) -> String {
+    let value = Value::Map(
+        predicates
+            .iter()
+            .map(|(rel_type, predicate)| {
+                (
+                    rel_type.clone(),
+                    projected_relationship_predicate_to_value(predicate),
+                )
+            })
+            .collect(),
+    );
+    crate::text::encode_value(&value)
+}
+
+pub(crate) fn decode_projected_relationship_predicates(
+    encoded: &str,
+) -> crate::Result<BTreeMap<String, ProjectedRelationshipPredicate>> {
+    if encoded.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let Value::Map(predicates) = crate::text::decode_value(encoded)? else {
+        return Err(crate::HawDBError::Storage(
+            "projected relationship predicates must decode to a map".to_string(),
+        ));
+    };
+    predicates
+        .into_iter()
+        .map(|(rel_type, predicate)| {
+            projected_relationship_predicate_from_value(predicate)
+                .map(|predicate| (rel_type, predicate))
+        })
+        .collect()
+}
+
+fn projected_relationship_predicate_to_value(predicate: &ProjectedRelationshipPredicate) -> Value {
+    match predicate {
+        ProjectedRelationshipPredicate::And(predicates) => Value::List(vec![
+            Value::String("and".to_string()),
+            Value::List(
+                predicates
+                    .iter()
+                    .map(projected_relationship_predicate_to_value)
+                    .collect(),
+            ),
+        ]),
+        ProjectedRelationshipPredicate::Eq { property, value } => Value::List(vec![
+            Value::String("eq".to_string()),
+            Value::String(property.clone()),
+            value.clone(),
+        ]),
+        ProjectedRelationshipPredicate::Gte { property, value } => Value::List(vec![
+            Value::String("gte".to_string()),
+            Value::String(property.clone()),
+            value.clone(),
+        ]),
+    }
+}
+
+fn projected_relationship_predicate_from_value(
+    value: Value,
+) -> crate::Result<ProjectedRelationshipPredicate> {
+    let Value::List(mut fields) = value else {
+        return Err(crate::HawDBError::Storage(
+            "projected relationship predicate must decode to a list".to_string(),
+        ));
+    };
+    if fields.is_empty() {
+        return Err(crate::HawDBError::Storage(
+            "projected relationship predicate is missing its operator".to_string(),
+        ));
+    }
+    let Value::String(operator) = fields.remove(0) else {
+        return Err(crate::HawDBError::Storage(
+            "projected relationship predicate operator must be a string".to_string(),
+        ));
+    };
+    match (operator.as_str(), fields.as_slice()) {
+        ("and", [Value::List(predicates)]) if !predicates.is_empty() => predicates
+            .iter()
+            .cloned()
+            .map(projected_relationship_predicate_from_value)
+            .collect::<crate::Result<Vec<_>>>()
+            .map(ProjectedRelationshipPredicate::And),
+        ("eq", [Value::String(property), value]) => Ok(ProjectedRelationshipPredicate::Eq {
+            property: property.clone(),
+            value: value.clone(),
+        }),
+        ("gte", [Value::String(property), value]) => Ok(ProjectedRelationshipPredicate::Gte {
+            property: property.clone(),
+            value: value.clone(),
+        }),
+        _ => Err(crate::HawDBError::Storage(format!(
+            "invalid projected relationship predicate operator or arity: {operator}"
+        ))),
+    }
 }
 
 /// Control flow a projection scan visitor returns to the scan driver.

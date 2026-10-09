@@ -839,6 +839,8 @@ mod tests {
             hawdb_core::error::FileDescriptorError::OsLimit {
                 requested: 1,
                 os_code: None,
+                soft: None,
+                hard: None,
             },
         ] {
             assert!(matches!(

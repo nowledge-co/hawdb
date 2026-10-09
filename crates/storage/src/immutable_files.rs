@@ -53,9 +53,16 @@ pub(crate) struct ImmutableFileBinding {
 }
 
 #[derive(Debug)]
+struct CachedHandle {
+    file: Arc<File>,
+    last_used: u64,
+}
+
+#[derive(Debug)]
 pub(crate) struct ImmutableFileHandles {
     state: Arc<BudgetState>,
-    handles: Mutex<BTreeMap<ObjectReference, Arc<File>>>,
+    handles: Mutex<BTreeMap<ObjectReference, CachedHandle>>,
+    access_tick: AtomicU64,
     bindings: Mutex<BTreeMap<PathBuf, ImmutableFileBinding>>,
     opening: Mutex<()>,
 }
@@ -65,6 +72,7 @@ impl ImmutableFileHandles {
         Self {
             state,
             handles: Mutex::new(BTreeMap::new()),
+            access_tick: AtomicU64::new(0),
             bindings: Mutex::new(BTreeMap::new()),
             opening: Mutex::new(()),
         }
@@ -111,7 +119,7 @@ impl ImmutableFileHandles {
             .unwrap_or_else(|error| error.into_inner());
         if handles
             .get(&reference)
-            .is_some_and(|file| Arc::strong_count(file) != 1)
+            .is_some_and(|handle| Arc::strong_count(&handle.file) != 1)
         {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -211,13 +219,7 @@ impl ImmutableFileHandles {
         context: &FileOpenContext,
         admit_validation: impl FnMut(u64) -> io::Result<()>,
     ) -> io::Result<(Arc<File>, u64)> {
-        if let Some(file) = self
-            .handles
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(&binding.reference)
-            .cloned()
-        {
+        if let Some(file) = self.cached(binding.reference) {
             self.state.record_cache_hit();
             return Ok((file, 0));
         }
@@ -227,13 +229,7 @@ impl ImmutableFileHandles {
             .opening
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if let Some(file) = self
-            .handles
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(&binding.reference)
-            .cloned()
-        {
+        if let Some(file) = self.cached(binding.reference) {
             self.state.record_cache_hit();
             return Ok((file, 0));
         }
@@ -247,8 +243,32 @@ impl ImmutableFileHandles {
         self.handles
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .insert(binding.reference, file.clone());
+            .insert(
+                binding.reference,
+                CachedHandle {
+                    file: file.clone(),
+                    last_used: self.next_tick(),
+                },
+            );
         Ok((file, binding.reference.byte_length))
+    }
+
+    fn next_tick(&self) -> u64 {
+        self.access_tick
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |tick| {
+                Some(tick.saturating_add(1))
+            })
+            .expect("the access tick update always succeeds")
+    }
+
+    fn cached(&self, reference: ObjectReference) -> Option<Arc<File>> {
+        let mut handles = self
+            .handles
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let handle = handles.get_mut(&reference)?;
+        handle.last_used = self.next_tick();
+        Some(handle.file.clone())
     }
 
     fn open_verified_object(
@@ -312,14 +332,15 @@ impl DescriptorCache for ImmutableFileHandles {
                 .handles
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            let keys = handles
+            let mut idle = handles
                 .iter()
-                .filter(|(_, handle)| Arc::strong_count(handle) == 1)
-                .take(requested)
-                .map(|(key, _)| *key)
+                .filter(|(_, handle)| Arc::strong_count(&handle.file) == 1)
+                .map(|(key, handle)| (handle.last_used, *key))
                 .collect::<Vec<_>>();
-            keys.into_iter()
-                .filter_map(|key| handles.remove(&key))
+            idle.sort_unstable();
+            idle.into_iter()
+                .take(requested)
+                .filter_map(|(_, key)| handles.remove(&key))
                 .collect::<Vec<_>>()
         };
         let count = removed.len();

@@ -78,9 +78,20 @@ impl MutationRunBudget {
     }
 
     pub(super) fn admit_entries(&self, entries: &[SearchMutationRunEntry]) -> Result<()> {
-        self.check(streaming::working_bytes(
-            entries.len(),
-            streaming::entries_scalar(entries)?,
+        self.admit_entries_with_additional_segments(entries, 0)
+    }
+
+    pub(super) fn admit_entries_with_additional_segments(
+        &self,
+        entries: &[SearchMutationRunEntry],
+        additional_segments: usize,
+    ) -> Result<()> {
+        self.check(add(
+            streaming::working_bytes(entries.len(), streaming::entries_scalar(entries)?)?,
+            multiply(
+                additional_segments as u64,
+                crate::build_memory::SET_ENTRY_BYTES,
+            )?,
         )?)?;
         Ok(())
     }

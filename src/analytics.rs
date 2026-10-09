@@ -16,9 +16,9 @@
 
 pub use hawdb_analytics::{
     CommunityAssignment, GraphAlgorithmMemoryEstimate, HierarchicalCommunityAssignment,
-    LouvainOptions, PageRankOptions, PageRankScore, ProjectedGraph, ProjectionLayout,
-    ProjectionMemoryAdmissionError, ProjectionMemoryBudget, ProjectionMemoryEstimate,
-    ProjectionScanControl, ProjectionSource,
+    LouvainOptions, LouvainProcedureOptions, PageRankOptions, PageRankProcedureOptions,
+    PageRankScore, ProjectedGraph, ProjectionLayout, ProjectionMemoryAdmissionError,
+    ProjectionMemoryBudget, ProjectionMemoryEstimate, ProjectionScanControl, ProjectionSource,
 };
 
 #[cfg(test)]

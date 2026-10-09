@@ -14,14 +14,35 @@
 
 """HawDB Python bindings: embed the database directly from Python."""
 
-from hawdb._hawdb import Database, QueryResult, __version__, open
+from hawdb._hawdb import (
+    Database,
+    QueryResult,
+    ReadTransaction,
+    Transaction,
+    __version__,
+    capabilities,
+    open,
+)
 from hawdb._hawdb import exceptions
 
 connect = open
 
+
+def __getattr__(name):
+    # `hawdb.pydantic` needs the optional extra, so it loads on first use.
+    if name == "pydantic":
+        import importlib
+
+        return importlib.import_module("hawdb.pydantic")
+    raise AttributeError(f"module 'hawdb' has no attribute {name!r}")
+
+
 __all__ = [
     "Database",
     "QueryResult",
+    "ReadTransaction",
+    "Transaction",
+    "capabilities",
     "connect",
     "exceptions",
     "open",

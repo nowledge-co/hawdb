@@ -197,3 +197,37 @@ fn transaction_commit_updates_property_index() {
         Some(&Value::String("Indexed memory".to_string()))
     );
 }
+
+#[test]
+fn readme_open_database_example_returns_the_linked_note() {
+    let mut db = Database::new();
+    let mut note = BTreeMap::new();
+    note.insert(
+        "title".to_string(),
+        Value::String("Graph foundations".to_string()),
+    );
+
+    let mut tx = db.begin_transaction().unwrap();
+    tx.query_with_params(
+        "CREATE (:Note {title: $title})-[:MENTIONS]->(:Entity {name: 'context layer'})",
+        &note,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+
+    let found = db
+        .query(
+            "MATCH (note:Note)-[:MENTIONS]->(entity:Entity)
+             RETURN note.title AS title, entity.name AS name
+             ORDER BY title",
+        )
+        .unwrap();
+    assert_eq!(
+        found.rows[0].get("title"),
+        Some(&Value::String("Graph foundations".to_string()))
+    );
+    assert_eq!(
+        found.rows[0].get("name"),
+        Some(&Value::String("context layer".to_string()))
+    );
+}

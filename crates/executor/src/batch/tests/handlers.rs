@@ -20,8 +20,7 @@ use crate::external::NoExternalReadOperator;
 use crate::observer::QueryExecutionReports;
 use crate::Row;
 use hawdb_analytics::{
-    LouvainOptions, PageRankOptions, ProjectedGraphExecution, ProjectionLayout,
-    ProjectionMemoryBudget,
+    LouvainProcedureOptions, PageRankProcedureOptions, ProjectionLayout, ProjectionMemoryBudget,
 };
 use hawdb_plan_cypher::GraphAlgorithmKind;
 
@@ -47,6 +46,7 @@ fn graph_algorithm_fixture() -> (Catalog, ReadFixture) {
         definition: Some(hawdb_storage::projection::ProjectedGraphDefinition {
             node_labels: vec!["Memory".to_string()],
             rel_types: vec!["MENTIONS".to_string()],
+            relationship_predicates: BTreeMap::new(),
         }),
         ..ReadFixture::default()
     };
@@ -61,8 +61,10 @@ fn graph_algorithm_plan(algorithm: GraphAlgorithmKind) -> PhysicalPlan {
             damping: None,
             max_iterations: Some(2),
             max_levels: Some(1),
+            ..Default::default()
         },
         score_column: "score".to_string(),
+        return_node_identity: false,
         node_visibility_predicate: None,
     }
 }
@@ -121,10 +123,10 @@ fn graph_row_oracle(algorithm: GraphAlgorithmKind, context: BatchReadContext<'_>
     .unwrap();
     match algorithm {
         GraphAlgorithmKind::PageRank => graph
-            .page_rank_with_context(
-                PageRankOptions {
+            .page_rank_procedure_with_context(
+                PageRankProcedureOptions {
                     iterations: 2,
-                    ..PageRankOptions::default()
+                    ..PageRankProcedureOptions::default()
                 },
                 None,
             )
@@ -138,10 +140,12 @@ fn graph_row_oracle(algorithm: GraphAlgorithmKind, context: BatchReadContext<'_>
             })
             .collect(),
         GraphAlgorithmKind::Louvain => graph
-            .hierarchical_louvain_communities_with_context(
-                LouvainOptions {
+            .louvain_procedure_with_context(
+                LouvainProcedureOptions {
                     max_iterations: 2,
                     max_levels: 1,
+                    resolution: 1.0,
+                    hierarchy: true,
                 },
                 None,
             )

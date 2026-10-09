@@ -33,6 +33,14 @@ _SEARCH_TEST_PROFILES = {
     "vector_background": (["vector-search", "background-maintenance"], ":hawdb_search_lifecycle_vector_background"),
 }
 
+# Large public lifecycles need optimized loops, with debug checks retained.
+# Scope these flags to their private test libraries and fixture executables.
+_STREAMED_LIFECYCLE_RUSTC_FLAGS = [
+    "-Copt-level=2",
+    "-Cdebug-assertions=yes",
+    "-Coverflow-checks=yes",
+]
+
 _SEARCH_BASE_DEPS = [
     "@crate_index//:bitpacking",
     "@crate_index//:chrono",
@@ -166,8 +174,28 @@ rust_test(
     if settings[1].startswith(":hawdb_search_lifecycle_")
 ]
 
-# Keep every original FTS profile's complete 32-MiB lifecycle under its own
-# unchanged 900-second deadline, compiled from the public fixture and helpers.
+# Isolate optimized lifecycle libraries from production and debug unit owners.
+# All five exact feature sets still execute the complete 32-MiB fixture.
+[
+    rust_library(
+        name = "hawdb_search_streamed_lifecycle_%s" % profile,
+        testonly = True,
+        crate_name = "hawdb_search",
+        crate_root = "src/lib.rs",
+        crate_features = settings[0],
+        srcs = glob(["src/**/*.rs"]) + ["tests/support/live_allocation.rs"],
+        edition = "2024",
+        rustc_flags = _STREAMED_LIFECYCLE_RUSTC_FLAGS,
+        aliases = aliases(),
+        deps = _SEARCH_BASE_DEPS + (_SEARCH_VECTOR_DEPS if "vector-search" in settings[0] else []),
+        proc_macro_deps = all_crate_deps(proc_macro = True),
+        visibility = ["//visibility:private"],
+    )
+    for profile, settings in _SEARCH_TEST_PROFILES.items()
+    if "full-text-search" in settings[0]
+]
+
+# Preserve each original target name, complete lifecycle and 900s deadline.
 [
     rust_test(
         name = "hawdb_search_streamed_lifecycle_tests" if profile == "default" else "hawdb_search_%s_streamed_lifecycle_tests" % profile,
@@ -180,8 +208,9 @@ rust_test(
             "tests/support/out_of_core.rs",
         ],
         edition = "2024",
+        rustc_flags = _STREAMED_LIFECYCLE_RUSTC_FLAGS,
         deps = [
-            settings[1],
+            ":hawdb_search_streamed_lifecycle_%s" % profile,
             "//crates/core:hawdb_core",
             "//crates/storage:hawdb_storage",
         ],
@@ -281,6 +310,22 @@ rust_test(
     ],
     edition = "2024",
     deps = [":hawdb_search"],
+)
+
+rust_test(
+    name = "hawdb_search_analyzer_observation_tests",
+    crate_root = "tests/analyzer_observation.rs",
+    srcs = [
+        "src/analyzer_workspace/observation.rs",
+        "src/analyzer_workspace/stack.rs",
+        "src/build_control/read_observation.rs",
+        "tests/analyzer_observation.rs",
+    ],
+    edition = "2024",
+    deps = [
+        "//crates/core:hawdb_core",
+        "//crates/executor:hawdb_executor",
+    ],
 )
 
 rust_test(

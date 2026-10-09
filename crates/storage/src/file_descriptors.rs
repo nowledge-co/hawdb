@@ -24,7 +24,11 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 
-pub const DEFAULT_MAX_OPEN_FILES: usize = 256;
+mod os_limit;
+
+/// Shared project admission ceiling; capacity is charged only when used.
+/// Native Unix acquisition observes OS capacity without changing process limits.
+pub const DEFAULT_MAX_OPEN_FILES: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DescriptorKind {
@@ -47,7 +51,14 @@ impl DescriptorKind {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FileDescriptorMetrics {
+    /// Effective admission ceiling, retained for existing consumers.
     pub limit: usize,
+    pub configured_limit: usize,
+    pub effective_limit: usize,
+    /// A readiness/reporting warning; reduced capacity does not block readiness.
+    pub os_limit_clamped: bool,
+    /// Current process soft limit on native Unix; unavailable on other platforms.
+    pub os_soft_limit: Option<u64>,
     pub admitted_runtimes: usize,
     pub open: usize,
     pub reserved: usize,
@@ -93,6 +104,7 @@ pub(crate) trait DescriptorCache: std::fmt::Debug + Send + Sync {
 #[derive(Debug)]
 pub(crate) struct BudgetState {
     root: PathBuf,
+    configured_limit: usize,
     limit: usize,
     counts: Mutex<Counts>,
     cache: Mutex<Option<Weak<dyn DescriptorCache>>>,
@@ -104,9 +116,10 @@ pub(crate) struct BudgetState {
 }
 
 impl BudgetState {
-    fn new(root: PathBuf, limit: usize) -> Self {
+    fn new(root: PathBuf, configured_limit: usize, limit: usize) -> Self {
         Self {
             root,
+            configured_limit,
             limit,
             counts: Mutex::new(Counts::default()),
             cache: Mutex::new(None),
@@ -163,6 +176,10 @@ impl BudgetState {
             .unwrap_or_else(|error| error.into_inner());
         FileDescriptorMetrics {
             limit: self.limit,
+            configured_limit: self.configured_limit,
+            effective_limit: self.limit,
+            os_limit_clamped: self.limit < self.configured_limit,
+            os_soft_limit: os_limit::current_soft_limit(),
             admitted_runtimes: counts.admitted_runtimes,
             open: counts.open.iter().sum(),
             reserved: counts.reserved,
@@ -237,8 +254,13 @@ impl BudgetState {
 
 static PROJECTS: LazyLock<Mutex<BTreeMap<PathBuf, Weak<BudgetState>>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
-static STANDALONE: LazyLock<Arc<BudgetState>> =
-    LazyLock::new(|| Arc::new(BudgetState::new(PathBuf::new(), DEFAULT_MAX_OPEN_FILES)));
+static STANDALONE: LazyLock<Arc<BudgetState>> = LazyLock::new(|| {
+    Arc::new(BudgetState::new(
+        PathBuf::new(),
+        DEFAULT_MAX_OPEN_FILES,
+        DEFAULT_MAX_OPEN_FILES,
+    ))
+});
 
 /// Contexts and retained descriptor permits share one canonical project state.
 /// The registry is weak, so closure of the final owner releases the domain.
@@ -316,7 +338,8 @@ impl ProjectFileDescriptors {
             }
             return Ok(project);
         }
-        let tentative = Arc::new(BudgetState::new(lexical.clone(), limit));
+        let effective_limit = os_limit::effective_limit(limit)?;
+        let tentative = Arc::new(BudgetState::new(lexical.clone(), limit, effective_limit));
         #[cfg(any(test, feature = "test-support"))]
         {
             // A recorder rooted at an existing durable ancestor also observes
@@ -538,10 +561,10 @@ fn configured_state(
     state: Arc<BudgetState>,
     limit: usize,
 ) -> Result<ProjectFileDescriptors, HawDBError> {
-    if state.limit != limit {
+    if state.configured_limit != limit {
         Err(HawDBError::FileDescriptors(
             FileDescriptorError::ConfigurationConflict {
-                configured: state.limit,
+                configured: state.configured_limit,
                 requested: limit,
             },
         ))

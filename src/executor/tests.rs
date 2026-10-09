@@ -17,6 +17,7 @@
 #![allow(deprecated)]
 
 use super::*;
+use hawdb_executor::analytics::try_projected_graph_with_node_filter;
 
 #[path = "tests/clause_mutations.rs"]
 mod clause_mutations;
@@ -1449,6 +1450,7 @@ pub(super) fn graph_algorithm_fixture() -> (Catalog, GraphStore) {
             ProjectedGraphDefinition {
                 node_labels: vec!["Memory".to_string()],
                 rel_types: vec!["MENTIONS".to_string()],
+                relationship_predicates: BTreeMap::new(),
             },
         )
         .unwrap();
@@ -1463,8 +1465,10 @@ pub(super) fn graph_algorithm_plan(algorithm: GraphAlgorithmKind) -> PhysicalPla
             damping: None,
             max_iterations: Some(2),
             max_levels: Some(1),
+            ..Default::default()
         },
         score_column: "score".to_string(),
+        return_node_identity: false,
         node_visibility_predicate: None,
     }
 }

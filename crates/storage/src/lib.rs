@@ -45,6 +45,8 @@ pub mod checkpoint;
 #[doc(hidden)]
 pub mod checkpoint_closure;
 pub mod column_group;
+#[doc(hidden)]
+pub mod compression;
 pub mod config;
 #[doc(hidden)]
 pub mod consistency;

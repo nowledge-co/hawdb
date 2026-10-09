@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Existing v1 projected graph artifact text format.
+//! Projected graph artifact text format.
 //!
 //! The facade owns graph construction, file publication, epoch admission, and
 //! recovery fallback. This module only encodes and validates storage data.
@@ -26,7 +26,7 @@ use crate::NodeId;
 use hawdb_core::{HawDBError, Result};
 use std::collections::BTreeMap;
 
-const PROJECTED_GRAPH_ARTIFACT_VERSION: u64 = 1;
+const PROJECTED_GRAPH_ARTIFACT_VERSION: u64 = 2;
 
 /// Consume one projection at a time without materializing another graph map.
 pub fn encode_projected_graph_artifacts<'a>(
@@ -49,10 +49,11 @@ pub fn encode_projected_graph_artifacts<'a>(
     body.push_str(&format!("commit_epoch\t{commit_epoch}\n"));
     for (name, definition, data) in artifacts {
         body.push_str(&format!(
-            "graph\t{}\t{}\t{}\t{}\t{}\n",
+            "graph\t{}\t{}\t{}\t{}\t{}\t{}\n",
             encode_string(name),
             encode_string_vec(&definition.node_labels),
             encode_string_vec(&definition.rel_types),
+            super::encode_projected_relationship_predicates(&definition.relationship_predicates),
             data.node_count(),
             data.edge_count()
         ));
@@ -97,7 +98,7 @@ pub fn decode_projected_graph_artifacts(
         "artifact_version",
         "projected graph artifact version",
     )?;
-    if artifact_version != PROJECTED_GRAPH_ARTIFACT_VERSION {
+    if !matches!(artifact_version, 1 | PROJECTED_GRAPH_ARTIFACT_VERSION) {
         return Err(HawDBError::Storage(format!(
             "unsupported projected graph artifact version: {artifact_version}"
         )));
@@ -116,12 +117,48 @@ pub fn decode_projected_graph_artifacts(
     let mut artifacts = BTreeMap::new();
     while let Some(line) = lines.next() {
         let fields = line.split('\t').collect::<Vec<_>>();
-        match fields.as_slice() {
-            ["graph", raw_name, raw_node_labels, raw_rel_types, raw_node_count, raw_edge_count] => {
+        let graph_fields = match (artifact_version, fields.as_slice()) {
+            (
+                1,
+                ["graph", raw_name, raw_node_labels, raw_rel_types, raw_node_count, raw_edge_count],
+            ) => Some((
+                *raw_name,
+                *raw_node_labels,
+                *raw_rel_types,
+                None,
+                *raw_node_count,
+                *raw_edge_count,
+            )),
+            (
+                PROJECTED_GRAPH_ARTIFACT_VERSION,
+                ["graph", raw_name, raw_node_labels, raw_rel_types, raw_relationship_predicates, raw_node_count, raw_edge_count],
+            ) => Some((
+                *raw_name,
+                *raw_node_labels,
+                *raw_rel_types,
+                Some(*raw_relationship_predicates),
+                *raw_node_count,
+                *raw_edge_count,
+            )),
+            _ => None,
+        };
+        match graph_fields {
+            Some((
+                raw_name,
+                raw_node_labels,
+                raw_rel_types,
+                raw_relationship_predicates,
+                raw_node_count,
+                raw_edge_count,
+            )) => {
                 let name = decode_string(raw_name)?;
                 let definition = ProjectedGraphDefinition {
                     node_labels: decode_string_vec(raw_node_labels)?,
                     rel_types: decode_string_vec(raw_rel_types)?,
+                    relationship_predicates: raw_relationship_predicates
+                        .map(super::decode_projected_relationship_predicates)
+                        .transpose()?
+                        .unwrap_or_default(),
                 };
                 let node_count = parse_u64(raw_node_count, "projected graph artifact node count")?;
                 let edge_count = parse_u64(raw_edge_count, "projected graph artifact edge count")?;
@@ -159,7 +196,7 @@ pub fn decode_projected_graph_artifacts(
                     },
                 );
             }
-            [""] => {}
+            None if fields.as_slice() == [""] => {}
             _ => {
                 return Err(HawDBError::Storage(format!(
                     "invalid projected graph artifact line: {line}"

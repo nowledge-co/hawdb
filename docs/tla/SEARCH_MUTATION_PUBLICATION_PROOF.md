@@ -23,6 +23,44 @@ closure therefore removes its run; a partial closure keeps the outside targets
 without widening the selected range. Sustained workload, power-loss recovery
 and whole-process RSS qualification remain separate gates.
 
+Initial import now constructs independently bounded content owners from one
+captured spool. Intermediate prefix selectors exist only inside the writer's
+private stage; the real root receives one complete manifest after every
+dependency has been installed and validated. The finite publication model
+abstracts this as one prepared complete closure and does not separately model
+those private prefix selectors or adaptive partition sizes. Its refinement
+therefore remains conditional on that implementation boundary.
+
+The native `partitioned_initial_publication_survives_lost_torn_and_reordered_writes`
+fixture exercises real writes and private/final selector renames for both an
+absent prior dataset and a retained existing dataset. Physical image replay
+checks complete hydration and published text/scalar/RaBitQ/hybrid results;
+private prefixes cannot become a partial active dataset. The cancellation and
+memory-admission fixture interrupts construction after a complete private
+prefix and checks that the old real selector and dataset survive. These finite
+fixtures assume reliable completed POSIX file/directory synchronization and
+atomic same-directory rename; they do not establish arbitrary hardware coverage
+or whole-process scale admission.
+
+Incremental append and replacement use the same captured-spool partitioning.
+Their private selector describes only new content. The final join retains the
+captured active owners and mutation runs, allocates fresh content IDs, and adds
+one complete target-bound run before selecting the resulting closure. Its
+logical count and digest subtract the newly retracted contributions once and
+add every new partition. The byte split target permits an indivisible
+one-document owner; record, segment, operation and publication admission remain
+hard ceilings, with compaction admission configured independently.
+
+`partitioned_append_publication_cuts_select_the_complete_batch` and
+`partitioned_mutation_publication_cuts_preserve_prior_runs_and_the_complete_batch`
+extend native physical image replay to the final incremental publication,
+including a retained previous mutation run. Unit regressions traverse every
+dependency/prefix/final-selector replacement failure, interrupt after a private
+prefix through cancellation and memory rejection, and compare reopened queries
+and scores with a one-segment rebuild. These fixtures have the same finite
+POSIX assumptions; they do not extend the abstract model to private prefixes
+or establish large-corpus RSS qualification for a new runtime revision.
+
 ## Exact target contribution validation
 
 The runtime now adds `mutation_run::validate_targets` after structural closure

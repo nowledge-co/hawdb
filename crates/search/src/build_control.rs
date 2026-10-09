@@ -79,3 +79,6 @@ mod tests;
 
 #[cfg(test)]
 pub(crate) mod observation;
+
+#[cfg(test)]
+pub(crate) mod read_observation;

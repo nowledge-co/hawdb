@@ -7593,8 +7593,9 @@ fn split_checksum(text: &str) -> Result<(&str, u64)> {
 }
 
 fn encode_search_snapshot_text(text: &str) -> Result<Vec<u8>> {
-    let compressed = zstd::stream::encode_all(text.as_bytes(), SEARCH_COMPRESSION_LEVEL)
-        .map_err(|error| HawDBError::Storage(format!("zstd compression failed: {error}")))?;
+    let compressed =
+        hawdb_storage::compression::encode_all(text.as_bytes(), SEARCH_COMPRESSION_LEVEL)
+            .map_err(|error| HawDBError::Storage(format!("zstd compression failed: {error}")))?;
     let compressed_checksum = checksum_bytes(&compressed);
     let uncompressed_checksum = checksum_bytes(text.as_bytes());
     let header = search_snapshot_compression_header(
@@ -7747,11 +7748,12 @@ fn decode_search_snapshot_text_bounded(
             "search projection uncompressed payload requires {expected_uncompressed_len} bytes, exceeding {max_uncompressed_bytes}"
         )));
     }
-    let decoder = zstd::stream::read::Decoder::new(Cursor::new(payload)).map_err(|error| {
-        HawDBError::Storage(format!(
-            "search projection zstd decompression failed: {error}"
-        ))
-    })?;
+    let decoder =
+        hawdb_storage::compression::Decoder::new(Cursor::new(payload)).map_err(|error| {
+            HawDBError::Storage(format!(
+                "search projection zstd decompression failed: {error}"
+            ))
+        })?;
     let mut decoded = Vec::with_capacity(expected_uncompressed_len.min(1024 * 1024));
     // The declaration has already passed reader admission. Probe one byte past
     // it to reject understated lengths without inflating up to the reader limit.

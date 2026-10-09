@@ -872,8 +872,11 @@ not contain statistics lines.
 
 Checkpoint also writes `projected_graphs.hawdb` for every persisted projected
 graph definition. The artifact records its format version, projection epoch,
-covered commit epoch, node IDs, CSR outgoing offsets and targets, and CSC
-incoming offsets and sources. It is checksum-protected and atomically replaced.
+covered commit epoch, projected labels and relationship types, relationship
+property predicates, node IDs, CSR outgoing offsets and targets, and CSC
+incoming offsets and sources. V2 writes the predicates while recovery still
+accepts predicate-free V1 artifacts. It is checksum-protected and atomically
+replaced.
 Recovery parses valid artifacts into an in-memory cache. Graph algorithm
 execution reuses a cached artifact only when the artifact commit epoch equals
 the store commit epoch and the stored definition still matches the active

@@ -73,6 +73,15 @@ impl GraphExecutionRead for GraphStore {
         GraphStore::is_out_of_core(self)
     }
 
+    fn projected_node_owned_admitted(
+        &self,
+        id: NodeId,
+        required_properties: &BTreeSet<String>,
+        admit: &mut dyn FnMut(usize) -> Result<()>,
+    ) -> Result<Option<ProjectedNodeRecord>> {
+        GraphStore::projected_node_owned_admitted(self, id, required_properties, admit)
+    }
+
     fn node_owned(&self, id: NodeId) -> Result<Option<NodeRecord>> {
         GraphStore::node_owned(self, id)
     }

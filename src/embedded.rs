@@ -18,14 +18,15 @@ use crate::nowledge_mem::{
 };
 use crate::store::DurabilityPolicy;
 use crate::{
-    AdaptiveVectorBackendPolicy, Database, DatabaseConfig, HawDBError, QueryOutput,
-    QueryStreamOptions, Result, RuntimeCapabilities, SearchIndex, SearchRangeReadConfig, Value,
+    AdaptiveVectorBackendPolicy, Database, DatabaseConfig, DatabaseReadTransaction, HawDBError,
+    QueryOutput, QueryStreamOptions, Result, RuntimeCapabilities, SearchIndex,
+    SearchRangeReadConfig, Value,
 };
 use hawdb_core::{RuntimeCancellationReason, RuntimeTaskContext};
 use hawdb_qos::{
     IoConcurrencyBudget, ProcessMemoryPolicy, RuntimeAdmissionError, RuntimeGovernor,
     RuntimeGovernorConfig, RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot,
-    StorageDeviceProfile,
+    StorageDeviceProfile, StorageMediaKind,
 };
 #[cfg(test)]
 use hawdb_readiness::embedded_query_path::EMBEDDED_QUERY_PATH_READINESS_PROTOCOL;
@@ -87,6 +88,7 @@ pub struct HawDBEmbedded {
     deployment_profile: EmbeddedDeploymentProfile,
     runtime_resources: EmbeddedRuntimeResources,
     runtime_governor: RuntimeGovernor,
+    transaction: Option<EmbeddedTransaction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,6 +194,51 @@ impl HawDBEmbeddedOpenOptions {
     }
 }
 
+/// Governor and resource view assembled the same way for durable and
+/// in-memory opens, so both handles admit queries under identical policy.
+struct EmbeddedRuntimeSetup {
+    runtime_governor: RuntimeGovernor,
+    runtime_resources: EmbeddedRuntimeResources,
+}
+
+fn embedded_runtime_setup(
+    deployment_profile: EmbeddedDeploymentProfile,
+    storage_device: StorageDeviceProfile,
+    storage_io: Option<IoConcurrencyBudget>,
+    resource_snapshot: Option<RuntimeResourceSnapshot>,
+    governor_config: Option<RuntimeGovernorConfig>,
+    process_memory_policy: Option<ProcessMemoryPolicy>,
+) -> EmbeddedRuntimeSetup {
+    let resource_snapshot_pinned = resource_snapshot.is_some();
+    let resource_snapshot = resource_snapshot.unwrap_or_else(RuntimeResourceSnapshot::detect);
+    let cpu = resource_snapshot.cpu;
+    let storage_io =
+        storage_io.unwrap_or_else(|| default_io_budget(deployment_profile, storage_device));
+    let governor_config =
+        governor_config.unwrap_or_else(|| default_runtime_governor_config(deployment_profile));
+    let runtime_governor = match process_memory_policy {
+        Some(policy) => RuntimeGovernor::new_with_process_memory_policy(
+            governor_config,
+            resource_snapshot,
+            storage_io,
+            policy,
+        ),
+        None => RuntimeGovernor::new(governor_config, resource_snapshot, storage_io),
+    };
+    if resource_snapshot_pinned {
+        runtime_governor.pin_resources();
+    }
+    EmbeddedRuntimeSetup {
+        runtime_governor,
+        runtime_resources: EmbeddedRuntimeResources {
+            cpu,
+            memory: resource_snapshot.memory,
+            storage_device,
+            storage_io,
+        },
+    }
+}
+
 impl HawDBEmbedded {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_with_options(HawDBEmbeddedOpenOptions::new(path.as_ref().to_path_buf()))
@@ -223,50 +270,66 @@ impl HawDBEmbedded {
         options: HawDBEmbeddedOpenOptions,
         process_memory_policy: Option<ProcessMemoryPolicy>,
     ) -> Result<Self> {
-        let resource_snapshot_pinned = options.resource_snapshot.is_some();
-        let resource_snapshot = options
-            .resource_snapshot
-            .unwrap_or_else(RuntimeResourceSnapshot::detect);
-        let cpu = resource_snapshot.cpu;
         let storage_device = options
             .storage_device
             .unwrap_or_else(|| StorageDeviceProfile::detect(&options.path));
-        let storage_io = options
-            .storage_io
-            .unwrap_or_else(|| default_io_budget(options.deployment_profile, storage_device));
-        let governor_config = options
-            .runtime_governor_config
-            .unwrap_or_else(|| default_runtime_governor_config(options.deployment_profile));
-        let runtime_governor = match process_memory_policy {
-            Some(policy) => RuntimeGovernor::new_with_process_memory_policy(
-                governor_config,
-                resource_snapshot,
-                storage_io,
-                policy,
-            ),
-            None => RuntimeGovernor::new(governor_config, resource_snapshot, storage_io),
-        };
-        if resource_snapshot_pinned {
-            runtime_governor.pin_resources();
-        }
+        let setup = embedded_runtime_setup(
+            options.deployment_profile,
+            storage_device,
+            options.storage_io,
+            options.resource_snapshot,
+            options.runtime_governor_config,
+            process_memory_policy,
+        );
         let mut database = Database::open_with_durability_and_config(
             &options.path,
             options.durability,
             options.config,
         )?;
-        database.set_runtime_governor(runtime_governor.clone());
+        database.set_runtime_governor(setup.runtime_governor.clone());
         Ok(Self {
             path: options.path,
             database,
             deployment_profile: options.deployment_profile,
-            runtime_resources: EmbeddedRuntimeResources {
-                cpu,
-                memory: resource_snapshot.memory,
-                storage_device,
-                storage_io,
-            },
-            runtime_governor,
+            runtime_resources: setup.runtime_resources,
+            runtime_governor: setup.runtime_governor,
+            transaction: None,
         })
+    }
+
+    /// Opens an empty in-memory database behind the same runtime governor and
+    /// admission path as [`HawDBEmbedded::open`].
+    ///
+    /// The database wraps `Database::new()`-style construction: no project
+    /// path, no WAL, and no data survives `drop`. On
+    /// `wasm32-unknown-unknown`, where persistent `open` returns a storage
+    /// error, this is the constructor hosts use.
+    pub fn open_in_memory() -> Self {
+        Self::open_in_memory_with_config(DatabaseConfig::default())
+    }
+
+    /// Opens an in-memory database with an explicit `DatabaseConfig`,
+    /// mirroring `Database::new_with_config` plus the embedded runtime
+    /// governor.
+    ///
+    /// The handle always uses the `SharedHost` deployment profile. Its
+    /// storage device is reported as `StorageMediaKind::Memory`; there is no
+    /// device to discover and no durability policy to apply.
+    pub fn open_in_memory_with_config(config: DatabaseConfig) -> Self {
+        let deployment_profile = EmbeddedDeploymentProfile::SharedHost;
+        let storage_device = StorageDeviceProfile::host_provided(StorageMediaKind::Memory, None);
+        let setup =
+            embedded_runtime_setup(deployment_profile, storage_device, None, None, None, None);
+        let mut database = Database::new_with_config(config);
+        database.set_runtime_governor(setup.runtime_governor.clone());
+        Self {
+            path: PathBuf::new(),
+            database,
+            deployment_profile,
+            runtime_resources: setup.runtime_resources,
+            runtime_governor: setup.runtime_governor,
+            transaction: None,
+        }
     }
 
     pub fn open_nowledge_mem(
@@ -275,8 +338,15 @@ impl HawDBEmbedded {
         NowledgeMemEmbeddedStore::open_with_options(options)
     }
 
+    /// Returns the durable project path, or an empty path for an in-memory
+    /// database opened with [`HawDBEmbedded::open_in_memory`].
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Whether this handle was opened in memory and has no durable path.
+    pub fn is_in_memory(&self) -> bool {
+        self.path.as_os_str().is_empty()
     }
 
     pub fn deployment_profile(&self) -> EmbeddedDeploymentProfile {
@@ -351,6 +421,11 @@ impl HawDBEmbedded {
         parameters: &BTreeMap<String, Value>,
         task_context: &RuntimeTaskContext,
     ) -> std::result::Result<QueryOutput, EmbeddedQueryError> {
+        if self.transaction.is_some() {
+            return Err(EmbeddedQueryError::Database(HawDBError::Execution(
+                "a user transaction is open on this database".into(),
+            )));
+        }
         self.check_admitted_query_context(task_context)?;
         let planning_request = crate::api::runtime_planning_request(
             cypher_text.len(),
@@ -475,6 +550,101 @@ impl HawDBEmbedded {
         self.database
     }
 
+    /// Begins the engine's single user transaction on this handle, using the
+    /// same transaction state as [`Database::begin_transaction`]. While the
+    /// transaction is open, autocommit `query_*_admitted` calls fail and a
+    /// second `begin_transaction` returns an error. `commit_transaction`
+    /// publishes all staged mutations as one durable commit; a failed commit
+    /// abandons the workspace like `DatabaseTransaction::commit`.
+    /// `rollback_transaction` discards it. Statements run through
+    /// `transaction_query*` and see their own writes.
+    pub fn begin_transaction(&mut self) -> Result<()> {
+        if self.transaction.is_some() {
+            return Err(HawDBError::Execution(
+                "a user transaction is already open on this database".into(),
+            ));
+        }
+        let (runtime, state) = self.database.transaction_parts()?;
+        self.transaction = Some(EmbeddedTransaction { runtime, state });
+        Ok(())
+    }
+
+    /// Whether a user transaction is currently open on this handle.
+    pub fn transaction_active(&self) -> bool {
+        self.transaction.is_some()
+    }
+
+    /// Runs one Cypher statement inside the open user transaction.
+    pub fn transaction_query_with_params(
+        &mut self,
+        cypher_text: &str,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<QueryOutput> {
+        let transaction = self.transaction_mut()?;
+        crate::api::execute_database_transaction_query(
+            &transaction.runtime,
+            &mut transaction.state,
+            cypher_text,
+            parameters,
+            None,
+        )
+    }
+
+    /// Runs one SQL statement inside the open user transaction.
+    pub fn transaction_query_sql_with_params(
+        &mut self,
+        sql_text: &str,
+        parameters: &[Value],
+    ) -> Result<QueryOutput> {
+        let transaction = self.transaction_mut()?;
+        crate::api::execute_database_transaction_sql(
+            &transaction.runtime,
+            &mut transaction.state,
+            sql_text,
+            parameters,
+            false,
+            false,
+            None,
+        )
+        .map(|result| result.output)
+    }
+
+    /// Publishes the open transaction as one durable commit.
+    pub fn commit_transaction(&mut self) -> Result<QueryOutput> {
+        let mut transaction = self.take_transaction()?;
+        crate::api::commit_database_transaction_state(
+            &mut self.database,
+            &mut transaction.state,
+            false,
+        )
+        .map(|result| result.output)
+    }
+
+    /// Abandons the open transaction without committing.
+    pub fn rollback_transaction(&mut self) -> Result<()> {
+        self.take_transaction()?.state.rollback();
+        Ok(())
+    }
+
+    /// Pins the published branch state for a stable read scope, equivalent to
+    /// [`Database::begin_read_transaction`]. Statements that write fail with
+    /// the engine's read-transaction error.
+    pub fn begin_read_transaction(&self) -> Result<DatabaseReadTransaction> {
+        self.database.begin_read_transaction()
+    }
+
+    fn transaction_mut(&mut self) -> Result<&mut EmbeddedTransaction> {
+        self.transaction.as_mut().ok_or_else(|| {
+            HawDBError::Execution("no user transaction is open on this database".into())
+        })
+    }
+
+    fn take_transaction(&mut self) -> Result<EmbeddedTransaction> {
+        self.transaction.take().ok_or_else(|| {
+            HawDBError::Execution("no user transaction is open on this database".into())
+        })
+    }
+
     pub fn write_slow_query_log_jsonl(&self, path: impl AsRef<Path>) -> Result<()> {
         self.database.write_slow_query_log_jsonl(path)
     }
@@ -495,6 +665,16 @@ impl HawDBEmbedded {
             exit_code,
         })
     }
+}
+
+/// Owned runtime and statement state of the engine's single user
+/// transaction, parked inside [`HawDBEmbedded`] between `begin_transaction`
+/// and `commit_transaction`/`rollback_transaction`. Statement execution does
+/// not borrow the database; only commit touches it.
+#[derive(Debug)]
+struct EmbeddedTransaction {
+    runtime: crate::api::DatabaseTransactionRuntime,
+    state: crate::api::DatabaseTransactionState,
 }
 
 fn default_database_config(profile: EmbeddedDeploymentProfile) -> DatabaseConfig {
@@ -669,6 +849,89 @@ mod tests {
         assert!(options.config.runtime_capabilities.vector_search);
         assert!(!options.config.runtime_capabilities.graph_analytics);
         assert!(!options.config.runtime_capabilities.background_maintenance);
+    }
+
+    #[test]
+    fn in_memory_open_admits_queries_and_drops_data() {
+        let mut engine = HawDBEmbedded::open_in_memory();
+
+        assert!(engine.is_in_memory());
+        assert!(engine.path().as_os_str().is_empty());
+        engine.query_admitted("CREATE (:Memory {id: 1})").unwrap();
+        let output = engine
+            .query_admitted("MATCH (m:Memory) RETURN m.id AS id")
+            .unwrap();
+        assert_eq!(output.rows.len(), 1);
+        drop(engine);
+
+        let mut reopened = HawDBEmbedded::open_in_memory();
+        assert!(reopened
+            .query_admitted("MATCH (m:Memory) RETURN m.id AS id")
+            .unwrap()
+            .rows
+            .is_empty());
+    }
+
+    #[test]
+    fn in_memory_open_honors_database_config_budgets() {
+        let mut engine = HawDBEmbedded::open_in_memory_with_config(DatabaseConfig {
+            max_read_result_rows: Some(1),
+            ..DatabaseConfig::default()
+        });
+        engine.query_admitted("CREATE (:Memory {id: 1})").unwrap();
+        engine.query_admitted("CREATE (:Memory {id: 2})").unwrap();
+
+        let error = engine
+            .query_admitted("MATCH (m:Memory) RETURN m.id AS id")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("max_read_result_rows"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn transaction_commits_own_writes_and_rolls_back() {
+        let mut engine = HawDBEmbedded::open_in_memory();
+        engine.begin_transaction().unwrap();
+        assert!(engine.begin_transaction().is_err());
+        engine
+            .transaction_query_with_params("CREATE (:Item {id: 1})", &BTreeMap::new())
+            .unwrap();
+        let own_write = engine
+            .transaction_query_with_params("MATCH (i:Item) RETURN i.id AS id", &BTreeMap::new())
+            .unwrap();
+        assert_eq!(own_write.rows.len(), 1);
+        assert!(engine
+            .query_admitted("MATCH (i:Item) RETURN i.id AS id")
+            .is_err());
+
+        engine.commit_transaction().unwrap();
+        let published = engine
+            .query_admitted("MATCH (i:Item) RETURN i.id AS id")
+            .unwrap();
+        assert_eq!(published.rows.len(), 1);
+
+        engine.begin_transaction().unwrap();
+        engine
+            .transaction_query_with_params("CREATE (:Item {id: 2})", &BTreeMap::new())
+            .unwrap();
+        engine.rollback_transaction().unwrap();
+        let published = engine
+            .query_admitted("MATCH (i:Item) RETURN i.id AS id")
+            .unwrap();
+        assert_eq!(published.rows.len(), 1);
+    }
+
+    #[test]
+    fn read_transaction_rejects_writes() {
+        let mut engine = HawDBEmbedded::open_in_memory();
+        engine.query_admitted("CREATE (:Item {id: 1})").unwrap();
+
+        let mut read = engine.begin_read_transaction().unwrap();
+        let output = read.query("MATCH (i:Item) RETURN i.id AS id").unwrap();
+        assert_eq!(output.rows.len(), 1);
+        assert!(read.query("CREATE (:Item {id: 2})").is_err());
     }
 
     #[test]
