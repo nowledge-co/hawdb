@@ -59,6 +59,13 @@ initial scalar fallback borrows an already materialized row; direct columnar
 delivery remains an executor capability until end-to-end qualification proves
 that activating it improves the application boundary.
 
+The proposed retained-batch and foreign-runtime result contract is defined in
+[`ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md`](ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md).
+It extends the existing pull producer with admitted immutable batch leases,
+strict copy refusal, and Go/Python ownership. Its strict eligibility and
+zero-copy qualification are separate from this contract's existing scalar row
+fallback; they MUST NOT be inferred from the presence of a lending cursor.
+
 Bulk input must follow the same execution model in the opposite direction:
 an application-provided source is decoded into bounded batches, validated and
 coerced against `LogicalType`, and passed to an executor write sink that owns
