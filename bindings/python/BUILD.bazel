@@ -63,7 +63,7 @@ alias(
 py_library(
     name = "hawdb",
     srcs = ["python/hawdb/__init__.py"],
-    data = [":extension"] + glob(["python/hawdb/*.pyi"]),
+    data = [":extension"] + glob(["python/hawdb/*.pyi", "python/hawdb/py.typed"]),
     imports = ["python"],
 )
 
