@@ -1848,3 +1848,34 @@ These scoped scratch/CPU bounds do not establish source/candidate/cache/GC
 ownership, dictionary and writer payload accounting, allocation/free latency,
 FD/disk/cleanup debt, default sustained progress, complete publication parity,
 physical power-loss/refinement or paired release-performance qualification.
+
+### Canonical property Bloom hashing
+
+Canonical property Bloom keys now stream the existing label/name/value encoding
+through a CRC32C sink rather than concatenate a complete input buffer. The sink
+reuses the established canonical streaming value writer, preserving field tags,
+lengths, UUIDs, float bits and nested-value diagnostics. Ordinary hashing creates
+no heap allocation; controlled hashing admits at most 64 KiB per CPU unit and
+performs no physical I/O. A stopped sink returns a simple non-retry I/O error and
+retains its typed work cause across the existing streaming interface.
+
+Native node consumers finish their callback/payload unit before property hashing
+starts its child units. Callbacks keep their original active consumer admission.
+Property Bloom array insertion and the subsequent payload copy receive consumer
+units again. The array growth/copy and ordinary payload encoding are separate
+resource/CPU gaps, rather than covered by the streaming hash bounds.
+
+The original unchanged 257 KiB binary and UTF-8-name fixtures genuinely fail
+before correction (one and two large allocations respectively) and pass without
+those allocations. Each starts from a valid canonical artifact, validates full
+readback and selects its original record through the property Bloom path.
+Separate cases compare with the independent buffered codec across every value
+variant and chunk boundaries, observe every allocation in ordinary hashing,
+cancel at every actual unit with a real one-byte governor reservation and a
+one-unit local scheduler, fully retry the same input, preserve typed nested work
+failure, and compare over-depth diagnostics with the ordinary codec.
+
+This removes Bloom input scratch only. Property-key dictionaries, payload and
+segment accumulators, array growth, source/cache/GC ownership, allocation/free
+latency, FD/disk/cleanup debt, default sustained progress, full publication parity,
+physical power-loss/refinement and release-performance qualification remain open.

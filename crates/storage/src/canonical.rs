@@ -14,6 +14,9 @@
 
 use crate::background::{CheckpointWorkContext, CheckpointWorkError};
 
+mod checkpoint_bloom;
+#[cfg(test)]
+mod checkpoint_bloom_memory_tests;
 mod checkpoint_decode;
 #[cfg(test)]
 mod checkpoint_manifest_memory_related_tests;
@@ -1212,7 +1215,11 @@ impl CanonicalSegmentWriter {
                     self.config,
                 );
             }
-            accumulator.add_node_properties(node)?;
+            // Hashing owns bounded child units; callbacks retain their original
+            // consumer admission through fetch and ordinary payload encoding.
+            unit.finish();
+            accumulator.add_node_properties(node, self.work.as_ref())?;
+            let unit = work.start_unit()?;
             accumulator.push(node.id.0, &payload, None)?;
             unit.finish();
         }
@@ -1515,11 +1522,19 @@ impl SegmentAccumulator {
         Ok(())
     }
 
-    fn add_node_properties(&mut self, node: &NodeRecord) -> Result<(), CanonicalSegmentError> {
+    fn add_node_properties(
+        &mut self,
+        node: &NodeRecord,
+        work: Option<&CheckpointWorkContext>,
+    ) -> Result<(), CanonicalSegmentError> {
         for label in &node.labels {
             for (property, value) in &node.properties {
-                self.node_property_keys
-                    .push(node_property_bloom_key(*label, property, value)?);
+                let key = checkpoint_bloom::key(*label, property, value, work)?;
+                let unit = work.map(CheckpointWorkContext::start_unit).transpose()?;
+                self.node_property_keys.push(key);
+                if let Some(unit) = unit {
+                    unit.finish();
+                }
             }
         }
         Ok(())
@@ -2815,11 +2830,7 @@ fn node_property_bloom_key(
     property: &str,
     value: &Value,
 ) -> Result<u64, CanonicalSegmentError> {
-    let mut bytes = Vec::with_capacity(8usize.saturating_add(property.len()));
-    bytes.extend_from_slice(&label.0.to_le_bytes());
-    encode_string(property, &mut bytes)?;
-    encode_value(value, &mut bytes, 0)?;
-    Ok(content_digest(&bytes).0)
+    checkpoint_bloom::key(label, property, value, None)
 }
 
 fn update_report_for_segment(report: &mut CanonicalReadReport, read: &SegmentRangeRead) {
