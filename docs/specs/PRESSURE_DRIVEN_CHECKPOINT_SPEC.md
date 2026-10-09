@@ -2131,3 +2131,62 @@ their own ledger. A separate deterministic differential campaign is local-only
 and runs through the Bazel fuzz suite. These guards do not qualify default
 sustained progress, complete resource bounds, foreground latency, the remaining
 copied codecs, or physical power-loss behavior.
+
+
+## Bounded operation admission and paused execution
+
+The current owner supersedes the historical whole-record operation-admission
+limitations above. Planning borrows the captured source under a 64 KiB governor
+reservation and consumes bounded LocalQoS units. Candidate builders and fresh
+catch-up contexts also consume their actual bounded units rather than retaining
+one LocalQoS operation for every database record. Nested spill initialization
+finishes its parent unit before opening a descriptor-tree child. A frozen public
+configuration fixture writes 1,057 nodes with 512-byte bodies, continues writing
+every 20 ms and verifies two completed generations, every value and reopen.
+The same fixture previously deferred without completing a generation; its age,
+15-second observation windows, workload and assertions remain unchanged.
+
+Resumable maintenance uses `RuntimeGovernor::try_admit_resumable_maintenance`
+and the facade-exported `RuntimeMaintenanceWork`. Its original conservative
+memory and host process-memory reservations remain owned by the candidate.
+At a cooperative boundary, `pause()` cancels only the admitted child context
+and releases CPU and background task capacity. Actual wave-scoped I/O guards
+keep their global charges until they drop. `try_resume()` acquires execution
+capacity from the same governor with no second candidate-memory charge and
+binds a fresh child of the supplied cancellation/deadline context. Previously
+bound contexts remain cancelled. A denied resume leaves the candidate paused
+with its original memory reservation. Closing the owner follows the existing
+working-memory contract: allocations keep the complete original reservation
+until their last lease drops.
+
+The checkpoint owner parks a resumable private candidate before its admission
+retry wait. A frozen real-owner fixture first fails because a memory-denied
+candidate occupies one CPU slot; after the correction it observes zero CPU and
+background task slots, identical memory admission and base file bytes. Recovery
+completes that same candidate without another write under a 200 MiB budget that
+cannot fit two whole-candidate reservations. Old readers, all values and reopen
+are verified. A separate 32-node fixture completes two generations under the
+same fixed budget and retains no reservation after the final owner and store
+close. The small fixture already passed before this change; it is a sustained
+progress guard, not evidence of a reproduced memory leak or a speedup.
+
+Resource tests cover shared allocation capacity across fresh execution epochs,
+repeated pressure denial, occupied execution slots, parent cancellation/deadline
+and lower ceilings, conservative memory retention without tracked allocations,
+in-flight I/O ownership, and shared process-memory policy. A missing host RSS
+sample still fails closed when resuming with zero additional memory bytes.
+
+The synchronous `Database::checkpoint(&mut self)` and
+`ConcurrentDatabase::checkpoint(&self)` APIs remain available to the host below
+automatic thresholds, with automatic/background work disabled and in the
+native minimal feature profile. Their durability and successful-return contract
+are unchanged.
+
+This is a partial resource-lifetime correction. Selected candidates waiting for
+frontend adoption still hold execution admission, preparation is not resumable,
+and resource retry uses the existing 100 ms bound. Whole-candidate admission
+still estimates 16 times logical bytes plus 128 MiB. Complete memory/disk/FD/cache
+and cleanup-debt ownership, bounded out-of-core scaling, shorter publication
+gates, idle adoption without another frontend call, complete shared-codec parity,
+physical power-loss qualification and paired release-profile measurements remain
+required before issue #207 and the full replacement contract can be accepted.

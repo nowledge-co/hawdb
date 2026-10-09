@@ -301,11 +301,11 @@ pub use hawdb_qos::{
     IoConcurrencyBudget, ProcessMemoryCapabilities, ProcessMemoryPolicy, ProcessMemoryPolicyConfig,
     ProcessMemoryPolicySnapshot, ProcessMemoryProfile, ProcessMemorySnapshot, RuntimeAdmissionCode,
     RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorConfig, RuntimeGovernorLimits,
-    RuntimeGovernorSnapshot, RuntimeIoReservationScope, RuntimeMemoryPressure,
-    RuntimeMemorySnapshot, RuntimePermit, RuntimeResourceBudget, RuntimeResourceSnapshot,
-    RuntimeRetainedMemory, RuntimeTelemetryEvent, RuntimeTelemetryEventKind, RuntimeTelemetrySink,
-    RuntimeWorkKind, RuntimeWorkPriority, RuntimeWorkRequest, StorageDeviceDiscoverySource,
-    StorageDeviceProfile, StorageMediaKind,
+    RuntimeGovernorSnapshot, RuntimeIoReservationScope, RuntimeMaintenanceWork,
+    RuntimeMemoryPressure, RuntimeMemorySnapshot, RuntimePermit, RuntimeResourceBudget,
+    RuntimeResourceSnapshot, RuntimeRetainedMemory, RuntimeTelemetryEvent,
+    RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind, RuntimeWorkPriority,
+    RuntimeWorkRequest, StorageDeviceDiscoverySource, StorageDeviceProfile, StorageMediaKind,
 };
 pub use hawdb_readiness::embedded_query_path::{
     EmbeddedQueryEntrypoint, EmbeddedQueryPathReadiness, EMBEDDED_QUERY_PATH_READINESS_PROTOCOL,

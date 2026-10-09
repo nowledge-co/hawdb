@@ -17,7 +17,7 @@
 use super::{Catalog, DatabaseConfig, GraphStore, LocalQosScheduler, ReaderPins};
 use crate::error::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
-use hawdb_qos::{RuntimeGovernor, RuntimePermit, RuntimeWorkRequest};
+use hawdb_qos::{RuntimeGovernor, RuntimeMaintenanceWork, RuntimeWorkRequest};
 use hawdb_storage::store::{CheckpointCandidate, CheckpointDebtSnapshot, CheckpointSourceIdentity};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError};
@@ -128,7 +128,7 @@ enum Phase {
 
 #[derive(Debug)]
 struct Admission {
-    runtime: RuntimePermit,
+    runtime: RuntimeMaintenanceWork,
 }
 
 #[derive(Debug)]
@@ -662,7 +662,7 @@ fn run(
             }
             None => prepare(&source, &scheduler, &governor, &task),
         };
-        let (mut candidate, admission) = match attempt {
+        let (mut candidate, mut admission) = match attempt {
             Ok(Some(work)) => work,
             result => {
                 let mut state = control
@@ -706,12 +706,22 @@ fn run(
                 continue;
             }
         };
-        let admitted_task = admission.runtime.bind_task_context(task.clone());
         // Seal and mount each captured prefix while writes remain admitted.
         // A writer that advances during sealing supplies another suffix for
         // this same candidate; it never causes a database-sized base restart.
         let mut expected = None;
         let result = (|| -> Result<()> {
+            admission
+                .runtime
+                .try_resume(task.clone())
+                .map_err(|reason| {
+                    HawDBError::Storage(format!("automatic checkpoint resume deferred: {reason}"))
+                })?;
+            let admitted_task = admission
+                .runtime
+                .task_context()
+                .expect("checkpoint execution is admitted")
+                .clone();
             loop {
                 let latest = {
                     let mut state = control.lock()?;
@@ -815,6 +825,10 @@ fn run(
             control.changed.notify_all();
         } else {
             if candidate.can_continue_from(&source.store) {
+                // All builders and physical publication waves have returned.
+                // Retain the private candidate's memory while yielding CPU
+                // and the background task slot before waiting for recovery.
+                admission.runtime.pause();
                 let mut state = control
                     .state
                     .lock()
@@ -965,15 +979,18 @@ fn prepare(
             .checkpoint_candidate_admission_bytes_with_work_context(&work)?
     };
     let runtime = governor
-        .try_admit(RuntimeWorkRequest::background_maintenance(memory).with_io_wave_slots(1))
+        .try_admit_resumable_maintenance(memory, 1, task.clone())
         .map_err(|reason| {
             HawDBError::Storage(format!("automatic checkpoint admission deferred: {reason}"))
         })?;
     // Actual builder units consume LocalQoS, rather than reserving one
     // operation for every record until handoff. Keep the existing conservative
-    // governor reservation until the full memory/paused-work ledger is ready.
+    // memory reservation across retries; parked execution yields its CPU and task slot.
     let work = hawdb_storage::background::CheckpointWorkContext::new(
-        runtime.bind_task_context(task.clone()),
+        runtime
+            .task_context()
+            .expect("checkpoint execution is admitted")
+            .clone(),
     )
     .with_scheduler(scheduler.clone());
     let candidate = source
@@ -1005,6 +1022,8 @@ fn retire(retired: Retired, pins: &Mutex<ReaderPins>) {
 
 #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
 mod tests {
+    mod execution_progress;
+    mod memory_progress;
     mod progress;
     mod qos_units;
     mod read_gate;

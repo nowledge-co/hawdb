@@ -44,8 +44,10 @@ const MOBILE_RESULT_BUDGET_BYTES: u64 = 2 * 1024 * 1024;
 const IO_WAVE_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const BACKGROUND_ADMISSION_AGING: Duration = Duration::from_millis(100);
 
+mod maintenance;
 mod retained_memory;
 mod working_memory;
+pub use maintenance::RuntimeMaintenanceWork;
 pub use retained_memory::RuntimeRetainedMemory;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
