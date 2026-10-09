@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+package(default_visibility = ["//visibility:public"])
+
+go_library(
+    name = "hawdb",
+    srcs = [
+        "ffi.go",
+        "hawdb.go",
+        "lib_unix.go",
+        "lib_windows.go",
+    ],
+    importpath = "github.com/nowledge-co/hawdb/bindings/go",
+    deps = ["@com_github_ebitengine_purego//:purego"],
+)
+
+go_test(
+    name = "hawdb_go_tests",
+    size = "small",
+    srcs = [
+        "bazel_test.go",
+        "hawdb_test.go",
+    ],
+    data = ["//bindings/ffi:hawdb_ffi"],
+    embed = [":hawdb"],
+    env = {"HAWDB_LIBRARY": "$(rlocationpath //bindings/ffi:hawdb_ffi)"},
+    gotags = ["bazel"],
+    pure = "on",
+    deps = ["@rules_go//go/runfiles"],
+)

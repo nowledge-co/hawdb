@@ -577,6 +577,21 @@ rust_test(
     deps = [":hawdb_minimal"],
 )
 
+# Caller-triggered checkpoints are available independently of background support.
+[
+    rust_test(
+        name = "hawdb_manual_checkpoint%s_tests" % suffix,
+        crate_root = "tests/manual_checkpoint.rs",
+        srcs = ["tests/manual_checkpoint.rs"],
+        edition = "2024",
+        deps = [facade],
+    )
+    for suffix, facade in [
+        ("", ":hawdb"),
+        ("_minimal", ":hawdb_minimal"),
+    ]
+]
+
 # Allocator registration belongs to the external consumer, in both profiles.
 [
     rust_test(

@@ -1,0 +1,31 @@
+load("@rules_rust//rust:defs.bzl", "rust_shared_library", "rust_static_library")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["include/hawdb_ffi.h"])
+
+_FFI_DEPS = [
+    "//:hawdb",
+    "@crate_index//:serde_json",
+    "@ffi_crates//:base64",
+]
+
+rust_shared_library(
+    name = "hawdb_ffi",
+    srcs = ["src/lib.rs"],
+    crate_name = "hawdb_ffi",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = "0.5.0",
+    deps = _FFI_DEPS,
+)
+
+rust_static_library(
+    name = "hawdb_ffi_static",
+    srcs = ["src/lib.rs"],
+    crate_name = "hawdb_ffi",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = "0.5.0",
+    deps = _FFI_DEPS,
+)

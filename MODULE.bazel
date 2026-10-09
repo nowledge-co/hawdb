@@ -9,6 +9,8 @@ bazel_dep(name = "rules_tla", version = "0.2.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.2")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_python", version = "2.3.4")
+bazel_dep(name = "rules_go", version = "0.63.0")
+bazel_dep(name = "gazelle", version = "0.54.0")
 
 # Maintain the rules locally so the authoritative check also retains evidence.
 local_path_override(
@@ -30,6 +32,26 @@ crate.from_cargo(
     manifests = ["//:Cargo.toml"],
 )
 use_repo(crate, "crate_index")
+
+# Resolve the standalone C binding's extra dependency without duplicating the
+# engine or running Cargo's source-tree header generator inside Bazel.
+crate.spec(
+    package = "base64",
+    repositories = ["ffi_crates"],
+    version = "0.22",
+)
+crate.from_specs(
+    name = "ffi_crates",
+    cargo_lockfile = "//bindings/ffi:Cargo.Bazel.lock",
+)
+use_repo(crate, "ffi_crates")
+
+go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
+go_sdk.from_file(go_mod = "//bindings/go:go.mod")
+
+go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
+go_deps.from_file(go_mod = "//bindings/go:go.mod")
+use_repo(go_deps, "com_github_ebitengine_purego")
 
 # The binding remains outside the library's Cargo workspace. Resolve only its
 # PyO3 dependency here and reuse //:hawdb for the embedded engine itself.

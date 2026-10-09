@@ -353,6 +353,20 @@ open is strict: a torn tail or checksum mismatch fails startup without changing
 the WAL. `WalTailRepairPlan` and `WalTailRepairReport` are the separate typed
 doctor evidence. The historical `DoctorRepairTornTail` recovery enum value is
 retained for report compatibility but database open rejects it.
+
+Embedding applications can explicitly call `Database::checkpoint(&mut self)`
+or `ConcurrentDatabase::checkpoint(&self)`. These synchronous Rust APIs work
+below the automatic soft/age thresholds and with background maintenance
+disabled, including the native `default-features = false` profile. Success
+means the captured source crossed checkpoint publication and its durability
+barrier; enqueueing an automatic task is not success. The calls coordinate with
+the automatic owner, preserve pinned readers, and reject read-only handles.
+Storage/resource failures and concurrent-source validation errors remain
+explicit errors. Hosts own admission for this caller-triggered work and should
+execute it on a thread suitable for blocking storage I/O. The
+`checkpoint_background` and `checkpoint_scheduled_background` helpers retain
+their pressure and background-policy checks.
+
 The CLI command `hawdb storage-recovery-report [--strict]
 [--max-wal-replay-entries <n>] [--require-durable]
 [--require-checkpoint-boundary] [--require-bounded-wal-replay]

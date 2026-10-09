@@ -34,3 +34,15 @@ Historical PR sequencing and implementation milestones are non-normative. They
 may remain in development plans or Git history, but they must not be copied
 back into the active backlog after their acceptance contract is represented by
 the documents above.
+
+## Exploratory proposals
+
+The following documents are not active production contracts. Their requirement
+keywords describe prospective acceptance criteria, not new obligations on
+existing APIs or unrelated changes. Adopting a capability requires a separately
+scoped implementation review and qualification evidence; until then, the
+canonical contracts above govern supported behavior.
+
+| Proposal | Scope and adoption boundary |
+| --- | --- |
+| [`ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md`](ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md) | Measurement-first, opt-in strict zero-copy delivery with bounded pull and Go/Python ownership; producer-layout, SIMD, graph, and FTS extensions require separate workload evidence and implementation scope |

@@ -14,9 +14,9 @@
 
 use super::*;
 use crate::{
-    SearchDocument, SearchOutOfCoreGenerationWriter, SearchOutOfCoreReader,
-    SearchOutOfCoreSegmentCompactionPolicy, SearchProjectionDelta, SearchProjectionKind,
-    SearchProjectionRow,
+    SearchDocument, SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationWriter,
+    SearchOutOfCoreReader, SearchOutOfCoreSegmentCompactionPolicy, SearchProjectionDelta,
+    SearchProjectionKind, SearchProjectionRow,
 };
 use hawdb_search::{SearchMode, SearchQueryOptions, SearchResultSet};
 use std::num::{NonZeroU64, NonZeroUsize};
@@ -219,6 +219,205 @@ fn overlapping_compaction_survives_lost_torn_and_reordered_writes() {
     qualify(true);
 }
 
+#[cfg(feature = "full-text-search")]
+fn assert_same_queries(actual: &SearchOutOfCoreReader, expected: &SearchOutOfCoreReader) {
+    use crate::{SearchMode, SearchQueryOptions};
+    for mode in [
+        SearchMode::Text,
+        #[cfg(feature = "vector-search")]
+        SearchMode::Vector,
+        #[cfg(feature = "vector-search")]
+        SearchMode::Hybrid,
+    ] {
+        let options = SearchQueryOptions {
+            limit: 10,
+            offset: 0,
+            rank_window: None,
+            fusion_weights: Default::default(),
+            metadata_filters: Default::default(),
+            policy_epoch: None,
+        };
+        let reference = expected
+            .search_with_options(
+                "complete import",
+                Some(&[0.25, 0.75]),
+                mode,
+                options.clone(),
+            )
+            .unwrap();
+        let result = actual
+            .search_with_options(
+                "complete import",
+                Some(&[0.25, 0.75]),
+                mode,
+                options.clone(),
+            )
+            .unwrap();
+        assert_eq!(result.result.hits, reference.result.hits);
+        assert_eq!(result.result.total_hits, reference.result.total_hits);
+        #[cfg(feature = "vector-search")]
+        if mode != SearchMode::Text {
+            let compressed = actual
+                .search_with_options_compressed_vector_projection_mode(
+                    "complete import",
+                    Some(&[0.25, 0.75]),
+                    mode,
+                    options,
+                    crate::CompressedVectorSearchMode::Required,
+                )
+                .unwrap();
+            assert!(compressed.metrics.rabitq_payload_bytes_read > 0);
+            assert_eq!(compressed.result.hits, reference.result.hits);
+            assert_eq!(compressed.result.total_hits, reference.result.total_hits);
+        }
+    }
+}
+
+#[test]
+fn partitioned_initial_publication_survives_lost_torn_and_reordered_writes() {
+    for replaces_existing in [false, true] {
+        // Prefix selectors are private. Only the final real selector can make
+        // any part of this import visible, including after a lost response.
+        for cut in 0..5 {
+            let mut fixture = Fixture::new();
+            let path = fixture.root.join("search");
+            let old = replaces_existing.then(|| bootstrap(&path));
+            let old_documents = old.as_ref().map(|reader| documents(reader, &["a", "z"]));
+            let mut writer = SearchOutOfCoreGenerationWriter::create(
+                &path,
+                SearchOutOfCoreGenerationBuildOptions {
+                    max_content_documents: NonZeroUsize::new(2).unwrap(),
+                    source_graph_commit_epoch: Some(21),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let ids = ["n0", "n1", "n2", "n3", "n4", "n5", "n6"];
+            for id in ids {
+                writer
+                    .push(row(id, "complete import").into_document())
+                    .unwrap();
+            }
+            let stage = std::fs::read_dir(&path)
+                .unwrap()
+                .map(|entry| entry.unwrap())
+                .find(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".search-generation.")
+                })
+                .expect("the one active initial writer stage");
+            let private_manifest = Path::new("search")
+                .join(stage.file_name())
+                .join("search_projection.out_of_core.manifest.hawdb");
+            let (event, boundary, relative_path) = match cut {
+                0 => (
+                    IoEvent::Write,
+                    ObservationBoundary::After,
+                    PathBuf::from("search"),
+                ),
+                1 => (
+                    IoEvent::Rename,
+                    ObservationBoundary::Before,
+                    private_manifest,
+                ),
+                2 => (
+                    IoEvent::Rename,
+                    ObservationBoundary::After,
+                    private_manifest,
+                ),
+                3 => (
+                    IoEvent::Rename,
+                    ObservationBoundary::Before,
+                    PathBuf::from(MANIFEST),
+                ),
+                _ => (
+                    IoEvent::Rename,
+                    ObservationBoundary::After,
+                    PathBuf::from(MANIFEST),
+                ),
+            };
+            fixture
+                .model
+                .observe(ObservationPoint {
+                    event,
+                    relative_path,
+                    boundary,
+                    skip_matches: 0,
+                    include_descendants: event == IoEvent::Write,
+                    keep_last: false,
+                })
+                .unwrap();
+            let report = writer.finish().unwrap();
+            assert_eq!(report.published_content_segments, 4);
+            let published = SearchOutOfCoreReader::open(&path).unwrap();
+            assert_eq!(published.document_count(), ids.len());
+            let new_documents = documents(&published, &ids);
+            let acknowledged = fixture.model.capture().unwrap();
+            let snapshot = fixture
+                .model
+                .take_observation()
+                .unwrap()
+                .expect("the actual initial publication boundary must be observed");
+            // Before the first rename its destination has no inode yet. The
+            // namespace plans still cover loss and reordering; the write cut
+            // supplies the actual uncovered inode for torn-write plans.
+            let (plans, torn) = if cut == 1 || (cut == 3 && !replaces_existing) {
+                (publication_fault_plans(&snapshot), 0)
+            } else {
+                plans(&snapshot)
+            };
+            eprintln!("search-power-initial-v1 replaces_existing={replaces_existing} cut={cut} plans={} torn={torn}", plans.len());
+            if cut == 0 {
+                assert!(torn > 0);
+            }
+            for plan in plans {
+                let image = fixture.image(&snapshot, &plan);
+                if !image.join(MANIFEST).exists() {
+                    assert!(
+                        !replaces_existing,
+                        "an acknowledged previous selector must survive"
+                    );
+                    assert!(SearchOutOfCoreReader::open(image.join("search")).is_err());
+                    continue;
+                }
+                let recovered =
+                    SearchOutOfCoreReader::open(image.join("search")).unwrap_or_else(|error| {
+                        panic!("complete initial closure required: {error}; plan={plan:?}")
+                    });
+                if old
+                    .as_ref()
+                    .is_some_and(|old| recovered.generation() == old.generation())
+                {
+                    assert_eq!(recovered.document_count(), 2);
+                    assert_eq!(recovered.source_graph_commit_epoch(), None);
+                    assert_eq!(
+                        documents(&recovered, &["a", "z"]),
+                        *old_documents.as_ref().unwrap()
+                    );
+                } else {
+                    assert_eq!(cut, 4, "a private prefix cannot publish the real selector");
+                    assert_eq!(recovered.generation(), report.generation);
+                    assert_eq!(recovered.source_graph_commit_epoch(), Some(21));
+                    assert_eq!(recovered.document_count(), ids.len());
+                    assert_eq!(documents(&recovered, &ids), new_documents);
+                    #[cfg(feature = "full-text-search")]
+                    assert_same_queries(&recovered, &published);
+                }
+            }
+            let image = fixture.image(&acknowledged, &CrashPlan::default());
+            let recovered = SearchOutOfCoreReader::open(image.join("search")).unwrap();
+            assert_eq!(recovered.generation(), report.generation);
+            assert_eq!(recovered.source_graph_commit_epoch(), Some(21));
+            assert_eq!(recovered.document_count(), ids.len());
+            assert_eq!(documents(&recovered, &ids), new_documents);
+            #[cfg(feature = "full-text-search")]
+            assert_same_queries(&recovered, &published);
+        }
+    }
+}
+
 const COMPONENT_MANIFEST: &str = "search_projection.out_of_core.manifest.hawdb";
 
 fn component_row(number: usize) -> SearchProjectionRow {
@@ -357,6 +556,8 @@ enum Publication {
     Append,
     Mutation,
     Compaction,
+    PartitionedAppend,
+    PartitionedMutation,
 }
 
 fn append(root: &Path) {
@@ -410,6 +611,14 @@ fn expected_documents(publication: Publication, after: bool) -> Vec<SearchDocume
         (Publication::Mutation, true) | (Publication::Compaction, _) => {
             vec![replacement().into_document(), document(2)]
         }
+        (Publication::PartitionedAppend, false) => vec![document(0), document(1)],
+        (Publication::PartitionedAppend, true) => (0..6).map(document).collect(),
+        (Publication::PartitionedMutation, false) => {
+            vec![replacement().into_document(), document(2)]
+        }
+        (Publication::PartitionedMutation, true) => {
+            vec![replacement().into_document(), document(3), document(4)]
+        }
     }
 }
 
@@ -445,7 +654,7 @@ fn assert_complete(reader: &SearchOutOfCoreReader, expected: &[SearchDocument]) 
         .map(|document| document.id.clone())
         .collect();
     assert_eq!(reader.hydrate_documents(&ids).unwrap().documents, expected);
-    for number in 0..3 {
+    for number in 0..6 {
         let id = document(number).id;
         if !ids.contains(&id) {
             assert!(reader.hydrate_documents(&[id]).is_err());
@@ -536,15 +745,32 @@ fn qualify_publication(publication: Publication) {
         writer.push(document(0)).unwrap();
         writer.push(document(1)).unwrap();
         writer.finish().unwrap();
-        if !matches!(publication, Publication::Append) {
+        if !matches!(
+            publication,
+            Publication::Append | Publication::PartitionedAppend
+        ) {
             append(&root);
         }
-        if matches!(publication, Publication::Compaction) {
+        if matches!(
+            publication,
+            Publication::Compaction | Publication::PartitionedMutation
+        ) {
             mutate_component(&root);
         }
         let before = std::fs::read(root.join(COMPONENT_MANIFEST)).unwrap();
         let old = SearchOutOfCoreReader::open(&root).unwrap();
         assert_complete(&old, &expected_documents(publication, false));
+        let old_generation = old.generation();
+        let mut modes = vec![SearchMode::Text];
+        #[cfg(feature = "vector-search")]
+        modes.extend([SearchMode::Vector, SearchMode::Hybrid]);
+        let before_queries: Vec<_> = modes
+            .drain(..)
+            .flat_map(|mode| {
+                [None, Some("default"), Some("current")]
+                    .map(|space| (mode, space, search(&old, mode, space)))
+            })
+            .collect();
         fixture
             .model
             .observe(ObservationPoint {
@@ -577,6 +803,33 @@ fn qualify_publication(publication: Publication) {
                 .unwrap();
                 assert_eq!(report.source_segment_count(), 2);
             }
+            Publication::PartitionedAppend | Publication::PartitionedMutation => {
+                let delta = if matches!(publication, Publication::PartitionedAppend) {
+                    SearchProjectionDelta {
+                        upserts: (2..6).map(component_row).collect(),
+                        ..Default::default()
+                    }
+                } else {
+                    SearchProjectionDelta {
+                        upserts: vec![replacement(), component_row(3), component_row(4)],
+                        deletes: vec![document(2).id],
+                        ..Default::default()
+                    }
+                };
+                let expected_segments = delta.upserts.len();
+                let (_, report, _) = SearchOutOfCoreGenerationWriter::prepare_delta(
+                    &old,
+                    delta,
+                    SearchOutOfCoreGenerationBuildOptions {
+                        max_content_documents: NonZeroUsize::new(1).unwrap(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+                .finish()
+                .unwrap();
+                assert_eq!(report.published_content_segments, expected_segments);
+            }
         }
         let cut = fixture.model.take_observation().unwrap().unwrap();
         let acknowledged = fixture.model.capture().unwrap();
@@ -585,24 +838,19 @@ fn qualify_publication(publication: Publication) {
             before, after,
             "publication must replace the active selector"
         );
+        // Verify the pinned old closure after publication, then close it before
+        // admitting a second full reader under the unchanged FD32 project budget.
+        assert_complete(&old, &expected_documents(publication, false));
+        for (mode, space, expected) in &before_queries {
+            assert_search_parity(expected, &search(&old, *mode, *space));
+        }
+        drop(old);
         let new = SearchOutOfCoreReader::open(&root).unwrap();
-        assert_ne!(old.generation(), new.generation());
+        assert_ne!(old_generation, new.generation());
         assert_complete(&new, &expected_documents(publication, true));
-        let mut modes = vec![SearchMode::Text];
-        #[cfg(feature = "vector-search")]
-        modes.extend([SearchMode::Vector, SearchMode::Hybrid]);
-        let queries: Vec<_> = modes
-            .drain(..)
-            .flat_map(|mode| {
-                [None, Some("default"), Some("current")].map(|space| {
-                    (
-                        mode,
-                        space,
-                        search(&old, mode, space),
-                        search(&new, mode, space),
-                    )
-                })
-            })
+        let queries: Vec<_> = before_queries
+            .into_iter()
+            .map(|(mode, space, before)| (mode, space, before, search(&new, mode, space)))
             .collect();
         let plans = fault_plans(&cut, event);
         eprintln!(
@@ -635,7 +883,7 @@ fn qualify_publication(publication: Publication) {
                 if is_new {
                     new.generation()
                 } else {
-                    old.generation()
+                    old_generation
                 }
             );
             assert_complete(&recovered, &expected_documents(publication, is_new));
@@ -670,4 +918,14 @@ fn mutation_publication_cuts_preserve_complete_replacements_and_deletes() {
 #[test]
 fn compaction_publication_cuts_preserve_the_complete_selected_closure() {
     qualify_publication(Publication::Compaction);
+}
+
+#[test]
+fn partitioned_append_publication_cuts_select_the_complete_batch() {
+    qualify_publication(Publication::PartitionedAppend);
+}
+
+#[test]
+fn partitioned_mutation_publication_cuts_preserve_prior_runs_and_the_complete_batch() {
+    qualify_publication(Publication::PartitionedMutation);
 }

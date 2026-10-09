@@ -278,6 +278,14 @@ impl ConcurrentDatabase {
         self.inner.commits.finish_read(&view, snapshot)
     }
 
+    /// Completes a caller-triggered checkpoint through the writer coordinator.
+    ///
+    /// Like [`Database::checkpoint`], this blocking call works below automatic
+    /// thresholds and with background maintenance disabled. A successful return
+    /// follows durable publication of the captured source. It serializes manual
+    /// callers and coordinates with the automatic owner, preserving read pins.
+    /// Concurrent source changes and storage/resource errors remain errors; a
+    /// failed attempt does not undo already committed writes.
     pub fn checkpoint(&self) -> Result<()> {
         let _checkpoint_serial = self
             .inner

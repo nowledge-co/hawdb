@@ -1540,15 +1540,27 @@ impl Database {
         &mut self,
         task_context: Option<hawdb_core::RuntimeTaskContext>,
     ) -> Result<DatabaseTransaction<'_>> {
-        self.runtime.get_mut()?;
-        let runtime = DatabaseTransactionRuntime::from_database(self)?;
-        let state = DatabaseTransactionState::from_database(self)?;
+        let (runtime, state) = self.transaction_parts()?;
         Ok(DatabaseTransaction {
             db: self,
             runtime,
             state,
             task_context,
         })
+    }
+
+    /// Builds the owned runtime and statement state for one transaction.
+    /// Embedded hosts that must own the transaction object (rather than
+    /// borrow `Database`) assemble the same parts and commit through
+    /// [`commit_database_transaction_state`].
+    pub(super) fn transaction_parts(
+        &mut self,
+    ) -> Result<(DatabaseTransactionRuntime, DatabaseTransactionState)> {
+        self.runtime.get_mut()?;
+        Ok((
+            DatabaseTransactionRuntime::from_database(self)?,
+            DatabaseTransactionState::from_database(self)?,
+        ))
     }
 
     pub fn session(&mut self) -> DatabaseSession<'_> {
@@ -1917,6 +1929,18 @@ impl Database {
         )
     }
 
+    /// Completes a caller-triggered checkpoint of a writable persistent database.
+    ///
+    /// This synchronous call does not require automatic checkpoint pressure or
+    /// background-maintenance admission. It remains available when background
+    /// maintenance is disabled, including with `default-features = false`.
+    /// Success follows checkpoint publication and its durability barrier; merely
+    /// scheduling background work is not success. Read-only handles return an
+    /// error. An in-memory database has no persistent checkpoint to publish.
+    ///
+    /// The call coordinates with the automatic owner and preserves active read
+    /// snapshots. Hosts should run this blocking operation on a suitable thread
+    /// and provide their own admission boundary for caller-triggered work.
     pub fn checkpoint(&mut self) -> Result<()> {
         self.checkpoint_internal(None)
     }
@@ -3129,6 +3153,8 @@ impl Database {
         })
     }
 
+    /// Attempts pressure-triggered checkpoint work under the supplied background
+    /// policy. For an explicit App-triggered checkpoint, use [`Self::checkpoint`].
     pub fn checkpoint_background(
         &mut self,
         policy: &LocalQosPolicy,
@@ -3150,6 +3176,8 @@ impl Database {
         }
     }
 
+    /// Attempts pressure-triggered checkpoint work under the local background
+    /// scheduler. For an explicit App-triggered checkpoint, use [`Self::checkpoint`].
     pub fn checkpoint_scheduled_background(&mut self, hint: BackgroundWorkHint) -> Result<()> {
         self.ensure_runtime_capability(hawdb_core::RuntimeCapability::BackgroundMaintenance)?;
         let Some(plan) = self.storage_checkpoint_background_work_plan(hint)? else {
@@ -20214,7 +20242,7 @@ impl DatabaseTransactionState {
         })
     }
 
-    fn rollback(&mut self) {
+    pub(super) fn rollback(&mut self) {
         self.graph_transaction.take();
         self.relational_transaction.writes.clear();
         self.append_transaction.writes.clear();
@@ -20446,7 +20474,7 @@ fn execute_graph_transaction_statement(
     })
 }
 
-fn execute_database_transaction_query(
+pub(super) fn execute_database_transaction_query(
     runtime: &DatabaseTransactionRuntime,
     state: &mut DatabaseTransactionState,
     cypher_text: &str,
@@ -20518,7 +20546,7 @@ pub(super) fn execute_concurrent_graph_transaction_query(
     )
 }
 
-fn execute_database_transaction_sql(
+pub(super) fn execute_database_transaction_sql(
     runtime: &DatabaseTransactionRuntime,
     state: &mut DatabaseTransactionState,
     sql_text: &str,
@@ -21105,7 +21133,7 @@ fn reject_locking_select_without_manager(
     Ok(())
 }
 
-fn commit_database_transaction_state(
+pub(super) fn commit_database_transaction_state(
     db: &mut Database,
     state: &mut DatabaseTransactionState,
     allow_stale_rebase: bool,

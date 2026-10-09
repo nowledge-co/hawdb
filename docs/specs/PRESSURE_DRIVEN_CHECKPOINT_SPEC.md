@@ -12,6 +12,13 @@ soft WAL/delta pressure threshold, or when uncheckpointed data exceeds a finite
 host-configured age. A host need not run a checkpoint loop. Read-only,
 in-memory, and capability-excluded compositions create no maintenance worker.
 
+Apps retain the direct, synchronous `Database::checkpoint` and
+`ConcurrentDatabase::checkpoint` APIs. These calls work below automatic
+thresholds and when background maintenance is disabled or not compiled in.
+Success follows the captured source's checkpoint publication and durability
+barrier, with existing read-only/resource errors and reader pins preserved.
+Manual calls coordinate with the automatic owner through the same writer.
+
 Age measures the lifetime of checkpoint debt using a monotonic clock. Appending
 another transaction does not reset it. Reopening starts a new finite observation
 window for existing debt; wall-clock changes do not delay a live scheduler.
@@ -127,6 +134,9 @@ from scheduler failure. Removing a limit is not an availability fix.
   generations without a caller checkpoint loop.
 - Exact soft/age boundaries, duplicate triggers, admission denial and recovery,
   cancellation/shutdown, and absence of concurrent WAL writers.
+- Manual calls below automatic thresholds, with background capability/policy
+  disabled, and in the native minimal feature profile; manual/automatic overlap
+  and resumed automatic progress through both ordinary and concurrent facades.
 - Commits during preparation and catch-up; complete graph/schema, relational,
   append, and search-capture parity after publication and ordinary reopen.
 - Historical readers, MVCC conflict history, failed publication, torn WAL tails,

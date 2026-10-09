@@ -19,7 +19,7 @@ mod value;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-pub use database::{open, Database, QueryResult};
+pub use database::{open, Database, QueryResult, ReadTransaction, Transaction};
 pub use errors::register_exceptions;
 
 /// Report the engine capabilities compiled into this extension.
@@ -51,6 +51,8 @@ fn _hawdb(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     module.add_class::<Database>()?;
     module.add_class::<QueryResult>()?;
+    module.add_class::<Transaction>()?;
+    module.add_class::<ReadTransaction>()?;
     module.add_function(wrap_pyfunction!(open, module)?)?;
     module.add_function(wrap_pyfunction!(capabilities, module)?)?;
 

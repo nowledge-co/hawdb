@@ -79,6 +79,22 @@ db.execute_sql("SELECT 1")
 db.close()
 ```
 
+`db.transaction()` opens the engine's single user transaction: statements
+inside the `with` block see their own writes, a clean exit publishes them as
+one durable commit, and an exception rolls back and re-raises. A nested
+`db.transaction()` — and any `db.execute` / `db.execute_sql` on the parent —
+fails while a transaction is open.
+
+```python
+with db.transaction() as tx:
+    tx.execute("CREATE (s:Stock {code: $code})", {"code": "603122"})
+    tx.execute_sql("INSERT INTO trades (id) VALUES ($1)", [7])
+    tx.rollback()      # abandons both statements; omit it to commit
+```
+
+`db.read_transaction()` pins the committed state for a stable read scope;
+write statements on it raise the engine's read-transaction error.
+
 `hawdb.open()` without a path returns an empty in-memory database for tests,
 notebooks, and other hosts that already hold their data. It answers the same
 `execute` / `execute_sql` calls through the same embedded admission path;
@@ -187,6 +203,5 @@ run `CARGO_BAZEL_REPIN=1 CARGO_BAZEL_REPIN_ONLY=python_crates bazel build //bind
 
 ## Scope and follow-ups
 
-Not included yet: async calls, explicit multi-statement transactions, Arrow
-output, schema introspection helpers. These are tracked for follow-up once
-the base surface settles.
+Not included yet: async calls, Arrow output, schema introspection helpers.
+These are tracked for follow-up once the base surface settles.
