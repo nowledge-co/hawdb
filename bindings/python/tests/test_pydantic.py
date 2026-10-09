@@ -198,26 +198,47 @@ def test_params_batch_loads_in_one_statement(db):
     assert hawdb.pydantic.parse(result, Stock) == sorted(stocks, key=lambda s: s.code)
 
 
-# `params` checks values itself, so the error names the field.
+# `params` returns the dump; the binding rejects it by parameter path.
 @pytest.mark.parametrize(
-    ("value", "kind"),
+    ("value", "path", "kind"),
     [
-        (datetime.date(2026, 1, 2), "date"),
-        (decimal.Decimal("1.10"), "Decimal"),
-        (Color.RED, "Color"),
-        ([1, {"at": datetime.date(2026, 1, 2)}], "date"),
+        (datetime.date(2026, 1, 2), "$value", "date"),
+        (decimal.Decimal("1.10"), "$value", "Decimal"),
+        (Color.RED, "$value", "Color"),
+        ([1, {"at": datetime.date(2026, 1, 2)}], "$value[1].at", "date"),
     ],
+    ids=["date", "Decimal", "Enum", "nested-date"],
 )
-def test_params_rejects_unsupported_values(value, kind):
-    with pytest.raises(TypeError, match=rf"Listing\.value.*: unsupported parameter type {kind}"):
-        hawdb.pydantic.params(Listing(code="603122", value=value))
+def test_execute_rejects_unsupported_values_by_path(db, value, path, kind):
+    dumped = hawdb.pydantic.params(Listing(code="603122", value=value))
+    assert dumped == {"code": "603122", "value": value}
+    with pytest.raises(TypeError) as raised:
+        db.execute("CREATE (:Listing {code: $code, value: $value})", dumped)
+    assert str(raised.value) == f"{path}: unsupported parameter type: {kind}"
+    assert db.execute("MATCH (l:Listing) RETURN count(l) AS n").fetchall() == [{"n": 0}]
 
 
-# `params` checks the engine's 64-bit range itself, so the error names the field.
 @pytest.mark.parametrize("value", [2**63, -(2**63) - 1])
-def test_params_rejects_ints_outside_64_bits(value):
-    with pytest.raises(OverflowError, match=r"Listing\.value: .* outside the 64-bit integer"):
-        hawdb.pydantic.params(Listing(code="603122", value=value))
+def test_execute_rejects_ints_outside_64_bits_by_batch_row(db, value):
+    listings = [Listing(code="a", value=1), Listing(code="b", value=value)]
+    with pytest.raises(OverflowError) as raised:
+        db.execute(
+            "UNWIND $rows AS row CREATE (:Listing {code: row.code, value: row.value})",
+            {"rows": [hawdb.pydantic.params(listing) for listing in listings]},
+        )
+    message = "$rows[1].value: integer parameter is outside the signed 64-bit range"
+    assert str(raised.value) == message
+    assert db.execute("MATCH (l:Listing) RETURN count(l) AS n").fetchall() == [{"n": 0}]
+
+
+def test_execute_rejects_self_referencing_values(db):
+    # The dump keeps the cycle; the binding stops it at its nesting limit.
+    looped = []
+    looped.append(looped)
+    dumped = hawdb.pydantic.params(Listing(code="x", value=looped))
+    with pytest.raises(ValueError, match="nests deeper than 64 levels$"):
+        db.execute("CREATE (:Listing {code: $code, value: $value})", dumped)
+    assert db.execute("MATCH (l:Listing) RETURN count(l) AS n").fetchall() == [{"n": 0}]
 
 
 def test_params_accepts_64_bit_int_bounds(db):
@@ -230,16 +251,19 @@ def test_params_accepts_64_bit_int_bounds(db):
     assert result.fetchall() == [{"value": bounds}]
 
 
-def test_params_rejects_non_string_map_keys():
+def test_non_string_keys(db):
     class Scores(BaseModel):
         by_year: dict[int, float]
 
     class Root(RootModel[dict[int, float]]):
         pass
 
-    with pytest.raises(TypeError, match=r"Scores\.by_year: parameter maps require string keys"):
-        hawdb.pydantic.params(Scores(by_year={2026: 1.0}))
-    with pytest.raises(TypeError, match=r"Root: parameter maps require string keys"):
+    scores = hawdb.pydantic.params(Scores(by_year={2026: 1.0}))
+    with pytest.raises(TypeError) as raised:
+        db.execute("CREATE (:Scores {v: $by_year})", scores)
+    assert str(raised.value) == "$by_year: parameter maps require string keys, got int"
+    # Parameter names come from the dump's top-level keys, so `params` checks those.
+    with pytest.raises(TypeError, match="^Root does not dump to a parameter dict$"):
         hawdb.pydantic.params(Root({2026: 1.0}))
 
 
