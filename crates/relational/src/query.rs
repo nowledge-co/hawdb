@@ -42,7 +42,8 @@ use hawdb_executor::{
 };
 use hawdb_expression::{BindingId, SortDirection, SortItem, SortKey};
 use hawdb_optimizer::{
-    select_relational_access_path, RelationalAccessPathDescriptor, RelationalAccessPathKind,
+    select_relational_access_path_with_context, RelationalAccessCostContext,
+    RelationalAccessPathDescriptor, RelationalAccessPathKind, RelationalJoinCostContexts,
     RelationalJoinEnumerationConfig, RelationalJoinPlanningDirective, RelationalJoinPlanningReason,
 };
 use hawdb_sql::{
@@ -126,7 +127,7 @@ mod physical;
 #[cfg(test)]
 use physical::RelationalExecutionMemoryShape;
 use physical::{
-    planned_operator_cardinality_profiles, PreparedRelationalAccessPlan,
+    planned_operator_cardinality_profiles_with_cost_contexts, PreparedRelationalAccessPlan,
     PreparedRelationalExecutionDescriptor, PreparedRelationalExecutionMode,
     PreparedRelationalSelect, RelationalAccessCandidate, RelationalBaseAccess,
     RelationalEquiJoinKeys, RelationalExecutionAdmission, RelationalJoinAccess,
@@ -145,7 +146,12 @@ use pipeline::{
 };
 
 mod preparation;
-use preparation::{prepare_relational_select, prepared_access_descriptors};
+#[cfg(test)]
+use preparation::prepare_relational_select;
+use preparation::{
+    prepare_relational_select_with_snapshot, prepared_access_descriptors,
+    RelationalQueryPlanningSnapshot,
+};
 
 mod projection;
 use projection::{
@@ -239,6 +245,7 @@ struct AdmittedRelationalExecution<'state, 'runtime, R: RelationalQueryStoreRead
     execution_memory: &'runtime hawdb_executor::ExecutionMemoryConfig,
     memory_ledger: QueryMemoryLedger,
     task_context: Option<&'runtime hawdb_core::RuntimeTaskContext>,
+    planning_snapshot: Option<RelationalQueryPlanningSnapshot>,
 }
 
 pub struct RelationalQueryReadModes<
@@ -247,6 +254,8 @@ pub struct RelationalQueryReadModes<
 > {
     index: RelationalIndexReadMode<'a, R>,
     row: RelationalRowReadMode<'a, R>,
+    cost_contexts: Option<&'a RelationalJoinCostContexts>,
+    index_runtime: Option<&'a RelationalIndexRuntime<'a, R>>,
 }
 
 impl<R: RelationalQueryStoreReader> Copy for RelationalQueryReadModes<'_, R> {}
@@ -262,7 +271,29 @@ impl<'a, R: RelationalQueryStoreReader> RelationalQueryReadModes<'a, R> {
         index: RelationalIndexReadMode<'a, R>,
         row: RelationalRowReadMode<'a, R>,
     ) -> Self {
-        Self { index, row }
+        Self {
+            index,
+            row,
+            cost_contexts: None,
+            index_runtime: None,
+        }
+    }
+
+    fn with_cost_contexts(mut self, cost_contexts: &'a RelationalJoinCostContexts) -> Self {
+        self.cost_contexts = Some(cost_contexts);
+        self
+    }
+
+    fn with_index_runtime(mut self, runtime: &'a RelationalIndexRuntime<'a, R>) -> Self {
+        self.index_runtime = Some(runtime);
+        self
+    }
+
+    fn cost_context(self, binding: BindingId) -> RelationalAccessCostContext {
+        self.cost_contexts
+            .map_or_else(RelationalAccessCostContext::default, |contexts| {
+                contexts.for_relation(binding)
+            })
     }
 }
 
@@ -427,16 +458,16 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
                     resources.limits.hydration,
                 );
             }
-            let prepared = prepare_relational_select(
+            let (prepared, snapshot) = prepare_relational_select_with_snapshot(
                 select,
                 parameters,
                 state,
                 read_modes,
-                resources.limits,
-                resources.join_planning,
+                resources,
                 initial_stage_timings,
             )?;
-            let execution = prepared.execution.admit(state, read_modes, resources)?;
+            let mut execution = prepared.execution.admit(state, read_modes, resources)?;
+            execution.planning_snapshot = Some(snapshot);
             execute_select_timed(&prepared, parameters, execution)
         }
         SqlStatement::Explain(explain) => {
@@ -450,19 +481,35 @@ pub fn execute_prepared_relational_query_with_resources<'a, R: RelationalQuerySt
                     "EXPLAIN does not support a FROM-less SELECT".to_string(),
                 ));
             }
-            let prepared = prepare_relational_select(
+            // Ordinary EXPLAIN inspects bounded metadata without running the
+            // execution task. ANALYZE retains its cancellation and deadline.
+            let planning_resources = RelationalQueryResourceContext {
+                task_context: if explain.analyze {
+                    resources.task_context
+                } else {
+                    None
+                },
+                ..resources
+            };
+            let (prepared, snapshot) = prepare_relational_select_with_snapshot(
                 select,
                 parameters,
                 state,
                 read_modes,
-                resources.limits,
-                resources.join_planning,
+                planning_resources,
                 initial_stage_timings,
             )?;
             if !explain.analyze {
-                return explain_select(&prepared, parameters, resources.limits);
+                return explain_select(
+                    &prepared,
+                    parameters,
+                    resources.limits,
+                    &snapshot.cost_contexts,
+                    snapshot.index_context.evidence(),
+                );
             }
-            let execution = prepared.execution.admit(state, read_modes, resources)?;
+            let mut execution = prepared.execution.admit(state, read_modes, resources)?;
+            execution.planning_snapshot = Some(snapshot);
             let output = execute_select_timed(&prepared, parameters, execution)?;
             format_relational_explain(
                 &prepared.statement,

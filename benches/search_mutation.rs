@@ -44,7 +44,10 @@ fn main() {
     let sustained_rounds = env_usize("HAWDB_SEARCH_MUTATION_BENCH_ROUNDS", 0);
     let compaction_every = env_usize("HAWDB_SEARCH_MUTATION_BENCH_COMPACTION_EVERY", 1);
     let reuse_validation = env_usize("HAWDB_SEARCH_MUTATION_BENCH_REUSE_VALIDATION", 1) != 0;
-    let open_files = env_usize("HAWDB_SEARCH_MUTATION_BENCH_OPEN_FILES", 256);
+    let open_files = env_usize(
+        "HAWDB_SEARCH_MUTATION_BENCH_OPEN_FILES",
+        hawdb::DatabaseConfig::default().max_open_files,
+    );
     let segment_bytes = env_usize(
         "HAWDB_SEARCH_MUTATION_BENCH_SEGMENT_BYTES",
         64 * 1024 * 1024,

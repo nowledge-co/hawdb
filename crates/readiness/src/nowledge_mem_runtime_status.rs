@@ -31,6 +31,7 @@ pub struct NowledgeMemRuntimeStatus {
     pub graph_commit_epoch: u64,
     pub changefeed: SearchProjectionChangefeedStatus,
     pub projection_freshness: Option<SearchProjectionFreshness>,
+    pub file_descriptors: Option<hawdb_storage::file_descriptors::FileDescriptorMetrics>,
 }
 
 impl NowledgeMemRuntimeStatus {
@@ -52,6 +53,16 @@ impl NowledgeMemRuntimeStatus {
         serde_json::json!({
             "protocol": self.protocol,
             "graph_commit_epoch": self.graph_commit_epoch,
+            "file_descriptors": self.file_descriptors.map(|metrics| serde_json::json!({
+                "configured_limit": metrics.configured_limit,
+                "effective_limit": metrics.effective_limit,
+                "os_soft_limit": metrics.os_soft_limit,
+                "os_limit_clamped": metrics.os_limit_clamped,
+                "open": metrics.open,
+                "reserved": metrics.reserved,
+                "cached_handles": metrics.cached_handles,
+                "cache_evictions": metrics.cache_evictions,
+            })),
             "changefeed": {
                 "graph_commit_epoch": self.changefeed.graph_commit_epoch,
                 "resume_floor_commit_epoch": self.changefeed.resume_floor_commit_epoch,
@@ -265,10 +276,21 @@ mod tests {
             graph_commit_epoch: 8,
             changefeed: changefeed(),
             projection_freshness: None,
+            file_descriptors: Some(hawdb_storage::file_descriptors::FileDescriptorMetrics {
+                configured_limit: 1024,
+                effective_limit: 192,
+                limit: 192,
+                os_soft_limit: Some(256),
+                os_limit_clamped: true,
+                ..Default::default()
+            }),
         };
 
         assert_eq!(status.projection_commit_lag(), 8);
         assert!(status.projection_stale());
+        assert_eq!(status.json()["file_descriptors"]["configured_limit"], 1024);
+        assert_eq!(status.json()["file_descriptors"]["effective_limit"], 192);
+        assert_eq!(status.json()["file_descriptors"]["os_limit_clamped"], true);
         assert_eq!(
             status.json()["changefeed"]["newest_retained_mutation_id"],
             8
@@ -285,6 +307,7 @@ mod tests {
                 graph_commit_epoch: 8,
                 changefeed: changefeed(),
                 projection_freshness: None,
+                file_descriptors: None,
             },
             None,
         );

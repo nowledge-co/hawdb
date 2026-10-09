@@ -152,28 +152,15 @@ fn execution_evidence(
     statement: &ContentStoreSqlStatementSpec,
     profile: RelationalSqlReadProfile,
 ) -> Result<ContentStoreRowPageExecutionEvidence> {
-    let index_runtime_path = profile.index_reads.first().map_or_else(
-        || "none".to_string(),
-        |first| {
-            if profile
-                .index_reads
-                .iter()
-                .all(|read| read.runtime_path == first.runtime_path)
-            {
-                first.runtime_path.clone()
-            } else {
-                "mixed".to_string()
-            }
-        },
-    );
-    let index_logical_pages = sum_index_read(&profile, |read| read.logical_pages);
-    let index_logical_bytes = sum_index_read(&profile, |read| read.logical_bytes);
-    let index_physical_pages = sum_index_read(&profile, |read| read.physical_pages);
-    let index_physical_bytes = sum_index_read(&profile, |read| read.physical_bytes);
-    let index_cache_hits = sum_index_read(&profile, |read| read.cache_hits);
-    let index_cache_misses = sum_index_read(&profile, |read| read.cache_misses);
+    let index_runtime_path = index_execution_runtime_path(statement, &profile.index_reads)?;
+    let index_logical_pages = sum_index_read(&profile.index_reads, |read| read.logical_pages);
+    let index_logical_bytes = sum_index_read(&profile.index_reads, |read| read.logical_bytes);
+    let index_physical_pages = sum_index_read(&profile.index_reads, |read| read.physical_pages);
+    let index_physical_bytes = sum_index_read(&profile.index_reads, |read| read.physical_bytes);
+    let index_cache_hits = sum_index_read(&profile.index_reads, |read| read.cache_hits);
+    let index_cache_misses = sum_index_read(&profile.index_reads, |read| read.cache_misses);
     let index_cache_admission_rejections =
-        sum_index_read(&profile, |read| read.cache_admission_rejections);
+        sum_index_read(&profile.index_reads, |read| read.cache_admission_rejections);
     let row = profile.row_read;
     let evidence = ContentStoreRowPageExecutionEvidence {
         index_runtime_path,
@@ -213,15 +200,6 @@ fn execution_evidence(
         hydrated_compressed_bytes: count_u64(profile.hydrated_compressed_bytes),
         hydrated_decompressed_bytes: count_u64(profile.hydrated_decompressed_bytes),
     };
-    if !matches!(
-        evidence.index_runtime_path.as_str(),
-        "authoritative" | "none"
-    ) {
-        return Err(HawDBError::Execution(format!(
-            "content-store statement {} used index runtime {}, expected authoritative or a direct canonical row scan",
-            statement.name, evidence.index_runtime_path
-        )));
-    }
     if evidence.row_runtime_path != "snapshot_rows" {
         return Err(HawDBError::Execution(format!(
             "content-store statement {} used row runtime {}, expected snapshot_rows",
@@ -237,6 +215,48 @@ fn execution_evidence(
     Ok(evidence)
 }
 
+fn index_execution_runtime_path(
+    statement: &ContentStoreSqlStatementSpec,
+    reads: &[hawdb::RelationalSqlIndexReadProfile],
+) -> Result<String> {
+    let mut executed_path = None;
+    for read in reads {
+        match read.lookups.checked_sub(read.metadata_count_lookups) {
+            Some(0) if read.metadata_count_lookups != 0 && read.runtime_path == "not_executed" => {
+                // Planning counts retain their I/O below, but do not establish
+                // an execution path. The canonical row snapshot is checked
+                // independently by execution_evidence.
+                continue;
+            }
+            Some(executed) if executed != 0 => {}
+            _ => {
+                return Err(HawDBError::Execution(format!(
+                    "content-store statement {} has inconsistent index purpose evidence for {}.{}: lookups={}, metadata_count_lookups={}, runtime_path={}",
+                    statement.name,
+                    read.table,
+                    read.index,
+                    read.lookups,
+                    read.metadata_count_lookups,
+                    read.runtime_path,
+                )));
+            }
+        }
+        executed_path = Some(match executed_path {
+            None => read.runtime_path.as_str(),
+            Some(path) if path == read.runtime_path => path,
+            Some(_) => "mixed",
+        });
+    }
+    let runtime_path = executed_path.unwrap_or("none").to_string();
+    if executed_path.is_some() && runtime_path != "authoritative" {
+        return Err(HawDBError::Execution(format!(
+            "content-store statement {} used index runtime {}, expected authoritative or a direct canonical row scan",
+            statement.name, runtime_path
+        )));
+    }
+    Ok(runtime_path)
+}
+
 fn missing_profile(statement: &ContentStoreSqlStatementSpec, field: &str) -> HawDBError {
     HawDBError::Execution(format!(
         "content-store statement {} has no {field} execution evidence",
@@ -249,10 +269,10 @@ fn count_u64(value: usize) -> u64 {
 }
 
 fn sum_index_read(
-    profile: &RelationalSqlReadProfile,
+    reads: &[hawdb::RelationalSqlIndexReadProfile],
     field: impl Fn(&hawdb::RelationalSqlIndexReadProfile) -> usize,
 ) -> u64 {
-    profile.index_reads.iter().fold(0u64, |total, read| {
+    reads.iter().fold(0u64, |total, read| {
         total.saturating_add(count_u64(field(read)))
     })
 }
@@ -326,4 +346,92 @@ pub(super) fn info_field<'a>(info: &'a str, name: &str) -> Option<&'a str> {
         let (key, value) = field.split_once('=')?;
         (key == name).then_some(value)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hawdb::RelationalSqlIndexReadProfile;
+
+    fn index_read(path: &str, lookups: usize, metadata: usize) -> RelationalSqlIndexReadProfile {
+        RelationalSqlIndexReadProfile {
+            table: "thread_messages".into(),
+            index: "message_lookup".into(),
+            lookups,
+            metadata_count_lookups: metadata,
+            runtime_path: path.into(),
+            logical_pages: 2,
+            logical_bytes: 200,
+            physical_pages: 1,
+            physical_bytes: 100,
+            cache_hits: 3,
+            cache_misses: 4,
+            cache_admission_rejections: 5,
+            rows_visited: 6,
+        }
+    }
+
+    #[test]
+    fn metadata_and_execution_keep_distinct_authority() {
+        let statement = message_point_statement("profile_roles", "synthetic");
+        let reads = [
+            index_read("not_executed", 2, 2),
+            index_read("authoritative", 3, 1),
+        ];
+        assert_eq!(
+            index_execution_runtime_path(&statement, &reads).unwrap(),
+            "authoritative"
+        );
+    }
+
+    #[test]
+    fn metadata_only_is_not_index_execution() {
+        let statement = message_point_statement("profile_roles", "synthetic");
+        assert_eq!(
+            index_execution_runtime_path(&statement, &[index_read("not_executed", 2, 2)]).unwrap(),
+            "none"
+        );
+    }
+
+    #[test]
+    fn unknown_inconsistent_and_fallback_profiles_refuse_authority() {
+        let statement = message_point_statement("profile_roles", "synthetic");
+        for (path, total, metadata) in [
+            ("authoritative", 0, 0),
+            ("authoritative", 2, 3),
+            ("authoritative", 1, 1),
+            ("not_executed", 0, 0),
+            ("not_executed", 1, 0),
+            ("none", 1, 0),
+            ("canonical_fallback", 1, 0),
+            ("mixed", 1, 0),
+            ("demand_paged", 1, 0),
+            ("transaction_workspace", 1, 0),
+            ("unknown", 1, 0),
+        ] {
+            assert!(
+                index_execution_runtime_path(&statement, &[index_read(path, total, metadata)])
+                    .is_err(),
+                "{path}: total={total}, metadata={metadata} must not establish authority"
+            );
+        }
+    }
+
+    #[test]
+    fn metadata_io_is_preserved_in_complete_totals() {
+        let reads = [
+            index_read("not_executed", 2, 2),
+            index_read("authoritative", 3, 1),
+        ];
+        assert_eq!(sum_index_read(&reads, |read| read.logical_pages), 4);
+        assert_eq!(sum_index_read(&reads, |read| read.logical_bytes), 400);
+        assert_eq!(sum_index_read(&reads, |read| read.physical_pages), 2);
+        assert_eq!(sum_index_read(&reads, |read| read.physical_bytes), 200);
+        assert_eq!(sum_index_read(&reads, |read| read.cache_hits), 6);
+        assert_eq!(sum_index_read(&reads, |read| read.cache_misses), 8);
+        assert_eq!(
+            sum_index_read(&reads, |read| read.cache_admission_rejections),
+            10
+        );
+    }
 }

@@ -15,6 +15,7 @@
 use super::preparation::prepare_syntax_access_plan;
 use super::*;
 use crate::compile_relational_statement_sql;
+use crate::physical_plan::planned_operator_cardinality_profiles;
 use hawdb_core::Value;
 use hawdb_optimizer::{
     estimate_relational_access_path_cost, estimate_relational_join_cost, RelationalJoinCardinality,
@@ -24,9 +25,11 @@ use hawdb_optimizer::{
 use hawdb_storage::relational::{RelationalMutationLimits, RelationalOverflowConfig};
 use std::num::{NonZeroU64, NonZeroUsize};
 
+mod authoritative_nested_index;
 mod columnar_aggregate;
 mod cross_join;
 mod distinct_output;
+mod exact_count_planning;
 mod having;
 mod ordinary_aggregate;
 
@@ -1143,8 +1146,10 @@ fn prepared_bushy_physical_join_plan_materializes_the_composite_right_input_once
     let c_schema = state.table_schema("bushy_c").expect("bushy_c schema");
     let fields = plan_relational_field_plan(&select, &state).unwrap();
     let c_base = choose_base_access(RelationalBaseAccessPlanning {
+        cost_context: RelationalAccessCostContext::default(),
         index_read_mode:
             RelationalIndexReadMode::<crate::RelationalMaterializedReader>::Materialized,
+        index_runtime: None,
         fields: &fields,
         predicate: None,
         order_by: &[],

@@ -100,7 +100,8 @@ impl RelationalIndexMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WalReplayConfig {
-    /// Shared finite descriptor ceiling for the canonical project.
+    /// Configured finite descriptor ceiling for the canonical project. Native
+    /// Unix observes OS capacity and can admit a smaller effective ceiling.
     pub max_open_files: usize,
     pub recovery_mode: RecoveryMode,
     pub max_entries: Option<usize>,

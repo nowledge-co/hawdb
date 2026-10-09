@@ -16,7 +16,8 @@ use crate::RuntimeCapability;
 use std::fmt::{Display, Formatter};
 
 /// Descriptor admission failures are distinct from corrupt storage or a busy
-/// branch. Counts belong to one engine resource domain, not the host process.
+/// branch. Project quota counts belong to one engine resource domain; OS-limit
+/// failures can additionally report the process allowance when it is known.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileDescriptorError {
     InvalidBudget {
@@ -34,19 +35,21 @@ pub enum FileDescriptorError {
     OsLimit {
         requested: usize,
         os_code: Option<i32>,
+        soft: Option<u64>,
+        hard: Option<u64>,
     },
 }
 
 impl Display for FileDescriptorError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidBudget { limit } => write!(formatter, "file descriptor budget must be positive: {limit}"),
+            Self::InvalidBudget { limit } => write!(formatter, "invalid file descriptor budget: {limit}"),
             Self::ConfigurationConflict { configured, requested } => write!(formatter,
                 "project file descriptor budget conflict: configured {configured}, requested {requested}"),
             Self::BudgetExceeded { requested, available, limit } => write!(formatter,
                 "project file descriptor budget exceeded: requested {requested}, available {available}, limit {limit}"),
-            Self::OsLimit { requested, os_code } => write!(formatter,
-                "operating system file descriptor limit: requested {requested}, OS code {os_code:?}"),
+            Self::OsLimit { requested, os_code, soft, hard } => write!(formatter,
+                "operating system file descriptor limit: requested {requested}, soft {soft:?}, hard {hard:?}, OS code {os_code:?}"),
         }
     }
 }
@@ -187,6 +190,8 @@ pub fn file_descriptor_error(
                 return Some(FileDescriptorError::OsLimit {
                     requested: 1,
                     os_code: Some(code),
+                    soft: None,
+                    hard: None,
                 });
             }
             // io::Error::source can skip its boxed concrete error. Inspect it

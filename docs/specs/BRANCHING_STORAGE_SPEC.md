@@ -1157,12 +1157,52 @@ immutable storage.
 
 ### Current descriptor integration boundary
 
-`DatabaseConfig::max_open_files` supplies a finite default of 256. Storage file,
+`DatabaseConfig::max_open_files` and `WalReplayConfig::max_open_files` supply
+a finite configured ceiling, default 1024, without pre-opening files. On
+native Unix, project acquisition observes `RLIMIT_NOFILE` and installs an
+effective admission ceiling of `min(configured, soft.saturating_sub(64))`.
+Linux and macOS can have different effective ceilings without changing the
+host's soft or hard limit. A soft limit of 256, for example, admits 192 handles.
+The host owns process-limit changes; the engine does not call `setrlimit`.
+
+OS allowance must cover at least `min(configured, 8)` project handles, plus
+the 64-handle host margin. This preserves intentionally smaller explicit
+component quotas. Insufficient allowance fails before project installation
+with `FileDescriptorError::OsLimit`, reporting the required minimum allowance
+and observed soft/hard limits. A low hard limit that still leaves sufficient
+capacity reduces effective admission rather than rejecting the default config.
+Canonical project contexts compare the configured value for conflicts and
+share the effective ceiling installed by the first context. The ceiling stays
+fixed for that domain's lifetime; external process-limit changes are the host's
+responsibility.
+
+`FileDescriptorMetrics` reports configured/effective ceilings, current native
+Unix `os_soft_limit` (`None` on other platforms), and `os_limit_clamped`.
+The runtime readiness JSON exposes this warning without changing cutover
+authorization. Other platforms retain the configured ceiling. The host margin
+is not a reservation or a bound on other libraries or independent projects;
+hosts account for aggregate process usage.
+
+Storage file,
 directory-iterator, clone, ownership-lock, and WAL operations use the admitted
 file wrapper. Independently acquired canonical project contexts share the
 budget and reject conflicting configuration. Immutable checkpoint bindings
 retain logical file references; their cache uses the complete object identity,
-validates content on cold open, retains active reads, and evicts idle handles.
+validates content on cold open, retains active reads, and evicts idle handles
+in least-recently-used order. Hits and inserts advance a per-cache monotonic
+access tick. Capacity pressure sorts idle entries by their last use; active
+read Arcs are never eviction candidates, and removed files close outside the
+cache lock.
+Taking a read Arc and checking eviction eligibility use the same cache lock;
+the Arc outlives the complete native I/O operation. Closing an idle FD does
+not delete immutable storage or release a snapshot's reachability pin.
+This follows the bounded file-cache pattern in RocksDB: its
+[`max_open_files` option](https://github.com/facebook/rocksdb/blob/928527b86951a91367415b0023306735e8f0961b/include/rocksdb/options.h#L722)
+controls retained file readers, and its
+[LRU implementation](https://github.com/facebook/rocksdb/blob/928527b86951a91367415b0023306735e8f0961b/cache/lru_cache.cc#L300)
+evicts entries without external references and frees them outside the cache
+mutex. HawDB keeps its finite shared accounting for lock/WAL and transient
+files as well as immutable readers.
 Clones share a logical sequential cursor, while separately opened references
 and positioned reads preserve their own offsets. Mutable path opens invalidate
 future immutable bindings without changing references captured by snapshots.

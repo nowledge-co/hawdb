@@ -35,13 +35,15 @@ mod streaming;
 
 /// Selection limits for one immutable out-of-core segment compaction.
 ///
-/// A compaction selects adjacent segments with the same level, rewrites their
-/// complete ordered document range, and publishes one segment at the next
+/// Normal compaction selects adjacent segments with the same level, rewrites
+/// their complete ordered document range, and publishes one segment at the next
 /// level. `max_input_bytes` accounts for every selected immutable artifact,
 /// including descriptor, payload, lexical, layout, metadata, and vector files.
 /// `level_zero_target_bytes` scales by `level_size_ratio` until the hard input
 /// limit; `level_count` caps promotion; and `crisis_segment_count` permits a
-/// bounded pair merge when normal tier selection cannot reduce fan-out.
+/// bounded pair merge when normal tier selection cannot reduce fan-out. Crisis
+/// selection may cross levels and chooses the pair with the smallest complete
+/// input. Promotion starts from the highest selected level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SearchOutOfCoreSegmentCompactionPolicy {
     level_fan_in: NonZeroUsize,
@@ -167,7 +169,7 @@ pub struct SearchOutOfCoreSegmentCompactionReport {
 /// The terminal outcome of one host-scheduled segment compaction attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchOutOfCoreSegmentCompactionStopReason {
-    /// The current manifest has no bounded same-level range eligible for compaction.
+    /// The current manifest has no bounded range eligible for compaction.
     NoEligibleSegments,
     /// The QoS scheduler deferred the work before it began.
     Deferred(QosAdmissionCode),
@@ -413,7 +415,7 @@ fn select_with_fan_in(
     reader: &SearchOutOfCoreReader,
     policy: SearchOutOfCoreSegmentCompactionPolicy,
     fan_in: usize,
-    enforce_tier_limit: bool,
+    normal_tier: bool,
     task: &RuntimeTaskContext,
 ) -> Result<Option<Selection>> {
     if reader.manifest.segments.len() < fan_in {
@@ -430,10 +432,13 @@ fn select_with_fan_in(
         let contains_target = candidates
             .iter()
             .any(|segment| reader.visibility.has_target_segment(segment.segment_id));
-        let source_level = candidates[0].level;
-        if candidates
+        let source_level = candidates
             .iter()
-            .any(|segment| segment.level != source_level)
+            .fold(0, |level, segment| level.max(segment.level));
+        if normal_tier
+            && candidates
+                .iter()
+                .any(|segment| segment.level != source_level)
         {
             continue;
         }
@@ -467,7 +472,7 @@ fn select_with_fan_in(
             source_bytes
         };
         if source_bytes > policy.max_input_bytes.get()
-            || (enforce_tier_limit && source_bytes > policy.level_input_limit(source_level))
+            || (normal_tier && source_bytes > policy.level_input_limit(source_level))
         {
             continue;
         }
@@ -521,10 +526,14 @@ fn select_with_fan_in(
             rewrite_mutations: contains_target,
             source_bytes,
         };
-        if selected
-            .as_ref()
-            .is_none_or(|current: &Selection| source_level < current.source_level)
-        {
+        if selected.as_ref().is_none_or(|current: &Selection| {
+            if normal_tier {
+                source_level < current.source_level
+            } else {
+                // Reduce descriptor fan-out with the least admitted rewrite IO.
+                source_bytes < current.source_bytes
+            }
+        }) {
             selected = Some(candidate);
         }
     }

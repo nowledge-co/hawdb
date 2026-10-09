@@ -14,6 +14,12 @@
 
 //! Bounded demand reads over one immutable relational row-root generation.
 
+mod cumulative;
+use cumulative::CumulativeReadBudget;
+pub use cumulative::{
+    RelationalRowPageCumulativeReadRemaining, RelationalRowPageCumulativeReadReport,
+};
+
 use super::{
     validate_requested_fields, LendingProjectedRowCursor, ProjectedRowPageCursor,
     RelationalProjectedField, RelationalProjectedRow, RelationalProjectedRowRef,
@@ -154,6 +160,7 @@ pub(super) struct RelationalRowPageOverlayRead<'a, Cursor> {
     pub range: RelationalRowPageProjectedRange<'a>,
     pub limits: RelationalRowPageDemandReadLimits,
     pub overlay: RelationalRowPageOverlayRange<'a, Cursor>,
+    pub owned_callback: bool,
 }
 
 struct ProjectedPointReadRequest<'a> {
@@ -280,6 +287,7 @@ pub struct RelationalRowPageDemandReader {
     cache: Arc<SegmentCache>,
     store_id: StoreId,
     poisoned: AtomicBool,
+    pub(super) cumulative: CumulativeReadBudget,
 }
 
 impl fmt::Debug for RelationalRowPageDemandReader {
@@ -316,6 +324,7 @@ impl RelationalRowPageDemandReader {
             cache,
             store_id,
             poisoned: AtomicBool::new(false),
+            cumulative: CumulativeReadBudget::default(),
         })
     }
 
@@ -479,35 +488,16 @@ impl RelationalRowPageDemandReader {
             context.validate_column_count(&table_root, &view)?;
             for (encoded, primary_key) in keys {
                 context.checkpoint()?;
-                let Some(mut row) = view
-                    .find_projected_row_encoded(&encoded, requested_fields)
+                let Some(ordinal) = view
+                    .find_row_encoded(&encoded)
                     .map_err(|error| context.map_page_error(error))?
                 else {
                     continue;
                 };
-                context.admit_row()?;
+                let mut row =
+                    context.decode_row(|| view.decode_projected_row(ordinal, requested_fields))?;
                 context.resolve_projected_row(&mut row, hydration_fields)?;
-                context.report.rows_decoded =
-                    context.report.rows_decoded.checked_add(1).ok_or_else(|| {
-                        RelationalRowPageDemandReadError::Admission(
-                            "relational row multi-point decoded-row counter overflow".to_string(),
-                        )
-                    })?;
-                context.report.rows_emitted =
-                    context.report.rows_emitted.checked_add(1).ok_or_else(|| {
-                        RelationalRowPageDemandReadError::Admission(
-                            "relational row multi-point emitted-row counter overflow".to_string(),
-                        )
-                    })?;
-                context.report.owned_rows_emitted = context
-                    .report
-                    .owned_rows_emitted
-                    .checked_add(1)
-                    .ok_or_else(|| {
-                        RelationalRowPageDemandReadError::Admission(
-                            "relational row multi-point owned-row counter overflow".to_string(),
-                        )
-                    })?;
+                context.record_emitted_row(true)?;
                 rows.insert(primary_key, row);
             }
         }
@@ -583,21 +573,20 @@ impl RelationalRowPageDemandReader {
         let page = context.read_page(&descriptor)?;
         let view = page.view();
         context.validate_column_count(&table_root, &view)?;
-        let Some(mut row) = view
-            .find_projected_row_encoded(&encoded_key, requested_fields)
+        let Some(ordinal) = view
+            .find_row_encoded(&encoded_key)
             .map_err(|error| context.map_page_error(error))?
         else {
             context.checkpoint()?;
             return Ok((None, context.finish()));
         };
         context.checkpoint()?;
-        context.admit_row()?;
+        let mut row =
+            context.decode_row(|| view.decode_projected_row(ordinal, requested_fields))?;
         if let Some(hydration_fields) = hydration_fields {
             context.resolve_projected_row(&mut row, hydration_fields)?;
         }
-        context.report.rows_decoded += 1;
-        context.report.rows_emitted += 1;
-        context.report.owned_rows_emitted += 1;
+        context.record_emitted_row(true)?;
         Ok((Some(row), context.finish()))
     }
 
@@ -666,6 +655,7 @@ impl RelationalRowPageDemandReader {
                     cursor: EmptyOverlayCursor,
                     overflow_root: None,
                 },
+                owned_callback: true,
             },
             hydration,
             task,
@@ -677,13 +667,14 @@ impl RelationalRowPageDemandReader {
 
     pub(super) fn visit_projected_range_with_overlay<Cursor: RelationalRowPageOverlayCursor>(
         &self,
-        read: RelationalRowPageOverlayRead<'_, Cursor>,
+        mut read: RelationalRowPageOverlayRead<'_, Cursor>,
         hydration: &mut RelationalHydrationBudget,
         task: &RuntimeTaskContext,
         hydration_fields: Option<&[usize]>,
         resolve: &mut ProjectedRowResolver<'_>,
         mut visit: impl FnMut(RelationalProjectedRow, &mut RelationalHydrationBudget) -> bool,
     ) -> Result<RelationalRowPageDemandReadReport, RelationalRowPageDemandReadError> {
+        read.owned_callback = true;
         let mut report = self.visit_projected_range_with_overlay_ref(
             read,
             hydration,
@@ -713,6 +704,7 @@ impl RelationalRowPageDemandReader {
             range,
             limits,
             overlay,
+            owned_callback,
         } = read;
         let RelationalRowPageProjectedRange {
             table,
@@ -722,6 +714,7 @@ impl RelationalRowPageDemandReader {
         } = range;
         let range = EncodedRange::new(lower, upper)?;
         let mut context = DemandReadContext::new(self, limits, hydration, task)?;
+        context.owned_callback = owned_callback;
         if range.empty {
             return Ok(context.finish());
         }
@@ -816,12 +809,11 @@ impl RelationalRowPageDemandReader {
             };
             let mut cursor = ProjectedRowPageCursor::new(view, row_start, requested_fields)
                 .map_err(|error| context.map_page_error(error))?;
-            while let Some(row) = cursor
-                .next_row()
+            while let Some(encoded_key) = cursor
+                .peek_encoded_primary_key()
                 .map_err(|error| context.map_page_error(error))?
             {
                 context.checkpoint()?;
-                let encoded_key = row.encoded_primary_key();
                 if range.key_is_past_upper(encoded_key) {
                     if !emit_remaining_overlay(
                         &mut context,
@@ -835,39 +827,19 @@ impl RelationalRowPageDemandReader {
                     }
                     return Ok(context.finish());
                 }
-                if !has_overlay {
-                    if !emit_base_row(&mut context, row, hydration_fields, &mut visit)? {
-                        context.report.stopped_early = true;
-                        return Ok(context.finish());
-                    }
-                    continue;
-                }
-                let primary_key = row.primary_key();
-                if !emit_overlay_before(
-                    &mut context,
-                    &mut overlay,
-                    primary_key,
-                    overlay_overflow,
-                    hydration_fields,
-                    resolve,
-                    &mut visit,
-                )? {
-                    context.report.stopped_early = true;
-                    return Ok(context.finish());
-                }
-                if overlay
-                    .peek_key()?
-                    .is_some_and(|overlay_key| overlay_key == primary_key)
-                {
-                    let (overlay_key, overlay_value) = overlay.next_row()?.ok_or_else(|| {
-                        RelationalRowPageDemandReadError::Corrupt(
-                            "overlay cursor lost a matching row".to_string(),
-                        )
-                    })?;
-                    if !emit_overlay_row(
+                if has_overlay {
+                    let primary_key = cursor
+                        .peek_primary_key()
+                        .map_err(|error| context.map_page_error(error))?
+                        .ok_or_else(|| {
+                            RelationalRowPageDemandReadError::Corrupt(
+                                "row cursor lost a peeked key".to_string(),
+                            )
+                        })?;
+                    if !emit_overlay_before(
                         &mut context,
-                        overlay_key,
-                        overlay_value,
+                        &mut overlay,
+                        primary_key,
                         overlay_overflow,
                         hydration_fields,
                         resolve,
@@ -876,8 +848,39 @@ impl RelationalRowPageDemandReader {
                         context.report.stopped_early = true;
                         return Ok(context.finish());
                     }
-                    continue;
+                    if overlay
+                        .peek_key()?
+                        .is_some_and(|overlay_key| overlay_key == primary_key)
+                    {
+                        let (overlay_key, overlay_value) =
+                            overlay.next_row()?.ok_or_else(|| {
+                                RelationalRowPageDemandReadError::Corrupt(
+                                    "overlay cursor lost a matching row".to_string(),
+                                )
+                            })?;
+                        cursor.skip_row();
+                        if !emit_overlay_row(
+                            &mut context,
+                            overlay_key,
+                            overlay_value,
+                            overlay_overflow,
+                            hydration_fields,
+                            resolve,
+                            &mut visit,
+                        )? {
+                            context.report.stopped_early = true;
+                            return Ok(context.finish());
+                        }
+                        continue;
+                    }
                 }
+                let row = context.decode_row(|| {
+                    cursor.next_row()?.ok_or_else(|| {
+                        RelationalRowPageError::Corrupt(
+                            "row cursor lost an admitted row".to_string(),
+                        )
+                    })
+                })?;
                 if !emit_base_row(&mut context, row, hydration_fields, &mut visit)? {
                     context.report.stopped_early = true;
                     return Ok(context.finish());
@@ -915,6 +918,7 @@ struct DemandReadContext<'a> {
     hydration_start_decompressed: usize,
     task: &'a RuntimeTaskContext,
     report: RelationalRowPageDemandReadReport,
+    owned_callback: bool,
 }
 
 impl<'a> DemandReadContext<'a> {
@@ -938,6 +942,7 @@ impl<'a> DemandReadContext<'a> {
             hydration_start_decompressed: hydration.decompressed_bytes,
             hydration,
             task,
+            owned_callback: false,
             report: RelationalRowPageDemandReadReport {
                 generation: reader.generation(),
                 source_commit_epoch: reader.source_commit_epoch(),
@@ -1016,6 +1021,12 @@ impl<'a> DemandReadContext<'a> {
                         "row-root descriptor read counter overflow".to_string(),
                     )
                 })?;
+        self.reader
+            .cumulative
+            .record(RelationalRowPageDemandReadReport {
+                descriptor_reads: reads,
+                ..Default::default()
+            })?;
         Ok(())
     }
 
@@ -1052,6 +1063,7 @@ impl<'a> DemandReadContext<'a> {
                 self.limits.max_bytes
             )));
         }
+        self.reader.cumulative.admit_page(page_bytes)?;
         let read = self
             .reader
             .root
@@ -1075,6 +1087,16 @@ impl<'a> DemandReadContext<'a> {
                     )
                 })?;
         }
+        self.reader
+            .cumulative
+            .record(RelationalRowPageDemandReadReport {
+                file_pages_read: usize::from(!read.cache_hit),
+                file_bytes_read: if read.cache_hit { 0 } else { page_bytes },
+                cache_hits: usize::from(read.cache_hit),
+                cache_misses: usize::from(read.cache_miss),
+                cache_admission_rejections: usize::from(read.cache_admission_rejected),
+                ..Default::default()
+            })?;
         Ok(read.page)
     }
 
@@ -1085,7 +1107,43 @@ impl<'a> DemandReadContext<'a> {
                 self.limits.max_rows
             )));
         }
-        Ok(())
+        self.reader.cumulative.admit_row()
+    }
+
+    fn decode_row<T>(
+        &mut self,
+        decode: impl FnOnce() -> Result<T, RelationalRowPageError>,
+    ) -> Result<T, RelationalRowPageDemandReadError> {
+        self.admit_row()?;
+        let row = decode().map_err(|error| self.map_page_error(error))?;
+        self.record_decoded_row()?;
+        Ok(row)
+    }
+
+    // A successful decode (or selected owned overlay row) remains observable
+    // even when hydration or resolution subsequently fails before emission.
+    fn record_decoded_row(&mut self) -> Result<(), RelationalRowPageDemandReadError> {
+        self.report.rows_decoded += 1;
+        self.reader
+            .cumulative
+            .record(RelationalRowPageDemandReadReport {
+                rows_decoded: 1,
+                ..Default::default()
+            })
+    }
+
+    fn record_emitted_row(&mut self, owned: bool) -> Result<(), RelationalRowPageDemandReadError> {
+        self.report.rows_emitted += 1;
+        self.report.owned_rows_emitted += usize::from(owned);
+        self.report.borrowed_rows_emitted += usize::from(!owned);
+        self.reader
+            .cumulative
+            .record(RelationalRowPageDemandReadReport {
+                rows_emitted: 1,
+                owned_rows_emitted: usize::from(owned),
+                borrowed_rows_emitted: usize::from(!owned),
+                ..Default::default()
+            })
     }
 
     fn resolve_projected_row(
@@ -1264,7 +1322,6 @@ fn emit_base_row(
         &mut RelationalHydrationBudget,
     ) -> bool,
 ) -> Result<bool, RelationalRowPageDemandReadError> {
-    context.admit_row()?;
     let needs_hydration = hydration_fields.is_some_and(|hydration_fields| {
         row.fields().iter().any(|field| {
             hydration_fields.binary_search(&field.ordinal).is_ok()
@@ -1277,14 +1334,12 @@ fn emit_base_row(
             &mut owned,
             hydration_fields.expect("hydration fields were checked"),
         )?;
-        context.report.owned_rows_emitted += 1;
+        context.record_emitted_row(true)?;
         visit(RelationalProjectedRowView::Owned(&owned), context.hydration)
     } else {
-        context.report.borrowed_rows_emitted += 1;
+        context.record_emitted_row(context.owned_callback)?;
         visit(RelationalProjectedRowView::Borrowed(row), context.hydration)
     };
-    context.report.rows_decoded += 1;
-    context.report.rows_emitted += 1;
     Ok(keep_going)
 }
 
@@ -1376,6 +1431,7 @@ fn emit_overlay_row(
         primary_key,
         fields: fields.into_vec(),
     };
+    context.record_decoded_row()?;
     if let Some(hydration_fields) = hydration_fields {
         let has_overflow = row
             .fields
@@ -1392,9 +1448,7 @@ fn emit_overlay_row(
             resolve(&mut row, context.hydration, context.task)?;
         }
     }
-    context.report.rows_decoded += 1;
-    context.report.rows_emitted += 1;
-    context.report.owned_rows_emitted += 1;
+    context.record_emitted_row(true)?;
     Ok(visit(
         RelationalProjectedRowView::Owned(&row),
         context.hydration,

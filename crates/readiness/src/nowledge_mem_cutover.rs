@@ -248,6 +248,7 @@ mod tests {
                     restart_recoverable: true,
                 },
                 projection_freshness: None,
+                file_descriptors: None,
             },
             None,
         );

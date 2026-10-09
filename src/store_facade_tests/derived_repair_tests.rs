@@ -187,7 +187,11 @@ fn branch_repair_keeps_a_live_sibling_snapshot_and_its_immutable_history() {
     database.query_sql("USE BRANCH child").unwrap();
     let snapshot = database.read_snapshot().unwrap();
     drop(database);
-    let metadata = hawdb_storage::branch_project::ProjectMetadata::open(&path, 256).unwrap();
+    let metadata = hawdb_storage::branch_project::ProjectMetadata::open(
+        &path,
+        crate::DatabaseConfig::default().max_open_files,
+    )
+    .unwrap();
     let child = metadata
         .catalog()
         .branches

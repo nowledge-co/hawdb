@@ -20,6 +20,7 @@
 mod authoritative;
 mod constraint_qualification;
 mod qualification;
+mod read_context;
 mod row_source;
 mod transaction;
 
@@ -34,15 +35,16 @@ pub use qualification::{
     RelationalIndexQualificationProbeReport, RelationalIndexViewQualificationOptions,
     RelationalIndexViewQualificationReport, RELATIONAL_INDEX_VIEW_QUALIFICATION_PROTOCOL,
 };
+pub use read_context::{RelationalIndexReadContext, RelationalIndexReadTarget};
 pub use row_source::{map_index_row_snapshot_error, CanonicalRelationalIndexRowSource};
 pub use transaction::RelationalTransactionIndexView;
 
 use crate::relational::{
-    RelationalIndexChangeCapture, RelationalIndexChangeCaptureLimits, RelationalIndexChangeKind,
-    RelationalIndexRangeScan, RelationalIndexReadLimits, RelationalIndexReadReport,
-    RelationalIndexRecoveryReadReport, RelationalIndexRecoveryReader, RelationalIndexScanDirection,
-    RelationalIndexShadowError, RelationalIndexShadowManifest, RelationalIndexShadowReader,
-    RelationalKey,
+    IndexReadAdmission, IndexReadCharge, RelationalIndexChangeCapture,
+    RelationalIndexChangeCaptureLimits, RelationalIndexChangeKind, RelationalIndexRangeScan,
+    RelationalIndexReadLimits, RelationalIndexReadReport, RelationalIndexRecoveryReadReport,
+    RelationalIndexRecoveryReader, RelationalIndexScanDirection, RelationalIndexShadowError,
+    RelationalIndexShadowManifest, RelationalIndexShadowReader, RelationalKey,
 };
 use hawdb_integrity::Sha256Digest;
 use std::{
@@ -452,6 +454,7 @@ struct OrderedIndexEntryMerge<'a, F> {
     stopped_early: bool,
     error: Option<RelationalIndexShadowError>,
     direction: RelationalIndexScanDirection,
+    read_admission: IndexReadAdmission<'a>,
 }
 
 impl<F> OrderedIndexEntryMerge<'_, F>
@@ -468,6 +471,10 @@ where
                 "relational index read exceeds row limit {} after ordered merge",
                 self.max_rows
             )));
+            return false;
+        }
+        if let Err(error) = self.read_admission.charge(IndexReadCharge::Row) {
+            self.error = Some(error);
             return false;
         }
         self.rows_visited = rows_visited;
@@ -627,6 +634,93 @@ impl RelationalIndexReadView {
         })
     }
 
+    /// Counts one complete key from an unchanged checkpoint index partition.
+    ///
+    /// Matching live changes, recovery backends and partial keys decline without
+    /// reading pages. Known poison fails before eligibility. The declared count
+    /// and metadata report retain this pinned view's identity and do not certify
+    /// undecoded posting-chain structure. Cold mounted handle validation reads
+    /// the whole immutable object under the physical file budget and includes
+    /// those bytes in the report. Callers own cumulative statement budgets.
+    pub fn count_exact_postings(
+        &self,
+        table: &str,
+        index: &str,
+        key: &RelationalKey,
+        limits: RelationalIndexReadLimits,
+    ) -> Option<Result<(u64, RelationalIndexReadViewReport), RelationalIndexShadowError>> {
+        self.count_exact_postings_with_reader(table, index, key, |reader| {
+            reader.count_exact_postings(table, index, key, limits)
+        })
+    }
+
+    fn count_exact_postings_with_reader(
+        &self,
+        table: &str,
+        index: &str,
+        key: &RelationalKey,
+        read: impl FnOnce(
+            &RelationalIndexShadowReader,
+        )
+            -> Result<(u64, RelationalIndexReadReport), RelationalIndexShadowError>,
+    ) -> Option<Result<(u64, RelationalIndexReadViewReport), RelationalIndexShadowError>> {
+        self.exact_posting_count_reader(table, index, key)
+            .map(|reader| {
+                let (count, backend) = read(reader?)?;
+                Ok((count, self.exact_posting_count_report(backend)))
+            })
+    }
+
+    fn exact_posting_count_reader(
+        &self,
+        table: &str,
+        index: &str,
+        key: &RelationalKey,
+    ) -> Option<Result<&RelationalIndexShadowReader, RelationalIndexShadowError>> {
+        if self.is_poisoned() {
+            return Some(Err(RelationalIndexShadowError::Corrupt(
+                "relational index read view is poisoned".to_string(),
+            )));
+        }
+        let RelationalIndexReadBackend::Base(reader) = &self.backend else {
+            return None;
+        };
+        if self.live.touches(table, index) {
+            return None;
+        }
+        let Some(root) = reader.manifest().root(table, index) else {
+            return Some(Err(RelationalIndexShadowError::MissingIndex {
+                table: table.to_string(),
+                index: index.to_string(),
+            }));
+        };
+        let width = root.statistics.leading_prefixes.len();
+        if width == 0 || key.0.len() != width {
+            return None;
+        }
+        Some(Ok(reader))
+    }
+
+    fn exact_posting_count_report(
+        &self,
+        backend: RelationalIndexReadReport,
+    ) -> RelationalIndexReadViewReport {
+        RelationalIndexReadViewReport {
+            base_generation: self.identity.base_generation,
+            delta_generation: self.identity.delta_generation,
+            base_commit_epoch: self.identity.base_commit_epoch,
+            visible_commit_epoch: self.identity.visible_commit_epoch,
+            root_set_digest: self.identity.root_set_digest.to_string(),
+            backend: RelationalIndexReadViewBackendReport::Base(backend),
+            live_batches_visited: 0,
+            live_entries_visited: 0,
+            live_entries_matched: 0,
+            live_bytes_visited: 0,
+            rows_visited: 0,
+            stopped_early: false,
+        }
+    }
+
     pub fn advance(
         &self,
         next_commit_epoch: u64,
@@ -705,12 +799,32 @@ impl RelationalIndexReadView {
         limits: RelationalIndexReadLimits,
         visit: impl FnMut(&RelationalKey) -> bool,
     ) -> std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
+        self.visit_exact_postings_admitted(
+            table,
+            index,
+            key,
+            limits,
+            visit,
+            IndexReadAdmission::default(),
+        )
+    }
+
+    pub(crate) fn visit_exact_postings_admitted(
+        &self,
+        table: &str,
+        index: &str,
+        key: &RelationalKey,
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey) -> bool,
+        read_admission: IndexReadAdmission<'_>,
+    ) -> std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
         self.visit_postings(
             table,
             index,
             RelationalIndexReadSelector::Exact(key),
             limits,
             visit,
+            read_admission,
         )
     }
 
@@ -722,12 +836,32 @@ impl RelationalIndexReadView {
         limits: RelationalIndexReadLimits,
         visit: impl FnMut(&RelationalKey) -> bool,
     ) -> std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
+        self.visit_prefix_postings_admitted(
+            table,
+            index,
+            prefix,
+            limits,
+            visit,
+            IndexReadAdmission::default(),
+        )
+    }
+
+    pub(crate) fn visit_prefix_postings_admitted(
+        &self,
+        table: &str,
+        index: &str,
+        prefix: &RelationalKey,
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey) -> bool,
+        read_admission: IndexReadAdmission<'_>,
+    ) -> std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
         self.visit_postings(
             table,
             index,
             RelationalIndexReadSelector::Prefix(prefix),
             limits,
             visit,
+            read_admission,
         )
     }
 
@@ -739,7 +873,26 @@ impl RelationalIndexReadView {
         limits: RelationalIndexReadLimits,
         visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
     ) -> std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
-        self.visit_range_entries(
+        self.visit_prefix_entries_admitted(
+            table,
+            index,
+            prefix,
+            limits,
+            visit,
+            IndexReadAdmission::default(),
+        )
+    }
+
+    pub(crate) fn visit_prefix_entries_admitted(
+        &self,
+        table: &str,
+        index: &str,
+        prefix: &RelationalKey,
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        read_admission: IndexReadAdmission<'_>,
+    ) -> std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
+        self.visit_range_entries_admitted(
             table,
             index,
             &RelationalIndexRangeScan {
@@ -749,6 +902,7 @@ impl RelationalIndexReadView {
             },
             limits,
             visit,
+            read_admission,
         )
     }
 
@@ -758,7 +912,26 @@ impl RelationalIndexReadView {
         index: &str,
         prefixes: &[RelationalKey],
         limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+    ) -> std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
+        self.visit_prefix_entries_many_admitted(
+            table,
+            index,
+            prefixes,
+            limits,
+            visit,
+            IndexReadAdmission::default(),
+        )
+    }
+
+    pub(crate) fn visit_prefix_entries_many_admitted(
+        &self,
+        table: &str,
+        index: &str,
+        prefixes: &[RelationalKey],
+        limits: RelationalIndexReadLimits,
         mut visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        read_admission: IndexReadAdmission<'_>,
     ) -> std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
         if prefixes.is_empty() {
             return Err(admission("batch index lookup requires at least one prefix"));
@@ -796,6 +969,7 @@ impl RelationalIndexReadView {
                 .checked_add(1)
                 .ok_or_else(|| admission("relational index live batch counter overflow"))?;
             let batch_report = batch.visit_prefixes(&selected_prefixes, |change| {
+                read_admission.charge(IndexReadCharge::LiveBytes(change.encoded_bytes))?;
                 pending_live.insert(
                     (change.index_key.as_ref().clone(), change.primary_key.clone()),
                     change.kind,
@@ -844,6 +1018,7 @@ impl RelationalIndexReadView {
             ..limits
         };
         let mut merge = OrderedIndexEntryMerge {
+            read_admission,
             pending: pending_live,
             visit: &mut visit,
             max_rows: limits.max_rows.get(),
@@ -858,22 +1033,26 @@ impl RelationalIndexReadView {
             };
             match &self.backend {
                 RelationalIndexReadBackend::Base(reader) => {
-                    RelationalIndexReadViewBackendReport::Base(reader.visit_prefix_entries_many(
-                        table,
-                        index,
-                        prefixes,
-                        backend_limits,
-                        |_, index_key, primary_key| emit_backend(index_key, primary_key),
-                    )?)
+                    RelationalIndexReadViewBackendReport::Base(
+                        reader.visit_prefix_entries_many_admitted(
+                            table,
+                            index,
+                            prefixes,
+                            backend_limits,
+                            |_, index_key, primary_key| emit_backend(index_key, primary_key),
+                            read_admission,
+                        )?,
+                    )
                 }
                 RelationalIndexReadBackend::Recovered(reader) => {
                     RelationalIndexReadViewBackendReport::Recovered(
-                        reader.visit_prefix_entries_many(
+                        reader.visit_prefix_entries_many_admitted(
                             table,
                             index,
                             prefixes,
                             backend_limits,
                             &mut emit_backend,
+                            read_admission,
                         )?,
                     )
                 }
@@ -924,7 +1103,26 @@ impl RelationalIndexReadView {
         index: &str,
         scan: &RelationalIndexRangeScan,
         limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+    ) -> std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
+        self.visit_range_entries_admitted(
+            table,
+            index,
+            scan,
+            limits,
+            visit,
+            IndexReadAdmission::default(),
+        )
+    }
+
+    pub(crate) fn visit_range_entries_admitted(
+        &self,
+        table: &str,
+        index: &str,
+        scan: &RelationalIndexRangeScan,
+        limits: RelationalIndexReadLimits,
         mut visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        read_admission: IndexReadAdmission<'_>,
     ) -> std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
         if self.is_poisoned() {
             return Err(RelationalIndexShadowError::Corrupt(
@@ -952,6 +1150,7 @@ impl RelationalIndexReadView {
                 .checked_add(1)
                 .ok_or_else(|| admission("relational index live batch counter overflow"))?;
             let batch_report = batch.visit_selector(selector, |change| {
+                read_admission.charge(IndexReadCharge::LiveBytes(change.encoded_bytes))?;
                 pending_live.insert(
                     (change.index_key.as_ref().clone(), change.primary_key.clone()),
                     change.kind,
@@ -1000,6 +1199,7 @@ impl RelationalIndexReadView {
             ..limits
         };
         let mut merge = OrderedIndexEntryMerge {
+            read_admission,
             pending: pending_live,
             visit: &mut visit,
             max_rows: limits.max_rows.get(),
@@ -1014,22 +1214,28 @@ impl RelationalIndexReadView {
             };
             match &self.backend {
                 RelationalIndexReadBackend::Base(reader) => {
-                    RelationalIndexReadViewBackendReport::Base(reader.visit_range_entries(
-                        table,
-                        index,
-                        scan,
-                        backend_limits,
-                        &mut emit_backend,
-                    )?)
+                    RelationalIndexReadViewBackendReport::Base(
+                        reader.visit_range_entries_admitted(
+                            table,
+                            index,
+                            scan,
+                            backend_limits,
+                            &mut emit_backend,
+                            read_admission,
+                        )?,
+                    )
                 }
                 RelationalIndexReadBackend::Recovered(reader) => {
-                    RelationalIndexReadViewBackendReport::Recovered(reader.visit_range_entries(
-                        table,
-                        index,
-                        scan,
-                        backend_limits,
-                        &mut emit_backend,
-                    )?)
+                    RelationalIndexReadViewBackendReport::Recovered(
+                        reader.visit_range_entries_admitted(
+                            table,
+                            index,
+                            scan,
+                            backend_limits,
+                            &mut emit_backend,
+                            read_admission,
+                        )?,
+                    )
                 }
             }
         };
@@ -1079,6 +1285,7 @@ impl RelationalIndexReadView {
         selector: RelationalIndexReadSelector<'_>,
         limits: RelationalIndexReadLimits,
         mut visit: impl FnMut(&RelationalKey) -> bool,
+        read_admission: IndexReadAdmission<'_>,
     ) -> std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
         if self.is_poisoned() {
             return Err(RelationalIndexShadowError::Corrupt(
@@ -1106,6 +1313,7 @@ impl RelationalIndexReadView {
                 .ok_or_else(|| admission("relational index live batch counter overflow"))?;
             let mut batch_pending = BTreeMap::new();
             let batch_report = batch.visit_selector(selector, |change| {
+                read_admission.charge(IndexReadCharge::LiveBytes(change.encoded_bytes))?;
                 match change.kind {
                     RelationalIndexChangeKind::Insert => {
                         batch_pending.insert(change.primary_key.clone(), change.kind);
@@ -1188,6 +1396,10 @@ impl RelationalIndexReadView {
                     )));
                     return false;
                 }
+                if let Err(error) = read_admission.charge(IndexReadCharge::Row) {
+                    callback_error = Some(error);
+                    return false;
+                }
                 rows_visited = next_rows_visited;
                 if !visit(primary_key) {
                     stopped_early = true;
@@ -1199,45 +1411,55 @@ impl RelationalIndexReadView {
                 (
                     RelationalIndexReadBackend::Base(reader),
                     RelationalIndexReadSelector::Exact(key),
-                ) => RelationalIndexReadViewBackendReport::Base(reader.visit_exact_postings(
-                    table,
-                    index,
-                    key,
-                    backend_limits,
-                    &mut emit_backend,
-                )?),
+                ) => RelationalIndexReadViewBackendReport::Base(
+                    reader.visit_exact_postings_admitted(
+                        table,
+                        index,
+                        key,
+                        backend_limits,
+                        &mut emit_backend,
+                        read_admission,
+                    )?,
+                ),
                 (
                     RelationalIndexReadBackend::Base(reader),
                     RelationalIndexReadSelector::Prefix(prefix),
-                ) => RelationalIndexReadViewBackendReport::Base(reader.visit_prefix_postings(
-                    table,
-                    index,
-                    prefix,
-                    backend_limits,
-                    &mut emit_backend,
-                )?),
-                (
-                    RelationalIndexReadBackend::Recovered(reader),
-                    RelationalIndexReadSelector::Exact(key),
-                ) => RelationalIndexReadViewBackendReport::Recovered(reader.visit_exact_postings(
-                    table,
-                    index,
-                    key,
-                    backend_limits,
-                    &mut emit_backend,
-                )?),
-                (
-                    RelationalIndexReadBackend::Recovered(reader),
-                    RelationalIndexReadSelector::Prefix(prefix),
-                ) => {
-                    RelationalIndexReadViewBackendReport::Recovered(reader.visit_prefix_postings(
+                ) => RelationalIndexReadViewBackendReport::Base(
+                    reader.visit_prefix_postings_admitted(
                         table,
                         index,
                         prefix,
                         backend_limits,
                         &mut emit_backend,
-                    )?)
-                }
+                        read_admission,
+                    )?,
+                ),
+                (
+                    RelationalIndexReadBackend::Recovered(reader),
+                    RelationalIndexReadSelector::Exact(key),
+                ) => RelationalIndexReadViewBackendReport::Recovered(
+                    reader.visit_exact_postings_admitted(
+                        table,
+                        index,
+                        key,
+                        backend_limits,
+                        &mut emit_backend,
+                        read_admission,
+                    )?,
+                ),
+                (
+                    RelationalIndexReadBackend::Recovered(reader),
+                    RelationalIndexReadSelector::Prefix(prefix),
+                ) => RelationalIndexReadViewBackendReport::Recovered(
+                    reader.visit_prefix_postings_admitted(
+                        table,
+                        index,
+                        prefix,
+                        backend_limits,
+                        &mut emit_backend,
+                        read_admission,
+                    )?,
+                ),
                 (_, RelationalIndexReadSelector::Range(_)) => {
                     return Err(RelationalIndexShadowError::Admission(
                         "range selectors require ordered entry traversal".to_string(),
@@ -1262,6 +1484,7 @@ impl RelationalIndexReadView {
                         limits.max_rows
                     )));
                 }
+                read_admission.charge(IndexReadCharge::Row)?;
                 if !visit(&primary_key) {
                     stopped_early = true;
                     break;

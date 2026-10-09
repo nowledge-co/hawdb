@@ -177,8 +177,8 @@ impl RuntimeIoWaveController for PausedIo {
     }
 }
 
-fn paused_action<R: Send>(fixture: &Fixture, action: impl FnOnce() -> R + Send) -> Option<R> {
-    let governor = RuntimeGovernor::new(
+fn governor() -> RuntimeGovernor {
+    RuntimeGovernor::new(
         RuntimeGovernorConfig {
             memory_budget_bytes: Some(CEILING),
             background_task_limit: Some(NonZeroUsize::MIN),
@@ -189,7 +189,11 @@ fn paused_action<R: Send>(fixture: &Fixture, action: impl FnOnce() -> R + Send) 
             RuntimeMemorySnapshot::from_limits(Some(1 << 30), Some(1 << 30), None, None, None),
         ),
         IoConcurrencyBudget::new(2, 1),
-    );
+    )
+}
+
+fn paused_action<R: Send>(fixture: &Fixture, action: impl FnOnce() -> R + Send) -> Option<R> {
+    let governor = governor();
     let permit = governor
         .try_admit(RuntimeWorkRequest::background_maintenance(CEILING).with_io_wave_slots(1))
         .unwrap();
@@ -257,6 +261,66 @@ fn paused_action<R: Send>(fixture: &Fixture, action: impl FnOnce() -> R + Send) 
 }
 
 #[test]
+fn checkpoint_units_immutable_opening_cold_and_warm_reads_preserve_lru_eviction() {
+    let fixture = Fixture::new();
+    let governor = governor();
+    let permit = governor
+        .try_admit(RuntimeWorkRequest::background_maintenance(CEILING).with_io_wave_slots(1))
+        .unwrap();
+    let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+        max_background_operations: Some(1),
+        max_total_background_operations: Some(1),
+        ..LocalQosPolicy::default()
+    });
+    let probe = Arc::new(CheckpointWorkProbe::default());
+    scheduler.set_telemetry_sink(Some(probe.clone()));
+    let work = CheckpointWorkContext::new(permit.bind_task_context(
+        RuntimeTaskContext::without_deadline(probe.cancellation.clone()),
+    ))
+    .with_scheduler(scheduler.clone());
+    let handles = &fixture.project.immutable_handles;
+    let foreground = handles
+        .binding(&fixture.root.join("foreground.page"))
+        .unwrap()
+        .unwrap();
+
+    // First publish the cold checkpoint handle, then touch the same warm
+    // handle. In each round the foreground read is older and must be evicted.
+    for _ in 0..2 {
+        assert_eq!(
+            fixture
+                .foreground
+                .read_range(&fixture.foreground_range)
+                .unwrap()
+                .to_vec(),
+            fixture.foreground_bytes[fixture.foreground_bytes.len() - 7..]
+        );
+        drop(
+            handles
+                .checkpoint_get(
+                    &fixture.background_binding,
+                    &fixture.project.io_context(),
+                    &work,
+                )
+                .unwrap(),
+        );
+        assert_eq!(fixture.project.metrics().cached_handles, 2);
+        assert_eq!(handles.evict_idle(1), 1);
+        let cached = handles.handles.lock().unwrap();
+        assert!(cached.contains_key(&fixture.background_binding.reference));
+        assert!(!cached.contains_key(&foreground.reference));
+    }
+    assert_eq!(handles.evict_idle(1), 1);
+    assert_eq!(fixture.project.metrics().open, 0);
+    assert_eq!(fixture.project.metrics().reserved, 0);
+    probe.assert_released(&scheduler);
+    assert_eq!(governor.snapshot().active_background_io_slots, 0);
+    drop(work);
+    drop(permit);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}
+
+#[test]
 fn checkpoint_units_immutable_opening_foreground_read_finishes_while_background_hash_is_paused() {
     let fixture = Fixture::new();
     let result = paused_action(&fixture, || {
@@ -316,6 +380,7 @@ fn checkpoint_units_immutable_opening_reuses_a_foreground_published_handle_of_th
         .unwrap()
         .get(&fixture.background_binding.reference)
         .unwrap()
+        .file
         .clone();
     assert!(Arc::ptr_eq(&foreground, &published));
     assert_eq!(fixture.project.metrics().open, 1);

@@ -36,7 +36,7 @@ use hawdb_storage::{
         RelationalRowPageSnapshotRowSource, RelationalState, RelationalValueRef,
     },
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::ops::Bound;
@@ -216,18 +216,34 @@ impl<'a, R: RelationalRowStoreReader> RelationalRowReadMode<'a, R> {
         hydration: RelationalHydrationBudget,
         task: &'a RuntimeTaskContext,
     ) -> Result<RelationalRowRuntime<'a>> {
-        let projection = match self {
-            Self::ProjectionGeneration { reader, tables, .. } => Some((reader, tables)),
-            _ => None,
-        };
-        let snapshot = match self {
+        let snapshot = self.open_snapshot_reader()?;
+        self.open_runtime_with_snapshot(state, snapshot, fields, limits, hydration, task)
+    }
+
+    pub(crate) fn open_snapshot_reader(self) -> Result<Option<RelationalRowPageSnapshotReader>> {
+        Ok(match self {
             Self::CanonicalMemory => None,
             Self::Store(store) | Self::ProjectionGeneration { store, .. } => {
-                store.open_relational_row_snapshot_reader()?
+                return store.open_relational_row_snapshot_reader();
             }
             Self::Transaction { store, rows } => {
                 Some(store.open_relational_transaction_row_snapshot_reader(rows)?)
             }
+        })
+    }
+
+    pub(crate) fn open_runtime_with_snapshot(
+        self,
+        state: &'a RelationalState,
+        snapshot: Option<RelationalRowPageSnapshotReader>,
+        fields: RelationalFieldPlan,
+        limits: RelationalRowPageSnapshotReadLimits,
+        hydration: RelationalHydrationBudget,
+        task: &'a RuntimeTaskContext,
+    ) -> Result<RelationalRowRuntime<'a>> {
+        let projection = match self {
+            Self::ProjectionGeneration { reader, tables, .. } => Some((reader, tables)),
+            _ => None,
         };
         Ok(RelationalRowRuntime::new(
             state, snapshot, projection, fields, limits, hydration, task,
@@ -235,18 +251,14 @@ impl<'a, R: RelationalRowStoreReader> RelationalRowReadMode<'a, R> {
     }
 }
 
-enum RelationalRowBackend {
-    CanonicalMemory,
-    Snapshot(RelationalRowPageSnapshotReader),
-}
-
 pub struct RelationalRowRuntime<'a> {
     state: &'a RelationalState,
-    backend: RelationalRowBackend,
+    backend: Option<RelationalRowPageSnapshotReader>,
     fields: RelationalFieldPlan,
     limits: RelationalRowPageSnapshotReadLimits,
     hydration: RefCell<RelationalHydrationBudget>,
     evidence: RefCell<RelationalRowExecutionEvidence>,
+    projection_pages: Cell<usize>,
     task: &'a RuntimeTaskContext,
     projection: Option<ProjectionRelationalRuntime<'a>>,
 }
@@ -269,14 +281,11 @@ impl<'a> RelationalRowRuntime<'a> {
         let projection = projection
             .filter(|(_, tables)| fields.uses_any_table(tables))
             .map(|(reader, tables)| ProjectionRelationalRuntime { reader, tables });
-        let backend = snapshot.map_or(
-            RelationalRowBackend::CanonicalMemory,
-            RelationalRowBackend::Snapshot,
-        );
+        let backend = snapshot;
         let runtime_path = match (&backend, &projection) {
             (_, Some(_)) => "projection_generation",
-            (RelationalRowBackend::CanonicalMemory, None) => "canonical_memory",
-            (RelationalRowBackend::Snapshot(_), None) => "snapshot_rows",
+            (None, None) => "canonical_memory",
+            (Some(_), None) => "snapshot_rows",
         };
         let projection_evidence = projection.as_ref().map(|projection| {
             (
@@ -312,6 +321,7 @@ impl<'a> RelationalRowRuntime<'a> {
                     .map(|evidence| evidence.3),
                 ..RelationalRowExecutionEvidence::default()
             }),
+            projection_pages: Cell::new(0),
             task,
             projection,
         }
@@ -322,7 +332,42 @@ impl<'a> RelationalRowRuntime<'a> {
     }
 
     pub fn evidence(&self) -> RelationalRowExecutionEvidence {
-        self.evidence.borrow().clone()
+        let mut evidence = self.evidence.borrow().clone();
+        if let Some(reader) = &self.backend
+            && let Some(report) = reader.cumulative_read_report()
+        {
+            let identity = reader.identity();
+            evidence.base_generation = Some(identity.base_generation);
+            evidence.delta_generation = identity.delta_generation;
+            evidence.base_commit_epoch = Some(identity.base_commit_epoch);
+            evidence.visible_commit_epoch = Some(identity.visible_commit_epoch);
+            evidence.root_set_digest = Some(identity.root_set_digest.to_string());
+            // At overflow the visible counter stays exhausted, so admission
+            // cannot mistake a wrapped counter for unused budget.
+            macro_rules! add {
+                ($target:ident, $source:ident) => {
+                    evidence.$target = evidence.$target.saturating_add(report.demand.$source);
+                };
+            }
+            add!(descriptor_reads, descriptor_reads);
+            add!(logical_pages, pages_read);
+            add!(logical_bytes, bytes_read);
+            add!(file_pages, file_pages_read);
+            add!(file_bytes, file_bytes_read);
+            add!(cache_hits, cache_hits);
+            add!(cache_misses, cache_misses);
+            add!(cache_admission_rejections, cache_admission_rejections);
+            add!(rows_visited, rows_emitted);
+            add!(borrowed_rows_visited, borrowed_rows_emitted);
+            add!(owned_rows_visited, owned_rows_emitted);
+            evidence.overlay_entries = evidence
+                .overlay_entries
+                .saturating_add(report.overlay_entries);
+            evidence.overlay_resident_bytes = evidence
+                .overlay_resident_bytes
+                .saturating_add(report.overlay_resident_bytes);
+        }
+        evidence
     }
 
     pub fn read_point(
@@ -468,7 +513,7 @@ impl<'a> RelationalRowRuntime<'a> {
             return self.read_projection_point(table, key, fields, hydration_fields);
         }
         match &self.backend {
-            RelationalRowBackend::CanonicalMemory => {
+            None => {
                 let Some((key, row)) = self.state.row_entry(table, key) else {
                     return Ok(None);
                 };
@@ -476,7 +521,7 @@ impl<'a> RelationalRowRuntime<'a> {
                 self.project_memory_row(table, key, row, fields, hydration_fields)
                     .map(Some)
             }
-            RelationalRowBackend::Snapshot(reader) => {
+            Some(reader) => {
                 let remaining = self.remaining_limits()?;
                 let mut hydration = self.hydration.borrow_mut();
                 let (mut row, report) = reader
@@ -538,7 +583,7 @@ impl<'a> RelationalRowRuntime<'a> {
             return Ok(rows);
         }
         match &self.backend {
-            RelationalRowBackend::CanonicalMemory => {
+            None => {
                 let mut rows = BTreeMap::new();
                 for key in keys {
                     self.task.checkpoint().map_err(|reason| {
@@ -555,8 +600,12 @@ impl<'a> RelationalRowRuntime<'a> {
                 }
                 Ok(rows)
             }
-            RelationalRowBackend::Snapshot(reader) => {
-                let remaining = self.remaining_limits()?;
+            Some(reader) => {
+                let mut remaining = self.remaining_limits()?;
+                // The batch key window is a configured input bound, not
+                // remaining decoded rows. Actual selected rows still require
+                // admission by the attached shared owner before decoding.
+                remaining.demand.max_rows = self.limits.demand.max_rows;
                 let mut hydration = self.hydration.borrow_mut();
                 let (mut rows, report) = reader
                     .points_projected_fields(
@@ -612,7 +661,7 @@ impl<'a> RelationalRowRuntime<'a> {
             return self.visit_projection_rows(table, fields, hydration_fields, &mut visit);
         }
         match &self.backend {
-            RelationalRowBackend::CanonicalMemory => {
+            None => {
                 for (key, row) in self.state.rows(table) {
                     self.task.checkpoint().map_err(|reason| {
                         HawDBError::Execution(format!("runtime task stopped: {reason}"))
@@ -630,7 +679,7 @@ impl<'a> RelationalRowRuntime<'a> {
                 }
                 Ok(true)
             }
-            RelationalRowBackend::Snapshot(reader) => {
+            Some(reader) => {
                 let remaining = self.remaining_limits()?;
                 let mut hydration = *self.hydration.borrow();
                 let state = self.state;
@@ -703,7 +752,7 @@ impl<'a> RelationalRowRuntime<'a> {
             });
         }
         match &self.backend {
-            RelationalRowBackend::CanonicalMemory => {
+            None => {
                 for (key, row) in self.state.rows(table) {
                     self.task.checkpoint().map_err(|reason| {
                         HawDBError::Execution(format!("runtime task stopped: {reason}"))
@@ -717,7 +766,7 @@ impl<'a> RelationalRowRuntime<'a> {
                 }
                 Ok(true)
             }
-            RelationalRowBackend::Snapshot(reader) => {
+            Some(reader) => {
                 let remaining = self.remaining_limits()?;
                 let mut hydration = *self.hydration.borrow();
                 let state = self.state;
@@ -933,33 +982,19 @@ impl<'a> RelationalRowRuntime<'a> {
     }
 
     fn projection_page_limits(&self) -> Result<ProjectionGenerationReadLimits> {
-        let evidence = self.evidence.borrow();
-        let rows = self
-            .limits
-            .demand
-            .max_rows
-            .get()
-            .checked_sub(evidence.rows_visited)
-            .and_then(NonZeroUsize::new)
-            .ok_or_else(|| {
-                HawDBError::Execution(format!(
-                    "projection generation row budget is exhausted at {}",
-                    self.limits.demand.max_rows
-                ))
-            })?;
-        let bytes = self
-            .limits
-            .demand
-            .max_bytes
-            .get()
-            .checked_sub(evidence.logical_bytes)
-            .and_then(NonZeroUsize::new)
-            .ok_or_else(|| {
-                HawDBError::Execution(format!(
-                    "projection generation payload budget is exhausted at {} bytes",
-                    self.limits.demand.max_bytes
-                ))
-            })?;
+        let [_, bytes_remaining, rows_remaining, _, _] = self.remaining_budget()?;
+        let rows = NonZeroUsize::new(rows_remaining).ok_or_else(|| {
+            HawDBError::Execution(format!(
+                "projection generation row budget is exhausted at {}",
+                self.limits.demand.max_rows
+            ))
+        })?;
+        let bytes = NonZeroUsize::new(bytes_remaining).ok_or_else(|| {
+            HawDBError::Execution(format!(
+                "projection generation payload budget is exhausted at {} bytes",
+                self.limits.demand.max_bytes
+            ))
+        })?;
         Ok(ProjectionGenerationReadLimits {
             max_rows: NonZeroUsize::new(rows.get().min(256)).expect("bounded rows are non-zero"),
             max_payload_bytes: bytes,
@@ -981,6 +1016,15 @@ impl<'a> RelationalRowRuntime<'a> {
                 "projection generation identity changed within one SQL transaction".to_string(),
             ));
         }
+        if let Some(reader) = &self.backend {
+            reader
+                .admit_cumulative_external_work(0, report.payload_bytes, report.rows_returned)
+                .map_err(map_snapshot_error)?;
+        }
+        let projection_pages =
+            self.projection_pages.get().checked_add(1).ok_or_else(|| {
+                HawDBError::Execution("projection page counter overflow".to_string())
+            })?;
         add_counter(&mut evidence.logical_pages, 1, "projection page")?;
         add_counter(
             &mut evidence.logical_bytes,
@@ -997,6 +1041,7 @@ impl<'a> RelationalRowRuntime<'a> {
             report.rows_returned,
             "projection owned row",
         )?;
+        self.projection_pages.set(projection_pages);
         Ok(())
     }
 
@@ -1063,35 +1108,41 @@ impl<'a> RelationalRowRuntime<'a> {
     }
 
     fn remaining_limits(&self) -> Result<RelationalRowPageSnapshotReadLimits> {
-        let evidence = self.evidence.borrow();
-        let remaining = |limit: NonZeroUsize, used: usize, name: &str| {
-            limit
-                .get()
-                .checked_sub(used)
-                .and_then(NonZeroUsize::new)
-                .ok_or_else(|| {
-                    HawDBError::Execution(format!(
-                        "relational row {name} budget is exhausted at {}",
-                        limit.get()
-                    ))
-                })
+        let [pages, bytes, rows, overlay_entries, overlay_bytes] = self.remaining_budget()?;
+        // The attached owner retains true zero and admits each actual action.
+        // Legacy NonZero per-call envelopes cannot encode that zero: a floor
+        // of one lets a point miss or overlay-only read select its source, but
+        // the owner still rejects any exhausted resource before consuming it.
+        let attached_owner = self.backend.is_some();
+        let remaining = |limit: NonZeroUsize, available: usize, name: &str| {
+            let envelope = if attached_owner {
+                available.max(1)
+            } else {
+                available
+            };
+            NonZeroUsize::new(envelope).ok_or_else(|| {
+                HawDBError::Execution(format!(
+                    "relational row {name} budget is exhausted at {}",
+                    limit.get()
+                ))
+            })
         };
         Ok(RelationalRowPageSnapshotReadLimits {
             demand: hawdb_storage::relational::RelationalRowPageDemandReadLimits {
-                max_pages: remaining(self.limits.demand.max_pages, evidence.logical_pages, "page")?,
-                max_rows: remaining(self.limits.demand.max_rows, evidence.rows_visited, "row")?,
-                max_bytes: remaining(self.limits.demand.max_bytes, evidence.logical_bytes, "byte")?,
+                max_pages: remaining(self.limits.demand.max_pages, pages, "page")?,
+                max_rows: remaining(self.limits.demand.max_rows, rows, "row")?,
+                max_bytes: remaining(self.limits.demand.max_bytes, bytes, "byte")?,
                 max_pins: self.limits.demand.max_pins,
                 max_tree_height: self.limits.demand.max_tree_height,
             },
             max_overlay_entries: remaining(
                 self.limits.max_overlay_entries,
-                evidence.overlay_entries,
+                overlay_entries,
                 "overlay-entry",
             )?,
             max_overlay_bytes: remaining(
                 self.limits.max_overlay_bytes,
-                evidence.overlay_resident_bytes,
+                overlay_bytes,
                 "overlay-byte",
             )?,
         })
@@ -1104,7 +1155,7 @@ impl<'a> RelationalRowRuntime<'a> {
                 | RelationalRowPageSnapshotRowSource::Live
                 | RelationalRowPageSnapshotRowSource::Deleted
         ));
-        self.record(
+        self.record_snapshot(
             report.identity,
             &report.demand,
             overlay_entries,
@@ -1113,7 +1164,7 @@ impl<'a> RelationalRowRuntime<'a> {
     }
 
     fn record_range(&self, report: &RelationalRowPageSnapshotRangeReport) -> Result<()> {
-        self.record(
+        self.record_snapshot(
             report.identity,
             &report.demand,
             report.overlay_entries,
@@ -1122,7 +1173,7 @@ impl<'a> RelationalRowRuntime<'a> {
     }
 
     fn record_points(&self, report: &RelationalRowPageSnapshotPointsReport) -> Result<()> {
-        self.record(
+        self.record_snapshot(
             report.identity,
             &report.demand,
             report.overlay_entries,
@@ -1131,10 +1182,101 @@ impl<'a> RelationalRowRuntime<'a> {
     }
 
     fn bind_snapshot_identity(&self) -> Result<()> {
-        let RelationalRowBackend::Snapshot(reader) = &self.backend else {
+        let Some(reader) = &self.backend else {
             return Ok(());
         };
         self.record(reader.identity(), &Default::default(), 0, 0)
+    }
+
+    fn attach_cumulative_budget(&self) -> Result<()> {
+        if let Some(reader) = &self.backend {
+            reader
+                .restrict_cumulative_read_limits(self.limits)
+                .map_err(map_snapshot_error)?;
+        }
+        Ok(())
+    }
+
+    fn remaining_budget(&self) -> Result<[usize; 5]> {
+        self.attach_cumulative_budget()?;
+        let observed = self.observed_budget_usage();
+        let mut remaining = [
+            self.limits.demand.max_pages.get(),
+            self.limits.demand.max_bytes.get(),
+            self.limits.demand.max_rows.get(),
+            self.limits.max_overlay_entries.get(),
+            self.limits.max_overlay_bytes.get(),
+        ];
+        for (allowance, used) in remaining.iter_mut().zip(observed) {
+            *allowance = allowance.saturating_sub(used);
+        }
+        if let Some(admitted) = self
+            .backend
+            .as_ref()
+            .and_then(|reader| reader.cumulative_read_remaining())
+        {
+            // Admission includes failed hydration and externally charged
+            // projection rows. Intersect allowances rather than summing them:
+            // emission evidence remains separate and projection is not doubled.
+            for (allowance, shared) in remaining.iter_mut().zip([
+                admitted.pages,
+                admitted.bytes,
+                admitted.rows,
+                admitted.overlay_entries,
+                admitted.overlay_resident_bytes,
+            ]) {
+                *allowance = (*allowance).min(shared);
+            }
+        }
+        Ok(remaining)
+    }
+
+    fn observed_budget_usage(&self) -> [usize; 5] {
+        let evidence = self.evidence.borrow();
+        let snapshot = self
+            .backend
+            .as_ref()
+            .and_then(|reader| reader.cumulative_read_report())
+            .unwrap_or_default();
+        [
+            evidence
+                .logical_pages
+                .saturating_sub(self.projection_pages.get())
+                .saturating_add(snapshot.demand.pages_read),
+            evidence
+                .logical_bytes
+                .saturating_add(snapshot.demand.bytes_read),
+            evidence
+                .rows_visited
+                .saturating_add(snapshot.demand.rows_emitted),
+            evidence
+                .overlay_entries
+                .saturating_add(snapshot.overlay_entries),
+            evidence
+                .overlay_resident_bytes
+                .saturating_add(snapshot.overlay_resident_bytes),
+        ]
+    }
+
+    fn record_snapshot(
+        &self,
+        identity: RelationalRowPageReadViewIdentity,
+        demand: &hawdb_storage::relational::RelationalRowPageDemandReadReport,
+        overlay_entries: usize,
+        overlay_resident_bytes: usize,
+    ) -> Result<()> {
+        if self
+            .backend
+            .as_ref()
+            .and_then(|reader| reader.cumulative_read_report())
+            .is_some()
+        {
+            // The reader has already published this work before callbacks.
+            // Record only identity; settling an operation must not count it twice.
+            self.record(identity, &Default::default(), 0, 0)
+        } else {
+            self.record(identity, demand, overlay_entries, overlay_resident_bytes)
+        }
     }
 
     fn record(
@@ -1270,7 +1412,7 @@ fn map_state_error(error: RelationalError) -> HawDBError {
     }
 }
 
-fn map_snapshot_error(error: RelationalRowPageSnapshotReadError) -> HawDBError {
+pub(crate) fn map_snapshot_error(error: RelationalRowPageSnapshotReadError) -> HawDBError {
     match error {
         RelationalRowPageSnapshotReadError::FileDescriptors(error) => {
             HawDBError::FileDescriptors(error)

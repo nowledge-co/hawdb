@@ -68,6 +68,59 @@ fn values(database: &mut Database) -> Vec<BTreeMap<String, Value>> {
         .into_rows()
 }
 
+#[cfg(unix)]
+#[test]
+fn default_project_remains_usable_under_a_host_owned_descriptor_limit() {
+    const CHILD_LIMIT: &str = "HAWDB_TEST_HOST_DESCRIPTOR_LIMIT";
+    let Ok(soft) = std::env::var(CHILD_LIMIT) else {
+        for soft in [96, 256] {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "default_project_remains_usable_under_a_host_owned_descriptor_limit",
+                    "--exact",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CHILD_LIMIT, soft.to_string())
+                .status()
+                .unwrap();
+            assert!(status.success(), "host limit {soft}");
+        }
+        return;
+    };
+    let soft: libc::rlim_t = soft.parse().unwrap();
+    let limit = libc::rlimit {
+        rlim_cur: soft,
+        rlim_max: soft,
+    };
+    // SAFETY: This expendable child changes only its own process limits.
+    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+    let project = Project::new();
+    let mut database = Database::open(&project.0).unwrap();
+    let effective = usize::try_from(soft).unwrap() - 64;
+    let metrics = database.file_descriptor_metrics().unwrap();
+    assert_eq!(metrics.configured_limit, 1024);
+    assert_eq!(metrics.effective_limit, effective);
+    assert!(metrics.os_limit_clamped);
+    database.query("CREATE (:Memory {id: 'before'})").unwrap();
+    database.checkpoint().unwrap();
+    database.query("CREATE (:Memory {id: 'after'})").unwrap();
+    drop(database);
+    let mut reopened = Database::open(&project.0).unwrap();
+    assert_eq!(values(&mut reopened).len(), 2);
+    assert!(reopened.file_descriptor_metrics().unwrap().high_water <= effective);
+    let mut observed = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: observed is writable and remains live through the call.
+    assert_eq!(
+        unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut observed) },
+        0
+    );
+    assert_eq!((observed.rlim_cur, observed.rlim_max), (soft, soft));
+}
+
 #[test]
 fn live_writer_reclamation_retains_readers_descendants_and_budget_retries() {
     use hawdb::BranchReclamationLimits;

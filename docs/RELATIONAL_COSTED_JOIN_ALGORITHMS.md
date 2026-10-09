@@ -40,6 +40,16 @@ over each ordered input and matching-pair work. Hash includes an additional
 build insertion per right row. These are planning work units, not calibrated
 wall-clock or I/O predictions.
 
+With pinned snapshot row-source contexts, Hash additionally charges canonical
+point fetches for both typed locators per estimated match. The current adapter
+stores locators rather than projected rows even in resident execution. LEFT
+also reserves estimated work for up to one unmatched left fetch per outer row.
+Merge retains projected rows and does not pay resident locator fetches. The
+same per-binding estimator governs candidate selection and physical profiles;
+default contexts preserve their previous descriptor-only behavior. Spill
+validation and repartitioning remain additional unmodeled work, so the estimate
+does not promise that an execution fits any particular page/memory budget.
+
 Equality output estimates use existing fresh NDV/complete unique-key metadata
 and the documented fallback. Planning does not scan rows to invent statistics.
 LEFT cardinality retains its outer floor. Arithmetic saturates as before.

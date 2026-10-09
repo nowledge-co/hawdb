@@ -478,8 +478,14 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
                 } => serde_json::json!({
                     "kind": "budget_exceeded", "requested": requested, "available": available, "limit": limit,
                 }),
-                FileDescriptorError::OsLimit { requested, os_code } => serde_json::json!({
+                FileDescriptorError::OsLimit {
+                    requested,
+                    os_code,
+                    soft,
+                    hard,
+                } => serde_json::json!({
                     "kind": "os_limit", "requested": requested, "os_code": os_code,
+                    "soft": soft, "hard": hard,
                 }),
             };
             let mut response = json_error("file_descriptors", &error);
@@ -1559,6 +1565,10 @@ impl ExternalShadowErrorClass {
 
 fn descriptor_error_from_json(details: &serde_json::Value) -> Option<FileDescriptorError> {
     let count = |name: &str| usize::try_from(details.get(name)?.as_u64()?).ok();
+    let optional_limit = |name: &str| match details.get(name) {
+        None | Some(serde_json::Value::Null) => Some(None),
+        Some(limit) => limit.as_u64().map(Some),
+    };
     Some(match details.get("kind")?.as_str()? {
         "invalid_budget" => FileDescriptorError::InvalidBudget {
             limit: count("limit")?,
@@ -1574,6 +1584,8 @@ fn descriptor_error_from_json(details: &serde_json::Value) -> Option<FileDescrip
         },
         "os_limit" => FileDescriptorError::OsLimit {
             requested: count("requested")?,
+            soft: optional_limit("soft")?,
+            hard: optional_limit("hard")?,
             os_code: match details.get("os_code")? {
                 serde_json::Value::Null => None,
                 code => Some(i32::try_from(code.as_i64()?).ok()?),
@@ -1860,10 +1872,20 @@ mod protocol_server_tests {
             FileDescriptorError::OsLimit {
                 requested: 1,
                 os_code: Some(24),
+                soft: None,
+                hard: None,
             },
             FileDescriptorError::OsLimit {
                 requested: 1,
                 os_code: None,
+                soft: None,
+                hard: None,
+            },
+            FileDescriptorError::OsLimit {
+                requested: 1088,
+                os_code: None,
+                soft: Some(256),
+                hard: Some(512),
             },
         ] {
             let original = HawDBError::FileDescriptors(error);

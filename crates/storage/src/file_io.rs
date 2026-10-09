@@ -145,6 +145,25 @@ impl File {
         }
     }
 
+    /// Retain one native lease across admitted cold validation and the read.
+    pub(crate) fn with_native_admitted<T>(
+        &self,
+        admit_validation: impl FnMut(u64) -> io::Result<()>,
+        operation: impl FnOnce(&std::fs::File) -> io::Result<T>,
+    ) -> io::Result<(T, u64)> {
+        match &self.backing {
+            FileBacking::Native(file) => file.io(operation).map(|value| (value, 0)),
+            FileBacking::Immutable(file) => {
+                let (lease, validation_bytes) =
+                    file.handles
+                        .get_admitted(&file.binding, &file.context, admit_validation)?;
+                lease
+                    .with_native(operation)
+                    .map(|value| (value, validation_bytes))
+            }
+        }
+    }
+
     fn writable_native(&self) -> io::Result<&std::fs::File> {
         match &self.backing {
             FileBacking::Native(file) => Ok(&file.inner),

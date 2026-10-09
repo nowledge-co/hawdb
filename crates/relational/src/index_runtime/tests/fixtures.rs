@@ -326,6 +326,129 @@ impl Reader {
 }
 
 impl RelationalIndexStoreReader for Reader {
+    fn supports_relational_index_operation_admission(&self) -> bool {
+        matches!(self.source, Source::View(_))
+    }
+
+    fn relational_index_exact_posting_count_with_context(
+        &self,
+        table: &str,
+        index: &str,
+        key: &RelationalKey,
+        limits: RelationalIndexReadLimits,
+        context: &RelationalIndexReadContext,
+    ) -> Option<std::result::Result<(u64, RelationalIndexReadViewReport), RelationalIndexShadowError>>
+    {
+        match &self.source {
+            Source::View(view) => context.count_exact_postings(
+                hawdb_storage::relational_index_view::RelationalIndexReadTarget::View(view),
+                table,
+                index,
+                key,
+                limits,
+            ),
+            Source::Script { .. } => self
+                .attempt(|_, _| true)
+                .map(|result| result.map(|report| (report.rows_visited as u64, report))),
+        }
+    }
+
+    fn visit_relational_index_read_view_prefix_entries_with_context(
+        &self,
+        table: &str,
+        index: &str,
+        prefix: &RelationalKey,
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        context: &hawdb_storage::relational_index_view::RelationalIndexReadContext,
+    ) -> Option<std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError>>
+    {
+        self.limits.borrow_mut().push(limits);
+
+        match &self.source {
+            Source::View(view) => Some(context.visit_prefix_entries(
+                hawdb_storage::relational_index_view::RelationalIndexReadTarget::View(view),
+                table,
+                index,
+                prefix,
+                limits,
+                visit,
+            )),
+            // Scripted outcomes have no persistent I/O; keep their existing
+            // causal/error oracles while charging their declared logical usage.
+            Source::Script { .. } => self.attempt(visit).map(|result| {
+                result.and_then(|report| {
+                    context.admit_reported_usage(&report)?;
+                    Ok(report)
+                })
+            }),
+        }
+    }
+
+    fn visit_relational_index_read_view_prefix_entries_many_with_context(
+        &self,
+        table: &str,
+        index: &str,
+        prefixes: &[RelationalKey],
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        context: &hawdb_storage::relational_index_view::RelationalIndexReadContext,
+    ) -> Option<std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError>>
+    {
+        self.limits.borrow_mut().push(limits);
+        self.batches.borrow_mut().push(prefixes.to_vec());
+        match &self.source {
+            Source::View(view) => Some(context.visit_prefix_entries_many(
+                hawdb_storage::relational_index_view::RelationalIndexReadTarget::View(view),
+                table,
+                index,
+                prefixes,
+                limits,
+                visit,
+            )),
+            // Scripted outcomes have no persistent I/O; keep their existing
+            // causal/error oracles while charging their declared logical usage.
+            Source::Script { .. } => self.attempt(visit).map(|result| {
+                result.and_then(|report| {
+                    context.admit_reported_usage(&report)?;
+                    Ok(report)
+                })
+            }),
+        }
+    }
+
+    fn visit_relational_index_read_view_range_entries_with_context(
+        &self,
+        table: &str,
+        index: &str,
+        scan: &RelationalIndexRangeScan,
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        context: &hawdb_storage::relational_index_view::RelationalIndexReadContext,
+    ) -> Option<std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError>>
+    {
+        self.limits.borrow_mut().push(limits);
+
+        match &self.source {
+            Source::View(view) => Some(context.visit_range_entries(
+                hawdb_storage::relational_index_view::RelationalIndexReadTarget::View(view),
+                table,
+                index,
+                scan,
+                limits,
+                visit,
+            )),
+            // Scripted outcomes have no persistent I/O; keep their existing
+            // causal/error oracles while charging their declared logical usage.
+            Source::Script { .. } => self.attempt(visit).map(|result| {
+                result.and_then(|report| {
+                    context.admit_reported_usage(&report)?;
+                    Ok(report)
+                })
+            }),
+        }
+    }
+
     fn relational_index_probe_statistics(
         &self,
         table: &str,

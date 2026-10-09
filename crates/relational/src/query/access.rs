@@ -19,18 +19,21 @@ use hawdb_optimizer::relational_sargability::{
 };
 
 use super::{
-    bind_sql_value, relational_unique_index_name, resolve_column, select_relational_access_path,
-    value_to_relational_as, BTreeMap, BTreeSet, BoundRow, HawDBError, PlannedJoin,
-    RelationalAccessCandidate, RelationalAccessPathDescriptor, RelationalAccessPathKind,
-    RelationalBaseAccess, RelationalIndexRangeScan, RelationalIndexReadMode,
-    RelationalIndexRuntime, RelationalIndexScanDirection, RelationalJoinAccess,
-    RelationalJoinAccessCandidate, RelationalKey, RelationalReadRow, RelationalRowReadMode,
-    RelationalRowRuntime, RelationalState, RelationalTableSchema, RelationalValue, Result,
-    SqlColumnRef, SqlNullOrder, SqlOrderDirection, SqlPredicate, Value,
+    bind_sql_value, relational_unique_index_name, resolve_column,
+    select_relational_access_path_with_context, value_to_relational_as, BTreeMap, BTreeSet,
+    BoundRow, HawDBError, PlannedJoin, RelationalAccessCandidate, RelationalAccessPathDescriptor,
+    RelationalAccessPathKind, RelationalBaseAccess, RelationalIndexRangeScan,
+    RelationalIndexReadMode, RelationalIndexRuntime, RelationalIndexScanDirection,
+    RelationalJoinAccess, RelationalJoinAccessCandidate, RelationalKey, RelationalReadRow,
+    RelationalRowReadMode, RelationalRowRuntime, RelationalState, RelationalTableSchema,
+    RelationalValue, Result, SqlColumnRef, SqlNullOrder, SqlOrderDirection, SqlPredicate, Value,
 };
+use hawdb_optimizer::RelationalAccessCostContext;
 
 pub(super) struct RelationalBaseAccessPlanning<'a, R> {
+    pub(super) cost_context: RelationalAccessCostContext,
     pub(super) index_read_mode: RelationalIndexReadMode<'a, R>,
+    pub(super) index_runtime: Option<&'a RelationalIndexRuntime<'a, R>>,
     pub(super) fields: &'a crate::field_plan::RelationalFieldPlan,
     pub(super) predicate: Option<&'a SqlPredicate>,
     pub(super) order_by: &'a [hawdb_sql::SqlOrderItem],
@@ -214,7 +217,7 @@ pub(super) fn choose_base_access(
     } else {
         ordered_candidates
     };
-    let selected = select_relational_access_path(descriptors)
+    let selected = select_relational_access_path_with_context(descriptors, planning.cost_context)
         .map_err(|error| HawDBError::Execution(format!("invalid relational access path: {error}")))?
         .expect("full scan is always an access-path candidate");
     let position = candidates
@@ -288,7 +291,21 @@ pub(super) fn index_access_candidate(
         match state.index_prefix_cardinality_at_most(table, &name, &key, *cardinality_limit) {
             Some(rows) => rows,
             None if !state.materialized_index_postings_resident() => {
-                if unique && prefix_len == columns.len() {
+                let exact_count = if !unique && prefix_len == columns.len() {
+                    planning
+                        .index_runtime
+                        .map(|runtime| runtime.exact_posting_count(table, &name, &key))
+                        .transpose()?
+                        .flatten()
+                } else {
+                    None
+                };
+                if let Some(count) = exact_count {
+                    usize::try_from(count)
+                        .unwrap_or(usize::MAX)
+                        .min(state.row_count(table))
+                        .min(*cardinality_limit)
+                } else if unique && prefix_len == columns.len() {
                     usize::from(state.row_count(table) != 0)
                 } else {
                     // Persisted indexes may have fresh prefix NDV statistics even
@@ -435,6 +452,7 @@ pub(super) fn choose_join_access(
     >,
     projection: RelationalProjectionAccessPlanning,
     fields: &crate::field_plan::RelationalFieldPlan,
+    cost_context: RelationalAccessCostContext,
 ) -> Result<RelationalJoinAccessCandidate> {
     let mut bound = BTreeMap::<String, SqlColumnRef>::new();
     collect_conjunctive_join_equalities(predicate, table, qualifier, &mut bound);
@@ -510,10 +528,11 @@ pub(super) fn choose_join_access(
     for candidate in &mut candidates {
         fields.apply_access_coverage(&mut candidate.descriptor, table, schema)?;
     }
-    let selected = select_relational_access_path(
+    let selected = select_relational_access_path_with_context(
         candidates
             .iter()
             .map(|candidate| candidate.descriptor.clone()),
+        cost_context,
     )
     .map_err(|error| HawDBError::Execution(format!("invalid relational join access: {error}")))?
     .expect("full scan is always a join access-path candidate");

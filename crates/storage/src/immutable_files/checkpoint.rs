@@ -63,12 +63,7 @@ impl ImmutableFileHandles {
     ) -> Result<Arc<File>, CheckpointImmutableFileError> {
         {
             let unit = work.start_unit()?;
-            let cached = self
-                .handles
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .get(&binding.reference)
-                .cloned();
+            let cached = self.cached(binding.reference);
             unit.finish();
             work.checkpoint()?;
             if let Some(file) = cached {
@@ -91,12 +86,7 @@ impl ImmutableFileHandles {
                         .into());
                 }
             };
-            let cached = self
-                .handles
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .get(&binding.reference)
-                .cloned();
+            let cached = self.cached(binding.reference);
             drop(opening);
             unit.finish();
             work.checkpoint()?;
@@ -185,11 +175,18 @@ impl ImmutableFileHandles {
                 .handles
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            if let Some(file) = handles.get(&binding.reference) {
-                file.clone()
+            if let Some(handle) = handles.get_mut(&binding.reference) {
+                handle.last_used = self.next_tick();
+                handle.file.clone()
             } else {
                 let file = Arc::new(candidate.take().expect("validated candidate is present"));
-                handles.insert(binding.reference, file.clone());
+                handles.insert(
+                    binding.reference,
+                    CachedHandle {
+                        file: file.clone(),
+                        last_used: self.next_tick(),
+                    },
+                );
                 file
             }
         };

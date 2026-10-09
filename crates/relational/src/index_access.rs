@@ -24,6 +24,80 @@ pub type RelationalIndexReadMode<'a> =
     crate::index_runtime::RelationalIndexReadMode<'a, GraphStore>;
 
 impl RelationalIndexStoreReader for GraphStore {
+    fn supports_relational_index_operation_admission(&self) -> bool {
+        true
+    }
+
+    fn visit_relational_index_read_view_prefix_entries_with_context(
+        &self,
+        table: &str,
+        index: &str,
+        prefix: &RelationalKey,
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        context: &hawdb_storage::relational_index_view::RelationalIndexReadContext,
+    ) -> Option<std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError>>
+    {
+        GraphStore::visit_relational_index_read_view_prefix_entries_with_context(
+            self, table, index, prefix, limits, visit, context,
+        )
+    }
+
+    fn visit_relational_index_read_view_prefix_entries_many_with_context(
+        &self,
+        table: &str,
+        index: &str,
+        prefixes: &[RelationalKey],
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        context: &hawdb_storage::relational_index_view::RelationalIndexReadContext,
+    ) -> Option<std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError>>
+    {
+        GraphStore::visit_relational_index_read_view_prefix_entries_many_with_context(
+            self, table, index, prefixes, limits, visit, context,
+        )
+    }
+
+    fn visit_relational_index_read_view_range_entries_with_context(
+        &self,
+        table: &str,
+        index: &str,
+        scan: &hawdb_storage::relational::RelationalIndexRangeScan,
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        context: &hawdb_storage::relational_index_view::RelationalIndexReadContext,
+    ) -> Option<std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError>>
+    {
+        GraphStore::visit_relational_index_read_view_range_entries_with_context(
+            self, table, index, scan, limits, visit, context,
+        )
+    }
+
+    fn relational_index_exact_posting_count_with_context(
+        &self,
+        table: &str,
+        index: &str,
+        key: &RelationalKey,
+        limits: RelationalIndexReadLimits,
+        context: &hawdb_storage::relational_index_view::RelationalIndexReadContext,
+    ) -> Option<std::result::Result<(u64, RelationalIndexReadViewReport), RelationalIndexShadowError>>
+    {
+        GraphStore::relational_index_exact_posting_count_with_context(
+            self, table, index, key, limits, context,
+        )
+    }
+
+    fn relational_index_exact_posting_count(
+        &self,
+        table: &str,
+        index: &str,
+        key: &RelationalKey,
+        limits: RelationalIndexReadLimits,
+    ) -> Option<std::result::Result<(u64, RelationalIndexReadViewReport), RelationalIndexShadowError>>
+    {
+        GraphStore::relational_index_exact_posting_count(self, table, index, key, limits)
+    }
+
     fn relational_index_probe_statistics(
         &self,
         table: &str,

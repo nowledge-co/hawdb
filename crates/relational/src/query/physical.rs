@@ -56,6 +56,7 @@ impl RelationalExecutionAdmission for PreparedRelationalExecutionDescriptor {
             execution_memory: resources.execution_memory,
             memory_ledger: QueryMemoryLedger::new(query_memory_budget),
             task_context: resources.task_context,
+            planning_snapshot: None,
         })
     }
 }

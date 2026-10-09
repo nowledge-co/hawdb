@@ -34,6 +34,110 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[test]
+fn checkpoint_layout_metadata_is_bounded_and_rejects_cancellation_and_known_poison() {
+    let fixture = SnapshotFixture::new("checkpoint-layout-metadata");
+    let base = RelationalRowPageSnapshotReader::new(
+        Arc::new(RelationalRowPageReadView::from_base(
+            fixture.view.pinned_base(),
+        )),
+        Arc::clone(&fixture.overflow_root),
+        None,
+        Arc::new(SegmentCache::new(64 * 1024)),
+        StoreId(906),
+    )
+    .unwrap();
+    let task = RuntimeTaskContext::default();
+    let root = base
+        .checkpoint_table_root("documents", &task)
+        .unwrap()
+        .unwrap();
+    assert_eq!((root.row_count, root.page_count), (4, 1));
+    // Unknown data-page corruption does not require a data read to obtain the
+    // already checked root metadata. Once a point observes it, metadata fails.
+    flip_byte(
+        &fixture
+            .directory
+            .join(crate::relational::relational_row_page_artifact_file(1)),
+        0,
+    );
+    assert_eq!(
+        base.checkpoint_table_root("documents", &task)
+            .unwrap()
+            .unwrap(),
+        root
+    );
+    let mut hydration = RelationalHydrationBudget::default();
+    assert!(matches!(
+        base.point_projected(
+            "documents",
+            &key(0),
+            &[1],
+            Default::default(),
+            &mut hydration,
+            &task,
+        ),
+        Err(RelationalRowPageSnapshotReadError::Corrupt(_))
+    ));
+    assert!(matches!(base.checkpoint_table_root("documents", &task),
+        Err(RelationalRowPageSnapshotReadError::Corrupt(message)) if message.contains("poisoned")));
+    let cancellation = RuntimeCancellationToken::new();
+    cancellation.cancel();
+    assert!(matches!(
+        fixture.reader.checkpoint_table_root(
+            "documents",
+            &RuntimeTaskContext::without_deadline(cancellation),
+        ),
+        Err(RelationalRowPageSnapshotReadError::Stopped(_))
+    ));
+    drop(base);
+    fixture.remove();
+}
+
+#[test]
+fn checkpoint_layout_metadata_declines_recovery_and_live_views_independently() {
+    let fixture = SnapshotFixture::new("overlay-layout-metadata");
+    let root = fixture.view.pinned_base();
+    let config = RelationalRowDeltaConfig {
+        max_dirty_entries: NonZeroUsize::MIN,
+        ..RelationalRowDeltaConfig::default()
+    };
+    let delta = Arc::new(
+        RelationalRowDeltaReader::open_latest(&fixture.directory, &root, 13, config)
+            .unwrap()
+            .unwrap(),
+    );
+    let recovered =
+        RelationalRowPageReadView::from_recovery_delta(Arc::clone(&root), delta).unwrap();
+    let live = RelationalRowPageReadView::from_base(root)
+        .advance(
+            11,
+            Some(capture(vec![change(1, Some("live"))])),
+            Default::default(),
+        )
+        .unwrap();
+    for view in [recovered, live] {
+        let reader = RelationalRowPageSnapshotReader::new(
+            Arc::new(view),
+            Arc::clone(&fixture.overflow_root),
+            None,
+            Arc::new(SegmentCache::new(64 * 1024)),
+            StoreId(907),
+        )
+        .unwrap();
+        assert!(reader
+            .checkpoint_table_root("documents", &RuntimeTaskContext::default())
+            .unwrap()
+            .is_none());
+    }
+    assert!(fixture
+        .reader
+        .checkpoint_table_root("documents", &RuntimeTaskContext::default())
+        .unwrap()
+        .is_none());
+    fixture.remove();
+}
+
+#[test]
 fn descriptor_exhaustion_preserves_snapshot_reader_for_retry() {
     use crate::file_descriptors::ProjectFileDescriptors;
     use hawdb_core::error::{file_descriptor_error, FileDescriptorError, HawDBError};

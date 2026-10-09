@@ -716,6 +716,55 @@ impl GraphStore {
             .fresh_probe_statistics(table, index, prefix_len)
     }
 
+    #[doc(hidden)]
+    pub fn relational_index_exact_posting_count(
+        &self,
+        table: &str,
+        index: &str,
+        key: &RelationalKey,
+        limits: RelationalIndexReadLimits,
+    ) -> Option<std::result::Result<(u64, RelationalIndexReadViewReport), RelationalIndexShadowError>>
+    {
+        match self
+            .relational_index_shadow
+            .current_read_view(self.commit_epoch)
+        {
+            Some(view) => view.count_exact_postings(table, index, key, limits),
+            None => self
+                .relational_index_shadow
+                .selected_read_failure()
+                .map(Err),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn relational_index_exact_posting_count_with_context(
+        &self,
+        table: &str,
+        index: &str,
+        key: &RelationalKey,
+        limits: RelationalIndexReadLimits,
+        context: &hawdb_storage::relational_index_view::RelationalIndexReadContext,
+    ) -> Option<std::result::Result<(u64, RelationalIndexReadViewReport), RelationalIndexShadowError>>
+    {
+        match self
+            .relational_index_shadow
+            .current_read_view(self.commit_epoch)
+        {
+            Some(view) => context.count_exact_postings(
+                hawdb_storage::relational_index_view::RelationalIndexReadTarget::View(view),
+                table,
+                index,
+                key,
+                limits,
+            ),
+            None => self
+                .relational_index_shadow
+                .selected_read_failure()
+                .map(Err),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn visit_relational_index_read_view_prefix(
         &self,
@@ -799,6 +848,96 @@ impl GraphStore {
             .current_read_view(self.commit_epoch)
         {
             Some(view) => Some(view.visit_range_entries(table, index, scan, limits, visit)),
+            None => self
+                .relational_index_shadow
+                .selected_read_failure()
+                .map(Err),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn visit_relational_index_read_view_prefix_entries_with_context(
+        &self,
+        table: &str,
+        index: &str,
+        prefix: &RelationalKey,
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        context: &hawdb_storage::relational_index_view::RelationalIndexReadContext,
+    ) -> Option<std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError>>
+    {
+        match self
+            .relational_index_shadow
+            .current_read_view(self.commit_epoch)
+        {
+            Some(view) => Some(context.visit_prefix_entries(
+                hawdb_storage::relational_index_view::RelationalIndexReadTarget::View(view),
+                table,
+                index,
+                prefix,
+                limits,
+                visit,
+            )),
+            None => self
+                .relational_index_shadow
+                .selected_read_failure()
+                .map(Err),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn visit_relational_index_read_view_prefix_entries_many_with_context(
+        &self,
+        table: &str,
+        index: &str,
+        prefixes: &[RelationalKey],
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        context: &hawdb_storage::relational_index_view::RelationalIndexReadContext,
+    ) -> Option<std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError>>
+    {
+        match self
+            .relational_index_shadow
+            .current_read_view(self.commit_epoch)
+        {
+            Some(view) => Some(context.visit_prefix_entries_many(
+                hawdb_storage::relational_index_view::RelationalIndexReadTarget::View(view),
+                table,
+                index,
+                prefixes,
+                limits,
+                visit,
+            )),
+            None => self
+                .relational_index_shadow
+                .selected_read_failure()
+                .map(Err),
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn visit_relational_index_read_view_range_entries_with_context(
+        &self,
+        table: &str,
+        index: &str,
+        scan: &RelationalIndexRangeScan,
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        context: &hawdb_storage::relational_index_view::RelationalIndexReadContext,
+    ) -> Option<std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError>>
+    {
+        match self
+            .relational_index_shadow
+            .current_read_view(self.commit_epoch)
+        {
+            Some(view) => Some(context.visit_range_entries(
+                hawdb_storage::relational_index_view::RelationalIndexReadTarget::View(view),
+                table,
+                index,
+                scan,
+                limits,
+                visit,
+            )),
             None => self
                 .relational_index_shadow
                 .selected_read_failure()
@@ -3220,6 +3359,107 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn graph_store_context_probes_share_budget_and_keep_complete_results() {
+        use hawdb_storage::relational_index_view::RelationalIndexReadContext;
+
+        let path = std::env::temp_dir().join(format!(
+            "hawdb-store-read-context-{}",
+            hawdb_core::generate_uuidv7().unwrap()
+        ));
+        {
+            let mut catalog = Catalog::default();
+            let mut store = GraphStore::open_with_durability_and_replay_config(
+                &path,
+                &mut catalog,
+                DurabilityPolicy::default(),
+                WalReplayConfig {
+                    relational_index_mode: hawdb_storage::config::RelationalIndexMode::Shadow,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            store
+                .commit_relational_transaction(
+                    &mut catalog,
+                    create_recovery_documents_table("doc-1"),
+                )
+                .unwrap();
+            store.checkpoint(&catalog).unwrap();
+            let limits = RelationalIndexReadLimits {
+                max_rows: NonZeroUsize::new(3).unwrap(),
+                ..Default::default()
+            };
+            let context = RelationalIndexReadContext::new(limits);
+            let prefix = RelationalKey(vec![RelationalValue::Text("owner-1".into())]);
+            let scan = RelationalIndexRangeScan {
+                prefix: prefix.clone(),
+                exclusive_bound: None,
+                direction: hawdb_storage::relational::RelationalIndexScanDirection::Forward,
+            };
+            let identity = current_index_view(&store).identity();
+            for kind in 0..3 {
+                let mut rows = Vec::new();
+                let mut visit = |index: &RelationalKey, primary: &RelationalKey| {
+                    rows.push((index.clone(), primary.clone()));
+                    true
+                };
+                let report = match kind {
+                    0 => store.visit_relational_index_read_view_prefix_entries_with_context(
+                        "documents",
+                        "documents_owner_idx",
+                        &prefix,
+                        limits,
+                        &mut visit,
+                        &context,
+                    ),
+                    1 => store.visit_relational_index_read_view_prefix_entries_many_with_context(
+                        "documents",
+                        "documents_owner_idx",
+                        std::slice::from_ref(&prefix),
+                        limits,
+                        &mut visit,
+                        &context,
+                    ),
+                    _ => store.visit_relational_index_read_view_range_entries_with_context(
+                        "documents",
+                        "documents_owner_idx",
+                        &scan,
+                        limits,
+                        &mut visit,
+                        &context,
+                    ),
+                }
+                .expect("native provider supports operation admission")
+                .unwrap();
+                assert_eq!(
+                    rows,
+                    vec![(
+                        prefix.clone(),
+                        RelationalKey(vec![RelationalValue::Text("doc-1".into())])
+                    )]
+                );
+                assert_eq!(report.rows_visited, 1);
+                assert_eq!(report.base_generation, identity.base_generation);
+                assert_eq!(report.visible_commit_epoch, identity.visible_commit_epoch);
+            }
+            assert!(context.remaining_limits().is_err());
+            assert!(matches!(
+                store.visit_relational_index_read_view_prefix_entries_with_context(
+                    "documents",
+                    "documents_owner_idx",
+                    &prefix,
+                    limits,
+                    |_, _| panic!("exhausted statement must decline before callback"),
+                    &context,
+                ),
+                Some(Err(RelationalIndexShadowError::Admission(_)))
+            ));
+            assert!(!current_index_view(&store).is_poisoned());
+        }
+        std::fs::remove_dir_all(path).expect("remove only owned store context fixture");
     }
 
     fn create_constraint_qualification_state() -> RelationalTransaction {

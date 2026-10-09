@@ -4031,6 +4031,7 @@ impl NowledgeMemEmbeddedStore {
                     .database()
                     .search_projection_changefeed_status()?,
                 projection_freshness: self.search_projection_freshness(),
+                file_descriptors: self.graph.database().file_descriptor_metrics(),
             }
         })
     }

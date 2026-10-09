@@ -28,6 +28,13 @@ use std::fmt;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::ops::Range;
 
+// Observe actual projected decode entry, independently of emission/reporting.
+// Thread-local scope keeps parallel regression fixtures independent.
+#[cfg(test)]
+thread_local! {
+    static PROJECTED_ROW_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 mod checkpoint;
 mod delta;
 mod demand;
@@ -52,6 +59,7 @@ pub use delta::{
     RELATIONAL_ROW_DELTA_MANIFEST_FILE,
 };
 pub use demand::{
+    RelationalRowPageCumulativeReadRemaining, RelationalRowPageCumulativeReadReport,
     RelationalRowPageDemandReadError, RelationalRowPageDemandReadLimits,
     RelationalRowPageDemandReadReport, RelationalRowPageDemandReader,
     RelationalRowPageProjectedFields, RelationalRowPageProjectedRange,
@@ -238,7 +246,6 @@ pub struct RelationalProjectedFieldRef<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct RelationalProjectedRowRef<'a> {
     primary_key: &'a RelationalKey,
-    encoded_primary_key: &'a [u8],
     fields: &'a [RelationalProjectedFieldRef<'a>],
 }
 
@@ -249,10 +256,6 @@ impl<'a> RelationalProjectedRowRef<'a> {
 
     pub fn fields(self) -> &'a [RelationalProjectedFieldRef<'a>] {
         self.fields
-    }
-
-    pub(crate) fn encoded_primary_key(self) -> &'a [u8] {
-        self.encoded_primary_key
     }
 
     pub fn value(self, ordinal: usize) -> Option<RelationalValueRef<'a>> {
@@ -831,6 +834,8 @@ impl<'a> RelationalRowPageView<'a> {
         ordinal: usize,
         requested_fields: &[usize],
     ) -> Result<RelationalProjectedRow, RelationalRowPageError> {
+        #[cfg(test)]
+        PROJECTED_ROW_DECODES.with(|count| count.set(count.get() + 1));
         validate_requested_fields(requested_fields, self.column_count, self.limits)?;
         let slot = self.slot(ordinal)?;
         let primary_key =
@@ -850,17 +855,15 @@ impl<'a> RelationalRowPageView<'a> {
         &self,
         ordinal: usize,
         requested_fields: &[usize],
-        primary_key: &'row mut RelationalKey,
+        primary_key: &'row RelationalKey,
         fields: &'row mut Vec<RelationalProjectedFieldRef<'a>>,
     ) -> Result<RelationalProjectedRowRef<'row>, RelationalRowPageError>
     where
         'a: 'row,
     {
+        #[cfg(test)]
+        PROJECTED_ROW_DECODES.with(|count| count.set(count.get() + 1));
         let slot = self.slot(ordinal)?;
-        let encoded_primary_key = self.key_for_slot(slot)?;
-        decode_ordered_relational_key_into(encoded_primary_key, primary_key).map_err(|error| {
-            RelationalRowPageError::Corrupt(format!("row {ordinal} primary key: {error}"))
-        })?;
         decode_row_field_refs(
             self.row_for_slot(slot)?,
             self.column_count,
@@ -870,7 +873,6 @@ impl<'a> RelationalRowPageView<'a> {
         )?;
         Ok(RelationalProjectedRowRef {
             primary_key,
-            encoded_primary_key,
             fields,
         })
     }
@@ -881,16 +883,6 @@ impl<'a> RelationalRowPageView<'a> {
         requested_fields: &[usize],
     ) -> Result<Option<RelationalProjectedRow>, RelationalRowPageError> {
         self.find_row(primary_key)?
-            .map(|ordinal| self.decode_projected_row(ordinal, requested_fields))
-            .transpose()
-    }
-
-    pub(crate) fn find_projected_row_encoded(
-        &self,
-        encoded_primary_key: &[u8],
-        requested_fields: &[usize],
-    ) -> Result<Option<RelationalProjectedRow>, RelationalRowPageError> {
-        self.find_row_encoded(encoded_primary_key)?
             .map(|ordinal| self.decode_projected_row(ordinal, requested_fields))
             .transpose()
     }
@@ -1035,6 +1027,7 @@ pub(super) struct ProjectedRowPageCursor<'page> {
     next_ordinal: usize,
     requested_fields: &'page [usize],
     primary_key: RelationalKey,
+    primary_key_ordinal: Option<usize>,
     fields: Vec<RelationalProjectedFieldRef<'page>>,
 }
 
@@ -1050,8 +1043,45 @@ impl<'page> ProjectedRowPageCursor<'page> {
             next_ordinal,
             requested_fields,
             primary_key: RelationalKey(Vec::new()),
+            primary_key_ordinal: None,
             fields: Vec::with_capacity(requested_fields.len()),
         })
+    }
+
+    /// Key/range/overlay decisions precede selected field decode and admission.
+    pub(super) fn peek_encoded_primary_key(
+        &self,
+    ) -> Result<Option<&'page [u8]>, RelationalRowPageError> {
+        if self.next_ordinal >= self.view.row_count() {
+            return Ok(None);
+        }
+        self.view.key(self.next_ordinal).map(Some)
+    }
+
+    pub(super) fn peek_primary_key(
+        &mut self,
+    ) -> Result<Option<&RelationalKey>, RelationalRowPageError> {
+        let Some(encoded) = self.peek_encoded_primary_key()? else {
+            return Ok(None);
+        };
+        if self.primary_key_ordinal != Some(self.next_ordinal) {
+            decode_ordered_relational_key_into(encoded, &mut self.primary_key).map_err(
+                |error| {
+                    RelationalRowPageError::Corrupt(format!(
+                        "row {} primary key: {error}",
+                        self.next_ordinal
+                    ))
+                },
+            )?;
+            self.primary_key_ordinal = Some(self.next_ordinal);
+        }
+        Ok(Some(&self.primary_key))
+    }
+
+    /// A shadowed base row is skipped without decoding its selected fields.
+    pub(super) fn skip_row(&mut self) {
+        debug_assert!(self.next_ordinal < self.view.row_count());
+        self.next_ordinal += 1;
     }
 }
 
@@ -1065,13 +1095,14 @@ impl LendingProjectedRowCursor for ProjectedRowPageCursor<'_> {
         if self.next_ordinal >= self.view.row_count() {
             return Ok(None);
         }
+        self.peek_primary_key()?;
         let ordinal = self.next_ordinal;
         self.next_ordinal += 1;
         self.view
             .decode_projected_row_ref_into(
                 ordinal,
                 self.requested_fields,
-                &mut self.primary_key,
+                &self.primary_key,
                 &mut self.fields,
             )
             .map(Some)
