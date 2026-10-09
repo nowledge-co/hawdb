@@ -337,6 +337,28 @@ extended as later lifecycle states land.
 
 ## Compaction
 
+The default shared project FD budget is 1024. It is admission capacity, not
+pre-opened handles or a process-wide OS limit. A host retaining old snapshots
+must budget their handles alongside the new generation and temporary publication
+files. Compaction reduces the active owner's fan-out; old readers keep their
+complete immutable closures until released, so merging does not immediately
+release every old handle.
+
+Normal selection merges adjacent same-level owners. If no normal selection is
+eligible and the active owner count reaches `crisis_segment_count` (default 16),
+one attempt selects the smallest complete input among bounded adjacent pairs,
+including pairs at different levels. The output promotes from the highest
+selected level without exceeding the configured top level or demoting an
+existing higher level. The hard input limit remains 256 MiB by default and
+includes lexical artifacts and any rewritten mutation closure. Reader, writer,
+output-artifact and operation-memory limits remain independent.
+
+Hosts run attempts through the existing scheduled background API. A busy
+scheduler defers before staging; cancellation or a budget failure preserves the
+active generation. One call performs at most one merge, rather than synchronously
+draining the complete history on a foreground query or checkpoint. This does
+not start a worker automatically or increase the maintenance memory reservation.
+
 Content and mutation runs compact as one logical closure. A compaction that
 selects a target content segment materializes only visible documents into the
 replacement content segment. Entries targeting selected segments are absorbed;

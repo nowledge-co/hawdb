@@ -56,6 +56,29 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn default_budget_admits_large_reader_reservations_without_opening_files() {
+    let fixture = Fixture::new(crate::config::WalReplayConfig::default().max_open_files);
+    let sibling = ProjectFileDescriptors::acquire_existing(
+        &fixture.root,
+        crate::config::WalReplayConfig::default().max_open_files,
+    )
+    .unwrap();
+    let readers = fixture.project.reserve(300).unwrap();
+    assert_eq!(sibling.metrics().open, 0);
+    assert_eq!(sibling.metrics().reserved, 300);
+    let remaining = sibling.reserve(sibling.metrics().limit - 300).unwrap();
+    let error = fixture.project.reserve(1).unwrap_err();
+    assert!(matches!(
+        file_descriptor_error(&error),
+        Some(FileDescriptorError::BudgetExceeded { available: 0, .. })
+    ));
+    drop((readers, remaining));
+    assert_eq!(sibling.metrics().open, 0);
+    assert_eq!(sibling.metrics().reserved, 0);
+    assert!(Fixture::new(32).project.reserve(33).is_err());
+}
+
+#[test]
 fn descriptor_cap_covers_clones_failures_and_reservation_reuse() {
     let fixture = Fixture::new(4);
     let path = fixture.root.join("data");

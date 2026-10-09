@@ -24,7 +24,9 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 
-pub const DEFAULT_MAX_OPEN_FILES: usize = 256;
+/// Shared project admission ceiling; capacity is charged only when used.
+/// Host-owned handles and the OS descriptor limit remain independent.
+pub const DEFAULT_MAX_OPEN_FILES: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DescriptorKind {

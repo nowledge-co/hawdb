@@ -360,10 +360,15 @@ pub(super) fn publish_generation(
                     ));
                 }
                 let selected = &active.segments[start..end];
-                let source_level = selected[0].level;
+                // Crisis selection may cross levels, but only for a pair.
+                // Both paths promote from the highest input without demotion.
+                let source_level = selected
+                    .iter()
+                    .fold(0, |level, segment| level.max(segment.level));
                 if (*target_level != source_level
                     && *target_level != source_level.saturating_add(1))
-                    || selected.iter().any(|segment| segment.level != source_level)
+                    || (*segment_count != 2
+                        && selected.iter().any(|segment| segment.level != source_level))
                 {
                     return Err(HawDBError::Storage(
                         "search segment compaction source levels do not match its target".into(),

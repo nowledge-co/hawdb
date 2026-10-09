@@ -1157,7 +1157,9 @@ immutable storage.
 
 ### Current descriptor integration boundary
 
-`DatabaseConfig::max_open_files` supplies a finite default of 256. Storage file,
+`DatabaseConfig::max_open_files` supplies a finite default of 1024. The budget
+does not pre-open files or raise the process OS limit; hosts can select a lower
+shared ceiling to leave capacity for their other libraries. Storage file,
 directory-iterator, clone, ownership-lock, and WAL operations use the admitted
 file wrapper. Independently acquired canonical project contexts share the
 budget and reject conflicting configuration. Immutable checkpoint bindings

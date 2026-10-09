@@ -79,7 +79,7 @@ schema, identity, optimizer, planning caches, reader pins, and projection
 consumers together. It rejects explicit transaction and shared-session
 selection. Failed admission leaves the source runtime available.
 
-The project descriptor domain has a finite default limit of 256, configurable
+The project descriptor domain has a finite default limit of 1024, configurable
 through `DatabaseConfig::max_open_files`. Ownership locks, mutable WAL handles,
 cached immutable handles, and temporary recovery/publication operations share
 that domain. Target capacity is reserved before recovery; unopened logical
