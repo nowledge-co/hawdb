@@ -180,6 +180,14 @@ rpath = false
 name = "optimizer_smoke"
 harness = false
 
+[[bench]]
+name = "host_boundary"
+harness = false
+
+[[bench]]
+name = "host_boundary_allocations"
+harness = false
+
 [[example]]
 name = "wasm_playground"
 path = "examples/wasm_playground.rs"

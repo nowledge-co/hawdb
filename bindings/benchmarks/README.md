@@ -1,0 +1,99 @@
+# Host boundary qualification
+
+These local tools measure the ordinary owned Rust, Python and pure-Go APIs for
+[issue #976](https://github.com/nowledge-co/hawdb/issues/976) and the measurement
+gate in [the interchange spec](../../docs/specs/ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md).
+They do not enable a strict zero-copy query path or change database defaults.
+[Initial observations](RESULTS.md) record partial measurements and remaining gates.
+
+Build every engine dependency together in the same optimized configuration:
+
+```console
+bazel build -c opt //:hawdb_bench_host_boundary \
+  //bindings/benchmarks:python_boundary //bindings/go/cmd/boundary \
+  //bindings/ffi:hawdb_ffi
+```
+
+Stage the exact source before running the matrix. The driver records its Git
+HEAD and staged tree and rejects unstaged tracked changes before every job and
+at completion. It resolves Bazel output symlinks and hashes the binaries and
+library actually used. Do not edit or rebuild those sources during a run.
+
+```console
+python3 -B bindings/benchmarks/run.py --output /tmp/hawdb-boundary-baseline
+```
+
+The full matrix uses sizes 1,000, 100,000 and 1,000,000, all five cases (`select`,
+`point`, `fill`, `fill_bulk`, `wide`), both memory and persistent stores, one
+discarded iteration and three measured iterations. A small wiring check uses
+`--sizes 3 --samples 1`; it does not qualify bulk performance. Large point and
+single-write workloads can take substantial time: point runs perform one
+query per input row during both warmup and measurement; fill performs one
+committed statement per row. The driver imposes no query limit to shorten them.
+
+Every layer receives the same fixed-seed fixture and parameterized statements.
+`wide` has 20 columns, including Unicode, embedded NUL, strings, lists, maps,
+booleans and nulls. Scores use exactly representable binary fractions. The
+schema and an ordered typed checksum distinguish integers from floats and
+include recursive values. This fixture alone does not prove all arbitrary
+floating-point, UUID or binary round trips.
+
+Read cases seed in 512-row batches and warm the same query path in the same
+process and handle before measurement. Fill cases start with an empty indexed
+store. Each iteration creates a fresh database. Persistent commits keep
+`SyncOnEveryWrite`; no environment variable or benchmark override relaxes it.
+The query-boundary timer includes parameter/result conversion and execution.
+All clients then perform the same typed checksum work, timed separately.
+Process wall time and peak RSS also include fixture parsing, setup, warmup and
+the host runtime; they are not query-only resource charges.
+
+The output directory retains `report.json` and every job's stdout/stderr.
+Repeated input files and the driver's own database directories are deleted
+only after that job completes; the fixed recipe and input SHA remain recorded.
+Budget refusal, process failure, missing output, schema mismatch and checksum
+mismatch remain visible. Any such failure makes the driver return nonzero.
+A complete experiment containing refusals is not a successful qualification.
+Run on an otherwise idle host before making performance comparisons; record
+competing work if an exploratory run shares the host.
+
+## Allocation and conversion observations
+
+Instrumented runs are separate from ordinary latency results. Build these
+manual targets explicitly:
+
+```console
+bazel build -c opt //:hawdb_bench_host_boundary_allocations \
+  //bindings/benchmarks:python_boundary //bindings/go/cmd/boundary \
+  //bindings/ffi:hawdb_ffi_boundary_profile \
+  //bindings/python:_hawdb_boundary_profile
+```
+
+For macOS (use `.so` instead of `.dylib` on Linux):
+
+```console
+python3 -B bindings/benchmarks/run.py --output /tmp/hawdb-boundary-profile \
+  --rust bazel-bin/hawdb_bench_host_boundary_allocations \
+  --library bazel-bin/bindings/ffi/libhawdb_ffi_boundary_profile.dylib \
+  --python-extension bazel-bin/bindings/python/lib_hawdb_boundary_profile.dylib \
+  --cpu-profiles
+```
+
+The standalone FFI and Python `boundary-profiling` Cargo features and the
+allocation benchmark install a Rust counting allocator only in these
+instrumented artifacts. The embedded library and default binding artifacts
+keep their ordinary allocator. Native counters cover successful allocation,
+deallocation and reallocation requests on native threads. A successful resize
+counts one allocation/free pair of requested sizes; this is not proof that
+`realloc` copied payload. Live requested bytes and process peak requested bytes
+exclude allocator rounding, foreign heaps and non-Rust workspace. Concurrent
+cross-field snapshots are observations, not a memory-admission ledger. Peaks
+include setup/warmup; deltas cover the measured operation and checksum work.
+
+C and Python additionally time parameter conversion, the existing engine call,
+and native result conversion. Python separately records traced host allocation
+peaks. Go reports its heap allocation traffic and may save Go CPU `pprof`
+profiles; these do not constitute a complete native engine stack profile.
+Successful instrumented records must include the applicable native counters;
+missing profiles fail qualification even when value parity succeeds. Refusals
+before measurement can have no per-operation profile and still remain failures.
+No counters claim payload-copy identity or strict result admission.

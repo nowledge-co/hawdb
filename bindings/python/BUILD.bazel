@@ -16,6 +16,8 @@ rust_shared_library(
     # Python supplies its symbols when importing an extension on macOS.
     rustc_flags = select({
         "@platforms//os:macos": [
+            # Rust 1.97.1 stripping misaligns Mach-O's LINKEDIT string pool.
+            "-Cstrip=none",
             "-C",
             "link-arg=-undefined",
             "-C",
@@ -103,4 +105,34 @@ compile_pip_requirements(
     python_version = "3.11",
     requirements_in = "requirements.in",
     requirements_txt = "requirements.txt",
+)
+
+# Local profiling extension: loaded explicitly by the benchmark, never default.
+rust_shared_library(
+    name = "_hawdb_boundary_profile",
+    srcs = glob(["src/**/*.rs"]) + ["//bindings/benchmarks:native_alloc.rs", "//bindings/benchmarks:native_profile.rs"],
+    crate_features = ["abi3", "boundary-profiling"],
+    crate_name = "_hawdb_boundary_profile",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    # Python supplies its symbols when importing an extension on macOS.
+    rustc_flags = select({
+        "@platforms//os:macos": [
+            # Rust 1.97.1 stripping misaligns Mach-O's LINKEDIT string pool.
+            "-Cstrip=none",
+            "-C",
+            "link-arg=-undefined",
+            "-C",
+            "link-arg=dynamic_lookup",
+            "-C",
+            "link-arg=-Wl,-no_fixup_chains",
+        ],
+        "//conditions:default": [],
+    }),
+    tags = ["manual"],
+    version = "0.6.0",
+    deps = [
+        "//:hawdb",
+        "@python_crates//:pyo3",
+    ],
 )

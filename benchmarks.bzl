@@ -38,6 +38,8 @@ HAWDB_MANUAL_BENCHMARKS = [
     "concurrent_snapshot_reads",
     "concurrent_writers",
     "graph_analytics",
+    "host_boundary",
+    "host_boundary_allocations",
 ]
 
 def _release_benchmark_transition_impl(_settings, _attr):
@@ -90,13 +92,18 @@ def hawdb_benchmark_binaries(crate_features):
         "//crates/vector-projection:hawdb_vector_projection",
     ]
     for benchmark in HAWDB_BENCHMARKS + HAWDB_MANUAL_BENCHMARKS:
+        shared_srcs = [
+            "benches/host_boundary/workload.rs",
+            "benches/host_boundary/checksum.rs",
+            "//bindings/benchmarks:native_alloc.rs",
+        ] if benchmark == "host_boundary_allocations" else []
         rust_binary(
             name = "hawdb_bench_%s" % benchmark,
             crate_root = "benches/%s.rs" % benchmark,
             crate_features = crate_features,
             srcs = ["benches/%s.rs" % benchmark] + native.glob([
                 "benches/%s/**/*.rs" % benchmark,
-            ], allow_empty = True),
+            ], allow_empty = True) + shared_srcs,
             edition = "2024",
             tags = ["manual"] if benchmark in HAWDB_MANUAL_BENCHMARKS else [],
             aliases = aliases(

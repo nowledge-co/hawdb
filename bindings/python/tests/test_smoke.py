@@ -86,3 +86,37 @@ def test_context_manager_closes(open_db):
     with open_db() as db:
         db.execute("CREATE (:N)")
     assert not db.is_open
+
+
+def test_owned_nested_result_survives_database_close(db):
+    import math
+    import struct
+    import uuid
+
+    nan = struct.unpack("<d", struct.pack("<Q", 0x7FF800000000DEAD))[0]
+    identity = uuid.UUID("00000000-0000-0000-0000-000000000001")
+    payload = {
+        "text": "知识\x00🙂" * 4096,
+        "binary": b"\x00\xff" * 4096,
+        "empty_bytes": b"",
+        "empty_string": "",
+        "items": [None, True, 2**63 - 1, -0.0, nan, {"uuid": identity}],
+    }
+    db.execute("CREATE (:Owned {payload: $payload})", {"payload": payload})
+    result = db.execute("MATCH (n:Owned) RETURN n.payload AS payload")
+    db.close()
+    # Results own Python objects even when conversion borrows native values.
+    payload["items"].clear()
+    output = result.fetchone()["payload"]
+    assert output["text"] == "知识\x00🙂" * 4096
+    assert output["binary"] == b"\x00\xff" * 4096
+    assert type(output["binary"]) is bytes
+    assert output["empty_bytes"] == b""
+    assert output["empty_string"] == ""
+    assert output["items"][:3] == [None, True, 2**63 - 1]
+    assert [type(value) for value in output["items"][:3]] == [type(None), bool, int]
+    assert struct.pack("<d", output["items"][3]) == struct.pack("<d", -0.0)
+    assert math.isnan(output["items"][4])
+    assert struct.pack("<d", output["items"][4]) == struct.pack("<d", nan)
+    assert output["items"][5] == {"uuid": str(identity)}
+    assert result.fetchone() is None

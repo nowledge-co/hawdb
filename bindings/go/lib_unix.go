@@ -35,3 +35,7 @@ func loadSharedLibrary(path string) (uintptr, error) {
 	// frame returning into unmapped code.
 	return purego.Dlopen(path, purego.RTLD_LAZY|purego.RTLD_GLOBAL)
 }
+
+func lookupSharedSymbol(handle uintptr, name string) (uintptr, error) {
+	return purego.Dlsym(handle, name)
+}

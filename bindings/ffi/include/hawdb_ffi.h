@@ -29,6 +29,21 @@
  */
 typedef struct HawdbDatabase HawdbDatabase;
 
+#if defined(HAWDB_BOUNDARY_PROFILING)
+typedef struct BoundaryProfileSnapshot {
+  uint64_t allocation_calls;
+  uint64_t allocated_bytes;
+  uint64_t deallocation_calls;
+  uint64_t deallocated_bytes;
+  uint64_t reallocation_calls;
+  uint64_t live_requested_bytes;
+  uint64_t process_peak_requested_bytes;
+  uint64_t parameter_conversion_ns;
+  uint64_t engine_call_ns;
+  uint64_t result_conversion_ns;
+} BoundaryProfileSnapshot;
+#endif
+
 /**
  * A byte buffer the library hands to the caller.
  *
@@ -42,6 +57,17 @@ typedef struct HawdbBuffer {
   char *ptr;
   uintptr_t len;
 } HawdbBuffer;
+
+#if defined(HAWDB_BOUNDARY_PROFILING)
+/**
+ * Developer profiling build only. This observation is not an admission ledger
+ * or an allocator-capacity bound. NULL output is a no-op; no buffer is allocated.
+ *
+ * # Safety
+ * `out` must be NULL or point to writable `BoundaryProfileSnapshot` storage.
+ */
+void hawdb_boundary_profile_snapshot(struct BoundaryProfileSnapshot *out);
+#endif
 
 /**
  * Open a HawDB database at `path`, creating it if needed.
@@ -64,6 +90,16 @@ struct HawdbDatabase *hawdb_open(const char *path,
                                  const char *options_json,
                                  uintptr_t options_len,
                                  struct HawdbBuffer *err_out);
+
+/**
+ * Open an independent in-memory database using the embedded facade defaults.
+ * Close the returned handle with [`hawdb_close`]. Errors use the same output
+ * convention as [`hawdb_open`]; this does not create a temporary on-disk store.
+ *
+ * # Safety
+ * `err_out` must be NULL or point to writable [`HawdbBuffer`] storage.
+ */
+struct HawdbDatabase *hawdb_open_in_memory(struct HawdbBuffer *err_out);
 
 /**
  * Close a database handle and release its resources.

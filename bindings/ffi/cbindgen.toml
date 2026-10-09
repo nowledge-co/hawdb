@@ -37,3 +37,4 @@ header = """
 
 [defines]
 "target_os = ios" = "TARGET_OS_IOS"
+"feature = boundary-profiling" = "HAWDB_BOUNDARY_PROFILING"

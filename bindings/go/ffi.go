@@ -45,6 +45,7 @@ type Library struct {
 	querySQL   func(db unsafe.Pointer, text *byte, textLen uintptr, params *byte, paramsLen uintptr, result, errOut *ffiBuffer) bool
 	bufferFree func(buffer *ffiBuffer)
 	version    func(out *ffiBuffer)
+	openMemory func(errOut *ffiBuffer) unsafe.Pointer
 }
 
 // LoadLibrary loads libhawdb_ffi from path. Missing libraries and
@@ -62,6 +63,10 @@ func LoadLibrary(path string) (*Library, error) {
 	purego.RegisterLibFunc(&lib.querySQL, handle, "hawdb_query_sql")
 	purego.RegisterLibFunc(&lib.bufferFree, handle, "hawdb_buffer_free")
 	purego.RegisterLibFunc(&lib.version, handle, "hawdb_version")
+	// Additive capability: older libraries remain usable for persistent stores.
+	if symbol, err := lookupSharedSymbol(handle, "hawdb_open_in_memory"); err == nil {
+		purego.RegisterFunc(&lib.openMemory, symbol)
+	}
 	return lib, nil
 }
 

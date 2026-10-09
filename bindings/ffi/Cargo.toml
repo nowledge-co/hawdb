@@ -26,6 +26,10 @@ license = "Apache-2.0"
 # lockfile so hosts can compile it without the workspace's toolchain pins.
 [workspace]
 
+[features]
+# Local measurement only; default host builds keep the ordinary allocator.
+boundary-profiling = []
+
 [lib]
 crate-type = ["cdylib", "staticlib"]
 
