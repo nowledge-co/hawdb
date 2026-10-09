@@ -46,6 +46,11 @@ const BACKGROUND_ADMISSION_AGING: Duration = Duration::from_millis(100);
 
 mod retained_memory;
 pub use retained_memory::RuntimeRetainedMemory;
+mod retained_result;
+pub use retained_result::{
+    RuntimeRetainedResult, RuntimeRetainedResultError, RuntimeRetainedResultResource,
+    RuntimeRetainedResultSnapshot,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeWorkPriority {
@@ -249,6 +254,8 @@ pub struct RuntimeGovernorConfig {
     pub memory_fraction_per_million: u32,
     pub fallback_memory_budget_bytes: u64,
     pub result_budget_bytes: u64,
+    /// Aggregate live retained-result handles across this governor's consumers.
+    pub retained_result_handle_limit: NonZeroUsize,
 }
 
 impl RuntimeGovernorConfig {
@@ -262,6 +269,7 @@ impl RuntimeGovernorConfig {
             memory_fraction_per_million: SHARED_HOST_MEMORY_FRACTION_PER_MILLION,
             fallback_memory_budget_bytes: SHARED_HOST_FALLBACK_MEMORY_BUDGET_BYTES,
             result_budget_bytes: SHARED_HOST_RESULT_BUDGET_BYTES,
+            retained_result_handle_limit: NonZeroUsize::new(1024).unwrap(),
         }
     }
 
@@ -275,6 +283,7 @@ impl RuntimeGovernorConfig {
             memory_fraction_per_million: MOBILE_MEMORY_FRACTION_PER_MILLION,
             fallback_memory_budget_bytes: MOBILE_FALLBACK_MEMORY_BUDGET_BYTES,
             result_budget_bytes: MOBILE_RESULT_BUDGET_BYTES,
+            retained_result_handle_limit: NonZeroUsize::new(256).unwrap(),
         }
     }
 }
@@ -447,6 +456,7 @@ struct RuntimeGovernorState {
     active_foreground_io_slots: usize,
     active_background_io_slots: usize,
     admitted_memory_bytes: u64,
+    retained_results: RuntimeRetainedResultSnapshot,
     next_admission_waiter_id: u64,
     admission_waiters: VecDeque<RuntimeAdmissionQueueEntry>,
     admissions: u64,
@@ -638,6 +648,7 @@ impl RuntimeGovernor {
                     active_foreground_io_slots: 0,
                     active_background_io_slots: 0,
                     admitted_memory_bytes: 0,
+                    retained_results: RuntimeRetainedResultSnapshot::default(),
                     next_admission_waiter_id: 1,
                     admission_waiters: VecDeque::new(),
                     admissions: 0,

@@ -83,13 +83,14 @@ impl NumericBatchValues<'_> {
     }
 }
 
-enum NumericValueBuffer {
+#[derive(Debug)]
+pub(super) enum NumericValueBuffer {
     Int(Vec<i64>),
     Float(Vec<f64>),
 }
 
 impl NumericValueBuffer {
-    fn with_capacity(property_type: hawdb_core::PropertyType, rows: usize) -> Self {
+    pub(super) fn with_capacity(property_type: hawdb_core::PropertyType, rows: usize) -> Self {
         match property_type {
             hawdb_core::PropertyType::Int => Self::Int(Vec::with_capacity(rows)),
             hawdb_core::PropertyType::Float => Self::Float(Vec::with_capacity(rows)),
@@ -104,14 +105,14 @@ impl NumericValueBuffer {
         }
     }
 
-    fn view(&self) -> NumericBatchValues<'_> {
+    pub(super) fn view(&self) -> NumericBatchValues<'_> {
         match self {
             Self::Int(values) => NumericBatchValues::Int(values),
             Self::Float(values) => NumericBatchValues::Float(values),
         }
     }
 
-    fn push_node_value(
+    pub(super) fn push_node_value(
         &mut self,
         fragment: NumericFragment<'_>,
         node: &NodeRecord,

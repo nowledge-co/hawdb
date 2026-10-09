@@ -18,6 +18,7 @@
 //! prepared-kernel contracts are not a second host integration API.
 
 mod lending;
+pub mod retained;
 
 #[cfg(test)]
 mod differential;

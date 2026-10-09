@@ -443,6 +443,21 @@ impl QueryMemoryLease {
         self.bytes
     }
 
+    /// Transfers part of this already admitted charge to an independent owner.
+    /// The ledger charge never disappears or grows during the handoff.
+    pub(crate) fn split_off(&mut self, bytes: usize) -> Result<Self> {
+        if bytes > self.bytes {
+            return Err(HawDBError::Execution(
+                "query memory lease split exceeds its admitted charge".into(),
+            ));
+        }
+        self.bytes -= bytes;
+        Ok(Self {
+            account: self.account.clone(),
+            bytes,
+        })
+    }
+
     pub fn grow(&mut self, bytes: usize) -> Result<()> {
         self.account
             .ledger
@@ -517,6 +532,25 @@ mod hardening_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splitting_a_full_lease_preserves_charge_and_independent_drop() {
+        let budget = NonZeroUsize::new(8).unwrap();
+        let ledger = QueryMemoryLedger::new(budget);
+        let account = ledger.account(QueryMemoryClass::ResultMaterialization, "retained", budget);
+        let mut owner = account.reserve(8).unwrap();
+        assert!(owner.split_off(9).is_err());
+        assert_eq!(owner.bytes(), 8);
+        let view = owner.split_off(3).unwrap();
+        assert_eq!(owner.bytes(), 5);
+        assert_eq!(view.bytes(), 3);
+        assert_eq!(ledger.snapshot().used_bytes, 8);
+        assert_eq!(ledger.snapshot().peak_bytes, 8);
+        drop(owner);
+        assert_eq!(ledger.snapshot().used_bytes, 3);
+        drop(view);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
 
     #[test]
     fn sub_accounts_reserve_parent_capacity_without_double_charging() {
