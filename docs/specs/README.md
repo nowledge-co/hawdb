@@ -22,7 +22,6 @@ contracts must update the corresponding specification in the same change.
 | Lexical compact postings encoding, per-block term dictionary, and encoding-aware scan (design stage; no implemented surface yet) | [`LEXICAL_COMPACT_POSTINGS_SPEC.md`](LEXICAL_COMPACT_POSTINGS_SPEC.md) | [`../SEARCH_BUILD_RESOURCE_OWNERSHIP.md`](../SEARCH_BUILD_RESOURCE_OWNERSHIP.md), [`../STORAGE.md`](../STORAGE.md) |
 | Large-document search input, exact streaming analysis, resource ownership, updates, and verified reads (proposed; implementation not yet qualified) | [`LARGE_DOCUMENT_LIFECYCLE_SPEC.md`](LARGE_DOCUMENT_LIFECYCLE_SPEC.md) | [`../SEARCH_GENERATION_CONTEXT.md`](../SEARCH_GENERATION_CONTEXT.md), [`../DOCUMENT_FREQUENCY_SPILL.md`](../DOCUMENT_FREQUENCY_SPILL.md), [`../STREAMING_SEARCH_HYDRATION.md`](../STREAMING_SEARCH_HYDRATION.md) |
 | Typed columnar batches, numeric vectorized fragments, morsel admission, fallback, and performance evidence | [`VECTORIZED_MORSEL_EXECUTION_SPEC.md`](VECTORIZED_MORSEL_EXECUTION_SPEC.md) | [`../EXECUTOR_MORSEL_BENCHMARK.md`](../EXECUTOR_MORSEL_BENCHMARK.md), [`../ARCHITECTURE.md`](../ARCHITECTURE.md), [`EMBEDDED_RUNTIME_SPEC.md`](EMBEDDED_RUNTIME_SPEC.md) |
-| Strict zero-copy columnar delivery, bounded pull, SIMD, Go/Python ownership, graph frontiers, and FTS views (proposed; not yet qualified) | [`ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md`](ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md) | [`VECTORIZED_MORSEL_EXECUTION_SPEC.md`](VECTORIZED_MORSEL_EXECUTION_SPEC.md), [`ROW_PAGE_AND_DEMAND_PAGED_INDEX_SPEC.md`](ROW_PAGE_AND_DEMAND_PAGED_INDEX_SPEC.md), [`LEXICAL_COMPACT_POSTINGS_SPEC.md`](LEXICAL_COMPACT_POSTINGS_SPEC.md), [`LARGE_DOCUMENT_LIFECYCLE_SPEC.md`](LARGE_DOCUMENT_LIFECYCLE_SPEC.md) |
 | PostgreSQL-dialect Content Store corpus, relational COW storage, large values, durability boundary, and migration qualification | [`POSTGRES_RELATIONAL_CONTENT_STORE_SPEC.md`](POSTGRES_RELATIONAL_CONTENT_STORE_SPEC.md) | [`../STORAGE.md`](../STORAGE.md), [`PRODUCTION_READINESS_SPEC.md`](PRODUCTION_READINESS_SPEC.md) |
 | PostgreSQL SQL/PGQ property-graph DDL, `GRAPH_TABLE`, owned syntax frontend, shared graph IR, and compatibility qualification | [`POSTGRES_SQL_PGQ_SPEC.md`](POSTGRES_SQL_PGQ_SPEC.md) | [`../ARCHITECTURE.md`](../ARCHITECTURE.md), [`POSTGRES_RELATIONAL_CONTENT_STORE_SPEC.md`](POSTGRES_RELATIONAL_CONTENT_STORE_SPEC.md) |
 | Convergent CRDT replication and anti-entropy synchronization between HawDB nodes (design stage; no implemented surface yet) | [`HAWDB_CRDT_REPLICATION_SPEC.md`](HAWDB_CRDT_REPLICATION_SPEC.md) | [`../tla/README.md`](../tla/README.md), [`../STORAGE.md`](../STORAGE.md) |
@@ -35,3 +34,15 @@ Historical PR sequencing and implementation milestones are non-normative. They
 may remain in development plans or Git history, but they must not be copied
 back into the active backlog after their acceptance contract is represented by
 the documents above.
+
+## Exploratory proposals
+
+The following documents are not active production contracts. Their requirement
+keywords describe prospective acceptance criteria, not new obligations on
+existing APIs or unrelated changes. Adopting a capability requires a separately
+scoped implementation review and qualification evidence; until then, the
+canonical contracts above govern supported behavior.
+
+| Proposal | Scope and adoption boundary |
+| --- | --- |
+| [`ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md`](ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md) | Measurement-first, opt-in strict zero-copy delivery with bounded pull and Go/Python ownership; producer-layout, SIMD, graph, and FTS extensions require separate workload evidence and implementation scope |

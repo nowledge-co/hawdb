@@ -2,19 +2,28 @@
 
 ## Status and scope
 
-Status: proposed implementation contract; no new API, SIMD backend, or
-cross-language zero-copy path is qualified by this document.
+Status: exploratory design proposal, not an active production contract. No new
+API, retained-batch producer, SIMD backend, or cross-language zero-copy path is
+qualified by this document. Publishing it does not change existing APIs or
+impose new requirements on ordinary binding changes.
 
-This proposal advances [issue #976](https://github.com/nowledge-co/hawdb/issues/976).
-Its implementation and host-boundary benchmark acceptance criteria remain open.
+Related measurement work is tracked in
+[issue #976](https://github.com/nowledge-co/hawdb/issues/976). Its benchmark and
+bulk-boundary acceptance criteria remain open. That issue excludes execution
+engine changes; the producer-layout, SIMD, graph, and FTS work considered here
+requires separately scoped implementation issues and workload evidence.
 
-Normative MUST, MUST NOT, SHALL, SHOULD, and MAY clauses describe the target
-contract; SHALL has the same requirement strength as MUST. Existing APIs are
-not changed merely by publishing this proposal.
+MUST, MUST NOT, SHALL, SHOULD, and MAY below express prospective acceptance
+criteria for an implementation explicitly adopting a named capability from
+this proposal; SHALL has the same strength as MUST. They do not override the
+active contracts in the specification index. Adoption requires an implementation
+review identifying its eligible plans, types, adapters, and qualification
+evidence; unadopted capabilities remain proposals.
 
-HawDB SHALL own its in-memory batch representation, bounded pull protocol,
-SIMD kernels, and resource lifetimes. Compatible columns SHALL interoperate
-through the Arrow C Data / C Stream interfaces and Python PyCapsules without
+For adopted capabilities, HawDB SHALL own its in-memory batch representation,
+bounded pull protocol, applicable kernels, and resource lifetimes. Compatible
+columns SHALL interoperate through the Arrow C Data / C Stream interfaces and
+Python PyCapsules without
 requiring an Arrow SDK in the engine. Native consumers MAY use the smaller
 HawDB batch interface, including its explicit row selection.
 
@@ -22,9 +31,10 @@ The target is **zero payload copies**, not fewer copies or a faster serializer.
 JSON, base64, Arrow IPC, per-row language objects, and an intermediate owned
 `Vec<Value>` MUST NOT be required by the strict result-delivery path.
 
-This contract covers embedded Rust, C ABI, purego Go, and Python consumers;
-numeric SIMD; graph identities, frontiers, and path views; and FTS candidates
-and eligible verified content views. It does not authorize a durable-format
+The core proposal covers embedded Rust, C ABI, purego Go, and Python consumers.
+Numeric SIMD, graph identities/frontiers/path views, and FTS candidates/content
+views are independent extensions, not prerequisites for a scalar host-boundary
+pilot or for closing #976. This proposal does not authorize a durable-format
 change, a second canonical column store, a new graph algorithm, or approximate
 search behavior. Existing release, query, durability, and recovery contracts
 remain authoritative.
@@ -41,24 +51,86 @@ Related contracts:
 
 ## Existing foundations and gaps
 
-The executor already has typed `ColumnVector` values, validity bitmaps,
-adaptive `Selection::All/Bitmap/Indices`, shared-column projection, numeric
-kernels, and an internal `LendingBatchCursor::next_batch`. Its borrowed view
-expires at the next mutable cursor step, allowing producer buffer reuse.
-This lifetime MUST NOT be exported unchanged to a foreign runtime that can
-retain a view after the next step.
+The executor has typed `ColumnVector` values, validity bitmaps, adaptive
+`Selection::All/Bitmap/Indices`, shared-column projection, and numeric kernels
+in its restricted numeric fragment. Eligibility is the existing one-label
+`SeqNodeScan -> PropertyCompare -> Project -> optional Limit` shape with an
+integer/float literal comparison and a public numeric property descriptor;
+see the vectorized morsel contract. These building blocks do not establish a
+general columnar result producer for ordinary queries.
 
-Current collected output stores positional `Value` rows. Python eagerly clones
-values and constructs dictionaries; the Go C ABI uses JSON and an owned
-buffer copy. None of these boundaries establishes strict zero-copy delivery.
-Current UTF-8 columns use `Arc<[String]>`, boolean columns use bytes, and
-dynamic columns use Rust `Value` objects. These are not automatically
-Arrow-compatible physical layouts. Typed loops also do not, by themselves,
-prove that an explicit SIMD backend executes.
+`crates/executor/src/numeric/lending.rs` defines a private `pub(super)`
+`LendingBatchCursor` that lends `NumericNodeBatch`. Its borrowed view expires
+at the next mutable cursor step, allowing producer buffer reuse. This lifetime
+MUST NOT be exported unchanged to a retaining foreign runtime. The admitted,
+immutable retained-slot producer proposed below is new implementation work,
+not an existing general cursor that only needs an ABI wrapper.
+
+Collected `QueryRows` already owns an `Arc<QueryRowStorage>` containing flat
+`Vec<Value>` storage, and `QueryRows::value` returns an allocation-free
+`ValueRef`. This can reduce binding-side clones without making the storage
+columnar. Python currently clones values into eager dictionaries; the Go C ABI
+uses JSON and an owned buffer copy. Neither boundary is strict zero-copy.
+
+Current UTF-8 columns use `Arc<[String]>`, booleans use byte-per-value storage,
+and dynamic columns use Rust `Value` objects. Standard Arrow UTF-8 offsets and
+packed booleans cannot directly share these layouts. Arrow view layouts do not
+remove the need to construct their inline values/prefixes. Typed loops also do
+not prove that an explicit SIMD backend executes.
+
+| Current result shape | Gap before strict delivery can be claimed |
+| --- | --- |
+| Numeric fragment's integers, floats, and node identities | Qualify a retained producer, owner/account transfer, and each host adapter; no foreign zero-copy path exists today |
+| String/binary application results such as titles and thread IDs | Add a qualified producer-native layout or owned native spans; current collected rows are not a columnar producer |
+| Byte booleans or noncontiguous selected results | Native layout/selection views may have their own capability; packed/dense Arrow export requires a compatible producer or explicit materialization |
+| Lists, maps, and mixed dynamic values | Define and qualify immutable recursive views and schema/type mapping; the initial strict pilot does not support them |
+
+An initial numeric pilot therefore cannot serve most Mem-shaped results and
+MUST NOT be presented as completing #976 or providing general query support.
 
 The implementation SHALL extend existing executor and facade ownership.
 Creating another crate, replacing the durable row layout, or exposing an
 internal crate as the production integration surface is not a prerequisite.
+
+## Measurement gate and API choices
+
+Before selecting a production boundary change, record the #976 baseline for
+Python and Go against an engine-only Rust lower bound at a frozen revision.
+Use all five cases (`select`, `point`, `fill`, `fill_bulk`, and `wide`), sizes
+`1e3`, `1e5`, and `1e6`, fixed-seed data, and in-memory and warm file-backed
+runs. State the release build, durability setting, CPU/toolchain, consumer work,
+checksums, wall time, conversion profile, allocations, and peak RSS. Include
+representative strings, lists, and maps instead of only numeric-friendly rows.
+This document supplies no such baseline or measured end-to-end speedup.
+
+The comparisons should distinguish reduced per-call/per-value overhead from
+payload copying. One bounded conversion per batch may outperform the existing
+JSON/dictionary paths; zero-copy is not assumed to dominate point queries or
+to justify changing executor layouts. A narrow zero-copy pilot may establish
+feasibility, but does not replace representative workload measurements.
+
+Keep the following independently named choices available:
+
+- Existing owned result APIs continue to serve their supported types and plans.
+  Binding-only improvements may convert from `ValueRef` without cloning values
+  and expose lazy tuple rows with shared column names. Lazy host conversion
+  over collected `QueryRows` still retains its full result allocation; it is
+  not bounded execution streaming.
+- An explicitly materializing batch/`to_arrow` API may gather values, pack
+  booleans, and copy UTF-8 once per admitted batch. A compact binary FFI path is
+  another measurement-driven option. Both must report conversion costs and
+  preserve value semantics; recursive/mixed values require explicit schema
+  mappings and type-parity tests rather than an assumed universal Arrow mapping.
+  Batching an already collected result must charge the retained full result,
+  not just its current exported batch.
+- A separately requested strict API preserves existing payload allocations or
+  refuses incompatible plans/layouts. Its refusal does not remove support from
+  the ordinary APIs and cannot trigger a copying fallback. Producer-native
+  UTF-8, boolean, and recursive-layout changes require their own evidence and
+  implementation review before widening eligibility.
+
+The lifetime and admission analysis below can inform both batch APIs; its
+no-copy invariants apply only to an explicitly adopted strict capability.
 
 ## Zero-copy definition and invariants
 
@@ -129,7 +201,7 @@ row count MUST be distinct from physical row count. Nullability MUST be
 explicit, including empty and all-null results; the first non-null row MUST
 NOT decide a stream's schema.
 
-Required initial physical representations:
+Target physical representations, enabled only with a qualified producer:
 
 | Values | Representation and ownership |
 | --- | --- |
@@ -139,6 +211,12 @@ Required initial physical representations:
 | UUID | Producer-native 16-byte values in RFC 4122/network byte order, compatible with `arrow.uuid` |
 | UTF-8 / binary | Owned offsets plus immutable payload buffers, or native borrowed span descriptors retaining every referenced buffer |
 | Selection | All, contiguous range, dense bitmap, or ordered sparse indices |
+
+The first scalar feasibility slice may qualify only integers, floating point,
+node identities, validity, and selection. UTF-8, binary, packed booleans, and
+UUIDs are later capability slices rather than mandatory changes for that pilot.
+Capability reporting MUST name both the producer and adapter; an available
+descriptor type alone does not imply query-result eligibility.
 
 All-valid columns MUST omit a validity allocation. Empty bytes, empty UTF-8,
 and null MUST remain distinct. Every range, offset, multiplication, alignment,
@@ -256,10 +334,10 @@ owner/descriptor/handle is separately charged. A tiny slice of a large arena
 is charged for the arena that it keeps alive, not merely the visible bytes.
 
 Batch reservations MUST include validity, selection, offsets/spans, allocator
-padding, pool slots, SIMD scratch, producer work, graph blocking state, and
-search decoder/top-k working state. External result leases must also remain
-covered by the embedded retained-result allowance. A producer MUST NOT double
-its pool to bypass a retained-byte limit.
+padding, pool slots, and producer work, plus any applicable SIMD scratch, graph
+blocking state, and search decoder/top-k working state. External result leases
+must also remain covered by the embedded retained-result allowance. A producer
+MUST NOT double its pool to bypass a retained-byte limit.
 
 The database/host SHALL enforce an aggregate retained-result allowance across
 all cursors and language adapters; opening more cursors MUST NOT multiply the
@@ -346,7 +424,11 @@ arrays, child ownership, and early/error cleanup require explicit tests.
 
 ## SIMD execution contract
 
-The initial backends SHALL be scalar, x86_64 AVX2, and AArch64 NEON, selected by
+This is an independent proposed execution extension. It needs a separately
+scoped issue, kernel baseline, and end-to-end workload evidence before adoption;
+scalar strict delivery and ordinary binding improvements do not depend on it.
+
+The target backends SHALL be scalar, x86_64 AVX2, and AArch64 NEON, selected by
 runtime CPU feature detection under target-specific compilation. Unsupported
 CPUs/targets SHALL use the scalar backend over the same shared buffers. Global
 `target-cpu=native`, a Bazel configuration change, and AVX-512 are not required.
@@ -366,6 +448,11 @@ reassociation that only checks the final sum is not equivalent. SIMD speed
 claims require per-kernel differential tests and measured end-to-end benefit.
 
 ## Graph-specific optimization and correctness
+
+This is an independent proposed graph extension, not part of #976's acceptance.
+Adoption requires a separately scoped issue and evidence identifying an active
+query workload and the relevant expansion/hydration cost. Existing graph
+semantics and resource contracts remain authoritative until then.
 
 ### Identity, adjacency, and frontier
 
@@ -410,6 +497,11 @@ Benchmarks MUST include hub nodes, reverse/type-constrained expansion, parallel
 edges, cycles, tiny result limits, cancellation, and large property payloads.
 
 ## FTS-specific optimization and correctness
+
+This is an independent proposed search extension, not part of #976's acceptance.
+Adoption requires a separately scoped issue and profiles separating candidate
+ranking, identity resolution, decoding, and host delivery. Existing search
+semantics and resource contracts remain authoritative until then.
 
 ### Candidate and postings flow
 
@@ -489,39 +581,53 @@ copy counters MUST be zero. Counters MUST cover operations in adapters as well
 as the engine; moving a copy into a constructor or omitting native allocations
 from language allocation statistics cannot satisfy the contract.
 
-Qualification requires the following gates:
+Qualification is scoped to the plans, types, and adapters actually adopted.
+The core gates apply to each strict delivery claim; extension gates apply only
+when that extension is implemented or advertised. A scalar numeric pilot does
+not require SIMD, graph, or FTS implementation. No pilot can claim support for
+types or application queries outside its recorded capability set.
 
 | Gate | Required evidence |
 | --- | --- |
 | Buffer identity | Allocation ID/generation/range equality from producer through projected/selected Rust, Go, Python, and eligible Arrow views; address equality alone is insufficient when allocations can be recycled |
-| Lifetime | Views retained across next pull, cursor/database close, cancellation, graph publication, search replacement/compaction, and GC; exact final release without double-free or module unload |
+| Lifetime | Views retained across next pull, cursor/database close, cancellation, and GC; add graph publication or search replacement/compaction when the claimed producer uses those resources; exact final release without double-free or module unload |
 | Pull and memory | No speculative next batch; slow/stopped consumer; two-slot, byte, handle, and aggregate multi-cursor caps; small view retaining a large arena; oversized values; collection of all batches; recoverable backpressure without source advancement or same-thread deadlock |
-| Layout and refusal | Null/empty/all-null, NUL bytes, maximum integers, UUID, offsets/alignment, unsupported dynamic values, sparse selection Arrow export, writable/cast requests, and malformed descriptors |
-| SIMD | Forced scalar/AVX2/NEON parity on their supported platforms, tails, nullable/sparse input, NaN/signed zero, and intermediate sum overflow; no unsupported instruction execution |
-| Graph | Identity/order/duplicate/path parity, bounded hub expansion, property laziness, cancellation and pin release |
-| FTS | Exact candidates/scores/ties/visibility, ordinal generation fencing, no unnecessary ID/body hydration, and corrupt-tail refusal |
+| Layout and refusal | Null/empty/all-null, maximum integers, offsets/alignment, unsupported types/layouts, sparse selection Arrow export, writable/cast requests, and malformed descriptors; add NUL bytes and UUID parity when those types are supported |
+| SIMD extension | Forced scalar/AVX2/NEON parity on their supported platforms, tails, nullable/sparse input, NaN/signed zero, and intermediate sum overflow; no unsupported instruction execution |
+| Graph extension | Identity/order/duplicate/path parity, bounded hub expansion, property laziness, cancellation and pin release |
+| FTS extension | Exact candidates/scores/ties/visibility, ordinal generation fencing, no unnecessary ID/body hydration, and corrupt-tail refusal |
 | Performance | Same consumer work and checksums; rows/bytes, latency/throughput, copy bytes, allocations, ledger peaks, native RSS, cold/warm source work, and retained resource counts |
 
-Measurements SHALL compare current owned boundaries, native zero-copy scalar,
-native zero-copy SIMD, and eligible Arrow adapters separately. Small point
-results and large variable-width batches are both required. A Go IPC decode
-microbenchmark cannot establish Python, full-query, graph, FTS, SIMD, or
-zero-copy support. Memory boundedness and zero-copy are acceptance gates even
-when throughput improves.
+Measurements SHALL compare current owned boundaries and each implemented
+candidate separately, including materializing batches and eligible strict
+scalar/Arrow paths. Add SIMD comparisons only when implemented. Small point
+results and large variable-width batches are required for a claim of general
+host-workload benefit; a numeric-only pilot records its narrower coverage and
+unsupported workloads. A Go IPC decode microbenchmark cannot establish Python,
+full-query, graph, FTS, SIMD, or zero-copy support. Memory boundedness and
+zero-copy are acceptance gates even when throughput improves.
 
 ## Delivery order
 
-1. Qualify native layout, owner/account transfer, and the existing pull producer
-   using scalar kernels. Exit only with identity, refusal, lifetime, and bounded
-   slot/backpressure evidence; no serializer or row-result staging is allowed.
-2. Add Go and Python owner-bearing views and eligible Arrow/PyCapsule export.
-   Exit only with cross-language identity, retained-view, close/GC, and purego
-   tests. Materializing convenience APIs remain explicit separate operations.
-3. Add runtime-dispatched SIMD kernels for existing eligible shapes. Exit only
-   with platform-specific parity and complete-query performance evidence.
-4. Qualify graph frontier/path and FTS candidate/content slices under the same
-   pull, memory, identity, and integrity gates. Unsupported slices keep explicit
-   refusal rather than acquiring a copying strict fallback.
+1. Record #976's representative baseline and isolate conversion/crossing cost.
+   Exit only with reproducible Rust/Python/Go results and value parity. Choose
+   ordinary binding improvements from that evidence; the zero-copy proposal is
+   not a commitment to rewrite engine layouts.
+2. Independently evaluate binding-only clone removal, lazy tuples, and explicit
+   materializing batch/Arrow or binary FFI paths. Exit each adopted path with
+   measured benefit, complete type semantics, and retained-memory accounting.
+   These improvements may satisfy #976 without implementing strict delivery.
+3. If separately scoped evidence justifies a strict capability, implement and
+   qualify a narrow scalar retained-batch producer, native owner/account
+   transfer, and Go/Python views. Start from eligible numeric execution shapes;
+   do not describe the current lending cursor as a general retained producer.
+   Exit only with cross-language identity, refusal, lifetime, bounded slots,
+   recoverable backpressure, and purego evidence. Add Arrow export only for
+   layouts/selections whose no-copy compatibility is independently qualified.
+4. Evaluate producer-native UTF-8/boolean/recursive representations and SIMD,
+   graph, and FTS extensions as separate measured workstreams. They are not a
+   combined prerequisite or an automatic follow-up to #976. Each adopted slice
+   must pass its relevant gates; unsupported strict slices keep explicit refusal.
 
 Every implementation stage SHALL use default repository Bazel configuration
 and the required formatting, strict Clippy, target-specific, and local fuzz
