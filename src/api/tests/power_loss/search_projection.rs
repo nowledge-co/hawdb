@@ -760,6 +760,17 @@ fn qualify_publication(publication: Publication) {
         let before = std::fs::read(root.join(COMPONENT_MANIFEST)).unwrap();
         let old = SearchOutOfCoreReader::open(&root).unwrap();
         assert_complete(&old, &expected_documents(publication, false));
+        let old_generation = old.generation();
+        let mut modes = vec![SearchMode::Text];
+        #[cfg(feature = "vector-search")]
+        modes.extend([SearchMode::Vector, SearchMode::Hybrid]);
+        let before_queries: Vec<_> = modes
+            .drain(..)
+            .flat_map(|mode| {
+                [None, Some("default"), Some("current")]
+                    .map(|space| (mode, space, search(&old, mode, space)))
+            })
+            .collect();
         fixture
             .model
             .observe(ObservationPoint {
@@ -827,24 +838,19 @@ fn qualify_publication(publication: Publication) {
             before, after,
             "publication must replace the active selector"
         );
+        // Verify the pinned old closure after publication, then close it before
+        // admitting a second full reader under the unchanged FD32 project budget.
+        assert_complete(&old, &expected_documents(publication, false));
+        for (mode, space, expected) in &before_queries {
+            assert_search_parity(expected, &search(&old, *mode, *space));
+        }
+        drop(old);
         let new = SearchOutOfCoreReader::open(&root).unwrap();
-        assert_ne!(old.generation(), new.generation());
+        assert_ne!(old_generation, new.generation());
         assert_complete(&new, &expected_documents(publication, true));
-        let mut modes = vec![SearchMode::Text];
-        #[cfg(feature = "vector-search")]
-        modes.extend([SearchMode::Vector, SearchMode::Hybrid]);
-        let queries: Vec<_> = modes
-            .drain(..)
-            .flat_map(|mode| {
-                [None, Some("default"), Some("current")].map(|space| {
-                    (
-                        mode,
-                        space,
-                        search(&old, mode, space),
-                        search(&new, mode, space),
-                    )
-                })
-            })
+        let queries: Vec<_> = before_queries
+            .into_iter()
+            .map(|(mode, space, before)| (mode, space, before, search(&new, mode, space)))
             .collect();
         let plans = fault_plans(&cut, event);
         eprintln!(
@@ -877,7 +883,7 @@ fn qualify_publication(publication: Publication) {
                 if is_new {
                     new.generation()
                 } else {
-                    old.generation()
+                    old_generation
                 }
             );
             assert_complete(&recovered, &expected_documents(publication, is_new));
