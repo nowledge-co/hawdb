@@ -1879,3 +1879,80 @@ This removes Bloom input scratch only. Property-key dictionaries, payload and
 segment accumulators, array growth, source/cache/GC ownership, allocation/free
 latency, FD/disk/cleanup debt, default sustained progress, full publication parity,
 physical power-loss/refinement and release-performance qualification remain open.
+
+### Borrowed canonical segment flush input
+
+Canonical segment flush now builds the existing 29-byte header on the stack and
+borrows captured record bytes, without allocating a second complete segment.
+The original unchanged 257 KiB node and relationship fixtures each observe one
+large duplicate allocation before correction (0 pass/2 fail), then pass with
+zero large flush allocations and complete byte, record, Bloom and CRC/SHA checks.
+Controlled checksum and physical write loops use 64 KiB units, each physical
+write obtains and releases its own real I/O wave, and Bloom insertion uses
+256-key units. Callback/payload consumer permits end before these child units.
+Ordinary record inputs, wire framing, hard segment-size diagnostics and callback
+admission remain unchanged.
+
+A cloned stack integrity state advances the caller's artifact digest only after
+the complete segment succeeds. Cancellation or I/O failure may leave a partial
+uncommitted output file, as before; production temporary-artifact cleanup still
+owns it. The observed prefix must match the complete reference, and an error
+must not publish a segment descriptor or advance the caller digest. Related
+fixtures enumerate every measured CPU and I/O cancellation point with a real
+one-wave governor reservation and one-unit local ceiling, release work state,
+and fully retry the same source and reservation. A separate actual zero-slot
+reservation denial preserves the initial file prefix and digest; retry explicitly
+re-admits one I/O slot. Its initial preparation mistakenly retained a wave on the
+same thread before a blocking acquire and was terminated, archived and excluded
+from passing evidence. The original two allocation fixtures remain byte-identical.
+
+This qualifies the duplicate flush scratch and the declared checksum/write and
+Bloom-insertion boundaries. Source record/key arrays, returned descriptor Bloom
+memory and leaf payload ownership, Bloom allocation/zeroing, allocator/free
+latency, FD/disk/cleanup debt and complete writer resources remain separate gaps.
+It does not establish default-owner sustained progress or permit weakening its
+whole-candidate operation admission.
+
+### Canonical writer key and value scratch ownership
+
+The private borrowed checkpoint writer now admits its property-key strings,
+replacement key-vector capacities and fixed-width digest index before allocation.
+Hashing, exact collision comparison and UTF-8 copying use bounded byte units.
+The index preserves first-seen IDs, including nonadjacent duplicates and digest
+collisions, and is destroyed before releasing its construction inventory. Its
+conservative B-tree reservation assumes the pinned Rust node layout of eleven
+key/value slots and twelve child pointers; four node bounds per distinct digest
+cover retained nodes and insertion overlap. This is a declared payload bound,
+not a portable allocator, allocation-latency or RSS proof.
+
+The private writer returns a manifest with its key allocation inventory. Key
+strings and the containing vector are destroyed before that inventory, even if
+the admitted worker has already closed. There is no private conversion that
+detaches admitted keys. Ordinary public writers retain their established return
+type and encoding; only their unadmitted manifest may be detached.
+
+Controlled value encoding first counts the established streaming wire codec,
+admits its exact byte capacity, then copies through bounded work units. Spilled
+values carry that ownership into the pending spill batch until physical flush
+or workspace destruction. Ordinary spill inputs keep their existing path. Two
+frozen, genuinely failing pre-fix fixtures exercise the actual private writer
+with a borrowed source and 64 KiB reservation: 257 KiB property names and binary
+values previously allocated complete scratch before admission. They preserve
+the ordinary artifact and full-read reference.
+
+Related fixtures exercise complete manifest encoding and node readback, retained
+key ownership after worker closure, first-seen ordering across vector/tree growth
+boundaries through 8193 keys, forced equal-length digest collisions, and denial
+while old and replacement key-vector capacities overlap. Value fixtures compare
+all wire variants and byte boundaries with the independent buffered codec, retain
+the original depth diagnostic, and observe pending spill ownership through flush
+and cancellation. Every measured value/collision CPU cancellation cut releases
+working memory before reconstructing a complete private workspace with the same
+governor reservation and one-unit local ceiling. Failed private dictionaries are
+abandoned; this does not promise resumable partial dictionary mutation.
+
+Canonical record and segment arrays, spill pending-array capacity, descriptor
+payloads, source ownership, full writer work-unit boundaries, FD/disk/cleanup
+debt, allocator/free latency and the entire candidate still need their separate
+ledger. This does not qualify the default owner progress envelope or authorize
+changing its whole-candidate operation estimate.

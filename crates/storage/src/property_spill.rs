@@ -463,6 +463,21 @@ impl PropertySpillManifest {
     }
 }
 
+enum PropertySpillValue {
+    Ordinary(Vec<u8>),
+    Checkpoint(crate::background::CheckpointBytes),
+}
+
+impl std::ops::Deref for PropertySpillValue {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Ordinary(bytes) => bytes,
+            Self::Checkpoint(bytes) => bytes,
+        }
+    }
+}
+
 pub struct PropertySpillWriter {
     work: crate::background::CheckpointWorkContext,
     path: PathBuf,
@@ -474,7 +489,7 @@ pub struct PropertySpillWriter {
     next_spill_id: u64,
     next_block_id: u64,
     value_bytes: u64,
-    pending: Vec<(u64, Vec<u8>)>,
+    pending: Vec<(u64, PropertySpillValue)>,
     pending_bytes: u64,
     block_count: u64,
     descriptor_tree: GraphDescriptorTreeBuilder,
@@ -549,6 +564,17 @@ impl PropertySpillWriter {
     }
 
     pub fn push(&mut self, encoded_value: Vec<u8>) -> Result<u64, PropertySpillError> {
+        self.push_value(PropertySpillValue::Ordinary(encoded_value))
+    }
+
+    pub(crate) fn push_checkpoint(
+        &mut self,
+        encoded_value: crate::background::CheckpointBytes,
+    ) -> Result<u64, PropertySpillError> {
+        self.push_value(PropertySpillValue::Checkpoint(encoded_value))
+    }
+
+    fn push_value(&mut self, encoded_value: PropertySpillValue) -> Result<u64, PropertySpillError> {
         self.work.checkpoint()?;
         let value_bytes = encoded_value.len() as u64;
         if value_bytes > self.config.max_value_bytes.get() {

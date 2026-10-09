@@ -18,6 +18,9 @@ mod checkpoint_bloom;
 #[cfg(test)]
 mod checkpoint_bloom_memory_tests;
 mod checkpoint_decode;
+mod checkpoint_flush;
+#[cfg(test)]
+mod checkpoint_flush_memory_tests;
 #[cfg(test)]
 mod checkpoint_manifest_memory_related_tests;
 #[cfg(test)]
@@ -27,8 +30,12 @@ mod checkpoint_metadata_tests;
 mod checkpoint_point;
 mod checkpoint_scan;
 mod checkpoint_validation;
+mod checkpoint_writer;
+pub(crate) use checkpoint_writer::CheckpointCanonicalManifest;
 #[cfg(test)]
 mod checkpoint_validation_memory_tests;
+#[cfg(test)]
+mod checkpoint_writer_memory_tests;
 pub(crate) use checkpoint_scan::{CheckpointCanonicalIterator, CheckpointCanonicalRecord};
 
 use crate::file_io::{self as fs, File};
@@ -1015,7 +1022,9 @@ impl CanonicalSegmentWriter {
             let _wave = work.io_wave()?;
             durable_replace_file(&tmp_path, path)?;
         }
-        prepared.publish_descriptor_tree()
+        prepared
+            .publish_descriptor_tree()
+            .map(CheckpointCanonicalManifest::into_unadmitted)
     }
 
     pub fn write_fallible_with_property_spills<N, R>(
@@ -1052,7 +1061,8 @@ impl CanonicalSegmentWriter {
         N: IntoIterator<Item = Result<Option<NodeRecord>, CanonicalSegmentError>>,
         R: IntoIterator<Item = Result<Option<RelRecord>, CanonicalSegmentError>>,
     {
-        self.write_borrowed_steps(path, generation, nodes, relationships, property_spill)
+        self.write_borrowed_steps_owned(path, generation, nodes, relationships, property_spill)
+            .map(|(manifest, spills)| (manifest.into_unadmitted(), spills))
     }
 
     pub(crate) fn write_checkpoint_steps<N, R, NT, RT>(
@@ -1062,7 +1072,7 @@ impl CanonicalSegmentWriter {
         nodes: N,
         relationships: R,
         property_spill: PropertySpillWriteOptions<'_>,
-    ) -> Result<(CanonicalSegmentManifest, PropertySpillWriteOutput), CanonicalSegmentError>
+    ) -> Result<(CheckpointCanonicalManifest, PropertySpillWriteOutput), CanonicalSegmentError>
     where
         N: IntoIterator<Item = Result<Option<NT>, CanonicalSegmentError>>,
         R: IntoIterator<Item = Result<Option<RT>, CanonicalSegmentError>>,
@@ -1074,17 +1084,17 @@ impl CanonicalSegmentWriter {
             work: self.work.clone(),
             source_admits: true,
         };
-        writer.write_borrowed_steps(path, generation, nodes, relationships, property_spill)
+        writer.write_borrowed_steps_owned(path, generation, nodes, relationships, property_spill)
     }
 
-    fn write_borrowed_steps<N, R, NT, RT>(
+    fn write_borrowed_steps_owned<N, R, NT, RT>(
         &self,
         path: &Path,
         generation: ManifestGeneration,
         nodes: N,
         relationships: R,
         property_spill: PropertySpillWriteOptions<'_>,
-    ) -> Result<(CanonicalSegmentManifest, PropertySpillWriteOutput), CanonicalSegmentError>
+    ) -> Result<(CheckpointCanonicalManifest, PropertySpillWriteOutput), CanonicalSegmentError>
     where
         N: IntoIterator<Item = Result<Option<NT>, CanonicalSegmentError>>,
         R: IntoIterator<Item = Result<Option<RT>, CanonicalSegmentError>>,
@@ -1165,7 +1175,11 @@ impl CanonicalSegmentWriter {
         let mut relationship_segment_count = 0u64;
         let mut node_count = 0u64;
         let mut relationship_count = 0u64;
-        let mut property_keys = PropertyKeyDictionary::default();
+        let mut property_keys = if self.source_admits {
+            PropertyKeyDictionary::with_work_context(work.clone())
+        } else {
+            PropertyKeyDictionary::default()
+        };
 
         let mut accumulator = SegmentAccumulator::new(
             CanonicalSegmentKind::Nodes,
@@ -1186,16 +1200,29 @@ impl CanonicalSegmentWriter {
             };
             let node = node.borrow();
             work.checkpoint()?;
+            let unit = if self.source_admits {
+                unit.finish();
+                None
+            } else {
+                Some(unit)
+            };
             let payload = encode_node_with_property_spills(
                 node,
                 property_spills.as_deref_mut(),
                 Some(&mut property_keys),
             )?;
+            // Public callbacks keep their consumer admission through ordinary
+            // encoding; private dictionary work owns bounded child units.
+            if let Some(unit) = unit {
+                unit.finish();
+            }
             if accumulator.would_exceed(node.id.0, payload.len()) && !accumulator.is_empty() {
-                let descriptor = {
-                    let _wave = work.io_wave()?;
-                    accumulator.flush(&mut file, &mut artifact_digest, artifact_len)?
-                };
+                let descriptor = accumulator.flush_with_work_context(
+                    &mut file,
+                    &mut artifact_digest,
+                    artifact_len,
+                    self.work.as_ref(),
+                )?;
                 artifact_len = artifact_len.saturating_add(descriptor.length.get());
                 node_count = node_count.saturating_add(u64::from(descriptor.record_count));
                 descriptor_tree.push(
@@ -1215,19 +1242,19 @@ impl CanonicalSegmentWriter {
                     self.config,
                 );
             }
-            // Hashing owns bounded child units; callbacks retain their original
-            // consumer admission through fetch and ordinary payload encoding.
-            unit.finish();
+            // Hashing owns bounded child units after callback/payload admission.
             accumulator.add_node_properties(node, self.work.as_ref())?;
             let unit = work.start_unit()?;
             accumulator.push(node.id.0, &payload, None)?;
             unit.finish();
         }
         if !accumulator.is_empty() {
-            let unit = work.start_unit()?;
-            let _wave = work.io_wave()?;
-            let descriptor = accumulator.flush(&mut file, &mut artifact_digest, artifact_len)?;
-            drop(_wave);
+            let descriptor = accumulator.flush_with_work_context(
+                &mut file,
+                &mut artifact_digest,
+                artifact_len,
+                self.work.as_ref(),
+            )?;
             artifact_len = artifact_len.saturating_add(descriptor.length.get());
             node_count = node_count.saturating_add(u64::from(descriptor.record_count));
             descriptor_tree.push(
@@ -1238,7 +1265,6 @@ impl CanonicalSegmentWriter {
                 CanonicalSegmentError::Corrupt("canonical node segment count overflow".to_string())
             })?;
             segment_id = segment_id.saturating_add(1);
-            unit.finish();
         }
 
         let mut accumulator = SegmentAccumulator::new(
@@ -1260,17 +1286,30 @@ impl CanonicalSegmentWriter {
             };
             let relationship = relationship.borrow();
             work.checkpoint()?;
+            let unit = if self.source_admits {
+                unit.finish();
+                None
+            } else {
+                Some(unit)
+            };
             let payload = encode_relationship_with_property_spills(
                 relationship,
                 property_spills.as_deref_mut(),
                 Some(&mut property_keys),
             )?;
+            // Public callbacks keep their consumer admission through ordinary
+            // encoding; private dictionary work owns bounded child units.
+            if let Some(unit) = unit {
+                unit.finish();
+            }
             if accumulator.would_exceed(relationship.id.0, payload.len()) && !accumulator.is_empty()
             {
-                let descriptor = {
-                    let _wave = work.io_wave()?;
-                    accumulator.flush(&mut file, &mut artifact_digest, artifact_len)?
-                };
+                let descriptor = accumulator.flush_with_work_context(
+                    &mut file,
+                    &mut artifact_digest,
+                    artifact_len,
+                    self.work.as_ref(),
+                )?;
                 artifact_len = artifact_len.saturating_add(descriptor.length.get());
                 relationship_count =
                     relationship_count.saturating_add(u64::from(descriptor.record_count));
@@ -1292,6 +1331,7 @@ impl CanonicalSegmentWriter {
                     self.config,
                 );
             }
+            let unit = work.start_unit()?;
             accumulator.push(
                 relationship.id.0,
                 &payload,
@@ -1300,10 +1340,12 @@ impl CanonicalSegmentWriter {
             unit.finish();
         }
         if !accumulator.is_empty() {
-            let unit = work.start_unit()?;
-            let _wave = work.io_wave()?;
-            let descriptor = accumulator.flush(&mut file, &mut artifact_digest, artifact_len)?;
-            drop(_wave);
+            let descriptor = accumulator.flush_with_work_context(
+                &mut file,
+                &mut artifact_digest,
+                artifact_len,
+                self.work.as_ref(),
+            )?;
             artifact_len = artifact_len.saturating_add(descriptor.length.get());
             relationship_count =
                 relationship_count.saturating_add(u64::from(descriptor.record_count));
@@ -1317,7 +1359,6 @@ impl CanonicalSegmentWriter {
                         "canonical relationship segment count overflow".to_string(),
                     )
                 })?;
-            unit.finish();
         }
         {
             let _wave = work.io_wave()?;
@@ -1381,12 +1422,12 @@ struct PreparedCanonicalSegmentArtifact {
     relationship_count: u64,
     node_segment_count: u64,
     relationship_segment_count: u64,
-    property_keys: Vec<String>,
+    property_keys: checkpoint_writer::Keys,
     descriptor_tree: PreparedGraphDescriptorTree,
 }
 
 impl PreparedCanonicalSegmentArtifact {
-    fn publish_descriptor_tree(self) -> Result<CanonicalSegmentManifest, CanonicalSegmentError> {
+    fn publish_descriptor_tree(self) -> Result<CheckpointCanonicalManifest, CanonicalSegmentError> {
         let Self {
             work,
             generation,
@@ -1432,11 +1473,14 @@ impl PreparedCanonicalSegmentArtifact {
             node_segment_count,
             relationship_segment_count,
             descriptor_root_artifact: descriptor_tree.root_artifact,
-            property_keys,
+            property_keys: property_keys.values,
         };
         work.checkpoint()?;
         manifest.validate_with_work_context(&work)?;
-        Ok(manifest)
+        Ok(CheckpointCanonicalManifest {
+            manifest,
+            memory: property_keys.memory,
+        })
     }
 }
 
@@ -1546,41 +1590,20 @@ impl SegmentAccumulator {
         artifact_digest: &mut IntegrityHasher,
         offset: u64,
     ) -> Result<CanonicalSegmentDescriptor, CanonicalSegmentError> {
-        let mut bytes = Vec::with_capacity(segment_header_len().saturating_add(self.records.len()));
-        bytes.extend_from_slice(SEGMENT_HEADER);
-        bytes.push(self.kind.tag());
-        bytes.extend_from_slice(&self.generation.0.to_le_bytes());
-        bytes.extend_from_slice(&self.segment_id.to_le_bytes());
-        bytes.extend_from_slice(&self.record_count.to_le_bytes());
-        bytes.extend_from_slice(&self.records);
-        let length = NonZeroU64::new(bytes.len() as u64).expect("segment bytes are non-zero");
-        let hard_max = self.config.target_segment_bytes.get().max(
-            self.config
-                .max_record_bytes
-                .get()
-                .saturating_add(segment_header_len() as u64),
-        );
-        if length.get() > hard_max {
-            return Err(CanonicalSegmentError::SegmentTooLarge {
-                segment_bytes: length.get(),
-                max_bytes: hard_max,
-            });
+        checkpoint_flush::flush(self, file, artifact_digest, offset, None)
+    }
+
+    fn flush_with_work_context(
+        self,
+        file: &mut File,
+        artifact_digest: &mut IntegrityHasher,
+        offset: u64,
+        work: Option<&CheckpointWorkContext>,
+    ) -> Result<CanonicalSegmentDescriptor, CanonicalSegmentError> {
+        match work {
+            Some(work) => checkpoint_flush::flush(self, file, artifact_digest, offset, Some(work)),
+            None => self.flush(file, artifact_digest, offset),
         }
-        let digest = content_digest(&bytes);
-        write_hashed(file, artifact_digest, &bytes)?;
-        Ok(CanonicalSegmentDescriptor {
-            segment_id: self.segment_id,
-            kind: self.kind,
-            offset,
-            length,
-            content_digest: digest,
-            min_record_id: self.min_record_id.expect("flushed segment is non-empty"),
-            max_record_id: self.max_record_id,
-            record_count: self.record_count,
-            source_endpoint_bloom: CanonicalEndpointBloom::from_keys(&self.source_endpoint_keys),
-            target_endpoint_bloom: CanonicalEndpointBloom::from_keys(&self.target_endpoint_keys),
-            node_property_bloom: CanonicalEndpointBloom::from_keys(&self.node_property_keys),
-        })
     }
 }
 
@@ -3233,10 +3256,27 @@ fn decode_segment_records_control(
 struct PropertyKeyDictionary {
     ids: BTreeMap<String, u32>,
     keys: Vec<String>,
+    checkpoint: Option<checkpoint_writer::Dictionary>,
 }
 
 impl PropertyKeyDictionary {
+    fn checkpoint_work(&self) -> Option<&CheckpointWorkContext> {
+        self.checkpoint
+            .as_ref()
+            .map(checkpoint_writer::Dictionary::work_context)
+    }
+
+    fn with_work_context(work: CheckpointWorkContext) -> Self {
+        Self {
+            checkpoint: Some(checkpoint_writer::Dictionary::new(work)),
+            ..Self::default()
+        }
+    }
+
     fn intern(&mut self, key: &str) -> Result<u32, CanonicalSegmentError> {
+        if let Some(checkpoint) = &mut self.checkpoint {
+            return checkpoint.intern(key);
+        }
         if let Some(id) = self.ids.get(key) {
             return Ok(*id);
         }
@@ -3246,8 +3286,14 @@ impl PropertyKeyDictionary {
         Ok(id)
     }
 
-    fn into_keys(self) -> Vec<String> {
-        self.keys
+    fn into_keys(self) -> checkpoint_writer::Keys {
+        match self.checkpoint {
+            Some(checkpoint) => checkpoint.into_keys(),
+            None => checkpoint_writer::Keys {
+                values: self.keys,
+                memory: crate::background::CheckpointAllocationOwner::default(),
+            },
+        }
     }
 }
 
@@ -3403,9 +3449,27 @@ fn encode_properties_with_property_spills(
 ) -> Result<(), CanonicalSegmentError> {
     output.extend_from_slice(&u32_len(properties.len(), "property map")?.to_le_bytes());
     for (key, value) in properties {
+        let work = property_keys
+            .as_deref()
+            .and_then(PropertyKeyDictionary::checkpoint_work)
+            .cloned();
         match property_keys.as_deref_mut() {
             Some(dictionary) => output.extend_from_slice(&dictionary.intern(key)?.to_le_bytes()),
             None => encode_string(key, output)?,
+        }
+        if let Some(work) = work {
+            let encoded_value = checkpoint_writer::encode_value(value, &work)?;
+            if let Some(spills) = property_spills.as_deref_mut()
+                && spills.should_spill(encoded_value.len())
+            {
+                let spill_id = spills.push_checkpoint(encoded_value)?;
+                output.push(7);
+                output.extend_from_slice(&spill_id.to_le_bytes());
+            } else {
+                // The record accumulator remains a separate ownership gap.
+                output.extend_from_slice(&encoded_value);
+            }
+            continue;
         }
         let mut encoded_value = Vec::new();
         encode_value(value, &mut encoded_value, 1)?;

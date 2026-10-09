@@ -64,6 +64,10 @@ impl CheckpointAllocationToken {
 }
 
 impl CheckpointAllocationOwner {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.head.is_none()
+    }
+
     pub(crate) const METADATA_BYTES: usize = std::mem::size_of::<Allocation>()
         + 2 * std::mem::size_of::<std::sync::atomic::AtomicUsize>();
 
