@@ -92,25 +92,46 @@ as incremental appends. A manifest entry that owns a corpus-sized lexical or
 vector artifact is not a valid mutation target: replacing one ID would still
 rewrite that full artifact.
 
-`SearchOutOfCoreGenerationBuildOptions` applies the same input content limits
+`SearchOutOfCoreGenerationBuildOptions` applies the same input ownership policy
 to initial imports and incremental content publications: `max_content_documents`
 defaults to 8,192 and `max_content_artifact_bytes` defaults to 64 MiB. The byte
-limit includes the descriptor, all three payload files, layout, complete lexical
+target includes the descriptor, all three payload files, layout, complete lexical
 artifact and manifest, and optional RaBitQ artifact. Compaction outputs use the
 separate typed compaction input policy. Payload descriptor ranges retain their
-own existing limits.
+own existing limits. The document count is a hard per-owner bound. The byte
+target is a split threshold: an indivisible one-document owner may exceed it.
+Record, lexical source/token, compressed/uncompressed segment, operation memory,
+and whole-publication limits remain hard admission ceilings. Increasing source
+limits for large bodies does not require increasing this split target.
 
-Initial import captures bodies once in its immutable spool. Each content owner
+Initial import and incremental append/replacement capture new bodies once in
+their immutable spool. Each content owner
 is built from a bounded spool range under the same operation memory ledger,
 task and descriptor admission. Oversized artifact candidates split into smaller
-ranges; a single document that cannot fit fails admission. Global metadata-field
+ranges until they fit the byte target or contain one document. Global metadata-field
 and embedding identity remain consistent across the partitions, including fields
 absent from a particular partition. Private prefix manifests remain in the
 writer's stage. After every partition and its dependencies validate, one final
 manifest publishes the complete dataset in the real root. Cancellation or
 admission failure before that boundary retains the previous complete dataset;
 an absent previous selector remains absent. A lost response after the completed
-durability barriers may leave the full import committed.
+durability barriers may leave the full batch committed.
+
+An incremental batch joins its new owners to the captured active manifest once,
+retaining old content and mutation runs and adding one target-bound retraction
+run for the complete batch. Intermediate prefixes never expose partial edits
+or deletes. Old bodies are neither copied nor scanned for this final join.
+Host catch-up batches may exceed the per-owner document count without stalling
+at that boundary; operation count, memory, source and whole-publication admission
+still apply to the batch. Build reports include the new mutation run's bytes
+and the complete final selector, and retain the final logical count/digest.
+
+Compaction admission is independent of the split target and still counts every
+complete dependency. A one-document exception is observable through its owner
+document count and artifact lengths; it does not silently enlarge compaction
+budgets. Hosts admitting such large documents must configure enough compaction
+input admission to merge the selected owners. An insufficient policy reports
+bounded no-progress instead of an unbounded rewrite.
 
 Partition stages remain flat siblings under the real project root. A deferred
 partition deletion stays registered with `retry_staging_cleanup` for that root,
@@ -273,6 +294,14 @@ revalidate mapped payloads.
 
 ## Publication and recovery
 
+Writer admission uses the canonical ancestry barrier delivered in #900 before
+creating its private stage. Existing directories left by an interrupted attempt
+still require synchronization. A search root may be a symlink outside its
+registered project; the canonical ancestry walk then continues to the filesystem
+mount boundary rather than rejecting that root. A mounted filesystem's own
+persistence remains a platform assumption. This qualification reuses main's
+implementation rather than adding a second stage-level barrier.
+
 Mutation preparation has four ordered stages:
 
 1. Resolve every changed ID to its currently visible content segment and read
@@ -349,6 +378,36 @@ mutation artifacts to serving before the shared visibility and statistic
 contracts are complete.
 
 ## Verification matrix
+
+`api::tests::power_loss::search_projection` runs the real search writer and reader
+under storage's Unix `PowerLossModel`. It validates native IO coverage, then
+materializes and reopens loss of all uncovered operations, complete/reversed
+persistence, isolated pending operations, and prefix/suffix torn manifest
+temporary writes. Append and bounded compaction are observed after the last
+manifest temporary write; all three publication kinds are observed immediately
+before/after active manifest rename. Mutation's post-commit discovery writes
+validation scratch, so its single retained observation uses the exact rename
+path rather than the last write under the component. Every selected manifest
+must be byte-identical to the complete
+old or new selector; document hydration, text/vector/hybrid IDs and scores, and
+metadata filters must match that generation. Acknowledged publication must
+survive loss of all remaining uncovered operations. Initial one/two-level roots
+and retries of existing unsynchronized roots cover namespace ancestry, including
+admission denial and startup with only one descriptor available.
+
+Run the bounded qualification through its existing native CI owner:
+
+```console
+bash scripts/cargo-test-required.sh --locked -p hawdb --all-features --lib \
+  api::tests::power_loss::search_projection:: -- --nocapture --test-threads=1
+```
+
+The existing Linux/macOS `api::tests::power_loss::` CI discovery and execution
+include this module; default Bazel targets do not enable its `test-support` gate.
+The model assumes completed POSIX file/directory synchronization and atomic
+same-directory rename. These finite fixtures do not qualify native Windows
+namespace durability, physical storage hardware, sustained RSS, or the
+representative tens-of-GB workload required by #291.
 
 The current bounded checkpoint regression is
 `mutation_delete_publication_reuses_content_and_repeated_delete_is_a_noop`.

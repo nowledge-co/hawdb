@@ -20,50 +20,17 @@ mod fixtures;
 
 use fixtures::{header, options, task, Generated};
 use hawdb_search::{
-    SearchBodyReadOptions, SearchDocumentBody, SearchDocumentHeader, SearchFusionWeights,
-    SearchLexicalSourcePolicy, SearchMode, SearchOutOfCoreConfig,
-    SearchOutOfCoreGenerationBuildOptions, SearchOutOfCoreGenerationWriter, SearchOutOfCoreReader,
-    SearchOutOfCoreSegmentCompactionPolicy, SearchQueryOptions,
+    SearchBodyReadOptions, SearchDocumentBody, SearchDocumentHeader, SearchLexicalSourcePolicy,
+    SearchMode, SearchOutOfCoreConfig, SearchOutOfCoreGenerationBuildOptions,
+    SearchOutOfCoreGenerationWriter, SearchOutOfCoreReader, SearchOutOfCoreSegmentCompactionPolicy,
 };
 use hawdb_storage::file_io as fs;
-use std::collections::BTreeMap;
 use std::num::{NonZeroU64, NonZeroUsize};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+#[path = "support/out_of_core.rs"]
+mod support;
 
-thread_local! {
-    // Keep the fixture's FD domain owned until its test thread exits.
-    static TEST_PROJECTS: std::cell::RefCell<Vec<hawdb_storage::file_descriptors::ProjectFileDescriptors>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-fn test_dir(name: &str) -> PathBuf {
-    let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let temporary = std::env::var_os("TEST_TMPDIR").map_or_else(std::env::temp_dir, PathBuf::from);
-    let path = temporary.join(format!(
-        "hawdb-search-out-of-core-{name}-{}-{sequence}",
-        std::process::id()
-    ));
-    let files = hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire(
-        &path,
-        hawdb_storage::file_descriptors::DEFAULT_MAX_OPEN_FILES,
-    )
-    .unwrap();
-    TEST_PROJECTS.with_borrow_mut(|owners| owners.push(files));
-    path
-}
-
-fn search_options(limit: usize, rank_window: Option<usize>) -> SearchQueryOptions {
-    SearchQueryOptions {
-        limit,
-        offset: 0,
-        rank_window,
-        fusion_weights: SearchFusionWeights::default(),
-        metadata_filters: BTreeMap::new(),
-        policy_epoch: None,
-    }
-}
+use support::{search_options, test_dir};
 
 // Typecheck the complete public fixture on every FTS host; anonymous-body
 // transfer is executable only on Linux.

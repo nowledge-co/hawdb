@@ -2255,6 +2255,7 @@ impl GraphStore {
             name: name.to_string(),
             node_labels: definition.node_labels.clone(),
             rel_types: definition.rel_types.clone(),
+            relationship_predicates: definition.relationship_predicates.clone(),
         })?;
         self.apply_project_graph_definition(name.to_string(), definition);
         self.finish_non_relational_commit();
@@ -2479,7 +2480,29 @@ fn projected_graph_from_definition(
         }
         return ProjectedGraph::from_store_labels_without_edges(store, &label_ids);
     }
-    ProjectedGraph::from_store_labels_and_rel_types(store, &label_ids, &rel_type_ids)
+    let relationship_predicates = definition
+        .relationship_predicates
+        .iter()
+        .filter_map(|(rel_type, predicate)| {
+            catalog
+                .rel_type_id(rel_type)
+                .map(|rel_type_id| (rel_type_id, predicate))
+        })
+        .collect::<BTreeMap<_, _>>();
+    ProjectedGraph::try_from_store_labels_and_rel_types_with_filters_and_layout(
+        store,
+        &label_ids,
+        &rel_type_ids,
+        |_| true,
+        |relationship| {
+            relationship_predicates
+                .get(&relationship.rel_type)
+                .is_none_or(|predicate| predicate.matches(&relationship.properties))
+        },
+        crate::analytics::ProjectionLayout::Bidirectional,
+        crate::analytics::ProjectionMemoryBudget::unlimited(),
+    )
+    .expect("unlimited checkpoint projection is admitted")
 }
 
 fn validate_changed_node_uniqueness(
@@ -3371,6 +3394,7 @@ mod tests {
     use hawdb_storage::{
         config::{DurabilityPolicy, StorageResidencyMode, WalReplayConfig},
         mutation::{GraphMutation, MutationLimits, RelationshipPropertyUpdate},
+        projection::ProjectedRelationshipPredicate,
         relational::{
             RelationalColumnSchema, RelationalHydrationBudget, RelationalInsertMode, RelationalKey,
             RelationalRow, RelationalScalarType, RelationalTableSchema, RelationalTransaction,
@@ -9729,6 +9753,13 @@ mod tests {
         let definition = ProjectedGraphDefinition {
             node_labels: vec!["Memory".to_string()],
             rel_types: vec!["LINKS".to_string()],
+            relationship_predicates: BTreeMap::from([(
+                "LINKS".to_string(),
+                ProjectedRelationshipPredicate::Gte {
+                    property: "confidence".to_string(),
+                    value: Value::Float(0.7),
+                },
+            )]),
         };
         {
             let mut catalog = Catalog::default();
@@ -9739,8 +9770,26 @@ mod tests {
             let target = store
                 .create_node(&mut catalog, "Memory", properties([("id", Value::Int(2))]))
                 .unwrap();
+            let excluded = store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(3))]))
+                .unwrap();
             store
-                .create_relationship(&mut catalog, source, target, "LINKS", BTreeMap::new())
+                .create_relationship(
+                    &mut catalog,
+                    source,
+                    target,
+                    "LINKS",
+                    properties([("confidence", Value::Float(0.7))]),
+                )
+                .unwrap();
+            store
+                .create_relationship(
+                    &mut catalog,
+                    source,
+                    excluded,
+                    "LINKS",
+                    properties([("confidence", Value::Float(0.69))]),
+                )
                 .unwrap();
             store
                 .register_projected_graph("MemoryGraph", definition.clone())
@@ -9755,7 +9804,7 @@ mod tests {
             let artifact = store
                 .projected_graph_artifact("MemoryGraph", &definition)
                 .unwrap();
-            assert_eq!(artifact.node_count(), 2);
+            assert_eq!(artifact.node_count(), 3);
             assert_eq!(artifact.edge_count(), 1);
         }
         std::fs::remove_dir_all(path).unwrap();
@@ -9767,6 +9816,7 @@ mod tests {
         let definition = ProjectedGraphDefinition {
             node_labels: vec!["Memory".to_string()],
             rel_types: vec!["LINKS".to_string()],
+            relationship_predicates: BTreeMap::new(),
         };
         {
             let mut catalog = Catalog::default();

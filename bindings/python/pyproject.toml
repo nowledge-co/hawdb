@@ -29,6 +29,9 @@ requires-python = ">=3.11"
 
 dynamic = ["version"]
 
+[project.optional-dependencies]
+pydantic = ["pydantic>=2,<3"]
+
 [project.urls]
 Repository = "https://github.com/nowledge-co/hawdb"
 

@@ -23,6 +23,7 @@ use crate::parser::MAX_CYPHER_INPUT_BYTES;
 use crate::ScalarBinaryOp;
 use crate::{AstNode, ReturnExpressionKind, ScalarExpressionKind, ValueExpressionKind};
 use hawdb_core::Value;
+use std::collections::BTreeMap;
 
 fn pipeline_patterns(query: &crate::QueryPipeline, clause: usize) -> &[crate::MatchPattern] {
     let ClauseKind::Match { patterns, .. } = &query.clauses[clause].kind else {
@@ -844,6 +845,7 @@ fn parses_graph_algorithm_calls() {
             name: "EntityGraph".to_string(),
             node_labels: vec!["Entity".to_string()],
             rel_types: vec!["RELATES_TO".to_string()],
+            relationship_predicates: BTreeMap::new(),
         })
     );
     assert_eq!(
@@ -854,12 +856,15 @@ fn parses_graph_algorithm_calls() {
         Statement::GraphAlgorithm(GraphAlgorithm {
             algorithm: GraphAlgorithmKind::PageRank,
             graph_name: "EntityGraph".to_string(),
-            options: GraphAlgorithmOptions {
+            options: Box::new(GraphAlgorithmOptions {
                 damping: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Float(0.85)))),
                 max_iterations: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(20)))),
                 max_levels: None,
-            },
+                max_phases: None,
+                ..GraphAlgorithmOptions::default()
+            }),
             score_column: "pagerank_score".to_string(),
+            return_node_identity: false,
         })
     );
     assert_eq!(
@@ -875,6 +880,16 @@ fn parses_graph_algorithm_calls() {
                 "MENTIONS".to_string(),
                 "MEMORY_RELATES_TO".to_string(),
             ],
+            relationship_predicates: BTreeMap::from([(
+                "MEMORY_RELATES_TO".to_string(),
+                PropertyPredicate::Eq {
+                    variable: "r".to_string(),
+                    property: "status".to_string(),
+                    value: AstNode::synthetic(ValueExpressionKind::Literal(Value::String(
+                        "active".to_string(),
+                    ))),
+                },
+            )]),
         })
     );
     assert_eq!(
@@ -885,12 +900,21 @@ fn parses_graph_algorithm_calls() {
         Statement::GraphAlgorithm(GraphAlgorithm {
             algorithm: GraphAlgorithmKind::PageRank,
             graph_name: "UnifiedGraph".to_string(),
-            options: GraphAlgorithmOptions {
+            options: Box::new(GraphAlgorithmOptions {
                 damping: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Float(0.85)))),
                 max_iterations: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Int(20)))),
                 max_levels: None,
-            },
+                max_phases: None,
+                tolerance: Some(AstNode::synthetic(ValueExpressionKind::Literal(Value::Float(
+                    0.0000001,
+                )))),
+                normalize_initial: Some(AstNode::synthetic(ValueExpressionKind::Literal(
+                    Value::Bool(true),
+                ))),
+                resolution: None,
+            }),
             score_column: "rank".to_string(),
+            return_node_identity: false,
         })
     );
     assert_eq!(
@@ -899,14 +923,16 @@ fn parses_graph_algorithm_calls() {
         Statement::GraphAlgorithm(GraphAlgorithm {
             algorithm: GraphAlgorithmKind::Louvain,
             graph_name: "EntityGraph".to_string(),
-            options: GraphAlgorithmOptions {
+            options: Box::new(GraphAlgorithmOptions {
                 damping: None,
                 max_iterations: None,
                 max_levels: Some(AstNode::synthetic(ValueExpressionKind::Literal(
                     Value::Int(2)
                 ))),
-            },
+                ..GraphAlgorithmOptions::default()
+            }),
             score_column: "louvain_id".to_string(),
+            return_node_identity: false,
         })
     );
     assert_eq!(
@@ -915,13 +941,143 @@ fn parses_graph_algorithm_calls() {
         Statement::GraphAlgorithm(GraphAlgorithm {
             algorithm: GraphAlgorithmKind::PageRank,
             graph_name: "EntityGraph".to_string(),
-            options: GraphAlgorithmOptions {
+            options: Box::new(GraphAlgorithmOptions {
                 damping: Some(AstNode::synthetic(ValueExpressionKind::Parameter("damping".to_string()))),
                 max_iterations: Some(AstNode::synthetic(ValueExpressionKind::Parameter("iterations".to_string()))),
                 max_levels: None,
-            },
+                max_phases: None,
+                ..GraphAlgorithmOptions::default()
+            }),
             score_column: "pagerank_score".to_string(),
+            return_node_identity: false,
         })
+    );
+
+    let Statement::GraphAlgorithm(identity) =
+        parse("CALL page_rank('UnifiedGraph') RETURN node, node_id, node_label, rank").unwrap()
+    else {
+        panic!("expected graph algorithm");
+    };
+    assert!(identity.return_node_identity);
+    assert_eq!(identity.score_column, "rank");
+
+    let Statement::ProjectGraph(project) = parse(
+        "CALL PROJECT_GRAPH('EntityTopicGraph', {'Entity': ''}, {'RELATES_TO': 'r.confidence >= 0.7 AND r.strength >= 0.5'})",
+    )
+    .unwrap()
+    else {
+        panic!("expected projected graph");
+    };
+    assert_eq!(project.node_labels, vec!["Entity"]);
+    assert_eq!(project.rel_types, vec!["RELATES_TO"]);
+    assert!(matches!(
+        project.relationship_predicates.get("RELATES_TO"),
+        Some(PropertyPredicate::And(predicates)) if predicates.len() == 2
+    ));
+
+    let Statement::GraphAlgorithm(algorithm) = parse(
+        "CALL louvain('EntityTopicGraph', maxPhases := 20, maxIterations := 12, resolution := 0.8) RETURN node, louvain_id",
+    )
+    .unwrap()
+    else {
+        panic!("expected graph algorithm");
+    };
+    assert_eq!(
+        algorithm.options.max_phases,
+        Some(AstNode::synthetic(ValueExpressionKind::Literal(
+            Value::Int(20)
+        )))
+    );
+    assert_eq!(
+        algorithm.options.resolution,
+        Some(AstNode::synthetic(ValueExpressionKind::Literal(
+            Value::Float(0.8)
+        )))
+    );
+
+    assert!(
+        parse("CALL PROJECT_GRAPH('g', ['Entity'], {'RELATES_TO': 'r.confidence < 0.7'})")
+            .unwrap_err()
+            .to_string()
+            .contains("support only literal r.property comparisons")
+    );
+    assert!(parse("CALL page_rank('g', unsupported := 1)")
+        .unwrap_err()
+        .to_string()
+        .contains("unsupported graph algorithm option"));
+}
+
+#[test]
+fn projected_relationship_predicates_bound_utf8_input() {
+    let prefix = "r.status = '";
+    let suffix = "'";
+    let literal = "a".repeat(16 * 1024 - prefix.len() - suffix.len());
+    let exact = format!("{prefix}{literal}{suffix}");
+    assert_eq!(exact.len(), 16 * 1024);
+    let query = |filter: &str| {
+        format!("CALL project_graph('g', ['Entity'], {{'RELATES_TO': \"{filter}\"}})")
+    };
+    assert!(parse(&query(&exact)).is_ok());
+    let overflow = format!("{prefix}{literal}é{suffix}");
+    assert_eq!(overflow.len(), 16 * 1024 + 2);
+    assert!(
+        parse(&query(&overflow)).is_err(),
+        "oversized UTF-8 predicates must fail before inner expression parsing"
+    );
+}
+
+#[test]
+fn projected_relationship_predicates_bound_nested_conjuncts() {
+    let query = |count: usize| {
+        let left = std::iter::repeat_n("r.confidence >= 0.7", 8)
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let right = std::iter::repeat_n("r.strength >= 0.5", count - 8)
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        format!("CALL project_graph('g', ['Entity'], {{'RELATES_TO': '({left}) AND ({right})'}})")
+    };
+    assert!(parse(&query(16)).is_ok());
+    assert!(
+        parse(&query(17)).is_err(),
+        "nested AND groups must not bypass the predicate conjunct limit"
+    );
+}
+
+#[test]
+fn projected_graph_maps_reject_duplicate_keys() {
+    for query in [
+        "CALL project_graph('g', {'Entity': '', 'Entity': ''}, ['RELATES_TO'])",
+        "CALL project_graph('g', ['Entity'], {'RELATES_TO': '', 'RELATES_TO': \"r.status = 'active'\"})",
+        "CALL project_graph('g', ['Entity'], {'RELATES_TO': \"r.status = 'active'\", 'RELATES_TO': ''})",
+        "CALL project_graph('g', ['Entity'], {'RELATES_TO': '', 'RELATES_TO': ''})",
+    ] {
+        assert!(parse(query).is_err(), "duplicate map key was admitted: {query}");
+    }
+    assert!(
+        parse("CALL project_graph('g', ['Entity', 'Memory'], ['RELATES_TO', 'MENTIONS'])").is_ok()
+    );
+}
+
+#[test]
+fn graph_algorithm_options_reject_duplicate_aliases() {
+    for query in [
+        "CALL page_rank('g', dampingFactor := 0.85, damping := 0.5)",
+        "CALL page_rank('g', maxIterations := 20, iterations := 1)",
+        "CALL page_rank('g', tolerance := 0.0, TOLERANCE := 0.1)",
+        "CALL page_rank('g', normalizeInitial := true, normalizeInitial := false)",
+        "CALL louvain('g', maxLevels := 1, maxPhases := 20)",
+        "CALL louvain('g', phases := 2, maxPhases := 3)",
+        "CALL louvain('g', resolution := 0.8, resolution := 1.0)",
+    ] {
+        assert!(
+            parse(query).is_err(),
+            "duplicate option was admitted: {query}"
+        );
+    }
+    assert!(parse("CALL page_rank('g', dampingFactor := 0.85, maxIterations := 20, tolerance := 0.0000001, normalizeInitial := true)").is_ok());
+    assert!(
+        parse("CALL louvain('g', maxPhases := 20, maxIterations := 20, resolution := 0.8)").is_ok()
     );
 }
 

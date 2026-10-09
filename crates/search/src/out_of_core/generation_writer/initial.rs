@@ -12,13 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Independently bounded initial content, installed by one complete selector.
+//! Partitioned initial and incremental content, installed by one complete selector.
 
 use super::*;
 use crate::build_control::json;
 use crate::out_of_core::{
     SearchOutOfCoreManifestEnvelope, MAX_OUT_OF_CORE_MANIFEST_BYTES, OUT_OF_CORE_MANIFEST_FILE,
 };
+
+mod install;
+mod update;
 
 #[derive(Clone, Copy)]
 struct Range {
@@ -154,7 +157,7 @@ pub(super) fn finish(
     }
     let cleanup = PreparedCleanup::prepare(&writer.root, &writer.memory, &writer.task_context)?;
     let (generations, manifest_bytes, retention_memory) =
-        publish(&writer, &private, active, &report)?;
+        install::publish(&writer, &private, active, &mut report)?;
     report.manifest_bytes = manifest_bytes;
     report.generation_bytes = report
         .generation_bytes
@@ -250,7 +253,7 @@ fn build_range(
                 artifacts(part, source, range, generation, None)?
             };
             let bytes = artifacts.content_bytes(&part.task_context)?;
-            if bytes > part.options.max_content_artifact_bytes.get() {
+            if range.documents > 1 && bytes > part.options.max_content_artifact_bytes.get() {
                 exceeds_content = true;
                 return Err(HawDBError::Storage(format!(
                     "initial content candidate with {} documents requires {bytes} artifact bytes, exceeding {}",
@@ -328,150 +331,4 @@ fn artifacts(
         }
         Ok(())
     })
-}
-
-fn publish(
-    writer: &SearchOutOfCoreGenerationWriter,
-    private: &Path,
-    active: Option<u64>,
-    report: &SearchOutOfCoreGenerationBuildReport,
-) -> Result<(SearchProjectionGenerations, u64, QueryMemoryLease)> {
-    let memory = &writer.memory;
-    let task = &writer.task_context;
-    let io = io::GenerationIo::new(memory, task);
-    let head = io.read(
-        &io.path(private, Path::new(OUT_OF_CORE_MANIFEST_FILE))?,
-        MAX_OUT_OF_CORE_MANIFEST_BYTES,
-    )?;
-    let _decode = memory.spool.reserve(checked_add(
-        json::decode_capacity(&head.bytes, 0, 0, task)?,
-        3 * 128,
-    )?)?;
-    let envelope: SearchOutOfCoreManifestEnvelope =
-        serde_json::from_slice(&head.bytes).map_err(|error| {
-            HawDBError::Storage(format!("invalid staged initial manifest: {error}"))
-        })?;
-    if json::checksum_with_context(&envelope.body, Some(task))? != envelope.checksum {
-        return Err(HawDBError::Storage(
-            "staged initial manifest checksum mismatch".into(),
-        ));
-    }
-    let manifest = &envelope.body;
-    manifest.validate_names()?;
-    if manifest.generation != report.generation
-        || manifest.document_count != writer.document_count
-        || manifest.documents_digest != writer.documents_digest.finish()
-        || !manifest.mutation_runs.is_empty()
-        || manifest.segments.len() != report.published_content_segments
-    {
-        return Err(HawDBError::Storage(
-            "staged initial manifest identity mismatch".into(),
-        ));
-    }
-    let total = report
-        .generation_bytes
-        .checked_add(head.bytes.len() as u64)
-        .ok_or_else(|| HawDBError::Storage("initial published size overflows".into()))?;
-    if total > writer.options.max_generation_bytes.get() {
-        return Err(HawDBError::Storage(
-            "complete initial generation exceeds publication admission".into(),
-        ));
-    }
-    let count = manifest.segments.len();
-    let retained = memory
-        .retained
-        .reserve(checked_mul(checked_mul(3, count)?, SET_ENTRY_BYTES)?)?;
-    let mut generations = SearchProjectionGenerations {
-        lexical: Some(report.lexical_generation),
-        out_of_core: Some(report.generation),
-        rabitq_remove_all: report.rabitq_artifact_bytes == 0,
-        ..Default::default()
-    };
-    let mut complete_content_bytes = 0_u64;
-    for segment in &manifest.segments {
-        checkpoint(task)?;
-        let lexical =
-            artifact_name::Name::generated("search_lexical.", segment.generation, memory, task)?;
-        let lexical_len = io.length(&io.path(private, lexical.as_ref())?)?;
-        let mut content_bytes = 0_u64;
-        for (file, length, checksum) in [
-            (
-                segment.descriptor_file.as_str(),
-                segment.descriptor_len,
-                Some(segment.descriptor_checksum),
-            ),
-            (segment.payload_file.as_str(), segment.payload_len, None),
-            (
-                segment.metadata_payload_file.as_str(),
-                segment.metadata_payload_len,
-                None,
-            ),
-            (
-                segment.vector_payload_file.as_str(),
-                segment.vector_payload_len,
-                None,
-            ),
-            (
-                segment.layout_file.as_str(),
-                segment.layout_len,
-                Some(segment.layout_checksum),
-            ),
-            (
-                segment.lexical_manifest_file.as_str(),
-                segment.lexical_manifest_len,
-                Some(segment.lexical_manifest_checksum),
-            ),
-            (lexical.as_str(), lexical_len, None),
-        ]
-        .into_iter()
-        .chain(
-            segment
-                .rabitq_artifact_file
-                .as_deref()
-                .zip(segment.rabitq_artifact_len)
-                .map(|(file, length)| (file, length, segment.rabitq_artifact_checksum)),
-        ) {
-            content_bytes = content_bytes
-                .checked_add(length)
-                .ok_or_else(|| HawDBError::Storage("initial content size overflows".into()))?;
-            let source = io.path(private, Path::new(file))?;
-            let target = io.path(&writer.root, Path::new(file))?;
-            io.verify(&source, length, checksum, "staged initial dependency")?;
-            io.link(&source, &target)?;
-            io.verify(&target, length, checksum, "initial dependency")?;
-        }
-        if content_bytes > writer.options.max_content_artifact_bytes.get()
-            || segment.document_count > writer.options.max_content_documents.get()
-        {
-            return Err(HawDBError::Storage(
-                "initial content owner exceeds admission".into(),
-            ));
-        }
-        complete_content_bytes = complete_content_bytes
-            .checked_add(content_bytes)
-            .ok_or_else(|| HawDBError::Storage("initial content size overflows".into()))?;
-        generations.retained_lexical.insert(segment.generation);
-        generations.retained_out_of_core.insert(segment.generation);
-        if segment.rabitq_artifact_file.is_some() {
-            generations.retained_rabitq.insert(segment.generation);
-            generations.rabitq = Some(segment.generation);
-        }
-    }
-    if complete_content_bytes != report.generation_bytes {
-        return Err(HawDBError::Storage(
-            "initial dependency lengths differ from the complete publication report".into(),
-        ));
-    }
-    if discovery::active(&writer.root, memory, task)? != active {
-        return Err(HawDBError::TransactionConflict {
-            read_epoch: active.unwrap_or_default(),
-            committed_epoch: discovery::active(&writer.root, memory, task)?.unwrap_or_default(),
-            key: "initial search publication changed".into(),
-        });
-    }
-    io.write(
-        &io.path(&writer.root, Path::new(OUT_OF_CORE_MANIFEST_FILE))?,
-        &head.bytes,
-    )?;
-    Ok((generations, head.bytes.len() as u64, retained))
 }

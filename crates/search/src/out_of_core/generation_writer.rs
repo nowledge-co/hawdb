@@ -41,8 +41,6 @@ use publication::file_len_checksum;
 use publication::{publish_generation, ActiveManifestUpdate, PublishGenerationInput};
 use rabitq::RaBitQArtifactBuilder;
 use serde::Serialize;
-#[cfg(test)]
-pub(crate) use spool::read_evidence as analyzer_read_evidence;
 pub use spool::SearchStagingCleanupReport;
 pub(in crate::out_of_core) use spool::StageDirectory;
 use spool::{SpoolSource, SPOOL_FRAME_HEADER_BYTES, SPOOL_HEADER};
@@ -112,8 +110,10 @@ pub struct SearchOutOfCoreGenerationBuildOptions {
     /// Maximum documents in one new input content closure.
     /// Compaction outputs use the separate typed compaction input policy.
     pub max_content_documents: NonZeroUsize,
-    /// Complete descriptor/payload/lexical/vector artifact bytes per new input closure.
-    /// Initial imports split oversized candidates before publishing the final selector.
+    /// Target complete descriptor/payload/lexical/vector bytes per new input closure.
+    /// Initial and incremental input splits before one final selector publication.
+    /// An indivisible one-document owner may exceed this target; segment, record
+    /// and whole-publication admission limits remain hard ceilings.
     pub max_content_artifact_bytes: NonZeroU64,
     pub max_segment_uncompressed_bytes: NonZeroU64,
     pub max_segment_compressed_bytes: NonZeroU64,
@@ -276,7 +276,7 @@ impl std::fmt::Debug for SearchOutOfCoreGenerationWriter {
 }
 
 impl SearchOutOfCoreGenerationWriter {
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(test, target_os = "linux", feature = "full-text-search"))]
     pub(in crate::out_of_core) fn memory_for_test(&self) -> BuildMemory {
         self.memory.clone()
     }
@@ -738,8 +738,12 @@ impl SearchOutOfCoreGenerationWriter {
             },
             Ok,
         )?;
+        let compacting = matches!(
+            self.active_manifest_update,
+            Some(ActiveManifestUpdate::Compact { .. })
+        );
         if !private_partition
-            && self.active_manifest_update.is_none()
+            && !compacting
             && self.document_count > self.options.max_content_documents.get()
         {
             return initial::finish(self, generation);
@@ -752,21 +756,15 @@ impl SearchOutOfCoreGenerationWriter {
             memory: self.memory.clone(),
         };
         let artifacts = build(&self, &source, generation)?;
-        let compacting = matches!(
-            self.active_manifest_update,
-            Some(ActiveManifestUpdate::Compact { .. })
-        );
         let publishes_content = self.mutations.is_none() || self.document_count != 0;
         if !compacting
             && publishes_content
             && (self.document_count > self.options.max_content_documents.get()
-                || artifacts.content_bytes(&self.task_context)?
-                    > self.options.max_content_artifact_bytes.get())
+                || (self.document_count > 1
+                    && artifacts.content_bytes(&self.task_context)?
+                        > self.options.max_content_artifact_bytes.get()))
         {
-            if !private_partition
-                && self.active_manifest_update.is_none()
-                && self.document_count > 1
-            {
+            if !private_partition && self.document_count > 1 {
                 drop(artifacts);
                 drop(source);
                 return initial::finish(self, generation);

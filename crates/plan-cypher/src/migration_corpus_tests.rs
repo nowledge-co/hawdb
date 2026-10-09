@@ -222,6 +222,7 @@ fn ordered_mutation_pipeline_preserves_frozen_plans_and_errors() {
 #[test]
 fn ordered_procedure_and_shortest_path_plans_preserve_frozen_outcomes() {
     use hawdb_cypher::{ClauseKind, PathSearch};
+    let migration: Value = serde_json::from_str(DEFAULT_PIPELINE).unwrap();
     let mut covered = BTreeMap::new();
     for line in CASES.lines() {
         let case: Value = serde_json::from_str(line).unwrap();
@@ -248,7 +249,10 @@ fn ordered_procedure_and_shortest_path_plans_preserve_frozen_outcomes() {
             Ok(plan) => format!("{plan:?}"),
             Err(error) => error.to_string(),
         };
-        assert_eq!(text, case["plan"]["text"], "{}: {query}", case["id"]);
+        let expected = migration["logical_plan_representations"]
+            .get(case["id"].as_str().unwrap())
+            .unwrap_or(&case["plan"]["text"]);
+        assert_eq!(text, expected.as_str().unwrap(), "{}: {query}", case["id"]);
     }
     assert_eq!(
         covered,
@@ -335,7 +339,7 @@ fn normalized_pipeline_frozen_plan_coverage() {
     );
     assert_eq!(
         exact,
-        369,
+        361,
         "{}",
         serde_json::to_string_pretty(&differences).unwrap()
     );
@@ -353,14 +357,26 @@ fn normalized_pipeline_frozen_plan_coverage() {
             migration["logical_plan_representations"][difference["id"].as_str().unwrap()]
         );
     }
-    // These two are representation differences, not permission to restore
-    // the incorrect group-key or pre-lookup RETURN window (#757).
+    // Every difference is explicitly qualified in the migration fixture.
+    // The two probe differences are not permission to restore the incorrect
+    // group-key or pre-lookup RETURN window (#757).
     assert_eq!(
         differences
             .iter()
             .map(|case| case["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["probe-0040", "probe-0042"]
+        [
+            "mem-0370",
+            "mem-0374",
+            "owner-0057",
+            "owner-0058",
+            "owner-0059",
+            "owner-0060",
+            "owner-0061",
+            "probe-0008",
+            "probe-0040",
+            "probe-0042",
+        ]
     );
 }
 

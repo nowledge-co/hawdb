@@ -42,6 +42,25 @@ fixtures assume reliable completed POSIX file/directory synchronization and
 atomic same-directory rename; they do not establish arbitrary hardware coverage
 or whole-process scale admission.
 
+Incremental append and replacement use the same captured-spool partitioning.
+Their private selector describes only new content. The final join retains the
+captured active owners and mutation runs, allocates fresh content IDs, and adds
+one complete target-bound run before selecting the resulting closure. Its
+logical count and digest subtract the newly retracted contributions once and
+add every new partition. The byte split target permits an indivisible
+one-document owner; record, segment, operation and publication admission remain
+hard ceilings, with compaction admission configured independently.
+
+`partitioned_append_publication_cuts_select_the_complete_batch` and
+`partitioned_mutation_publication_cuts_preserve_prior_runs_and_the_complete_batch`
+extend native physical image replay to the final incremental publication,
+including a retained previous mutation run. Unit regressions traverse every
+dependency/prefix/final-selector replacement failure, interrupt after a private
+prefix through cancellation and memory rejection, and compare reopened queries
+and scores with a one-segment rebuild. These fixtures have the same finite
+POSIX assumptions; they do not extend the abstract model to private prefixes
+or establish large-corpus RSS qualification for a new runtime revision.
+
 ## Exact target contribution validation
 
 The runtime now adds `mutation_run::validate_targets` after structural closure
