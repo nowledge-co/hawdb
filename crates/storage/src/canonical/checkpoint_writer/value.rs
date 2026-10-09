@@ -34,8 +34,18 @@ pub(crate) fn encode(
     }
     result?;
     work.checkpoint()?;
+    let mut bytes = CheckpointBytes::new(counter.length, work)?;
+    append(value, &mut bytes, work)?;
+    Ok(bytes)
+}
+
+pub(super) fn append(
+    value: &Value,
+    bytes: &mut CheckpointBytes,
+    work: &CheckpointWorkContext,
+) -> Result<(), CanonicalSegmentError> {
     let mut output = Output {
-        bytes: CheckpointBytes::new(counter.length, work)?,
+        bytes,
         work,
         failure: None,
     };
@@ -45,7 +55,7 @@ pub(crate) fn encode(
     }
     result?;
     work.checkpoint()?;
-    Ok(output.bytes)
+    Ok(())
 }
 
 struct Counter<'a> {
@@ -93,7 +103,7 @@ impl Write for Counter<'_> {
 }
 
 struct Output<'a> {
-    bytes: CheckpointBytes,
+    bytes: &'a mut CheckpointBytes,
     work: &'a CheckpointWorkContext,
     failure: Option<CheckpointWorkError>,
 }

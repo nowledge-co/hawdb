@@ -1956,3 +1956,36 @@ payloads, source ownership, full writer work-unit boundaries, FD/disk/cleanup
 debt, allocator/free latency and the entire candidate still need their separate
 ledger. This does not qualify the default owner progress envelope or authorize
 changing its whole-candidate operation estimate.
+
+### Canonical checkpoint record buffer ownership
+
+The private borrowed writer now computes complete node/relationship wire lengths
+without a record-sized temporary buffer and admits the exact record capacity
+before encoding. It retains that buffer's lease through the segment consumer.
+Inline values stream directly into the admitted record through the established
+value codec; spilled values retain their separately admitted pending ownership.
+The dictionary is consulted twice rather than allocating an intermediate key-ID
+array. Node labels copy through fixed 4096-byte blocks with separate bounded
+iteration and output units. The ordinary public encoder and callback path remain
+the independent wire reference. Record-size limits are checked before record
+allocation; invalid value depth retains the established codec diagnostic.
+
+Two frozen actual-writer probes use borrowed source records and a real 64 KiB
+reservation. A 65793-label source and eight inline 37 KiB binary values both
+reopen fully through the ordinary path, but genuinely fail admission assertions
+before correction: four and three large allocations occur before appropriate
+record admission. Source setup and ordinary artifact/readback precede allocation
+observation. Related fixtures compare every wire variant and size boundary,
+label-block boundaries, first-seen keys and relationship endpoints; retain buffer
+ownership after worker closure; cancel every measured direct-codec CPU unit with
+one-unit local admission and fully reconstruct the same source/reservation; and
+compare complete private/ordinary canonical and property-spill artifact bytes and
+full node/relationship readback. The original allocation fixtures are unchanged.
+
+These record buffers are one resource boundary. Segment record/key arrays,
+descriptor payload/returned Bloom ownership, spill pending-array capacities,
+source state, complete writer work units, allocator/free latency, FD/disk/cleanup
+debt and the whole candidate still need qualification. Full-writer readback uses
+its existing descriptor/spill construction admission; only the isolated record
+codec fixtures require one local unit. Default-owner sustained progress and the
+whole-candidate operation estimate remain unresolved.

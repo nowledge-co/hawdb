@@ -217,5 +217,23 @@ fn source(error: hawdb_core::HawDBError) -> CanonicalSegmentError {
 mod value;
 pub(super) use value::encode as encode_value;
 
+pub(super) mod record;
+
+pub(super) enum Record {
+    Ordinary(Vec<u8>),
+    Checkpoint(crate::background::CheckpointBytes),
+}
+
+impl std::ops::Deref for Record {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Ordinary(bytes) => bytes,
+            Self::Checkpoint(bytes) => bytes,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -28,6 +28,8 @@ mod checkpoint_manifest_memory_tests;
 #[cfg(test)]
 mod checkpoint_metadata_tests;
 mod checkpoint_point;
+#[cfg(test)]
+mod checkpoint_record_memory_tests;
 mod checkpoint_scan;
 mod checkpoint_validation;
 mod checkpoint_writer;
@@ -1206,11 +1208,20 @@ impl CanonicalSegmentWriter {
             } else {
                 Some(unit)
             };
-            let payload = encode_node_with_property_spills(
-                node,
-                property_spills.as_deref_mut(),
-                Some(&mut property_keys),
-            )?;
+            let payload = if self.source_admits {
+                checkpoint_writer::Record::Checkpoint(checkpoint_writer::record::node(
+                    node,
+                    property_spills.as_deref_mut(),
+                    &mut property_keys,
+                    self.config,
+                )?)
+            } else {
+                checkpoint_writer::Record::Ordinary(encode_node_with_property_spills(
+                    node,
+                    property_spills.as_deref_mut(),
+                    Some(&mut property_keys),
+                )?)
+            };
             // Public callbacks keep their consumer admission through ordinary
             // encoding; private dictionary work owns bounded child units.
             if let Some(unit) = unit {
@@ -1292,11 +1303,20 @@ impl CanonicalSegmentWriter {
             } else {
                 Some(unit)
             };
-            let payload = encode_relationship_with_property_spills(
-                relationship,
-                property_spills.as_deref_mut(),
-                Some(&mut property_keys),
-            )?;
+            let payload = if self.source_admits {
+                checkpoint_writer::Record::Checkpoint(checkpoint_writer::record::relationship(
+                    relationship,
+                    property_spills.as_deref_mut(),
+                    &mut property_keys,
+                    self.config,
+                )?)
+            } else {
+                checkpoint_writer::Record::Ordinary(encode_relationship_with_property_spills(
+                    relationship,
+                    property_spills.as_deref_mut(),
+                    Some(&mut property_keys),
+                )?)
+            };
             // Public callbacks keep their consumer admission through ordinary
             // encoding; private dictionary work owns bounded child units.
             if let Some(unit) = unit {

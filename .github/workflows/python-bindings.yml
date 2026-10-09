@@ -79,3 +79,9 @@ jobs:
 
       - name: Run tests
         run: pytest
+
+      - name: Install the pydantic extra
+        run: pip install "$(echo dist/*.whl)[pydantic]"
+
+      - name: Run tests with the pydantic extra
+        run: pytest tests/test_pydantic*.py
