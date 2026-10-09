@@ -459,10 +459,15 @@ fn cancellation_is_terminal_without_revoking_a_previous_batch_or_source_pin() {
     );
     let pins = Arc::clone(&db.runtime.get().unwrap().reader_pins);
     let snapshot = db.begin_read_transaction_with_context(&context).unwrap();
+    assert_eq!(pins.lock().unwrap().active_views.len(), 1);
     let mut cursor = snapshot
         .into_retained_query(QUERY, &params(), options())
         .unwrap();
-    assert_eq!(pins.lock().unwrap().active_views.len(), 1);
+    // Node COW ownership is sufficient: the cursor releases the broader read
+    // transaction/file-retirement pin as soon as it detaches its heap source.
+    assert_eq!(pins.lock().unwrap().active_views.len(), 0);
+    assert_eq!(cursor.profile().source_pinned_rows, 9);
+    assert!(cursor.profile().source_pinned_pages > 0);
     let batch = cursor.next_batch().unwrap().unwrap();
     let before = cursor.profile().visited_rows;
     context.cancellation().cancel();
@@ -474,8 +479,40 @@ fn cancellation_is_terminal_without_revoking_a_previous_batch_or_source_pin() {
     assert_eq!(cursor.next_batch().unwrap_err(), error);
     assert_eq!(cursor.profile().visited_rows, before);
     assert_eq!(pins.lock().unwrap().active_views.len(), 0);
+    assert_eq!(cursor.profile().source_pinned_rows, 0);
+    assert_eq!(cursor.profile().source_pinned_pages, 0);
+    assert_eq!(cursor.profile().source_directory_capacity_bytes, 0);
     assert_eq!(scores(&batch), vec![2]);
     assert_eq!(batch.status(), RetainedQueryStatus::Failed);
+}
+
+#[test]
+fn heap_source_continues_after_database_close_without_retaining_its_read_pin() {
+    let db = fixture();
+    let pins = Arc::clone(&db.runtime.get().unwrap().reader_pins);
+    let mut cursor = db
+        .query_with_params_retained(QUERY, &params(), options())
+        .unwrap();
+    let profile = cursor.profile();
+    assert_eq!(profile.visited_rows, 0);
+    assert_eq!(profile.source_snapshot_rows, 9);
+    assert_eq!(profile.source_pinned_rows, 9);
+    assert!(profile.source_directory_capacity_bytes > 0);
+    assert!(pins.lock().unwrap().active_views.is_empty());
+    let governor = cursor.governor.clone();
+    drop(db);
+    let mut values = Vec::new();
+    while let Some(batch) = cursor.next_batch().unwrap() {
+        values.extend(scores(&batch));
+    }
+    assert_eq!(values, vec![2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(cursor.profile().source_snapshot_rows, 9);
+    assert_eq!(cursor.profile().source_pinned_rows, 0);
+    assert_eq!(cursor.profile().source_directory_capacity_bytes, 0);
+    assert!(pins.lock().unwrap().active_views.is_empty());
+    drop(cursor);
+    assert_eq!(governor.retained_result_snapshot().retained_bytes, 0);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
 }
 
 #[test]

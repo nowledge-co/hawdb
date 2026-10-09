@@ -466,6 +466,14 @@ impl<K, V> CowSegmentedMap<K, V> {
         self.segments.len()
     }
 
+    /// Shared directory capacity, including its Arc header. Page/record
+    /// allocations are intentionally excluded from this metadata observation.
+    pub fn directory_capacity_bytes(&self) -> usize {
+        2 * std::mem::size_of::<usize>()
+            + std::mem::size_of::<Vec<Arc<BTreeMap<K, V>>>>()
+            + self.segments.capacity() * std::mem::size_of::<Arc<BTreeMap<K, V>>>()
+    }
+
     pub fn shared_segment_count_with(&self, other: &Self) -> usize {
         self.segments
             .iter()

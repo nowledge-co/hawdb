@@ -41,6 +41,7 @@ fn canonical_decoding_refuses_instead_of_returning_only_the_live_overlay() {
         )
         .unwrap();
     assert!(store.is_out_of_core());
+    assert!(store.try_materialized_node_read_source().unwrap().is_none());
     assert!(store
         .try_scan_materialized_nodes_after(catalog.label_id("Item"), None)
         .unwrap()
@@ -110,4 +111,76 @@ fn demanded_scan_resumes_borrowed_label_order_across_publication() {
         .unwrap()
         .next()
         .is_none());
+}
+
+#[test]
+fn minimal_source_shares_records_and_survives_store_mutation_and_destruction() {
+    let mut store = GraphStore::default();
+    let mut catalog = Catalog::default();
+    for score in 0..4 {
+        store
+            .create_node(
+                &mut catalog,
+                "Item",
+                BTreeMap::from([("score".into(), Value::Int(score))]),
+            )
+            .unwrap();
+    }
+    let source = store.try_materialized_node_read_source().unwrap().unwrap();
+    assert_eq!(source.row_count(), 4);
+    assert_eq!(source.page_count(), store.nodes.segment_count());
+    assert_eq!(
+        source.directory_capacity_bytes(),
+        store.nodes.directory_capacity_bytes()
+    );
+    assert!(source.nodes.shares_storage_with(&store.nodes));
+    let original = source.iter_after(None).unwrap().next().unwrap();
+    assert!(std::ptr::eq(
+        original,
+        store.nodes.get(&original.id).unwrap()
+    ));
+    let first_id = original.id;
+    store
+        .nodes
+        .get_mut(&first_id)
+        .unwrap()
+        .properties
+        .insert("score".into(), Value::Int(99));
+    assert_eq!(original.properties["score"], Value::Int(0));
+    assert_eq!(
+        store.nodes.get(&first_id).unwrap().properties["score"],
+        Value::Int(99)
+    );
+    drop(store);
+    let scores = source
+        .iter_after(Some(first_id))
+        .unwrap()
+        .map(|node| node.properties["score"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(scores, vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+}
+
+#[test]
+fn minimal_source_observes_both_shared_poison_signals() {
+    for integrity in [false, true] {
+        let store = GraphStore::default();
+        let source = store.try_materialized_node_read_source().unwrap().unwrap();
+        assert!(source.iter_after(None).unwrap().next().is_none());
+        if integrity {
+            store
+                .integrity_poisoned
+                .store(true, AtomicOrdering::Release);
+        } else {
+            store
+                .post_wal_apply_poisoned
+                .store(true, AtomicOrdering::Release);
+        }
+        let Err(error) = source.iter_after(None) else {
+            panic!("poisoned source must fail before yielding records");
+        };
+        assert_eq!(
+            error.to_string(),
+            store.ensure_usable().unwrap_err().to_string()
+        );
+    }
 }

@@ -3,18 +3,24 @@
 
 //! Experimental demand-driven delivery for the materialized numeric plan.
 //!
-//! Native payload handoff is allocation-preserving. Source snapshot/planning
-//! workspace and foreign adapters are not yet fully qualified; this is not a
+//! Native payload handoff is allocation-preserving. Pinned node-page capacity,
+//! planning workspace and foreign adapters are not yet fully qualified; this is not a
 //! general query, source-reuse, or whole-operation memory-bounded capability.
 
 use super::{query_runtime, Database, DatabaseReadTransaction, QuerySystemVariables};
-use crate::{HawDBError, RuntimeGovernor, RuntimeGovernorConfig, RuntimeResourceSnapshot, Value};
-use hawdb_core::{LabelId, PropertyType, RuntimeCancellationReason};
+use crate::store::{GraphStore, MaterializedNodeReadSource};
+use crate::{
+    DatabaseConfig, HawDBError, RuntimeGovernor, RuntimeGovernorConfig, RuntimeResourceSnapshot,
+    Value,
+};
+use hawdb_core::{LabelId, PropertyType, RuntimeCancellationReason, RuntimeTaskContext};
 use hawdb_executor::numeric::retained::{
     NumericBatchOwner, NumericBufferProvenance, RetainedNumericBatch, RetainedNumericBuilder,
     RetainedNumericError, RetainedNumericValues,
 };
-use hawdb_executor::numeric::{try_prepare_retained_numeric_plan, NumericFragment};
+use hawdb_executor::numeric::{
+    try_prepare_retained_numeric_plan, NumericFragment, RetainedNumericPlan,
+};
 use hawdb_executor::{
     NumericLiteral, NumericPredicate, QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease,
     QueryMemoryLedger, ValidityView,
@@ -218,6 +224,12 @@ impl Default for RetainedQueryOptions {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RetainedQueryProfile {
+    /// Original source cardinality, including unrelated labels; observed without a scan.
+    pub source_snapshot_rows: usize,
+    pub source_pinned_rows: usize,
+    pub source_pinned_pages: usize,
+    /// Shared directory capacity only; excludes node-page payload allocations.
+    pub source_directory_capacity_bytes: usize,
     pub pulls: usize,
     pub visited_rows: usize,
     pub predicate_selected_rows: usize,
@@ -377,7 +389,7 @@ impl OwnedFragment {
 /// Serializes pulls through `&mut self`. No work is prefetched between pulls.
 #[derive(Debug)]
 pub struct RetainedQueryCursor {
-    source: Option<DatabaseReadTransaction>,
+    source: Option<RetainedSource>,
     fragment: OwnedFragment,
     label_id: LabelId,
     last_node: Option<NodeId>,
@@ -392,6 +404,31 @@ pub struct RetainedQueryCursor {
     terminal_error: Option<RetainedQueryError>,
     result_allowance: u64,
     needs_ids: bool,
+}
+
+#[derive(Debug)]
+struct RetainedSource {
+    nodes: MaterializedNodeReadSource,
+    task_context: Option<RuntimeTaskContext>,
+}
+
+fn require_materialized_source(
+    store: &GraphStore,
+    require_source_reuse: bool,
+    task_context: Option<&RuntimeTaskContext>,
+) -> Result<()> {
+    store.ensure_usable()?;
+    if let Some(context) = task_context {
+        context.checkpoint().map_err(RetainedQueryError::Stopped)?;
+    }
+    if require_source_reuse
+        || store
+            .try_scan_materialized_nodes_after(None, None)?
+            .is_none()
+    {
+        return Err(RetainedQueryError::CopyRequired);
+    }
+    Ok(())
 }
 
 fn restrictive(left: Option<usize>, right: Option<usize>) -> Option<usize> {
@@ -413,10 +450,31 @@ impl Database {
         parameters: &BTreeMap<String, Value>,
         options: RetainedQueryOptions,
     ) -> Result<RetainedQueryCursor> {
-        // Eligible numeric statements cannot observe the system logs. Avoid
-        // cloning slow-query/statement-summary history into this source pin.
-        self.read_transaction_state(None, None)?
-            .into_retained_query(cypher, parameters, options)
+        let runtime = self.runtime.get()?;
+        require_materialized_source(&runtime.store, options.require_source_reuse, None)?;
+        let prepared = query_runtime::parse_runtime_execution(cypher)?;
+        super::query_work_request_for_statement(&self.system_variables, &prepared.statement)?;
+        let optimized = self.optimized_query_plan_with_access_control(
+            cypher,
+            &prepared.statement,
+            parameters,
+            None,
+        )?;
+        let plan = try_prepare_retained_numeric_plan(&optimized.physical_plan, &runtime.catalog)
+            .ok_or(RetainedQueryError::UnsupportedPlan)?;
+        let label_id = runtime
+            .catalog
+            .label_id(plan.fragment.label)
+            .ok_or(RetainedQueryError::UnsupportedPlan)?;
+        RetainedQueryCursor::from_plan(
+            plan,
+            label_id,
+            &runtime.store,
+            &self.config,
+            &self.retained_runtime,
+            None,
+            options,
+        )
     }
     pub fn retained_result_snapshot(&self) -> Option<hawdb_qos::RuntimeRetainedResultSnapshot> {
         self.retained_runtime
@@ -433,22 +491,13 @@ impl DatabaseReadTransaction {
         self,
         cypher: &str,
         parameters: &BTreeMap<String, Value>,
-        mut options: RetainedQueryOptions,
+        options: RetainedQueryOptions,
     ) -> Result<RetainedQueryCursor> {
-        self.store.ensure_usable()?;
-        if let Some(context) = &self.task_context {
-            context.checkpoint().map_err(RetainedQueryError::Stopped)?;
-        }
-        if options.require_source_reuse {
-            return Err(RetainedQueryError::CopyRequired);
-        }
-        if self
-            .store
-            .try_scan_materialized_nodes_after(None, None)?
-            .is_none()
-        {
-            return Err(RetainedQueryError::CopyRequired);
-        }
+        require_materialized_source(
+            &self.store,
+            options.require_source_reuse,
+            self.task_context.as_ref(),
+        )?;
         let prepared = query_runtime::parse_runtime_execution(cypher)?;
         super::query_work_request_for_statement(
             &QuerySystemVariables::default(),
@@ -466,16 +515,38 @@ impl DatabaseReadTransaction {
             .catalog
             .label_id(plan.fragment.label)
             .ok_or(RetainedQueryError::UnsupportedPlan)?;
-        let governor = self.retained_runtime.governor()?.clone();
+        RetainedQueryCursor::from_plan(
+            plan,
+            label_id,
+            &self.store,
+            &self.config,
+            &self.retained_runtime,
+            self.task_context.clone(),
+            options,
+        )
+    }
+}
+
+impl RetainedQueryCursor {
+    fn from_plan(
+        plan: RetainedNumericPlan<'_>,
+        label_id: LabelId,
+        store: &GraphStore,
+        config: &DatabaseConfig,
+        runtime: &RetainedRuntime,
+        task_context: Option<RuntimeTaskContext>,
+        mut options: RetainedQueryOptions,
+    ) -> Result<Self> {
+        let governor = runtime.governor()?.clone();
         let result_allowance = governor.snapshot().limits.result_budget_bytes;
         let permit = governor.try_admit(
             RuntimeWorkRequest::foreground_query(0, result_allowance).with_blocking(false),
         )?;
-        let ledger = QueryMemoryLedger::new(self.config.execution_memory.query_memory_bytes);
+        let ledger = QueryMemoryLedger::new(config.execution_memory.query_memory_bytes);
         let account = ledger.account(
             QueryMemoryClass::ResultMaterialization,
             "retained_query",
-            self.config.execution_memory.query_memory_bytes,
+            config.execution_memory.query_memory_bytes,
         );
         let schema_bytes = plan
             .projections
@@ -537,22 +608,31 @@ impl DatabaseReadTransaction {
             options
                 .batch_rows
                 .get()
-                .min(self.config.execution_memory.batch_rows.get()),
+                .min(config.execution_memory.batch_rows.get()),
         )
         .unwrap();
         options.batch_bytes = NonZeroUsize::new(
             options
                 .batch_bytes
                 .get()
-                .min(self.config.execution_memory.batch_payload_bytes.get()),
+                .min(config.execution_memory.batch_payload_bytes.get()),
         )
         .unwrap();
-        options.max_result_rows =
-            restrictive(self.config.max_read_result_rows, options.max_result_rows);
+        options.max_result_rows = restrictive(config.max_read_result_rows, options.max_result_rows);
         options.max_result_payload_bytes = restrictive(
-            self.config.max_read_result_payload_bytes,
+            config.max_read_result_payload_bytes,
             options.max_result_payload_bytes,
         );
+        let source = RetainedSource {
+            nodes: store
+                .try_materialized_node_read_source()?
+                .ok_or(RetainedQueryError::CopyRequired)?,
+            task_context,
+        };
+        let profile = RetainedQueryProfile {
+            source_snapshot_rows: source.nodes.row_count(),
+            ..RetainedQueryProfile::default()
+        };
         let shared = Arc::new(CursorShared {
             schema,
             outstanding: AtomicUsize::new(0),
@@ -563,7 +643,7 @@ impl DatabaseReadTransaction {
         });
         drop(permit);
         Ok(RetainedQueryCursor {
-            source: Some(self),
+            source: Some(source),
             fragment,
             label_id,
             last_node: None,
@@ -574,7 +654,7 @@ impl DatabaseReadTransaction {
             ledger,
             account,
             options,
-            profile: RetainedQueryProfile::default(),
+            profile,
             terminal_error: None,
             result_allowance,
             needs_ids,
@@ -592,6 +672,18 @@ impl RetainedQueryCursor {
     pub fn profile(&self) -> RetainedQueryProfile {
         RetainedQueryProfile {
             query_peak_bytes: self.ledger.snapshot().peak_bytes,
+            source_pinned_rows: self
+                .source
+                .as_ref()
+                .map_or(0, |source| source.nodes.row_count()),
+            source_pinned_pages: self
+                .source
+                .as_ref()
+                .map_or(0, |source| source.nodes.page_count()),
+            source_directory_capacity_bytes: self
+                .source
+                .as_ref()
+                .map_or(0, |source| source.nodes.directory_capacity_bytes()),
             ..self.profile
         }
     }
@@ -740,12 +832,7 @@ impl RetainedQueryCursor {
         builder.attach_owner(Arc::clone(&slot))?;
         let mut last = self.last_node;
         let mut visited = 0usize;
-        for node in source
-            .store
-            .try_scan_materialized_nodes_after(None, self.last_node)?
-            .ok_or(RetainedQueryError::CopyRequired)?
-            .take(rows.get())
-        {
+        for node in source.nodes.iter_after(self.last_node)?.take(rows.get()) {
             visited += 1;
             self.profile.visited_rows += 1;
             if let Some(context) = &source.task_context {

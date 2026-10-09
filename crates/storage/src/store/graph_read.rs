@@ -31,7 +31,55 @@ mod ordered_range_tests;
 #[path = "graph_read/retained_scan_tests.rs"]
 mod retained_scan_tests;
 
+/// Root-internal immutable materialized-node source. Capturing this source
+/// shares only the node directory/pages and fail-closed poison signals, without
+/// keeping relationships, indexes, statistics, file leases or a query cache.
+/// It does not borrow a mutable store and does not decode canonical data.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct MaterializedNodeReadSource {
+    nodes: CowSegmentedMap<NodeId, NodeRecord>,
+    integrity_poisoned: Arc<AtomicBool>,
+    post_wal_apply_poisoned: Arc<AtomicBool>,
+}
+
+impl MaterializedNodeReadSource {
+    pub fn iter_after(&self, after: Option<NodeId>) -> Result<impl Iterator<Item = &NodeRecord>> {
+        ensure_graph_read_flags_usable(&self.integrity_poisoned, &self.post_wal_apply_poisoned)?;
+        Ok(self.nodes.iter_after(after).map(|(_, node)| node))
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn page_count(&self) -> usize {
+        self.nodes.segment_count()
+    }
+
+    /// Capacity of the shared page-directory allocation only. This excludes
+    /// node-page/record payload capacities and is not a full source memory bound.
+    pub fn directory_capacity_bytes(&self) -> usize {
+        self.nodes.directory_capacity_bytes()
+    }
+}
+
 impl GraphStore {
+    /// Capture a heap-only materialized source without cloning the whole store.
+    /// Caller admission of source capacities remains a separate requirement.
+    #[doc(hidden)]
+    pub fn try_materialized_node_read_source(&self) -> Result<Option<MaterializedNodeReadSource>> {
+        self.ensure_usable()?;
+        if self.is_out_of_core() || self.canonical_base.is_some() {
+            return Ok(None);
+        }
+        Ok(Some(MaterializedNodeReadSource {
+            nodes: self.nodes.clone(),
+            integrity_poisoned: Arc::clone(&self.integrity_poisoned),
+            post_wal_apply_poisoned: Arc::clone(&self.post_wal_apply_poisoned),
+        }))
+    }
+
     pub fn canonical_node_from_segments(&self, id: NodeId) -> Result<Option<NodeRecord>> {
         self.durable
             .as_ref()

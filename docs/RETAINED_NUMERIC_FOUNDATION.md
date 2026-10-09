@@ -101,6 +101,15 @@ materialized source resumes by ordered node ID over the original immutable
 copy-on-write pages. Persistent canonical/overlay sources and source-reuse
 requests return `CopyRequired`.
 
+The direct database entrypoint borrows the existing catalog and planner during
+creation instead of cloning a complete read transaction. The cursor keeps only
+the shared node directory/pages, fail-closed poison signals and optional task
+context. Consuming a read transaction releases its catalog, relationships,
+indexes, query cache, file leases and reader pin before returning the cursor.
+These heap-only node pages survive database destruction and later writes use
+copy-on-write publication. No persistent canonical pages are decoded by this
+path. Shared storage poison signals still fail subsequent source access closed.
+
 Pulling is serialized by Rust's mutable cursor borrow. Slot/byte/handle pressure
 returns a retryable error before source advancement, without waiting for a
 same-thread consumer to release its own view. A larger explicitly configured
@@ -119,8 +128,9 @@ byte range; a small selection still charges its full owner. Result row and
 selected-payload limits apply cumulatively and caller options cannot raise the
 database limits. Every batch remains provisional until successful terminal
 completion. Terminal errors repeat as errors, never EOF; status changes remain
-visible through earlier independently retained batches. Cursor/database close
-and cancellation release the source without revoking produced values.
+visible through earlier independently retained batches. Cursor close and
+cancellation release the source without revoking produced values. Dropping the
+database leaves the cursor's immutable heap source available for further pulls.
 
 The database and all its read snapshots share one retained governor binding,
 chosen at the first eligible cursor. Configure the governor before that first
@@ -129,14 +139,17 @@ allowance. Native batches retain schema/status and admitted payload owners,
 without retaining the database, source iterator or read pin. CPU permits are
 released between pulls. Profiles retain inspected/constructed/selected work even
 when a later delivery budget fails; emitted rows/bytes include successful
-deliveries only.
+deliveries only. Profiles also report original source cardinality and currently
+pinned rows/pages without scanning records; completion, failure and close drop
+the current source counts to zero. Directory capacity counts only the shared
+directory allocation, excluding node-page and record payload capacities.
 
-This is not yet a qualified whole-operation memory bound. Root cursor creation
-still uses the existing read-snapshot and optimizer paths, whose catalog,
-statistics, source-pin and planning workspace allocations need a complete
-admission/capacity audit. The direct database entrypoint avoids cloning unrelated
-slow-query and statement-summary history, but that does not resolve the remaining
-workspace gate. Current counters cover numeric source construction, selection
+This is not yet a qualified whole-operation memory bound. Parsing and optimizer
+workspace still need a complete admission/capacity audit. The cursor pins all
+materialized node pages, including unrelated labels; their complete retained
+capacity is not yet admitted. Avoiding a full read-snapshot clone and reporting
+source counts does not resolve these remaining gates. Current counters cover
+numeric source construction, selection
 and native payload handoff; they do not establish a complete allocator/RSS or
 foreign-adapter copy profile. Use the ordinary APIs for unsupported workloads;
 the experimental retained API never silently materializes those workloads.
@@ -154,7 +167,8 @@ tests, not full query or cross-language qualification.
 
 Native cursor regressions additionally cover two-slot and shared-handle pressure,
 retry without source advancement, snapshot publication/close, cancellation and
-read-pin release, SKIP/LIMIT range identity, nullable float IEEE bits, fixed empty
+immediate read-pin release, source survival after database destruction,
+SKIP/LIMIT range identity, nullable float IEEE bits, fixed empty
 schemas, terminal cumulative budgets and bounded sparse-label source work.
 Explicitly increasing slots from two to four cannot bypass shared handles;
 larger cursor row/payload options cannot bypass database limits.
