@@ -60,6 +60,10 @@ impl CheckpointWorkContext {
         self
     }
 
+    pub(crate) fn scheduler(&self) -> Option<LocalQosScheduler> {
+        self.scheduler.clone()
+    }
+
     pub fn checkpoint(&self) -> Result<(), CheckpointWorkError> {
         self.task
             .checkpoint()

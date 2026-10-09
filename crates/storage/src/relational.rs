@@ -1436,16 +1436,25 @@ impl RelationalRowPages {
 }
 
 fn relational_row_entry_bytes(key: &RelationalKey, row: &RelationalRow) -> usize {
-    std::mem::size_of::<RelationalKey>()
+    relational_row_entry_bytes_with_visit(key, row, &mut || Ok::<_, std::convert::Infallible>(()))
+        .unwrap_or_else(|never| match never {})
+}
+
+fn relational_row_entry_bytes_with_visit<E>(
+    key: &RelationalKey,
+    row: &RelationalRow,
+    visit: &mut impl FnMut() -> std::result::Result<(), E>,
+) -> std::result::Result<usize, E> {
+    visit()?;
+    let mut payload = 0usize;
+    for value in key.0.iter().chain(row.values.iter()) {
+        visit()?;
+        payload = payload.saturating_add(value.estimated_payload_bytes());
+    }
+    Ok(std::mem::size_of::<RelationalKey>()
         .saturating_add(std::mem::size_of::<RelationalRow>())
         .saturating_add(std::mem::size_of::<Vec<RelationalValue>>())
-        .saturating_add(
-            key.0
-                .iter()
-                .map(RelationalValue::estimated_payload_bytes)
-                .sum::<usize>(),
-        )
-        .saturating_add(row.estimated_payload_bytes())
+        .saturating_add(payload))
 }
 
 fn relational_key_payload_bytes(key: &RelationalKey) -> Option<usize> {
@@ -3758,6 +3767,39 @@ impl RelationalState {
                 })
             });
         row_bytes.saturating_add(overflow_bytes)
+    }
+
+    /// Computes both existing checkpoint admission terms in one borrowed,
+    /// cooperatively checked traversal. No row/value copies are created.
+    #[doc(hidden)]
+    pub fn estimated_checkpoint_admission_bytes_with_visit<E>(
+        &self,
+        visit: &mut impl FnMut() -> std::result::Result<(), E>,
+    ) -> std::result::Result<(u64, u64), E> {
+        let mut resident_rows = 0u64;
+        if self.materialized_rows_resident {
+            for segment in self.segments.values() {
+                visit()?;
+                for (key, row) in segment.rows.iter() {
+                    resident_rows = resident_rows.saturating_add(
+                        relational_row_entry_bytes_with_visit(key, row, visit)? as u64,
+                    );
+                }
+            }
+        }
+        let mut checkpoint = if self.materialized_rows_resident {
+            resident_rows
+        } else {
+            self.detached_row_bytes
+        };
+        for segment in self.overflow_segments.values() {
+            visit()?;
+            checkpoint = checkpoint.saturating_add(match segment {
+                RelationalOverflowSegment::Inline(value) => value.len() as u64,
+                RelationalOverflowSegment::FileRange { range, .. } => range.length.get(),
+            });
+        }
+        Ok((resident_rows, checkpoint))
     }
 
     pub fn index_lookup(

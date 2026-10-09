@@ -17,9 +17,7 @@
 use super::{Catalog, DatabaseConfig, GraphStore, LocalQosScheduler, ReaderPins};
 use crate::error::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
-use hawdb_qos::{
-    LocalQosPermit, RuntimeGovernor, RuntimePermit, RuntimeWorkRequest, WorkClass, WorkRequest,
-};
+use hawdb_qos::{RuntimeGovernor, RuntimePermit, RuntimeWorkRequest};
 use hawdb_storage::store::{CheckpointCandidate, CheckpointDebtSnapshot, CheckpointSourceIdentity};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError};
@@ -27,6 +25,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 const RETRY_DELAY: Duration = Duration::from_millis(100);
+const PLANNING_MEMORY_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AutomaticCheckpointReport {
@@ -130,7 +129,6 @@ enum Phase {
 #[derive(Debug)]
 struct Admission {
     runtime: RuntimePermit,
-    local: LocalQosPermit,
 }
 
 #[derive(Debug)]
@@ -942,32 +940,48 @@ fn prepare(
 ) -> Result<Option<(CheckpointCandidate, Admission)>> {
     task.checkpoint()
         .map_err(|reason| HawDBError::Storage(reason.to_string()))?;
-    let local = scheduler
-        .try_start(WorkRequest::background(
-            WorkClass::Mutation,
-            source.store.checkpoint_estimated_operations(),
-        ))
-        .map_err(|reason| {
-            HawDBError::Storage(format!("automatic checkpoint QoS deferred: {reason:?}"))
-        })?;
-    let memory = source.store.checkpoint_candidate_admission_bytes()?;
+    if !scheduler.policy().background_enabled {
+        return Err(HawDBError::Storage(
+            "automatic checkpoint QoS deferred: background disabled".into(),
+        ));
+    }
+    let memory = {
+        // Planning borrows the captured source and keeps only scalar totals.
+        // Its traversal is admitted in bounded units before the current
+        // conservative whole-candidate memory reservation is calculated.
+        let planning = governor
+            .try_admit(RuntimeWorkRequest::background_maintenance(
+                PLANNING_MEMORY_BYTES,
+            ))
+            .map_err(|reason| {
+                HawDBError::Storage(format!("automatic checkpoint planning deferred: {reason}"))
+            })?;
+        let work = hawdb_storage::background::CheckpointWorkContext::new(
+            planning.bind_task_context(task.clone()),
+        )
+        .with_scheduler(scheduler.clone());
+        source
+            .store
+            .checkpoint_candidate_admission_bytes_with_work_context(&work)?
+    };
     let runtime = governor
         .try_admit(RuntimeWorkRequest::background_maintenance(memory).with_io_wave_slots(1))
         .map_err(|reason| {
             HawDBError::Storage(format!("automatic checkpoint admission deferred: {reason}"))
         })?;
-    // Retain the whole-job QoS permit until all builders have bounded units.
-    // The canonical/descriptor builders can already consume this admitted task
-    // for cancellation and I/O without reacquiring CPU or memory admission.
+    // Actual builder units consume LocalQoS, rather than reserving one
+    // operation for every record until handoff. Keep the existing conservative
+    // governor reservation until the full memory/paused-work ledger is ready.
     let work = hawdb_storage::background::CheckpointWorkContext::new(
         runtime.bind_task_context(task.clone()),
-    );
+    )
+    .with_scheduler(scheduler.clone());
     let candidate = source
         .store
         .prepare_checkpoint_candidate_with_work_context(&source.catalog, &work)?;
     task.checkpoint()
         .map_err(|reason| HawDBError::Storage(reason.to_string()))?;
-    Ok(candidate.map(|candidate| (candidate, Admission { runtime, local })))
+    Ok(candidate.map(|candidate| (candidate, Admission { runtime })))
 }
 
 fn retire(retired: Retired, pins: &Mutex<ReaderPins>) {
@@ -985,13 +999,14 @@ fn retire(retired: Retired, pins: &Mutex<ReaderPins>) {
     let _ = candidate.reclaim_published_generations(&mut selected.store, &pinned);
     drop(candidate);
     drop(selected);
-    let Admission { runtime, local } = admission;
+    let Admission { runtime } = admission;
     drop(runtime);
-    local.finish_with_outcome(true);
 }
 
 #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
 mod tests {
+    mod progress;
+    mod qos_units;
     mod read_gate;
     mod read_handoff;
 

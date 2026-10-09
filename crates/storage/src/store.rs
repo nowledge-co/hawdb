@@ -3188,13 +3188,41 @@ fn elapsed_micros(started: std::time::Instant) -> u64 {
 }
 
 fn estimated_node_record_bytes(node: &NodeRecord) -> u64 {
-    32u64
+    estimated_node_record_bytes_with_visit(node, &mut || Ok::<_, std::convert::Infallible>(()))
+        .unwrap_or_else(|never| match never {})
+}
+
+fn estimated_node_record_bytes_with_visit<E>(
+    node: &NodeRecord,
+    visit: &mut impl FnMut() -> std::result::Result<(), E>,
+) -> std::result::Result<u64, E> {
+    visit()?;
+    Ok(32u64
         .saturating_add((node.labels.len() as u64).saturating_mul(4))
-        .saturating_add(estimated_properties_bytes(&node.properties))
+        .saturating_add(crate::mutation::estimated_properties_bytes_with_visit(
+            &node.properties,
+            visit,
+        )?))
 }
 
 fn estimated_relationship_record_bytes(relationship: &RelRecord) -> u64 {
-    40u64.saturating_add(estimated_properties_bytes(&relationship.properties))
+    estimated_relationship_record_bytes_with_visit(relationship, &mut || {
+        Ok::<_, std::convert::Infallible>(())
+    })
+    .unwrap_or_else(|never| match never {})
+}
+
+fn estimated_relationship_record_bytes_with_visit<E>(
+    relationship: &RelRecord,
+    visit: &mut impl FnMut() -> std::result::Result<(), E>,
+) -> std::result::Result<u64, E> {
+    visit()?;
+    Ok(
+        40u64.saturating_add(crate::mutation::estimated_properties_bytes_with_visit(
+            &relationship.properties,
+            visit,
+        )?),
+    )
 }
 
 impl hawdb_storage::graph_engine::GraphReadEngine for GraphStore {

@@ -40,6 +40,10 @@ mod resume_tests;
 #[path = "graph_checkpoint_candidate/verbatim_tests.rs"]
 mod verbatim_tests;
 
+#[cfg(test)]
+#[path = "graph_checkpoint_candidate/unit_qos_tests.rs"]
+mod unit_qos_tests;
+
 /// Identity of the complete foreground prefix from which a worker publishes.
 /// Opaque fields prevent a facade caller from manufacturing a partial receipt.
 #[doc(hidden)]
@@ -77,6 +81,9 @@ pub struct CheckpointDebtSnapshot {
 /// Catch-up runs on captured sources outside the writer critical section.
 #[doc(hidden)]
 pub struct CheckpointCandidate {
+    // Keep unit admission across fresh catch-up tasks without retaining the
+    // cancelled task or an execution permit for every record in the dataset.
+    scheduler: Option<hawdb_qos::LocalQosScheduler>,
     prepared: Option<PreparedCheckpoint>,
     store: Option<GraphStore>,
     catalog: Option<Catalog>,
@@ -135,14 +142,57 @@ impl GraphStore {
     /// allocation leases and bounded work still require full qualification.
     #[doc(hidden)]
     pub fn checkpoint_candidate_admission_bytes(&self) -> Result<u64> {
-        self.estimated_logical_record_bytes()
-            .checked_add(self.relational_state.estimated_materialized_row_bytes())
-            .and_then(|bytes| bytes.checked_add(self.relational_state.estimated_checkpoint_bytes()))
+        self.checkpoint_candidate_admission_bytes_with_visit(&mut || {
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|never| match never {})
+    }
+
+    /// Plans the existing conservative reservation through borrowed size steps.
+    /// Every graph/property/value and relational cell step can defer or cancel;
+    /// no complete record/value array is allocated during this scan.
+    #[doc(hidden)]
+    pub fn checkpoint_candidate_admission_bytes_with_work_context(
+        &self,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<u64> {
+        self.checkpoint_candidate_admission_bytes_with_visit(&mut || {
+            let unit = work.start_unit()?;
+            unit.finish();
+            Ok::<_, crate::background::CheckpointWorkError>(())
+        })
+        .map_err(HawDBError::from_storage_error)?
+    }
+
+    fn checkpoint_candidate_admission_bytes_with_visit<E>(
+        &self,
+        visit: &mut impl FnMut() -> std::result::Result<(), E>,
+    ) -> std::result::Result<Result<u64>, E> {
+        visit()?;
+        let mut logical = self
+            .canonical_base
+            .as_ref()
+            .map_or(0, |reader| reader.manifest().artifact_len);
+        for node in self.nodes.values() {
+            logical = logical.saturating_add(estimated_node_record_bytes_with_visit(node, visit)?);
+        }
+        for relationship in self.relationships.values() {
+            logical = logical.saturating_add(estimated_relationship_record_bytes_with_visit(
+                relationship,
+                visit,
+            )?);
+        }
+        let (resident_rows, checkpoint_rows) = self
+            .relational_state
+            .estimated_checkpoint_admission_bytes_with_visit(visit)?;
+        Ok(logical
+            .checked_add(resident_rows)
+            .and_then(|bytes| bytes.checked_add(checkpoint_rows))
             .and_then(|bytes| bytes.checked_mul(16))
             .and_then(|bytes| bytes.checked_add(128 * 1024 * 1024))
             .ok_or_else(|| {
                 HawDBError::Storage("checkpoint candidate admission size overflow".into())
-            })
+            }))
     }
 
     #[doc(hidden)]
@@ -273,6 +323,7 @@ impl GraphStore {
             .as_ref()
             .expect("prepared checkpoint is durable");
         let mut candidate = CheckpointCandidate {
+            scheduler: work.scheduler(),
             source_wal_path: durable.wal_path.clone(),
             source_head: self.admitted_branch_head().copied(),
             source_store_id: durable.store_id(),
@@ -752,7 +803,10 @@ impl CheckpointCandidate {
         source: &GraphStore,
         task: &RuntimeTaskContext,
     ) -> Result<CheckpointWalTail> {
-        let work = crate::background::CheckpointWorkContext::new(task.clone());
+        let mut work = crate::background::CheckpointWorkContext::new(task.clone());
+        if let Some(scheduler) = &self.scheduler {
+            work = work.with_scheduler(scheduler.clone());
+        }
         let original = source.durable.as_ref().expect("validated durable source");
         let prepared = self
             .prepared

@@ -575,6 +575,7 @@ impl PropertySpillWriter {
         write_hashed(&mut file, &mut artifact_digest, ARTIFACT_HEADER)?;
         write_hashed(&mut file, &mut artifact_digest, &generation.0.to_le_bytes())?;
         drop(_wave);
+        unit.finish();
         let create = if checkpoint_buffers {
             GraphDescriptorTreeBuilder::create_checkpoint
         } else {
@@ -589,7 +590,6 @@ impl PropertySpillWriter {
             descriptor_config,
             work.clone(),
         )?;
-        unit.finish();
         Ok(Self {
             work,
             path,
