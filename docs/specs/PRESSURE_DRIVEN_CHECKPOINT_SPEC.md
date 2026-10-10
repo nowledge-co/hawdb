@@ -1112,8 +1112,19 @@ source authority, cleanup and complete ordinary-reopen assertions remain
 unchanged. The corrected reader tree passed four supported profiles, all required
 complete regression commands and all 96 actually executed local fuzz targets.
 
-Checkpoint suffix decoding now has its own cooperative path, while ordinary
-decoding remains independent. Each transaction operation and field scan checks
+Checkpoint suffix decoding has a cooperative allocation backend, while ordinary
+decoding retains its existing allocation behavior. Both backends share operation
+dispatch, field identities, required-field order and enum conversion in
+`wal/binary/op_decode.rs`. Backend-specific allocation, field inventory, value
+and predicate decoding remain explicit; envelope/value decoding and other
+checkpoint codec copies still need consolidation or broader qualification.
+A deterministic field-order and mutation regression exercises all 28 operation
+codes in 8552 cases. It preserves repeated-field order while moving field groups,
+adds unknown varint/fixed64/byte fields, duplicates individual fields and mutates
+each body byte. Both allocation backends must agree on complete re-encoded
+records or corruption diagnostics. Existing cancellation and retained-memory
+regressions continue to exercise the controlled backend independently of this
+shared dispatch. This does not complete the broader codec/resource acceptance. Each transaction operation and field scan checks
 the admitted task. The field inventory borrows input slices instead of storing
 duplicate strings, varints and message descriptors. UTF-8 validation and owned
 string/binary copying use at most 64 KiB source chunks, carrying at most three

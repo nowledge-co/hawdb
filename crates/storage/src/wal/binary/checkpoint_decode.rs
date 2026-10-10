@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Cooperative checkpoint-only WAL decoding. Ordinary decoding stays independent.
+//! Cooperative checkpoint WAL decoding with shared operation dispatch.
 //! Field inventory borrows the record instead of allocating duplicate fields.
 //! Decoded strings, byte buffers and vectors retain admitted allocation owners.
 //! Map nodes/comparisons, replay-created allocations, Arc finalization and
@@ -626,219 +626,53 @@ fn decode_op_frame(bytes: &[u8], pos: &mut usize, work: &DecodeContext) -> Resul
     decode_op_body(op_code, body, work)
 }
 
-fn decode_op_body(op_code: u64, body: &[u8], work: &DecodeContext) -> Result<WalOp> {
-    match op_code {
-        OP_CREATE_NODE_LABEL => {
-            let fields = OpFields::parse(body, &[1], &[], work)?;
-            Ok(WalOp::CreateNodeLabel {
-                label: fields.required_string(1, "label")?,
-            })
-        }
-        OP_CREATE_RELATIONSHIP_TYPE => {
-            let fields = OpFields::parse(body, &[1], &[], work)?;
-            Ok(WalOp::CreateRelationshipType {
-                rel_type: fields.required_string(1, "relationship type")?,
-            })
-        }
-        OP_CREATE_NODE_TABLE => {
-            let fields = OpFields::parse(body, &[1], &[], work)?;
-            Ok(WalOp::CreateNodeTable {
-                name: fields.required_string(1, "table name")?,
-            })
-        }
-        OP_CREATE_RELATIONSHIP_TABLE => {
-            let fields = OpFields::parse(body, &[1], &[], work)?;
-            Ok(WalOp::CreateRelationshipTable {
-                name: fields.required_string(1, "table name")?,
-            })
-        }
-        OP_CREATE_PROPERTY => {
-            let fields = OpFields::parse(body, &[2, 3], &[], work)?;
-            Ok(WalOp::CreateProperty {
-                table_kind: decode_table_kind_code(fields.required_varint(1, "table kind")?)?,
-                table: fields.required_string(2, "table")?,
-                property: fields.required_string(3, "property")?,
-                value_type: decode_property_type_code(fields.required_varint(4, "value type")?)?,
-                nullable: fields.required_varint(5, "nullable flag")? != 0,
-            })
-        }
-        OP_ALTER_TABLE_STATE => {
-            let fields = OpFields::parse(body, &[2], &[], work)?;
-            Ok(WalOp::AlterTableState {
-                table_kind: decode_table_kind_code(fields.required_varint(1, "table kind")?)?,
-                table: fields.required_string(2, "table")?,
-                state: decode_schema_object_state_code(fields.required_varint(3, "state")?)?,
-            })
-        }
-        OP_ALTER_PROPERTY_STATE => {
-            let fields = OpFields::parse(body, &[2, 3], &[], work)?;
-            Ok(WalOp::AlterPropertyState {
-                table_kind: decode_table_kind_code(fields.required_varint(1, "table kind")?)?,
-                table: fields.required_string(2, "table")?,
-                property: fields.required_string(3, "property")?,
-                state: decode_schema_object_state_code(fields.required_varint(4, "state")?)?,
-            })
-        }
-        OP_GC_TABLE_DESCRIPTOR => {
-            let fields = OpFields::parse(body, &[2], &[], work)?;
-            Ok(WalOp::GcTableDescriptor {
-                table_kind: decode_table_kind_code(fields.required_varint(1, "table kind")?)?,
-                table: fields.required_string(2, "table")?,
-            })
-        }
-        OP_GC_PROPERTY_DESCRIPTOR => {
-            let fields = OpFields::parse(body, &[2, 3], &[], work)?;
-            Ok(WalOp::GcPropertyDescriptor {
-                table_kind: decode_table_kind_code(fields.required_varint(1, "table kind")?)?,
-                table: fields.required_string(2, "table")?,
-                property: fields.required_string(3, "property")?,
-            })
-        }
-        OP_CREATE_INDEX => {
-            let fields = OpFields::parse(body, &[1, 2], &[], work)?;
-            Ok(WalOp::CreateIndex {
-                label: fields.required_string(1, "label")?,
-                property: fields.required_string(2, "property")?,
-            })
-        }
-        OP_CREATE_COMPOSITE_INDEX => {
-            let fields = OpFields::parse(body, &[1, 2], &[], work)?;
-            Ok(WalOp::CreateCompositeIndex {
-                label: fields.required_string(1, "label")?,
-                properties: fields.strings_for(2)?,
-            })
-        }
-        OP_CREATE_RANGE_INDEX => {
-            let fields = OpFields::parse(body, &[1, 2], &[], work)?;
-            Ok(WalOp::CreateRangeIndex {
-                label: fields.required_string(1, "label")?,
-                property: fields.required_string(2, "property")?,
-            })
-        }
-        OP_CREATE_FULL_TEXT_INDEX => {
-            let fields = OpFields::parse(body, &[1, 2], &[], work)?;
-            Ok(WalOp::CreateFullTextIndex {
-                label: fields.required_string(1, "label")?,
-                property: fields.required_string(2, "property")?,
-            })
-        }
-        OP_CREATE_UNIQUE_CONSTRAINT => {
-            let fields = OpFields::parse(body, &[1, 2], &[], work)?;
-            Ok(WalOp::CreateUniqueConstraint {
-                label: fields.required_string(1, "label")?,
-                property: fields.required_string(2, "property")?,
-            })
-        }
-        OP_CREATE_NODE_PROPERTY_EXISTS_CONSTRAINT => {
-            let fields = OpFields::parse(body, &[1, 2], &[], work)?;
-            Ok(WalOp::CreateNodePropertyExistsConstraint {
-                label: fields.required_string(1, "label")?,
-                property: fields.required_string(2, "property")?,
-            })
-        }
-        OP_CREATE_RELATIONSHIP_UNIQUE_CONSTRAINT => {
-            let fields = OpFields::parse(body, &[1, 2], &[], work)?;
-            Ok(WalOp::CreateRelationshipUniqueConstraint {
-                rel_type: fields.required_string(1, "relationship type")?,
-                property: fields.required_string(2, "property")?,
-            })
-        }
-        OP_CREATE_RELATIONSHIP_PROPERTY_EXISTS_CONSTRAINT => {
-            let fields = OpFields::parse(body, &[1, 2], &[], work)?;
-            Ok(WalOp::CreateRelationshipPropertyExistsConstraint {
-                rel_type: fields.required_string(1, "relationship type")?,
-                property: fields.required_string(2, "property")?,
-            })
-        }
-        OP_CREATE_NODE => {
-            let fields = OpFields::parse(body, &[2], &[3], work)?;
-            Ok(WalOp::CreateNode {
-                id: NodeId(fields.required_varint(1, "node id")?),
-                label: fields.required_string(2, "label")?,
-                properties: fields.properties_for(3)?,
-            })
-        }
-        OP_CREATE_RELATIONSHIP => {
-            let fields = OpFields::parse(body, &[4], &[5], work)?;
-            Ok(WalOp::CreateRelationship {
-                id: RelId(fields.required_varint(1, "relationship id")?),
-                source: NodeId(fields.required_varint(2, "source node id")?),
-                target: NodeId(fields.required_varint(3, "target node id")?),
-                rel_type: fields.required_string(4, "relationship type")?,
-                properties: fields.properties_for(5)?,
-            })
-        }
-        OP_SET_NODE_PROPERTY => {
-            let fields = OpFields::parse(body, &[2], &[3], work)?;
-            Ok(WalOp::SetNodeProperty {
-                id: NodeId(fields.required_varint(1, "node id")?),
-                property: fields.required_string(2, "property")?,
-                value: decode_value_message(fields.required_message(3, "value")?, 1, work)?,
-            })
-        }
-        OP_SET_RELATIONSHIP_PROPERTY => {
-            let fields = OpFields::parse(body, &[2], &[3], work)?;
-            Ok(WalOp::SetRelationshipProperty {
-                id: RelId(fields.required_varint(1, "relationship id")?),
-                property: fields.required_string(2, "property")?,
-                value: decode_value_message(fields.required_message(3, "value")?, 1, work)?,
-            })
-        }
-        OP_DELETE_NODE => {
-            let fields = OpFields::parse(body, &[], &[], work)?;
-            Ok(WalOp::DeleteNode {
-                id: NodeId(fields.required_varint(1, "node id")?),
-            })
-        }
-        OP_DELETE_RELATIONSHIP => {
-            let fields = OpFields::parse(body, &[], &[], work)?;
-            Ok(WalOp::DeleteRelationship {
-                id: RelId(fields.required_varint(1, "relationship id")?),
-            })
-        }
-        OP_PROJECT_GRAPH => {
-            let fields = OpFields::parse(body, &[1, 2, 3, 4], &[], work)?;
-            let encoded_predicates = fields.unique_borrowed_string(
-                4,
-                "projected graph WAL has duplicate relationship predicate fields",
-            )?;
-            let relationship_predicates = encoded_predicates
-                .map(|encoded| predicate::decode(encoded, work))
-                .transpose()?
-                .unwrap_or_default();
-            Ok(WalOp::ProjectGraph {
-                name: fields.required_string(1, "projected graph name")?,
-                node_labels: fields.strings_for(2)?,
-                rel_types: fields.strings_for(3)?,
-                relationship_predicates,
-            })
-        }
-        OP_MARK_INITIAL_IMPORT_SOURCE => {
-            let fields = OpFields::parse(body, &[1], &[], work)?;
-            Ok(WalOp::MarkInitialImportSource {
-                source_fingerprint: fields.required_string(1, "source fingerprint")?,
-            })
-        }
-        OP_RELATIONAL => {
-            let fields = OpFields::parse(body, &[], &[1], work)?;
-            Ok(WalOp::Relational {
-                record: copy_arc(fields.required_message(1, "relational record")?, work)?,
-            })
-        }
-        OP_RELATIONAL_SNAPSHOT => {
-            let fields = OpFields::parse(body, &[], &[1], work)?;
-            Ok(WalOp::RelationalSnapshot {
-                record: copy_arc(fields.required_message(1, "relational record")?, work)?,
-            })
-        }
-        OP_APPEND => {
-            let fields = OpFields::parse(body, &[], &[1], work)?;
-            Ok(WalOp::Append {
-                record: copy_arc(fields.required_message(1, "append record")?, work)?,
-            })
-        }
-        op_code => Err(HawDBError::Storage(format!(
-            "unknown WAL op code {op_code}"
-        ))),
+struct ControlledOpDecoder<'w>(&'w DecodeContext);
+
+impl<'a, 'w> op_decode::OpDecoder<'a> for ControlledOpDecoder<'w> {
+    type Fields = OpFields<'a, 'w>;
+
+    fn parse(
+        &self,
+        body: &'a [u8],
+        strings: &'static [u32],
+        messages: &'static [u32],
+    ) -> Result<Self::Fields> {
+        OpFields::parse(body, strings, messages, self.0)
     }
+}
+
+impl op_decode::OpFieldsDecode for OpFields<'_, '_> {
+    fn required_string(&mut self, id: u32, name: &str) -> Result<String> {
+        OpFields::required_string(self, id, name)
+    }
+    fn strings_for(&mut self, id: u32) -> Result<Vec<String>> {
+        OpFields::strings_for(self, id)
+    }
+    fn required_varint(&self, id: u32, name: &str) -> Result<u64> {
+        OpFields::required_varint(self, id, name)
+    }
+    fn properties_for(&self, id: u32) -> Result<BTreeMap<String, Value>> {
+        OpFields::properties_for(self, id)
+    }
+    fn value(&self, id: u32, name: &str) -> Result<Value> {
+        decode_value_message(self.required_message(id, name)?, 1, self.work)
+    }
+    fn record(&self, id: u32, name: &str) -> Result<Arc<[u8]>> {
+        copy_arc(self.required_message(id, name)?, self.work)
+    }
+    fn predicates(
+        &mut self,
+    ) -> Result<BTreeMap<String, crate::projection::ProjectedRelationshipPredicate>> {
+        self.unique_borrowed_string(
+            4,
+            "projected graph WAL has duplicate relationship predicate fields",
+        )?
+        .map(|encoded| predicate::decode(encoded, self.work))
+        .transpose()
+        .map(Option::unwrap_or_default)
+    }
+}
+
+fn decode_op_body(op_code: u64, body: &[u8], work: &DecodeContext) -> Result<WalOp> {
+    op_decode::decode_op_body(op_code, body, &ControlledOpDecoder(work))
 }

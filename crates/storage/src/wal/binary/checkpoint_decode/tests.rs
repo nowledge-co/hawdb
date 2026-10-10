@@ -52,7 +52,7 @@ pub(super) fn parity(bytes: &[u8], work: &CheckpointWorkContext) {
     assert!(
         outcome(decode_binary_wal_record_with_work_context(bytes, work))
             == outcome(super::super::decode_binary_wal_record(bytes)),
-        "controlled and independent ordinary decoders must agree for {} bytes",
+        "controlled and ordinary allocation backends must agree for {} bytes",
         bytes.len(),
     );
 }
@@ -217,4 +217,89 @@ fn checkpoint_units_wal_decode_cancels_every_classified_unit_and_fully_retries()
         parity(&bytes, &work);
         retry.assert_released(&scheduler);
     }
+}
+
+#[test]
+fn checkpoint_units_wal_decode_generated_field_orders_and_mutations_match() {
+    let scheduler = scheduler();
+    let work = CheckpointWorkContext::default().with_scheduler(scheduler.clone());
+    let mut checked = 0usize;
+    let mut codes = std::collections::BTreeSet::new();
+    for op in super::super::tests::sample_ops() {
+        let children = match op {
+            WalOp::Batch(children) => children,
+            op => vec![op],
+        };
+        for op in children {
+            let (code, body) = encode_op_body(&op).unwrap();
+            codes.insert(code);
+            let mut groups = BTreeMap::<u32, Vec<Vec<u8>>>::new();
+            let mut pos = 0;
+            while pos < body.len() {
+                let start = pos;
+                let (id, wire) = decode_tag(&body, &mut pos).unwrap();
+                skip_field(&body, &mut pos, wire).unwrap();
+                groups
+                    .entry(id)
+                    .or_default()
+                    .push(body[start..pos].to_vec());
+            }
+            let mut groups: Vec<_> = groups.into_values().collect();
+            let original = outcome(super::super::decode_binary_wal_record(&raw_record(
+                code, &body,
+            )));
+            // Move field groups while keeping repeated-field order, which is part
+            // of composite-index and projected-graph semantics, unchanged.
+            for reverse in [false, true] {
+                if reverse {
+                    groups.reverse();
+                }
+                for rotation in 0..groups.len() {
+                    let mut reordered = Vec::new();
+                    for offset in 0..groups.len() {
+                        for field in &groups[(rotation + offset) % groups.len()] {
+                            reordered.extend(field);
+                        }
+                    }
+                    // Unknown fields exercise all supported wire types. Invalid
+                    // UTF-8 in an unknown byte field must remain uninterpreted.
+                    encode_varint_field(100, u64::MAX, &mut reordered);
+                    encode_fixed64_field(101, u64::MAX, &mut reordered);
+                    encode_len_field(102, &[0xff, 0x80], &mut reordered);
+                    let record = raw_record(code, &reordered);
+                    assert!(outcome(super::super::decode_binary_wal_record(&record)) == original);
+                    assert!(
+                        outcome(decode_binary_wal_record_with_work_context(&record, &work))
+                            == original
+                    );
+                    checked += 1;
+                }
+            }
+            for group in &groups {
+                for field in group {
+                    let mut duplicate = body.clone();
+                    duplicate.extend(field);
+                    parity(&raw_record(code, &duplicate), &work);
+                    checked += 1;
+                }
+            }
+            // Fixed deterministic mutations combine valid field encodings with
+            // malformed tags/lengths, rather than testing only valid prefixes.
+            for index in 0..body.len() {
+                for byte in [0, 0x7f, 0x80, 0xff] {
+                    let mut mutated = body.clone();
+                    mutated[index] = byte;
+                    parity(&raw_record(code, &mutated), &work);
+                    checked += 1;
+                }
+            }
+            assert_eq!(scheduler.state().running_background_operations, 0);
+        }
+    }
+    assert_eq!(codes, (OP_CREATE_NODE_LABEL..=OP_APPEND).collect());
+    assert!(checked > 1000);
+    println!(
+        "WAL field-order and mutation parity: {checked} cases, {} operation codes",
+        codes.len()
+    );
 }
