@@ -2712,9 +2712,13 @@ impl NowledgeMemEmbeddedStoreHandle {
                     payload_bytes =
                         payload_bytes.saturating_add(search_document_payload_bytes(document));
                     if payload_bytes > max_payload_bytes {
-                        return Err(HawDBError::Execution(format!(
-                            "search projection document hydration produced {payload_bytes} payload bytes, limit is {max_payload_bytes}"
-                        )));
+                        return Err(HawDBError::read_budget_exceeded(
+                            ReadBudgetResource::PayloadBytes,
+                            max_payload_bytes,
+                            format!(
+                                "search projection document hydration produced {payload_bytes} payload bytes, limit is {max_payload_bytes}"
+                            ),
+                        ));
                     }
                     documents.push(document.clone());
                 }
@@ -2728,10 +2732,14 @@ impl NowledgeMemEmbeddedStoreHandle {
                 if output.metrics.hydrated_bytes
                     > u64::try_from(max_payload_bytes).unwrap_or(u64::MAX)
                 {
-                    return Err(HawDBError::Execution(format!(
-                        "search projection document hydration produced {} payload bytes, limit is {max_payload_bytes}",
-                        output.metrics.hydrated_bytes
-                    )));
+                    return Err(HawDBError::read_budget_exceeded(
+                        ReadBudgetResource::PayloadBytes,
+                        max_payload_bytes,
+                        format!(
+                            "search projection document hydration produced {} payload bytes, limit is {max_payload_bytes}",
+                            output.metrics.hydrated_bytes
+                        ),
+                    ));
                 }
                 Ok(NowledgeMemSearchHydrationOutput {
                     documents: output.documents,
@@ -10735,37 +10743,63 @@ mod tests {
 
     #[test]
     fn embedded_handle_search_hydration_rejects_payload_over_budget() {
-        let graph = NowledgeMemGraph::from_database(
-            Database::new_with_config(DatabaseConfig {
-                max_read_result_payload_bytes: Some(64),
-                ..DatabaseConfig::default()
-            }),
-            NowledgeMemGraphMode::ShadowReadOnly,
-        );
-        let mut index = SearchIndex::in_memory();
-        index
-            .upsert(crate::SearchDocument {
-                id: "source_chunk:large".to_string(),
-                title: "Large".to_string(),
-                content: "x".repeat(256),
-                embedding: None,
-                metadata: BTreeMap::new(),
-            })
-            .unwrap();
-        let handle = NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(
-            graph,
-            Some(NowledgeMemSearchProjection::from_index(index)),
-        ))
-        .unwrap();
+        for out_of_core in [false, true] {
+            let root = unique_nowledge_mem_test_dir("search_hydration_budget");
+            let graph = NowledgeMemGraph::from_database(
+                Database::new_with_config(DatabaseConfig {
+                    max_read_result_payload_bytes: Some(64),
+                    ..DatabaseConfig::default()
+                }),
+                NowledgeMemGraphMode::ShadowReadOnly,
+            );
+            let mut index = if out_of_core {
+                SearchIndex::open(&root).unwrap()
+            } else {
+                SearchIndex::in_memory()
+            };
+            index
+                .upsert(crate::SearchDocument {
+                    id: "source_chunk:large".to_string(),
+                    title: "Large".to_string(),
+                    content: "x".repeat(256),
+                    embedding: None,
+                    metadata: BTreeMap::new(),
+                })
+                .unwrap();
+            let store = if out_of_core {
+                index.checkpoint().unwrap();
+                drop(index);
+                NowledgeMemEmbeddedStore::new_with_out_of_core_search(
+                    graph,
+                    NowledgeMemOutOfCoreSearchProjection::open(&root).unwrap(),
+                    NowledgeMemRetrievalProjectionAdvisor::default(),
+                )
+            } else {
+                NowledgeMemEmbeddedStore::new(
+                    graph,
+                    Some(NowledgeMemSearchProjection::from_index(index)),
+                )
+            };
+            let handle = NowledgeMemEmbeddedStoreHandle::new(store).unwrap();
+            let ids = ["source_chunk:large".to_string()];
+            let error = handle.search_projection_documents(&ids, 1).unwrap_err();
 
-        let error = handle
-            .search_projection_documents(&["source_chunk:large".to_string()], 1)
-            .unwrap_err();
-
-        assert!(error.to_string().contains("payload bytes"));
-        let snapshot = handle.runtime_governor_snapshot().unwrap();
-        assert_eq!(snapshot.admissions, 1);
-        assert_eq!(snapshot.completions, 1);
+            assert!(error.to_string().contains("payload bytes"));
+            assert!(
+                matches!(&error, HawDBError::ReadBudgetExceeded(cause)
+                    if cause.resource == ReadBudgetResource::PayloadBytes && cause.limit == 64),
+                "hydration lost its result budget cause (out_of_core={out_of_core}): {error}"
+            );
+            let request_error = handle.search_projection_documents(&ids, 0).unwrap_err();
+            assert!(matches!(request_error, HawDBError::Execution(_)));
+            let snapshot = handle.runtime_governor_snapshot().unwrap();
+            assert_eq!(snapshot.admissions, 1);
+            assert_eq!(snapshot.completions, 1);
+            drop(handle);
+            if out_of_core {
+                std::fs::remove_dir_all(root).unwrap();
+            }
+        }
     }
 
     #[test]
