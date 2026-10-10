@@ -96,6 +96,15 @@ in the correct shard. Partial shards never receive a full-campaign manifest.
 The separate mutant gate remains mandatory. CI keeps one shard by default;
 timeouts and resource settings are unchanged.
 
+## Search private-stage cleanup ownership
+
+`HawDBSearchStageCleanup` checks that interrupted writer cleanup and retained
+stage retries keep unresolved disk evidence and live ticket allocations covered
+by retained admission. The guard restores unfinished tickets; only confirmed
+removal may free a ticket and subsequently its reservation. Two controls reject
+forgetting the ticket on unwind and refunding admission before freeing it.
+See the [inductive argument, source mapping and proof limits](SEARCH_STAGE_CLEANUP_PROOF.md).
+
 ## Immutable root artifact bindings
 
 `HawDBImmutableRootBindings` models the manifest-to-object relation used by a
