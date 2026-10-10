@@ -70,6 +70,7 @@ py_library(
 py_test(
     name = "hawdb_python_tests",
     size = "small",
+    timeout = "moderate",
     srcs = glob(["tests/*.py"]),
     legacy_create_init = False,
     main = "tests/pytest_main.py",
