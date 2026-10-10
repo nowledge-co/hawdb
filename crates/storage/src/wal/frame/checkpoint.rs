@@ -25,6 +25,8 @@ pub(crate) use reader::{CheckpointBinaryWalReader, CheckpointWalReadEvent};
 mod stream_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod writer_tests;
 
 pub(crate) struct CheckpointWalFrameStream<'a> {
     generation: u64,
@@ -54,6 +56,28 @@ impl CheckpointWalFragment<'_> {
 
     pub(crate) fn encoded_len(&self) -> usize {
         self.padding + self.header.len() + self.body.len()
+    }
+
+    /// Write the bounded physical fragment without allocating a combined
+    /// buffer. Complete short writes before the caller advances replay state.
+    pub(crate) fn write_to<W: std::io::Write>(&self, output: &mut W) -> std::io::Result<()> {
+        let mut slices = self.parts().map(std::io::IoSlice::new);
+        let mut remaining = &mut slices[..];
+        std::io::IoSlice::advance_slices(&mut remaining, 0);
+        while !remaining.is_empty() {
+            match output.write_vectored(remaining) {
+                Ok(0) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WriteZero,
+                        "checkpoint WAL fragment write made no progress",
+                    ));
+                }
+                Ok(written) => std::io::IoSlice::advance_slices(&mut remaining, written),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
     }
 }
 

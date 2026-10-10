@@ -434,154 +434,11 @@ fn decode_binary_wal_record_inner(
     bytes: &[u8],
     work: &DecodeContext,
 ) -> Result<BinaryWalRecordDecode> {
-    let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-    if bytes.len() < 21 {
-        return Err(HawDBError::Storage(
-            "binary WAL record envelope is truncated".to_string(),
-        ));
-    }
-    let lsn = u64::from_le_bytes(bytes[0..8].try_into().expect("8-byte lsn"));
-    let record_kind = bytes[8];
-    let commit_epoch = u64::from_le_bytes(bytes[9..17].try_into().expect("8-byte commit epoch"));
-    let op_count = u32::from_le_bytes(bytes[17..21].try_into().expect("4-byte op count"));
-    let mut pos = 21usize;
-    unit.finish();
-    let op = match record_kind {
-        RECORD_KIND_SINGLE => {
-            if op_count != 1 {
-                return Err(HawDBError::Storage(format!(
-                    "single-op WAL record declares op_count {op_count}"
-                )));
-            }
-            let op = decode_op_frame(bytes, &mut pos, work)?;
-            if let WalOp::Batch(_) = op {
-                return Err(HawDBError::Storage(
-                    "single-op WAL record carries a batch envelope".to_string(),
-                ));
-            }
-            op
-        }
-        RECORD_KIND_BATCH => {
-            let mut ops = Vec::new();
-            for _ in 0..op_count {
-                push(&mut ops, decode_op_frame(bytes, &mut pos, work)?, work)?;
-            }
-            WalOp::Batch(ops)
-        }
-        kind => {
-            return Err(HawDBError::Storage(format!(
-                "unknown WAL record kind {kind}"
-            )));
-        }
-    };
-    if pos != bytes.len() {
-        return Err(HawDBError::Storage(format!(
-            "binary WAL record has {} trailing bytes",
-            bytes.len() - pos
-        )));
-    }
-    Ok(BinaryWalRecordDecode::Entry {
-        entry: WalEntry { lsn, op },
-        commit_epoch,
-    })
+    record_decode::decode_record(bytes, &ControlledOpDecoder(work))
 }
 
 fn decode_value_message(bytes: &[u8], depth: usize, work: &DecodeContext) -> Result<Value> {
-    ensure_value_depth(depth)?;
-    let mut pos = 0usize;
-    let mut value: Option<Value> = None;
-    let mut map_nodes = map_memory::MapMemory::default();
-    while pos < bytes.len() {
-        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-        let (field_id, wire_type) = decode_tag(bytes, &mut pos)?;
-        unit.finish();
-        match (field_id, wire_type) {
-            (VALUE_FIELD_NULL, WIRE_TYPE_VARINT) => {
-                decode_varint_u64(bytes, &mut pos)?;
-                value = Some(Value::Null);
-            }
-            (VALUE_FIELD_BOOL, WIRE_TYPE_VARINT) => {
-                value = Some(Value::Bool(decode_varint_u64(bytes, &mut pos)? != 0));
-            }
-            (VALUE_FIELD_INT, WIRE_TYPE_VARINT) => {
-                value = Some(Value::Int(zigzag_decode_i64(decode_varint_u64(
-                    bytes, &mut pos,
-                )?)));
-            }
-            (VALUE_FIELD_FLOAT, WIRE_TYPE_FIXED64) => {
-                value = Some(Value::Float(f64::from_bits(decode_fixed64(
-                    bytes, &mut pos,
-                )?)));
-            }
-            (VALUE_FIELD_STRING, WIRE_TYPE_LEN) => {
-                value = Some(Value::String(decode_string_body(bytes, &mut pos, work)?));
-            }
-            (VALUE_FIELD_BINARY, WIRE_TYPE_LEN) => {
-                value = Some(Value::Binary(copy_bytes(
-                    decode_len_body(bytes, &mut pos)?,
-                    work,
-                )?));
-            }
-            (VALUE_FIELD_UUID, WIRE_TYPE_LEN) => {
-                let encoded = decode_len_body(bytes, &mut pos)?;
-                let bytes: [u8; 16] = encoded.try_into().map_err(|_| {
-                    HawDBError::Storage("WAL UUID value must contain 16 bytes".to_string())
-                })?;
-                value = Some(Value::Uuid(hawdb_core::Uuid::from_bytes(bytes)));
-            }
-            (VALUE_FIELD_ELEMENT, WIRE_TYPE_LEN) => {
-                let body = decode_len_body(bytes, &mut pos)?;
-                let list = match value.take() {
-                    Some(Value::List(mut values)) => {
-                        if !body.is_empty() {
-                            push(
-                                &mut values,
-                                decode_value_message(body, depth.saturating_add(1), work)?,
-                                work,
-                            )?;
-                        }
-                        values
-                    }
-                    None | Some(_) => {
-                        if body.is_empty() {
-                            Vec::new()
-                        } else {
-                            {
-                                let mut values = Vec::new();
-                                push(
-                                    &mut values,
-                                    decode_value_message(body, depth.saturating_add(1), work)?,
-                                    work,
-                                )?;
-                                values
-                            }
-                        }
-                    }
-                };
-                value = Some(Value::List(list));
-            }
-            (VALUE_FIELD_MAP_ENTRY, WIRE_TYPE_LEN) => {
-                let body = decode_len_body(bytes, &mut pos)?;
-                let mut map = match value.take() {
-                    Some(Value::Map(values)) => values,
-                    None | Some(_) => {
-                        map_nodes = map_memory::MapMemory::default();
-                        BTreeMap::new()
-                    }
-                };
-                if !body.is_empty() {
-                    let (key, entry_value) = decode_map_entry(body, depth.saturating_add(2), work)?;
-                    let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-                    map_nodes.before_insert(map.len(), work)?;
-                    map.insert(key, entry_value);
-                    unit.finish();
-                }
-                value = Some(Value::Map(map));
-            }
-            (_, wire_type) => skip_field(bytes, &mut pos, wire_type)?,
-        }
-    }
-    value.ok_or_else(|| HawDBError::Storage("WAL value message is empty".to_string()))
+    value_decode::decode_value(bytes, depth, &ControlledOpDecoder(work))
 }
 
 fn decode_map_entry(
@@ -589,44 +446,60 @@ fn decode_map_entry(
     value_depth: usize,
     work: &DecodeContext,
 ) -> Result<(String, Value)> {
-    let mut pos = 0usize;
-    let mut key = None;
-    let mut value = None;
-    while pos < bytes.len() {
-        let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-        let (field_id, wire_type) = decode_tag(bytes, &mut pos)?;
-        unit.finish();
-        match (field_id, wire_type) {
-            (ENTRY_FIELD_KEY, WIRE_TYPE_LEN) => {
-                key = Some(decode_string_body(bytes, &mut pos, work)?)
-            }
-            (ENTRY_FIELD_VALUE, WIRE_TYPE_LEN) => {
-                value = Some(decode_value_message(
-                    decode_len_body(bytes, &mut pos)?,
-                    value_depth,
-                    work,
-                )?);
-            }
-            (_, wire_type) => skip_field(bytes, &mut pos, wire_type)?,
-        }
-    }
-    match (key, value) {
-        (Some(key), Some(value)) => Ok((key, value)),
-        _ => Err(HawDBError::Storage(
-            "WAL map entry is missing its key or value".to_string(),
-        )),
-    }
-}
-
-fn decode_op_frame(bytes: &[u8], pos: &mut usize, work: &DecodeContext) -> Result<WalOp> {
-    let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-    let op_code = decode_varint_u64(bytes, pos)?;
-    let body = decode_len_body(bytes, pos)?;
-    unit.finish();
-    decode_op_body(op_code, body, work)
+    value_decode::decode_map_entry(bytes, value_depth, &ControlledOpDecoder(work))
 }
 
 struct ControlledOpDecoder<'w>(&'w DecodeContext);
+
+impl value_decode::ValueDecoder for ControlledOpDecoder<'_> {
+    type MapNodes = map_memory::MapMemory;
+
+    fn string(&self, bytes: &[u8], pos: &mut usize) -> Result<String> {
+        decode_string_body(bytes, pos, self.0)
+    }
+
+    fn bytes(&self, bytes: &[u8]) -> Result<Vec<u8>> {
+        copy_bytes(bytes, self.0)
+    }
+
+    fn push_value(&self, values: &mut Vec<Value>, value: Value) -> Result<()> {
+        push(values, value, self.0)
+    }
+
+    fn singleton_value(&self, value: Value) -> Result<Vec<Value>> {
+        let mut values = Vec::new();
+        push(&mut values, value, self.0)?;
+        Ok(values)
+    }
+
+    fn before_map_insert(&self, nodes: &mut Self::MapNodes, len: usize) -> Result<()> {
+        nodes.before_insert(len, self.0)
+    }
+}
+
+impl record_decode::RecordDecoder for ControlledOpDecoder<'_> {
+    fn with_unit<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+        let unit = self
+            .0
+            .start_unit()
+            .map_err(HawDBError::from_storage_error)?;
+        let result = operation()?;
+        unit.finish();
+        Ok(result)
+    }
+
+    fn decode_body(&self, code: u64, body: &[u8]) -> Result<WalOp> {
+        decode_op_body(code, body, self.0)
+    }
+
+    fn batch(&self, _count: u32) -> Vec<WalOp> {
+        Vec::new()
+    }
+
+    fn push(&self, batch: &mut Vec<WalOp>, op: WalOp) -> Result<()> {
+        push(batch, op, self.0)
+    }
+}
 
 impl<'a, 'w> op_decode::OpDecoder<'a> for ControlledOpDecoder<'w> {
     type Fields = OpFields<'a, 'w>;

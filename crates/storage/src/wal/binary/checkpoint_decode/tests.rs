@@ -303,3 +303,51 @@ fn checkpoint_units_wal_decode_generated_field_orders_and_mutations_match() {
         codes.len()
     );
 }
+
+#[test]
+fn checkpoint_units_wal_record_header_generated_mutations_and_count_boundaries_match() {
+    let scheduler = scheduler();
+    let work = CheckpointWorkContext::default().with_scheduler(scheduler.clone());
+    let sample = super::super::tests::sample_ops();
+    let fixtures = [
+        sample[0].clone(),
+        WalOp::Batch(Vec::new()),
+        WalOp::Batch(sample[..2].to_vec()),
+    ];
+    let mut cases = 0usize;
+    for op in fixtures {
+        let record = encode_binary_wal_record(&WalEntry { lsn: 17, op }, 19).unwrap();
+        parity(&record, &work);
+        for offset in 0..21 {
+            for replacement in u8::MIN..=u8::MAX {
+                let mut altered = record.clone();
+                altered[offset] = replacement;
+                parity(&altered, &work);
+                cases += 1;
+            }
+        }
+        for count in [0u32, 1, 2, 3, 1024, u32::MAX] {
+            let mut altered = record.clone();
+            altered[17..21].copy_from_slice(&count.to_le_bytes());
+            parity(&altered, &work);
+            if altered[8] == RECORD_KIND_SINGLE && count != 1 {
+                assert!(
+                    outcome(decode_binary_wal_record_with_work_context(&altered, &work))
+                        == Outcome::Corrupt(format!(
+                            "single-op WAL record declares op_count {count}"
+                        ))
+                );
+            }
+        }
+        for kind in 2u8..=u8::MAX {
+            let mut altered = record.clone();
+            altered[8] = kind;
+            assert!(
+                outcome(decode_binary_wal_record_with_work_context(&altered, &work))
+                    == Outcome::Corrupt(format!("unknown WAL record kind {kind}"))
+            );
+        }
+    }
+    assert_eq!(cases, 3 * 21 * 256);
+    assert_eq!(scheduler.state().running_background_operations, 0);
+}

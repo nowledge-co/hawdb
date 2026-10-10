@@ -1048,11 +1048,7 @@ impl CheckpointCandidate {
                         })?;
                     self.wal_write_attempt_end = Some(end);
                     self.wal_sync_pending = true;
-                    for part in fragment.parts() {
-                        if !part.is_empty() {
-                            output.write_all(part)?;
-                        }
-                    }
+                    fragment.write_to(&mut output)?;
                     bytes = end;
                     drop(write_wave);
                     // Preserve replay cancellation diagnostics after actual I/O,
