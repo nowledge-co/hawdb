@@ -18,6 +18,7 @@
 //! the host-facing contracts can depend on, because the scoring operator runs in
 //! the executor while the request contract lives above the search crate.
 
+use super::ScoringCombination;
 use std::fmt;
 
 /// Typed, host-injectable rerank scoring.
@@ -69,6 +70,12 @@ pub trait ScoringFeatureSource {
     fn hop_distance(&self) -> Option<usize>;
     fn numeric_property(&self, property: &str) -> Option<f64>;
     fn timestamp_millis(&self, property: &str) -> Option<u64>;
+
+    /// Borrowed, explicitly returned metadata for a host's cohort policy, such
+    /// as an exact reason/tie key. It does not establish retrieval provenance.
+    fn returned_value(&self, _column: &str) -> Option<&crate::Value> {
+        None
+    }
 }
 
 /// One candidate's evaluation, carrying per-term provenance.
@@ -208,26 +215,86 @@ impl ScoringSpec {
     ) -> ScoringEvaluation {
         let mut missing_features = Vec::new();
         let mut term_contributions = Vec::with_capacity(self.terms.len());
-        let mut combined_score = 0.0;
+        let mut decay_factors = Vec::with_capacity(self.decay.len());
+        let combined_score = self.evaluate_into(
+            source,
+            reference_time_millis,
+            ScoringCombination::WeightedSum,
+            &mut |value| term_contributions.push(value),
+            &mut |value| decay_factors.push(value),
+            &mut |feature: &ScoreFeature| missing_features.push(feature.clone()),
+        );
+        ScoringEvaluation {
+            combined_score,
+            term_contributions,
+            decay_factors,
+            missing_features,
+        }
+    }
+
+    /// Evaluates the same score without allocating a per-row diagnostic report.
+    ///
+    /// Validate the specification before execution. Missing features retain
+    /// the same neutral behavior as [`Self::evaluate`]; use that method when
+    /// the caller needs feature provenance and individual contributions.
+    pub fn evaluate_score(
+        &self,
+        source: &impl ScoringFeatureSource,
+        reference_time_millis: u64,
+    ) -> f64 {
+        self.evaluate_into(
+            source,
+            reference_time_millis,
+            ScoringCombination::WeightedSum,
+            &mut |_| {},
+            &mut |_| {},
+            &mut |_| {},
+        )
+    }
+
+    pub(super) fn evaluate_into(
+        &self,
+        source: &impl ScoringFeatureSource,
+        reference_time_millis: u64,
+        combination: ScoringCombination,
+        term_contribution: &mut impl FnMut(f64),
+        decay_factor: &mut impl FnMut(f64),
+        missing_feature: &mut impl FnMut(&ScoreFeature),
+    ) -> f64 {
+        let mut combined_score = match combination {
+            ScoringCombination::WeightedSum => 0.0,
+            ScoringCombination::WeightedProduct => 1.0,
+        };
         for term in &self.terms {
             let value = match self.term_value(&term.feature, source) {
                 Some(value) => value,
                 None => {
-                    missing_features.push(term.feature.clone());
-                    0.0
+                    missing_feature(&term.feature);
+                    match combination {
+                        ScoringCombination::WeightedSum => 0.0,
+                        ScoringCombination::WeightedProduct => {
+                            term_contribution(1.0);
+                            continue;
+                        }
+                    }
                 }
             };
-            let contribution = term.weight * value;
-            combined_score += contribution;
-            term_contributions.push(contribution);
+            let contribution = match combination {
+                ScoringCombination::WeightedSum => term.weight * value,
+                ScoringCombination::WeightedProduct => value.powf(term.weight),
+            };
+            match combination {
+                ScoringCombination::WeightedSum => combined_score += contribution,
+                ScoringCombination::WeightedProduct => combined_score *= contribution,
+            }
+            term_contribution(contribution);
         }
-        let mut decay_factors = Vec::with_capacity(self.decay.len());
         for decay in &self.decay {
             let age = match self.decay_age(&decay.feature, source, reference_time_millis) {
                 Some(age) => age,
                 None => {
-                    missing_features.push(decay.feature.clone());
-                    decay_factors.push(1.0);
+                    missing_feature(&decay.feature);
+                    decay_factor(1.0);
                     continue;
                 }
             };
@@ -235,14 +302,9 @@ impl ScoringSpec {
                 .powf(age / decay.half_life)
                 .clamp(decay.min_factor, 1.0);
             combined_score *= factor;
-            decay_factors.push(factor);
+            decay_factor(factor);
         }
-        ScoringEvaluation {
-            combined_score,
-            term_contributions,
-            decay_factors,
-            missing_features,
-        }
+        combined_score
     }
 
     fn term_value(
@@ -360,6 +422,7 @@ mod tests {
         assert_eq!(evaluation.combined_score, 0.5 * 4.0 + 2.0 * 3.0);
         assert_eq!(evaluation.term_contributions, vec![2.0, 6.0]);
         assert!(evaluation.missing_features.is_empty());
+        assert_eq!(spec.evaluate_score(&source, 0), evaluation.combined_score);
     }
 
     #[test]
@@ -377,6 +440,7 @@ mod tests {
         };
         let evaluation = spec.evaluate(&source, 0);
         assert_eq!(evaluation.combined_score, 2.0);
+        assert_eq!(spec.evaluate_score(&source, 0), evaluation.combined_score);
         assert_eq!(
             evaluation.missing_features,
             vec![ScoreFeature::GraphSeedScore]

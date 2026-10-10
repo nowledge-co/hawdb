@@ -38,6 +38,200 @@ use crate::planner::{
 use crate::store::{DurabilityPolicy, ScanPruningStrategy, StorageResidencyMode, WalReplayConfig};
 
 #[test]
+fn manual_scoring_non_batch_inputs_return_typed_refusal() {
+    use hawdb_core::graph_rag::{
+        MissingScoringFeature, ScoreFeature, ScoringCombination, ScoringProgram, ScoringSpec,
+        ScoringTerm,
+    };
+
+    let input = PhysicalPlan::ProjectGraph {
+        name: "manual-unsupported".into(),
+        node_labels: vec!["Memory".into()],
+        rel_types: vec!["LINK".into()],
+        relationship_predicates: Default::default(),
+    };
+    let spec = ScoringSpec {
+        terms: vec![ScoringTerm {
+            weight: 1.0,
+            feature: ScoreFeature::SearchScore,
+        }],
+        decay: vec![],
+    };
+    let program = ScoringProgram::new(
+        ScoringCombination::WeightedSum,
+        MissingScoringFeature::Reject,
+        spec.clone(),
+    )
+    .unwrap();
+    let plans = [
+        PhysicalPlan::ScoringRerankExec {
+            score_column: "score".into(),
+            spec,
+            limit: 1,
+            input: Box::new(input.clone()),
+        },
+        PhysicalPlan::ScoringProgramExec {
+            score_column: "score".into(),
+            seed_graph_input: None,
+            program,
+            reference_time_millis: 1000,
+            limit: 1,
+            input: Box::new(input.clone()),
+        },
+        PhysicalPlan::HostScoringExec {
+            scoring: hawdb_plan_cypher::HostScoringPlan::new(
+                "manual",
+                "v1",
+                NonZeroU64::MIN,
+                "score",
+                NonZeroUsize::new(2).unwrap(),
+                1,
+            )
+            .unwrap(),
+            reference_time_millis: 1000,
+            input: Box::new(input),
+        },
+    ];
+    struct RecordingProvider(std::cell::Cell<usize>);
+
+    impl hawdb_executor::scoring::HostScorerProvider for RecordingProvider {
+        fn with_scorer(
+            &self,
+            _run: &mut dyn FnMut(
+                &mut dyn hawdb_executor::scoring::HostScorer,
+            ) -> Result<BatchControl>,
+        ) -> Result<BatchControl> {
+            self.0.set(self.0.get() + 1);
+            Err(HawDBError::Execution("unexpected scoring callback".into()))
+        }
+    }
+
+    for scoring_plan in plans {
+        let sorted = || {
+            vec![SortItem {
+                key: SortKey::Column("score".into()),
+                direction: SortDirection::Desc,
+            }]
+        };
+        for shape in [
+            "direct", "project", "filter", "sort", "limit", "top-n", "distinct", "left", "right",
+            "deep",
+        ] {
+            let input = Box::new(scoring_plan.clone());
+            let plan = match shape {
+                "direct" => *input,
+                "project" => PhysicalPlan::ProjectExec {
+                    items: vec![Projection {
+                        expression: ProjectionExpression::Variable {
+                            variable: "score".into(),
+                        },
+                        name: "score".into(),
+                    }],
+                    input,
+                },
+                "filter" => PhysicalPlan::FilterExec {
+                    predicate: Predicate::ConstantBool(true),
+                    input,
+                },
+                "sort" => PhysicalPlan::SortExec {
+                    items: sorted(),
+                    input,
+                },
+                "limit" => PhysicalPlan::LimitExec {
+                    offset: 0,
+                    limit: Some(1),
+                    input,
+                },
+                "top-n" => PhysicalPlan::TopNExec {
+                    items: sorted(),
+                    offset: 0,
+                    limit: 1,
+                    input,
+                },
+                "distinct" => PhysicalPlan::DistinctExec { input },
+                "left" => PhysicalPlan::NodeCartesianProductExec {
+                    left: input,
+                    right: Box::new(PhysicalPlan::EmptyExec),
+                },
+                "right" => PhysicalPlan::NodeCartesianProductExec {
+                    left: Box::new(PhysicalPlan::EmptyExec),
+                    right: input,
+                },
+                "deep" => PhysicalPlan::LimitExec {
+                    offset: 0,
+                    limit: Some(1),
+                    input: Box::new(PhysicalPlan::FilterExec {
+                        predicate: Predicate::ConstantBool(true),
+                        input: Box::new(PhysicalPlan::SortExec {
+                            items: sorted(),
+                            input: Box::new(PhysicalPlan::NodeCartesianProductExec {
+                                left: Box::new(PhysicalPlan::EmptyExec),
+                                right: input,
+                            }),
+                        }),
+                    }),
+                },
+                _ => unreachable!(),
+            };
+            for entry in ["legacy", "request", "consumer"] {
+                let mut catalog = Catalog::default();
+                let mut store = GraphStore::in_memory();
+                let parameters = BTreeMap::new();
+                let memory = ExecutionMemoryConfig::default();
+                let provider = RecordingProvider(std::cell::Cell::new(0));
+                let mut external = NoExternalReadOperator;
+                let mut delivered = 0;
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let request = ExecutionRequest::new(&plan, &parameters, &memory)
+                        .with_optional_host_scorer(Some(&provider));
+                    match entry {
+                        "legacy" => execute(&plan, &mut catalog, &mut store).map(|_| ()),
+                        "request" => execute_with_request(
+                            request,
+                            ExecutionResources::new(&mut catalog, &mut store, &mut external),
+                        )
+                        .map(|_| ()),
+                        "consumer" => execute_with_request_consumer(
+                            request,
+                            ExecutionResources::new(&mut catalog, &mut store, &mut external),
+                            &mut |_| {
+                                delivered += 1;
+                                Ok(())
+                            },
+                        )
+                        .map(|_| ()),
+                        _ => unreachable!(),
+                    }
+                }));
+                assert!(
+                    result.is_ok(),
+                    "manual scoring input must return a typed refusal: {shape}/{entry}"
+                );
+                let error = result.unwrap().unwrap_err();
+                assert!(
+                    matches!(error, HawDBError::Semantic(_)),
+                    "{shape}/{entry}: {error}"
+                );
+                assert!(
+                    error.to_string().contains("scoring"),
+                    "{shape}/{entry}: {error}"
+                );
+                assert_eq!(provider.0.get(), 0, "{shape}/{entry}");
+                assert_eq!(delivered, 0, "{shape}/{entry}");
+                assert!(
+                    hawdb_executor::store::GraphExecutionRead::projected_graph_definition(
+                        &store,
+                        "manual-unsupported"
+                    )
+                    .is_none()
+                );
+                assert!(execute(&PhysicalPlan::EmptyExec, &mut catalog, &mut store).is_ok());
+            }
+        }
+    }
+}
+
+#[test]
 fn vector_seed_receives_resolved_runtime_resource_contract() {
     #[derive(Default)]
     struct RecordingExternalRead {
@@ -2210,6 +2404,7 @@ fn node_column_lookup_uses_property_index_pruning_for_exact_label() {
             property: "stable_id".to_string(),
             column: "lookup_id".to_string(),
             optional: true,
+            node_visibility_predicate: None,
             input: Box::new(PhysicalPlan::ProjectExec {
                 items: vec![Projection {
                     expression: ProjectionExpression::Property {
@@ -2317,6 +2512,7 @@ fn source_segment_scan_uses_checkpoint_sidecar_and_keeps_filter_semantics() {
         memory_ledger: &memory_ledger,
         task_context: None,
         observer: &observer,
+        host_scorer: None,
     };
     let bindings = execute_bindings_with_limit(
         &plan,

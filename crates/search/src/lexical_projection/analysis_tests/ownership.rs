@@ -27,7 +27,7 @@ fn context() -> (RuntimeTaskContext, BuildMemory) {
 fn admitted_events_and_every_rejected_prefix_match_the_legacy_oracle() {
     let (task, memory) = context();
     let control = Control {
-        memory: Some(&memory),
+        memory: Some(crate::analyzer_memory::Memory::Build(&memory)),
         task: Some(&task),
         workspace: None,
         checkpoint_throttle: None,
@@ -79,7 +79,7 @@ fn admitted_token_cancellation_and_unwind_release_all_local_state() {
                 "HTTPServer Graph another",
                 &SearchAnalyzerLexicon::default(),
                 Control {
-                    memory: Some(&memory),
+                    memory: Some(crate::analyzer_memory::Memory::Build(&memory)),
                     task: Some(&task),
                     workspace: None,
                     checkpoint_throttle: None,
@@ -196,7 +196,7 @@ fn resident_frequency_drain_releases_remaining_nodes_on_consumer_error_and_unwin
 fn admitted_resident_frequencies_match_seeded_legacy_field_semantics() {
     let (task, memory) = context();
     let control = Control {
-        memory: Some(&memory),
+        memory: Some(crate::analyzer_memory::Memory::Build(&memory)),
         task: Some(&task),
         workspace: None,
         checkpoint_throttle: None,

@@ -276,6 +276,32 @@ impl PhysicalPlan {
                 write_optional_predicate(output, node_visibility_predicate.as_ref());
                 output.push(')');
             }
+            PhysicalPlan::GraphSeedScan {
+                query_parameter,
+                label,
+                variable,
+                score_column,
+                top_k,
+                node_visibility_predicate,
+            } => {
+                output.push_str("GraphSeedScan(");
+                for value in [query_parameter, label, variable, score_column] {
+                    write_identifier(output, value);
+                    output.push(':');
+                }
+                output.push_str(&top_k.to_string());
+                write_optional_predicate(output, node_visibility_predicate.as_ref());
+                output.push(')');
+            }
+            PhysicalPlan::TextSeedScan {
+                query_parameter,
+                top_k,
+                output_external_id,
+                metadata_filters,
+                resource_profile,
+            } => {
+                output.push_str(&format!("TextSeedScan(query=${query_parameter},top_k={top_k},external_id={output_external_id},metadata_filters={metadata_filters:?},resources={resource_profile:?})"));
+            }
             PhysicalPlan::VectorSeedScan {
                 embedding_parameter,
                 output_external_id,
@@ -852,6 +878,7 @@ impl PhysicalPlan {
                 property,
                 column,
                 optional,
+                node_visibility_predicate,
                 input,
             } => {
                 output.push_str("NodeColumnLookupExec(");
@@ -864,6 +891,8 @@ impl PhysicalPlan {
                 write_identifier(output, column);
                 output.push(',');
                 output.push_str(if *optional { "optional" } else { "required" });
+                output.push(',');
+                write_optional_predicate(output, node_visibility_predicate.as_ref());
                 output.push(',');
                 input.write_instance_fingerprint(output);
                 output.push(')');
@@ -1321,6 +1350,29 @@ impl PhysicalPlan {
                     None => output.push_str("none"),
                 }
                 output.push_str(",input=");
+                input.write_instance_fingerprint(output);
+                output.push(')');
+            }
+            PhysicalPlan::ScoringProgramExec {
+                score_column,
+                seed_graph_input,
+                program,
+                reference_time_millis,
+                limit,
+                input,
+            } => {
+                output.push_str("ScoringProgramExec(score_column=");
+                write_identifier(output, score_column);
+                output.push_str(&format!(",seed_graph_input={seed_graph_input:?},program={program:?},reference_time_millis={reference_time_millis},limit={limit},input="));
+                input.write_instance_fingerprint(output);
+                output.push(')');
+            }
+            PhysicalPlan::HostScoringExec {
+                scoring,
+                reference_time_millis,
+                input,
+            } => {
+                output.push_str(&format!("HostScoringExec(scoring={scoring:?},reference_time_millis={reference_time_millis},input="));
                 input.write_instance_fingerprint(output);
                 output.push(')');
             }

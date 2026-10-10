@@ -33,6 +33,8 @@ pub mod external_order;
 pub mod graph;
 mod graph_match;
 #[doc(hidden)]
+pub mod graph_seed;
+#[doc(hidden)]
 pub mod kernel;
 pub mod limit;
 pub mod memory;
@@ -82,6 +84,7 @@ pub use columnar::{
 pub use concurrent::{BoundedExecutor, SharedExecutorPool, SharedExecutorPoolError};
 pub use external::{
     ExternalReadOperator, ExternalReadResourceContract, ExternalReadResultBudget,
+    TextSeedExecutionOutput, TextSeedExecutionRequest, TextSeedExecutionRow,
     VectorSeedExecutionOutput, VectorSeedExecutionRequest, VectorSeedExecutionRow,
 };
 pub use graph::{GraphExpansionExecutionReport, GraphExpansionTruncationReason};

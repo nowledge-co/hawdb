@@ -27,6 +27,7 @@ struct Header {
 
 thread_local! {
     static ENABLED: Cell<bool> = const { Cell::new(false) };
+    static OBSERVER: Cell<fn(usize)> = const { Cell::new(record_allocation) };
 }
 
 static LIVE: AtomicUsize = AtomicUsize::new(0);
@@ -41,7 +42,7 @@ fn allocation_layout(layout: Layout) -> (Layout, usize) {
     )
 }
 
-fn added(bytes: usize) {
+pub(crate) fn record_allocation(bytes: usize) {
     let live = LIVE.fetch_add(bytes, Ordering::Relaxed) + bytes;
     PEAK.fetch_max(live, Ordering::Relaxed);
 }
@@ -61,7 +62,8 @@ unsafe impl GlobalAlloc for TrackingAllocator {
         // SAFETY: the header and payload are disjoint and inside the allocation.
         unsafe { base.cast::<Header>().write(Header { tracked }) };
         if tracked {
-            added(layout.size());
+            let observer = OBSERVER.try_with(Cell::get).unwrap_or(record_allocation);
+            observer(layout.size());
         }
         // SAFETY: offset preserves alignment and leaves layout.size() bytes.
         unsafe { base.add(offset) }
@@ -100,15 +102,31 @@ unsafe impl GlobalAlloc for TrackingAllocator {
 static ALLOCATOR: TrackingAllocator = TrackingAllocator;
 
 pub(crate) fn measure<T>(work: impl FnOnce() -> T) -> (T, usize) {
-    struct Reset;
+    // SAFETY: the default observer only updates the allocation counters.
+    unsafe { measure_with_observer(record_allocation, work) }
+}
+
+/// Measure allocations with a scoped observer on this thread.
+///
+/// # Safety
+/// The observer runs inside GlobalAlloc. It must not unwind, must forward each
+/// size exactly once to record_allocation, and must not reenter itself through
+/// allocation or hold TLS borrows while invoking reentrant operations.
+pub(crate) unsafe fn measure_with_observer<T>(
+    observer: fn(usize),
+    work: impl FnOnce() -> T,
+) -> (T, usize) {
+    struct Reset(fn(usize));
     impl Drop for Reset {
         fn drop(&mut self) {
             ENABLED.with(|enabled| enabled.set(false));
+            OBSERVER.with(|observer| observer.set(self.0));
         }
     }
     ENABLED.with(|enabled| assert!(!enabled.replace(true)));
+    let previous = OBSERVER.with(|slot| slot.replace(observer));
     PEAK.store(live(), Ordering::Relaxed);
-    let reset = Reset;
+    let reset = Reset(previous);
     let value = work();
     let peak = PEAK.load(Ordering::Relaxed);
     drop(reset);

@@ -15,7 +15,7 @@
 //! Shortest-path and relationship traversal operators.
 
 use crate::binding::{
-    binding_memory_bytes, node_memory_bytes, relationship_memory_bytes, value_memory_bytes, Binding,
+    binding_memory_bytes, relationship_memory_bytes, value_memory_bytes, Binding,
 };
 use crate::blocking::in_memory_report;
 use crate::kernel::{
@@ -40,6 +40,7 @@ use hawdb_plan_cypher::{
     RelationshipCountFilter, RelationshipCountLeg, ShortestPathProjection,
     ShortestPathProjectionExpression,
 };
+use hawdb_storage::read_view::AdmittedNodeRead;
 use hawdb_storage::{
     adjacency::AdjacencyDirection, mutation::PropertyFilter, NodeId, NodeRecord, RelRecord,
 };
@@ -339,20 +340,23 @@ pub(crate) fn visit_one_hop_relationships_with_context(
         {
             return Ok(ScanControl::Continue);
         }
-        if let Some(target) = store.node_owned(target_id)?
-            && node_matches_label_pattern(&target, spec.target_label_ids)
-        {
-            let match_bytes =
-                relationship_memory_bytes(&relationship).saturating_add(node_memory_bytes(&target));
-            if match_bytes > memory.budget_bytes {
-                return Err(HawDBError::Execution(format!(
-                    "adjacency result uses {match_bytes} bytes, exceeding blocking_operator_bytes {}",
-                    memory.budget_bytes
-                )));
+        let mut admit_node = |bytes| {
+            memory
+                .admit_node(
+                    bytes,
+                    relationship_memory_bytes(&relationship),
+                    task_context,
+                )
+                .map(Some)
+        };
+        match store.node_with_allocation(target_id, spec.target_label_ids, &mut admit_node)? {
+            AdmittedNodeRead::Node(target) => {
+                let (target, _allocation) = target.into_parts();
+                consumer(relationship, target)
             }
-            return consumer(relationship, target);
+            AdmittedNodeRead::Missing => Ok(ScanControl::Continue),
+            AdmittedNodeRead::Stopped => Ok(ScanControl::Stop),
         }
-        Ok(ScanControl::Continue)
     };
     let mut visit_direction = |adjacency_direction: AdjacencyDirection,
                                skip_undirected_self_loops: bool|
@@ -504,19 +508,21 @@ fn visit_bounded_expand_targets_inner(
         consumer: &mut dyn FnMut(NodeRecord, usize) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
         runtime_checkpoint(task_context)?;
-        if depth >= spec.min_hops
-            && let Some(node) = store.node_owned(current)?
-            && node_matches_label_pattern(&node, spec.target_label_ids)
-        {
-            let item_bytes = node_memory_bytes(&node).saturating_add(std::mem::size_of::<usize>());
-            if item_bytes > memory.budget_bytes {
-                return Err(HawDBError::Execution(format!(
-                    "AdjacencyExpandExec result uses {item_bytes} bytes, exceeding blocking_operator_bytes {}",
-                    memory.budget_bytes
-                )));
-            }
-            if consumer(node, depth)? == ScanControl::Stop {
-                return Ok(ScanControl::Stop);
+        if depth >= spec.min_hops {
+            let mut admit_node = |bytes| {
+                memory
+                    .admit_node(bytes, std::mem::size_of::<usize>(), task_context)
+                    .map(Some)
+            };
+            match store.node_with_allocation(current, spec.target_label_ids, &mut admit_node)? {
+                AdmittedNodeRead::Node(node) => {
+                    let (node, _allocation) = node.into_parts();
+                    if consumer(node, depth)? == ScanControl::Stop {
+                        return Ok(ScanControl::Stop);
+                    }
+                }
+                AdmittedNodeRead::Missing => {}
+                AdmittedNodeRead::Stopped => return Ok(ScanControl::Stop),
             }
         }
         if depth == spec.max_hops {

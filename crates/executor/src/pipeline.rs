@@ -33,6 +33,14 @@ pub enum BatchControl {
 
 pub type BindingBatch = Vec<Binding>;
 
+/// Call after admitting the next row's storage. Spare configured slots are
+/// not part of that admission; grow only for the row about to be inserted.
+pub(crate) fn reserve_binding_slot(bindings: &mut BindingBatch) {
+    if bindings.len() == bindings.capacity() {
+        bindings.reserve_exact(1);
+    }
+}
+
 /// Recursively executes an input while honoring the requested row cap and
 /// propagating consumer stop/error without emitting subsequent batches.
 ///
@@ -90,6 +98,7 @@ pub struct TransformBatchBuilder {
     bindings: BindingBatch,
     batch_rows: usize,
     payload_bytes: usize,
+    used_payload_bytes: usize,
     reservation: QueryMemoryLease,
 }
 
@@ -108,8 +117,11 @@ impl TransformBatchBuilder {
         let reservation = account.reserve(memory_budget.get())?;
         Ok(Self {
             bindings: Vec::new(),
-            batch_rows,
+            batch_rows: batch_rows
+                .max(1)
+                .min((memory_budget.get() / std::mem::size_of::<Binding>()).max(1)),
             payload_bytes: memory_budget.get(),
+            used_payload_bytes: 0,
             reservation,
         })
     }
@@ -119,14 +131,56 @@ impl TransformBatchBuilder {
         if self.reservation.bytes() == 0 {
             self.reservation.grow(self.payload_bytes)?;
         }
-        if self.bindings.capacity() == 0 {
-            self.bindings.reserve_exact(self.batch_rows);
+        let slots = self
+            .bindings
+            .len()
+            .checked_add(1)
+            .and_then(|rows| rows.checked_mul(std::mem::size_of::<Binding>()))
+            .ok_or_else(|| HawDBError::Execution("transform batch capacity overflow".into()))?;
+        if slots > self.payload_bytes {
+            return Err(HawDBError::Execution(format!(
+                "transform batch row storage uses {slots} bytes, exceeding batch_payload_bytes {}",
+                self.payload_bytes
+            )));
         }
+        reserve_binding_slot(&mut self.bindings);
         Ok(())
+    }
+
+    /// Admit the complete row before cloning or constructing its owned values.
+    /// A byte boundary completes the existing batch before allocating the next
+    /// row, so downstream Stop prevents that row's payload copies.
+    pub fn reserve_row_before_allocation(
+        &mut self,
+        bytes: usize,
+        emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+    ) -> Result<BatchControl> {
+        if bytes > self.payload_bytes {
+            return Err(HawDBError::Execution(format!(
+                "intermediate row uses {bytes} bytes, exceeding batch_payload_bytes {}",
+                self.payload_bytes
+            )));
+        }
+        if self.used_payload_bytes.saturating_add(bytes) > self.payload_bytes
+            && !self.bindings.is_empty()
+            && self.emit(emit)? == BatchControl::Stop
+        {
+            return Ok(BatchControl::Stop);
+        }
+        self.reserve_before_allocation()?;
+        Ok(BatchControl::Continue)
+    }
+
+    pub(crate) fn would_exceed_payload(&self, bytes: usize) -> bool {
+        self.used_payload_bytes.saturating_add(bytes) > self.payload_bytes
     }
 
     pub fn push(&mut self, binding: Binding) {
         debug_assert!(self.reservation.bytes() >= self.payload_bytes);
+        self.used_payload_bytes = self
+            .used_payload_bytes
+            .saturating_add(binding_memory_bytes(&binding));
+        debug_assert!(self.used_payload_bytes <= self.payload_bytes);
         self.bindings.push(binding);
     }
 
@@ -139,7 +193,7 @@ impl TransformBatchBuilder {
     }
 
     pub fn is_full(&self) -> bool {
-        self.bindings.len() == self.batch_rows
+        self.bindings.len() == self.batch_rows || self.used_payload_bytes == self.payload_bytes
     }
 
     pub fn emit(
@@ -150,6 +204,7 @@ impl TransformBatchBuilder {
             return Ok(BatchControl::Continue);
         }
         self.reservation.reset();
+        self.used_payload_bytes = 0;
         emit(std::mem::take(&mut self.bindings))
     }
 }
@@ -181,8 +236,8 @@ impl AccountedBindingBatch {
     ) -> Self {
         Self {
             operator,
-            bindings: Vec::with_capacity(batch_rows),
-            batch_rows,
+            bindings: Vec::new(),
+            batch_rows: batch_rows.max(1),
             tracker: OperatorMemoryTracker::with_account(memory_budget, account),
         }
     }
@@ -210,6 +265,7 @@ impl AccountedBindingBatch {
                     self.operator
                 ))
             })?;
+        reserve_binding_slot(&mut self.bindings);
         self.bindings.push(binding);
         Ok(BatchControl::Continue)
     }
@@ -222,6 +278,7 @@ impl AccountedBindingBatch {
         if self.reserve_row(binding_memory_bytes(&binding), emit)? == BatchControl::Stop {
             return Ok(BatchControl::Stop);
         }
+        reserve_binding_slot(&mut self.bindings);
         self.bindings.push(binding);
         Ok(BatchControl::Continue)
     }
@@ -234,8 +291,31 @@ impl AccountedBindingBatch {
         if self.reserve_row(binding_memory_bytes(binding), emit)? == BatchControl::Stop {
             return Ok(BatchControl::Stop);
         }
+        reserve_binding_slot(&mut self.bindings);
         self.bindings.push(binding.clone());
         Ok(BatchControl::Continue)
+    }
+
+    /// The caller previews the final row while values remain borrowed. Never
+    /// invoke the ownership conversion before its complete output admission.
+    pub(crate) fn push_generated(
+        &mut self,
+        bytes: usize,
+        create: impl FnOnce() -> Binding,
+        emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+    ) -> Result<BatchControl> {
+        if self.reserve_row(bytes, emit)? == BatchControl::Stop {
+            return Ok(BatchControl::Stop);
+        }
+        let binding = create();
+        debug_assert_eq!(binding_memory_bytes(&binding), bytes);
+        reserve_binding_slot(&mut self.bindings);
+        self.bindings.push(binding);
+        Ok(BatchControl::Continue)
+    }
+
+    pub(crate) fn would_exceed_payload(&self, bytes: usize) -> bool {
+        self.tracker.would_exceed(bytes)
     }
 
     fn reserve_row(
@@ -284,10 +364,7 @@ impl AccountedBindingBatch {
             return Ok(BatchControl::Continue);
         }
         self.tracker.reset();
-        emit(std::mem::replace(
-            &mut self.bindings,
-            Vec::with_capacity(self.batch_rows),
-        ))
+        emit(std::mem::take(&mut self.bindings))
     }
 }
 
@@ -316,30 +393,13 @@ impl AccountedBindingSet {
             bindings,
             mut tracker,
         } = self;
-        let mut batch = Vec::with_capacity(batch_rows);
-        let mut batch_bytes = 0usize;
-        for binding in bindings {
-            batch_bytes = batch_bytes.saturating_add(binding_memory_bytes(&binding));
-            batch.push(binding);
-            if batch.len() == batch_rows {
-                tracker.release(batch_bytes);
-                batch_bytes = 0;
-                if emit(std::mem::replace(
-                    &mut batch,
-                    Vec::with_capacity(batch_rows),
-                ))? == BatchControl::Stop
-                {
-                    return Ok(BatchControl::Stop);
-                }
-            }
-        }
-        if !batch.is_empty() {
-            tracker.release(batch_bytes);
-            if emit(batch)? == BatchControl::Stop {
-                return Ok(BatchControl::Stop);
-            }
-        }
-        Ok(BatchControl::Continue)
+        emit_owned_binding_batches(bindings, batch_rows, &mut |batch| {
+            let bytes = batch.iter().fold(0usize, |bytes, binding| {
+                bytes.saturating_add(binding_memory_bytes(binding))
+            });
+            tracker.release(bytes);
+            emit(batch)
+        })
     }
 }
 
@@ -352,11 +412,20 @@ pub fn runtime_checkpoint(task_context: Option<&RuntimeTaskContext>) -> Result<(
     }
 }
 
+/// Emission consumes already-owned rows. Reuse their allocation for a short
+/// result, and stage only actual rows for larger results; configured capacity
+/// must not amplify an admitted producer's retained allocation.
 pub fn emit_owned_binding_batches(
     bindings: Vec<Binding>,
     batch_rows: usize,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
+    if bindings.is_empty() {
+        return Ok(BatchControl::Continue);
+    }
+    if bindings.len() <= batch_rows.max(1) {
+        return emit(bindings);
+    }
     emit_binding_iterator(bindings, batch_rows, emit)
 }
 
@@ -365,20 +434,18 @@ pub fn emit_binding_iterator(
     batch_rows: usize,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    let mut batch = Vec::with_capacity(batch_rows);
-    for binding in bindings {
-        batch.push(binding);
-        if batch.len() == batch_rows
-            && emit(std::mem::replace(
-                &mut batch,
-                Vec::with_capacity(batch_rows),
-            ))? == BatchControl::Stop
-        {
+    let mut bindings = bindings.into_iter();
+    let batch_rows = batch_rows.max(1);
+    while let Some(first) = bindings.next() {
+        // A lower bound can never reserve more slots than actual remaining
+        // input. Allocate the next batch only after the previous emit returns.
+        let capacity = batch_rows.min(bindings.size_hint().0.saturating_add(1));
+        let mut batch = Vec::with_capacity(capacity);
+        batch.push(first);
+        batch.extend(bindings.by_ref().take(batch_rows - 1));
+        if emit(batch)? == BatchControl::Stop {
             return Ok(BatchControl::Stop);
         }
-    }
-    if !batch.is_empty() && emit(batch)? == BatchControl::Stop {
-        return Ok(BatchControl::Stop);
     }
     Ok(BatchControl::Continue)
 }
@@ -435,6 +502,60 @@ mod tests {
     }
 
     #[test]
+    fn accounted_set_capacity_never_amplifies_configured_rows() {
+        let budget = NonZeroUsize::new(4096).unwrap();
+        for (rows, batch_rows, terminal) in
+            [(1, 8192, 0), (3, 2, 0), (3, 2, 1), (3, 2, 2), (0, 8192, 0)]
+        {
+            let ledger = QueryMemoryLedger::new(budget);
+            let bindings = (0..rows).map(binding).collect::<Vec<_>>();
+            let mut tracker = OperatorMemoryTracker::with_account(
+                budget,
+                ledger.account(QueryMemoryClass::BlockingState, "source", budget),
+            );
+            for row in &bindings {
+                tracker.try_charge(binding_memory_bytes(row)).unwrap();
+            }
+            let mut emitted = 0;
+            let result = AccountedBindingSet::new(bindings, tracker).emit_batches(
+                batch_rows,
+                &mut |batch| {
+                    let slots = batch
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<Binding>())
+                        .unwrap();
+                    assert!(
+                        slots <= budget.get(),
+                        "owned-set capacity {slots} exceeds admitted root {}",
+                        budget
+                    );
+                    emitted += batch.len();
+                    match terminal {
+                        1 => Ok(BatchControl::Stop),
+                        2 => Err(HawDBError::Execution("set consumer refused".into())),
+                        _ => Ok(BatchControl::Continue),
+                    }
+                },
+            );
+            match terminal {
+                1 => assert_eq!(result.unwrap(), BatchControl::Stop),
+                2 => assert!(result.is_err()),
+                _ => assert_eq!(result.unwrap(), BatchControl::Continue),
+            }
+            assert_eq!(
+                emitted,
+                if terminal == 0 {
+                    rows as usize
+                } else {
+                    (rows as usize).min(batch_rows)
+                }
+            );
+            assert_eq!(ledger.snapshot().used_bytes, 0);
+            assert!(ledger.snapshot().peak_bytes <= budget.get());
+        }
+    }
+
+    #[test]
     fn accounted_batch_flushes_before_a_byte_budget_overflow() {
         let first = binding(1);
         let second = binding(2);
@@ -482,7 +603,7 @@ mod tests {
         assert_eq!(ledger.snapshot().used_bytes, 4096);
         assert_eq!(builder.bindings.capacity(), 0);
         builder.reserve_before_allocation().unwrap();
-        assert!(builder.bindings.capacity() >= 2);
+        assert_eq!(builder.bindings.capacity(), 1);
         builder.push(binding(1));
         let control = builder
             .emit(&mut |batch| {

@@ -45,6 +45,8 @@ impl PhysicalPlan {
             PhysicalPlan::ProjectGraph { .. } => PhysicalPlanKind::ProjectGraph,
             PhysicalPlan::GraphAlgorithm { .. } => PhysicalPlanKind::GraphAlgorithm,
             PhysicalPlan::VectorSeedScan { .. } => PhysicalPlanKind::VectorSeedScan,
+            PhysicalPlan::GraphSeedScan { .. } => PhysicalPlanKind::GraphSeedScan,
+            PhysicalPlan::TextSeedScan { .. } => PhysicalPlanKind::TextSeedScan,
             PhysicalPlan::CreateNode { .. } => PhysicalPlanKind::CreateNode,
             PhysicalPlan::UnwindMutation { .. } => PhysicalPlanKind::UnwindMutationExec,
             PhysicalPlan::MergeNode { .. } => PhysicalPlanKind::MergeNode,
@@ -118,6 +120,8 @@ impl PhysicalPlan {
             PhysicalPlan::TopNExec { .. } => PhysicalPlanKind::TopNExec,
             PhysicalPlan::LimitExec { .. } => PhysicalPlanKind::LimitExec,
             PhysicalPlan::ScoringRerankExec { .. } => PhysicalPlanKind::ScoringRerankExec,
+            PhysicalPlan::ScoringProgramExec { .. } => PhysicalPlanKind::ScoringProgramExec,
+            PhysicalPlan::HostScoringExec { .. } => PhysicalPlanKind::HostScoringExec,
         }
     }
 
@@ -143,7 +147,9 @@ impl PhysicalPlan {
             | PhysicalPlan::SortExec { input, .. }
             | PhysicalPlan::TopNExec { input, .. }
             | PhysicalPlan::LimitExec { input, .. }
-            | PhysicalPlan::ScoringRerankExec { input, .. } => PlanChildren::Unary(input),
+            | PhysicalPlan::ScoringRerankExec { input, .. }
+            | PhysicalPlan::ScoringProgramExec { input, .. }
+            | PhysicalPlan::HostScoringExec { input, .. } => PlanChildren::Unary(input),
             PhysicalPlan::CreateNodeLabel { .. }
             | PhysicalPlan::CreateRelationshipType { .. }
             | PhysicalPlan::CreateNodeTable { .. }
@@ -162,6 +168,8 @@ impl PhysicalPlan {
             | PhysicalPlan::ProjectGraph { .. }
             | PhysicalPlan::GraphAlgorithm { .. }
             | PhysicalPlan::VectorSeedScan { .. }
+            | PhysicalPlan::GraphSeedScan { .. }
+            | PhysicalPlan::TextSeedScan { .. }
             | PhysicalPlan::CreateNode { .. }
             | PhysicalPlan::UnwindMutation { .. }
             | PhysicalPlan::MergeNode { .. }

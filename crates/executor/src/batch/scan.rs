@@ -603,7 +603,7 @@ pub(super) fn stream_adjacency_expand_batches(
         memory.batch_payload_bytes,
     );
     let mut output_lease = output_account.reserve(0)?;
-    let mut output = Vec::with_capacity(batch_rows);
+    let mut output = Vec::new();
     let mut output_bytes = 0usize;
     let control = execute_binding_batches(
         input,
@@ -624,8 +624,15 @@ pub(super) fn stream_adjacency_expand_batches(
                     max_hops: *max_hops,
                     optional: *optional,
                 };
-                let mut visit_candidate = |candidate: crate::scan::ExpandedBinding| {
+                let mut visit_candidate = |mut candidate: crate::scan::ExpandedBinding| {
                     runtime_checkpoint(context.task_context)?;
+                    if context.observer.seed_graph_scoring_input().is_some() {
+                        crate::scoring::advance_seed_hop(
+                            &mut candidate.binding,
+                            candidate.hop,
+                            candidate.target_id.is_some(),
+                        )?;
+                    }
                     let candidate_bytes = binding_memory_bytes(&candidate.binding);
                     if candidate_bytes > batch_payload_bytes {
                         return Err(HawDBError::Execution(format!(
@@ -636,8 +643,7 @@ pub(super) fn stream_adjacency_expand_batches(
                         && (output.len() == batch_rows
                             || output_bytes.saturating_add(candidate_bytes) > batch_payload_bytes)
                     {
-                        let emitted =
-                            std::mem::replace(&mut output, Vec::with_capacity(batch_rows));
+                        let emitted = std::mem::take(&mut output);
                         output_lease.reset();
                         if emit(emitted)? == BatchControl::Stop {
                             return Ok(crate::store::ScanControl::Stop);
@@ -653,6 +659,7 @@ pub(super) fn stream_adjacency_expand_batches(
                     }
                     output_lease.grow(candidate_bytes)?;
                     output_bytes = output_bytes.saturating_add(candidate_bytes);
+                    crate::pipeline::reserve_binding_slot(&mut output);
                     output.push(candidate.binding);
                     if execution_limit.is_reached(graph_expansion.returned_count()) {
                         Ok(crate::store::ScanControl::Stop)

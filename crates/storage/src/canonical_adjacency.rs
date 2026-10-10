@@ -565,6 +565,29 @@ pub enum CanonicalAdjacencyEntry {
     CanonicalReference { relationship_id: crate::RelId },
 }
 
+/// A validated adjacency entry whose inline property values remain encoded.
+/// Query readers can inspect keys and reserve ownership before decoding.
+#[doc(hidden)]
+pub struct CanonicalAdjacencyInput<'a> {
+    pub relationship_id: crate::RelId,
+    pub neighbor_id: NodeId,
+    payload: &'a [u8],
+}
+
+impl CanonicalAdjacencyInput<'_> {
+    fn decode(self) -> Result<CanonicalAdjacencyEntry, CanonicalAdjacencyError> {
+        if self.payload.is_empty() {
+            Ok(CanonicalAdjacencyEntry::CanonicalReference {
+                relationship_id: self.relationship_id,
+            })
+        } else {
+            decode_relationship(self.relationship_id.0, self.payload)
+                .map(CanonicalAdjacencyEntry::Inline)
+                .map_err(|error| CanonicalAdjacencyError::Corrupt(error.to_string()))
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct EntryKey {
     direction: u8,
@@ -1763,6 +1786,46 @@ impl CanonicalAdjacencyReader {
             CanonicalAdjacencyEntry,
         ) -> Result<CanonicalScanControl, CanonicalAdjacencyError>,
     ) -> Result<(CanonicalAdjacencyReadReport, CanonicalScanControl), CanonicalAdjacencyError> {
+        self.scan_endpoint_blocks_control(endpoint, direction, rel_type, |block, report| {
+            self.scan_one_block(block, report, &mut consumer)
+        })
+    }
+
+    /// Key inspection validates encoded values without constructing a RelRecord.
+    #[doc(hidden)]
+    pub fn scan_endpoint_inputs_control(
+        &self,
+        endpoint: NodeId,
+        direction: AdjacencyDirection,
+        rel_type: Option<RelTypeId>,
+        mut consumer: impl FnMut(
+            CanonicalAdjacencyInput<'_>,
+        ) -> Result<CanonicalScanControl, CanonicalAdjacencyError>,
+    ) -> Result<(CanonicalAdjacencyReadReport, CanonicalScanControl), CanonicalAdjacencyError> {
+        self.scan_endpoint_blocks_control(endpoint, direction, rel_type, |block, report| {
+            let read = self.read_accounted_block(block, report)?;
+            let mut control = CanonicalScanControl::Continue;
+            decode_block_inputs(&read.payload, self.generation, block, |input| {
+                if control == CanonicalScanControl::Continue {
+                    control = consumer(input)?;
+                    report.records_decoded = report.records_decoded.saturating_add(1);
+                }
+                Ok(())
+            })?;
+            Ok(control)
+        })
+    }
+
+    fn scan_endpoint_blocks_control(
+        &self,
+        endpoint: NodeId,
+        direction: AdjacencyDirection,
+        rel_type: Option<RelTypeId>,
+        mut scan_block: impl FnMut(
+            &CanonicalAdjacencyBlockDescriptor,
+            &mut CanonicalAdjacencyReadReport,
+        ) -> Result<CanonicalScanControl, CanonicalAdjacencyError>,
+    ) -> Result<(CanonicalAdjacencyReadReport, CanonicalScanControl), CanonicalAdjacencyError> {
         self.ensure_healthy()?;
         let result = match &self.descriptors {
             CanonicalAdjacencyDescriptorBackend::Resident(manifest) => {
@@ -1775,12 +1838,22 @@ impl CanonicalAdjacencyReader {
                     (direction_tag(block.direction), block.endpoint.0)
                         <= (direction_tagged, endpoint.0)
                 });
-                self.scan_blocks(
-                    manifest.blocks[start..end]
-                        .iter()
-                        .filter(|block| rel_type.is_none_or(|expected| block.rel_type == expected)),
-                    consumer,
-                )
+                let mut report = CanonicalAdjacencyReadReport {
+                    generation: self.generation.0,
+                    ..Default::default()
+                };
+                let mut control = CanonicalScanControl::Continue;
+                for block in manifest.blocks[start..end]
+                    .iter()
+                    .filter(|block| rel_type.is_none_or(|expected| block.rel_type == expected))
+                {
+                    report.blocks_considered = report.blocks_considered.saturating_add(1);
+                    control = scan_block(block, &mut report)?;
+                    if control == CanonicalScanControl::Stop {
+                        break;
+                    }
+                }
+                Ok((report, control))
             }
             CanonicalAdjacencyDescriptorBackend::Demand(demand) => {
                 let prefix = descriptor_prefix(endpoint, direction, rel_type);
@@ -1804,7 +1877,7 @@ impl CanonicalAdjacencyReader {
                                         "canonical adjacency block accounting overflow".to_string(),
                                     )
                                 })?;
-                            self.scan_one_block(&block, &mut report, &mut consumer)
+                            scan_block(&block, &mut report)
                         });
                         match step {
                             Ok(control) => {
@@ -1836,27 +1909,6 @@ impl CanonicalAdjacencyReader {
         result
     }
 
-    fn scan_blocks<'a>(
-        &self,
-        blocks: impl IntoIterator<Item = &'a CanonicalAdjacencyBlockDescriptor>,
-        mut consumer: impl FnMut(
-            CanonicalAdjacencyEntry,
-        ) -> Result<CanonicalScanControl, CanonicalAdjacencyError>,
-    ) -> Result<(CanonicalAdjacencyReadReport, CanonicalScanControl), CanonicalAdjacencyError> {
-        let mut report = CanonicalAdjacencyReadReport {
-            generation: self.generation.0,
-            ..CanonicalAdjacencyReadReport::default()
-        };
-        for block in blocks {
-            report.blocks_considered = report.blocks_considered.saturating_add(1);
-            let control = self.scan_one_block(block, &mut report, &mut consumer)?;
-            if control == CanonicalScanControl::Stop {
-                return Ok((report, control));
-            }
-        }
-        Ok((report, CanonicalScanControl::Continue))
-    }
-
     fn scan_one_block(
         &self,
         block: &CanonicalAdjacencyBlockDescriptor,
@@ -1865,6 +1917,24 @@ impl CanonicalAdjacencyReader {
             CanonicalAdjacencyEntry,
         ) -> Result<CanonicalScanControl, CanonicalAdjacencyError>,
     ) -> Result<CanonicalScanControl, CanonicalAdjacencyError> {
+        let read = self.read_accounted_block(block, report)?;
+        let mut control = CanonicalScanControl::Continue;
+        decode_block(&read.payload, self.generation, block, |relationship| {
+            if control == CanonicalScanControl::Stop {
+                return Ok(());
+            }
+            control = consumer(relationship)?;
+            report.records_decoded = report.records_decoded.saturating_add(1);
+            Ok(())
+        })?;
+        Ok(control)
+    }
+
+    fn read_accounted_block(
+        &self,
+        block: &CanonicalAdjacencyBlockDescriptor,
+        report: &mut CanonicalAdjacencyReadReport,
+    ) -> Result<SegmentRangeRead, CanonicalAdjacencyError> {
         let read = self.read_block(block)?;
         report.blocks_read = report.blocks_read.saturating_add(1);
         report.bytes_read = report.bytes_read.saturating_add(read.payload.len() as u64);
@@ -1880,16 +1950,7 @@ impl CanonicalAdjacencyReader {
                 report.dense_blocks_read = report.dense_blocks_read.saturating_add(1)
             }
         }
-        let mut control = CanonicalScanControl::Continue;
-        decode_block(&read.payload, self.generation, block, |relationship| {
-            if control == CanonicalScanControl::Stop {
-                return Ok(());
-            }
-            control = consumer(relationship)?;
-            report.records_decoded = report.records_decoded.saturating_add(1);
-            Ok(())
-        })?;
-        Ok(control)
+        Ok(read)
     }
 
     fn read_block(
@@ -2195,6 +2256,17 @@ fn decode_block(
     descriptor: &CanonicalAdjacencyBlockDescriptor,
     mut consumer: impl FnMut(CanonicalAdjacencyEntry) -> Result<(), CanonicalAdjacencyError>,
 ) -> Result<(), CanonicalAdjacencyError> {
+    decode_block_inputs(bytes, generation, descriptor, |input| {
+        consumer(input.decode()?)
+    })
+}
+
+fn decode_block_inputs(
+    bytes: &[u8],
+    generation: ManifestGeneration,
+    descriptor: &CanonicalAdjacencyBlockDescriptor,
+    mut consumer: impl FnMut(CanonicalAdjacencyInput<'_>) -> Result<(), CanonicalAdjacencyError>,
+) -> Result<(), CanonicalAdjacencyError> {
     let mut cursor = Cursor::new(bytes);
     if cursor.read_exact(8)? != BLOCK_HEADER {
         return Err(CanonicalAdjacencyError::Corrupt(format!(
@@ -2235,28 +2307,28 @@ fn decode_block(
                 descriptor.block_id
             )));
         }
-        if payload.is_empty() {
-            consumer(CanonicalAdjacencyEntry::CanonicalReference {
-                relationship_id: crate::RelId(rel_id),
-            })?;
-        } else {
-            let relationship = decode_relationship(rel_id, payload)
+        if !payload.is_empty() {
+            let layout = crate::canonical::relationship_payload_layout(payload, None, None)
                 .map_err(|error| CanonicalAdjacencyError::Corrupt(error.to_string()))?;
             let (actual_endpoint, actual_neighbor) = match direction {
-                AdjacencyDirection::Outgoing => (relationship.source, relationship.target),
-                AdjacencyDirection::Incoming => (relationship.target, relationship.source),
+                AdjacencyDirection::Outgoing => (layout.source, layout.target),
+                AdjacencyDirection::Incoming => (layout.target, layout.source),
             };
             if actual_endpoint != endpoint
                 || actual_neighbor != neighbor
-                || relationship.rel_type != rel_type
+                || layout.rel_type != rel_type
             {
                 return Err(CanonicalAdjacencyError::Corrupt(format!(
                     "canonical adjacency block {} relationship {} does not match its key",
                     descriptor.block_id, rel_id
                 )));
             }
-            consumer(CanonicalAdjacencyEntry::Inline(relationship))?;
         }
+        consumer(CanonicalAdjacencyInput {
+            relationship_id: crate::RelId(rel_id),
+            neighbor_id: neighbor,
+            payload,
+        })?;
         previous = Some(key);
     }
     if !cursor.is_empty()

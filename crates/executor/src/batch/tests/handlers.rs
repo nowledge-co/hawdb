@@ -96,6 +96,7 @@ fn with_graph_context<T>(
         memory_ledger: &memory_ledger,
         task_context,
         observer: &observer,
+        host_scorer: None,
     });
     let snapshot = memory_ledger.snapshot();
     assert_eq!(

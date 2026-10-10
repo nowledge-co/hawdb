@@ -225,6 +225,9 @@ pub fn max_external_read_parallelism(plan: &PhysicalPlan) -> usize {
     let own_parallelism = match plan {
         PhysicalPlan::VectorSeedScan {
             resource_profile, ..
+        }
+        | PhysicalPlan::TextSeedScan {
+            resource_profile, ..
         } => resource_profile.max_parallelism.max(1),
         _ => 1,
     };
@@ -294,6 +297,9 @@ fn peak_execution_memory_shape(
     }
     if let PhysicalPlan::VectorSeedScan {
         resource_profile, ..
+    }
+    | PhysicalPlan::TextSeedScan {
+        resource_profile, ..
     } = plan
     {
         shape.external_read_bytes = shape.external_read_bytes.saturating_add(usize_to_u64(
@@ -334,6 +340,8 @@ fn retains_blocking_state(plan: &PhysicalPlan) -> bool {
         plan,
         PhysicalPlan::GraphAlgorithm { .. }
             | PhysicalPlan::VectorSeedScan { .. }
+            | PhysicalPlan::GraphSeedScan { .. }
+            | PhysicalPlan::TextSeedScan { .. }
             | PhysicalPlan::SourceSegmentScan { .. }
             | PhysicalPlan::NodeCartesianProductExec { .. }
             | PhysicalPlan::HashJoinExec { .. }
@@ -346,6 +354,8 @@ fn retains_blocking_state(plan: &PhysicalPlan) -> bool {
             | PhysicalPlan::SortExec { .. }
             | PhysicalPlan::TopNExec { .. }
             | PhysicalPlan::ScoringRerankExec { .. }
+            | PhysicalPlan::ScoringProgramExec { .. }
+            | PhysicalPlan::HostScoringExec { .. }
     )
 }
 

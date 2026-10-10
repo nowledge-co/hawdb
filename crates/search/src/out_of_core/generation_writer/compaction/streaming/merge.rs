@@ -81,7 +81,7 @@ impl selected_body::Consumer for Capture<'_> {
             },
             self.writer.options.max_record_bytes.get(),
             Control {
-                memory: Some(self.memory),
+                memory: Some(crate::analyzer_memory::Memory::Build(self.memory)),
                 task: Some(self.task),
                 ..Control::default()
             },

@@ -119,6 +119,7 @@ fn rewrite_bottom_up(plan: LogicalPlan, events: &mut Vec<RuleEvent>) -> LogicalP
             property,
             column,
             optional,
+            node_visibility_predicate,
             input,
         } => LogicalPlan::NodeColumnLookup {
             variable,
@@ -126,6 +127,7 @@ fn rewrite_bottom_up(plan: LogicalPlan, events: &mut Vec<RuleEvent>) -> LogicalP
             property,
             column,
             optional,
+            node_visibility_predicate,
             input: Box::new(rewrite_bottom_up(*input, events)),
         },
         LogicalPlan::Expand {

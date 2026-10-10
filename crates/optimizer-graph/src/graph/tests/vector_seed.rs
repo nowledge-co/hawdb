@@ -34,6 +34,7 @@ fn vector_seed_filter(property: &str) -> LogicalPlan {
             property: "id".to_string(),
             column: "external_id".to_string(),
             optional: false,
+            node_visibility_predicate: None,
             input: Box::new(LogicalPlan::VectorSeed {
                 embedding_parameter: "embedding".to_string(),
                 embedding_dimension: 2,
@@ -171,6 +172,7 @@ fn vector_seeded_expand_receives_bounded_graph_budget() {
             property: "id".to_string(),
             column: "external_id".to_string(),
             optional: false,
+            node_visibility_predicate: None,
             input: Box::new(LogicalPlan::VectorSeed {
                 embedding_parameter: "embedding".to_string(),
                 embedding_dimension: 2,

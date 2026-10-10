@@ -35,7 +35,9 @@ type ValueRangeBound = (Value, bool);
 type ValueRangeBounds = (Option<ValueRangeBound>, Option<ValueRangeBound>);
 
 mod predicate;
+mod projection;
 mod value;
 
 pub use predicate::*;
+pub(crate) use projection::{prepare_borrowed_projection, push_borrowed_projection};
 pub use value::*;

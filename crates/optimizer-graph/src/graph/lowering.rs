@@ -398,6 +398,8 @@ impl GroupExpr {
             | LogicalPlan::ProjectGraph { .. }
             | LogicalPlan::GraphAlgorithm { .. }
             | LogicalPlan::VectorSeed { .. }
+            | LogicalPlan::TextSeed { .. }
+            | LogicalPlan::GraphSeed { .. }
             | LogicalPlan::CreateNode { .. }
             | LogicalPlan::UnwindMutation { .. }
             | LogicalPlan::MergeNode { .. }
@@ -484,14 +486,14 @@ impl GroupExpr {
     }
 }
 
-fn push_vector_seed_metadata_filter(
+fn push_seed_metadata_filter(
     input: &mut PhysicalPlan,
     predicate: &hawdb_plan_cypher::Predicate,
     decisions: &mut Vec<String>,
 ) {
     if let hawdb_plan_cypher::Predicate::And(predicates) = predicate {
         for predicate in predicates {
-            push_vector_seed_metadata_filter(input, predicate, decisions);
+            push_seed_metadata_filter(input, predicate, decisions);
         }
         return;
     }
@@ -503,20 +505,23 @@ fn push_vector_seed_metadata_filter(
     else {
         return;
     };
-    let Some(filter_field) = vector_seed_metadata_field(property) else {
+    let Some(filter_field) = seed_metadata_field(property) else {
         return;
     };
-    let Some(filter_value) = vector_seed_metadata_value(value) else {
+    let Some(filter_value) = seed_metadata_value(value) else {
         return;
     };
-    if attach_vector_seed_metadata_filter(input, variable, filter_field, filter_value) {
+    let producer = seed_window(input)
+        .map(|(producer, _)| producer)
+        .unwrap_or("retriever");
+    if attach_seed_metadata_filter(input, variable, filter_field, filter_value) {
         decisions.push(format!(
-            "push descriptor-safe vector seed filter {variable}.{property} before candidate generation"
+            "push descriptor-safe {producer} seed filter {variable}.{property} before candidate generation"
         ));
     }
 }
 
-fn attach_vector_seed_metadata_filter(
+fn attach_seed_metadata_filter(
     plan: &mut PhysicalPlan,
     variable: &str,
     field: &str,
@@ -527,25 +532,32 @@ fn attach_vector_seed_metadata_filter(
             variable: lookup_variable,
             input,
             ..
-        } if lookup_variable == variable => {
-            attach_metadata_filter_to_vector_seed(input, field, value)
-        }
+        } if lookup_variable == variable => attach_metadata_filter_to_seed(input, field, value),
         PhysicalPlan::AdjacencyExpandExec {
             source_variable,
             input,
             ..
         } if source_variable == variable => {
-            attach_vector_seed_metadata_filter(input, variable, field, value)
+            attach_seed_metadata_filter(input, variable, field, value)
         }
         _ => false,
     }
 }
 
-fn attach_metadata_filter_to_vector_seed(
-    plan: &mut PhysicalPlan,
-    field: &str,
-    value: String,
-) -> bool {
+fn attach_metadata_filter_to_seed(plan: &mut PhysicalPlan, field: &str, value: String) -> bool {
+    if let PhysicalPlan::TextSeedScan {
+        metadata_filters, ..
+    } = plan
+    {
+        if metadata_filters
+            .get(field)
+            .is_some_and(|existing| existing != &value)
+        {
+            return false;
+        }
+        metadata_filters.insert(field.to_string(), value);
+        return true;
+    }
     let PhysicalPlan::VectorSeedScan {
         metadata_filters,
         vector_plan,
@@ -582,7 +594,7 @@ fn attach_vector_filter_field(plan: &mut hawdb_plan_cypher::VectorPhysicalPlan, 
     }
 }
 
-fn vector_seed_metadata_field(property: &str) -> Option<&str> {
+fn seed_metadata_field(property: &str) -> Option<&str> {
     match property {
         "id" => Some("external_id"),
         "kind" | "external_id" | "source_id" | "space_id" | "unit_type" | "lifecycle_state"
@@ -592,7 +604,7 @@ fn vector_seed_metadata_field(property: &str) -> Option<&str> {
     }
 }
 
-fn vector_seed_metadata_value(value: &Value) -> Option<String> {
+fn seed_metadata_value(value: &Value) -> Option<String> {
     match value {
         Value::String(value) => Some(value.clone()),
         Value::Bool(value) => Some(value.to_string()),
@@ -603,15 +615,19 @@ fn vector_seed_metadata_value(value: &Value) -> Option<String> {
     }
 }
 
-fn vector_seed_top_k(plan: &PhysicalPlan) -> Option<usize> {
+fn seed_window(plan: &PhysicalPlan) -> Option<(&'static str, usize)> {
     match plan {
-        PhysicalPlan::VectorSeedScan { vector_plan, .. } => vector_plan_top_k(vector_plan),
+        PhysicalPlan::VectorSeedScan { vector_plan, .. } => {
+            vector_plan_top_k(vector_plan).map(|window| ("vector", window))
+        }
+        PhysicalPlan::TextSeedScan { top_k, .. } => Some(("text", *top_k)),
+        PhysicalPlan::GraphSeedScan { top_k, .. } => Some(("graph", *top_k)),
         PhysicalPlan::NodeColumnLookupExec { input, .. }
         | PhysicalPlan::AdjacencyExpandExec { input, .. }
         | PhysicalPlan::AdjacencyExistsExec { input, .. }
         | PhysicalPlan::FilterExec { input, .. }
         | PhysicalPlan::ProjectExec { input, .. }
-        | PhysicalPlan::LimitExec { input, .. } => vector_seed_top_k(input),
+        | PhysicalPlan::LimitExec { input, .. } => seed_window(input),
         _ => None,
     }
 }
@@ -688,6 +704,8 @@ fn logical_group_count(logical: &LogicalPlan) -> usize {
         | LogicalPlan::ProjectGraph { .. }
         | LogicalPlan::GraphAlgorithm { .. }
         | LogicalPlan::VectorSeed { .. }
+        | LogicalPlan::TextSeed { .. }
+        | LogicalPlan::GraphSeed { .. }
         | LogicalPlan::CreateNode { .. }
         | LogicalPlan::UnwindMutation { .. }
         | LogicalPlan::MergeNode { .. }
@@ -806,6 +824,7 @@ fn lower_logical(
             property,
             column,
             optional,
+            node_visibility_predicate,
             input,
         } => PhysicalPlan::NodeColumnLookupExec {
             variable: variable.clone(),
@@ -813,6 +832,7 @@ fn lower_logical(
             property: property.clone(),
             column: column.clone(),
             optional: *optional,
+            node_visibility_predicate: node_visibility_predicate.clone(),
             input: Box::new(children.lower(
                 input,
                 0,
@@ -857,10 +877,13 @@ fn lower_logical(
                 stage_events,
             );
             let graph_budget =
-                vector_seed_top_k(&input).map(|top_k| graph_expansion_budget(top_k, *max_hops));
+                seed_window(&input).map(|(_, top_k)| graph_expansion_budget(top_k, *max_hops));
             if let Some(graph_budget) = graph_budget {
+                let producer = seed_window(&input)
+                    .map(|(producer, _)| producer)
+                    .unwrap_or("retriever");
                 decisions.push(format!(
-                    "bound vector-seeded graph expansion to {} candidates and {} payload bytes",
+                    "bound {producer}-seeded graph expansion to {} candidates and {} payload bytes",
                     graph_budget.candidate_limit, graph_budget.payload_byte_limit
                 ));
             }
@@ -971,7 +994,7 @@ fn lower_logical(
                     decisions,
                     stage_events,
                 );
-                push_vector_seed_metadata_filter(&mut input, predicate, decisions);
+                push_seed_metadata_filter(&mut input, predicate, decisions);
                 input = join::lower_property_join(input, predicate, decisions);
                 PhysicalPlan::FilterExec {
                     predicate: predicate.clone(),

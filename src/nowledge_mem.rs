@@ -2405,6 +2405,27 @@ impl<'a> NowledgeMemReadSnapshot<'a> {
         parameters: &BTreeMap<String, Value>,
         max_rows: usize,
     ) -> Result<BoundedReadQueryOutput> {
+        self.query_request_profiled(
+            crate::QueryRequest::new(cypher).with_params(parameters),
+            max_rows,
+        )
+    }
+
+    /// Typed query attachment under the same pinned snapshot and cumulative
+    /// result budgets as ordinary Cypher. Scoring does not widen caller caps.
+    pub fn query_request(
+        &mut self,
+        request: crate::QueryRequest<'_>,
+        max_rows: usize,
+    ) -> Result<QueryOutput> {
+        Ok(self.query_request_profiled(request, max_rows)?.output)
+    }
+
+    pub fn query_request_profiled(
+        &mut self,
+        request: crate::QueryRequest<'_>,
+        max_rows: usize,
+    ) -> Result<BoundedReadQueryOutput> {
         let completed_statement_count =
             self.cypher_statement_count.checked_add(1).ok_or_else(|| {
                 HawDBError::Execution(
@@ -2414,13 +2435,11 @@ impl<'a> NowledgeMemReadSnapshot<'a> {
         let max_rows = self.statement_row_budget(max_rows)?;
         let max_payload_bytes = self.remaining_payload_bytes()?;
         let mut rows = Vec::new();
-        let report = self.transaction.query_with_params_streaming_external(
-            cypher,
-            parameters,
-            QueryStreamOptions {
+        let report = self.transaction.query_request_streaming_with_external(
+            request.with_restrictive_output_limits(QueryStreamOptions {
                 max_rows: Some(max_rows),
                 max_payload_bytes: Some(max_payload_bytes),
-            },
+            }),
             &mut self.external,
             |row| {
                 rows.push(row);

@@ -113,7 +113,7 @@ impl DocumentSource for SpoolRecord {
         let memory = control.memory.ok_or_else(|| {
             HawDBError::Execution("streamed analysis requires memory admission".into())
         })?;
-        let scratch = memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
+        let scratch = memory.spool().reserve(SPOOL_BUFFER_BYTES)?;
         let mut input = HexReader {
             input: self.body()?,
             buffer: [0; SPOOL_BUFFER_BYTES],

@@ -332,7 +332,7 @@ pub(super) fn analyze_with_control<'a>(
     if base.saturating_add(pending.bytes) > map_limit {
         pending.flush(pool)?;
     }
-    let mut resident = Some(DocumentAnalysis::new_with_memory(
+    let mut resident = Some(DocumentAnalysis::new_with_accounts(
         document_id,
         LexicalProjectionConfig {
             build_memory_bytes: NonZeroU64::new(map_limit).unwrap(),
@@ -409,7 +409,7 @@ pub(super) fn analyze_with_control<'a>(
                     runs: DocumentRuns::default(),
                     records_memory: control
                         .memory
-                        .map(|memory| memory.retained.reserve(0))
+                        .map(|memory| memory.retained().reserve(0))
                         .transpose()?,
                 };
                 if !analysis.frequencies.is_empty() {

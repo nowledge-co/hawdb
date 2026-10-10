@@ -52,6 +52,26 @@ impl GraphExecutionRead for ChainStore {
             properties: BTreeMap::new(),
         }))
     }
+    fn node_with_allocation(
+        &self,
+        id: NodeId,
+        label_ids: Option<&[hawdb_core::LabelId]>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+    ) -> Result<hawdb_storage::read_view::AdmittedNodeRead> {
+        use hawdb_storage::read_view::{AdmittedNodeRead, AdmittedNodeRecord};
+        let node = NodeRecord {
+            id,
+            labels: BTreeSet::new(),
+            properties: BTreeMap::new(),
+        };
+        if !crate::predicate::node_matches_label_pattern(&node, label_ids) {
+            return Ok(AdmittedNodeRead::Missing);
+        }
+        let Some(allocation) = admit(hawdb_core::ids::node_allocation_bytes(&node))? else {
+            return Ok(AdmittedNodeRead::Stopped);
+        };
+        AdmittedNodeRecord::clone_admitted(&node, allocation).map(AdmittedNodeRead::Node)
+    }
     fn visit_adjacent_relationships_owned(
         &self,
         node_id: NodeId,

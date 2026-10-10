@@ -97,6 +97,19 @@ pub fn projected_node_allocation_bytes(
         }))
 }
 
+/// Full-record allocation bound, evaluated while all values remain borrowed.
+#[doc(hidden)]
+pub fn node_allocation_bytes(node: &NodeRecord) -> usize {
+    std::mem::size_of::<NodeRecord>()
+        .saturating_add(node.labels.len().saturating_mul(128))
+        .saturating_add(node.properties.iter().fold(0usize, |total, (name, value)| {
+            total
+                .saturating_add(1024)
+                .saturating_add(name.len())
+                .saturating_add(projected_value_allocation_bytes(value))
+        }))
+}
+
 fn projected_value_allocation_bytes(value: &Value) -> usize {
     std::mem::size_of::<Value>().saturating_add(match value {
         Value::String(value) => value.len(),
@@ -124,4 +137,18 @@ pub struct RelRecord {
     pub target: NodeId,
     pub rel_type: RelTypeId,
     pub properties: BTreeMap<String, Value>,
+}
+
+/// Full relationship ownership bound, measured without copying its properties.
+#[doc(hidden)]
+pub fn relationship_allocation_bytes(relationship: &RelRecord) -> usize {
+    std::mem::size_of::<RelRecord>().saturating_add(relationship.properties.iter().fold(
+        0usize,
+        |total, (name, value)| {
+            total
+                .saturating_add(1024)
+                .saturating_add(name.len())
+                .saturating_add(projected_value_allocation_bytes(value))
+        },
+    ))
 }

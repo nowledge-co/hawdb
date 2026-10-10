@@ -59,7 +59,7 @@ impl LexicalProjectionReader {
                 &mut pool,
                 &mut pending,
                 crate::analyzer_stream::Control {
-                    memory: Some(memory),
+                    memory: Some(crate::analyzer_memory::Memory::Build(memory)),
                     task: Some(task),
                     workspace,
                     checkpoint_throttle: None,

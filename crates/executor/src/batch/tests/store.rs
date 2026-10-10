@@ -55,6 +55,24 @@ impl GraphExecutionRead for ReadFixture {
     fn node_owned(&self, id: NodeId) -> Result<Option<NodeRecord>> {
         Ok(self.nodes.iter().find(|node| node.id == id).cloned())
     }
+    fn node_with_allocation(
+        &self,
+        id: NodeId,
+        label_ids: Option<&[LabelId]>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+    ) -> Result<hawdb_storage::read_view::AdmittedNodeRead> {
+        use hawdb_storage::read_view::{AdmittedNodeRead, AdmittedNodeRecord};
+        let Some(node) = self.nodes.iter().find(|node| node.id == id) else {
+            return Ok(AdmittedNodeRead::Missing);
+        };
+        if !crate::predicate::node_matches_label_pattern(node, label_ids) {
+            return Ok(AdmittedNodeRead::Missing);
+        }
+        let Some(allocation) = admit(hawdb_core::ids::node_allocation_bytes(node))? else {
+            return Ok(AdmittedNodeRead::Stopped);
+        };
+        AdmittedNodeRecord::clone_admitted(node, allocation).map(AdmittedNodeRead::Node)
+    }
     fn visit_adjacent_relationships_owned(
         &self,
         node_id: NodeId,
@@ -99,6 +117,29 @@ impl GraphExecutionRead for ReadFixture {
         }
         Ok(ScanControl::Continue)
     }
+
+    fn visit_nodes_with_allocation(
+        &self,
+        label: Option<LabelId>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedNodeRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        for node in &self.nodes {
+            if label.is_none_or(|label| node.labels.contains(&label)) {
+                let Some(allocation) = admit(hawdb_core::ids::node_allocation_bytes(node))? else {
+                    return Ok(ScanControl::Stop);
+                };
+                let input =
+                    hawdb_storage::read_view::AdmittedNodeRecord::clone_admitted(node, allocation)?;
+                if consumer(input)? == ScanControl::Stop {
+                    return Ok(ScanControl::Stop);
+                }
+            }
+        }
+        Ok(ScanControl::Continue)
+    }
     fn visit_relationships_owned(
         &self,
         rel_type: Option<RelTypeId>,
@@ -109,6 +150,30 @@ impl GraphExecutionRead for ReadFixture {
                 && consumer(relationship.clone())? == ScanControl::Stop
             {
                 return Ok(ScanControl::Stop);
+            }
+        }
+        Ok(ScanControl::Continue)
+    }
+    fn visit_projected_nodes_admitted(
+        &self,
+        label: Option<LabelId>,
+        properties: &BTreeSet<String>,
+        admit: &mut dyn FnMut(
+            usize,
+        )
+            -> Result<Box<dyn hawdb_storage::read_view::GraphReadAllocation>>,
+        consumer: &mut dyn FnMut(ProjectedNodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        for node in &self.nodes {
+            if label.is_none_or(|label| node.labels.contains(&label)) {
+                let _allocation = admit(hawdb_core::ids::projected_node_allocation_bytes(
+                    node, properties,
+                ))?;
+                if consumer(hawdb_core::ids::project_node_record_ref(node, properties))?
+                    == ScanControl::Stop
+                {
+                    return Ok(ScanControl::Stop);
+                }
             }
         }
         Ok(ScanControl::Continue)
@@ -242,7 +307,7 @@ impl GraphExecutionRead for ReadFixture {
             .collect();
         let output_count = nodes.len();
         Ok(PrunedNodeScan {
-            nodes: Box::new(nodes.into_iter()),
+            nodes: Box::new(nodes.into_iter().map(std::borrow::Cow::Owned)),
             report: ScanPruningReport {
                 target_kind: ScanPruningTargetKind::Node,
                 label_id,
@@ -255,6 +320,45 @@ impl GraphExecutionRead for ReadFixture {
                 candidate_count_before_filter: candidate_count,
                 output_count,
                 filtered_out_count: candidate_count.saturating_sub(output_count),
+            },
+        })
+    }
+
+    fn scan_nodes_with_filter_pruning_admitted<'a>(
+        &'a self,
+        _: &Catalog,
+        label_id: Option<LabelId>,
+        filter: Option<&PropertyFilter>,
+        admit: &mut hawdb_storage::read_view::GraphReadAllocator<'_>,
+    ) -> Result<PrunedNodeScan<'a>> {
+        let admission = hawdb_storage::read_view::GraphReadAdmission::new(admit);
+        let mut nodes = hawdb_storage::read_view::AdmittedVec::new(&admission)?;
+        for node in &self.nodes {
+            if label_id.is_none_or(|label| node.labels.contains(&label))
+                && filter.is_none_or(|filter| node_matches_property_filter(node, filter))
+            {
+                nodes.try_push(node)?;
+            }
+        }
+        let (nodes, allocation) = nodes.into_parts();
+        let output_count = nodes.len();
+        Ok(PrunedNodeScan {
+            nodes: Box::new(nodes.into_iter().map(move |node| {
+                let _retained_allocation = &allocation;
+                std::borrow::Cow::Borrowed(node)
+            })),
+            report: ScanPruningReport {
+                target_kind: ScanPruningTargetKind::Node,
+                label_id,
+                rel_type_id: None,
+                strategy: ScanPruningStrategy::FullLabelScan,
+                pruned: false,
+                exact_empty: output_count == 0,
+                candidate_count_before_pruning: self.nodes.len(),
+                pruned_candidate_count: 0,
+                candidate_count_before_filter: self.nodes.len(),
+                output_count,
+                filtered_out_count: self.nodes.len().saturating_sub(output_count),
             },
         })
     }

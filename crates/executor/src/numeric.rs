@@ -18,37 +18,39 @@
 //! prepared-kernel contracts are not a second host integration API.
 
 mod lending;
+mod owned;
+
+pub use owned::{stream_owned_numeric_nodes, stream_owned_typed_numeric_nodes};
 
 #[cfg(test)]
 mod differential;
 
-use crate::binding::Binding;
 use crate::columnar::{
     filter_float64_values, filter_int64_values, select_float64_values_view,
     select_int64_values_view, BindingSchema, ColumnVector, ColumnarBatch, NumericLiteral,
     NumericPredicate, Selection, SlotDescriptor, SlotId, SlotType, Validity, ValidityBuilder,
     ValidityView,
 };
-use crate::expression::insert_projected_value;
+use crate::expression::{prepare_borrowed_projection, push_borrowed_projection, ProjectedValue};
 use crate::morsel::{
     MorselAdmission, MorselAdmissionRequest, MorselOutput, MorselStreamControl,
     MorselStreamResources, PipelineId, SharedPoolMorselScheduler,
 };
 use crate::observer::ExecutionObserver;
 use crate::observer::QueryExecutionObserver;
-use crate::pipeline::{runtime_checkpoint, BatchControl, BindingBatch};
-use crate::store::{GraphExecutionRead, ScanControl};
+use crate::pipeline::{runtime_checkpoint, AccountedBindingBatch, BatchControl, BindingBatch};
+use crate::store::GraphExecutionRead;
 use crate::SharedExecutorPool;
-use crate::{ExecutionLimit, ExecutionMemoryConfig, QueryMemoryLedger};
+use crate::{
+    ExecutionLimit, ExecutionMemoryConfig, QueryMemoryAccount, QueryMemoryClass, QueryMemoryLedger,
+};
 use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
 use hawdb_plan_cypher::{PhysicalPlan, PlanChildren, Predicate, Projection, ProjectionExpression};
 use hawdb_storage::{scan::ScanPruningReport, NodeRecord};
 use lending::{
     admitted_numeric_batch_rows, LendingBatchCursor, NumericNodeBatch, NumericNodeBatchCursor,
-    OwnedNumericBatchBuffer,
 };
 use std::borrow::Borrow;
-use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -104,15 +106,17 @@ pub struct LendingNumericScan {
     pub needs_node_ids: bool,
 }
 
-struct NumericBatchEmitter<'plan, 'task, 'observer, 'emit> {
+struct NumericBatchEmitter<'plan, 'context, 'emit> {
     fragment: NumericFragment<'plan>,
     items: &'plan [Projection],
     emitted: usize,
     execution_limit: ExecutionLimit,
-    task_context: Option<&'task RuntimeTaskContext>,
-    observer: &'observer QueryExecutionObserver,
+    task_context: Option<&'context RuntimeTaskContext>,
+    observer: &'context QueryExecutionObserver,
     emit: &'emit mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     selected_rows: Vec<u32>,
+    working: QueryMemoryAccount,
+    output: AccountedBindingBatch,
 }
 
 pub fn supports_parallel_morsel_execution(plan: &PhysicalPlan, catalog: &Catalog) -> bool {
@@ -625,12 +629,6 @@ fn numeric_columnar_schema(
     Ok(Arc::new(BindingSchema::try_new(slots)?))
 }
 
-struct PreparedNumericBatch {
-    input_rows: usize,
-    selected_rows: usize,
-    output: BindingBatch,
-}
-
 #[derive(Debug)]
 struct PreparedColumnarBatch {
     input_rows: usize,
@@ -709,6 +707,7 @@ fn stream_parallel_borrowed_numeric_nodes(
         fragment,
         items,
         execution_limit,
+        (context.memory, context.memory_ledger),
         context.task_context,
         context.observer,
         emit,
@@ -797,6 +796,7 @@ fn stream_lending_numeric_nodes(
         fragment,
         items,
         execution_limit,
+        (context.memory, context.memory_ledger),
         context.task_context,
         context.observer,
         emit,
@@ -825,6 +825,7 @@ fn stream_borrowed_numeric_nodes(
         fragment,
         items,
         execution_limit,
+        (context.memory, context.memory_ledger),
         context.task_context,
         context.observer,
         emit,
@@ -847,132 +848,14 @@ fn stream_borrowed_numeric_nodes(
     Ok((batch_emitter.emitted, stopped))
 }
 
-pub fn stream_owned_numeric_nodes(
-    fragment: NumericFragment<'_>,
-    items: &[Projection],
-    label_id: hawdb_core::LabelId,
-    context: NumericExecutionContext<'_>,
-    execution_limit: ExecutionLimit,
-    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
-) -> Result<(usize, bool)> {
-    let mut nodes = Vec::with_capacity(context.memory.batch_rows.get());
-    let mut buffered_bytes = 0usize;
-    let mut batch_emitter = NumericBatchEmitter::new(
-        fragment,
-        items,
-        execution_limit,
-        context.task_context,
-        context.observer,
-        emit,
-    );
-    let mut stopped = false;
-    {
-        let mut consume = |node: NodeRecord| {
-            if stopped {
-                return Ok(ScanControl::Stop);
-            }
-            let node_bytes = crate::binding::node_memory_bytes(&node);
-            if !nodes.is_empty()
-                && buffered_bytes.saturating_add(node_bytes)
-                    > context.memory.batch_payload_bytes.get()
-            {
-                match batch_emitter.emit_owned(&mut nodes)? {
-                    BatchControl::Continue => buffered_bytes = 0,
-                    BatchControl::Stop => {
-                        stopped = true;
-                        return Ok(ScanControl::Stop);
-                    }
-                }
-            }
-            buffered_bytes = buffered_bytes.saturating_add(node_bytes);
-            nodes.push(node);
-            if nodes.len() == context.memory.batch_rows.get()
-                || buffered_bytes >= context.memory.batch_payload_bytes.get()
-            {
-                match batch_emitter.emit_owned(&mut nodes)? {
-                    BatchControl::Continue => buffered_bytes = 0,
-                    BatchControl::Stop => {
-                        stopped = true;
-                        return Ok(ScanControl::Stop);
-                    }
-                }
-            }
-            if batch_emitter.limit_reached() {
-                stopped = true;
-                Ok(ScanControl::Stop)
-            } else {
-                Ok(ScanControl::Continue)
-            }
-        };
-        context
-            .store
-            .visit_nodes_owned(Some(label_id), &mut consume)?;
-    }
-    if !stopped && !nodes.is_empty() {
-        stopped = batch_emitter.emit_owned(&mut nodes)? == BatchControl::Stop;
-    }
-    Ok((batch_emitter.emitted, stopped))
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn stream_owned_typed_numeric_nodes(
-    fragment: NumericFragment<'_>,
-    items: &[Projection],
-    label_id: hawdb_core::LabelId,
-    scan: LendingNumericScan,
-    context: NumericExecutionContext<'_>,
-    execution_limit: ExecutionLimit,
-    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
-) -> Result<(usize, bool)> {
-    let mut buffer = OwnedNumericBatchBuffer::new(fragment, scan.batch_rows, scan.needs_node_ids);
-    let mut batch_emitter = NumericBatchEmitter::new(
-        fragment,
-        items,
-        execution_limit,
-        context.task_context,
-        context.observer,
-        emit,
-    );
-    let mut stopped = false;
-    {
-        let mut consume = |node: NodeRecord| {
-            if stopped {
-                return Ok(ScanControl::Stop);
-            }
-            buffer.push_owned(node)?;
-            if buffer.is_full() {
-                match batch_emitter.emit_typed(buffer.take_batch())? {
-                    BatchControl::Continue => buffer.clear(),
-                    BatchControl::Stop => {
-                        stopped = true;
-                        return Ok(ScanControl::Stop);
-                    }
-                }
-            }
-            if batch_emitter.limit_reached() {
-                stopped = true;
-                Ok(ScanControl::Stop)
-            } else {
-                Ok(ScanControl::Continue)
-            }
-        };
-        context
-            .store
-            .visit_nodes_owned(Some(label_id), &mut consume)?;
-    }
-    if !stopped && !buffer.is_empty() {
-        stopped = batch_emitter.emit_typed(buffer.take_batch())? == BatchControl::Stop;
-    }
-    Ok((batch_emitter.emitted, stopped))
-}
-
-impl<'plan, 'task, 'observer, 'emit> NumericBatchEmitter<'plan, 'task, 'observer, 'emit> {
+impl<'plan, 'context, 'emit> NumericBatchEmitter<'plan, 'context, 'emit> {
     fn new(
         fragment: NumericFragment<'plan>,
         items: &'plan [Projection],
         execution_limit: ExecutionLimit,
-        task_context: Option<&'task RuntimeTaskContext>,
-        observer: &'observer QueryExecutionObserver,
+        resources: (&ExecutionMemoryConfig, &QueryMemoryLedger),
+        task_context: Option<&'context RuntimeTaskContext>,
+        observer: &'context QueryExecutionObserver,
         emit: &'emit mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Self {
         Self {
@@ -984,6 +867,17 @@ impl<'plan, 'task, 'observer, 'emit> NumericBatchEmitter<'plan, 'task, 'observer
             observer,
             emit,
             selected_rows: Vec::new(),
+            working: resources.1.account(
+                QueryMemoryClass::BlockingState,
+                "numeric projection expressions",
+                resources.0.blocking_operator_bytes,
+            ),
+            output: AccountedBindingBatch::with_ledger(
+                "NumericProjectionExec",
+                resources.0.batch_rows.get(),
+                resources.0.batch_payload_bytes,
+                resources.1,
+            ),
         }
     }
 
@@ -991,18 +885,51 @@ impl<'plan, 'task, 'observer, 'emit> NumericBatchEmitter<'plan, 'task, 'observer
         self.execution_limit.is_reached(self.emitted)
     }
 
-    fn emit_owned(&mut self, nodes: &mut Vec<NodeRecord>) -> Result<BatchControl> {
-        let control = self.emit_nodes(nodes)?;
-        nodes.clear();
-        Ok(control)
-    }
-
     fn emit_typed(&mut self, input: NumericNodeBatch<'_>) -> Result<BatchControl> {
         runtime_checkpoint(self.task_context)?;
         self.observer.record_morsels(1);
-        let prepared =
-            prepare_typed_batch(self.fragment, self.items, input, &mut self.selected_rows)?;
-        self.emit_prepared(prepared)
+        match input.values {
+            lending::NumericBatchValues::Int(values) => self.fragment.select_int64_values(
+                values,
+                input.validity,
+                &mut self.selected_rows,
+            )?,
+            lending::NumericBatchValues::Float(values) => self.fragment.select_float64_values(
+                values,
+                input.validity,
+                &mut self.selected_rows,
+            )?,
+        }
+        let selected = std::mem::take(&mut self.selected_rows);
+        self.record_selection(input.input_rows, selected.len());
+        let result = (|| {
+            for row in selected.iter().copied().map(|row| row as usize) {
+                if self.limit_reached() {
+                    break;
+                }
+                let control = self.emit_row(|expression| {
+                    Ok(match expression {
+                        ProjectionExpression::Id { .. } => ProjectedValue::scalar(Value::Int(
+                            input
+                                .node_ids
+                                .expect("typed scan retains requested node ids")[row]
+                                as i64,
+                        )),
+                        ProjectionExpression::Property { .. } => {
+                            ProjectedValue::scalar(input.values.value(row))
+                        }
+                        ProjectionExpression::Literal(value) => ProjectedValue::borrowed(value),
+                        _ => unreachable!("typed projection eligibility checks expressions"),
+                    })
+                })?;
+                if control == BatchControl::Stop {
+                    return Ok(control);
+                }
+            }
+            self.finish_batch()
+        })();
+        self.selected_rows = selected;
+        result
     }
 
     fn emit_nodes<N: Borrow<NodeRecord>>(&mut self, input: &[N]) -> Result<BatchControl> {
@@ -1014,37 +941,44 @@ impl<'plan, 'task, 'observer, 'emit> NumericBatchEmitter<'plan, 'task, 'observer
         &mut self,
         input: &[N],
     ) -> Result<BatchControl> {
-        let prepared = prepare_numeric_batch(self.fragment, self.items, input, self.task_context)?;
-        self.emit_prepared(prepared)
+        let selection = select_numeric_rows(self.fragment, input, self.task_context)?;
+        self.record_selection(input.len(), selection.selected_count());
+        for row in selection.iter() {
+            if self.limit_reached() {
+                break;
+            }
+            let node = input[row].borrow();
+            let control = self.emit_row(|expression| {
+                Ok(match expression {
+                    ProjectionExpression::Id { .. } => {
+                        ProjectedValue::scalar(Value::Int(node.id.0 as i64))
+                    }
+                    ProjectionExpression::Property { property, .. } => {
+                        node.properties.get(property).map_or_else(
+                            || ProjectedValue::scalar(Value::Null),
+                            ProjectedValue::borrowed,
+                        )
+                    }
+                    ProjectionExpression::Literal(value) => ProjectedValue::borrowed(value),
+                    _ => unreachable!("numeric projection eligibility checks expressions"),
+                })
+            })?;
+            if control == BatchControl::Stop {
+                return Ok(control);
+            }
+        }
+        self.finish_batch()
     }
 
-    fn emit_prepared(&mut self, mut prepared: PreparedNumericBatch) -> Result<BatchControl> {
-        self.fragment.record_fused_cardinality(
-            self.observer,
-            prepared.input_rows,
-            prepared.selected_rows,
-        );
+    fn record_selection(&self, input_rows: usize, selected_rows: usize) {
+        self.fragment
+            .record_fused_cardinality(self.observer, input_rows, selected_rows);
         self.observer
-            .record_columnar_batch(prepared.input_rows, prepared.selected_rows);
-        let remaining = self
-            .execution_limit
-            .output_rows
-            .unwrap_or(usize::MAX)
-            .saturating_sub(self.emitted);
-        if prepared.output.len() > remaining {
-            prepared.output.truncate(remaining);
-        }
-        self.emit_output(prepared.output)
+            .record_columnar_batch(input_rows, selected_rows);
     }
 
     fn emit_columnar(&mut self, prepared: PreparedColumnarBatch) -> Result<BatchControl> {
-        self.fragment.record_fused_cardinality(
-            self.observer,
-            prepared.input_rows,
-            prepared.batch.selected_count(),
-        );
-        self.observer
-            .record_columnar_batch(prepared.input_rows, prepared.batch.selected_count());
+        self.record_selection(prepared.input_rows, prepared.batch.selected_count());
         let remaining = self
             .execution_limit
             .output_rows
@@ -1055,89 +989,68 @@ impl<'plan, 'task, 'observer, 'emit> NumericBatchEmitter<'plan, 'task, 'observer
             .column(PREDICATE_VALUE_SLOT)
             .expect("prepared columnar batch retains its predicate column");
         let node_ids = batch.column(NODE_ID_SLOT);
-        let mut output = Vec::with_capacity(batch.selected_count());
         for row in batch.selection().iter() {
-            let mut values = BTreeMap::new();
-            for item in self.items {
-                let value = match &item.expression {
-                    ProjectionExpression::Id { .. } => node_ids
-                        .expect("typed scan retains requested node ids")
-                        .value(row)
-                        .expect("node id columns are non-null"),
+            let control = self.emit_row(|expression| {
+                Ok(match expression {
+                    ProjectionExpression::Id { .. } => ProjectedValue::scalar(
+                        node_ids
+                            .expect("typed scan retains requested node ids")
+                            .value(row)
+                            .expect("node id columns are non-null"),
+                    ),
                     ProjectionExpression::Property { .. } => {
-                        property.value(row).unwrap_or(Value::Null)
+                        ProjectedValue::scalar(property.value(row).unwrap_or(Value::Null))
                     }
-                    ProjectionExpression::Literal(value) => value.clone(),
+                    ProjectionExpression::Literal(value) => ProjectedValue::borrowed(value),
                     _ => unreachable!("typed projection eligibility checks expressions"),
-                };
-                insert_projected_value(&mut values, &item.name, value);
+                })
+            })?;
+            if control == BatchControl::Stop {
+                return Ok(control);
             }
-            output.push(Binding::values(values));
         }
-        self.emit_output(output)
+        self.finish_batch()
     }
 
-    fn emit_output(&mut self, output: BindingBatch) -> Result<BatchControl> {
-        self.emitted = self.emitted.saturating_add(output.len());
+    fn emit_row<'a>(
+        &mut self,
+        mut evaluate: impl FnMut(&'a ProjectionExpression) -> Result<ProjectedValue<'a>>,
+    ) -> Result<BatchControl>
+    where
+        'plan: 'a,
+    {
         runtime_checkpoint(self.task_context)?;
-        if !output.is_empty() && (self.emit)(output)? == BatchControl::Stop {
+        let items = self.items;
+        let working = &self.working;
+        if push_borrowed_projection(
+            &mut self.output,
+            || prepare_borrowed_projection(items, working, None, &mut evaluate),
+            self.emit,
+        )? == BatchControl::Stop
+        {
             return Ok(BatchControl::Stop);
         }
-        Ok(if self.limit_reached() {
-            BatchControl::Stop
-        } else {
-            BatchControl::Continue
-        })
+        self.emitted = self.emitted.saturating_add(1);
+        if self.output.is_full() || self.limit_reached() {
+            return self.finish_batch();
+        }
+        Ok(BatchControl::Continue)
+    }
+
+    fn finish_batch(&mut self) -> Result<BatchControl> {
+        runtime_checkpoint(self.task_context)?;
+        if self.output.emit(self.emit)? == BatchControl::Stop || self.limit_reached() {
+            return Ok(BatchControl::Stop);
+        }
+        Ok(BatchControl::Continue)
     }
 }
 
-fn prepare_typed_batch(
+fn select_numeric_rows<N: Borrow<NodeRecord>>(
     fragment: NumericFragment<'_>,
-    items: &[Projection],
-    input: NumericNodeBatch<'_>,
-    selected_rows: &mut Vec<u32>,
-) -> Result<PreparedNumericBatch> {
-    match input.values {
-        lending::NumericBatchValues::Int(values) => {
-            fragment.select_int64_values(values, input.validity, selected_rows)?
-        }
-        lending::NumericBatchValues::Float(values) => {
-            fragment.select_float64_values(values, input.validity, selected_rows)?
-        }
-    }
-    let selected_count = selected_rows.len();
-    let mut output = Vec::with_capacity(selected_count);
-    for row in selected_rows.iter().copied().map(|row| row as usize) {
-        let mut values = BTreeMap::new();
-        for item in items {
-            let value = match &item.expression {
-                ProjectionExpression::Id { .. } => Value::Int(
-                    input
-                        .node_ids
-                        .expect("typed scan retains requested node ids")[row]
-                        as i64,
-                ),
-                ProjectionExpression::Property { .. } => input.values.value(row),
-                ProjectionExpression::Literal(value) => value.clone(),
-                _ => unreachable!("typed projection eligibility checks expressions"),
-            };
-            insert_projected_value(&mut values, &item.name, value);
-        }
-        output.push(Binding::values(values));
-    }
-    Ok(PreparedNumericBatch {
-        input_rows: input.input_rows,
-        selected_rows: selected_count,
-        output,
-    })
-}
-
-fn prepare_numeric_batch<N: Borrow<NodeRecord>>(
-    fragment: NumericFragment<'_>,
-    items: &[Projection],
     input: &[N],
     task_context: Option<&RuntimeTaskContext>,
-) -> Result<PreparedNumericBatch> {
+) -> Result<Selection> {
     runtime_checkpoint(task_context)?;
     let mut validity = ValidityBuilder::with_capacity(input.len());
     let selection = match fragment.property_type {
@@ -1188,35 +1101,7 @@ fn prepare_numeric_batch<N: Borrow<NodeRecord>>(
         _ => unreachable!("numeric fragment eligibility checks the property type"),
     };
     runtime_checkpoint(task_context)?;
-    let selected_rows = selection.selected_count();
-    let mut output = Vec::with_capacity(selected_rows);
-    for row in selection.iter() {
-        let node = input[row].borrow();
-        let mut values = BTreeMap::new();
-        for item in items {
-            let value = match &item.expression {
-                ProjectionExpression::Id { .. } => Value::Int(node.id.0 as i64),
-                ProjectionExpression::Property { property, .. } => node
-                    .properties
-                    .get(property)
-                    .cloned()
-                    .unwrap_or(Value::Null),
-                ProjectionExpression::Literal(value) => value.clone(),
-                _ => unreachable!("columnar projection eligibility checks expressions"),
-            };
-            insert_projected_value(&mut values, &item.name, value);
-        }
-        output.push(Binding {
-            values,
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
-        });
-    }
-    Ok(PreparedNumericBatch {
-        input_rows: input.len(),
-        selected_rows,
-        output,
-    })
+    Ok(selection)
 }
 
 fn prepare_owned_columnar_batch(

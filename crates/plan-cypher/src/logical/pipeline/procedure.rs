@@ -9,6 +9,9 @@ pub(super) fn bind_procedure_pipeline(
         unreachable!()
     };
     let mut tail = &query.clauses[1..];
+    let has_graph_read = tail
+        .iter()
+        .any(|clause| matches!(clause.kind, ClauseKind::Match { .. }));
     let (mut input, columns) = match &procedure.kind {
         ProcedureCallKind::ProjectGraph {
             name,
@@ -88,13 +91,20 @@ pub(super) fn bind_procedure_pipeline(
                 columns,
             )
         }
+        ProcedureCallKind::GraphSeedSearch(search) => {
+            return bind_graph_seed_pipeline(search, yields, tail, parameters);
+        }
+        ProcedureCallKind::TextSearch(search) => {
+            if yields.is_empty() && has_graph_read {
+                return Err(unsupported("text search requires YIELD before MATCH"));
+            }
+            let seeded_match = !yields.is_empty() && has_graph_read;
+            let input = bind_text_seed(search, parameters, seeded_match)?;
+            (input, vec!["id".to_string(), "score".to_string()])
+        }
         ProcedureCallKind::VectorSearch(search) => {
             let input = bind_vector_seed(search, parameters, !yields.is_empty())?;
-            if yields.is_empty()
-                && tail
-                    .iter()
-                    .any(|clause| matches!(clause.kind, ClauseKind::Match { .. }))
-            {
+            if yields.is_empty() && has_graph_read {
                 return Err(unsupported("vector search requires YIELD before MATCH"));
             }
             if yields.is_empty()
@@ -111,15 +121,21 @@ pub(super) fn bind_procedure_pipeline(
             (input, vec!["id".to_string(), "score".to_string()])
         }
     };
-    let vector_match =
-        matches!(procedure.kind, ProcedureCallKind::VectorSearch(_)) && !yields.is_empty();
-    let (next, mut scope) = bind_yields(input, &columns, yields, vector_match)?;
+    let seeded_match = !yields.is_empty()
+        && (matches!(procedure.kind, ProcedureCallKind::VectorSearch(_))
+            || (matches!(procedure.kind, ProcedureCallKind::TextSearch(_)) && has_graph_read));
+    let producer = if matches!(procedure.kind, ProcedureCallKind::TextSearch(_)) {
+        "text"
+    } else {
+        "vector"
+    };
+    let (next, mut scope) = bind_yields(input, &columns, yields, seeded_match)?;
     input = next;
-    if vector_match {
+    if seeded_match {
         let Some((clause, rest)) = tail.split_first() else {
-            return Err(unsupported(
-                "vector search YIELD must feed a MATCH read query",
-            ));
+            return Err(unsupported(&format!(
+                "{producer} search YIELD must feed a MATCH read query"
+            )));
         };
         let ClauseKind::Match {
             optional: false,
@@ -127,14 +143,14 @@ pub(super) fn bind_procedure_pipeline(
             predicate,
         } = &clause.kind
         else {
-            return Err(unsupported(
-                "vector search YIELD must feed a MATCH read query",
-            ));
+            return Err(unsupported(&format!(
+                "{producer} search YIELD must feed a MATCH read query"
+            )));
         };
         let [pattern] = patterns.as_slice() else {
-            return Err(unsupported(
-                "vector search requires one seeded MATCH pattern",
-            ));
+            return Err(unsupported(&format!(
+                "{producer} search requires one seeded MATCH pattern"
+            )));
         };
         let hops = tail.iter().fold(0usize, |hops, clause| match &clause.kind {
             ClauseKind::Match { patterns, .. } => patterns.iter().fold(hops, |hops, pattern| {
@@ -144,8 +160,8 @@ pub(super) fn bind_procedure_pipeline(
             }),
             _ => hops,
         });
-        if hops > MAX_VECTOR_SEEDED_GRAPH_HOPS {
-            return Err(unsupported(&format!("vector-seeded graph expansion supports at most {MAX_VECTOR_SEEDED_GRAPH_HOPS} hops")));
+        if hops > MAX_RETRIEVER_SEEDED_GRAPH_HOPS {
+            return Err(unsupported(&format!("{producer}-seeded graph expansion supports at most {MAX_RETRIEVER_SEEDED_GRAPH_HOPS} hops")));
         }
         scope.bind_graph(
             &pattern.first.variable,
@@ -158,6 +174,7 @@ pub(super) fn bind_procedure_pipeline(
             property: "id".to_string(),
             column: "external_id".to_string(),
             optional: false,
+            node_visibility_predicate: None,
             input: Box::new(input),
         };
         if pattern.first.properties.is_empty() && pattern.steps.is_empty() {
@@ -285,4 +302,104 @@ fn bind_yields(
 
 fn unsupported(message: &str) -> HawDBError {
     HawDBError::Semantic(message.to_string())
+}
+
+fn bind_graph_seed_pipeline(
+    search: &hawdb_cypher::GraphSeedSearch,
+    yields: &[YieldItem],
+    tail: &[Clause],
+    parameters: &BTreeMap<String, Value>,
+) -> Result<LogicalPlan> {
+    let ValueExpressionKind::Parameter(query_parameter) = &search.query.kind else {
+        return Err(unsupported("graph seed query must be a string parameter"));
+    };
+    if !matches!(parameters.get(query_parameter), Some(Value::String(_))) {
+        return Err(unsupported("graph seed query must be a string parameter"));
+    }
+    let Value::String(label) = bind_value(&search.label, parameters)? else {
+        return Err(unsupported("graph seed label must be a nonempty string"));
+    };
+    if label.is_empty() || label.contains('\0') {
+        return Err(unsupported(
+            "graph seed label must be a nonempty string without NUL",
+        ));
+    }
+    let top_k = search
+        .top_k
+        .as_ref()
+        .map(|value| bind_non_negative_usize(value, parameters, "topK"))
+        .transpose()?
+        .unwrap_or(10);
+    let mut scope = Scope::default();
+    let mut variable = "node".to_string();
+    let mut score_column = "score".to_string();
+    let mut seen = BTreeSet::new();
+    for item in yields {
+        let column = item.name.to_ascii_lowercase();
+        if !seen.insert(column.clone()) {
+            return Err(unsupported("graph seed YIELD columns must be distinct"));
+        }
+        let alias = item.alias.as_ref().unwrap_or(&column);
+        if alias.contains('\0') || scope.0.contains_key(alias) {
+            return Err(unsupported(
+                "graph seed YIELD aliases must be distinct and public",
+            ));
+        }
+        match column.as_str() {
+            "node" => {
+                variable = alias.clone();
+                scope.bind_graph(alias, GraphEntityKind::Node, &mut Vec::new())?;
+            }
+            "score" => {
+                score_column = alias.clone();
+                scope.0.insert(alias.clone(), BindingType::Scalar);
+            }
+            _ => return Err(unsupported("unknown graph seed YIELD column")),
+        }
+    }
+    if yields.is_empty() {
+        scope.bind_graph(&variable, GraphEntityKind::Node, &mut Vec::new())?;
+        scope.0.insert(score_column.clone(), BindingType::Scalar);
+    }
+    let hops = tail.iter().fold(0usize, |hops, clause| match &clause.kind {
+        ClauseKind::Match { patterns, .. } => patterns.iter().fold(hops, |hops, pattern| {
+            pattern.steps.iter().fold(hops, |hops, step| {
+                hops.saturating_add(step.relationship.max_hops)
+            })
+        }),
+        _ => hops,
+    });
+    if hops > MAX_RETRIEVER_SEEDED_GRAPH_HOPS {
+        return Err(unsupported(
+            "graph-seeded expansion supports at most two hops",
+        ));
+    }
+    let input = LogicalPlan::GraphSeed {
+        query_parameter: query_parameter.clone(),
+        label,
+        variable,
+        score_column,
+        top_k,
+        node_visibility_predicate: None,
+    };
+    if tail.is_empty() {
+        let items = scope
+            .0
+            .iter()
+            .map(|(name, kind)| Projection {
+                name: name.clone(),
+                expression: match kind {
+                    BindingType::Graph { .. } => ProjectionExpression::Variable {
+                        variable: name.clone(),
+                    },
+                    _ => ProjectionExpression::Column(name.clone()),
+                },
+            })
+            .collect();
+        return Ok(LogicalPlan::Project {
+            items,
+            input: Box::new(input),
+        });
+    }
+    bind_read_clauses(tail, Some(input), scope, parameters)
 }

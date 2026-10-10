@@ -13,7 +13,8 @@
 // limitations under the License.
 
 use super::*;
-use crate::build_memory::{checked_add, BuildMemory};
+use crate::analyzer_memory::Memory;
+use crate::build_memory::checked_add;
 use crate::build_term::Term;
 use crate::{HawDBError, RuntimeTaskContext};
 use hawdb_executor::QueryMemoryLease;
@@ -25,7 +26,7 @@ const CHECKPOINT_STRIDE: usize = 1024;
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Control<'a> {
-    pub(crate) memory: Option<&'a BuildMemory>,
+    pub(crate) memory: Option<Memory<'a>>,
     pub(crate) task: Option<&'a RuntimeTaskContext>,
     pub(crate) workspace: Option<&'a crate::analyzer_workspace::Workspace>,
     pub(crate) checkpoint_throttle: Option<&'a CheckpointThrottle>,
@@ -42,10 +43,10 @@ impl CheckpointThrottle {
         }
     }
 
-    fn check(&self, task: &RuntimeTaskContext) -> Result<()> {
+    fn check(&self, task: &RuntimeTaskContext, memory: Option<Memory<'_>>) -> Result<()> {
         let remaining = self.remaining.get();
         if remaining == 0 {
-            crate::build_control::checkpoint(task)?;
+            checkpoint(memory, task)?;
             self.remaining.set(CHECKPOINT_STRIDE - 1);
         } else {
             self.remaining.set(remaining - 1);
@@ -70,22 +71,22 @@ impl<'a> Control<'a> {
         // deadline path retains bounded latency without calling Instant::now
         // for every token, suffix and alias.
         if task.cancellation().is_cancelled() {
-            return crate::build_control::checkpoint(task);
+            return checkpoint(self.memory, task);
         }
         self.checkpoint_throttle.map_or_else(
-            || crate::build_control::checkpoint(task),
-            |throttle| throttle.check(task),
+            || checkpoint(self.memory, task),
+            |throttle| throttle.check(task, self.memory),
         )
     }
 
     pub(super) fn copy(self, text: &str) -> Result<Term> {
         self.check()?;
-        Term::copy(text, self.memory)
+        Term::copy_with_account(text, self.memory.map(Memory::retained))
     }
 
     pub(super) fn build(self, capacity: usize, build: impl FnOnce() -> String) -> Result<Term> {
         self.check()?;
-        let term = Term::build(capacity, self.memory, build)?;
+        let term = Term::build_with_account(capacity, self.memory.map(Memory::retained), build)?;
         self.check()?;
         Ok(term)
     }
@@ -135,7 +136,7 @@ impl<'a> Dedup<'a> {
         let bytes = table_bytes::<(Text<'_>, ())>(capacity)?;
         let memory = control
             .memory
-            .map(|memory| memory.retained.reserve(bytes))
+            .map(|memory| memory.retained().reserve(bytes))
             .transpose()?;
         // Field order keeps this candidate's lease alive through allocation
         // failure and capacity rejection, without a manual grow/shrink rollback.
@@ -158,6 +159,13 @@ impl<'a> Dedup<'a> {
 fn table_bytes<T>(capacity: usize) -> Result<usize> {
     crate::analyzer_workspace::bounds::retained_hash_table_bytes(capacity, size_of::<T>())
         .ok_or_else(|| HawDBError::Execution("search dedup capacity overflow".into()))
+}
+
+fn checkpoint(memory: Option<Memory<'_>>, task: &RuntimeTaskContext) -> Result<()> {
+    memory.map_or_else(
+        || crate::build_control::checkpoint(task),
+        |memory| memory.checkpoint(task),
+    )
 }
 
 #[cfg(test)]

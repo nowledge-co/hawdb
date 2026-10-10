@@ -40,7 +40,7 @@ pub(crate) fn visit_reader(
         bytes: Vec::new(),
         memory: control
             .memory
-            .map(|memory| memory.input.reserve(0))
+            .map(|memory| memory.input().reserve(0))
             .transpose()?,
         limit: max_identifier_bytes,
     };

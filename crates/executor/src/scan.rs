@@ -14,10 +14,12 @@
 
 //! Storage-implementation-neutral node scan and lookup operators.
 
-use crate::binding::{binding_memory_bytes, Binding};
+mod owned;
+
+use crate::binding::{binding_memory_bytes, projected_node_binding_memory_bytes, Binding};
 use crate::expression::{
-    evaluate_predicate_with_memory, insert_projected_value, project_value,
-    property_filter_from_predicate,
+    evaluate_predicate_with_memory, evaluate_projection_borrowed, prepare_borrowed_projection,
+    property_filter_from_predicate, push_borrowed_projection,
 };
 use crate::kernel::{push_bounded_operator_binding, OperatorMemoryTracker};
 use crate::observer::ExecutionObserver;
@@ -49,8 +51,6 @@ use hawdb_storage::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 
-const UNION_DEDUP_ENTRY_BYTES: usize = 64;
-
 #[derive(Clone, Copy)]
 pub struct NodeScanSpec<'a> {
     pub variable: &'a str,
@@ -81,7 +81,21 @@ pub struct NodeScanContext<'a> {
     pub task_context: Option<&'a RuntimeTaskContext>,
 }
 
-impl NodeScanContext<'_> {
+impl<'a> NodeScanContext<'a> {
+    fn pruned_scan(
+        self,
+        label_id: Option<LabelId>,
+        filter: Option<&PropertyFilter>,
+    ) -> Result<crate::store::PrunedNodeScan<'a>> {
+        self.store.scan_nodes_with_filter_pruning_admitted(
+            self.catalog,
+            label_id,
+            filter,
+            &mut |bytes| {
+                crate::store::admit_graph_read(self.memory_account, self.task_context, bytes)
+            },
+        )
+    }
     fn memory_tracker(self) -> OperatorMemoryTracker {
         OperatorMemoryTracker::with_account(self.memory_budget, self.memory_account.clone())
     }
@@ -446,109 +460,7 @@ pub fn stream_node_scan_batches(
     observer: &dyn ExecutionObserver,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    let exact_label = exact_scan_label_id(context.catalog, spec.label);
-    let exact_label_id = exact_label.flatten();
-    if !context.store.is_out_of_core()
-        && let Some(label_id) = exact_label
-        && context
-            .store
-            .node_count_for_label(label_id)
-            .saturating_mul(std::mem::size_of::<&NodeRecord>())
-            <= context.memory_budget.get()
-    {
-        let scan = context.store.scan_nodes_with_filter_pruning(
-            context.catalog,
-            label_id,
-            spec.property_filter,
-        )?;
-        observer.record_scan_pruning_report(scan.report.clone());
-        let mut batch = context.output_batch("NodeScanExec");
-        let mut emitted = 0usize;
-        for node in scan.nodes {
-            runtime_checkpoint(context.task_context)?;
-            let binding = node_binding(spec.variable, node);
-            if !predicate(&binding)? {
-                continue;
-            }
-            if batch.push(binding, emit)? == BatchControl::Stop {
-                return Ok(BatchControl::Stop);
-            }
-            emitted = emitted.saturating_add(1);
-            if batch.is_full() && batch.emit(emit)? == BatchControl::Stop {
-                return Ok(BatchControl::Stop);
-            }
-            if context.execution_limit.is_reached(emitted) {
-                break;
-            }
-        }
-        if !batch.is_empty() && batch.emit(emit)? == BatchControl::Stop {
-            return Ok(BatchControl::Stop);
-        }
-        return Ok(if context.execution_limit.is_reached(emitted) {
-            BatchControl::Stop
-        } else {
-            BatchControl::Continue
-        });
-    }
-
-    let label_ids = label_ids_for_pattern(context.catalog, spec.label);
-    let mut batch = context.output_batch("NodeScanExec");
-    let mut emitted = 0usize;
-    let mut visit = |node: NodeRecord| {
-        runtime_checkpoint(context.task_context)?;
-        if exact_label.is_none() && !node_matches_label_pattern(&node, label_ids.as_deref()) {
-            return Ok(ScanControl::Continue);
-        }
-        if spec
-            .property_filter
-            .map(|filter| node_matches_property_filter(&node, filter))
-            .is_some_and(|matches| !matches)
-        {
-            return Ok(ScanControl::Continue);
-        }
-        let binding = node_binding(spec.variable, node);
-        if !predicate(&binding)? {
-            return Ok(ScanControl::Continue);
-        }
-        if batch.push(binding, emit)? == BatchControl::Stop {
-            return Ok(ScanControl::Stop);
-        }
-        emitted = emitted.saturating_add(1);
-        if batch.is_full() && batch.emit(emit)? == BatchControl::Stop {
-            return Ok(ScanControl::Stop);
-        }
-        Ok(if context.execution_limit.is_reached(emitted) {
-            ScanControl::Stop
-        } else {
-            ScanControl::Continue
-        })
-    };
-    let control = context
-        .store
-        .visit_nodes_owned(exact_label_id, &mut visit)?;
-    let candidate_count = context.store.node_count_for_label(exact_label_id);
-    observer.record_scan_pruning_report(ScanPruningReport {
-        target_kind: ScanPruningTargetKind::Node,
-        label_id: exact_label_id,
-        rel_type_id: None,
-        strategy: ScanPruningStrategy::FullLabelScan,
-        pruned: false,
-        exact_empty: candidate_count == 0,
-        candidate_count_before_pruning: candidate_count,
-        pruned_candidate_count: 0,
-        candidate_count_before_filter: candidate_count,
-        output_count: emitted,
-        filtered_out_count: candidate_count.saturating_sub(emitted),
-    });
-    let final_emit_control = batch.emit(emit)?;
-    if final_emit_control == BatchControl::Stop {
-        return Ok(BatchControl::Stop);
-    }
-    Ok(if control == ScanControl::Stop {
-        BatchControl::Stop
-    } else {
-        BatchControl::Continue
-    })
+    owned::stream(spec, context, predicate, observer, emit)
 }
 
 pub fn stream_node_projection_scan_batches(
@@ -595,20 +507,30 @@ pub fn stream_node_projection_scan_batches(
         {
             return Ok(ScanControl::Continue);
         }
-        let output = if spec.items.is_empty() {
-            binding
+        let control = if spec.items.is_empty() {
+            batch.push(binding, emit)?
         } else {
-            let mut values = BTreeMap::new();
-            for item in spec.items {
-                insert_projected_value(
-                    &mut values,
-                    &item.name,
-                    project_value(item, context.catalog, &binding)?,
-                );
-            }
-            Binding::values(values)
+            push_borrowed_projection(
+                &mut batch,
+                || {
+                    prepare_borrowed_projection(
+                        spec.items,
+                        context.memory_account,
+                        None,
+                        |expression| {
+                            evaluate_projection_borrowed(
+                                expression,
+                                context.catalog,
+                                &binding,
+                                Some(context.memory_account),
+                            )
+                        },
+                    )
+                },
+                emit,
+            )?
         };
-        if batch.push(output, emit)? == BatchControl::Stop {
+        if control == BatchControl::Stop {
             return Ok(ScanControl::Stop);
         }
         emitted = emitted.saturating_add(1);
@@ -633,14 +555,14 @@ pub fn stream_node_projection_scan_batches(
             .saturating_mul(std::mem::size_of::<&NodeRecord>())
             <= context.memory_budget.get()
     {
-        let scan = context.store.scan_nodes_with_filter_pruning(
-            context.catalog,
-            label_id,
-            property_filter.as_ref(),
-        )?;
+        let scan = context.pruned_scan(label_id, property_filter.as_ref())?;
         observer.record_scan_pruning_report(scan.report.clone());
         let mut control = ScanControl::Continue;
         for node in scan.nodes {
+            let node = node.as_ref();
+            let input_bytes =
+                projected_node_binding_memory_bytes(spec.variable, node, &required_properties);
+            let _input_memory = context.memory_account.reserve(input_bytes)?;
             let properties = required_properties
                 .iter()
                 .filter_map(|property| {
@@ -652,7 +574,7 @@ pub fn stream_node_projection_scan_batches(
                 .collect();
             control = visit(ProjectedNodeRecord {
                 id: node.id,
-                labels: node.labels,
+                labels: node.labels.clone(),
                 properties,
             })?;
             if control == ScanControl::Stop {
@@ -668,27 +590,45 @@ pub fn stream_node_projection_scan_batches(
             BatchControl::Continue
         });
     }
+    let mut admit =
+        |bytes: usize| -> Result<Box<dyn hawdb_storage::read_view::GraphReadAllocation>> {
+            runtime_checkpoint(context.task_context)?;
+            let owned_bytes = bytes
+                .saturating_add(std::mem::size_of::<crate::binding::Binding>())
+                .saturating_add(spec.variable.len())
+                .saturating_add(std::mem::size_of::<usize>() * 6);
+            crate::store::admit_graph_read(
+                context.memory_account,
+                context.task_context,
+                owned_bytes,
+            )
+        };
     let control = match (exact_label_id, spec.access) {
-        (_, NodeProjectionAccess::LabelScan) => context.store.visit_projected_nodes_owned(
+        (_, NodeProjectionAccess::LabelScan) => context.store.visit_projected_nodes_admitted(
             exact_label_id,
             &required_properties,
+            &mut admit,
             &mut visit,
         )?,
         (Some(label_id), NodeProjectionAccess::PropertyUnion { branches }) => {
-            let mut seen = BTreeSet::new();
-            let mut dedup_memory = context.memory_tracker();
+            let mut allocate_keys = |bytes| {
+                crate::store::admit_graph_read(context.memory_account, context.task_context, bytes)
+            };
+            let key_admission =
+                hawdb_storage::read_view::GraphReadAdmission::new(&mut allocate_keys);
+            let mut seen = hawdb_storage::read_view::AdmittedKeySet::new(&key_admission)?;
             let mut control = ScanControl::Continue;
             for branch in branches {
-                control = context.store.visit_projected_nodes_by_property_owned(
+                control = context.store.visit_projected_nodes_by_property_admitted(
                     label_id,
                     &branch.property,
                     &branch.values,
                     &required_properties,
+                    &mut admit,
                     &mut |node| {
-                        if !seen.insert(node.id) {
+                        if !seen.try_insert(node.id)? {
                             return Ok(ScanControl::Continue);
                         }
-                        dedup_memory.try_charge(UNION_DEDUP_ENTRY_BYTES)?;
                         visit(node)
                     },
                 )?;
@@ -698,10 +638,11 @@ pub fn stream_node_projection_scan_batches(
             }
             control
         }
-        (Some(label_id), access) => context.store.visit_projected_nodes_by_access_owned(
+        (Some(label_id), access) => context.store.visit_projected_nodes_by_access_admitted(
             label_id,
             access,
             &required_properties,
+            &mut admit,
             &mut visit,
         )?,
         (None, _) => ScanControl::Continue,
@@ -773,80 +714,7 @@ pub fn execute_node_scan(
     predicate: &mut dyn FnMut(&Binding) -> Result<bool>,
     observer: &dyn ExecutionObserver,
 ) -> Result<Vec<Binding>> {
-    let exact_label = exact_scan_label_id(context.catalog, spec.label);
-    let exact_label_id = exact_label.flatten();
-    if !context.store.is_out_of_core()
-        && let Some(label_id) = exact_label
-        && context
-            .store
-            .node_count_for_label(label_id)
-            .saturating_mul(std::mem::size_of::<&NodeRecord>())
-            <= context.memory_budget.get()
-    {
-        let scan = context.store.scan_nodes_with_filter_pruning(
-            context.catalog,
-            label_id,
-            spec.property_filter,
-        )?;
-        observer.record_scan_pruning_report(scan.report.clone());
-        let mut output = Vec::new();
-        let mut tracker = context.memory_tracker();
-        for node in scan.nodes {
-            let binding = node_binding(spec.variable, node);
-            if !predicate(&binding)? {
-                continue;
-            }
-            push_bounded_operator_binding("NodeScanExec", &mut output, binding, &mut tracker)?;
-            if context.execution_limit.is_reached(output.len()) {
-                break;
-            }
-        }
-        return Ok(output);
-    }
-
-    let label_ids = label_ids_for_pattern(context.catalog, spec.label);
-    let mut output = Vec::new();
-    let mut tracker = context.memory_tracker();
-    let mut visit = |node: NodeRecord| {
-        if exact_label.is_none() && !node_matches_label_pattern(&node, label_ids.as_deref()) {
-            return Ok(ScanControl::Continue);
-        }
-        if spec
-            .property_filter
-            .map(|filter| node_matches_property_filter(&node, filter))
-            .is_some_and(|matches| !matches)
-        {
-            return Ok(ScanControl::Continue);
-        }
-        let binding = node_binding(spec.variable, node);
-        if !predicate(&binding)? {
-            return Ok(ScanControl::Continue);
-        }
-        push_bounded_operator_binding("NodeScanExec", &mut output, binding, &mut tracker)?;
-        Ok(if context.execution_limit.is_reached(output.len()) {
-            ScanControl::Stop
-        } else {
-            ScanControl::Continue
-        })
-    };
-    context
-        .store
-        .visit_nodes_owned(exact_label_id, &mut visit)?;
-    let candidate_count = context.store.node_count_for_label(exact_label_id);
-    observer.record_scan_pruning_report(ScanPruningReport {
-        target_kind: ScanPruningTargetKind::Node,
-        label_id: exact_label_id,
-        rel_type_id: None,
-        strategy: ScanPruningStrategy::FullLabelScan,
-        pruned: false,
-        exact_empty: candidate_count == 0,
-        candidate_count_before_pruning: candidate_count,
-        pruned_candidate_count: 0,
-        candidate_count_before_filter: candidate_count,
-        output_count: output.len(),
-        filtered_out_count: candidate_count.saturating_sub(output.len()),
-    });
-    Ok(output)
+    owned::materialize(spec, context, predicate, observer)
 }
 
 pub fn stream_index_node_seek_batches(
@@ -927,8 +795,10 @@ pub fn stream_index_node_union_seek_batches(
         return Ok(BatchControl::Continue);
     };
     let mut batch = context.output_batch("IndexNodeUnionSeekExec");
-    let mut seen = BTreeSet::new();
-    let mut dedup_memory = context.memory_tracker();
+    let mut allocate_keys =
+        |bytes| crate::store::admit_graph_read(context.memory_account, context.task_context, bytes);
+    let key_admission = hawdb_storage::read_view::GraphReadAdmission::new(&mut allocate_keys);
+    let mut seen = hawdb_storage::read_view::AdmittedKeySet::new(&key_admission)?;
     let mut emitted = 0usize;
     let mut control = ScanControl::Continue;
     for branch in branches {
@@ -937,10 +807,9 @@ pub fn stream_index_node_union_seek_batches(
             &branch.property,
             &branch.values,
             &mut |node| {
-                if !seen.insert(node.id) {
+                if !seen.try_insert(node.id)? {
                     return Ok(ScanControl::Continue);
                 }
-                dedup_memory.try_charge(UNION_DEDUP_ENTRY_BYTES)?;
                 if batch.push(node_binding(variable, node), emit)? == BatchControl::Stop {
                     return Ok(ScanControl::Stop);
                 }
@@ -990,6 +859,7 @@ pub struct NodeColumnLookupSpec<'a> {
     pub property: &'a str,
     pub column: &'a str,
     pub optional: bool,
+    pub node_visibility_predicate: Option<&'a Predicate>,
 }
 
 pub fn execute_node_column_lookup(
@@ -1019,6 +889,21 @@ pub fn execute_node_column_lookup(
             {
                 let mut next = binding.clone();
                 next.nodes.insert(spec.variable.to_string(), node);
+                if let Some(predicate) = spec.node_visibility_predicate
+                    && !evaluate_predicate_with_memory(
+                        predicate,
+                        context.catalog,
+                        context.store,
+                        &next,
+                        observer,
+                        AdjacencyReadMemory {
+                            budget_bytes: context.memory_budget.get(),
+                            account: Some(context.memory_account),
+                        },
+                    )?
+                {
+                    return Ok(ScanControl::Continue);
+                }
                 push_bounded_operator_binding(
                     "NodeColumnLookupExec",
                     &mut output,
@@ -1084,6 +969,21 @@ fn execute_indexed_node_column_lookup(
             unique_candidate_ids.insert(node.id);
             let mut next = binding.clone();
             next.nodes.insert(spec.variable.to_string(), node);
+            if let Some(predicate) = spec.node_visibility_predicate
+                && !evaluate_predicate_with_memory(
+                    predicate,
+                    context.catalog,
+                    context.store,
+                    &next,
+                    observer,
+                    AdjacencyReadMemory {
+                        budget_bytes: context.memory_budget.get(),
+                        account: Some(context.memory_account),
+                    },
+                )?
+            {
+                return Ok(ScanControl::Continue);
+            }
             push_bounded_operator_binding("NodeColumnLookupExec", &mut output, next, &mut tracker)?;
             matched = true;
             Ok(if context.execution_limit.is_reached(output.len()) {
@@ -1340,6 +1240,27 @@ mod tests {
                 labels: BTreeSet::new(),
                 properties: BTreeMap::new(),
             }))
+        }
+
+        fn node_with_allocation(
+            &self,
+            id: NodeId,
+            label_ids: Option<&[LabelId]>,
+            admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        ) -> Result<hawdb_storage::read_view::AdmittedNodeRead> {
+            use hawdb_storage::read_view::{AdmittedNodeRead, AdmittedNodeRecord};
+            let node = NodeRecord {
+                id,
+                labels: BTreeSet::new(),
+                properties: BTreeMap::new(),
+            };
+            if !crate::predicate::node_matches_label_pattern(&node, label_ids) {
+                return Ok(AdmittedNodeRead::Missing);
+            }
+            let Some(allocation) = admit(hawdb_core::ids::node_allocation_bytes(&node))? else {
+                return Ok(AdmittedNodeRead::Stopped);
+            };
+            AdmittedNodeRecord::clone_admitted(&node, allocation).map(AdmittedNodeRead::Node)
         }
 
         fn scan_nodes_borrowed<'a>(
