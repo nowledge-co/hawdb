@@ -423,7 +423,10 @@ mod tests {
         let graph_path = root.join("database");
         let spill_path = root.join("spill");
         let execution_memory = ExecutionMemoryConfig {
-            blocking_operator_bytes: NonZeroUsize::new(2048).expect("non-zero"),
+            // Full scan records and their binding maps are admitted before copying.
+            // Leave room for one source row; forty rows still force both distinct
+            // and cartesian build state to spill under this operator limit.
+            blocking_operator_bytes: NonZeroUsize::new(8 * 1024).expect("non-zero"),
             max_spill_bytes: NonZeroU64::new(16 * 1024 * 1024).expect("non-zero"),
             max_spill_runs: NonZeroUsize::new(128).expect("non-zero"),
             max_total_spill_bytes: NonZeroU64::new(32 * 1024 * 1024).expect("non-zero"),
