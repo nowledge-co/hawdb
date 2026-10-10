@@ -668,43 +668,80 @@ pub fn stream_node_projection_scan_batches(
             BatchControl::Continue
         });
     }
-    let control = match (exact_label_id, spec.access) {
-        (_, NodeProjectionAccess::LabelScan) => context.store.visit_projected_nodes_owned(
-            exact_label_id,
-            &required_properties,
-            &mut visit,
-        )?,
-        (Some(label_id), NodeProjectionAccess::PropertyUnion { branches }) => {
-            let mut seen = BTreeSet::new();
-            let mut dedup_memory = context.memory_tracker();
-            let mut control = ScanControl::Continue;
-            for branch in branches {
-                control = context.store.visit_projected_nodes_by_property_owned(
-                    label_id,
-                    &branch.property,
-                    &branch.values,
-                    &required_properties,
-                    &mut |node| {
-                        if !seen.insert(node.id) {
-                            return Ok(ScanControl::Continue);
-                        }
-                        dedup_memory.try_charge(UNION_DEDUP_ENTRY_BYTES)?;
-                        visit(node)
-                    },
-                )?;
+    let indexed_nodes = match (exact_label_id, spec.access) {
+        (Some(label_id), NodeProjectionAccess::PropertyValues { property, values })
+            if !context.store.is_out_of_core()
+                && context
+                    .catalog
+                    .has_scalar_property_index(label_id, property) =>
+        {
+            match values.as_slice() {
+                [value] => context
+                    .store
+                    .scan_indexed_nodes_borrowed(label_id, property, value),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    let control = if let Some(nodes) = indexed_nodes {
+        let mut control = ScanControl::Continue;
+        for candidate in nodes {
+            runtime_checkpoint(context.task_context)?;
+            // Own only the requested fields and admit their temporary storage
+            // before cloning. Batch/output charges cover the projected result.
+            let mut source_memory = context.memory_tracker();
+            if let Some(node) = context.store.projected_node_owned_admitted(
+                candidate.id,
+                &required_properties,
+                &mut |bytes| source_memory.try_charge(bytes),
+            )? {
+                control = visit(node)?;
                 if control == ScanControl::Stop {
                     break;
                 }
             }
-            control
         }
-        (Some(label_id), access) => context.store.visit_projected_nodes_by_access_owned(
-            label_id,
-            access,
-            &required_properties,
-            &mut visit,
-        )?,
-        (None, _) => ScanControl::Continue,
+        control
+    } else {
+        match (exact_label_id, spec.access) {
+            (_, NodeProjectionAccess::LabelScan) => context.store.visit_projected_nodes_owned(
+                exact_label_id,
+                &required_properties,
+                &mut visit,
+            )?,
+            (Some(label_id), NodeProjectionAccess::PropertyUnion { branches }) => {
+                let mut seen = BTreeSet::new();
+                let mut dedup_memory = context.memory_tracker();
+                let mut control = ScanControl::Continue;
+                for branch in branches {
+                    control = context.store.visit_projected_nodes_by_property_owned(
+                        label_id,
+                        &branch.property,
+                        &branch.values,
+                        &required_properties,
+                        &mut |node| {
+                            if !seen.insert(node.id) {
+                                return Ok(ScanControl::Continue);
+                            }
+                            dedup_memory.try_charge(UNION_DEDUP_ENTRY_BYTES)?;
+                            visit(node)
+                        },
+                    )?;
+                    if control == ScanControl::Stop {
+                        break;
+                    }
+                }
+                control
+            }
+            (Some(label_id), access) => context.store.visit_projected_nodes_by_access_owned(
+                label_id,
+                access,
+                &required_properties,
+                &mut visit,
+            )?,
+            (None, _) => ScanControl::Continue,
+        }
     };
     let candidate_count = context.store.node_count_for_label(exact_label_id);
     let pruned = !spec.access.is_label_scan();

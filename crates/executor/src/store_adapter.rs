@@ -93,6 +93,17 @@ impl GraphExecutionRead for GraphStore {
         Box::new(GraphStore::scan_nodes(self, label_id))
     }
 
+    fn scan_indexed_nodes_borrowed<'a>(
+        &'a self,
+        label_id: LabelId,
+        property: &str,
+        value: &hawdb_core::Value,
+    ) -> Option<Box<dyn Iterator<Item = &'a NodeRecord> + 'a>> {
+        Some(Box::new(GraphStore::seek_nodes_by_property(
+            self, label_id, property, value,
+        )))
+    }
+
     fn node_count_for_label(&self, label_id: Option<LabelId>) -> usize {
         GraphStore::node_count_for_label(self, label_id)
     }

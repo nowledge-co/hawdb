@@ -33,6 +33,123 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn cleanup_unwind_preserves_evidence_and_retained_admission() {
+    const CHILD: &str = "HAWDB_CLEANUP_UNWIND_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                concat!(
+                    module_path!(),
+                    "::cleanup_unwind_preserves_evidence_and_retained_admission"
+                )
+                .strip_prefix("hawdb_search::")
+                .unwrap(),
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
+        return;
+    }
+    use crate::{SearchGenerationAdmission, SearchOutOfCoreGenerationWriter};
+    use hawdb_storage::file_descriptors::ProjectFileDescriptors;
+
+    for retry in [false, true] {
+        let fixture = Fixture::new();
+        let project = ProjectFileDescriptors::acquire_existing(&fixture.0, 4).unwrap();
+        let governor = hawdb_qos::RuntimeGovernor::detect(
+            hawdb_qos::RuntimeGovernorConfig {
+                memory_budget_bytes: Some(64 * 1024 * 1024),
+                background_task_limit: std::num::NonZeroUsize::new(1),
+                ..Default::default()
+            },
+            hawdb_qos::IoConcurrencyBudget::new(2, 1),
+        );
+        let request = hawdb_qos::RuntimeWorkRequest::background_maintenance(16 * 1024 * 1024);
+        let admission = SearchGenerationAdmission::acquire(&governor, request).unwrap();
+        let mut writer = admission
+            .create_writer(&fixture.0, Default::default())
+            .unwrap();
+        writer
+            .writer_mut()
+            .push(crate::SearchDocument {
+                id: "unpublished".into(),
+                title: String::new(),
+                content: "private staged document".into(),
+                embedding: None,
+                metadata: Default::default(),
+            })
+            .unwrap();
+        let path = fs::read_dir(&fixture.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "stage")
+            })
+            .unwrap();
+        let evidence = path.join("unwind.evidence");
+        fs::write(&evidence, b"private evidence survives unwind").unwrap();
+        let fault = retry.then(|| stage::evidence::fail_unlink(&evidence));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        // The existing one-shot hook panics after selection when recv observes
+        // this disconnected channel. No panic or fault hook enters production.
+        drop(resume_tx);
+        if retry {
+            drop(writer);
+            stage::evidence::install(fixture.0.clone(), started_tx, resume_rx);
+            assert!(std::panic::catch_unwind(|| {
+                SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&fixture.0, 1).unwrap();
+            })
+            .is_err());
+        } else {
+            stage::evidence::install(fixture.0.clone(), started_tx, resume_rx);
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(writer))).is_err()
+            );
+        }
+        started_rx.recv().unwrap();
+        let debt = SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&fixture.0, 0).unwrap();
+        assert_eq!(debt.pending_stages, 1, "retry={retry}");
+        assert!(debt.retained_memory_bytes > 0);
+        assert!(debt.reserved_disk_bytes > 0);
+        let idle = governor.snapshot();
+        assert_eq!(
+            idle.admitted_memory_bytes,
+            debt.retained_memory_bytes as u64
+        );
+        assert_eq!(idle.active_background_tasks, 0);
+        assert_eq!(idle.active_cpu_slots, 0);
+        assert_eq!(project.metrics().open, 0);
+        assert_eq!(
+            fs::read(&evidence).unwrap(),
+            b"private evidence survives unwind"
+        );
+        drop(project);
+        let reopened = ProjectFileDescriptors::acquire_existing(&fixture.0, 8).unwrap();
+        drop(fault);
+        let admission = SearchGenerationAdmission::acquire(&governor, request).unwrap();
+        drop(admission);
+        let removed =
+            SearchOutOfCoreGenerationWriter::retry_staging_cleanup(&fixture.0, 1).unwrap();
+        assert_eq!(removed.removed_stages, 1);
+        assert_eq!(removed.pending_stages, 0);
+        assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+        assert_eq!(reopened.metrics().open, 0);
+        assert!(!path.exists());
+    }
+}
+
+#[test]
 fn foreign_root_retries_do_not_reset_bounded_cleanup_progress() {
     const CHILD: &str = "HAWDB_ROOT_CLEANUP_PROGRESS_CHILD";
     if std::env::var_os(CHILD).is_none() {

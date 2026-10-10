@@ -139,6 +139,7 @@ fn run(job: Job, observer: Option<&Observer>) -> Result<serde_json::Value, Strin
             .map_err(|error| format!("execute: {error}"))?;
         query_ns += called.elapsed().as_nanos();
     }
+    let write_ns = query_ns;
     let calls = if job.case == "point" {
         input_rows.len()
     } else {
@@ -180,6 +181,7 @@ fn run(job: Job, observer: Option<&Observer>) -> Result<serde_json::Value, Strin
         "input_rows": input_rows.len(), "output_rows": rows_seen,
         "values": rows_seen * job.columns.len(), "checksum": hash.hex(),
         "setup_ns": setup_ns, "query_boundary_ns": query_ns,
+        "write_boundary_ns": write_ns, "read_boundary_ns": query_ns - write_ns,
         "consumer_ns": consume_ns, "elapsed_ns": elapsed_ns,
         "native_profile": native_profile,
         "engine_payload_bytes": payload_bytes,

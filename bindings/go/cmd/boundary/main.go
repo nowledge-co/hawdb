@@ -252,6 +252,7 @@ func run(j job, lib *hawdb.Library, nativeRead func(*nativeSnapshot)) (map[strin
 			return nil, fmt.Errorf("execute: %w", err)
 		}
 	}
+	writeNS := queryNS
 	calls := 1
 	if j.Case == "point" {
 		calls = len(j.Rows)
@@ -295,7 +296,7 @@ func run(j job, lib *hawdb.Library, nativeRead func(*nativeSnapshot)) (map[strin
 		profile = profileDelta(nativeBefore, nativeAfter)
 	}
 	runtime.ReadMemStats(&after)
-	return map[string]any{"status": "ok", "layer": "go", "case": j.Case, "backend": j.Backend, "input_rows": len(j.Rows), "output_rows": rowsSeen, "values": rowsSeen * len(j.Columns), "checksum": fmt.Sprintf("%016x", uint64(c)), "setup_ns": setupNS, "query_boundary_ns": queryNS, "consumer_ns": consumeNS, "elapsed_ns": elapsedNS, "go_allocations": after.Mallocs - before.Mallocs, "go_allocated_bytes": after.TotalAlloc - before.TotalAlloc, "native_profile": profile, "cpu_profile": j.CPUProfile, "durability": "SyncOnEveryWrite", "cgo_enabled": false}, nil
+	return map[string]any{"status": "ok", "layer": "go", "case": j.Case, "backend": j.Backend, "input_rows": len(j.Rows), "output_rows": rowsSeen, "values": rowsSeen * len(j.Columns), "checksum": fmt.Sprintf("%016x", uint64(c)), "setup_ns": setupNS, "query_boundary_ns": queryNS, "write_boundary_ns": writeNS, "read_boundary_ns": queryNS - writeNS, "consumer_ns": consumeNS, "elapsed_ns": elapsedNS, "go_allocations": after.Mallocs - before.Mallocs, "go_allocated_bytes": after.TotalAlloc - before.TotalAlloc, "native_profile": profile, "cpu_profile": j.CPUProfile, "durability": "SyncOnEveryWrite", "cgo_enabled": false}, nil
 }
 
 func main() {

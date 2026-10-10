@@ -155,6 +155,7 @@ def main():
             "Process peak RSS includes runtime, fixture, setup and query; it is not a query-only allocation ledger.",
             "Allocator observations count Rust requests; Go/Python heaps and non-Rust workspace are separate." if args.python_extension else "Go allocation counts exclude the native engine; run the separately instrumented matrix for native/Python profiles.",
             "Each iteration opens its own store; seeded read runs measure a warm store, not cold artifact reads.",
+            "Write cases include a final verification query in query_boundary_ns; write_boundary_ns and read_boundary_ns separate the phases without removing calls.",
             "The query timer excludes the identical checksum algorithm; consumer time is reported separately.",
         ],
     }
@@ -193,6 +194,12 @@ def main():
                             parity_failures += not result["parity"]
                         else:
                             result["parity"] = None
+                        timings = ("query_boundary_ns", "write_boundary_ns", "read_boundary_ns")
+                        result["phase_timing_valid"] = (
+                            all(type(result.get(key)) is int and result[key] >= 0 for key in timings)
+                            and result["query_boundary_ns"] == result["write_boundary_ns"] + result["read_boundary_ns"]
+                            and (case in ("fill", "fill_bulk") or result["write_boundary_ns"] == 0)
+                        ) if result["status"] == "ok" else None
                         profile = result.get("native_profile")
                         required = ("allocation_calls", "allocated_bytes", "deallocation_calls",
                                     "deallocated_bytes", "reallocation_calls",
@@ -213,10 +220,12 @@ def main():
                             shutil.rmtree(job["path"], ignore_errors=False) if pathlib.Path(job["path"]).exists() else None
                 for layer in commands:
                     records = [r for r in report["records"] if r["case"] == case and r["size"] == count and r["backend"] == backend and r["layer"] == layer and not r["discarded"]]
-                    valid = [r for r in records if r["status"] == "ok" and r["parity"]]
+                    valid = [r for r in records if r["status"] == "ok" and r["parity"] and r["phase_timing_valid"]]
                     report["summaries"].append({"layer": layer, "case": case, "size": count, "backend": backend,
                         "successful_samples": len(valid), "failed_samples": len(records) - len(valid),
                         "median_query_boundary_ns": statistics.median(r["query_boundary_ns"] for r in valid) if valid else None,
+                        "median_write_boundary_ns": statistics.median(r["write_boundary_ns"] for r in valid) if valid else None,
+                        "median_read_boundary_ns": statistics.median(r["read_boundary_ns"] for r in valid) if valid else None,
                         "median_elapsed_ns": statistics.median(r["elapsed_ns"] for r in valid) if valid else None})
                 save()
             del data
@@ -229,9 +238,11 @@ def main():
     # A completed experiment may contain useful budget-refusal evidence, but
     # cannot be represented as a successful parity/performance qualification.
     report["profile_failures"] = sum(r["profile_valid"] is False for r in report["records"])
+    report["phase_timing_failures"] = sum(r["phase_timing_valid"] is False for r in report["records"])
     report["all_paths_succeeded"] = all(
         r["status"] == "ok" and r["parity"] and r["process_exit"] == 0
-        and r["profile_valid"] is not False for r in report["records"]
+        and r["profile_valid"] is not False and r["phase_timing_valid"] is True
+        for r in report["records"]
     )
     save()
     return int(not report["all_paths_succeeded"])

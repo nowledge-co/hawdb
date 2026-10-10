@@ -71,6 +71,7 @@ def run(job):
             called = time.perf_counter_ns()
             db.execute(job["insert_bulk"], {"rows": job["rows"]})
             query_ns += time.perf_counter_ns() - called
+        write_ns = query_ns
         calls = len(job["rows"]) if job["case"] == "point" else 1
         for row in job["rows"][:calls]:
             called = time.perf_counter_ns()
@@ -97,6 +98,7 @@ def run(job):
             "input_rows": len(job["rows"]), "output_rows": rows_seen,
             "values": rows_seen * len(job["columns"]), "checksum": checksum.hex(),
             "setup_ns": setup_ns, "query_boundary_ns": query_ns,
+            "write_boundary_ns": write_ns, "read_boundary_ns": query_ns - write_ns,
             "consumer_ns": consume_ns, "elapsed_ns": elapsed_ns,
             "native_profile": profile,
             "durability": "SyncOnEveryWrite", "prefetch": 0,

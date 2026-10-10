@@ -15,6 +15,67 @@
 use super::*;
 
 #[test]
+fn projected_point_queries_rebind_against_pinned_index_snapshots() {
+    let mut db = Database::new();
+    for statement in [
+        "CREATE (:Item {key: 1, title: 'first'})",
+        "CREATE (:Item {key: 1, title: 'second'})",
+        "CREATE (:Other {key: 1, title: 'other'})",
+    ] {
+        db.query(statement).unwrap();
+    }
+    for key in 3..67 {
+        db.query_with_params(
+            "CREATE (:Item {key: $key, title: 'unmatched'})",
+            &BTreeMap::from([("key".into(), Value::Int(key))]),
+        )
+        .unwrap();
+    }
+    db.query("CREATE INDEX ON :Item(key)").unwrap();
+    let mut snapshot = db.begin_read_transaction().unwrap();
+    let query = "MATCH (n:Item {key: $key}) RETURN n.title AS title";
+    let one = BTreeMap::from([("key".into(), Value::Int(1))]);
+    let two = BTreeMap::from([("key".into(), Value::Int(2))]);
+    let missing = BTreeMap::from([("key".into(), Value::Int(999))]);
+    let expected = db.query_with_params(query, &one).unwrap().rows;
+    assert_eq!(expected.len(), 2);
+    assert!(db
+        .query_with_params(query, &missing)
+        .unwrap()
+        .rows
+        .is_empty());
+    assert_eq!(db.query_with_params(query, &one).unwrap().rows, expected);
+    db.query("MATCH (n:Item {title: 'second'}) SET n.key = 2")
+        .unwrap();
+    db.query("MATCH (n:Item {title: 'first'}) DELETE n")
+        .unwrap();
+    assert!(db.query_with_params(query, &one).unwrap().rows.is_empty());
+    assert_eq!(db.query_with_params(query, &two).unwrap().rows.len(), 1);
+    assert_eq!(
+        snapshot.query_with_params(query, &one).unwrap().rows,
+        expected
+    );
+    assert!(snapshot
+        .query_with_params(query, &two)
+        .unwrap()
+        .rows
+        .is_empty());
+    assert_eq!(
+        snapshot
+            .query_with_params(&format!("{query} LIMIT 1"), &one)
+            .unwrap()
+            .rows,
+        vec![expected[0].to_owned_row()],
+    );
+    assert!(db
+        .explain_query_with_params(query, &two)
+        .unwrap()
+        .physical_plan
+        .explain(0)
+        .contains("IndexNodeSeek"));
+}
+
+#[test]
 fn system_sql_exposes_pinned_catalog_snapshot() {
     let mut db = Database::new();
     db.query("CREATE NODE LABEL Memory").unwrap();

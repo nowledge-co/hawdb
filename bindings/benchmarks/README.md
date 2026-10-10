@@ -43,11 +43,20 @@ process and handle before measurement. Fill cases start with an empty indexed
 store. Each iteration creates a fresh database. Persistent commits keep
 `SyncOnEveryWrite`; no environment variable or benchmark override relaxes it.
 The query-boundary timer includes parameter/result conversion and execution.
+For `fill` and `fill_bulk`, it also includes the final result-verification read;
+it is not a pure write metric. `write_boundary_ns` contains only the committed
+write calls and `read_boundary_ns` contains only the result/verification query
+calls. Their sum is the unchanged `query_boundary_ns`. No call is removed from
+the workload. Older reports without these fields cannot separate the phases.
 All clients then perform the same typed checksum work, timed separately.
 Use `median_query_boundary_ns` for cross-language boundary comparisons.
 `median_elapsed_ns` also includes the language-specific checksum implementation
 and must not be treated as isolated crossing overhead. These five-case tools
 exercise ordinary owned results; they do not qualify retained or Arrow latency.
+Arrow in PR #986 applies to explicit retained read delivery. It is not used by
+these write calls. Write measurements are compatibility/regression controls;
+Arrow acceptance concerns read execution and delivery performance. A difference
+between two mixed workloads is not evidence of an Arrow-caused write regression.
 The Go `BenchmarkRetainedBatchScalarReads` separately measures locked scalar
 reads of one held native batch, with setup and the first descriptor lookup
 outside its timer. It does not measure cursor creation, bulk export or RSS.
