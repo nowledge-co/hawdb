@@ -141,6 +141,80 @@ fn retiring_owner_blocks_pressure_growth_until_cleanup_finishes() {
 }
 
 #[test]
+fn retired_cow_cleanup_allows_writes_and_fences_manual_resource_release() {
+    let fixture = Fixture::new();
+    let (mut db, suspension, next) = seeded(&fixture);
+    let old = db.runtime.get().unwrap().store.snapshot_for_read();
+    let control = db.runtime.checkpoint_control_for_test();
+    let (probe, paused, resume) = pause();
+    control.lock().unwrap().retirement_drop_probe = Some(probe);
+    drop(suspension);
+    wait_for(&db, |report| report.completed_checkpoints == 1);
+    drop(db.runtime.get_mut().unwrap());
+    paused.recv_timeout(Duration::from_secs(15)).unwrap();
+    assert_eq!(control.lock().unwrap().phase, Phase::Releasing);
+    let (finished, observed) = mpsc::channel();
+    let producer = std::thread::spawn(move || {
+        create(&mut db, next).unwrap();
+        finished.send(db).unwrap();
+    });
+    // Reclamation is complete, but the old COW store and its admission have
+    // deliberately not been destroyed. Ordinary writing can still finish.
+    let produced = observed.recv_timeout(Duration::from_secs(15));
+    let mut db = produced.unwrap();
+    producer.join().unwrap();
+    let (waiting, waited) = mpsc::channel();
+    control.lock().unwrap().manual_wait_probe = Some(waiting);
+    let (finished, observed) = mpsc::channel();
+    let manual = std::thread::spawn(move || {
+        db.checkpoint().unwrap();
+        finished.send(db).unwrap();
+    });
+    let wait_phase = waited.recv_timeout(Duration::from_secs(15));
+    let early_return = observed.try_recv();
+    resume.send(()).unwrap();
+    assert_eq!(wait_phase.unwrap(), Phase::Releasing);
+    assert!(matches!(early_return, Err(mpsc::TryRecvError::Empty)));
+    let mut db = observed.recv_timeout(Duration::from_secs(15)).unwrap();
+    manual.join().unwrap();
+    assert_eq!(old.node_count_for_label(None), next as usize);
+    assert_eq!(
+        db.query("MATCH (n:Memory) RETURN n.id AS id, n.body AS body ORDER BY id")
+            .unwrap()
+            .rows
+            .len(),
+        next as usize + 1
+    );
+    for id in 0..next {
+        let node = old
+            .node_owned(hawdb_storage::NodeId(id as u64))
+            .unwrap()
+            .unwrap();
+        assert_eq!(node.properties["id"], crate::Value::Int(id));
+        assert_eq!(
+            node.properties["body"],
+            crate::Value::String("b".repeat(512))
+        );
+    }
+    drop(old);
+    drop(db);
+    drop(control);
+    let mut reopened = Database::open(&fixture.0).unwrap();
+    let rows = reopened
+        .query("MATCH (n:Memory) RETURN n.id AS id, n.body AS body ORDER BY id")
+        .unwrap()
+        .rows;
+    assert_eq!(rows.len(), next as usize + 1);
+    for (id, row) in rows.iter().enumerate() {
+        assert_eq!(row.get("id"), Some(&crate::Value::Int(id as i64)));
+        assert_eq!(
+            row.get("body"),
+            Some(&crate::Value::String("b".repeat(512)))
+        );
+    }
+}
+
+#[test]
 fn pending_idle_admission_denial_releases_the_frontend_without_a_host_retry() {
     let fixture = Fixture::new();
     let (mut db, suspension, next) = seeded(&fixture);

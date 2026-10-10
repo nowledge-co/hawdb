@@ -1812,15 +1812,14 @@ impl Database {
             parameters,
             access_control.as_ref(),
         )?;
-        if executor::is_mutation_plan(&optimized.physical_plan)? {
+        if executor::requires_write_access(&optimized.physical_plan) {
             return Err(HawDBError::Execution(
                 "EXPLAIN ANALYZE only supports read queries".to_string(),
             ));
         }
         let mut external = executor::NoExternalReadOperator;
         let profiled = {
-            let branch_runtime = self.runtime.get_read_mut()?;
-            executor::execute_with_request(
+            self.runtime.get_read()?.execute(
                 executor::ExecutionRequest::new(
                     &optimized.physical_plan,
                     parameters,
@@ -1830,11 +1829,7 @@ impl Database {
                     self.config.max_read_result_rows,
                     self.config.max_read_result_payload_bytes,
                 ),
-                executor::ExecutionResources::new(
-                    &mut branch_runtime.catalog,
-                    &mut branch_runtime.store,
-                    &mut external,
-                ),
+                &mut external,
             )
         };
         self.runtime.get()?.store.poison_on_storage_error(&profiled);

@@ -155,6 +155,8 @@ enum Phase {
     Discarding,
     Handoff,
     Retiring,
+    // Published disk work is complete; old COW storage still owns admission.
+    Releasing,
 }
 
 #[derive(Debug)]
@@ -210,6 +212,8 @@ pub(super) struct State {
     #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
     publication_probe: Option<Arc<OwnerPauseProbe>>,
     #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+    publication_io_probe: Option<Arc<OwnerPauseProbe>>,
+    #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
     discard_probe: Option<Arc<OwnerPauseProbe>>,
     #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
     manual_wait_probe: Option<std::sync::mpsc::Sender<Phase>>,
@@ -217,6 +221,8 @@ pub(super) struct State {
     idle_start_probe: Option<Arc<OwnerPauseProbe>>,
     #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
     retirement_probe: Option<Arc<OwnerPauseProbe>>,
+    #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+    retirement_drop_probe: Option<Arc<OwnerPauseProbe>>,
     #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
     frontend_wait_probe: Option<std::sync::mpsc::Sender<Phase>>,
     #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
@@ -683,7 +689,7 @@ fn run(
                             if let Some(probe) = probe {
                                 probe.observe();
                             }
-                            let result = retire(retired, &pins);
+                            let result = reclaim_retired_generations(&mut retired, &pins);
                             drop(wave);
                             state = control
                                 .state
@@ -698,7 +704,6 @@ fn run(
                         Err(_) => {
                             // Invalid publication/reclamation ownership is
                             // terminal. Published evidence remains on disk.
-                            drop(retired);
                             state = control
                                 .state
                                 .lock()
@@ -708,8 +713,34 @@ fn run(
                             state.report.failed_attempts += 1;
                         }
                     }
-                    state.phase = Phase::Idle;
+                    state.phase = Phase::Releasing;
                     state.task = None;
+                    control.changed.notify_all();
+                    #[cfg(all(
+                        test,
+                        feature = "background-maintenance",
+                        not(target_arch = "wasm32")
+                    ))]
+                    let probe = state.retirement_drop_probe.take();
+                    drop(state);
+                    #[cfg(all(
+                        test,
+                        feature = "background-maintenance",
+                        not(target_arch = "wasm32")
+                    ))]
+                    if let Some(probe) = probe {
+                        probe.observe();
+                    }
+                    // Disk reclamation has finished. Old COW destruction must
+                    // not extend the physical retirement phase. Synchronous
+                    // maintenance still waits for complete resource release.
+                    // Its admission stays owned until the final storage drop.
+                    release_retired_state(retired);
+                    state = control
+                        .state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    state.phase = Phase::Idle;
                     control.changed.notify_all();
                     continue;
                 }
@@ -908,12 +939,29 @@ fn run(
                 })?;
                 // Admission waits occur before the writer barrier. The final
                 // barrier only compares a sealed identity and publishes it.
+                #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+                let publication_io_probe = control.lock()?.publication_io_probe.take();
                 let _publication_wave = admitted_task
                     .acquire_io_wave(std::num::NonZeroUsize::MIN)
                     .map_err(|reason| {
                         CheckpointOperationError::Work(CheckpointWorkError::Io(reason))
                     })?;
-                let mut state = control.lock()?;
+                #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+                if let Some(probe) = publication_io_probe {
+                    probe.observe();
+                }
+                // A writer can need physical I/O while owning Control. Never
+                // wait for that mutex while retaining the publication wave;
+                // park the sealed candidate through the existing retry path.
+                let mut state = match control.state.try_lock() {
+                    Ok(state) => state,
+                    Err(TryLockError::WouldBlock) => {
+                        return Err(CheckpointOperationError::Work(
+                            CheckpointWorkError::Contended("checkpoint publication gate"),
+                        ));
+                    }
+                    Err(TryLockError::Poisoned(_)) => return Err(Control::poisoned().into()),
+                };
                 state.phase = Phase::Draining;
                 #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
                 if let Some(probe) = state.publication_probe.take() {
@@ -1292,23 +1340,27 @@ fn admit_retirement(
     Ok(RetirementAdmission::Deferred)
 }
 
-fn retire(retired: Retired, pins: &Mutex<ReaderPins>) -> Result<()> {
-    let Retired {
-        old,
-        mut selected,
-        candidate,
-        admission,
-    } = retired;
-    drop(old);
+fn reclaim_retired_generations(retired: &mut Retired, pins: &Mutex<ReaderPins>) -> Result<()> {
     let pinned = pins
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .pinned_physical_generations();
-    let result = candidate.reclaim_published_generations(&mut selected.store, &pinned);
+    retired
+        .candidate
+        .reclaim_published_generations(&mut retired.selected.store, &pinned)
+}
+
+fn release_retired_state(retired: Retired) {
+    let Retired {
+        old,
+        selected,
+        candidate,
+        admission,
+    } = retired;
+    drop(old);
     drop(candidate);
     drop(selected);
     drop(admission);
-    result
 }
 
 #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
@@ -1321,7 +1373,9 @@ mod tests {
     mod planning_recovery;
     mod planning_retry;
     mod progress;
+    mod publication_io;
     mod qos_units;
+    mod read_access;
     mod read_gate;
     mod read_handoff;
     mod retirement_io;

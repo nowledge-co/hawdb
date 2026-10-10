@@ -166,8 +166,13 @@ impl PreparedRuntimeQuery {
         self.parse_metrics.elapsed_nanos
     }
 
-    pub(super) fn uses_read_snapshot(&self) -> bool {
-        if self.admission.is_mutation {
+    pub(crate) fn uses_read_snapshot(&self) -> bool {
+        if self.admission.is_mutation
+            || self
+                .optimized
+                .as_ref()
+                .is_some_and(|optimized| executor::requires_write_access(&optimized.physical_plan))
+        {
             return false;
         }
         // A plain EXPLAIN may contain a mutation plan without executing it. Snapshot
@@ -336,7 +341,7 @@ impl RuntimePlanningContext<'_> {
         let statement = parsed.result?;
         let work_request = query_work_request_for_statement(self.system_variables, &statement)?;
         let body = statement_body(&statement);
-        let streaming_eligible = !matches!(body, cypher::Statement::Explain(_));
+        let mut streaming_eligible = !matches!(body, cypher::Statement::Explain(_));
         let mut prepared_optimized = None;
         let mut optimizer_environment = None;
         let (
@@ -367,6 +372,7 @@ impl RuntimePlanningContext<'_> {
                     planning_cache,
                 )?;
                 let is_mutation = executor::is_mutation_plan(&optimized.physical_plan)?;
+                streaming_eligible &= !executor::requires_write_access(&optimized.physical_plan);
                 let estimated_memory_bytes = if is_mutation {
                     executor::estimated_mutation_memory_bytes(
                         self.config.mutation_limits,
@@ -758,30 +764,38 @@ impl Database {
                     None,
                 )
             } else {
-                let branch_runtime = self.runtime.get_read_mut()?;
-                let profiled = executor::execute_with_request(
-                    executor::ExecutionRequest::new(
-                        &optimized.physical_plan,
-                        parameters,
-                        &self.config.execution_memory,
-                    )
-                    .with_output_limits(
-                        restrictive_query_limit(
-                            self.config.max_read_result_rows,
-                            output_limits.max_rows,
-                        ),
-                        restrictive_query_limit(
-                            self.config.max_read_result_payload_bytes,
-                            output_limits.max_payload_bytes,
-                        ),
-                    )
-                    .with_optional_task_context(task_context),
-                    executor::ExecutionResources::new(
-                        &mut branch_runtime.catalog,
-                        &mut branch_runtime.store,
-                        external,
+                let request = executor::ExecutionRequest::new(
+                    &optimized.physical_plan,
+                    parameters,
+                    &self.config.execution_memory,
+                )
+                .with_output_limits(
+                    restrictive_query_limit(
+                        self.config.max_read_result_rows,
+                        output_limits.max_rows,
                     ),
-                )?;
+                    restrictive_query_limit(
+                        self.config.max_read_result_payload_bytes,
+                        output_limits.max_payload_bytes,
+                    ),
+                )
+                .with_optional_task_context(task_context);
+                let profiled = if executor::requires_write_access(&optimized.physical_plan) {
+                    // Projection registration is a procedure result, but its
+                    // WAL append must use the same guard as other writes.
+                    let mut access = self.runtime.get_mut()?;
+                    let branch_runtime = &mut *access;
+                    executor::execute_with_request(
+                        request,
+                        executor::ExecutionResources::new(
+                            &mut branch_runtime.catalog,
+                            &mut branch_runtime.store,
+                            external,
+                        ),
+                    )?
+                } else {
+                    self.runtime.get_read()?.execute(request, external)?
+                };
                 (profiled.rows, Some(profiled.profile))
             };
             if !is_mutation {
@@ -846,13 +860,12 @@ impl Database {
         )?;
         let inner_statement_kind = statement_kind(statement_body(&explain.statement));
         if explain.analyze {
-            if executor::is_mutation_plan(&optimized.physical_plan)? {
+            if executor::requires_write_access(&optimized.physical_plan) {
                 return Err(HawDBError::Execution(
                     "EXPLAIN ANALYZE only supports read queries".to_string(),
                 ));
             }
-            let branch_runtime = self.runtime.get_read_mut()?;
-            let profiled = executor::execute_with_request(
+            let profiled = self.runtime.get_read()?.execute(
                 executor::ExecutionRequest::new(
                     &optimized.physical_plan,
                     parameters,
@@ -869,11 +882,7 @@ impl Database {
                     ),
                 )
                 .with_optional_task_context(task_context),
-                executor::ExecutionResources::new(
-                    &mut branch_runtime.catalog,
-                    &mut branch_runtime.store,
-                    external,
-                ),
+                external,
             )?;
             let row = explain_analyze_output_row(
                 &optimized,

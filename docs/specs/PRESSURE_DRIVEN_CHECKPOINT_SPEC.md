@@ -227,9 +227,12 @@ entry. The automatic owner seals and mounts captured prefixes while new commits
 remain admitted. It drains existing sync groups and compares the complete
 writer identity with the sealed prefix. If that identity advanced, it resumes
 background catch-up on the same pinned base rather than replaying or mounting
-under the final gate. A publication I/O wave is acquired outside the gate and
-released before waiting for an existing foreground sync group. After that
-group finishes, the same candidate seals its new complete prefix and retries.
+under the final gate. A publication I/O wave is acquired outside the gate. The
+owner only tries the publication mutex while holding that wave; contention
+releases the wave and parks the complete private candidate through the existing
+bounded retry path. It also releases the wave before waiting for an existing
+foreground sync group. After that group finishes, the same candidate seals its
+new complete prefix and retries.
 Cancelled unselected work leaves `Draining`/`Finalizing` before destroying
 private artifacts, COW data and admission. `Discarding` wakes ordinary writers
 without allowing manual generation reuse: synchronous checkpoint, backup and
@@ -2389,3 +2392,43 @@ byte of nine scalar/container fixtures across both record kinds (134,144 cases),
 compares complete decoded identifiers/labels/endpoints/types and value bytes,
 and verifies released unit admission. This is backend parity evidence, not the
 remaining range-path, copied-codec or resource/scaling qualification.
+
+Predicate operator/arity and owned-tree construction share a parser between
+ordinary and maintenance decoding. Owned child values, property names and
+payloads move into their result instead of recursively cloning them; the
+ordinary regression checks exact wide allocation addresses, data and NaN bits.
+Text value tags, UUIDs, list/map framing and recursive interpretation also share
+one grammar. Allocation, temporary-text destruction, numeric parsing and
+chunked traversal remain backend hooks so maintenance keeps its existing
+admission/cancellation boundaries. Existing all-value, malformed-text, memory
+denial and per-unit cancellation campaigns remain required. Other codec and
+full resource/performance qualification remains open.
+
+Unfenced frontend reads receive a private read-access wrapper rather than a
+mutable branch runtime. It exposes immutable catalog/store references and a
+read execution method that rejects storage-writing plan nodes before handing
+mutable cache access to the executor. It does not clone a query snapshot or
+retain Control throughout read execution. Physical plan shape determines
+storage effects separately from procedure/report classification: ProjectGraph
+registers a definition in WAL and therefore uses the mutation publication guard
+even though it retains procedure execution and profiling. EXPLAIN ANALYZE
+rejects that side effect. Regressions cover publication/projection interleaving,
+rejection of nested write effects, immutable readers and complete reopen.
+
+The Tokio facade also checks whether a prepared plan can use a read snapshot.
+Procedures with WAL effects execute through the guarded live runtime while
+retaining their procedure classification and query result budget. They are
+ineligible for the read-only row-stream API; rejection happens during planning
+before executing the procedure.
+
+Generation retirement completes its physical reclamation before entering
+Releasing and notifying frontend waiters. Old COW stores, candidate metadata
+and captured sources are then destroyed outside Control. Their admission
+remains owned until destruction completes; only then does the owner enter Idle.
+Normal frontend writing can proceed during Releasing. Synchronous maintenance
+and quiescent suspension still wait for Idle and complete resource release.
+Published candidate
+destruction retains authoritative artifacts. Reclamation failure marks the
+owner unhealthy before releasing waiters. This ordering does not bound the
+physical reclamation scan or qualify the remaining whole-candidate memory and
+continuous-write performance gates.

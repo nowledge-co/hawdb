@@ -653,6 +653,19 @@ impl HawDBTokioEmbedded {
                         let prepared =
                             input.prepare_for_execution(&planning, &admission, task_context)?;
                         drop(planning);
+                        if !prepared.uses_read_snapshot() {
+                            // Procedures such as project_graph return rows but
+                            // append WAL. Use the guarded live runtime while
+                            // retaining their query admission/result budget.
+                            drop(read_transaction);
+                            return lock_embedded(&embedded)
+                                .database_mut()
+                                .query_prepared_with_params_context(
+                                    prepared,
+                                    &input.parameters,
+                                    task_context,
+                                );
+                        }
                         if !admission.streaming_eligible {
                             return read_transaction.query_prepared_with_params_context(
                                 prepared,
@@ -929,6 +942,93 @@ mod tests {
                 assert_eq!(snapshot.admitted_memory_bytes, 0);
                 drop(embedded);
             }
+            std::fs::remove_dir_all(&path).unwrap();
+        }
+    }
+
+    #[test]
+    fn projection_procedures_use_the_live_runtime_and_remain_durable() {
+        use hawdb_storage::config::StorageResidencyMode;
+
+        for mode in [
+            StorageResidencyMode::Materialized,
+            StorageResidencyMode::OutOfCore,
+        ] {
+            let path = unique_test_path("projection-procedure");
+            let options = HawDBEmbeddedOpenOptions::new(&path).with_config(crate::DatabaseConfig {
+                storage_residency_mode: mode,
+                ..crate::DatabaseConfig::default()
+            });
+            let embedded = HawDBTokioEmbedded::open_owned(options).unwrap();
+            embedded
+                .runtime()
+                .block_on(async {
+                    embedded
+                        .query("CREATE (:Memory {id: 37})", RuntimeTaskContext::default())
+                        .await
+                        .unwrap();
+                    let output = embedded
+                        .query(
+                            "CALL project_graph('ordinary', ['Memory'], [])",
+                            RuntimeTaskContext::default(),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(output.rows.len(), 1);
+                    let output = embedded
+                        .query_with_request(
+                            "CALL project_graph('custom', ['Memory'], [])",
+                            BTreeMap::new(),
+                            RuntimeWorkRequest::foreground_query(0, 1024),
+                            RuntimeTaskContext::default(),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(output.rows.len(), 1);
+                    let streaming = embedded
+                        .query_stream(
+                            "CALL project_graph('blocked', ['Memory'], [])",
+                            RuntimeTaskContext::default(),
+                        )
+                        .await;
+                    assert!(matches!(
+                        streaming,
+                        Err(HawDBTokioEmbeddedError::StreamingUnsupported)
+                    ));
+                    embedded
+                        .query("CHECKPOINT", RuntimeTaskContext::default())
+                        .await
+                        .unwrap();
+                })
+                .unwrap();
+            let snapshot = embedded.runtime_snapshot();
+            assert_eq!(snapshot.admitted_memory_bytes, 0);
+            assert_eq!(snapshot.admissions, snapshot.completions);
+            drop(embedded);
+
+            let mut reopened = crate::Database::open_with_config(
+                &path,
+                crate::DatabaseConfig {
+                    storage_residency_mode: mode,
+                    ..crate::DatabaseConfig::default()
+                },
+            )
+            .unwrap();
+            let rows = reopened
+                .query("MATCH (m:Memory) RETURN m.id AS id")
+                .unwrap()
+                .rows;
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].get("id"), Some(&Value::Int(37)));
+            let projections = reopened.projected_graph_statuses().unwrap();
+            assert_eq!(projections.len(), 2);
+            for name in ["ordinary", "custom"] {
+                let definition = projections.iter().find(|entry| entry.name == name).unwrap();
+                assert_eq!(definition.node_labels, ["Memory"]);
+                assert!(definition.rel_types.is_empty());
+            }
+            assert!(projections.iter().all(|entry| entry.name != "blocked"));
+            drop(reopened);
             std::fs::remove_dir_all(&path).unwrap();
         }
     }

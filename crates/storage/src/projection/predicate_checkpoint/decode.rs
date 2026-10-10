@@ -268,68 +268,66 @@ fn integer(input: &str, work: &DecodeContext) -> Result<i64> {
     }
 }
 
+struct ControlledValueDecoder<'a>(&'a DecodeContext);
+
+impl crate::text::value_decode::Decoder for ControlledValueDecoder<'_> {
+    type Items<'a> = Items<'a>;
+    type TemporaryText = TemporaryText;
+    type MapMemory = MapMemory<Value>;
+    fn visit(&self) -> Result<()> {
+        self.0
+            .start_unit()
+            .map_err(HawDBError::from_storage_error)?
+            .finish();
+        Ok(())
+    }
+    fn integer(&self, input: &str) -> Result<i64> {
+        integer(input, self.0)
+    }
+    fn unsigned(&self, input: &str) -> Result<u64> {
+        unsigned(input, self.0)
+    }
+    fn string(&self, input: &str) -> Result<String> {
+        decode_string(input, self.0)
+    }
+    fn binary(&self, input: &str) -> Result<Vec<u8>> {
+        hex_bytes(input, true, self.0)
+    }
+    fn temporary(&self, input: &str) -> Result<TemporaryText> {
+        temporary_text(input, self.0)
+    }
+    fn items<'a>(&self, input: &'a str, delimiter: u8) -> Items<'a> {
+        Items::new(input, delimiter)
+    }
+    fn next<'a>(&self, items: &mut Self::Items<'a>) -> Result<Option<&'a str>> {
+        items.next(self.0)
+    }
+    fn equal(&self, input: &str) -> Result<Option<usize>> {
+        find_delimiter(input, b'=', self.0)
+    }
+    fn push(&self, values: &mut Vec<Value>, value: Value) -> Result<()> {
+        self.0.push(values, value)
+    }
+    fn insert(
+        &self,
+        values: &mut BTreeMap<String, Value>,
+        memory: &mut MapMemory<Value>,
+        key: String,
+        value: Value,
+    ) -> Result<()> {
+        let unit = self
+            .0
+            .start_unit()
+            .map_err(HawDBError::from_storage_error)?;
+        memory.before_insert(values.len(), self.0)?;
+        values.insert(key, value);
+        unit.finish();
+        Ok(())
+    }
+}
+
 fn decode_value(input: &str, work: &DecodeContext) -> Result<Value> {
-    work.start_unit()
-        .map_err(HawDBError::from_storage_error)?
-        .finish();
-    if input.is_empty() {
-        return Err(HawDBError::Storage("empty encoded value".into()));
-    }
-    let (kind, rest) = input
-        .split_at_checked(1)
-        .ok_or_else(|| HawDBError::Storage("invalid encoded value tag".into()))?;
-    match kind {
-        "n" if rest.is_empty() => Ok(Value::Null),
-        "b" => match rest {
-            "0" => Ok(Value::Bool(false)),
-            "1" => Ok(Value::Bool(true)),
-            _ => Err(HawDBError::Storage(format!("invalid bool value: {input}"))),
-        },
-        "i" => integer(rest, work).map(Value::Int),
-        "f" => unsigned(rest, work).map(f64::from_bits).map(Value::Float),
-        "s" => decode_string(rest, work).map(Value::String),
-        "u" => hawdb_core::Uuid::parse_str(rest)
-            .map(Value::Uuid)
-            .map_err(|error| HawDBError::Storage(format!("invalid UUID value: {error}"))),
-        "x" => hex_bytes(rest, true, work).map(Value::Binary),
-        "l" => {
-            let mut values = Vec::new();
-            if !rest.is_empty() {
-                let mut items = Items::new(rest, b',');
-                while let Some(item) = items.next(work)? {
-                    let text = temporary_text(item, work)?;
-                    let value = decode_value(&text, work)?;
-                    drop(text);
-                    work.push(&mut values, value)?;
-                }
-            }
-            Ok(Value::List(values))
-        }
-        "m" => {
-            let mut values = BTreeMap::new();
-            let mut memory = MapMemory::<Value>::default();
-            if !rest.is_empty() {
-                let mut items = Items::new(rest, b';');
-                while let Some(item) = items.next(work)? {
-                    let equal = find_delimiter(item, b'=', work)?.ok_or_else(|| {
-                        HawDBError::Storage(format!("invalid encoded map item: {item}"))
-                    })?;
-                    let key = decode_string(&item[..equal], work)?;
-                    let text = temporary_text(&item[equal + 1..], work)?;
-                    let value = decode_value(&text, work)?;
-                    drop(text);
-                    let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
-                    memory.before_insert(values.len(), work)?;
-                    values.insert(key, value);
-                    unit.finish();
-                }
-            }
-            Ok(Value::Map(values))
-        }
-        _ => Err(HawDBError::Storage(format!(
-            "invalid encoded value tag or payload: {kind:?}"
-        ))),
-    }
+    crate::text::value_decode::decode(input, &ControlledValueDecoder(work))
 }
 
 pub(crate) struct MapMemory<T> {
@@ -381,49 +379,26 @@ impl<T> MapMemory<T> {
     }
 }
 
-fn from_value(value: Value, work: &DecodeContext) -> Result<ProjectedRelationshipPredicate> {
-    work.start_unit()
-        .map_err(HawDBError::from_storage_error)?
-        .finish();
-    let Value::List(fields) = value else {
-        return Err(HawDBError::Storage(
-            "projected relationship predicate must decode to a list".into(),
-        ));
-    };
-    let count = fields.len();
-    let mut fields = fields.into_iter();
-    let Some(operator) = fields.next() else {
-        return Err(HawDBError::Storage(
-            "projected relationship predicate is missing its operator".into(),
-        ));
-    };
-    let Value::String(operator) = operator else {
-        return Err(HawDBError::Storage(
-            "projected relationship predicate operator must be a string".into(),
-        ));
-    };
-    if operator == "and" && count == 2 {
-        if let Some(Value::List(children)) = fields.next()
-            && !children.is_empty()
-        {
-            let mut predicates = Vec::new();
-            for child in children {
-                work.push(&mut predicates, from_value(child, work)?)?;
-            }
-            return Ok(ProjectedRelationshipPredicate::And(predicates));
-        }
-    } else if matches!(operator.as_str(), "eq" | "gte")
-        && count == 3
-        && let Some(Value::String(property)) = fields.next()
-    {
-        let value = fields.next().expect("arity checked");
-        return Ok(if operator == "eq" {
-            ProjectedRelationshipPredicate::Eq { property, value }
-        } else {
-            ProjectedRelationshipPredicate::Gte { property, value }
-        });
+struct ControlledPredicateDecoder<'a>(&'a DecodeContext);
+
+impl super::super::predicate_decode::Decoder for ControlledPredicateDecoder<'_> {
+    fn visit(&self) -> Result<()> {
+        self.0
+            .start_unit()
+            .map_err(HawDBError::from_storage_error)?
+            .finish();
+        Ok(())
     }
-    Err(HawDBError::Storage(format!(
-        "invalid projected relationship predicate operator or arity: {operator}"
-    )))
+
+    fn push(
+        &self,
+        values: &mut Vec<ProjectedRelationshipPredicate>,
+        value: ProjectedRelationshipPredicate,
+    ) -> Result<()> {
+        self.0.push(values, value)
+    }
+}
+
+fn from_value(value: Value, work: &DecodeContext) -> Result<ProjectedRelationshipPredicate> {
+    super::super::predicate_decode::decode(value, &ControlledPredicateDecoder(work))
 }

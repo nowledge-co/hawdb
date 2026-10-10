@@ -19,6 +19,7 @@
 
 #[doc(hidden)]
 pub mod envelope;
+pub(crate) mod value_decode;
 
 use hawdb_core::{
     HawDBError, IndexKind, PropertyType, Result, SchemaObjectState, TableKind, Value,
@@ -121,38 +122,60 @@ pub fn encode_value(value: &Value) -> String {
     }
 }
 
-pub fn decode_value(input: &str) -> Result<Value> {
-    if input.is_empty() {
-        return Err(HawDBError::Storage("empty encoded value".to_string()));
+struct OrdinaryValueDecoder;
+
+impl value_decode::Decoder for OrdinaryValueDecoder {
+    type Items<'a> = std::str::Split<'a, char>;
+    type TemporaryText = String;
+    type MapMemory = ();
+    fn visit(&self) -> Result<()> {
+        Ok(())
     }
-    let (kind, rest) = input
-        .split_at_checked(1)
-        .ok_or_else(|| HawDBError::Storage("invalid encoded value tag".to_string()))?;
-    match kind {
-        "n" if rest.is_empty() => Ok(Value::Null),
-        "b" => match rest {
-            "0" => Ok(Value::Bool(false)),
-            "1" => Ok(Value::Bool(true)),
-            _ => Err(HawDBError::Storage(format!("invalid bool value: {input}"))),
-        },
-        "i" => parse_i64(rest, "integer value").map(Value::Int),
-        "f" => parse_u64(rest, "float value")
-            .map(f64::from_bits)
-            .map(Value::Float),
-        "s" => decode_string(rest).map(Value::String),
-        "u" => hawdb_core::Uuid::parse_str(rest)
-            .map(Value::Uuid)
-            .map_err(|error| HawDBError::Storage(format!("invalid UUID value: {error}"))),
-        "x" => decode_hex_value(rest),
-        "l" => decode_list_value(rest),
-        "m" => decode_map_value(rest),
-        _ => Err(HawDBError::Storage(format!(
-            "invalid encoded value tag or payload: {kind:?}"
-        ))),
+    fn integer(&self, input: &str) -> Result<i64> {
+        parse_i64(input, "integer value")
+    }
+    fn unsigned(&self, input: &str) -> Result<u64> {
+        parse_u64(input, "float value")
+    }
+    fn string(&self, input: &str) -> Result<String> {
+        decode_string(input)
+    }
+    fn binary(&self, input: &str) -> Result<Vec<u8>> {
+        decode_hex_bytes(input)
+    }
+    fn temporary(&self, input: &str) -> Result<String> {
+        decode_string(input)
+    }
+    fn items<'a>(&self, input: &'a str, delimiter: u8) -> Self::Items<'a> {
+        input.split(char::from(delimiter))
+    }
+    fn next<'a>(&self, items: &mut Self::Items<'a>) -> Result<Option<&'a str>> {
+        Ok(items.next())
+    }
+    fn equal(&self, input: &str) -> Result<Option<usize>> {
+        Ok(input.find('='))
+    }
+    fn push(&self, values: &mut Vec<Value>, value: Value) -> Result<()> {
+        values.push(value);
+        Ok(())
+    }
+    fn insert(
+        &self,
+        values: &mut BTreeMap<String, Value>,
+        _memory: &mut (),
+        key: String,
+        value: Value,
+    ) -> Result<()> {
+        values.insert(key, value);
+        Ok(())
     }
 }
 
-fn decode_hex_value(input: &str) -> Result<Value> {
+pub fn decode_value(input: &str) -> Result<Value> {
+    value_decode::decode(input, &OrdinaryValueDecoder)
+}
+
+fn decode_hex_bytes(input: &str) -> Result<Vec<u8>> {
     if !input.len().is_multiple_of(2) {
         return Err(HawDBError::Storage(
             "binary value has an odd number of hex digits".to_string(),
@@ -167,7 +190,6 @@ fn decode_hex_value(input: &str) -> Result<Value> {
             Ok((high << 4) | low)
         })
         .collect::<Result<Vec<_>>>()
-        .map(Value::Binary)
 }
 
 fn decode_hex_digit(digit: u8) -> Result<u8> {
@@ -180,36 +202,6 @@ fn decode_hex_digit(digit: u8) -> Result<u8> {
             char::from(digit)
         ))),
     }
-}
-
-fn decode_list_value(input: &str) -> Result<Value> {
-    if input.is_empty() {
-        return Ok(Value::List(Vec::new()));
-    }
-    input
-        .split(',')
-        .map(|item| decode_string(item).and_then(|value| decode_value(&value)))
-        .collect::<Result<Vec<_>>>()
-        .map(Value::List)
-}
-
-fn decode_map_value(input: &str) -> Result<Value> {
-    let mut values = BTreeMap::new();
-    if input.is_empty() {
-        return Ok(Value::Map(values));
-    }
-    for item in input.split(';') {
-        let Some((key, value)) = item.split_once('=') else {
-            return Err(HawDBError::Storage(format!(
-                "invalid encoded map item: {item}"
-            )));
-        };
-        values.insert(
-            decode_string(key)?,
-            decode_string(value).and_then(|value| decode_value(&value))?,
-        );
-    }
-    Ok(Value::Map(values))
 }
 
 pub fn encode_string(input: &str) -> String {

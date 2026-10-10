@@ -130,6 +130,21 @@ pub(crate) use hawdb_executor::result_delivery::StreamDelivery;
 
 pub use entrypoint::ExecutionResources;
 
+/// Storage side effects are separate from execution/report classification.
+/// ProjectGraph is a procedure, but registering its definition appends WAL.
+pub(crate) fn requires_write_access(plan: &PhysicalPlan) -> bool {
+    let mut writes = false;
+    hawdb_plan_cypher::visit_plan(plan, &mut |node| {
+        writes |= matches!(node, PhysicalPlan::ProjectGraph { .. })
+            || matches!(
+                node.class(),
+                hawdb_plan_cypher::PhysicalPlanClass::Schema
+                    | hawdb_plan_cypher::PhysicalPlanClass::Mutation
+            );
+    });
+    writes
+}
+
 /// Executes one request through the public embedded-library execution contract.
 ///
 /// The request owns query-specific inputs while [`ExecutionResources`] makes

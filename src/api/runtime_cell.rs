@@ -105,6 +105,43 @@ impl DerefMut for AdmittedBranchRuntimeMut<'_> {
     }
 }
 
+/// Read execution may update local caches, but callers cannot access mutable
+/// live storage or the catalog without the mutation/publication guard.
+#[derive(Debug)]
+pub(super) struct AdmittedBranchRuntimeRead<'a> {
+    runtime: &'a mut AdmittedBranchRuntime,
+}
+
+impl AdmittedBranchRuntimeRead<'_> {
+    pub(super) fn catalog(&self) -> &Catalog {
+        &self.runtime.catalog
+    }
+
+    pub(super) fn store(&self) -> &GraphStore {
+        &self.runtime.store
+    }
+
+    pub(super) fn execute(
+        &mut self,
+        request: crate::executor::ExecutionRequest<'_>,
+        external: &mut dyn crate::executor::ExternalReadOperator,
+    ) -> Result<crate::executor::ProfiledQueryRows> {
+        if crate::executor::requires_write_access(request.plan()) {
+            return Err(HawDBError::Execution(
+                "read runtime access does not permit storage writes".into(),
+            ));
+        }
+        crate::executor::execute_with_request(
+            request,
+            crate::executor::ExecutionResources::new(
+                &mut self.runtime.catalog,
+                &mut self.runtime.store,
+                external,
+            ),
+        )
+    }
+}
+
 impl BranchRuntimeCell {
     pub(super) fn admitted(runtime: AdmittedBranchRuntime) -> Self {
         Self {
@@ -187,7 +224,7 @@ impl BranchRuntimeCell {
         })
     }
 
-    pub(super) fn get_read_mut(&mut self) -> Result<&mut AdmittedBranchRuntime> {
+    pub(super) fn get_read(&mut self) -> Result<AdmittedBranchRuntimeRead<'_>> {
         self.get()?;
         let runtime = self.admitted.get_mut().map(Box::as_mut).ok_or_else(|| {
             HawDBError::StorageIntegrity("completed branch admission has no mutable runtime".into())
@@ -195,7 +232,7 @@ impl BranchRuntimeCell {
         self.publication.adopt_for_read(&mut runtime.store)?;
         // &mut self exclusively owns the frontend. Read execution may update
         // its local caches without holding the owner's publication mutex.
-        Ok(runtime)
+        Ok(AdmittedBranchRuntimeRead { runtime })
     }
 
     pub(super) fn peek(&self) -> Option<&AdmittedBranchRuntime> {

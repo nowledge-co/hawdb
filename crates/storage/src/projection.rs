@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 pub mod artifact;
 
 pub(crate) mod predicate_checkpoint;
+mod predicate_decode;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedGraphDefinition {
@@ -120,43 +121,27 @@ fn projected_relationship_predicate_to_value(predicate: &ProjectedRelationshipPr
     }
 }
 
+struct OrdinaryPredicateDecoder;
+
+impl predicate_decode::Decoder for OrdinaryPredicateDecoder {
+    fn visit(&self) -> crate::Result<()> {
+        Ok(())
+    }
+
+    fn push(
+        &self,
+        values: &mut Vec<ProjectedRelationshipPredicate>,
+        value: ProjectedRelationshipPredicate,
+    ) -> crate::Result<()> {
+        values.push(value);
+        Ok(())
+    }
+}
+
 fn projected_relationship_predicate_from_value(
     value: Value,
 ) -> crate::Result<ProjectedRelationshipPredicate> {
-    let Value::List(mut fields) = value else {
-        return Err(crate::HawDBError::Storage(
-            "projected relationship predicate must decode to a list".to_string(),
-        ));
-    };
-    if fields.is_empty() {
-        return Err(crate::HawDBError::Storage(
-            "projected relationship predicate is missing its operator".to_string(),
-        ));
-    }
-    let Value::String(operator) = fields.remove(0) else {
-        return Err(crate::HawDBError::Storage(
-            "projected relationship predicate operator must be a string".to_string(),
-        ));
-    };
-    match (operator.as_str(), fields.as_slice()) {
-        ("and", [Value::List(predicates)]) if !predicates.is_empty() => predicates
-            .iter()
-            .cloned()
-            .map(projected_relationship_predicate_from_value)
-            .collect::<crate::Result<Vec<_>>>()
-            .map(ProjectedRelationshipPredicate::And),
-        ("eq", [Value::String(property), value]) => Ok(ProjectedRelationshipPredicate::Eq {
-            property: property.clone(),
-            value: value.clone(),
-        }),
-        ("gte", [Value::String(property), value]) => Ok(ProjectedRelationshipPredicate::Gte {
-            property: property.clone(),
-            value: value.clone(),
-        }),
-        _ => Err(crate::HawDBError::Storage(format!(
-            "invalid projected relationship predicate operator or arity: {operator}"
-        ))),
-    }
+    predicate_decode::decode(value, &OrdinaryPredicateDecoder)
 }
 
 /// Control flow a projection scan visitor returns to the scan driver.

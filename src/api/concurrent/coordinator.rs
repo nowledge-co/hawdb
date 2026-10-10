@@ -133,7 +133,7 @@ impl CommitSequencer {
             Err(TryLockError::WouldBlock) => return Ok(()),
             Err(TryLockError::Poisoned(_)) => return Err(read_publication_poisoned_error()),
         };
-        database.runtime.get_read_mut()?;
+        database.runtime.get_read()?;
         if self.checkpoint_control.has_pending_handoff() {
             return Ok(());
         }
