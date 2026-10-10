@@ -120,6 +120,15 @@ impl GraphExpansionExecutionState {
         target_id: Option<NodeId>,
         hop: usize,
     ) -> Result<bool> {
+        self.try_admit_payload(binding_payload_bytes(candidate), target_id, hop)
+    }
+
+    pub(crate) fn try_admit_payload(
+        &mut self,
+        candidate_bytes: usize,
+        target_id: Option<NodeId>,
+        hop: usize,
+    ) -> Result<bool> {
         let Some(budget) = self.budget else {
             self.returned_count = self.returned_count.saturating_add(1);
             return Ok(true);
@@ -128,7 +137,6 @@ impl GraphExpansionExecutionState {
             self.truncation_reason = Some(GraphExpansionTruncationReason::CandidateLimit);
             return Ok(false);
         }
-        let candidate_bytes = binding_payload_bytes(candidate);
         if self.payload_bytes_used.saturating_add(candidate_bytes) > budget.payload_byte_limit {
             self.truncation_reason = Some(GraphExpansionTruncationReason::PayloadByteLimit);
             return Ok(false);

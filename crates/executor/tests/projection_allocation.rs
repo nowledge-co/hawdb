@@ -3146,3 +3146,301 @@ fn graph_relationship_scan_admits_native_payload_before_copy() {
 fn graph_relationship_scan_admits_cold_payload_before_copy() {
     run_blocking_source_admission(true, BlockingSource::GraphRelationship);
 }
+
+#[derive(Clone, Copy, Debug)]
+enum ExpandOutputOwner {
+    OneHop,
+    Typed,
+    ZeroHop,
+    Optional,
+}
+
+fn run_expand_output_admission(persisted: bool, owner: ExpandOutputOwner) {
+    let size = 1024 * 1024 + 173;
+    let directory = persisted.then(StoredPropertyDirectory::new);
+    let replay = hawdb_storage::store::WalReplayConfig {
+        residency_mode: hawdb_storage::store::StorageResidencyMode::OutOfCore,
+        ..Default::default()
+    };
+    let mut catalog = Catalog::default();
+    let mut store = if let Some(directory) = &directory {
+        GraphStore::open_with_durability_and_replay_config(
+            &directory.0,
+            &mut catalog,
+            Default::default(),
+            replay,
+        )
+        .unwrap()
+    } else {
+        GraphStore::default()
+    };
+    for label in ["Source", "Target"] {
+        store.create_node_table(&mut catalog, label).unwrap();
+        store
+            .create_property_descriptor(
+                &mut catalog,
+                TableKind::Node,
+                label,
+                "body",
+                PropertyType::String,
+                false,
+            )
+            .unwrap();
+    }
+    let source = store
+        .create_node(
+            &mut catalog,
+            "Source",
+            BTreeMap::from([(
+                "body".into(),
+                Value::String(if matches!(owner, ExpandOutputOwner::OneHop) {
+                    String::new()
+                } else {
+                    "S".repeat(size)
+                }),
+            )]),
+        )
+        .unwrap();
+    let target = store
+        .create_node(
+            &mut catalog,
+            "Target",
+            BTreeMap::from([(
+                "body".into(),
+                Value::String(if matches!(owner, ExpandOutputOwner::OneHop) {
+                    "T".repeat(size)
+                } else if matches!(owner, ExpandOutputOwner::Typed) {
+                    "t".repeat(32768)
+                } else {
+                    String::new()
+                }),
+            )]),
+        )
+        .unwrap();
+    store
+        .create_relationship_table(&mut catalog, "LINK")
+        .unwrap();
+    store
+        .create_relationship(&mut catalog, source, target, "LINK", BTreeMap::new())
+        .unwrap();
+    if let Some(directory) = &directory {
+        store.checkpoint(&catalog).unwrap();
+        drop(store);
+        catalog = Catalog::default();
+        store = GraphStore::open_with_durability_and_replay_config(
+            &directory.0,
+            &mut catalog,
+            Default::default(),
+            replay,
+        )
+        .unwrap();
+    }
+    assert_eq!(store.is_out_of_core(), persisted);
+    let input = PhysicalPlan::SeqNodeScan {
+        variable: "n".into(),
+        label: "Source".into(),
+    };
+    let parameters = BTreeMap::new();
+    let external = TextSource {
+        external_id: String::new(),
+        calls: Cell::new(0),
+    };
+    let mut memory = ExecutionMemoryConfig {
+        query_memory_bytes: nz(32 * 1024 * 1024),
+        blocking_operator_bytes: nz(8 * 1024 * 1024),
+        batch_payload_bytes: nz(8 * 1024 * 1024),
+        batch_rows: nz(1),
+        ..Default::default()
+    };
+    // Observe the real source-only peak outside the allocation window. The
+    // typed/optional root permits the complete input, but no larger output.
+    let input_ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+    let input_observer = QueryExecutionObserver::new(&input);
+    execute_binding_batches(
+        &input,
+        BatchReadContext {
+            catalog: &catalog,
+            store: &store,
+            parameters: &parameters,
+            external: &external,
+            memory: &memory,
+            memory_ledger: &input_ledger,
+            task_context: None,
+            observer: &input_observer,
+            host_scorer: None,
+        },
+        ExecutionLimit::unlimited(),
+        &mut |_| Ok(BatchControl::Continue),
+    )
+    .unwrap();
+    let input_peak = input_ledger.snapshot().peak_bytes;
+    assert_eq!(input_ledger.snapshot().used_bytes, 0);
+    match owner {
+        ExpandOutputOwner::OneHop => memory.batch_payload_bytes = nz(4096),
+        ExpandOutputOwner::Typed => memory.query_memory_bytes = nz(input_peak + 65536),
+        ExpandOutputOwner::Optional => memory.query_memory_bytes = nz(input_peak),
+        ExpandOutputOwner::ZeroHop => memory.query_memory_bytes = nz(input_peak + size + 8192),
+    }
+    let plan = PhysicalPlan::AdjacencyExpandExec {
+        source_variable: "n".into(),
+        source_label: "Source".into(),
+        rel_variable: matches!(owner, ExpandOutputOwner::OneHop).then(|| "r".into()),
+        rel_type: if matches!(
+            owner,
+            ExpandOutputOwner::ZeroHop | ExpandOutputOwner::Optional
+        ) {
+            "Unknown".into()
+        } else {
+            "LINK".into()
+        },
+        rel_properties: BTreeMap::new(),
+        direction: hawdb_core::RelationshipDirection::Outgoing,
+        target_variable: "m".into(),
+        target_label: if matches!(owner, ExpandOutputOwner::ZeroHop) {
+            "Source".into()
+        } else {
+            "Target".into()
+        },
+        min_hops: usize::from(!matches!(owner, ExpandOutputOwner::ZeroHop)),
+        max_hops: if matches!(owner, ExpandOutputOwner::Typed) {
+            2
+        } else {
+            1
+        },
+        optional: matches!(owner, ExpandOutputOwner::Optional),
+        graph_budget: None,
+        input: Box::new(input),
+    };
+    let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+    let observer = QueryExecutionObserver::new(&plan);
+    let emitted = Cell::new(0);
+    let window = AllocationWindow::start(size);
+    let result = execute_binding_batches(
+        &plan,
+        BatchReadContext {
+            catalog: &catalog,
+            store: &store,
+            parameters: &parameters,
+            external: &external,
+            memory: &memory,
+            memory_ledger: &ledger,
+            task_context: None,
+            observer: &observer,
+            host_scorer: None,
+        },
+        ExecutionLimit::unlimited(),
+        &mut |rows| {
+            emitted.set(emitted.get() + rows.len());
+            Ok(BatchControl::Continue)
+        },
+    );
+    let copies = window.allocations();
+    drop(window);
+    let error = result.expect_err("complete derived row must be refused");
+    assert!(matches!(error, HawDBError::Execution(_)), "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains(if matches!(owner, ExpandOutputOwner::OneHop) {
+                "batch_payload_bytes"
+            } else {
+                "charging AdjacencyExpandExec output"
+            }),
+        "wrong refusal boundary: {error}"
+    );
+    assert_eq!(emitted.get(), 0);
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+    assert_eq!(copies, if matches!(owner, ExpandOutputOwner::ZeroHop) { 2 } else { 1 },
+        "{owner:?}, cold={persisted}: only admitted input/source copies may occur; no retained output copy before refusal");
+    assert_eq!(store.node_owned(source).unwrap().unwrap().id, source);
+
+    // Recover through the same actual query owner with sufficient budgets.
+    // The lawful point record is moved; only retained input aliases are cloned.
+    memory.query_memory_bytes = nz(32 * 1024 * 1024);
+    memory.batch_payload_bytes = nz(8 * 1024 * 1024);
+    let admitted_ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+    let admitted_observer = QueryExecutionObserver::new(&plan);
+    let admitted_rows = Cell::new(0);
+    let window = AllocationWindow::start(size);
+    let result = execute_binding_batches(
+        &plan,
+        BatchReadContext {
+            catalog: &catalog,
+            store: &store,
+            parameters: &parameters,
+            external: &external,
+            memory: &memory,
+            memory_ledger: &admitted_ledger,
+            task_context: None,
+            observer: &admitted_observer,
+            host_scorer: None,
+        },
+        ExecutionLimit::unlimited(),
+        &mut |rows| {
+            admitted_rows.set(admitted_rows.get() + rows.len());
+            for row in rows {
+                assert_eq!(row.nodes["n"].id, source);
+                if matches!(owner, ExpandOutputOwner::Optional) {
+                    assert_eq!(row.values["m"], Value::Null);
+                } else {
+                    assert_eq!(
+                        row.nodes["m"].id,
+                        if matches!(owner, ExpandOutputOwner::ZeroHop) {
+                            source
+                        } else {
+                            target
+                        }
+                    );
+                }
+            }
+            Ok(BatchControl::Continue)
+        },
+    );
+    let copies = window.allocations();
+    drop(window);
+    result.unwrap();
+    assert_eq!(admitted_rows.get(), 1);
+    assert_eq!(admitted_ledger.snapshot().used_bytes, 0);
+    assert_eq!(
+        copies,
+        match owner {
+            ExpandOutputOwner::OneHop => 1,
+            ExpandOutputOwner::ZeroHop => 3,
+            ExpandOutputOwner::Typed | ExpandOutputOwner::Optional => 2,
+        },
+        "{owner:?}, cold={persisted}: recovery copied an overwritten or moved record"
+    );
+}
+
+#[test]
+fn expand_one_hop_native_output_admitted_before_copy() {
+    run_expand_output_admission(false, ExpandOutputOwner::OneHop);
+}
+#[test]
+fn expand_one_hop_cold_output_admitted_before_copy() {
+    run_expand_output_admission(true, ExpandOutputOwner::OneHop);
+}
+#[test]
+fn expand_typed_native_output_admitted_before_copy() {
+    run_expand_output_admission(false, ExpandOutputOwner::Typed);
+}
+#[test]
+fn expand_typed_cold_output_admitted_before_copy() {
+    run_expand_output_admission(true, ExpandOutputOwner::Typed);
+}
+#[test]
+fn expand_zero_hop_native_output_admitted_before_copy() {
+    run_expand_output_admission(false, ExpandOutputOwner::ZeroHop);
+}
+#[test]
+fn expand_zero_hop_cold_output_admitted_before_copy() {
+    run_expand_output_admission(true, ExpandOutputOwner::ZeroHop);
+}
+#[test]
+fn expand_optional_native_output_admitted_before_copy() {
+    run_expand_output_admission(false, ExpandOutputOwner::Optional);
+}
+#[test]
+fn expand_optional_cold_output_admitted_before_copy() {
+    run_expand_output_admission(true, ExpandOutputOwner::Optional);
+}

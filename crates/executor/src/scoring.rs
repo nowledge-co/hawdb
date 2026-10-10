@@ -239,7 +239,7 @@ pub(crate) fn annotate_seed(values: &mut std::collections::BTreeMap<String, Valu
     values.insert(SEED_HOP_ANNOTATION.into(), Value::Int(0));
 }
 
-pub(crate) fn advance_seed_hop(binding: &mut Binding, hop: usize, matched: bool) -> Result<()> {
+fn next_seed_hop(binding: &Binding, hop: usize, matched: bool) -> Result<Value> {
     let previous = binding
         .values
         .get(SEED_HOP_ANNOTATION)
@@ -259,6 +259,25 @@ pub(crate) fn advance_seed_hop(binding: &mut Binding, hop: usize, matched: bool)
                 .ok_or_else(|| HawDBError::Execution("seed hop distance overflow".into()))?,
         )
     };
+    Ok(next)
+}
+
+pub(crate) fn seed_hop_payload_reduction(
+    binding: &Binding,
+    hop: usize,
+    matched: bool,
+) -> Result<usize> {
+    let next = next_seed_hop(binding, hop, matched)?;
+    let previous = binding
+        .values
+        .get(SEED_HOP_ANNOTATION)
+        .expect("provenance key was checked");
+    Ok(crate::binding::value_payload_bytes(previous)
+        .saturating_sub(crate::binding::value_payload_bytes(&next)))
+}
+
+pub(crate) fn advance_seed_hop(binding: &mut Binding, hop: usize, matched: bool) -> Result<()> {
+    let next = next_seed_hop(binding, hop, matched)?;
     *binding
         .values
         .get_mut(SEED_HOP_ANNOTATION)

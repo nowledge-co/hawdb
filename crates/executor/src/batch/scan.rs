@@ -677,8 +677,6 @@ pub(super) fn stream_adjacency_expand_batches(
     }
     let source_label_ids = label_ids_for_pattern(catalog, source_label);
     let target_label_ids = label_ids_for_pattern(catalog, target_label);
-    let batch_rows = memory.batch_rows.get();
-    let batch_payload_bytes = memory.batch_payload_bytes.get();
     let output_account = context.memory_ledger.account(
         QueryMemoryClass::PipelineBatch,
         "AdjacencyExpandExec output",
@@ -687,11 +685,8 @@ pub(super) fn stream_adjacency_expand_batches(
     let mut output_lease = output_account.reserve(0)?;
     let mut output = Vec::new();
     let mut output_bytes = 0usize;
-    let control = execute_binding_batches(
-        input,
-        context,
-        ExecutionLimit::unlimited(),
-        &mut |batch| {
+    let control =
+        execute_binding_batches(input, context, ExecutionLimit::unlimited(), &mut |batch| {
             runtime_checkpoint(context.task_context)?;
             for binding in batch {
                 runtime_checkpoint(context.task_context)?;
@@ -706,48 +701,14 @@ pub(super) fn stream_adjacency_expand_batches(
                     max_hops: *max_hops,
                     optional: *optional,
                 };
-                let mut visit_candidate = |mut candidate: crate::scan::ExpandedBinding| {
-                    runtime_checkpoint(context.task_context)?;
-                    if context.observer.seed_graph_scoring_input().is_some() {
-                        crate::scoring::advance_seed_hop(
-                            &mut candidate.binding,
-                            candidate.hop,
-                            candidate.target_id.is_some(),
-                        )?;
-                    }
-                    let candidate_bytes = binding_memory_bytes(&candidate.binding);
-                    if candidate_bytes > batch_payload_bytes {
-                        return Err(HawDBError::Execution(format!(
-                                "intermediate row uses {candidate_bytes} bytes, exceeding batch_payload_bytes {batch_payload_bytes}"
-                            )));
-                    }
-                    if !output.is_empty()
-                        && (output.len() == batch_rows
-                            || output_bytes.saturating_add(candidate_bytes) > batch_payload_bytes)
-                    {
-                        let emitted = std::mem::take(&mut output);
-                        output_lease.reset();
-                        if emit(emitted)? == BatchControl::Stop {
-                            return Ok(crate::store::ScanControl::Stop);
-                        }
-                        output_bytes = 0;
-                    }
-                    if !graph_expansion.try_admit(
-                        &candidate.binding,
-                        candidate.target_id,
-                        candidate.hop,
-                    )? {
-                        return Ok(crate::store::ScanControl::Stop);
-                    }
-                    output_lease.grow(candidate_bytes)?;
-                    output_bytes = output_bytes.saturating_add(candidate_bytes);
-                    crate::pipeline::reserve_binding_slot(&mut output);
-                    output.push(candidate.binding);
-                    if execution_limit.is_reached(graph_expansion.returned_count()) {
-                        Ok(crate::store::ScanControl::Stop)
-                    } else {
-                        Ok(crate::store::ScanControl::Continue)
-                    }
+                let mut visit_candidate = ExpandBatchConsumer {
+                    context,
+                    execution_limit,
+                    graph_expansion: &mut graph_expansion,
+                    output: &mut output,
+                    output_bytes: &mut output_bytes,
+                    output_lease: &mut output_lease,
+                    emit,
                 };
                 let source_label_mismatch =
                     binding.nodes.get(source_variable).is_some_and(|node| {
@@ -777,7 +738,7 @@ pub(super) fn stream_adjacency_expand_batches(
                         &mut visit_candidate,
                     )?
                 } else {
-                    stream_expand_binding(
+                    stream_expand_binding_admitted(
                         &binding,
                         spec,
                         rel_type_id,
@@ -798,8 +759,7 @@ pub(super) fn stream_adjacency_expand_batches(
                 }
             }
             Ok(BatchControl::Continue)
-        },
-    )?;
+        })?;
     graph_expansion.set_reranked_seed_count(context.observer.current_vector_rerank_count());
     if !output.is_empty() {
         output_lease.reset();
@@ -826,6 +786,90 @@ pub(super) fn stream_adjacency_expand_batches(
     Ok(control)
 }
 
+struct ExpandBatchConsumer<'a, 'context> {
+    context: BatchReadContext<'context>,
+    execution_limit: ExecutionLimit,
+    graph_expansion: &'a mut GraphExpansionExecutionState,
+    output: &'a mut Vec<Binding>,
+    output_bytes: &'a mut usize,
+    output_lease: &'a mut crate::QueryMemoryLease,
+    emit: &'a mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+}
+
+impl crate::scan::ExpandedBindingConsumer for ExpandBatchConsumer<'_, '_> {
+    fn push(
+        &mut self,
+        preview: crate::scan::ExpandedBindingPreview<'_>,
+        create: impl FnOnce() -> crate::scan::ExpandedBinding,
+    ) -> Result<ScanControl> {
+        runtime_checkpoint(self.context.task_context)?;
+        let scoring = self.context.observer.seed_graph_scoring_input().is_some();
+        let reduction = if scoring {
+            crate::scoring::seed_hop_payload_reduction(
+                preview.input,
+                preview.hop,
+                preview.target_id.is_some(),
+            )?
+        } else {
+            0
+        };
+        let candidate_bytes = preview.memory_bytes.saturating_sub(reduction);
+        let payload_bytes = preview.payload_bytes.saturating_sub(reduction);
+        let batch_payload_bytes = self.context.memory.batch_payload_bytes.get();
+        if candidate_bytes > batch_payload_bytes {
+            return Err(HawDBError::Execution(format!(
+                "intermediate row uses {candidate_bytes} bytes, exceeding batch_payload_bytes {batch_payload_bytes}"
+            )));
+        }
+        if !self.output.is_empty()
+            && (self.output.len() == self.context.memory.batch_rows.get()
+                || self.output_bytes.saturating_add(candidate_bytes) > batch_payload_bytes)
+        {
+            let emitted = std::mem::take(self.output);
+            self.output_lease.reset();
+            *self.output_bytes = 0;
+            if (self.emit)(emitted)? == BatchControl::Stop {
+                return Ok(ScanControl::Stop);
+            }
+        }
+        if !self
+            .graph_expansion
+            .try_admit_payload(payload_bytes, preview.target_id, preview.hop)?
+        {
+            return Ok(ScanControl::Stop);
+        }
+        // The lazy constructor cannot run until its complete retained output
+        // allocation is charged. This same lease then owns the buffered row.
+        self.output_lease.grow(candidate_bytes)?;
+        let mut candidate = create();
+        if scoring {
+            crate::scoring::advance_seed_hop(
+                &mut candidate.binding,
+                candidate.hop,
+                candidate.target_id.is_some(),
+            )?;
+        }
+        debug_assert_eq!(binding_memory_bytes(&candidate.binding), candidate_bytes);
+        debug_assert_eq!(
+            crate::binding::binding_payload_bytes(&candidate.binding),
+            payload_bytes
+        );
+        *self.output_bytes = self.output_bytes.saturating_add(candidate_bytes);
+        crate::pipeline::reserve_binding_slot(self.output);
+        self.output.push(candidate.binding);
+        Ok(
+            if self
+                .execution_limit
+                .is_reached(self.graph_expansion.returned_count())
+            {
+                ScanControl::Stop
+            } else {
+                ScanControl::Continue
+            },
+        )
+    }
+}
+
 fn record_graph_expansion_state(
     observer: &QueryExecutionObserver,
     state: &GraphExpansionExecutionState,
@@ -836,5 +880,117 @@ fn record_graph_expansion_state(
 ) {
     if let Some(report) = state.report(rel_type, min_hops, max_hops, returned_count) {
         observer.record_graph_expansion(report);
+    }
+}
+
+#[cfg(test)]
+mod expand_output_tests {
+    use super::*;
+    use crate::scan::{ExpandedBinding, ExpandedBindingConsumer, ExpandedBindingPreview};
+    use std::num::NonZeroUsize;
+
+    #[test]
+    fn expand_output_exact_root_flushes_before_copy_and_respects_stop() {
+        for stop in [false, true] {
+            let row = Binding::scalar("v", Value::String("x".repeat(4097)));
+            let bytes = binding_memory_bytes(&row);
+            let limit = NonZeroUsize::new(bytes).unwrap();
+            let memory = ExecutionMemoryConfig {
+                query_memory_bytes: limit,
+                batch_payload_bytes: limit,
+                batch_rows: NonZeroUsize::new(1).unwrap(),
+                ..Default::default()
+            };
+            let ledger = QueryMemoryLedger::new(limit);
+            let account = ledger.account(
+                QueryMemoryClass::PipelineBatch,
+                "exact expand output",
+                limit,
+            );
+            let mut lease = account.reserve(0).unwrap();
+            let catalog = Catalog::default();
+            let store = hawdb_storage::store::GraphStore::default();
+            let parameters = BTreeMap::new();
+            let observer = QueryExecutionObserver::default();
+            let mut external = crate::external::NoExternalReadOperator;
+            let external = BatchExternalReadAdapter::new(&mut external);
+            let context = BatchReadContext {
+                catalog: &catalog,
+                store: &store,
+                parameters: &parameters,
+                external: &external,
+                memory: &memory,
+                memory_ledger: &ledger,
+                task_context: None,
+                observer: &observer,
+                host_scorer: None,
+            };
+            let copies = Cell::new(0);
+            let flushes = Cell::new(0);
+            let mut emit = |rows: BindingBatch| {
+                assert_eq!(rows, vec![row.clone()]);
+                assert_eq!(ledger.snapshot().used_bytes, 0);
+                flushes.set(flushes.get() + 1);
+                Ok(if stop {
+                    BatchControl::Stop
+                } else {
+                    BatchControl::Continue
+                })
+            };
+            let mut output = Vec::new();
+            let mut output_bytes = 0;
+            let mut graph_expansion = GraphExpansionExecutionState::new(None, 0, 0);
+            {
+                let mut sink = ExpandBatchConsumer {
+                    context,
+                    execution_limit: ExecutionLimit::unlimited(),
+                    graph_expansion: &mut graph_expansion,
+                    output: &mut output,
+                    output_bytes: &mut output_bytes,
+                    output_lease: &mut lease,
+                    emit: &mut emit,
+                };
+                let mut push = || {
+                    sink.push(
+                        ExpandedBindingPreview {
+                            input: &row,
+                            memory_bytes: bytes,
+                            payload_bytes: crate::binding::binding_payload_bytes(&row),
+                            target_id: None,
+                            hop: 0,
+                        },
+                        || {
+                            // The complete output lease must already exist when
+                            // ownership is constructed, including at the exact cap.
+                            assert_eq!(ledger.snapshot().used_bytes, bytes);
+                            copies.set(copies.get() + 1);
+                            ExpandedBinding {
+                                binding: row.clone(),
+                                target_id: None,
+                                hop: 0,
+                            }
+                        },
+                    )
+                    .unwrap()
+                };
+                assert_eq!(push(), ScanControl::Continue);
+                assert_eq!(
+                    push(),
+                    if stop {
+                        ScanControl::Stop
+                    } else {
+                        ScanControl::Continue
+                    }
+                );
+            }
+            assert_eq!(flushes.get(), 1);
+            assert_eq!(copies.get(), if stop { 1 } else { 2 });
+            assert_eq!(output.len(), usize::from(!stop));
+            assert_eq!(output_bytes, if stop { 0 } else { bytes });
+            assert_eq!(ledger.snapshot().used_bytes, if stop { 0 } else { bytes });
+            drop(output);
+            drop(lease);
+            assert_eq!(ledger.snapshot().used_bytes, 0);
+        }
     }
 }

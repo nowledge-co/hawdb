@@ -42,8 +42,8 @@ use crate::pipeline::{
 use crate::predicate::{label_ids_for_pattern, node_matches_label_pattern, node_properties_match};
 use crate::scan::{
     single_node_binding, source_scan_pruning_strategy, source_storage_scan_predicate,
-    stream_expand_binding, AdjacencyExpandFilters, AdjacencyExpandSpec, NodeColumnLookupSpec,
-    NodeProjectionScanSpec, NodeScanContext, NodeScanSpec,
+    stream_expand_binding_admitted, AdjacencyExpandFilters, AdjacencyExpandSpec,
+    NodeColumnLookupSpec, NodeProjectionScanSpec, NodeScanContext, NodeScanSpec,
 };
 use crate::store::{ScanControl, SourceScanCandidateVisit, SourceScanReadLimits};
 use crate::traversal::{

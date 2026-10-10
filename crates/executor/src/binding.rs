@@ -157,9 +157,25 @@ fn graph_binding_bytes(
     binding: &Binding,
     property_bytes: fn(&BTreeMap<String, Value>) -> usize,
 ) -> usize {
-    binding
-        .nodes
-        .iter()
+    graph_binding_parts_bytes(
+        binding
+            .nodes
+            .iter()
+            .map(|(name, node)| (name.as_str(), node)),
+        binding
+            .relationships
+            .iter()
+            .map(|(name, row)| (name.as_str(), row)),
+        property_bytes,
+    )
+}
+
+fn graph_binding_parts_bytes<'a>(
+    nodes: impl Iterator<Item = (&'a str, &'a NodeRecord)>,
+    relationships: impl Iterator<Item = (&'a str, &'a RelRecord)>,
+    property_bytes: fn(&BTreeMap<String, Value>) -> usize,
+) -> usize {
+    nodes
         .fold(0usize, |total, (name, node)| {
             total
                 .saturating_add(name.len())
@@ -171,20 +187,33 @@ fn graph_binding_bytes(
                 )
                 .saturating_add(property_bytes(&node.properties))
         })
-        .saturating_add(
-            binding
-                .relationships
-                .iter()
-                .fold(0usize, |total, (name, relationship)| {
-                    total
-                        .saturating_add(name.len())
-                        .saturating_add(std::mem::size_of_val(&relationship.id))
-                        .saturating_add(std::mem::size_of_val(&relationship.source))
-                        .saturating_add(std::mem::size_of_val(&relationship.target))
-                        .saturating_add(std::mem::size_of_val(&relationship.rel_type))
-                        .saturating_add(property_bytes(&relationship.properties))
-                }),
-        )
+        .saturating_add(relationships.fold(0usize, |total, (name, row)| {
+            total
+                .saturating_add(name.len())
+                .saturating_add(std::mem::size_of_val(&row.id))
+                .saturating_add(std::mem::size_of_val(&row.source))
+                .saturating_add(std::mem::size_of_val(&row.target))
+                .saturating_add(std::mem::size_of_val(&row.rel_type))
+                .saturating_add(property_bytes(&row.properties))
+        }))
+}
+
+pub(crate) fn binding_payload_bytes_with_parts<'a>(
+    values: impl Iterator<Item = (&'a str, &'a Value)>,
+    nodes: impl Iterator<Item = (&'a str, &'a NodeRecord)>,
+    relationships: impl Iterator<Item = (&'a str, &'a RelRecord)>,
+) -> usize {
+    values
+        .fold(0usize, |total, (name, value)| {
+            total
+                .saturating_add(name.len())
+                .saturating_add(value_payload_bytes(value))
+        })
+        .saturating_add(graph_binding_parts_bytes(
+            nodes,
+            relationships,
+            map_payload_bytes,
+        ))
 }
 
 pub fn binding_memory_bytes(binding: &Binding) -> usize {
@@ -218,25 +247,44 @@ pub(crate) fn binding_memory_bytes_replacing_value(
 /// Account a projection's borrowed values with the same retained graph and
 /// entry rules as its final owned Binding, before copying any of those values.
 pub(crate) fn binding_memory_bytes_with_values<'a>(
-    binding: &Binding,
+    binding: &'a Binding,
     values: impl Iterator<Item = (&'a str, &'a Value)>,
 ) -> usize {
+    binding_memory_bytes_with_parts(
+        values,
+        binding
+            .nodes
+            .iter()
+            .map(|(name, node)| (name.as_str(), node)),
+        binding
+            .relationships
+            .iter()
+            .map(|(name, row)| (name.as_str(), row)),
+    )
+}
+
+pub(crate) fn binding_memory_bytes_with_parts<'a>(
+    values: impl Iterator<Item = (&'a str, &'a Value)>,
+    nodes: impl Iterator<Item = (&'a str, &'a NodeRecord)>,
+    relationships: impl Iterator<Item = (&'a str, &'a RelRecord)>,
+) -> usize {
+    let entries = std::cell::Cell::new(0usize);
+    let graph_bytes = graph_binding_parts_bytes(
+        nodes.inspect(|_| entries.set(entries.get().saturating_add(1))),
+        relationships.inspect(|_| entries.set(entries.get().saturating_add(1))),
+        map_memory_bytes,
+    );
     std::mem::size_of::<Binding>()
-        .saturating_add(graph_binding_bytes(binding, map_memory_bytes))
+        .saturating_add(graph_bytes)
         .saturating_add(
-            binding
-                .nodes
-                .len()
-                .saturating_add(binding.relationships.len())
+            entries
+                .get()
                 .saturating_mul(std::mem::size_of::<usize>() * 6),
         )
         .saturating_add(values.fold(0usize, |total, (name, value)| {
             total
                 .saturating_add(name.len())
                 .saturating_add(match value {
-                    // The existing binding entry charge already represents the
-                    // outer inline value. Nested container slots and entries
-                    // need their own resident-storage admission before clone.
                     Value::List(_) | Value::Map(_) => {
                         value_memory_bytes(value).saturating_sub(std::mem::size_of::<Value>())
                     }

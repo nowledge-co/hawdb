@@ -16,7 +16,10 @@
 
 pub(crate) mod owned;
 
-use crate::binding::{binding_memory_bytes, projected_node_binding_memory_bytes, Binding};
+use crate::binding::{
+    binding_memory_bytes, binding_memory_bytes_with_parts, binding_payload_bytes_with_parts,
+    projected_node_binding_memory_bytes, Binding,
+};
 use crate::expression::{
     evaluate_predicate_with_context, evaluate_projection_borrowed, prepare_borrowed_projection,
     property_filter_from_predicate, push_borrowed_projection,
@@ -46,7 +49,7 @@ use hawdb_storage::{
     scan::{
         RangeBound, ScanPredicate, ScanPruningReport, ScanPruningStrategy, ScanPruningTargetKind,
     },
-    NodeId, NodeRecord, ProjectedNodeRecord,
+    NodeId, NodeRecord, ProjectedNodeRecord, RelRecord,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
@@ -131,6 +134,45 @@ pub struct AdjacencyExpandSpec<'a> {
     pub optional: bool,
 }
 
+/// The complete borrowed output estimate travels to the owner that will retain
+/// it. Source graph-read permits do not authorize these additional row copies.
+pub(crate) struct ExpandedBindingPreview<'a> {
+    pub(crate) input: &'a Binding,
+    pub(crate) memory_bytes: usize,
+    pub(crate) payload_bytes: usize,
+    pub(crate) target_id: Option<NodeId>,
+    pub(crate) hop: usize,
+}
+
+pub(crate) trait ExpandedBindingConsumer {
+    /// Check limits, flush if needed and reserve output ownership before calling
+    /// `create`. A normal Stop must not invoke the constructor.
+    fn push(
+        &mut self,
+        preview: ExpandedBindingPreview<'_>,
+        create: impl FnOnce() -> ExpandedBinding,
+    ) -> Result<ScanControl>;
+}
+
+struct StandaloneExpandConsumer<'a> {
+    memory: AdjacencyReadMemory<'a>,
+    task_context: Option<&'a RuntimeTaskContext>,
+    consumer: &'a mut dyn FnMut(ExpandedBinding) -> Result<ScanControl>,
+}
+
+impl ExpandedBindingConsumer for StandaloneExpandConsumer<'_> {
+    fn push(
+        &mut self,
+        preview: ExpandedBindingPreview<'_>,
+        create: impl FnOnce() -> ExpandedBinding,
+    ) -> Result<ScanControl> {
+        let _output = self
+            .memory
+            .admit_node(preview.memory_bytes, 0, self.task_context)?;
+        (self.consumer)(create())
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn stream_expand_binding(
     binding: &Binding,
@@ -143,6 +185,37 @@ pub fn stream_expand_binding(
     task_context: Option<&RuntimeTaskContext>,
     observer: &dyn ExecutionObserver,
     consumer: &mut dyn FnMut(ExpandedBinding) -> Result<ScanControl>,
+) -> Result<ScanControl> {
+    stream_expand_binding_admitted(
+        binding,
+        spec,
+        rel_type_id,
+        target_label_ids,
+        filters,
+        store,
+        memory,
+        task_context,
+        observer,
+        &mut StandaloneExpandConsumer {
+            memory,
+            task_context,
+            consumer,
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn stream_expand_binding_admitted(
+    binding: &Binding,
+    spec: AdjacencyExpandSpec<'_>,
+    rel_type_id: Option<RelTypeId>,
+    target_label_ids: Option<&[LabelId]>,
+    filters: &AdjacencyExpandFilters<'_>,
+    store: &dyn GraphExecutionRead,
+    memory: AdjacencyReadMemory<'_>,
+    task_context: Option<&RuntimeTaskContext>,
+    observer: &dyn ExecutionObserver,
+    consumer: &mut impl ExpandedBindingConsumer,
 ) -> Result<ScanControl> {
     runtime_checkpoint(task_context)?;
     if has_null_expand_constraint(binding, &spec) {
@@ -189,24 +262,27 @@ pub fn stream_expand_binding(
                 {
                     return Ok(ScanControl::Continue);
                 }
-                let mut nodes = binding.nodes.clone();
-                nodes.insert(spec.target_variable.to_string(), target.clone());
-                let mut relationships = binding.relationships.clone();
-                if let Some(rel_variable) = spec.rel_variable {
-                    relationships.insert(rel_variable.to_string(), relationship);
-                }
-                let expanded = ExpandedBinding {
-                    binding: Binding {
-                        values: binding.values.clone(),
-                        nodes,
-                        relationships,
-                    },
-                    target_id: Some(target.id),
-                    hop: 1,
-                };
-                ensure_expanded_binding_fits(&expanded, memory.budget_bytes)?;
+                let target_id = target.id;
+                let relationship_output = spec.rel_variable.map(|name| (name, &relationship));
+                let preview = expanded_binding_preview(
+                    binding,
+                    Some((spec.target_variable, &target)),
+                    relationship_output,
+                    [None, None],
+                    Some(target_id),
+                    1,
+                );
+                ensure_expanded_binding_fits(preview.memory_bytes, memory.budget_bytes)?;
                 matched = true;
-                consumer(expanded)
+                consumer.push(preview, || ExpandedBinding {
+                    binding: owned_expanded_binding(
+                        binding,
+                        Some((spec.target_variable, target)),
+                        spec.rel_variable.map(|name| (name, relationship)),
+                    ),
+                    target_id: Some(target_id),
+                    hop: 1,
+                })
             },
         )?
     } else {
@@ -227,19 +303,17 @@ pub fn stream_expand_binding(
             memory,
             task_context,
             &mut |target, hop| {
-                let Some(expanded) = expanded_node_binding(
+                let (control, target_matched) = stream_expanded_node_binding(
                     binding,
                     &spec,
                     filters,
                     target,
                     hop,
                     memory.budget_bytes,
-                )?
-                else {
-                    return Ok(ScanControl::Continue);
-                };
-                matched = true;
-                consumer(expanded)
+                    consumer,
+                )?;
+                matched |= target_matched;
+                Ok(control)
             },
         )?
     };
@@ -263,14 +337,100 @@ fn has_null_expand_constraint(binding: &Binding, spec: &AdjacencyExpandSpec<'_>)
     .any(|name| binding.values.get(name) == Some(&Value::Null))
 }
 
-fn expanded_node_binding(
+fn expanded_binding_preview<'a>(
+    binding: &'a Binding,
+    target: Option<(&str, &NodeRecord)>,
+    relationship: Option<(&str, &RelRecord)>,
+    null_variables: [Option<&str>; 2],
+    target_id: Option<NodeId>,
+    hop: usize,
+) -> ExpandedBindingPreview<'a> {
+    let values = || {
+        binding
+            .values
+            .iter()
+            .map(|(name, value)| (name.as_str(), value))
+            .chain(
+                null_variables
+                    .into_iter()
+                    .flatten()
+                    .map(|name| (name, &Value::Null)),
+            )
+    };
+    let nodes = || {
+        binding
+            .nodes
+            .iter()
+            .filter(|(name, _)| target.is_none_or(|(replacement, _)| name.as_str() != replacement))
+            .map(|(name, node)| (name.as_str(), node))
+            .chain(target)
+    };
+    let relationships = || {
+        binding
+            .relationships
+            .iter()
+            .filter(|(name, _)| {
+                relationship.is_none_or(|(replacement, _)| name.as_str() != replacement)
+            })
+            .map(|(name, row)| (name.as_str(), row))
+            .chain(relationship)
+    };
+    ExpandedBindingPreview {
+        input: binding,
+        memory_bytes: binding_memory_bytes_with_parts(values(), nodes(), relationships()),
+        payload_bytes: binding_payload_bytes_with_parts(values(), nodes(), relationships()),
+        target_id,
+        hop,
+    }
+}
+
+fn owned_expanded_binding(
+    binding: &Binding,
+    target: Option<(&str, NodeRecord)>,
+    relationship: Option<(&str, RelRecord)>,
+) -> Binding {
+    let mut nodes = binding
+        .nodes
+        .iter()
+        .filter(|(name, _)| {
+            target
+                .as_ref()
+                .is_none_or(|(replacement, _)| name.as_str() != *replacement)
+        })
+        .map(|(name, node)| (name.clone(), node.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut relationships = binding
+        .relationships
+        .iter()
+        .filter(|(name, _)| {
+            relationship
+                .as_ref()
+                .is_none_or(|(replacement, _)| name.as_str() != *replacement)
+        })
+        .map(|(name, row)| (name.clone(), row.clone()))
+        .collect::<BTreeMap<_, _>>();
+    if let Some((name, node)) = target {
+        nodes.insert(name.to_string(), node);
+    }
+    if let Some((name, row)) = relationship {
+        relationships.insert(name.to_string(), row);
+    }
+    Binding {
+        values: binding.values.clone(),
+        nodes,
+        relationships,
+    }
+}
+
+fn stream_expanded_node_binding(
     binding: &Binding,
     spec: &AdjacencyExpandSpec<'_>,
     filters: &AdjacencyExpandFilters<'_>,
     target: NodeRecord,
     hop: usize,
     budget_bytes: usize,
-) -> Result<Option<ExpandedBinding>> {
+    consumer: &mut impl ExpandedBindingConsumer,
+) -> Result<(ScanControl, bool)> {
     if binding
         .nodes
         .get(spec.target_variable)
@@ -279,18 +439,25 @@ fn expanded_node_binding(
             .target_scan_filter
             .is_some_and(|filter| !node_matches_property_filter(&target, filter))
     {
-        return Ok(None);
+        return Ok((ScanControl::Continue, false));
     }
     let target_id = target.id;
-    let mut next = binding.clone();
-    next.nodes.insert(spec.target_variable.to_string(), target);
-    let expanded = ExpandedBinding {
-        binding: next,
-        target_id: Some(target_id),
+    let preview = expanded_binding_preview(
+        binding,
+        Some((spec.target_variable, &target)),
+        None,
+        [None, None],
+        Some(target_id),
         hop,
-    };
-    ensure_expanded_binding_fits(&expanded, budget_bytes)?;
-    Ok(Some(expanded))
+    );
+    ensure_expanded_binding_fits(preview.memory_bytes, budget_bytes)?;
+    consumer
+        .push(preview, || ExpandedBinding {
+            binding: owned_expanded_binding(binding, Some((spec.target_variable, target)), None),
+            target_id: Some(target_id),
+            hop,
+        })
+        .map(|control| (control, true))
 }
 
 pub(crate) struct ZeroHopExpandContext<'a> {
@@ -305,7 +472,7 @@ pub(crate) fn stream_zero_hop_expand_binding(
     binding: &Binding,
     spec: &AdjacencyExpandSpec<'_>,
     context: ZeroHopExpandContext<'_>,
-    consumer: &mut dyn FnMut(ExpandedBinding) -> Result<ScanControl>,
+    consumer: &mut impl ExpandedBindingConsumer,
 ) -> Result<ScanControl> {
     runtime_checkpoint(context.task_context)?;
     if spec.min_hops != 0 || has_null_expand_constraint(binding, spec) {
@@ -331,19 +498,17 @@ pub(crate) fn stream_zero_hop_expand_binding(
         context.memory,
         context.task_context,
         &mut |target, hop| {
-            let Some(expanded) = expanded_node_binding(
+            let (control, target_matched) = stream_expanded_node_binding(
                 binding,
                 spec,
                 context.filters,
                 target,
                 hop,
                 context.memory.budget_bytes,
-            )?
-            else {
-                return Ok(ScanControl::Continue);
-            };
-            matched = true;
-            consumer(expanded)
+                consumer,
+            )?;
+            matched |= target_matched;
+            Ok(control)
         },
     )?;
     if control == ScanControl::Stop || matched {
@@ -358,27 +523,34 @@ pub(crate) fn stream_unmatched_expand_binding(
     binding: &Binding,
     spec: &AdjacencyExpandSpec<'_>,
     budget_bytes: usize,
-    consumer: &mut dyn FnMut(ExpandedBinding) -> Result<ScanControl>,
+    consumer: &mut impl ExpandedBindingConsumer,
 ) -> Result<ScanControl> {
     if !spec.optional {
         return Ok(ScanControl::Continue);
     }
-    let mut next = binding.clone();
-    for name in std::iter::once(spec.target_variable).chain(spec.rel_variable) {
-        if !next.values.contains_key(name)
-            && !next.nodes.contains_key(name)
-            && !next.relationships.contains_key(name)
-        {
+    let is_new = |name: &str| {
+        !binding.values.contains_key(name)
+            && !binding.nodes.contains_key(name)
+            && !binding.relationships.contains_key(name)
+    };
+    let null_variables = [
+        is_new(spec.target_variable).then_some(spec.target_variable),
+        spec.rel_variable
+            .filter(|name| *name != spec.target_variable && is_new(name)),
+    ];
+    let preview = expanded_binding_preview(binding, None, None, null_variables, None, 0);
+    ensure_expanded_binding_fits(preview.memory_bytes, budget_bytes)?;
+    consumer.push(preview, || {
+        let mut next = binding.clone();
+        for name in null_variables.into_iter().flatten() {
             set_null_node_binding(&mut next, name);
         }
-    }
-    let expanded = ExpandedBinding {
-        binding: next,
-        target_id: None,
-        hop: 0,
-    };
-    ensure_expanded_binding_fits(&expanded, budget_bytes)?;
-    consumer(expanded)
+        ExpandedBinding {
+            binding: next,
+            target_id: None,
+            hop: 0,
+        }
+    })
 }
 
 fn set_null_node_binding(binding: &mut Binding, variable: &str) {
@@ -464,11 +636,7 @@ pub(crate) fn adjacency_exists_with_memory(
     Ok(found)
 }
 
-fn ensure_expanded_binding_fits(
-    expanded: &ExpandedBinding,
-    memory_budget_bytes: usize,
-) -> Result<()> {
-    let bytes = binding_memory_bytes(&expanded.binding);
+fn ensure_expanded_binding_fits(bytes: usize, memory_budget_bytes: usize) -> Result<()> {
     if bytes > memory_budget_bytes {
         return Err(HawDBError::Execution(format!(
             "AdjacencyExpandExec result uses {bytes} bytes, exceeding blocking_operator_bytes {memory_budget_bytes}"
