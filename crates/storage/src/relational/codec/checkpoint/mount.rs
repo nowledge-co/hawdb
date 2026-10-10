@@ -20,6 +20,9 @@ use super::*;
 
 const INPUT_BYTES: usize = 64 * 1024;
 
+#[cfg(test)]
+mod tests;
+
 struct CheckpointFileInput<'a> {
     inner: FileDecodeInput,
     work: &'a CheckpointWorkContext,
@@ -27,6 +30,8 @@ struct CheckpointFileInput<'a> {
     buffer_position: usize,
     buffer_length: usize,
     consumed: usize,
+    // Release the allocation lease after its backing buffer is destroyed.
+    _buffer_memory: Option<Box<dyn hawdb_core::RuntimeMemoryPermit>>,
 }
 
 impl<'a> CheckpointFileInput<'a> {
@@ -35,7 +40,9 @@ impl<'a> CheckpointFileInput<'a> {
         work: &'a CheckpointWorkContext,
     ) -> Result<Self, RelationalError> {
         let unit = work.start_unit().map_err(work_error)?;
-        let buffer = vec![0; inner.payload_len.min(INPUT_BYTES)];
+        let length = inner.payload_len.min(INPUT_BYTES);
+        let buffer_memory = work.reserve_memory(length).map_err(work_error)?;
+        let buffer = vec![0; length];
         unit.finish();
         work.checkpoint().map_err(work_error)?;
         Ok(Self {
@@ -45,6 +52,7 @@ impl<'a> CheckpointFileInput<'a> {
             buffer_position: 0,
             buffer_length: 0,
             consumed: 0,
+            _buffer_memory: buffer_memory,
         })
     }
 

@@ -916,9 +916,13 @@ fn branch_bound(bound: &SqlBound, parameters: &[Value]) -> Result<usize> {
 }
 
 fn enforce_branch_result_budget(requested: usize, max_rows: Option<usize>) -> Result<()> {
-    if max_rows.is_some_and(|maximum| requested > maximum) {
-        return Err(HawDBError::Execution(
-            "branch SQL page exceeds the configured result row budget".to_string(),
+    if let Some(maximum) = max_rows
+        && requested > maximum
+    {
+        return Err(HawDBError::read_budget_exceeded(
+            crate::ReadBudgetResource::Rows,
+            maximum,
+            "branch SQL page exceeds the configured result row budget",
         ));
     }
     Ok(())
@@ -928,9 +932,13 @@ fn enforce_branch_payload_budget(
     output: &QueryOutput,
     max_payload_bytes: Option<usize>,
 ) -> Result<()> {
-    if max_payload_bytes.is_some_and(|maximum| output.payload_bytes() > maximum) {
-        return Err(HawDBError::Execution(
-            "branch SQL result exceeds the configured payload budget".to_string(),
+    if let Some(maximum) = max_payload_bytes
+        && output.payload_bytes() > maximum
+    {
+        return Err(HawDBError::read_budget_exceeded(
+            crate::ReadBudgetResource::PayloadBytes,
+            maximum,
+            "branch SQL result exceeds the configured payload budget",
         ));
     }
     Ok(())

@@ -124,15 +124,64 @@ impl PropertyProjectionRecord for CheckpointPropertyProjectionRecord<'_> {
 pub fn persistent_composite_property_identity(
     properties: &[String],
 ) -> Result<String, PersistentPropertyProjectionError> {
+    composite_property_identity(properties, None)
+}
+
+pub(crate) fn persistent_composite_property_identity_with_work_context(
+    properties: &[String],
+    work: &crate::background::CheckpointDecodeContext,
+) -> Result<String, PersistentPropertyProjectionError> {
+    composite_property_identity(properties, Some(work))
+}
+
+fn composite_property_identity(
+    properties: &[String],
+    work: Option<&crate::background::CheckpointDecodeContext>,
+) -> Result<String, PersistentPropertyProjectionError> {
     if properties.len() < 2 {
         return Err(PersistentPropertyProjectionError::Source(
             "persistent composite property projection requires at least two properties".to_string(),
         ));
     }
-    let mut identity = String::from(COMPOSITE_PROPERTY_IDENTITY_PREFIX);
+    let mut capacity = COMPOSITE_PROPERTY_IDENTITY_PREFIX.len();
+    for property in properties {
+        let unit = work.map(|work| work.start_unit()).transpose()?;
+        capacity = property
+            .len()
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(1))
+            .and_then(|bytes| capacity.checked_add(bytes))
+            .ok_or_else(|| {
+                PersistentPropertyProjectionError::Source(
+                    "persistent composite property identity size overflow".into(),
+                )
+            })?;
+        if let Some(unit) = unit {
+            unit.finish();
+        }
+    }
+    let mut identity = if let Some(work) = work {
+        work.string_capacity(capacity)?
+    } else {
+        String::with_capacity(capacity)
+    };
+    identity.push_str(COMPOSITE_PROPERTY_IDENTITY_PREFIX);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     for property in properties {
         identity.push(':');
-        identity.push_str(&encode_hex(property.as_bytes()));
+        for block in property.as_bytes().chunks(32 * 1024) {
+            let unit = work.map(|work| work.start_unit()).transpose()?;
+            for byte in block {
+                identity.push(HEX[(byte >> 4) as usize] as char);
+                identity.push(HEX[(byte & 15) as usize] as char);
+            }
+            if let Some(unit) = unit {
+                unit.finish();
+            }
+        }
+    }
+    if let Some(work) = work {
+        work.checkpoint()?;
     }
     Ok(identity)
 }

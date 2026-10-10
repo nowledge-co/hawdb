@@ -17,6 +17,10 @@
 use super::*;
 use crate::relational::decode_relational_checkpoint_file_with_work_context;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "graph_checkpoint/definition_memory_tests.rs"]
+mod definition_memory_tests;
+
 struct ExactRelationalOverflowCheckpoint<'a> {
     references: &'a hawdb_storage::relational::RelationalOverflowReferenceSet,
     scan: relational_row_pages::RelationalOverflowClosureScanReport,
@@ -75,12 +79,12 @@ fn push_property_projection_definition(
     definitions: &mut Vec<PersistentPropertyProjectionDefinition>,
     admission: &mut PersistentPropertyProjectionDefinitionAdmission,
     definition: PersistentPropertyProjectionDefinition,
+    work: &crate::background::CheckpointDecodeContext,
 ) -> Result<()> {
     admission
         .admit(&definition)
         .map_err(HawDBError::from_storage_error)?;
-    definitions.push(definition);
-    Ok(())
+    work.push(definitions, definition)
 }
 
 fn push_relationship_property_projection_definitions(
@@ -88,6 +92,7 @@ fn push_relationship_property_projection_definitions(
     admission: &mut PersistentPropertyProjectionDefinitionAdmission,
     rel_type: RelTypeId,
     property: &str,
+    work: &crate::background::CheckpointDecodeContext,
 ) -> Result<()> {
     for kind in [
         PersistentPropertyProjectionKind::RelationshipEquality,
@@ -98,10 +103,11 @@ fn push_relationship_property_projection_definitions(
             admission,
             PersistentPropertyProjectionDefinition {
                 label_id: LabelId(rel_type.0),
-                property: property.to_string(),
+                property: work.string(property)?,
                 kind,
                 complete: false,
             },
+            work,
         )?;
     }
     Ok(())
@@ -622,6 +628,13 @@ impl GraphStore {
                 });
             Ok::<_, HawDBError>(nodes.chain(relationships))
         }).transpose()?;
+        // This inventory outlives both the definitions passed to the builder
+        // and the temporary borrowed relationship-key tree. Admission precedes
+        // each exact string/vector capacity and each bounded tree insertion.
+        let definition_memory = crate::background::CheckpointDecodeContext {
+            work: work.clone(),
+            memory: std::cell::RefCell::default(),
+        };
         let mut property_projection_definitions = Vec::new();
         let mut property_projection_definition_admission =
             PersistentPropertyProjectionDefinitionAdmission::new(build_config.property_projection);
@@ -636,15 +649,18 @@ impl GraphStore {
                 &mut property_projection_definition_admission,
                 PersistentPropertyProjectionDefinition {
                     label_id: index.label_id,
-                    property: index.property.clone(),
+                    property: definition_memory.string(&index.property)?,
                     kind,
                     complete: false,
                 },
+                &definition_memory,
             )?;
         }
         for index in catalog.composite_property_indexes() {
-            let property = persistent_composite_property_identity(&index.properties)
-                .map_err(HawDBError::from_storage_error)?;
+            let property = crate::property_projection::persistent_composite_property_identity_with_work_context(
+                &index.properties,
+                &definition_memory,
+            ).map_err(HawDBError::from_storage_error)?;
             push_property_projection_definition(
                 &mut property_projection_definitions,
                 &mut property_projection_definition_admission,
@@ -654,34 +670,61 @@ impl GraphStore {
                     kind: PersistentPropertyProjectionKind::CompositeEquality,
                     complete: false,
                 },
+                &definition_memory,
             )?;
         }
         let mut relationship_property_definitions = BTreeSet::new();
+        // MapMemory's String plus RelTypeId payload conservatively covers this
+        // borrowed (RelTypeId, &str) key without duplicating property strings.
+        let mut relationship_definition_memory =
+            crate::projection::predicate_checkpoint::decode::MapMemory::<RelTypeId>::default();
         for (rel_type, property, _) in self.relationship_property_index.keys() {
-            if relationship_property_definitions.insert((*rel_type, property.clone())) {
+            let key = (*rel_type, property.as_str());
+            let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+            let new = !relationship_property_definitions.contains(&key);
+            if new {
+                relationship_definition_memory
+                    .before_insert(relationship_property_definitions.len(), &definition_memory)?;
+                relationship_property_definitions.insert(key);
+            }
+            unit.finish();
+            if new {
                 push_relationship_property_projection_definitions(
                     &mut property_projection_definitions,
                     &mut property_projection_definition_admission,
                     *rel_type,
                     property,
+                    &definition_memory,
                 )?;
             }
         }
         if let Some(projection) = &self.persistent_property_projection {
             for definition in &projection.manifest().definitions {
-                if matches!(
+                let key = (
+                    RelTypeId(definition.label_id.0),
+                    definition.property.as_str(),
+                );
+                let unit = work.start_unit().map_err(HawDBError::from_storage_error)?;
+                let new = matches!(
                     definition.kind,
                     PersistentPropertyProjectionKind::RelationshipEquality
                         | PersistentPropertyProjectionKind::RelationshipRange
-                ) && relationship_property_definitions.insert((
-                    RelTypeId(definition.label_id.0),
-                    definition.property.clone(),
-                )) {
+                ) && !relationship_property_definitions.contains(&key);
+                if new {
+                    relationship_definition_memory.before_insert(
+                        relationship_property_definitions.len(),
+                        &definition_memory,
+                    )?;
+                    relationship_property_definitions.insert(key);
+                }
+                unit.finish();
+                if new {
                     push_relationship_property_projection_definitions(
                         &mut property_projection_definitions,
                         &mut property_projection_definition_admission,
                         RelTypeId(definition.label_id.0),
                         &definition.property,
+                        &definition_memory,
                     )?;
                 }
             }

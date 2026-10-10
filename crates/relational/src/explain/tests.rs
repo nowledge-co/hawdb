@@ -226,7 +226,7 @@ fn explain_output_limits_accept_exact_boundary_and_refuse_truncation() {
             )
             .unwrap_err();
             assert!(
-                matches!(error, hawdb_core::HawDBError::Execution(message) if message == expected)
+                matches!(error, hawdb_core::HawDBError::ReadBudgetExceeded(cause) if cause.message == expected)
             );
         }
     }
@@ -271,7 +271,9 @@ fn output_push_preserves_utf8_and_refusal_accounting() {
     assert_eq!(bytes, 5);
     let error = push_relational_output(row.clone(), &mut output, &mut bytes, exact).unwrap_err();
     assert!(
-        matches!(error, hawdb_core::HawDBError::Execution(message) if message == "relational SQL output exceeds max_output_rows 1")
+        matches!(error, hawdb_core::HawDBError::ReadBudgetExceeded(cause)
+            if cause.resource == hawdb_core::ReadBudgetResource::Rows && cause.limit == 1
+                && cause.message == "relational SQL output exceeds max_output_rows 1")
     );
     assert_eq!(bytes, 5);
     assert_eq!(output, vec![row.clone()]);
@@ -288,7 +290,9 @@ fn output_push_preserves_utf8_and_refusal_accounting() {
     )
     .unwrap_err();
     assert!(
-        matches!(error, hawdb_core::HawDBError::Execution(message) if message == "relational SQL output exceeds max_output_payload_bytes 4")
+        matches!(error, hawdb_core::HawDBError::ReadBudgetExceeded(cause)
+            if cause.resource == hawdb_core::ReadBudgetResource::PayloadBytes && cause.limit == 4
+                && cause.message == "relational SQL output exceeds max_output_payload_bytes 4")
     );
     assert!(output.is_empty());
     assert_eq!(bytes, 5);

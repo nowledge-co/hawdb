@@ -50,6 +50,46 @@ pub(crate) fn allocation(
 }
 
 impl CheckpointDecodeContext {
+    /// Copy one schema string after admitting its exact backing capacity.
+    /// The caller keeps this inventory until the copied string is destroyed.
+    pub(crate) fn string(&self, value: &str) -> Result<String> {
+        let mut output = self
+            .string_capacity(value.len())
+            .map_err(HawDBError::from_storage_error)?;
+        let mut offset = 0;
+        while offset < value.len() {
+            let end = value.floor_char_boundary(offset.saturating_add(64 * 1024));
+            let unit = self.start_unit().map_err(HawDBError::from_storage_error)?;
+            output.push_str(&value[offset..end]);
+            offset = end;
+            unit.finish();
+        }
+        self.checkpoint().map_err(HawDBError::from_storage_error)?;
+        Ok(output)
+    }
+
+    pub(crate) fn string_capacity(
+        &self,
+        capacity: usize,
+    ) -> std::result::Result<String, CheckpointWorkError> {
+        let token = self.memory.borrow_mut().reserve(capacity, self)?;
+        let mut output = String::new();
+        output.try_reserve_exact(capacity).map_err(|error| {
+            self.record_failure(CheckpointWorkError::Allocation {
+                bytes: capacity as u64,
+                reason: error.to_string(),
+            })
+        })?;
+        if output.capacity() != capacity {
+            return Err(self.record_failure(CheckpointWorkError::Allocation {
+                bytes: capacity as u64,
+                reason: "string capacity differs from admitted capacity".into(),
+            }));
+        }
+        token.address(output.as_ptr() as usize);
+        Ok(output)
+    }
+
     pub(crate) fn push<T>(&self, values: &mut Vec<T>, value: T) -> Result<()> {
         let work = self;
         if values.len() == values.capacity() {

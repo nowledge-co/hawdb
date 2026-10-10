@@ -901,8 +901,14 @@ mod tests {
             }
             database.query_request(request.with_output_limits(limits))
         };
+        let expected = if payload {
+            (crate::ReadBudgetResource::PayloadBytes, 1)
+        } else {
+            (crate::ReadBudgetResource::Rows, 0)
+        };
         assert!(
-            matches!(result, Err(HawDBError::Execution(_))),
+            matches!(result, Err(HawDBError::ReadBudgetExceeded(cause))
+                if (cause.resource, cause.limit) == expected),
             "report bypassed its output limit: snapshot={snapshot}, analyze={analyze}, payload={payload}"
         );
     }
@@ -962,8 +968,14 @@ mod tests {
         }
         database.config.max_read_result_rows = (!payload).then_some(0);
         database.config.max_read_result_payload_bytes = payload.then_some(1);
+        let expected = if payload {
+            (crate::ReadBudgetResource::PayloadBytes, 1)
+        } else {
+            (crate::ReadBudgetResource::Rows, 0)
+        };
         assert!(
-            matches!(database.session().query(&cypher), Err(HawDBError::Execution(_))),
+            matches!(database.session().query(&cypher), Err(HawDBError::ReadBudgetExceeded(cause))
+                if (cause.resource, cause.limit) == expected),
             "session report bypassed its configured output limit: analyze={analyze}, payload={payload}"
         );
     }

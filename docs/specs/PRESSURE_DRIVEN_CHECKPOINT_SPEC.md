@@ -2326,13 +2326,33 @@ irreducible-owner permanent-denial boundary.
 This foundation does not yet replace the automatic owner's conservative
 whole-candidate admission. Before that switch, preparation must account its
 remaining allocations and retain resumable builder state at bounded resource
-denials. Known paths requiring inspection include property-projection
-definition vectors/strings and relationship-definition deduplication, relational
-checkpoint planning and final serving-reader construction. Complete CPU,
+denials. Property-projection definition vectors/strings and relationship-key
+deduplication now have allocation leases as described below. Known paths still
+requiring inspection include COW detach/growth, relational checkpoint planning
+and final serving-reader construction. Complete CPU,
 descriptor, I/O, temporary-disk, cache and cleanup ledgers and out-of-core delta
 scaling remain required. Typed preparation-denial reporting is described below;
 other owner stages still require typed denial reporting. The same synchronous
 manual API contract remains in force.
+
+Checkpoint property-index definitions now copy property strings in bounded UTF-8
+chunks after admitting exact string capacity, and grow definition arrays through
+the shared allocation inventory. Relationship-definition deduplication borrows
+source property strings and admits its BTree nodes before insertion, using the
+existing conservative node bound for the pinned Rust standard library. Ordinary
+and controlled composite-property identities share one hex grammar: size is
+checked first, controlled capacity is admitted before allocation, and encoding
+writes directly into the final string without intermediate hex strings. The
+inventory outlives the definition consumer and deduplication tree. Allocation
+rounding and standard-library tree latency remain platform assumptions.
+
+The controlled relational checkpoint file input now reserves its actual
+read-ahead buffer capacity before allocation and retains that lease until the
+buffer is destroyed. Focused regressions exercise denial before large property,
+composite-identity and input-buffer allocation, exact Unicode/wire results,
+pause without execution slots and complete charge refund. Actual negative
+controls removing each admission fail their runtime assertions; these do not
+establish complete relational reconstruction or replay/COW allocation coverage.
 
 ### Publication lock scope and duplicated descriptors
 

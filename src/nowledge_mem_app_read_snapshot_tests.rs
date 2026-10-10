@@ -412,6 +412,8 @@ fn bounded_read_snapshot_enforces_the_cumulative_row_budget() {
         .unwrap_err();
 
     assert!(error.to_string().contains("exhausted max_rows"));
+    assert!(matches!(error, crate::HawDBError::ReadBudgetExceeded(cause)
+        if cause.resource == crate::ReadBudgetResource::Rows && cause.limit == 1));
 }
 
 #[test]
@@ -447,6 +449,43 @@ fn bounded_read_snapshot_enforces_the_cumulative_payload_budget() {
         error.to_string().contains("max_output_payload_bytes 2"),
         "unexpected error: {error}"
     );
+    assert!(matches!(error, crate::HawDBError::ReadBudgetExceeded(cause)
+        if cause.resource == crate::ReadBudgetResource::PayloadBytes && cause.limit == 2));
+
+    handle
+        .with_bounded_read_snapshot(
+            NowledgeMemReadSnapshotBudget {
+                max_rows: 2,
+                max_payload_bytes: 10,
+            },
+            |snapshot| {
+                snapshot.query_cypher(
+                    "MATCH (t:Thread {id: $thread_id}) RETURN t.id AS id LIMIT 1",
+                    &BTreeMap::from([(
+                        "thread_id".to_string(),
+                        Value::String("thread-1".to_string()),
+                    )]),
+                    1,
+                )?;
+                let before_failure = snapshot.report();
+                assert_eq!(before_failure.output_payload_bytes, 10);
+                assert_eq!(before_failure.remaining_payload_bytes, 0);
+                let error = snapshot
+                    .query_sql(
+                        "SELECT content_message_id FROM thread_messages \
+                         WHERE thread_storage_id = $1 LIMIT 1",
+                        &[Value::String("thread-1".to_string())],
+                        1,
+                    )
+                    .unwrap_err();
+                assert!(error.to_string().contains("exhausted max_payload_bytes"));
+                assert!(matches!(error, crate::HawDBError::ReadBudgetExceeded(cause)
+                    if cause.resource == crate::ReadBudgetResource::PayloadBytes && cause.limit == 10));
+                assert_eq!(snapshot.report(), before_failure);
+                Ok(())
+            },
+        )
+        .unwrap();
 }
 
 #[test]

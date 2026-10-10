@@ -258,9 +258,7 @@ use hawdb_storage::{
     canonical::{CanonicalEndpointDirection, CanonicalSegmentError},
     durability::sync_parent_directory,
     pressure::available_storage_space,
-    property_projection::{
-        persistent_composite_property_identity, PersistentPropertyProjectionDefinitionAdmission,
-    },
+    property_projection::PersistentPropertyProjectionDefinitionAdmission,
     relational::{
         decode_relational_checkpoint_file_with_index_load,
         decode_relational_checkpoint_with_index_load, decode_relational_wal_batch,

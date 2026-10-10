@@ -122,6 +122,14 @@ fn output_limits_stop_before_calling_the_consumer() {
     let error = output.emit(binding("second")).unwrap_err();
 
     assert!(error.to_string().contains("max_read_result_rows 1"));
+    assert!(
+        matches!(
+            &error,
+            HawDBError::ReadBudgetExceeded(cause)
+                if cause.resource == hawdb_core::ReadBudgetResource::Rows && cause.limit == 1
+        ),
+        "row rejection lost its typed budget cause: {error}"
+    );
     assert_eq!(output.metrics().rows, 1);
     drop(output);
     assert_eq!(rows, 0);
@@ -190,6 +198,15 @@ fn payload_limit_discards_rows_deferred_across_calls() {
     assert!(error.to_string().contains(&format!(
         "max_read_result_payload_bytes {first_payload_bytes}"
     )));
+    assert!(
+        matches!(
+            &error,
+            HawDBError::ReadBudgetExceeded(cause)
+                if cause.resource == hawdb_core::ReadBudgetResource::PayloadBytes
+                    && cause.limit == first_payload_bytes
+        ),
+        "payload rejection lost its typed budget cause: {error}"
+    );
     drop(output);
     assert_eq!(rows, 0);
     assert_eq!(ledger.snapshot().used_bytes, 0);
@@ -222,6 +239,14 @@ fn payload_limit_failure_releases_transient_result_memory() {
     assert!(error
         .to_string()
         .contains("max_read_result_payload_bytes 0"));
+    assert!(
+        matches!(
+            &error,
+            HawDBError::ReadBudgetExceeded(cause)
+                if cause.resource == hawdb_core::ReadBudgetResource::PayloadBytes && cause.limit == 0
+        ),
+        "payload rejection lost its typed budget cause: {error}"
+    );
     assert_eq!(output.metrics().rows, 0);
     assert_eq!(ledger.snapshot().used_bytes, 0);
     drop(output);

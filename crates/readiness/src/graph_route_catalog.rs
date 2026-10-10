@@ -1205,6 +1205,7 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::AppendSequenceExhausted { .. }
         | HawDBError::BranchBusy { .. } => "storage",
         HawDBError::Execution(_)
+        | HawDBError::ReadBudgetExceeded(_)
         | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
         | HawDBError::GraphExpansionPayloadLimitExceeded { .. }
         | HawDBError::TransactionConflict { .. }

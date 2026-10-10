@@ -17,7 +17,7 @@
 use crate::predicate::bind_streaming_column;
 use crate::query_value::relational_ref_to_value;
 use crate::row_runtime::RelationalReadRowRef;
-use hawdb_core::{HawDBError, Result, Value};
+use hawdb_core::{HawDBError, ReadBudgetResource, Result, Value};
 use hawdb_executor::{QueryRowsBuilder, QuerySchema};
 use hawdb_sql::{Expr, ExprKind, SelectProjection};
 use hawdb_storage::relational::RelationalTableSchema;
@@ -143,9 +143,13 @@ impl BoundStreamingProjection {
             *payload_bytes =
                 payload_bytes.saturating_add(hawdb_executor::query_value_payload_bytes(&value));
             if *payload_bytes > max_payload_bytes {
-                return Err(HawDBError::Execution(format!(
+                return Err(HawDBError::read_budget_exceeded(
+                    ReadBudgetResource::PayloadBytes,
+                    max_payload_bytes,
+                    format!(
                     "relational SQL output exceeds max_output_payload_bytes {max_payload_bytes}"
-                )));
+                ),
+                ));
             }
             Ok(value)
         }));
@@ -238,8 +242,10 @@ mod tests {
 
         assert_eq!(
             error,
-            HawDBError::Execution(
-                "relational SQL output exceeds max_output_payload_bytes 1".to_string()
+            HawDBError::read_budget_exceeded(
+                ReadBudgetResource::PayloadBytes,
+                1,
+                "relational SQL output exceeds max_output_payload_bytes 1"
             )
         );
         assert_eq!(payload_bytes, 0);
