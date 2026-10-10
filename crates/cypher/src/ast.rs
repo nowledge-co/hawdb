@@ -121,14 +121,16 @@ pub struct ProjectGraph {
     pub name: String,
     pub node_labels: Vec<String>,
     pub rel_types: Vec<String>,
+    pub relationship_predicates: BTreeMap<String, PropertyPredicate>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphAlgorithm {
     pub algorithm: GraphAlgorithmKind,
     pub graph_name: String,
-    pub options: GraphAlgorithmOptions,
+    pub options: Box<GraphAlgorithmOptions>,
     pub score_column: String,
+    pub return_node_identity: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,11 +145,15 @@ pub enum GraphAlgorithmKind {
     Louvain,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GraphAlgorithmOptions {
     pub damping: Option<ValueExpression>,
     pub max_iterations: Option<ValueExpression>,
+    pub max_phases: Option<ValueExpression>,
     pub max_levels: Option<ValueExpression>,
+    pub tolerance: Option<ValueExpression>,
+    pub normalize_initial: Option<ValueExpression>,
+    pub resolution: Option<ValueExpression>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

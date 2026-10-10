@@ -13,9 +13,10 @@
 // limitations under the License.
 
 use super::authoritative::{map_constraint_read_error, AuthoritativeReadLedger};
+use super::read_context::PairedIndexReadAdmission;
 use super::{
-    RelationalIndexProbeStatistics, RelationalIndexReadSelector, RelationalIndexReadView,
-    RelationalIndexReadViewReport,
+    IndexReadAdmission, IndexReadCharge, RelationalIndexProbeStatistics,
+    RelationalIndexReadSelector, RelationalIndexReadView, RelationalIndexReadViewReport,
 };
 use crate::relational::{
     RelationalConstraintIndex, RelationalError, RelationalIndexChange,
@@ -110,9 +111,11 @@ impl RelationalTransactionIndexOverlay {
 }
 
 struct TransactionOverlayMerge<'a, F> {
+    read_admission: IndexReadAdmission<'a>,
+    error: Option<RelationalIndexShadowError>,
     overlay: BTreeMap<RelationalKey, RelationalIndexChangeKind>,
     visit: &'a mut F,
-    overlay_rows_emitted: usize,
+    rows_visited: usize,
     stopped_early: bool,
 }
 
@@ -167,11 +170,16 @@ impl<F> TransactionOverlayMerge<'_, F>
 where
     F: FnMut(&RelationalKey) -> bool,
 {
-    fn emit_overlay(&mut self, primary_key: &RelationalKey) -> bool {
-        self.overlay_rows_emitted = self
-            .overlay_rows_emitted
+    fn emit(&mut self, primary_key: &RelationalKey) -> bool {
+        if let Err(error) = self.read_admission.charge(IndexReadCharge::Row) {
+            self.error = Some(error);
+            self.stopped_early = true;
+            return false;
+        }
+        self.rows_visited = self
+            .rows_visited
             .checked_add(1)
-            .expect("reserved transaction overlay row count cannot overflow");
+            .expect("admitted transaction row count cannot overflow");
         if !(self.visit)(primary_key) {
             self.stopped_early = true;
             return false;
@@ -182,13 +190,7 @@ where
     fn visit_base(&mut self, primary_key: &RelationalKey) -> bool {
         match self.overlay.remove(primary_key) {
             Some(RelationalIndexChangeKind::Delete) => true,
-            Some(RelationalIndexChangeKind::Insert) | None => {
-                if !(self.visit)(primary_key) {
-                    self.stopped_early = true;
-                    return false;
-                }
-                true
-            }
+            Some(RelationalIndexChangeKind::Insert) | None => self.emit(primary_key),
         }
     }
 
@@ -197,7 +199,7 @@ where
             let Some((primary_key, kind)) = self.overlay.pop_first() else {
                 break;
             };
-            if kind == RelationalIndexChangeKind::Insert && !self.emit_overlay(&primary_key) {
+            if kind == RelationalIndexChangeKind::Insert && !self.emit(&primary_key) {
                 break;
             }
         }
@@ -246,6 +248,81 @@ impl RelationalTransactionIndexView {
         self.base.fresh_probe_statistics(table, index, prefix_len)
     }
 
+    /// Counts checkpoint metadata only while this index has no private changes.
+    /// Successful reads consume the same cumulative transaction ledger as row
+    /// probes, including logical charges for cache hits. An admitted failure
+    /// closes that ledger because its partial usage cannot be reported safely,
+    /// except typed descriptor refusal, which retains accrued charges for retry.
+    pub fn count_exact_postings(
+        &self,
+        table: &str,
+        index: &str,
+        key: &RelationalKey,
+        limits: RelationalIndexReadLimits,
+    ) -> Option<Result<(u64, RelationalIndexReadViewReport), RelationalIndexShadowError>> {
+        self.count_exact_postings_admitted(table, index, key, limits, IndexReadAdmission::default())
+    }
+
+    pub(super) fn exact_posting_count_view(
+        &self,
+        table: &str,
+        index: &str,
+        key: &RelationalKey,
+    ) -> Option<Result<&RelationalIndexReadView, RelationalIndexShadowError>> {
+        if self.base.is_poisoned() {
+            return Some(Err(RelationalIndexShadowError::Corrupt(
+                "relational index read view is poisoned".to_string(),
+            )));
+        }
+        if self.overlay.touches(table, index) {
+            return None;
+        }
+        self.base
+            .exact_posting_count_reader(table, index, key)
+            .map(|reader| {
+                reader?;
+                self.read_ledger
+                    .check_health()
+                    .map_err(relational_read_error)?;
+                Ok(self.base.as_ref())
+            })
+    }
+
+    pub(super) fn count_exact_postings_admitted(
+        &self,
+        table: &str,
+        index: &str,
+        key: &RelationalKey,
+        limits: RelationalIndexReadLimits,
+        outer_admission: IndexReadAdmission<'_>,
+    ) -> Option<Result<(u64, RelationalIndexReadViewReport), RelationalIndexShadowError>> {
+        self.exact_posting_count_view(table, index, key)
+            .map(|view| {
+                let view = view?;
+                let attempt = self
+                    .read_ledger
+                    .begin_native_read()
+                    .map_err(relational_read_error)?;
+                let limits = intersect_read_limits(limits, attempt.limits());
+                let observer = PairedIndexReadAdmission {
+                    local: IndexReadAdmission::new(&attempt),
+                    outer: outer_admission,
+                };
+                let result = view
+                    .count_exact_postings_with_reader(table, index, key, |reader| {
+                        reader.count_exact_postings_admitted(
+                            table,
+                            index,
+                            key,
+                            limits,
+                            IndexReadAdmission::new(&observer),
+                        )
+                    })
+                    .expect("immutable eligible checkpoint count remains available");
+                attempt.finish(result)
+            })
+    }
+
     pub fn append(&mut self, capture: RelationalIndexChangeCapture) -> Result<(), RelationalError> {
         self.overlay.append(capture)
     }
@@ -279,17 +356,45 @@ impl RelationalTransactionIndexView {
         limits: RelationalIndexReadLimits,
         visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
     ) -> Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
-        let transaction_remaining = self
+        self.visit_prefix_entries_many_admitted(
+            table,
+            index,
+            prefixes,
+            limits,
+            visit,
+            IndexReadAdmission::default(),
+        )
+    }
+
+    pub(super) fn visit_prefix_entries_many_admitted(
+        &self,
+        table: &str,
+        index: &str,
+        prefixes: &[RelationalKey],
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        outer_admission: IndexReadAdmission<'_>,
+    ) -> Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
+        let attempt = self
             .read_ledger
-            .remaining_limits()
+            .begin_native_read()
             .map_err(relational_read_error)?;
-        let limits = intersect_read_limits(limits, transaction_remaining);
-        let report =
-            self.visit_prefix_entries_many_with_overlay(table, index, prefixes, limits, visit)?;
-        self.read_ledger
-            .record(&report)
-            .map_err(relational_read_error)?;
-        Ok(report)
+        let limits = intersect_read_limits(limits, attempt.limits());
+        let observer = PairedIndexReadAdmission {
+            local: IndexReadAdmission::new(&attempt),
+            outer: outer_admission,
+        };
+        let result = self.visit_prefix_entries_many_with_overlay(
+            table,
+            index,
+            prefixes,
+            limits,
+            visit,
+            IndexReadAdmission::new(&observer),
+        );
+        attempt
+            .finish(result.map(|report| ((), report)))
+            .map(|(_, report)| report)
     }
 
     pub fn visit_range_entries(
@@ -300,16 +405,45 @@ impl RelationalTransactionIndexView {
         limits: RelationalIndexReadLimits,
         visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
     ) -> Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
-        let transaction_remaining = self
+        self.visit_range_entries_admitted(
+            table,
+            index,
+            scan,
+            limits,
+            visit,
+            IndexReadAdmission::default(),
+        )
+    }
+
+    pub(super) fn visit_range_entries_admitted(
+        &self,
+        table: &str,
+        index: &str,
+        scan: &RelationalIndexRangeScan,
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        outer_admission: IndexReadAdmission<'_>,
+    ) -> Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
+        let attempt = self
             .read_ledger
-            .remaining_limits()
+            .begin_native_read()
             .map_err(relational_read_error)?;
-        let limits = intersect_read_limits(limits, transaction_remaining);
-        let report = self.visit_range_entries_with_overlay(table, index, scan, limits, visit)?;
-        self.read_ledger
-            .record(&report)
-            .map_err(relational_read_error)?;
-        Ok(report)
+        let limits = intersect_read_limits(limits, attempt.limits());
+        let observer = PairedIndexReadAdmission {
+            local: IndexReadAdmission::new(&attempt),
+            outer: outer_admission,
+        };
+        let result = self.visit_range_entries_with_overlay(
+            table,
+            index,
+            scan,
+            limits,
+            visit,
+            IndexReadAdmission::new(&observer),
+        );
+        attempt
+            .finish(result.map(|report| ((), report)))
+            .map(|(_, report)| report)
     }
 
     fn visit_range_entries_with_overlay(
@@ -319,6 +453,7 @@ impl RelationalTransactionIndexView {
         scan: &RelationalIndexRangeScan,
         limits: RelationalIndexReadLimits,
         mut visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        read_admission: IndexReadAdmission<'_>,
     ) -> Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
         let selector = RelationalIndexReadSelector::Range(scan);
         let mut posting_states =
@@ -327,6 +462,7 @@ impl RelationalTransactionIndexView {
         let mut entries_matched = 0usize;
         let mut bytes_visited = 0usize;
         for batch in &self.overlay.batches {
+            read_admission.charge(IndexReadCharge::LiveBytes(batch.encoded_bytes))?;
             bytes_visited = bytes_visited
                 .checked_add(batch.encoded_bytes)
                 .ok_or_else(|| admission("transaction index byte accounting overflow"))?;
@@ -390,6 +526,7 @@ impl RelationalTransactionIndexView {
             ..limits
         };
         let mut merge = super::OrderedIndexEntryMerge {
+            read_admission,
             pending: overlay,
             visit: &mut visit,
             max_rows: limits.max_rows.get(),
@@ -402,8 +539,14 @@ impl RelationalTransactionIndexView {
             let mut emit_base = |index_key: &RelationalKey, primary_key: &RelationalKey| {
                 merge.visit_base(index_key, primary_key)
             };
-            self.base
-                .visit_range_entries(table, index, scan, backend_limits, &mut emit_base)?
+            self.base.visit_range_entries_admitted(
+                table,
+                index,
+                scan,
+                backend_limits,
+                &mut emit_base,
+                read_admission.without_rows(),
+            )?
         };
         if let Some(error) = merge.error.take() {
             return Err(error);
@@ -444,6 +587,7 @@ impl RelationalTransactionIndexView {
         prefixes: &[RelationalKey],
         limits: RelationalIndexReadLimits,
         mut visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        read_admission: IndexReadAdmission<'_>,
     ) -> Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
         if prefixes.is_empty() {
             return Err(admission(
@@ -462,6 +606,7 @@ impl RelationalTransactionIndexView {
         let mut entries_matched = 0usize;
         let mut bytes_visited = 0usize;
         for batch in &self.overlay.batches {
+            read_admission.charge(IndexReadCharge::LiveBytes(batch.encoded_bytes))?;
             bytes_visited = bytes_visited
                 .checked_add(batch.encoded_bytes)
                 .ok_or_else(|| admission("transaction batch index byte accounting overflow"))?;
@@ -527,6 +672,7 @@ impl RelationalTransactionIndexView {
             ..limits
         };
         let mut merge = super::OrderedIndexEntryMerge {
+            read_admission,
             pending: overlay,
             visit: &mut visit,
             max_rows: limits.max_rows.get(),
@@ -539,12 +685,13 @@ impl RelationalTransactionIndexView {
             let mut emit_base = |index_key: &RelationalKey, primary_key: &RelationalKey| {
                 merge.visit_base(index_key, primary_key)
             };
-            self.base.visit_prefix_entries_many(
+            self.base.visit_prefix_entries_many_admitted(
                 table,
                 index,
                 prefixes,
                 backend_limits,
                 &mut emit_base,
+                read_admission.without_rows(),
             )?
         };
         if let Some(error) = merge.error.take() {
@@ -586,12 +733,14 @@ impl RelationalTransactionIndexView {
         selector: RelationalIndexReadSelector<'_>,
         limits: RelationalIndexReadLimits,
         mut visit: impl FnMut(&RelationalKey) -> bool,
+        read_admission: IndexReadAdmission<'_>,
     ) -> Result<RelationalIndexReadViewReport, RelationalIndexShadowError> {
         let mut posting_states = BTreeMap::<RelationalKey, TransactionPostingState>::new();
         let mut entries_visited = 0usize;
         let mut entries_matched = 0usize;
         let mut bytes_visited = 0usize;
         for batch in &self.overlay.batches {
+            read_admission.charge(IndexReadCharge::LiveBytes(batch.encoded_bytes))?;
             bytes_visited = bytes_visited
                 .checked_add(batch.encoded_bytes)
                 .ok_or_else(|| admission("transaction index byte accounting overflow"))?;
@@ -655,28 +804,36 @@ impl RelationalTransactionIndexView {
         };
 
         let mut merge = TransactionOverlayMerge {
+            read_admission,
+            error: None,
             overlay,
             visit: &mut visit,
-            overlay_rows_emitted: 0,
+            rows_visited: 0,
             stopped_early: false,
         };
         let mut report = {
             let mut emit_base = |primary_key: &RelationalKey| merge.visit_base(primary_key);
             match selector {
-                RelationalIndexReadSelector::Exact(key) => self.base.visit_exact_postings(
-                    table,
-                    index,
-                    key,
-                    backend_limits,
-                    &mut emit_base,
-                )?,
-                RelationalIndexReadSelector::Prefix(prefix) => self.base.visit_prefix_postings(
-                    table,
-                    index,
-                    prefix,
-                    backend_limits,
-                    &mut emit_base,
-                )?,
+                RelationalIndexReadSelector::Exact(key) => {
+                    self.base.visit_exact_postings_admitted(
+                        table,
+                        index,
+                        key,
+                        backend_limits,
+                        &mut emit_base,
+                        read_admission.without_rows(),
+                    )?
+                }
+                RelationalIndexReadSelector::Prefix(prefix) => {
+                    self.base.visit_prefix_postings_admitted(
+                        table,
+                        index,
+                        prefix,
+                        backend_limits,
+                        &mut emit_base,
+                        read_admission.without_rows(),
+                    )?
+                }
                 RelationalIndexReadSelector::Range(_) => {
                     return Err(RelationalIndexShadowError::Admission(
                         "range selectors require ordered entry traversal".to_string(),
@@ -685,6 +842,9 @@ impl RelationalTransactionIndexView {
             }
         };
         merge.finish();
+        if let Some(error) = merge.error.take() {
+            return Err(error);
+        }
         report.live_batches_visited = checked_add(
             report.live_batches_visited,
             self.overlay.batches.len(),
@@ -705,11 +865,7 @@ impl RelationalTransactionIndexView {
             bytes_visited,
             "transaction index byte count",
         )?;
-        report.rows_visited = checked_add(
-            report.rows_visited,
-            merge.overlay_rows_emitted,
-            "transaction index row count",
-        )?;
+        report.rows_visited = merge.rows_visited;
         report.stopped_early |= merge.stopped_early;
         Ok(report)
     }
@@ -723,21 +879,25 @@ impl RelationalConstraintIndex for RelationalTransactionIndexView {
         key: &RelationalKey,
         visit: &mut dyn FnMut(&RelationalKey) -> bool,
     ) -> Result<(), RelationalError> {
-        let limits = self.read_ledger.remaining_limits()?;
-        let report = self
+        let attempt = self.read_ledger.begin_native_read()?;
+        let result = self
             .visit_with_overlay(
                 table,
                 index,
                 RelationalIndexReadSelector::Exact(key),
-                limits,
+                attempt.limits(),
                 visit,
+                IndexReadAdmission::new(&attempt),
             )
-            .map_err(map_constraint_read_error)?;
-        self.read_ledger.record(&report)
+            .map(|report| ((), report));
+        attempt
+            .finish(result)
+            .map(|_| ())
+            .map_err(map_constraint_read_error)
     }
 }
 
-fn intersect_read_limits(
+pub(super) fn intersect_read_limits(
     requested: RelationalIndexReadLimits,
     remaining: RelationalIndexReadLimits,
 ) -> RelationalIndexReadLimits {
@@ -764,7 +924,7 @@ fn admission(message: impl Into<String>) -> RelationalIndexShadowError {
     RelationalIndexShadowError::Admission(message.into())
 }
 
-fn relational_read_error(error: RelationalError) -> RelationalIndexShadowError {
+pub(super) fn relational_read_error(error: RelationalError) -> RelationalIndexShadowError {
     match error {
         RelationalError::FileDescriptors(error) => {
             RelationalIndexShadowError::FileDescriptors(error)
@@ -826,12 +986,14 @@ mod tests {
             true
         };
         let mut merge = TransactionOverlayMerge {
+            read_admission: IndexReadAdmission::default(),
+            error: None,
             overlay: BTreeMap::from([
                 (deleted_early.clone(), RelationalIndexChangeKind::Delete),
                 (deleted_late.clone(), RelationalIndexChangeKind::Delete),
             ]),
             visit: &mut visit,
-            overlay_rows_emitted: 0,
+            rows_visited: 0,
             stopped_early: false,
         };
 

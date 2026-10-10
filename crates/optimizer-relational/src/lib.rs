@@ -27,32 +27,38 @@ pub mod relational_sargability;
 pub use hawdb_cascades::*;
 pub use relational::{
     estimate_relational_nested_loop_join_cost, select_relational_access_path,
-    skyline_prune_relational_access_paths, RelationalAccessPathDescriptor,
+    select_relational_access_path_with_context, skyline_prune_relational_access_paths,
+    skyline_prune_relational_access_paths_with_context, RelationalAccessPathDescriptor,
     RelationalAccessPathKind, RelationalNestedLoopJoinCost,
 };
 pub use relational_join::{
-    enumerate_relational_inner_joins, RelationalInnerJoinEnumeration,
-    RelationalJoinAccessApplicability, RelationalJoinAccessPath, RelationalJoinEnumerationConfig,
-    RelationalJoinEnumerationError, RelationalJoinGraph, RelationalJoinPlan,
-    RelationalJoinPredicate, RelationalJoinPredicateId, RelationalJoinRelation, RelationalJoinStep,
+    enumerate_relational_inner_joins, enumerate_relational_inner_joins_with_cost_contexts,
+    RelationalInnerJoinEnumeration, RelationalJoinAccessApplicability, RelationalJoinAccessPath,
+    RelationalJoinEnumerationConfig, RelationalJoinEnumerationError, RelationalJoinGraph,
+    RelationalJoinPlan, RelationalJoinPredicate, RelationalJoinPredicateId, RelationalJoinRelation,
+    RelationalJoinStep,
 };
 pub use relational_join_cost::{
     estimate_relational_access_cost, estimate_relational_access_path_cost,
-    estimate_relational_join_cost, estimate_relational_probe_join_cost, RelationalJoinCardinality,
+    estimate_relational_access_path_cost_with_context, estimate_relational_join_cost,
+    estimate_relational_join_cost_with_contexts, estimate_relational_probe_join_cost,
+    RelationalAccessCostContext, RelationalJoinCardinality, RelationalJoinCostContexts,
     RelationalJoinRightInput, RelationalJoinSelectivity,
 };
 pub use relational_join_hypergraph::{
-    enumerate_relational_csg_cmp_joins, enumerate_relational_csg_cmp_joins_with_implementations,
+    enumerate_relational_csg_cmp_joins, enumerate_relational_csg_cmp_joins_with_cost_contexts,
+    enumerate_relational_csg_cmp_joins_with_implementations,
     enumerate_relational_csg_cmp_joins_with_right_input_policy, RelationalCsgCmpAlternative,
     RelationalCsgCmpEnumeration, RelationalCsgCmpJoinImplementation, RelationalCsgCmpPlan,
     RelationalCsgCmpPlanNode, RelationalCsgCmpRightInputPolicy, RelationalEquiJoinAlgorithm,
 };
 pub use relational_join_rewrite::{
     analyze_relational_join_conflicts, enumerate_relational_join_rewrites,
-    RelationalJoinConflictAnalysis, RelationalJoinConflictDescriptor, RelationalJoinConflictRule,
-    RelationalJoinOperator, RelationalJoinOperatorId, RelationalJoinOperatorKind,
-    RelationalJoinRewriteEnumeration, RelationalJoinRewriteError, RelationalJoinRewritePlan,
-    RelationalJoinRewriteProblem, RelationalJoinRewriteStep, RelationalJoinTree,
+    enumerate_relational_join_rewrites_with_cost_contexts, RelationalJoinConflictAnalysis,
+    RelationalJoinConflictDescriptor, RelationalJoinConflictRule, RelationalJoinOperator,
+    RelationalJoinOperatorId, RelationalJoinOperatorKind, RelationalJoinRewriteEnumeration,
+    RelationalJoinRewriteError, RelationalJoinRewritePlan, RelationalJoinRewriteProblem,
+    RelationalJoinRewriteStep, RelationalJoinTree,
 };
 pub use relational_planning::{
     RelationalJoinPlanningAttempt, RelationalJoinPlanningBudget, RelationalJoinPlanningCost,

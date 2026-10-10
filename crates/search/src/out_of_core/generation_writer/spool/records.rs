@@ -44,6 +44,10 @@ pub(in super::super) struct SpoolRecord {
 }
 
 impl SpoolRecord {
+    pub(in super::super) fn add_digest(&self, digest: &mut DocumentsDigest) {
+        digest.add_record(self.checksum, self.encoded_bytes);
+    }
+
     pub(in super::super) fn write_to(
         &self,
         output: &mut impl Write,
@@ -128,15 +132,15 @@ impl DocumentSource for SpoolRecord {
     }
 }
 
-struct HexReader<'a> {
-    input: RangeReader<'a>,
+struct HexReader<R> {
+    input: R,
     buffer: [u8; SPOOL_BUFFER_BYTES],
     position: usize,
     filled: usize,
     _memory: QueryMemoryLease,
 }
 
-impl HexReader<'_> {
+impl<R: Read> HexReader<R> {
     fn next(&mut self) -> io::Result<Option<u8>> {
         if self.position == self.filled {
             self.filled = self.input.read(&mut self.buffer)?;
@@ -151,7 +155,7 @@ impl HexReader<'_> {
     }
 }
 
-impl Read for HexReader<'_> {
+impl<R: Read> Read for HexReader<R> {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         for (index, slot) in output.iter_mut().enumerate() {
             let Some(high) = self.next()? else {
@@ -172,13 +176,169 @@ impl Read for HexReader<'_> {
     }
 }
 
+struct BodyRange {
+    source: Shared<SourceFile>,
+    offset: u64,
+    remaining: u64,
+}
+
+impl Read for BodyRange {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let mut range = RangeReader {
+            file: &self.source.file,
+            offset: self.offset,
+            remaining: self.remaining,
+        };
+        let count = range.read(output)?;
+        self.offset = range.offset;
+        self.remaining = range.remaining;
+        Ok(count)
+    }
+}
+
+impl SpoolRecord {
+    pub(in super::super) fn into_body(self) -> Result<(AdmittedHeader, impl Read, u64)> {
+        let scratch = self.memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
+        let remaining = self
+            .body_bytes
+            .checked_mul(2)
+            .ok_or_else(|| HawDBError::Storage("spool body extent overflow".into()))?;
+        Ok((
+            self.header,
+            HexReader {
+                input: BodyRange {
+                    source: self.source,
+                    offset: self.body_offset,
+                    remaining,
+                },
+                buffer: [0; SPOOL_BUFFER_BYTES],
+                position: 0,
+                filled: 0,
+                _memory: scratch,
+            },
+            self.body_bytes,
+        ))
+    }
+}
+
+/// One admitted header per source, with bodies retained only in private files.
+pub(in super::super) struct SpoolCursor {
+    source: Shared<SourceFile>,
+    offset: u64,
+    length: u64,
+    ordinal: usize,
+    document_count: usize,
+    max_record_bytes: u64,
+    max_metadata_fields: usize,
+    previous: Option<(String, QueryMemoryLease)>,
+    memory: BuildMemory,
+    task: RuntimeTaskContext,
+    _memory: QueryMemoryLease,
+}
+
+impl SpoolCursor {
+    pub(in super::super) fn position(&self) -> u64 {
+        self.offset
+    }
+
+    pub(in super::super) fn next(&mut self) -> Result<Option<SpoolRecord>> {
+        checkpoint(&self.task)?;
+        if self.ordinal == self.document_count {
+            if self.offset != self.length {
+                return Err(HawDBError::Storage("spool has trailing records".into()));
+            }
+            return Ok(None);
+        }
+        let input = RangeReader {
+            file: &self.source.file,
+            offset: self.offset,
+            remaining: self.length.saturating_sub(self.offset),
+        };
+        #[cfg(test)]
+        let mut input = read_evidence::track_reads(input);
+        #[cfg(not(test))]
+        let mut input = input;
+        let mut frame = [0; 16];
+        input.read_exact(&mut frame)?;
+        let length = u64::from_le_bytes(frame[..8].try_into().unwrap());
+        let checksum = u64::from_le_bytes(frame[8..].try_into().unwrap());
+        if length == 0 || length > self.max_record_bytes {
+            return Err(HawDBError::Storage("spool record exceeds admission".into()));
+        }
+        let size = usize::try_from(length)
+            .map_err(|_| HawDBError::Storage("spool record length exceeds usize".into()))?;
+        let offset = self
+            .offset
+            .checked_add(SPOOL_FRAME_HEADER_BYTES)
+            .ok_or_else(|| HawDBError::Storage("spool offset overflow".into()))?;
+        let end = offset
+            .checked_add(length)
+            .filter(|end| *end <= self.length)
+            .ok_or_else(|| {
+                HawDBError::Storage("spool record is truncated or its extent overflows".into())
+            })?;
+        let (header, body_offset, body_bytes) = decoding::read_record_admitted(
+            &mut input,
+            size,
+            checksum,
+            self.ordinal,
+            &self.memory,
+            self.max_metadata_fields,
+            &self.task,
+        )?;
+        if self
+            .previous
+            .as_ref()
+            .is_some_and(|previous| previous.0 >= header.id)
+        {
+            return Err(HawDBError::Storage(
+                "spool documents are not strictly ordered".into(),
+            ));
+        }
+        let id_memory = self.memory.retained.reserve(header.id.len())?;
+        self.previous = Some((header.id.clone(), id_memory));
+        let record_memory = self.memory.retained.reserve(size_of::<SpoolRecord>())?;
+        let body_offset = offset
+            .checked_add(body_offset)
+            .ok_or_else(|| HawDBError::Storage("spool body offset overflow".into()))?;
+        self.offset = end;
+        self.ordinal += 1;
+        Ok(Some(SpoolRecord {
+            header,
+            source: self.source.clone(),
+            offset,
+            encoded_bytes: length,
+            checksum,
+            body_offset,
+            body_bytes,
+            memory: self.memory.clone(),
+            task: self.task.clone(),
+            _memory: record_memory,
+        }))
+    }
+}
+
 impl SpoolSource<'_> {
-    pub(in super::super) fn scan_records(
+    pub(in super::super) fn range_cursor(
         &self,
+        start: u64,
+        end: u64,
+        documents: usize,
         task: &RuntimeTaskContext,
-        consumer: &mut dyn FnMut(u64, SpoolRecord) -> Result<()>,
-    ) -> Result<()> {
+    ) -> Result<SpoolCursor> {
+        let mut cursor = self.cursor(task)?;
+        if start < SPOOL_HEADER.len() as u64 || end < start || end > cursor.length {
+            return Err(HawDBError::Storage("invalid initial spool range".into()));
+        }
+        cursor.offset = start;
+        cursor.length = end;
+        cursor.document_count = documents;
+        Ok(cursor)
+    }
+
+    pub(in super::super) fn cursor(&self, task: &RuntimeTaskContext) -> Result<SpoolCursor> {
         checkpoint(task)?;
+        let cursor_memory = self.memory.spool.reserve(size_of::<SpoolCursor>())?;
         let shared_memory = self
             .memory
             .spool
@@ -186,85 +346,50 @@ impl SpoolSource<'_> {
         let file = super::super::io::GenerationIo::new(&self.memory, task)
             .native(&[self.path], || File::open(self.path))??;
         let length = file.metadata()?.len();
-        let source = Shared::new(SourceFile {
-            file,
-            _memory: shared_memory,
-        });
-        let _buffer_memory = self.memory.spool.reserve(SPOOL_BUFFER_BYTES)?;
         let input = RangeReader {
-            file: &source.file,
+            file: &file,
             offset: 0,
             remaining: length,
         };
         #[cfg(test)]
-        let input = read_evidence::track(input);
-        let mut reader = BufReader::with_capacity(SPOOL_BUFFER_BYTES, input);
+        let mut input = read_evidence::track(input);
+        #[cfg(not(test))]
+        let mut input = input;
         let mut header = [0; 8];
-        reader.read_exact(&mut header)?;
+        input.read_exact(&mut header)?;
         if &header != SPOOL_HEADER {
             return Err(HawDBError::Storage("invalid search spool header".into()));
         }
-        let mut offset = SPOOL_HEADER.len() as u64;
-        let mut previous = None::<(String, QueryMemoryLease)>;
-        for ordinal in 0..self.document_count {
-            checkpoint(task)?;
-            let mut header = [0; 16];
-            reader.read_exact(&mut header)?;
-            let length = u64::from_le_bytes(header[..8].try_into().unwrap());
-            let checksum = u64::from_le_bytes(header[8..].try_into().unwrap());
-            if length == 0 || length > self.max_record_bytes {
-                return Err(HawDBError::Storage("spool record exceeds admission".into()));
-            }
-            let size = usize::try_from(length)
-                .map_err(|_| HawDBError::Storage("spool record length exceeds usize".into()))?;
-            offset = offset
-                .checked_add(SPOOL_FRAME_HEADER_BYTES)
-                .ok_or_else(|| HawDBError::Storage("spool offset overflow".into()))?;
-            let (header, body_offset, body_bytes) = decoding::read_record_admitted(
-                &mut reader,
-                size,
-                checksum,
-                ordinal,
-                &self.memory,
-                self.max_metadata_fields,
-                task,
-            )?;
-            if previous
-                .as_ref()
-                .is_some_and(|previous| previous.0 >= header.id)
-            {
-                return Err(HawDBError::Storage(
-                    "spool documents are not strictly ordered".into(),
-                ));
-            }
-            let id_memory = self.memory.retained.reserve(header.id.len())?;
-            previous = Some((header.id.clone(), id_memory));
-            let record_memory = self
-                .memory
-                .retained
-                .reserve(size_of::<SpoolRecord>() + 2 * size_of::<usize>())?;
-            let body_offset = offset
-                .checked_add(body_offset)
-                .ok_or_else(|| HawDBError::Storage("spool body offset overflow".into()))?;
-            let record = SpoolRecord {
-                header,
-                source: source.clone(),
-                offset,
-                encoded_bytes: length,
-                checksum,
-                body_offset,
-                body_bytes,
-                memory: self.memory.clone(),
-                task: task.clone(),
-                _memory: record_memory,
-            };
-            consumer(ordinal as u64, record)?;
-            offset = offset
-                .checked_add(length)
-                .ok_or_else(|| HawDBError::Storage("spool offset overflow".into()))?;
-        }
-        if reader.read(&mut [0; 1])? != 0 {
-            return Err(HawDBError::Storage("spool has trailing records".into()));
+        Ok(SpoolCursor {
+            source: Shared::new(SourceFile {
+                file,
+                _memory: shared_memory,
+            }),
+            offset: SPOOL_HEADER.len() as u64,
+            length,
+            ordinal: 0,
+            document_count: self.document_count,
+            max_record_bytes: self.max_record_bytes,
+            max_metadata_fields: self.max_metadata_fields,
+            previous: None,
+            memory: self.memory.clone(),
+            task: task.clone(),
+            _memory: cursor_memory,
+        })
+    }
+}
+
+impl SpoolSource<'_> {
+    pub(in super::super) fn scan_records(
+        &self,
+        task: &RuntimeTaskContext,
+        consumer: &mut dyn FnMut(u64, SpoolRecord) -> Result<()>,
+    ) -> Result<()> {
+        let mut cursor = self.cursor(task)?;
+        let mut ordinal = 0u64;
+        while let Some(record) = cursor.next()? {
+            consumer(ordinal, record)?;
+            ordinal += 1;
         }
         Ok(())
     }

@@ -115,12 +115,14 @@ pub fn apply_node_visibility_predicates(
             graph_name,
             options,
             score_column,
+            return_node_identity,
             node_visibility_predicate: _,
         } => LogicalPlan::GraphAlgorithm {
             algorithm,
             graph_name,
             options,
             score_column,
+            return_node_identity,
             node_visibility_predicate: Some(predicate_for("node")),
         },
         LogicalPlan::ShortestPath {

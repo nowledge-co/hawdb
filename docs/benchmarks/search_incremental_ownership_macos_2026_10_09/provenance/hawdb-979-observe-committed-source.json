@@ -1,0 +1,10 @@
+{
+  "state": "passed",
+  "commit": "a90dc40ced8c0c527e1035d79168d9d25b9a9657",
+  "tree": "d20df60ec481037710fffd682e016fd181e811b4",
+  "files_verified": 1963,
+  "source_receipt": "/private/tmp/hawdb-979-observe-final-source.json",
+  "native_receipt": "/private/tmp/hawdb-979-observe-regressions.json",
+  "precommit_receipt": "/private/tmp/hawdb-979-observe-precommit-binding.json",
+  "verified_unix_seconds": 1791545581.960452
+}

@@ -9,5 +9,5 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-hawdb-cascades = { path = "../cascades", version = "0.4.0" }
+hawdb-cascades = { path = "../cascades", version = "0.6.0" }
 serde_json = "1"

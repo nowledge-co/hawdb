@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::estimate_relational_access_path_cost;
+use crate::{estimate_relational_access_path_cost_with_context, RelationalAccessCostContext};
 use std::collections::BTreeSet;
 
 #[cfg(test)]
@@ -92,7 +92,7 @@ impl RelationalAccessPathDescriptor {
         Ok(())
     }
 
-    fn dominates(&self, other: &Self) -> bool {
+    fn dominates(&self, other: &Self, context: RelationalAccessCostContext) -> bool {
         let access_is_superset = self.access_columns.is_superset(&other.access_columns);
         let no_worse = access_is_superset
             && self.equality_prefix_len >= other.equality_prefix_len
@@ -101,8 +101,8 @@ impl RelationalAccessPathDescriptor {
             && (self.unique_point || !other.unique_point)
             && (self.covering || !other.covering)
             && (!self.requires_row_fetch || other.requires_row_fetch)
-            && estimate_relational_access_path_cost(self).cost
-                <= estimate_relational_access_path_cost(other).cost
+            && estimate_relational_access_path_cost_with_context(self, context).cost
+                <= estimate_relational_access_path_cost_with_context(other, context).cost
             && self.estimated_rows <= other.estimated_rows;
         let strictly_better = self.access_columns != other.access_columns
             || self.equality_prefix_len > other.equality_prefix_len
@@ -124,17 +124,29 @@ impl RelationalAccessPathDescriptor {
 pub fn skyline_prune_relational_access_paths(
     candidates: impl IntoIterator<Item = RelationalAccessPathDescriptor>,
 ) -> Result<Vec<RelationalAccessPathDescriptor>, &'static str> {
+    skyline_prune_relational_access_paths_with_context(
+        candidates,
+        RelationalAccessCostContext::default(),
+    )
+}
+
+/// Computes the frontier with the same immutable relation context used for
+/// final selection. The legacy entrypoint retains descriptor-only costs.
+pub fn skyline_prune_relational_access_paths_with_context(
+    candidates: impl IntoIterator<Item = RelationalAccessPathDescriptor>,
+    context: RelationalAccessCostContext,
+) -> Result<Vec<RelationalAccessPathDescriptor>, &'static str> {
     let mut frontier = Vec::<RelationalAccessPathDescriptor>::new();
     for mut candidate in candidates {
         candidate.estimated_rows = candidate.estimated_rows.max(1);
         candidate.validate()?;
         if frontier
             .iter()
-            .any(|existing| existing.dominates(&candidate))
+            .any(|existing| existing.dominates(&candidate, context))
         {
             continue;
         }
-        frontier.retain(|existing| !candidate.dominates(existing));
+        frontier.retain(|existing| !candidate.dominates(existing, context));
         frontier.push(candidate);
     }
     frontier.sort_by(|left, right| left.name.cmp(&right.name));
@@ -144,11 +156,20 @@ pub fn skyline_prune_relational_access_paths(
 pub fn select_relational_access_path(
     candidates: impl IntoIterator<Item = RelationalAccessPathDescriptor>,
 ) -> Result<Option<RelationalAccessPathDescriptor>, &'static str> {
-    let frontier = skyline_prune_relational_access_paths(candidates)?;
+    select_relational_access_path_with_context(candidates, RelationalAccessCostContext::default())
+}
+
+/// Selects an access after context-aware skyline pruning. Candidate costs are
+/// comparable only when this context belongs to their common row source.
+pub fn select_relational_access_path_with_context(
+    candidates: impl IntoIterator<Item = RelationalAccessPathDescriptor>,
+    context: RelationalAccessCostContext,
+) -> Result<Option<RelationalAccessPathDescriptor>, &'static str> {
+    let frontier = skyline_prune_relational_access_paths_with_context(candidates, context)?;
     Ok(frontier.into_iter().min_by(|left, right| {
-        estimate_relational_access_path_cost(left)
+        estimate_relational_access_path_cost_with_context(left, context)
             .cost
-            .cmp(&estimate_relational_access_path_cost(right).cost)
+            .cmp(&estimate_relational_access_path_cost_with_context(right, context).cost)
             .then_with(|| left.estimated_rows.cmp(&right.estimated_rows))
             .then_with(|| right.unique_point.cmp(&left.unique_point))
             .then_with(|| right.equality_prefix_len.cmp(&left.equality_prefix_len))

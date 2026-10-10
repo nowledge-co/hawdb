@@ -41,8 +41,6 @@ use publication::file_len_checksum;
 use publication::{publish_generation, ActiveManifestUpdate, PublishGenerationInput};
 use rabitq::RaBitQArtifactBuilder;
 use serde::Serialize;
-#[cfg(test)]
-pub(crate) use spool::read_evidence as analyzer_read_evidence;
 pub use spool::SearchStagingCleanupReport;
 pub(in crate::out_of_core) use spool::StageDirectory;
 use spool::{SpoolSource, SPOOL_FRAME_HEADER_BYTES, SPOOL_HEADER};
@@ -60,6 +58,7 @@ mod context_memory;
 mod delta;
 mod discovery;
 mod governed;
+mod initial;
 mod io;
 mod mutations;
 mod publication;
@@ -85,6 +84,20 @@ pub use governed::{
 const STAGE_METADATA_FILE: &str = "search_projection_metadata_payloads.stage.hawdb";
 const STAGE_VECTOR_FILE: &str = "search_projection_vector_payloads.stage.hawdb";
 
+fn generation_changed(expected: u64, actual: u64) -> HawDBError {
+    if actual > expected {
+        HawDBError::TransactionConflict {
+            read_epoch: expected,
+            committed_epoch: actual,
+            key: "search projection base changed".into(),
+        }
+    } else {
+        HawDBError::StorageIntegrity(format!(
+            "search projection generation regressed: expected {expected}, got {actual}"
+        ))
+    }
+}
+
 /// Explicit admission limits and immutable identity for a streaming out-of-core build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchOutOfCoreGenerationBuildOptions {
@@ -94,6 +107,14 @@ pub struct SearchOutOfCoreGenerationBuildOptions {
     pub max_record_bytes: NonZeroU64,
     pub max_delta_operations: NonZeroUsize,
     pub max_delta_working_bytes: NonZeroU64,
+    /// Maximum documents in one new input content closure.
+    /// Compaction outputs use the separate typed compaction input policy.
+    pub max_content_documents: NonZeroUsize,
+    /// Target complete descriptor/payload/lexical/vector bytes per new input closure.
+    /// Initial and incremental input splits before one final selector publication.
+    /// An indivisible one-document owner may exceed this target; segment, record
+    /// and whole-publication admission limits remain hard ceilings.
+    pub max_content_artifact_bytes: NonZeroU64,
     pub max_segment_uncompressed_bytes: NonZeroU64,
     pub max_segment_compressed_bytes: NonZeroU64,
     pub max_generation_bytes: NonZeroU64,
@@ -128,6 +149,8 @@ impl Default for SearchOutOfCoreGenerationBuildOptions {
             max_record_bytes: NonZeroU64::new(16 * 1024 * 1024).unwrap(),
             max_delta_operations: NonZeroUsize::new(1_000_000).unwrap(),
             max_delta_working_bytes: NonZeroU64::new(1024 * 1024 * 1024).unwrap(),
+            max_content_documents: NonZeroUsize::new(8192).unwrap(),
+            max_content_artifact_bytes: NonZeroU64::new(64 * 1024 * 1024).unwrap(),
             max_segment_uncompressed_bytes: NonZeroU64::new(256 * 1024 * 1024).unwrap(),
             max_segment_compressed_bytes: NonZeroU64::new(64 * 1024 * 1024).unwrap(),
             max_generation_bytes: NonZeroU64::new(8 * 1024 * 1024 * 1024 * 1024).unwrap(),
@@ -175,10 +198,12 @@ pub struct SearchOutOfCoreGenerationBuildReport {
     pub lexical_artifact_bytes: u64,
     pub lexical_manifest_bytes: u64,
     pub rabitq_artifact_bytes: u64,
+    /// Digest of the sole new RaBitQ artifact; absent for zero or multiple artifacts.
     pub rabitq_source_digest: Option<u64>,
     pub rabitq_peak_build_working_bytes: usize,
     pub manifest_bytes: u64,
     pub generation_bytes: u64,
+    pub published_content_segments: usize,
     pub source_graph_commit_epoch: Option<u64>,
     pub embedding_dimension: Option<usize>,
     pub resident_document_count: usize,
@@ -217,6 +242,7 @@ pub struct SearchOutOfCoreGenerationWriter {
     metadata_field_bytes: u64,
     expected_active_generation: Option<u64>,
     active_manifest_update: Option<ActiveManifestUpdate>,
+    cleanup_reuse: Option<super::reuse::ValidatedArtifacts>,
     mutations: Option<delta::mutation::Prepared>,
     poisoned: bool,
     needs_chinese_analyzer: bool,
@@ -250,7 +276,7 @@ impl std::fmt::Debug for SearchOutOfCoreGenerationWriter {
 }
 
 impl SearchOutOfCoreGenerationWriter {
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(test, target_os = "linux", feature = "full-text-search"))]
     pub(in crate::out_of_core) fn memory_for_test(&self) -> BuildMemory {
         self.memory.clone()
     }
@@ -341,6 +367,16 @@ impl SearchOutOfCoreGenerationWriter {
         task_context: RuntimeTaskContext,
         memory: BuildMemory,
     ) -> Result<Self> {
+        Self::create_with_staging_root(root, None, options, task_context, memory)
+    }
+
+    fn create_with_staging_root(
+        root: impl AsRef<Path>,
+        staging_root: Option<&Path>,
+        options: context_memory::Options,
+        task_context: RuntimeTaskContext,
+        memory: BuildMemory,
+    ) -> Result<Self> {
         checkpoint(&task_context)?;
         validate_options(&options)?;
         let metadata_bytes = required_descriptor_field_names().try_fold(0, |bytes, field| {
@@ -351,7 +387,18 @@ impl SearchOutOfCoreGenerationWriter {
         let root = context_memory::OwnedPath::copy(root.as_ref(), &memory, &task_context)?;
         io::GenerationIo::new(&memory, &task_context)
             .native(&[&root], || fs::create_dir_all(&root))??;
-        let mut stage = StageDirectory::create(&root, &memory, &task_context)?;
+        let io = io::GenerationIo::new(&memory, &task_context);
+        let _project = io.native(&[&root], || {
+            hawdb_storage::file_descriptors::ProjectFileDescriptors::acquire_component(&root, true)
+        })??;
+        // Publishing files within this directory does not persist the new
+        // directory's name in its parent. Cover its installation before any
+        // generation can be acknowledged, including interrupted creations.
+        io.native(&[&root], || {
+            hawdb_storage::durability::sync_directory_ancestors(&root)
+        })??;
+        let mut stage =
+            StageDirectory::create(staging_root.unwrap_or(&root), &memory, &task_context)?;
         let disk_reservation = options
             .max_spool_bytes
             .get()
@@ -409,6 +456,7 @@ impl SearchOutOfCoreGenerationWriter {
             metadata_field_bytes,
             expected_active_generation: None,
             active_manifest_update: None,
+            cleanup_reuse: None,
             mutations: None,
             poisoned: false,
             needs_chinese_analyzer: false,
@@ -498,8 +546,8 @@ impl SearchOutOfCoreGenerationWriter {
     /// Prepares an update governed by the task until finish or drop.
     ///
     /// Uses the same operation contract as [`Self::create_with_context`],
-    /// including input conversion, strict append publication or ordered base
-    /// hydration, and retained reports.
+    /// including input conversion, strict append or target-bound mutation
+    /// publication, and retained reports.
     /// The reader's term policy, manifest budget and generation identity are
     /// captured during preparation. Later reader changes do not affect the
     /// update, and a newer active generation makes its publication fail.
@@ -625,8 +673,17 @@ impl SearchOutOfCoreGenerationWriter {
     }
 
     fn finish_with_artifacts(
+        self,
+        build: impl FnOnce(&Self, &SpoolSource, u64) -> Result<GenerationArtifacts>,
+    ) -> Result<SearchOutOfCoreGenerationBuildReport> {
+        self.finish_publication(build, None, false)
+    }
+
+    fn finish_publication(
         mut self,
         build: impl FnOnce(&Self, &SpoolSource, u64) -> Result<GenerationArtifacts>,
+        generation_override: Option<u64>,
+        private_partition: bool,
     ) -> Result<SearchOutOfCoreGenerationBuildReport> {
         checkpoint(&self.task_context)?;
         if self.poisoned {
@@ -659,12 +716,38 @@ impl SearchOutOfCoreGenerationWriter {
         if let Some(expected) = self.expected_active_generation {
             let actual = discovery::active(&self.root, &self.memory, &self.task_context)?;
             if actual != Some(expected) {
-                return Err(HawDBError::Storage(format!(
-                    "search generation update base changed before publication: expected {expected}, got {actual:?}"
-                )));
+                return Err(actual.map_or_else(
+                    || {
+                        HawDBError::StorageIntegrity(
+                            "published search generation disappeared".into(),
+                        )
+                    },
+                    |actual| generation_changed(expected, actual),
+                ));
             }
         }
 
+        let generation = generation_override.map_or_else(
+            || {
+                discovery::next(
+                    &self.root,
+                    self.max_lexical_manifest_bytes.get(),
+                    &self.memory,
+                    &self.task_context,
+                )
+            },
+            Ok,
+        )?;
+        let compacting = matches!(
+            self.active_manifest_update,
+            Some(ActiveManifestUpdate::Compact { .. })
+        );
+        if !private_partition
+            && !compacting
+            && self.document_count > self.options.max_content_documents.get()
+        {
+            return initial::finish(self, generation);
+        }
         let source = SpoolSource {
             path: &self.spool_path,
             document_count: self.document_count,
@@ -672,22 +755,42 @@ impl SearchOutOfCoreGenerationWriter {
             max_metadata_fields: self.options.max_metadata_fields.get(),
             memory: self.memory.clone(),
         };
-        let generation = discovery::next(
-            &self.root,
-            self.max_lexical_manifest_bytes.get(),
-            &self.memory,
-            &self.task_context,
-        )?;
+        let artifacts = build(&self, &source, generation)?;
+        let publishes_content = self.mutations.is_none() || self.document_count != 0;
+        if !compacting
+            && publishes_content
+            && (self.document_count > self.options.max_content_documents.get()
+                || (self.document_count > 1
+                    && artifacts.content_bytes(&self.task_context)?
+                        > self.options.max_content_artifact_bytes.get()))
+        {
+            if !private_partition && self.document_count > 1 {
+                drop(artifacts);
+                drop(source);
+                return initial::finish(self, generation);
+            }
+            return Err(HawDBError::Storage(
+                "search content exceeds the configured document or artifact limit".into(),
+            ));
+        }
         let GenerationArtifacts {
             segment: segment_output,
             lexical_artifact_name,
             lexical_artifact_bytes,
             lexical_manifest_bytes,
             rabitq,
-        } = build(&self, &source, generation)?;
+        } = artifacts;
 
         checkpoint(&self.task_context)?;
-        let cleanup = PreparedCleanup::prepare(&self.root, &self.memory, &self.task_context)?;
+        let cleanup = if private_partition {
+            None
+        } else {
+            Some(PreparedCleanup::prepare(
+                &self.root,
+                &self.memory,
+                &self.task_context,
+            )?)
+        };
         let published = publish_generation(
             PublishGenerationInput {
                 root: &self.root,
@@ -723,48 +826,60 @@ impl SearchOutOfCoreGenerationWriter {
         };
 
         #[cfg(test)]
-        crate::generation_cleanup::once::evidence::run(
-            crate::generation_cleanup::once::evidence::Point::AfterCommit,
-            &self.memory,
-        );
-        let cleanup_generations = if self.active_manifest_update.is_some() {
-            match super::published_artifact_generations(&self.root, &self.options.analyzer_lexicon)
-            {
-                Ok(Some(retained)) => SearchProjectionGenerations {
-                    lexical: Some(lexical_generation),
-                    out_of_core: Some(retained.active_generation),
-                    rabitq: retained.rabitq_generations.last().copied(),
-                    rabitq_remove_all: retained.rabitq_generations.is_empty(),
-                    retained_lexical: retained.lexical_generations,
-                    retained_out_of_core: retained.out_of_core_generations,
-                    retained_rabitq: retained.rabitq_generations,
-                    out_of_core_discovery_failed: false,
-                },
-                Ok(None) | Err(_) => SearchProjectionGenerations {
+        if private_partition {
+            crate::generation_cleanup::once::evidence::run(
+                crate::generation_cleanup::once::evidence::Point::AfterInitialPartition,
+                &self.memory,
+            );
+        } else {
+            crate::generation_cleanup::once::evidence::run(
+                crate::generation_cleanup::once::evidence::Point::AfterCommit,
+                &self.memory,
+            );
+        }
+        let cleanup = cleanup.map(|cleanup| {
+            let cleanup_generations = if self.active_manifest_update.is_some() {
+                match super::published_artifact_generations_with_reuse(
+                    &self.root,
+                    &self.options.analyzer_lexicon,
+                    self.cleanup_reuse.as_ref(),
+                ) {
+                    Ok(Some(retained)) => SearchProjectionGenerations {
+                        lexical: Some(lexical_generation),
+                        out_of_core: Some(retained.active_generation),
+                        rabitq: retained.rabitq_generations.last().copied(),
+                        rabitq_remove_all: retained.rabitq_generations.is_empty(),
+                        retained_lexical: retained.lexical_generations,
+                        retained_out_of_core: retained.out_of_core_generations,
+                        retained_rabitq: retained.rabitq_generations,
+                        out_of_core_discovery_failed: false,
+                    },
+                    Ok(None) | Err(_) => SearchProjectionGenerations {
+                        lexical: Some(lexical_generation),
+                        out_of_core: Some(generation),
+                        rabitq: rabitq.as_ref().map(|_| generation),
+                        rabitq_remove_all: false,
+                        out_of_core_discovery_failed: true,
+                        ..Default::default()
+                    },
+                }
+            } else {
+                SearchProjectionGenerations {
                     lexical: Some(lexical_generation),
                     out_of_core: Some(generation),
                     rabitq: rabitq.as_ref().map(|_| generation),
-                    rabitq_remove_all: false,
-                    out_of_core_discovery_failed: true,
+                    rabitq_remove_all: rabitq.is_none(),
+                    out_of_core_discovery_failed: false,
                     ..Default::default()
-                },
-            }
-        } else {
-            SearchProjectionGenerations {
-                lexical: Some(lexical_generation),
-                out_of_core: Some(generation),
-                rabitq: rabitq.as_ref().map(|_| generation),
-                rabitq_remove_all: rabitq.is_none(),
-                out_of_core_discovery_failed: false,
-                ..Default::default()
-            }
-        };
-        let cleanup = cleanup.run(
-            &self.root,
-            cleanup_generations,
-            self.options.cleanup_options,
-            &self.task_context,
-        );
+                }
+            };
+            cleanup.run(
+                &self.root,
+                cleanup_generations,
+                self.options.cleanup_options,
+                &self.task_context,
+            )
+        });
 
         self.mutations.take();
         self.active_manifest_update.take();
@@ -796,14 +911,16 @@ impl SearchOutOfCoreGenerationWriter {
                 .map_or(0, |artifact| artifact.peak_build_working_bytes),
             manifest_bytes: published.manifest_bytes,
             generation_bytes: published.generation_bytes,
+            published_content_segments: usize::from(published.content_published),
             source_graph_commit_epoch: self.options.source_graph_commit_epoch,
             embedding_dimension: self.embedding_dimension,
             resident_document_count: 0,
             active_manifest_published_last: true,
-            cleanup_deleted_files: cleanup.deleted_files,
-            cleanup_pending_files: cleanup.pending_files,
+            cleanup_deleted_files: cleanup.as_ref().map_or(0, |cleanup| cleanup.deleted_files),
+            cleanup_pending_files: cleanup.as_ref().map_or(0, |cleanup| cleanup.pending_files),
             cleanup_pending_stages,
-            cleanup_retry_required: cleanup.retry_required || cleanup_pending_stages != 0,
+            cleanup_retry_required: cleanup.is_some_and(|cleanup| cleanup.retry_required)
+                || cleanup_pending_stages != 0,
         })
     }
 
@@ -820,6 +937,18 @@ impl SearchOutOfCoreGenerationWriter {
         source: &SpoolSource,
         generation: u64,
         workspace: Option<&crate::analyzer_workspace::Workspace>,
+    ) -> Result<GenerationArtifacts> {
+        self.build_artifacts_with_scan(source.document_count, generation, workspace, |consume| {
+            source.scan_records(&self.task_context, consume)
+        })
+    }
+
+    fn build_artifacts_with_scan(
+        &self,
+        document_count: usize,
+        generation: u64,
+        workspace: Option<&crate::analyzer_workspace::Workspace>,
+        scan: impl FnOnce(&mut dyn FnMut(u64, spool::SpoolRecord) -> Result<()>) -> Result<()>,
     ) -> Result<GenerationArtifacts> {
         let mut segments = SegmentArtifactBuilder::new_with_context(
             &self.stage.path,
@@ -852,14 +981,14 @@ impl SearchOutOfCoreGenerationWriter {
                 lexical_analyzer_digest(&self.options.analyzer_lexicon),
                 self.documents_digest.finish(),
                 |consume| {
-                    source.scan_records(&self.task_context, &mut |ordinal, document| {
+                    scan(&mut |ordinal, document| {
                         consume(ordinal, &document)?;
                         vectors.push_embedding(document.header.embedding.as_deref())?;
                         segments.push_record(ordinal, document)
                     })?;
                     // Drop both writers' buffers before lexical external merge.
                     // All artifacts remain private to the stage until publication.
-                    completed = Some((segments.finish(source.document_count)?, vectors.finish()?));
+                    completed = Some((segments.finish(document_count)?, vectors.finish()?));
                     Ok(())
                 },
                 &self.options.analyzer_lexicon,
@@ -1062,6 +1191,32 @@ struct GenerationArtifacts {
     lexical_artifact_bytes: u64,
     lexical_manifest_bytes: u64,
     rabitq: Option<RaBitQGenerationArtifact>,
+}
+
+impl GenerationArtifacts {
+    fn content_bytes(&self, task: &RuntimeTaskContext) -> Result<u64> {
+        let layout = crate::build_control::json::prepare(
+            &self.segment.layout,
+            u64::MAX,
+            Some(task),
+            "search out-of-core layout",
+        )?;
+        [
+            self.segment.descriptor_bytes,
+            self.segment.document_payload_bytes,
+            self.segment.metadata_payload_bytes,
+            self.segment.vector_payload_bytes,
+            layout.len() as u64,
+            self.lexical_artifact_bytes,
+            self.lexical_manifest_bytes,
+            self.rabitq
+                .as_ref()
+                .map_or(0, |artifact| artifact.artifact_bytes),
+        ]
+        .into_iter()
+        .try_fold(0_u64, |total, bytes| total.checked_add(bytes))
+        .ok_or_else(|| HawDBError::Storage("search content byte count overflows".into()))
+    }
 }
 
 #[derive(Debug)]

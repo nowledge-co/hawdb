@@ -25,7 +25,7 @@ rust_shared_library(
         ],
         "//conditions:default": [],
     }),
-    version = "0.4.0",
+    version = "0.6.0",
     deps = [
         "//:hawdb",
         "@python_crates//:pyo3",
@@ -62,8 +62,8 @@ alias(
 
 py_library(
     name = "hawdb",
-    srcs = ["python/hawdb/__init__.py"],
-    data = [":extension"] + glob(["python/hawdb/*.pyi"]),
+    srcs = glob(["python/hawdb/*.py"]),
+    data = [":extension"] + glob(["python/hawdb/*.pyi", "python/hawdb/py.typed"]),
     imports = ["python"],
 )
 
@@ -75,6 +75,24 @@ py_test(
     main = "tests/pytest_main.py",
     deps = [
         ":hawdb",
+        requirement("pytest"),
+    ],
+)
+
+# The default target above runs without Pydantic, so it also proves the extra is
+# optional; this one installs the extra and runs its coverage.
+py_test(
+    name = "hawdb_python_pydantic_tests",
+    size = "small",
+    srcs = [
+        "tests/conftest.py",
+        "tests/pytest_main.py",
+    ] + glob(["tests/test_pydantic*.py"]),
+    legacy_create_init = False,
+    main = "tests/pytest_main.py",
+    deps = [
+        ":hawdb",
+        requirement("pydantic"),
         requirement("pytest"),
     ],
 )

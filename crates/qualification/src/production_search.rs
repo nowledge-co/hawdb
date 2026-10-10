@@ -1299,6 +1299,7 @@ mod tests {
             .iter()
             .all(|evidence| evidence.exact_topk_score_parity));
         assert!(report.lifecycle.incremental_upsert_delete);
+        assert!(report.lifecycle.bounded_generation_update);
         assert!(report.lifecycle.checkpoint_reopen);
         assert!(report.lifecycle.stale_generation);
         assert!(report.lifecycle.corrupt_artifact_rejected);

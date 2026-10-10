@@ -1,3 +1,11 @@
+startup --host_jvm_args=-Xmx2g
+startup --unlimit_coredumps
+
+build --announce_rc
+
+# Rust test binaries also run cases in parallel; bound concurrent local binaries.
+test --local_test_jobs=HOST_CPUS*0.5
+
 # Keep Java-backed rules independent of the host JDK and JAVA_HOME.
 build --java_runtime_version=remotejdk_21
 build --tool_java_runtime_version=remotejdk_21

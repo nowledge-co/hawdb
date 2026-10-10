@@ -29,6 +29,7 @@ use super::{
     RelationalIndexGenerationIdentity, RelationalIndexReadLimits, RelationalIndexReadReport,
     RelationalIndexShadowConfig, RelationalIndexShadowError, RelationalIndexShadowReader,
 };
+use super::{IndexReadAdmission, IndexReadCharge};
 use crate::file_io::{self as fs, File};
 use crate::{
     cache::{
@@ -39,7 +40,7 @@ use crate::{
 };
 use hawdb_integrity::{IntegrityDigest, IntegrityHasher, Sha256Digest, SHA256_BYTES};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1126,7 +1127,26 @@ impl RelationalIndexRecoveryReader {
         limits: RelationalIndexReadLimits,
         visit: impl FnMut(&RelationalKey) -> bool,
     ) -> Result<RelationalIndexRecoveryReadReport, RelationalIndexShadowError> {
-        self.visit_merged_exact(table, index, key, limits, visit)
+        self.visit_exact_postings_admitted(
+            table,
+            index,
+            key,
+            limits,
+            visit,
+            IndexReadAdmission::default(),
+        )
+    }
+
+    pub(crate) fn visit_exact_postings_admitted(
+        &self,
+        table: &str,
+        index: &str,
+        key: &RelationalKey,
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey) -> bool,
+        read_admission: IndexReadAdmission<'_>,
+    ) -> Result<RelationalIndexRecoveryReadReport, RelationalIndexShadowError> {
+        self.visit_merged_exact(table, index, key, limits, visit, read_admission)
     }
 
     pub fn visit_prefix_postings(
@@ -1135,11 +1155,35 @@ impl RelationalIndexRecoveryReader {
         index: &str,
         prefix: &RelationalKey,
         limits: RelationalIndexReadLimits,
-        mut visit: impl FnMut(&RelationalKey) -> bool,
+        visit: impl FnMut(&RelationalKey) -> bool,
     ) -> Result<RelationalIndexRecoveryReadReport, RelationalIndexShadowError> {
-        self.visit_prefix_entries(table, index, prefix, limits, |_, primary_key| {
-            visit(primary_key)
-        })
+        self.visit_prefix_postings_admitted(
+            table,
+            index,
+            prefix,
+            limits,
+            visit,
+            IndexReadAdmission::default(),
+        )
+    }
+
+    pub(crate) fn visit_prefix_postings_admitted(
+        &self,
+        table: &str,
+        index: &str,
+        prefix: &RelationalKey,
+        limits: RelationalIndexReadLimits,
+        mut visit: impl FnMut(&RelationalKey) -> bool,
+        read_admission: IndexReadAdmission<'_>,
+    ) -> Result<RelationalIndexRecoveryReadReport, RelationalIndexShadowError> {
+        self.visit_prefix_entries_admitted(
+            table,
+            index,
+            prefix,
+            limits,
+            |_, primary_key| visit(primary_key),
+            read_admission,
+        )
     }
 
     pub fn visit_prefix_entries(
@@ -1150,7 +1194,26 @@ impl RelationalIndexRecoveryReader {
         limits: RelationalIndexReadLimits,
         visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
     ) -> Result<RelationalIndexRecoveryReadReport, RelationalIndexShadowError> {
-        self.visit_range_entries(
+        self.visit_prefix_entries_admitted(
+            table,
+            index,
+            prefix,
+            limits,
+            visit,
+            IndexReadAdmission::default(),
+        )
+    }
+
+    pub(crate) fn visit_prefix_entries_admitted(
+        &self,
+        table: &str,
+        index: &str,
+        prefix: &RelationalKey,
+        limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        read_admission: IndexReadAdmission<'_>,
+    ) -> Result<RelationalIndexRecoveryReadReport, RelationalIndexShadowError> {
+        self.visit_range_entries_admitted(
             table,
             index,
             &RelationalIndexRangeScan {
@@ -1160,6 +1223,7 @@ impl RelationalIndexRecoveryReader {
             },
             limits,
             visit,
+            read_admission,
         )
     }
 
@@ -1171,7 +1235,26 @@ impl RelationalIndexRecoveryReader {
         index: &str,
         prefixes: &[RelationalKey],
         limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+    ) -> Result<RelationalIndexRecoveryReadReport, RelationalIndexShadowError> {
+        self.visit_prefix_entries_many_admitted(
+            table,
+            index,
+            prefixes,
+            limits,
+            visit,
+            IndexReadAdmission::default(),
+        )
+    }
+
+    pub(crate) fn visit_prefix_entries_many_admitted(
+        &self,
+        table: &str,
+        index: &str,
+        prefixes: &[RelationalKey],
+        limits: RelationalIndexReadLimits,
         mut visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        read_admission: IndexReadAdmission<'_>,
     ) -> Result<RelationalIndexRecoveryReadReport, RelationalIndexShadowError> {
         let mut encoded_prefixes = BTreeSet::new();
         let mut prefix_width = None;
@@ -1240,6 +1323,7 @@ impl RelationalIndexRecoveryReader {
             }
             let encoded_len = usize::try_from(descriptor.encoded_len)
                 .map_err(|_| corrupt("recovery delta encoded length overflows usize"))?;
+            read_admission.preflight_charge(IndexReadCharge::Page(encoded_len))?;
             let total_bytes = report
                 .delta_bytes_read
                 .checked_add(encoded_len)
@@ -1254,33 +1338,41 @@ impl RelationalIndexRecoveryReader {
                 .max_file_bytes
                 .checked_sub(report.delta_file_bytes_read)
                 .ok_or_else(|| admission("recovery batch file-byte counter exceeds its limit"))?;
-            let page_read = self.visit_page(descriptor, remaining_file_bytes, |entry| {
-                report.delta_entries_visited = report
-                    .delta_entries_visited
-                    .checked_add(1)
-                    .ok_or_else(|| admission("recovery batch delta entry counter overflow"))?;
-                if entry.key.table != table
-                    || entry.key.index != index
-                    || !encoded_prefixes
-                        .iter()
-                        .any(|prefix| entry.key.index_key.starts_with(prefix))
-                {
-                    return Ok(());
-                }
-                let index_key = super::demand_read::decode_relational_key(&entry.key.index_key)
-                    .inspect_err(|_| self.poison())?;
-                let primary_key = super::demand_read::decode_relational_key(&entry.key.primary_key)
-                    .inspect_err(|_| self.poison())?;
-                pending.insert((index_key, primary_key), entry.value.kind);
-                if pending.len() >= limits.max_rows.get() {
-                    return Err(admission(format!(
+            read_admission.charge(IndexReadCharge::Page(encoded_len))?;
+            let remaining_file_bytes = read_admission.file_budget(remaining_file_bytes)?;
+            let page_read = self.visit_page(
+                descriptor,
+                remaining_file_bytes,
+                |entry| {
+                    report.delta_entries_visited = report
+                        .delta_entries_visited
+                        .checked_add(1)
+                        .ok_or_else(|| admission("recovery batch delta entry counter overflow"))?;
+                    if entry.key.table != table
+                        || entry.key.index != index
+                        || !encoded_prefixes
+                            .iter()
+                            .any(|prefix| entry.key.index_key.starts_with(prefix))
+                    {
+                        return Ok(());
+                    }
+                    let index_key = super::demand_read::decode_relational_key(&entry.key.index_key)
+                        .inspect_err(|_| self.poison())?;
+                    let primary_key =
+                        super::demand_read::decode_relational_key(&entry.key.primary_key)
+                            .inspect_err(|_| self.poison())?;
+                    pending.insert((index_key, primary_key), entry.value.kind);
+                    if pending.len() >= limits.max_rows.get() {
+                        return Err(admission(format!(
                         "recovery batch ordered merge needs {} entries, exhausting row limit {}",
                         pending.len(),
                         limits.max_rows
                     )));
-                }
-                Ok(())
-            })?;
+                    }
+                    Ok(())
+                },
+                read_admission,
+            )?;
             report.delta_pages_read += 1;
             report.delta_bytes_read += encoded_len;
             report.delta_cache_hits += usize::from(page_read.cache_hit);
@@ -1335,12 +1427,13 @@ impl RelationalIndexRecoveryReader {
             error: None,
             direction: RelationalIndexScanDirection::Forward,
         };
-        report.base = self.base.visit_prefix_entries_many(
+        report.base = self.base.visit_prefix_entries_many_admitted(
             table,
             index,
             prefixes,
             base_limits,
             |_, index_key, primary_key| merge.visit_base(index_key, primary_key),
+            read_admission,
         )?;
         if let Some(error) = merge.error.take() {
             return Err(error);
@@ -1360,7 +1453,26 @@ impl RelationalIndexRecoveryReader {
         index: &str,
         scan: &RelationalIndexRangeScan,
         limits: RelationalIndexReadLimits,
+        visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+    ) -> Result<RelationalIndexRecoveryReadReport, RelationalIndexShadowError> {
+        self.visit_range_entries_admitted(
+            table,
+            index,
+            scan,
+            limits,
+            visit,
+            IndexReadAdmission::default(),
+        )
+    }
+
+    pub(crate) fn visit_range_entries_admitted(
+        &self,
+        table: &str,
+        index: &str,
+        scan: &RelationalIndexRangeScan,
+        limits: RelationalIndexReadLimits,
         mut visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        read_admission: IndexReadAdmission<'_>,
     ) -> Result<RelationalIndexRecoveryReadReport, RelationalIndexShadowError> {
         let encoded_prefix = encode_relational_key(&scan.prefix)?;
         let encoded_bound = scan
@@ -1410,6 +1522,7 @@ impl RelationalIndexRecoveryReader {
             }
             let encoded_len = usize::try_from(descriptor.encoded_len)
                 .map_err(|_| corrupt("recovery delta encoded length overflows usize"))?;
+            read_admission.preflight_charge(IndexReadCharge::Page(encoded_len))?;
             let total_bytes = report
                 .delta_bytes_read
                 .checked_add(encoded_len)
@@ -1424,37 +1537,49 @@ impl RelationalIndexRecoveryReader {
                 .max_file_bytes
                 .checked_sub(report.delta_file_bytes_read)
                 .ok_or_else(|| admission("recovery delta file-byte counter exceeds its limit"))?;
-            let page_read = self.visit_page(descriptor, remaining_file_bytes, |entry| {
-                report.delta_entries_visited = report
-                    .delta_entries_visited
-                    .checked_add(1)
-                    .ok_or_else(|| admission("recovery delta entry counter overflow"))?;
-                if entry.key.table != table
-                    || entry.key.index != index
-                    || !entry.key.index_key.starts_with(&encoded_prefix)
-                    || encoded_bound
-                        .as_ref()
-                        .is_some_and(|bound| match scan.direction {
-                            RelationalIndexScanDirection::Forward => entry.key.index_key <= *bound,
-                            RelationalIndexScanDirection::Backward => entry.key.index_key >= *bound,
-                        })
-                {
-                    return Ok(());
-                }
-                let index_key = super::demand_read::decode_relational_key(&entry.key.index_key)
-                    .inspect_err(|_| self.poison())?;
-                let primary_key = super::demand_read::decode_relational_key(&entry.key.primary_key)
-                    .inspect_err(|_| self.poison())?;
-                pending.insert((index_key, primary_key), entry.value.kind);
-                if pending.len() >= limits.max_rows.get() {
-                    return Err(admission(format!(
-                        "recovery ordered merge needs {} entries, exhausting row limit {}",
-                        pending.len(),
-                        limits.max_rows
-                    )));
-                }
-                Ok(())
-            })?;
+            read_admission.charge(IndexReadCharge::Page(encoded_len))?;
+            let remaining_file_bytes = read_admission.file_budget(remaining_file_bytes)?;
+            let page_read = self.visit_page(
+                descriptor,
+                remaining_file_bytes,
+                |entry| {
+                    report.delta_entries_visited = report
+                        .delta_entries_visited
+                        .checked_add(1)
+                        .ok_or_else(|| admission("recovery delta entry counter overflow"))?;
+                    if entry.key.table != table
+                        || entry.key.index != index
+                        || !entry.key.index_key.starts_with(&encoded_prefix)
+                        || encoded_bound
+                            .as_ref()
+                            .is_some_and(|bound| match scan.direction {
+                                RelationalIndexScanDirection::Forward => {
+                                    entry.key.index_key <= *bound
+                                }
+                                RelationalIndexScanDirection::Backward => {
+                                    entry.key.index_key >= *bound
+                                }
+                            })
+                    {
+                        return Ok(());
+                    }
+                    let index_key = super::demand_read::decode_relational_key(&entry.key.index_key)
+                        .inspect_err(|_| self.poison())?;
+                    let primary_key =
+                        super::demand_read::decode_relational_key(&entry.key.primary_key)
+                            .inspect_err(|_| self.poison())?;
+                    pending.insert((index_key, primary_key), entry.value.kind);
+                    if pending.len() >= limits.max_rows.get() {
+                        return Err(admission(format!(
+                            "recovery ordered merge needs {} entries, exhausting row limit {}",
+                            pending.len(),
+                            limits.max_rows
+                        )));
+                    }
+                    Ok(())
+                },
+                read_admission,
+            )?;
             report.delta_pages_read += 1;
             report.delta_bytes_read += encoded_len;
             report.delta_cache_hits += usize::from(page_read.cache_hit);
@@ -1509,12 +1634,13 @@ impl RelationalIndexRecoveryReader {
             error: None,
             direction: scan.direction,
         };
-        report.base = self.base.visit_range_entries(
+        report.base = self.base.visit_range_entries_admitted(
             table,
             index,
             scan,
             base_limits,
             |index_key, primary_key| merge.visit_base(index_key, primary_key),
+            read_admission,
         )?;
         if let Some(error) = merge.error.take() {
             return Err(error);
@@ -1535,6 +1661,7 @@ impl RelationalIndexRecoveryReader {
         key: &RelationalKey,
         limits: RelationalIndexReadLimits,
         mut visit: impl FnMut(&RelationalKey) -> bool,
+        read_admission: IndexReadAdmission<'_>,
     ) -> Result<RelationalIndexRecoveryReadReport, RelationalIndexShadowError> {
         if self.is_poisoned() {
             return Err(RelationalIndexShadowError::Corrupt(
@@ -1546,9 +1673,14 @@ impl RelationalIndexRecoveryReader {
             rows.insert(key.clone());
             true
         };
-        let base = self
-            .base
-            .visit_exact_postings(table, index, key, limits, &mut collect)?;
+        let base = self.base.visit_exact_postings_admitted(
+            table,
+            index,
+            key,
+            limits,
+            &mut collect,
+            read_admission,
+        )?;
         let selector_key = encode_relational_key(key)?;
         let mut report = RelationalIndexRecoveryReadReport {
             base,
@@ -1585,6 +1717,7 @@ impl RelationalIndexRecoveryReader {
             }
             let encoded_len = usize::try_from(descriptor.encoded_len)
                 .map_err(|_| corrupt("recovery delta encoded length overflows usize"))?;
+            read_admission.preflight_charge(IndexReadCharge::Page(encoded_len))?;
             let total_bytes = report
                 .base
                 .bytes_read
@@ -1606,35 +1739,43 @@ impl RelationalIndexRecoveryReader {
                 .max_file_bytes
                 .checked_sub(file_bytes_read)
                 .ok_or_else(|| admission("recovery file byte counter exceeds its limit"))?;
-            let page_read = self.visit_page(descriptor, remaining_file_bytes, |entry| {
-                report.delta_entries_visited = report
-                    .delta_entries_visited
-                    .checked_add(1)
-                    .ok_or_else(|| admission("recovery delta entry counter overflow"))?;
-                if entry.key.table != table
-                    || entry.key.index != index
-                    || entry.key.index_key != selector_key
-                {
-                    return Ok(());
-                }
-                let primary_key = super::demand_read::decode_relational_key(&entry.key.primary_key)
-                    .inspect_err(|_| self.poison())?;
-                match entry.value.kind {
-                    RelationalIndexChangeKind::Delete => {
-                        rows.remove(&primary_key);
+            read_admission.charge(IndexReadCharge::Page(encoded_len))?;
+            let remaining_file_bytes = read_admission.file_budget(remaining_file_bytes)?;
+            let page_read = self.visit_page(
+                descriptor,
+                remaining_file_bytes,
+                |entry| {
+                    report.delta_entries_visited = report
+                        .delta_entries_visited
+                        .checked_add(1)
+                        .ok_or_else(|| admission("recovery delta entry counter overflow"))?;
+                    if entry.key.table != table
+                        || entry.key.index != index
+                        || entry.key.index_key != selector_key
+                    {
+                        return Ok(());
                     }
-                    RelationalIndexChangeKind::Insert => {
-                        rows.insert(primary_key);
+                    let primary_key =
+                        super::demand_read::decode_relational_key(&entry.key.primary_key)
+                            .inspect_err(|_| self.poison())?;
+                    match entry.value.kind {
+                        RelationalIndexChangeKind::Delete => {
+                            rows.remove(&primary_key);
+                        }
+                        RelationalIndexChangeKind::Insert => {
+                            rows.insert(primary_key);
+                        }
                     }
-                }
-                if rows.len() > limits.max_rows.get() {
-                    return Err(admission(format!(
-                        "recovery index lookup exceeds row limit {}",
-                        limits.max_rows
-                    )));
-                }
-                Ok(())
-            })?;
+                    if rows.len() > limits.max_rows.get() {
+                        return Err(admission(format!(
+                            "recovery index lookup exceeds row limit {}",
+                            limits.max_rows
+                        )));
+                    }
+                    Ok(())
+                },
+                read_admission,
+            )?;
             report.delta_pages_read += 1;
             report.delta_bytes_read += encoded_len;
             report.delta_cache_hits += usize::from(page_read.cache_hit);
@@ -1661,6 +1802,7 @@ impl RelationalIndexRecoveryReader {
         descriptor: &DeltaPageDescriptor,
         max_file_bytes: usize,
         visit: impl FnMut(DeltaEntry) -> Result<(), RelationalIndexShadowError>,
+        read_admission: IndexReadAdmission<'_>,
     ) -> Result<RecoveryDeltaPageRead, RelationalIndexShadowError> {
         let cache_key = SegmentCacheKey {
             store_id: self.store_id,
@@ -1705,17 +1847,19 @@ impl RelationalIndexRecoveryReader {
                 self.manifest.delta_generation,
                 descriptor.ordinal,
             ));
-        let result = read_bounded_file(
-            &path,
-            self.config.max_dirty_bytes.get() + DELTA_PAGE_HEADER_BYTES,
-            "relational index recovery delta page",
-        )
+        let result = File::open(&path)
+        .map_err(|error| {
+            RelationalIndexShadowError::from_io("open relational index recovery delta page", error)
+        })
+        .and_then(|mut file| {
+            read_recovery_delta_payload(
+                &mut file,
+                encoded_len,
+                |file| file.metadata().map(|metadata| metadata.len()),
+                read_admission,
+            )
+        })
         .and_then(|encoded| {
-            if encoded.len() as u64 != descriptor.encoded_len {
-                return Err(corrupt(
-                    "recovery delta page length disagrees with manifest",
-                ));
-            }
             let digest = digest_encoded_delta_page(&encoded)?;
             if digest != descriptor.digest {
                 return Err(corrupt(
@@ -1766,6 +1910,45 @@ impl RelationalIndexRecoveryReader {
     fn poison(&self) {
         self.poisoned.store(true, Ordering::Release);
     }
+}
+
+// The manifest length has passed the bounded read envelope. Validate the opened
+// handle, then charge the owner before allocation or payload I/O. Never read an
+// extra byte to detect growth: length drift must stay within that allowance.
+fn read_recovery_delta_payload<R: Read>(
+    file: &mut R,
+    encoded_len: usize,
+    mut file_len: impl FnMut(&R) -> std::io::Result<u64>,
+    read_admission: IndexReadAdmission<'_>,
+) -> Result<Vec<u8>, RelationalIndexShadowError> {
+    let expected_len = u64::try_from(encoded_len)
+        .map_err(|_| admission("recovery delta encoded length does not fit u64"))?;
+    let observed_len = file_len(file).map_err(|error| {
+        RelationalIndexShadowError::from_io("inspect relational index recovery delta page", error)
+    })?;
+    if observed_len != expected_len {
+        return Err(corrupt(
+            "recovery delta page length disagrees with manifest",
+        ));
+    }
+    read_admission.charge(IndexReadCharge::FileBytes(encoded_len))?;
+    let mut encoded = vec![0; encoded_len];
+    file.read_exact(&mut encoded).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::UnexpectedEof {
+            corrupt("recovery delta page was truncated during payload read")
+        } else {
+            RelationalIndexShadowError::from_io("read relational index recovery delta page", error)
+        }
+    })?;
+    let observed_len = file_len(file).map_err(|error| {
+        RelationalIndexShadowError::from_io("inspect relational index recovery delta page", error)
+    })?;
+    if observed_len != expected_len {
+        return Err(corrupt(
+            "recovery delta page length changed during payload read",
+        ));
+    }
+    Ok(encoded)
 }
 
 fn encoded_prefix_upper_bound(prefix: &[u8]) -> Option<Vec<u8>> {
@@ -2184,6 +2367,9 @@ fn should_poison(error: &RelationalIndexShadowError) -> bool {
         RelationalIndexShadowError::Corrupt(_) | RelationalIndexShadowError::Durability(_)
     )
 }
+
+#[cfg(test)]
+mod payload_tests;
 
 #[cfg(test)]
 mod tests {

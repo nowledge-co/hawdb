@@ -142,12 +142,14 @@ pub enum LogicalPlan {
         name: String,
         node_labels: Vec<String>,
         rel_types: Vec<String>,
+        relationship_predicates: BTreeMap<String, Predicate>,
     },
     GraphAlgorithm {
         algorithm: GraphAlgorithmKind,
         graph_name: String,
         options: GraphAlgorithmOptions,
         score_column: String,
+        return_node_identity: bool,
         node_visibility_predicate: Option<Predicate>,
     },
     VectorSeed {
@@ -428,11 +430,15 @@ pub enum GraphAlgorithmKind {
     Louvain,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct GraphAlgorithmOptions {
     pub damping: Option<f64>,
     pub max_iterations: Option<usize>,
+    pub max_phases: Option<usize>,
     pub max_levels: Option<usize>,
+    pub tolerance: Option<f64>,
+    pub normalize_initial: Option<bool>,
+    pub resolution: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

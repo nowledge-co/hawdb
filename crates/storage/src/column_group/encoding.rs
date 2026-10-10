@@ -235,7 +235,7 @@ fn finish_chunk(
     validate_writable_chunk_body_len(body.len())?;
     if compress
         && body.len() >= MIN_COMPRESS_BYTES
-        && let Ok(packed) = zstd::stream::encode_all(body.as_slice(), ZSTD_LEVEL)
+        && let Ok(packed) = crate::compression::encode_all(body.as_slice(), ZSTD_LEVEL)
         && packed.len() < body.len()
     {
         return Ok(EncodedChunk {
@@ -417,7 +417,7 @@ pub fn decode_byte_chunk(
 }
 
 fn decompress_body(bytes: &[u8]) -> Result<Vec<u8>, ColumnGroupError> {
-    let decoder = zstd::stream::read::Decoder::new(bytes)
+    let decoder = crate::compression::Decoder::new(bytes)
         .map_err(|error| corrupt(format!("chunk zstd stream is invalid: {error}")))?;
     let mut body = Vec::new();
     let read = decoder

@@ -20,6 +20,27 @@ _SEARCH_DEFAULT_FEATURES = [
     "vector-search",
 ]
 
+# Share exact feature sets between the unit and public integration owners.
+_SEARCH_TEST_PROFILES = {
+    "default": (_SEARCH_DEFAULT_FEATURES, ":hawdb_search"),
+    "acl": (_SEARCH_DEFAULT_FEATURES + ["acl"], ":hawdb_search_acl"),
+    "minimal": ([], ":hawdb_search_minimal"),
+    "text_only": (["full-text-search"], ":hawdb_search_graph_text"),
+    "vector_only": (["vector-search"], ":hawdb_search_lifecycle_vector_only"),
+    "background_only": (["background-maintenance"], ":hawdb_search_lifecycle_background_only"),
+    "text_vector": (["full-text-search", "vector-search"], ":hawdb_search_lifecycle_text_vector"),
+    "text_background": (["full-text-search", "background-maintenance"], ":hawdb_search_lifecycle_text_background"),
+    "vector_background": (["vector-search", "background-maintenance"], ":hawdb_search_lifecycle_vector_background"),
+}
+
+# Large public lifecycles need optimized loops, with debug checks retained.
+# Scope these flags to their private test libraries and fixture executables.
+_STREAMED_LIFECYCLE_RUSTC_FLAGS = [
+    "-Copt-level=2",
+    "-Cdebug-assertions=yes",
+    "-Coverflow-checks=yes",
+]
+
 _SEARCH_BASE_DEPS = [
     "@crate_index//:bitpacking",
     "@crate_index//:chrono",
@@ -133,6 +154,93 @@ rust_test(
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
+# Reuse production libraries where their exact feature set already exists.
+# Other integration profiles need only a private test dependency.
+[
+    rust_library(
+        name = "hawdb_search_lifecycle_%s" % profile,
+        testonly = True,
+        crate_name = "hawdb_search",
+        crate_root = "src/lib.rs",
+        crate_features = settings[0],
+        srcs = glob(["src/**/*.rs"]) + ["tests/support/live_allocation.rs"],
+        edition = "2024",
+        aliases = aliases(),
+        deps = _SEARCH_BASE_DEPS + (_SEARCH_VECTOR_DEPS if "vector-search" in settings[0] else []),
+        proc_macro_deps = all_crate_deps(proc_macro = True),
+        visibility = ["//visibility:private"],
+    )
+    for profile, settings in _SEARCH_TEST_PROFILES.items()
+    if settings[1].startswith(":hawdb_search_lifecycle_")
+]
+
+# Isolate optimized lifecycle libraries from production and debug unit owners.
+# All five exact feature sets still execute the complete 32-MiB fixture.
+[
+    rust_library(
+        name = "hawdb_search_streamed_lifecycle_%s" % profile,
+        testonly = True,
+        crate_name = "hawdb_search",
+        crate_root = "src/lib.rs",
+        crate_features = settings[0],
+        srcs = glob(["src/**/*.rs"]) + ["tests/support/live_allocation.rs"],
+        edition = "2024",
+        rustc_flags = _STREAMED_LIFECYCLE_RUSTC_FLAGS,
+        aliases = aliases(),
+        deps = _SEARCH_BASE_DEPS + (_SEARCH_VECTOR_DEPS if "vector-search" in settings[0] else []),
+        proc_macro_deps = all_crate_deps(proc_macro = True),
+        visibility = ["//visibility:private"],
+    )
+    for profile, settings in _SEARCH_TEST_PROFILES.items()
+    if "full-text-search" in settings[0]
+]
+
+# Preserve each original target name, complete lifecycle and 900s deadline.
+[
+    rust_test(
+        name = "hawdb_search_streamed_lifecycle_tests" if profile == "default" else "hawdb_search_%s_streamed_lifecycle_tests" % profile,
+        timeout = "long",
+        crate_features = settings[0],
+        crate_root = "tests/streamed_document_lifecycle.rs",
+        srcs = [
+            "src/out_of_core/verified_body/fixtures.rs",
+            "tests/streamed_document_lifecycle.rs",
+            "tests/support/out_of_core.rs",
+        ],
+        edition = "2024",
+        rustc_flags = _STREAMED_LIFECYCLE_RUSTC_FLAGS,
+        deps = [
+            ":hawdb_search_streamed_lifecycle_%s" % profile,
+            "//crates/core:hawdb_core",
+            "//crates/storage:hawdb_storage",
+        ],
+    )
+    for profile, settings in _SEARCH_TEST_PROFILES.items()
+    if "full-text-search" in settings[0]
+]
+
+# Preserve each profile's complete source/token admission lifecycle in a
+# source-scoped executable with the same finite deadline as its former owner.
+[
+    rust_test(
+        name = "hawdb_search_source_policy_tests" if profile == "default" else "hawdb_search_%s_source_policy_tests" % profile,
+        timeout = "long",
+        crate_features = settings[0],
+        crate_root = "tests/generation_source_policy.rs",
+        srcs = [
+            "tests/generation_source_policy.rs",
+            "tests/support/out_of_core.rs",
+        ],
+        edition = "2024",
+        deps = [
+            settings[1],
+            "//crates/core:hawdb_core",
+            "//crates/storage:hawdb_storage",
+        ],
+    )
+    for profile, settings in _SEARCH_TEST_PROFILES.items()
+]
+
 rust_test(
     name = "hawdb_search_projection_evidence_fuzz_tests",
     args = [
@@ -202,6 +310,22 @@ rust_test(
     ],
     edition = "2024",
     deps = [":hawdb_search"],
+)
+
+rust_test(
+    name = "hawdb_search_analyzer_observation_tests",
+    crate_root = "tests/analyzer_observation.rs",
+    srcs = [
+        "src/analyzer_workspace/observation.rs",
+        "src/analyzer_workspace/stack.rs",
+        "src/build_control/read_observation.rs",
+        "tests/analyzer_observation.rs",
+    ],
+    edition = "2024",
+    deps = [
+        "//crates/core:hawdb_core",
+        "//crates/executor:hawdb_executor",
+    ],
 )
 
 rust_test(
@@ -323,6 +447,8 @@ rust_test(
 
 rust_test(
     name = "hawdb_search_lexical_spill_fuzz_tests",
+    # The complete local campaign exceeded the inherited 300-second deadline.
+    timeout = "long",
     args = [
         "lexical_projection::spill_tests::fuzz::lexical_spill_admission_differential_campaign",
         "--exact",
@@ -468,7 +594,7 @@ rust_test(
         timeout = "long",
         crate_name = "hawdb_search",
         crate_root = "src/lib.rs",
-        crate_features = features,
+        crate_features = settings[0],
         srcs = glob(["src/**/*.rs"]) + ["tests/support/live_allocation.rs"],
         edition = "2024",
         aliases = aliases(
@@ -480,16 +606,8 @@ rust_test(
         deps = _SEARCH_DEPS + all_crate_deps(normal_dev = True),
         proc_macro_deps = all_crate_deps(proc_macro = True, proc_macro_dev = True),
     )
-    for profile, features in {
-        "acl": _SEARCH_DEFAULT_FEATURES + ["acl"],
-        "minimal": [],
-        "text_only": ["full-text-search"],
-        "vector_only": ["vector-search"],
-        "background_only": ["background-maintenance"],
-        "text_vector": ["full-text-search", "vector-search"],
-        "text_background": ["full-text-search", "background-maintenance"],
-        "vector_background": ["vector-search", "background-maintenance"],
-    }.items()
+    for profile, settings in _SEARCH_TEST_PROFILES.items()
+    if profile != "default"
 ]
 
 rust_test(

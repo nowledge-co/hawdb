@@ -31,6 +31,37 @@ No production behavior, public API, v1 format, or capability policy changes are
 needed for this coverage. No test uses `ignore`, an early successful return, or
 a forced capability override to make an unsupported positive path succeed.
 
+## Streamed lifecycle compilation
+
+The five FTS Bazel profiles each execute the complete public 32 MiB lifecycle
+in `tests/streamed_document_lifecycle.rs`: initial build, append, compaction,
+replacement, repeated replacement, deletion, pinned-body transfer, and restore.
+Each target retains its `long` (900-second) deadline, feature set, fixture,
+admission budgets, and assertions.
+
+These executables and their private, test-only search libraries use
+`-Copt-level=2`, `-Cdebug-assertions=yes`, and `-Coverflow-checks=yes`. Optimizing
+the repeated UTF-8/token analysis and fixture generation reduces debug loop
+overhead while preserving debug checks. The feature matrix supplies both the
+test crate and its library, so optional capabilities cannot be unified away.
+Five separate search-library compilations add cold-build work; other dependencies
+remain shared. Production and unit-test owners retain their existing builds.
+
+```console
+bazel test \
+  //crates/search:hawdb_search_streamed_lifecycle_tests \
+  //crates/search:hawdb_search_acl_streamed_lifecycle_tests \
+  //crates/search:hawdb_search_text_only_streamed_lifecycle_tests \
+  //crates/search:hawdb_search_text_background_streamed_lifecycle_tests \
+  //crates/search:hawdb_search_text_vector_streamed_lifecycle_tests
+```
+
+The full lifecycle executes on Linux, where anonymous verified-body transfer
+is supported. macOS/Windows compilation checks the fixture but selects zero
+lifecycle cases; it is not runtime qualification. Cargo continues to use the
+workspace's existing test profile. Retain actual Linux counts and durations
+when assessing [#963](https://github.com/nowledge-co/hawdb/issues/963).
+
 ## Local Feature Matrix
 
 The baseline for issue [#313](https://github.com/nowledge-co/hawdb/issues/313) is

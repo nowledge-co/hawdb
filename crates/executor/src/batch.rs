@@ -678,6 +678,7 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
             graph_name,
             options,
             score_column,
+            return_node_identity,
             node_visibility_predicate,
         } => dispatch.supported(|context, execution_limit, emit| {
             GraphAlgorithmSpec {
@@ -685,6 +686,7 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
                 graph_name,
                 options,
                 score_column,
+                return_node_identity: *return_node_identity,
                 node_visibility_predicate,
             }
             .stream(

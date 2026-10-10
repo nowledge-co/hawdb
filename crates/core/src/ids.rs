@@ -58,6 +58,62 @@ pub fn project_node_record(
     }
 }
 
+/// Clone only selected columns from a borrowed node, without copying unrelated
+/// payloads. Callers that own a query budget admit the estimate before cloning.
+#[doc(hidden)]
+pub fn project_node_record_ref(
+    node: &NodeRecord,
+    required_properties: &BTreeSet<String>,
+) -> ProjectedNodeRecord {
+    ProjectedNodeRecord {
+        id: node.id,
+        labels: node.labels.clone(),
+        properties: required_properties
+            .iter()
+            .filter_map(|name| {
+                node.properties
+                    .get(name)
+                    .map(|value| (name.clone(), value.clone()))
+            })
+            .collect(),
+    }
+}
+
+/// Conservative allocation bound for the selected record, including container
+/// overhead and recursively owned values, computed without cloning values.
+#[doc(hidden)]
+pub fn projected_node_allocation_bytes(
+    node: &NodeRecord,
+    required_properties: &BTreeSet<String>,
+) -> usize {
+    std::mem::size_of::<ProjectedNodeRecord>()
+        .saturating_add(node.labels.len().saturating_mul(128))
+        .saturating_add(required_properties.iter().fold(0usize, |total, name| {
+            total.saturating_add(node.properties.get(name).map_or(0, |value| {
+                1024usize
+                    .saturating_add(name.len())
+                    .saturating_add(projected_value_allocation_bytes(value))
+            }))
+        }))
+}
+
+fn projected_value_allocation_bytes(value: &Value) -> usize {
+    std::mem::size_of::<Value>().saturating_add(match value {
+        Value::String(value) => value.len(),
+        Value::Binary(value) => value.len(),
+        Value::List(values) => values.iter().fold(32usize, |total, value| {
+            total.saturating_add(projected_value_allocation_bytes(value).saturating_mul(2))
+        }),
+        Value::Map(values) => values.iter().fold(32usize, |total, (key, value)| {
+            total
+                .saturating_add(1024)
+                .saturating_add(key.len())
+                .saturating_add(projected_value_allocation_bytes(value))
+        }),
+        _ => 0,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RelId(pub u64);
 

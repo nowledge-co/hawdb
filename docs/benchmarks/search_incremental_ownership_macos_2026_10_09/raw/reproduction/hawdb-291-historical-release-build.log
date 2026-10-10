@@ -1,0 +1,128 @@
+   Compiling libc v0.2.186
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.9
+   Compiling memchr v2.8.3
+   Compiling cfg-if v1.0.4
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling pkg-config v0.3.33
+   Compiling quote v1.0.46
+   Compiling regex-syntax v0.8.11
+   Compiling getrandom v0.4.3
+   Compiling uuid v1.26.0
+   Compiling zstd-safe v7.2.4
+   Compiling version_check v0.9.5
+   Compiling serde_core v1.0.228
+   Compiling typenum v1.20.1
+   Compiling object v0.37.3
+   Compiling crossbeam-utils v0.8.22
+   Compiling generic-array v0.14.7
+   Compiling crossbeam-epoch v0.9.20
+   Compiling semver v1.0.28
+   Compiling zmij v1.0.23
+   Compiling aho-corasick v1.1.4
+   Compiling rustc_version v0.4.1
+   Compiling crossbeam-deque v0.8.7
+   Compiling serde v1.0.228
+   Compiling autocfg v1.5.1
+   Compiling crc32c v0.6.8
+   Compiling crc32fast v1.5.0
+   Compiling num-traits v0.2.19
+   Compiling allocator-api2 v0.2.21
+   Compiling serde_json v1.0.150
+   Compiling foldhash v0.2.0
+   Compiling equivalent v1.0.2
+   Compiling rayon-core v1.13.0
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+   Compiling regex-automata v0.4.16
+   Compiling hashbrown v0.16.1
+   Compiling no_std_io2 v0.9.4
+   Compiling bitflags v2.13.1
+   Compiling jobserver v0.1.35
+   Compiling cpufeatures v0.2.17
+   Compiling rle-decode-fast v1.0.3
+   Compiling itoa v1.0.18
+   Compiling cc v1.2.67
+   Compiling syn v2.0.118
+   Compiling objc2-core-foundation v0.3.2
+   Compiling bytemuck v1.25.2
+   Compiling adler32 v1.2.0
+   Compiling dary_heap v0.3.9
+   Compiling either v1.16.0
+   Compiling byteorder v1.5.0
+   Compiling siphasher v1.0.3
+   Compiling proc-macro-error-attr3 v3.1.0
+   Compiling libflate_lz77 v2.3.0
+   Compiling phf_shared v0.13.1
+   Compiling fs2 v0.4.3
+   Compiling syn v3.0.3
+   Compiling libflate v2.3.1
+   Compiling tinyvec_macros v0.1.1
+   Compiling roaring v0.10.12
+   Compiling fastrand v2.5.0
+   Compiling tinyvec v1.12.0
+   Compiling skein-cgroup v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/cgroup)
+   Compiling phf_generator v0.13.1
+   Compiling proc-macro-error3 v3.1.0
+   Compiling phf_codegen v0.13.1
+   Compiling unicode-normalization v0.1.25
+   Compiling log v0.4.33
+   Compiling chrono v0.4.45
+   Compiling objc2-io-kit v0.3.2
+   Compiling smallvec v1.15.2
+   Compiling jieba-macros v0.10.3
+   Compiling sysinfo v0.38.4
+   Compiling cedarwood v0.5.0
+   Compiling rayon v1.12.0
+   Compiling phf v0.13.1
+   Compiling memmap2 v0.9.11
+   Compiling pin-project-lite v0.2.17
+   Compiling bytecount v0.6.9
+   Compiling caseless v0.2.2
+   Compiling rustc-hash v2.1.3
+   Compiling skein-sql-syntax v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/sql-syntax)
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+   Compiling sha2-asm v0.6.4
+   Compiling regex v1.13.1
+   Compiling ar_archive_writer v0.5.2
+   Compiling skein-core v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/core)
+   Compiling stacker v0.1.24
+   Compiling simsimd v6.5.16
+   Compiling psm v0.1.31
+   Compiling tokio v1.53.1
+   Compiling unicode-width v0.2.2
+   Compiling skein-ddl v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/ddl)
+   Compiling skein-cypher v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/cypher)
+   Compiling skein-expression v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/expression)
+   Compiling skein-qos v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/qos)
+   Compiling serde_derive v1.0.228
+   Compiling recursive-proc-macro-impl v0.1.1
+   Compiling skein-telemetry v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/telemetry)
+   Compiling recursive v0.1.1
+   Compiling skein-readiness v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/readiness)
+   Compiling sqlparser v0.61.0
+   Compiling skein-route-ownership v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/route-ownership)
+   Compiling skein-plan v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/plan)
+   Compiling sha2 v0.10.9
+   Compiling skein-integrity v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/integrity)
+   Compiling skein-query v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/query)
+   Compiling skein-runtime-tokio v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/runtime-tokio)
+   Compiling skein-plan-cache v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/plan-cache)
+   Compiling skein-vector-projection v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/vector-projection)
+   Compiling skein-evidence v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/evidence)
+   Compiling skein-optimizer v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/optimizer)
+   Compiling zstd v0.13.3
+   Compiling include-flate-compress v0.3.4
+   Compiling include-flate-codegen v0.3.4
+   Compiling skein-storage v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/storage)
+   Compiling include-flate v0.3.4
+   Compiling jieba-rs v0.10.3
+   Compiling skein-sql v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/sql)
+   Compiling skein-executor v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/executor)
+   Compiling skein-relational v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/relational)
+   Compiling skein-analytics v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/analytics)
+   Compiling skein-search v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review/crates/search)
+   Compiling skein v0.1.0 (/private/tmp/hawdb-291-historical-checkpoint-review)
+    Finished `release` profile [optimized] target(s) in 3m 21s

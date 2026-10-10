@@ -1,0 +1,98 @@
+{
+  "state": "passed",
+  "source_receipt": "/private/tmp/hawdb-291-post913-source.json",
+  "commit": "41e10dacf8b2589e416c01b9b047db98dfe01acd",
+  "checks": [
+    {
+      "label": "maintenance-facade",
+      "state": "passed",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hawdb",
+        "--all-features",
+        "--lib",
+        "incremental_maintenance",
+        "--",
+        "--test-threads=1"
+      ],
+      "log": "/private/tmp/hawdb-291-post913-maintenance-facade.log",
+      "pid": 81828,
+      "exit_code": 0,
+      "elapsed_seconds": 172.810876125,
+      "test_summaries": [
+        [
+          "ok",
+          "4",
+          "0",
+          "0"
+        ]
+      ],
+      "log_sha256": "8a6b82dc5dc0579de4fbad87e71fb00392249ebb3677d56757ff8de241f8bf2e"
+    },
+    {
+      "label": "rebuild-facade",
+      "state": "passed",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hawdb",
+        "--all-features",
+        "--lib",
+        "api::tests::search_projection_rebuild_facade::",
+        "--",
+        "--test-threads=1"
+      ],
+      "log": "/private/tmp/hawdb-291-post913-rebuild-facade.log",
+      "pid": 84201,
+      "exit_code": 0,
+      "elapsed_seconds": 0.775864791999993,
+      "test_summaries": [
+        [
+          "ok",
+          "5",
+          "0",
+          "0"
+        ]
+      ],
+      "log_sha256": "b22b13eaf45be7c914913e0fed1dc5d6be5ed673151ff5a794bebe3dc9a47e15"
+    },
+    {
+      "label": "power-loss",
+      "state": "passed",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hawdb",
+        "--all-features",
+        "--lib",
+        "api::tests::power_loss::search_projection::",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "log": "/private/tmp/hawdb-291-post913-power-loss.log",
+      "pid": 84212,
+      "cut_families": 30,
+      "fault_plans": 3260,
+      "exit_code": 0,
+      "elapsed_seconds": 1044.458197958,
+      "test_summaries": [
+        [
+          "ok",
+          "11",
+          "0",
+          "0"
+        ]
+      ],
+      "log_sha256": "af9f0714b29a2a070a522e540bdb250d69c3c0d1b1d3239a48804a8567a6109d"
+    }
+  ],
+  "source_unchanged": true
+}

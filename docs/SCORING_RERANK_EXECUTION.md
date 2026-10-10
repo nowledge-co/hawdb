@@ -75,6 +75,19 @@ Programs validate the legacy specification and explicitly declare composition:
   `Neutral` uses zero for missing sum terms and one for missing product terms
   or decay factors. These are explicit request choices, with distinct shapes.
 
+Timestamp properties accept only a nonnegative `Value::Int` representing epoch
+milliseconds. Floats, strings, negative integers and NULL count as missing.
+Future timestamps have age zero. Under `Neutral`, a missing or invalid timestamp
+has decay factor one and may outrank a valid recent timestamp; hosts must choose
+this policy deliberately. `Reject` fails the entire scored request when any
+candidate lacks a declared signal, including an OPTIONAL NULL candidate. It
+does not discard that row, rank it last, or publish a partial ranking.
+
+Equal combined scores retain candidate arrival order in resident and spilled
+execution. Reproducibility across executions requires a total upstream
+`ORDER BY` with an explicit tie key; a graph scan's incidental order is not a
+stable ranking contract.
+
 Property names refer to returned value aliases in this ordinary attachment.
 The declared score column supplies `SearchScore`; this does not by itself prove
 that an arbitrary host expression came from a vector or text retriever.
@@ -153,8 +166,8 @@ producer/engine graph evidence, not RaBitQ retrieval, browser or Mem route proof
 
 ## Host-scoring escape hatch
 
-The facade exports the batch-oriented `HostScorer` declaration required by the
-issue, with a validated borrowed `HostScorerDescriptor` (name, version and
+The executor keeps a batch-oriented `HostScorer` declaration for the issue's
+future extension, with a validated borrowed `HostScorerDescriptor` (name, version and
 nonzero logical CPU units per row) and `HostScorerBatch`. Batch inputs borrow
 feature rows, one fixed clock, task context and the existing query scratch
 account. The host writes into an engine-owned score slice in input order;
@@ -162,7 +175,8 @@ scratch allocation must reserve the supplied account first and release its
 leases before returning. The descriptor identifies deterministic behavior,
 including any host configuration that affects scores.
 
-No query request registers or invokes this trait yet. A concrete non-template
+The facade does not export these declarations while no query request registers
+or invokes the trait. A concrete non-template
 formula must establish the need before callback execution is added. That future
 attachment must capture a stable descriptor, include identity/version in the
 cache key or bypass it, account the input/output buffers, checkpoint before and

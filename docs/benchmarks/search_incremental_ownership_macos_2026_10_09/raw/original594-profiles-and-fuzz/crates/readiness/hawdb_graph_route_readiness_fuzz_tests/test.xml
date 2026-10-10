@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="crates/readiness/hawdb_graph_route_readiness_fuzz_tests" tests="1" failures="0" errors="0">
+    <testcase name="crates/readiness/hawdb_graph_route_readiness_fuzz_tests" classname="" status="run" duration="43" time="43"></testcase>
+      <system-out>
+Generated test.log (if the file is not UTF-8, then this may be unreadable):
+<![CDATA[exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/readiness:hawdb_graph_route_readiness_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+graph-route-readiness-differential-v1 seeds=128 coverage_cases=2560 contradiction_cases=8192 accepted_cases=128
+test graph_route::differential::graph_route_readiness_differential_campaign ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 359 filtered out; finished in 42.21s]]>
+      </system-out>
+    </testsuite>
+</testsuites>

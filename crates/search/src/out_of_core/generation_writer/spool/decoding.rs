@@ -34,6 +34,7 @@ pub(super) fn read_frame(
     decode_frame(reader, length, expected_checksum, ordinal, None).map(|(document, _)| document)
 }
 
+#[cfg(test)]
 pub(super) fn read_frame_admitted(
     reader: &mut impl Read,
     length: usize,
@@ -53,6 +54,7 @@ pub(super) fn read_frame_admitted(
     ))
 }
 
+#[cfg(test)]
 fn decode_frame(
     reader: &mut impl Read,
     length: usize,
@@ -152,6 +154,7 @@ impl<R: Read> FrameReader<'_, R> {
         Ok(byte)
     }
 
+    #[cfg(test)]
     fn document(&mut self) -> Result<SearchDocument> {
         for expected in b"doc\t" {
             if self.next()? != Some(*expected) {

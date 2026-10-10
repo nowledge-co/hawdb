@@ -53,9 +53,16 @@ pub(crate) struct ImmutableFileBinding {
 }
 
 #[derive(Debug)]
+struct CachedHandle {
+    file: Arc<File>,
+    last_used: u64,
+}
+
+#[derive(Debug)]
 pub(crate) struct ImmutableFileHandles {
     state: Arc<BudgetState>,
-    handles: Mutex<BTreeMap<ObjectReference, Arc<File>>>,
+    handles: Mutex<BTreeMap<ObjectReference, CachedHandle>>,
+    access_tick: AtomicU64,
     bindings: Mutex<BTreeMap<PathBuf, ImmutableFileBinding>>,
     opening: Mutex<()>,
 }
@@ -65,6 +72,7 @@ impl ImmutableFileHandles {
         Self {
             state,
             handles: Mutex::new(BTreeMap::new()),
+            access_tick: AtomicU64::new(0),
             bindings: Mutex::new(BTreeMap::new()),
             opening: Mutex::new(()),
         }
@@ -111,7 +119,7 @@ impl ImmutableFileHandles {
             .unwrap_or_else(|error| error.into_inner());
         if handles
             .get(&reference)
-            .is_some_and(|file| Arc::strong_count(file) != 1)
+            .is_some_and(|handle| Arc::strong_count(&handle.file) != 1)
         {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -199,15 +207,21 @@ impl ImmutableFileHandles {
         binding: &ImmutableFileBinding,
         context: &FileOpenContext,
     ) -> io::Result<Arc<File>> {
-        if let Some(file) = self
-            .handles
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(&binding.reference)
-            .cloned()
-        {
+        self.get_admitted(binding, context, |_| Ok(()))
+            .map(|(file, _)| file)
+    }
+
+    /// Cold validation is admitted before payload I/O while the opening lock
+    /// coalesces readers. A warm lease performs no additional validation read.
+    pub(crate) fn get_admitted(
+        &self,
+        binding: &ImmutableFileBinding,
+        context: &FileOpenContext,
+        admit_validation: impl FnMut(u64) -> io::Result<()>,
+    ) -> io::Result<(Arc<File>, u64)> {
+        if let Some(file) = self.cached(binding.reference) {
             self.state.record_cache_hit();
-            return Ok(file);
+            return Ok((file, 0));
         }
         // Coalesce cold opens without holding the eviction map across admission.
         // This serializes file validation, never waits for descriptor capacity.
@@ -215,33 +229,61 @@ impl ImmutableFileHandles {
             .opening
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if let Some(file) = self
-            .handles
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(&binding.reference)
-            .cloned()
-        {
+        if let Some(file) = self.cached(binding.reference) {
             self.state.record_cache_hit();
-            return Ok(file);
+            return Ok((file, 0));
         }
         self.state.record_cache_miss();
-        let file = Arc::new(Self::open_verified_object(
+        let file = Arc::new(Self::open_verified_object_admitted(
             binding,
             context,
             DescriptorKind::ImmutableCache,
+            admit_validation,
         )?);
         self.handles
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .insert(binding.reference, file.clone());
-        Ok(file)
+            .insert(
+                binding.reference,
+                CachedHandle {
+                    file: file.clone(),
+                    last_used: self.next_tick(),
+                },
+            );
+        Ok((file, binding.reference.byte_length))
+    }
+
+    fn next_tick(&self) -> u64 {
+        self.access_tick
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |tick| {
+                Some(tick.saturating_add(1))
+            })
+            .expect("the access tick update always succeeds")
+    }
+
+    fn cached(&self, reference: ObjectReference) -> Option<Arc<File>> {
+        let mut handles = self
+            .handles
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let handle = handles.get_mut(&reference)?;
+        handle.last_used = self.next_tick();
+        Some(handle.file.clone())
     }
 
     fn open_verified_object(
         binding: &ImmutableFileBinding,
         context: &FileOpenContext,
         kind: DescriptorKind,
+    ) -> io::Result<File> {
+        Self::open_verified_object_admitted(binding, context, kind, |_| Ok(()))
+    }
+
+    fn open_verified_object_admitted(
+        binding: &ImmutableFileBinding,
+        context: &FileOpenContext,
+        kind: DescriptorKind,
+        mut admit_validation: impl FnMut(u64) -> io::Result<()>,
     ) -> io::Result<File> {
         let mut file = OpenOptions::new()
             .read(true)
@@ -254,30 +296,24 @@ impl ImmutableFileHandles {
                 "immutable handle identity length mismatch",
             ));
         }
+        // Descriptor rejection occurs before this charge. No payload may be
+        // read until the caller has reserved the complete identity validation.
+        admit_validation(binding.reference.byte_length)?;
         let mut hasher = crate::immutable_object::identity_hasher(
             binding.reference.kind,
             binding.reference.format_version,
             binding.reference.byte_length,
         );
         let mut buffer = [0_u8; 64 * 1024];
-        let mut read_bytes = 0_u64;
-        loop {
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            read_bytes = read_bytes
-                .checked_add(read as u64)
-                .ok_or_else(|| io::Error::other("immutable file length overflow"))?;
-            if read_bytes > binding.reference.byte_length {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "immutable handle grew during validation",
-                ));
-            }
-            hasher.update(&buffer[..read]);
+        let mut remaining = binding.reference.byte_length;
+        while remaining > 0 {
+            let chunk = remaining.min(buffer.len() as u64) as usize;
+            file.read_exact(&mut buffer[..chunk])?;
+            remaining -= chunk as u64;
+            hasher.update(&buffer[..chunk]);
         }
-        if read_bytes != binding.reference.byte_length
+        // Detect length drift without fetching an unadmitted EOF sentinel.
+        if file.metadata()?.len() != binding.reference.byte_length
             || hasher.finish().sha256 != binding.reference.sha256
         {
             return Err(io::Error::new(
@@ -296,14 +332,15 @@ impl DescriptorCache for ImmutableFileHandles {
                 .handles
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            let keys = handles
+            let mut idle = handles
                 .iter()
-                .filter(|(_, handle)| Arc::strong_count(handle) == 1)
-                .take(requested)
-                .map(|(key, _)| *key)
+                .filter(|(_, handle)| Arc::strong_count(&handle.file) == 1)
+                .map(|(key, handle)| (handle.last_used, *key))
                 .collect::<Vec<_>>();
-            keys.into_iter()
-                .filter_map(|key| handles.remove(&key))
+            idle.sort_unstable();
+            idle.into_iter()
+                .take(requested)
+                .filter_map(|(_, key)| handles.remove(&key))
                 .collect::<Vec<_>>()
         };
         let count = removed.len();

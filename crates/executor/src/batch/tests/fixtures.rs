@@ -144,6 +144,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                 name: String::new(),
                 node_labels: Vec::new(),
                 rel_types: Vec::new(),
+                relationship_predicates: BTreeMap::new(),
             },
             false,
         ),
@@ -155,8 +156,10 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                     damping: None,
                     max_iterations: Some(1),
                     max_levels: Some(1),
+                    ..Default::default()
                 },
                 score_column: String::new(),
+                return_node_identity: false,
                 node_visibility_predicate: None,
             },
             true,

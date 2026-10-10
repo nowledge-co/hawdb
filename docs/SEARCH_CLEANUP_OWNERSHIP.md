@@ -121,6 +121,13 @@ recursive deletion or unaccounted memory growth is authorized.
 
 ## Validation and remaining work
 
+Initial cleanup and retries retain a `CleanupAttempt` guard through native
+removal. Error, cancellation, a partial pass, or unwind returns the unfinished
+ticket to its pre-admitted registry entry. Confirmed removal frees the ticket
+before releasing its registration. See the
+[inductive ownership argument and executable negative controls](tla/SEARCH_STAGE_CLEANUP_PROOF.md)
+for the proof assumptions and finite model-checking boundary.
+
 Permanent regressions compare the one-shot counts with the original retry state
 across retention identities, quarantine, success/not-found/errors and hard limits.
 They cover exact/one-short admission, a full shared root, actual requested live

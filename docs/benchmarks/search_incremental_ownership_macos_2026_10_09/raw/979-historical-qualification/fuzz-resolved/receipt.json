@@ -1,0 +1,72 @@
+{
+  "state": "passed",
+  "source_receipt": "/private/tmp/hawdb-979-observe-final-source.json",
+  "initial_receipt": "/private/tmp/hawdb-979-observe-evidence/fuzz/receipt.json",
+  "checks": [
+    {
+      "target": "//crates/search:hawdb_search_manifest_budget_fuzz_tests",
+      "state": "passed",
+      "command": [
+        "bazel",
+        "--output_base=/private/tmp/hawdb-fd-owner-bazel",
+        "test",
+        "//crates/search:hawdb_search_manifest_budget_fuzz_tests",
+        "--local_test_jobs=1",
+        "--test_output=errors"
+      ],
+      "log": "/private/tmp/hawdb-979-observe-evidence/fuzz-resolved/crates/search/hawdb_search_manifest_budget_fuzz_tests/command.log",
+      "unchanged_deadline": true,
+      "exit_code": 0,
+      "elapsed_seconds": 63.645147042000076,
+      "artifacts": [
+        {
+          "path": "/private/tmp/hawdb-979-observe-evidence/fuzz-resolved/crates/search/hawdb_search_manifest_budget_fuzz_tests/test.log",
+          "sha256": "d6efd5d186d9ac169c5446e04d177d095c9c3198d7b5c032d224b0f32ced0a2f",
+          "bytes": 550
+        },
+        {
+          "path": "/private/tmp/hawdb-979-observe-evidence/fuzz-resolved/crates/search/hawdb_search_manifest_budget_fuzz_tests/test.xml",
+          "sha256": "8a9f6f93a73f6ae5bb9ff79f4f0701af2f71773038980c353fcb4c7d1e1086f4",
+          "bytes": 1005
+        }
+      ],
+      "test_summaries": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ]
+      ]
+    }
+  ],
+  "initial_exit_code": 3,
+  "initial_passed_targets": 95,
+  "timeout_targets": [
+    "//crates/search:hawdb_search_manifest_budget_fuzz_tests"
+  ],
+  "initial_receipt_sha256": "26cc917cac37b39ac773f2b0544b0d8c4e17531966e616ca662be0b4d5a065ae",
+  "final_command": [
+    "bazel",
+    "--output_base=/private/tmp/hawdb-fd-owner-bazel",
+    "test",
+    "//crates/fuzz:hawdb_fuzz_tests",
+    "//crates/fuzz:hawdb_fuzz_cli_tests",
+    "//:hawdb_linux_ci_fuzz_smoke_test",
+    "--local_test_jobs=1",
+    "--test_output=errors"
+  ],
+  "final_log": "/private/tmp/hawdb-979-observe-evidence/fuzz-resolved/final-command.log",
+  "final_exit_code": 0,
+  "final_elapsed_seconds": 1.8042348749999064,
+  "final_log_sha256": "35ac52032408a918307e7c1085b2a023e948ee00aad625320b1bca0f465ac382",
+  "source_unchanged": true,
+  "execution_summary": [
+    [
+      "0",
+      "96",
+      "96 tests pass."
+    ]
+  ],
+  "qualification_scope": "Keep the original complete-run timeout. Successful qualification combines its passing targets with fresh isolated retries at original seeds, caps and deadlines; the final exact required command may reuse cached results and is not claimed as 96 fresh successful executions."
+}

@@ -313,6 +313,9 @@ pub struct DatabaseConfig {
     /// Checkpoint compaction resets the chain; default is 256.
     pub max_branch_sealed_wal_intervals: usize,
     /// Finite shared ceiling for all engine-owned project file descriptors.
+    /// Defaults to 1024 without pre-opening files. Native Unix acquisition limits
+    /// effective admission to the OS soft limit minus 64 host-owned handles.
+    /// Process limits remain under host control; idle immutable files use LRU.
     /// Independent contexts for one canonical project must request the same value.
     pub max_open_files: usize,
     pub max_wal_quarantine_bytes: u64,
@@ -1529,15 +1532,27 @@ impl Database {
         &mut self,
         task_context: Option<hawdb_core::RuntimeTaskContext>,
     ) -> Result<DatabaseTransaction<'_>> {
-        self.runtime.get_mut()?;
-        let runtime = DatabaseTransactionRuntime::from_database(self)?;
-        let state = DatabaseTransactionState::from_database(self)?;
+        let (runtime, state) = self.transaction_parts()?;
         Ok(DatabaseTransaction {
             db: self,
             runtime,
             state,
             task_context,
         })
+    }
+
+    /// Builds the owned runtime and statement state for one transaction.
+    /// Embedded hosts that must own the transaction object (rather than
+    /// borrow `Database`) assemble the same parts and commit through
+    /// [`commit_database_transaction_state`].
+    pub(super) fn transaction_parts(
+        &mut self,
+    ) -> Result<(DatabaseTransactionRuntime, DatabaseTransactionState)> {
+        self.runtime.get_mut()?;
+        Ok((
+            DatabaseTransactionRuntime::from_database(self)?,
+            DatabaseTransactionState::from_database(self)?,
+        ))
     }
 
     pub fn session(&mut self) -> DatabaseSession<'_> {
@@ -4361,6 +4376,18 @@ impl Database {
         batch: SearchProjectionChangeBatch,
         relational: SearchProjectionRelationalDelta,
     ) -> Result<SearchProjectionDeltaReport> {
+        let delta = self.build_search_projection_change_delta(batch, relational)?;
+        search_index.apply_projection_delta(delta)
+    }
+
+    /// Builds the complete graph-and-host delta without publishing its watermark.
+    /// Both full-residency and incremental persistence must pass this same
+    /// relational coverage and source-epoch proof before applying a batch.
+    pub fn build_search_projection_change_delta(
+        &self,
+        batch: SearchProjectionChangeBatch,
+        relational: SearchProjectionRelationalDelta,
+    ) -> Result<SearchProjectionDelta> {
         let expected_primary_key_count = batch
             .relational_primary_key_changes()
             .iter()
@@ -4391,7 +4418,7 @@ impl Database {
         graph.deletes.extend(deletes);
         graph.max_operations = max_operations;
         graph.source_graph_commit_epoch = complete_through_commit_epoch;
-        search_index.apply_projection_delta(graph)
+        Ok(graph)
     }
 
     pub fn apply_background_search_projection_delta(
@@ -20172,7 +20199,7 @@ impl DatabaseTransactionState {
         })
     }
 
-    fn rollback(&mut self) {
+    pub(super) fn rollback(&mut self) {
         self.graph_transaction.take();
         self.relational_transaction.writes.clear();
         self.append_transaction.writes.clear();
@@ -20405,7 +20432,7 @@ fn execute_graph_transaction_statement(
     })
 }
 
-fn execute_database_transaction_query(
+pub(super) fn execute_database_transaction_query(
     runtime: &DatabaseTransactionRuntime,
     state: &mut DatabaseTransactionState,
     cypher_text: &str,
@@ -20477,7 +20504,7 @@ pub(super) fn execute_concurrent_graph_transaction_query(
     )
 }
 
-fn execute_database_transaction_sql(
+pub(super) fn execute_database_transaction_sql(
     runtime: &DatabaseTransactionRuntime,
     state: &mut DatabaseTransactionState,
     sql_text: &str,
@@ -21064,7 +21091,7 @@ fn reject_locking_select_without_manager(
     Ok(())
 }
 
-fn commit_database_transaction_state(
+pub(super) fn commit_database_transaction_state(
     db: &mut Database,
     state: &mut DatabaseTransactionState,
     allow_stale_rebase: bool,
@@ -21533,6 +21560,8 @@ fn profiled_relational_sql_output(
                 RelationalSqlIndexReadProfile {
                     table: evidence.table,
                     index: evidence.index,
+                    lookups: evidence.lookups,
+                    metadata_count_lookups: evidence.metadata_count_lookups,
                     runtime_path,
                     logical_pages: evidence.logical_pages,
                     logical_bytes: evidence.logical_bytes,

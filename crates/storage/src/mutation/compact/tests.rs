@@ -305,6 +305,7 @@ fn opaque_ops() -> Vec<WalOp> {
             name: "projection".into(),
             node_labels: vec!["Memory".into()],
             rel_types: vec!["LINK".into()],
+            relationship_predicates: BTreeMap::new(),
         },
         WalOp::MarkInitialImportSource {
             source_fingerprint: "source-v1".into(),

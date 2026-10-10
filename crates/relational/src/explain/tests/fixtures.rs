@@ -148,6 +148,7 @@ impl Case {
                 "idx_x".into()
             },
             lookups: n,
+            metadata_count_lookups: n / 2,
             demand_paged_lookups: 1,
             canonical_fallback_lookups: 1,
             fallback_reasons: BTreeSet::from(["budget", "missing"]),
@@ -280,6 +281,7 @@ impl Case {
             entries.extend([
                 ("runtime_path", "mixed".into()),
                 ("lookups", n.to_string()),
+                ("metadata_counts", (n / 2).to_string()),
                 ("range_lookups", (n + 15).to_string()),
                 ("exclusive_seek_lookups", (n + 16).to_string()),
                 ("backward_lookups", (n + 17).to_string()),

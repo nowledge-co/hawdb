@@ -964,7 +964,8 @@ fn assert_read_only_snapshot_context(case: SnapshotContextCase) {
                         assert_eq!(output.rows.len(), 1);
                         if !sql && case == SnapshotContextCase::AnalyticsProfile {
                             assert_eq!(output.rows[0]["node"], Value::Int(0));
-                            assert_eq!(output.rows[0]["pagerank_score"], Value::Float(1.0));
+                            // A dangling singleton retains only the teleport term.
+                            assert_eq!(output.rows[0]["pagerank_score"], Value::Float(1.0 - 0.85));
                         } else {
                             assert_eq!(output.rows[0]["id"], Value::String("committed".into()));
                         }

@@ -14,7 +14,7 @@
 
 use super::*;
 
-fn fixture() -> (
+pub(super) fn fixture() -> (
     RelationalJoinRewriteProblem,
     RelationalCsgCmpJoinImplementation,
 ) {

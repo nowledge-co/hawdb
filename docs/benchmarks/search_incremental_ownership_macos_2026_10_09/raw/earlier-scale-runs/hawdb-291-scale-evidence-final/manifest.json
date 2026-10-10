@@ -1,0 +1,106 @@
+{
+  "commit": "1892c245bc1acd70b1c6d45dccac35e68509d530",
+  "patch_sha256_before": "e294b147c7eabea151a6994474b33d9fef4ad60aa98c60dd88e35966fed7c124",
+  "os_file_descriptor_limits": [
+    4096,
+    9223372036854775807
+  ],
+  "source_files_sha256": {
+    "benches/search_mutation.rs": "7deebdc62d7ab915938a7334ce498071a4f1a78201be253dff1bfef1a2db64bb",
+    "crates/search/src/out_of_core.rs": "8320aff0da630527503abdacd33ad0d95aa753333a3650086ffa9b81be29ad61",
+    "crates/search/src/out_of_core/mutation_run.rs": "7c68629aba98ea8095630c0f85f9c7ad252e03ad85df565f17034003f70f8317",
+    "src/nowledge_mem/incremental_search.rs": "85fc236794c3d61e0a7aedd52fe809afe7c250fb61100d52b3c04c897701b6b6"
+  },
+  "earlier_failures": "/private/tmp/hawdb-291-scale-evidence/manifest.json",
+  "earlier_failure_disposition": "Original defaults failed: 5 GiB sustained compaction exhausted OS descriptors (256), and 20 GiB full builds exceeded the 256 MiB ledger with 256 MiB segment admission. This matrix keeps the same memory reservation and body shape, explicitly selects 64 MiB segments and 1024 project descriptors, and adds hashed 384-dimensional dense vectors and RaBitQ artifacts. It does not qualify default resource availability.",
+  "working_tree_status_before": " M benches/search_mutation.rs\n M crates/search/src/lib.rs\n M crates/search/src/out_of_core.rs\n M crates/search/src/out_of_core/mutation_run.rs\n M docs/SEARCH_MUTATION_SEGMENTS.md\n M src/nowledge_mem/incremental_search.rs\n",
+  "platform": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0.1\nBuildVersion:\t\t26A434\n",
+  "host_ram_bytes": 137438953472,
+  "host_model": "Mac15,8",
+  "scratch": "/private/tmp/hawdb-291-scale-scratch-final",
+  "filesystem": "APFS; internal Apple Fabric SSD; 4096-byte allocation blocks",
+  "writer_budget_bytes": 268435456,
+  "fixture": "Repeated bounded-search-mutation text, 65536 bytes per body and ordinal/column-hashed 384-dimensional dense embeddings; streaming full build and 32 seed segments, then deletes and 128 replacement/insert/compaction rounds. Logical body size is corpus-shaped; emitted artifact bytes are compressed files, not device-level writes.",
+  "cells": [
+    {
+      "label": "d81920-k10",
+      "command": [
+        "cargo",
+        "bench",
+        "--locked",
+        "--bench",
+        "search_mutation"
+      ],
+      "environment": {
+        "TMPDIR": "/private/tmp/hawdb-291-scale-scratch-final",
+        "HAWDB_SEARCH_MUTATION_BENCH_DOCUMENTS": "81920",
+        "HAWDB_SEARCH_MUTATION_BENCH_CONTENT_BYTES": "65536",
+        "HAWDB_SEARCH_MUTATION_BENCH_TOUCHES": "10",
+        "HAWDB_SEARCH_MUTATION_BENCH_ROUNDS": "128",
+        "HAWDB_SEARCH_MUTATION_BENCH_MEMORY_BYTES": "268435456",
+        "HAWDB_SEARCH_MUTATION_BENCH_SEGMENT_BYTES": "67108864",
+        "HAWDB_SEARCH_MUTATION_BENCH_OPEN_FILES": "1024",
+        "HAWDB_SEARCH_MUTATION_BENCH_VECTOR_DIMENSIONS": "384",
+        "HAWDB_SEARCH_MUTATION_BENCH_COMPACTION_EVERY": "1",
+        "HAWDB_SEARCH_MUTATION_BENCH_REUSE_VALIDATION": "1"
+      },
+      "started_unix_seconds": 1791397343.034244,
+      "state": "finished",
+      "cargo_pid": 19394,
+      "elapsed_seconds": 2822.4672129154205,
+      "scratch_logical_highwater_bytes": 11479855634,
+      "scratch_allocated_highwater_bytes": 11513692160,
+      "exit_code": 0,
+      "stdout_sha256": "b2715d273839ca53bfaf562a14f6f96b3abc56bb650690c23cdd48a52b2124b4",
+      "stderr_sha256": "76b8612f21121183a536b7cc9b5c71589270184299a04689789cbce3d4040576",
+      "qualification": {
+        "round_count": 128,
+        "compactions": 128,
+        "full_generation_bytes": 362009531,
+        "full_vector_document_count": 81920,
+        "full_vector_payload_bytes": 152499090,
+        "full_rabitq_artifact_bytes": 17050310,
+        "sustained_artifact_write_amplification": 0.8674659437805642,
+        "mutation_checkpoint_bytes": 37555,
+        "peak_resident_bytes": 186155008,
+        "all_rss_samples_available": true,
+        "rss_within_writer_budget": true,
+        "total_sustained_checkpoint_bytes": 6939064,
+        "total_compaction_artifact_bytes": 7955701,
+        "total_compaction_source_bytes": 2587710
+      }
+    },
+    {
+      "label": "d327680-k10",
+      "command": [
+        "cargo",
+        "bench",
+        "--locked",
+        "--bench",
+        "search_mutation"
+      ],
+      "environment": {
+        "TMPDIR": "/private/tmp/hawdb-291-scale-scratch-final",
+        "HAWDB_SEARCH_MUTATION_BENCH_DOCUMENTS": "327680",
+        "HAWDB_SEARCH_MUTATION_BENCH_CONTENT_BYTES": "65536",
+        "HAWDB_SEARCH_MUTATION_BENCH_TOUCHES": "10",
+        "HAWDB_SEARCH_MUTATION_BENCH_ROUNDS": "128",
+        "HAWDB_SEARCH_MUTATION_BENCH_MEMORY_BYTES": "268435456",
+        "HAWDB_SEARCH_MUTATION_BENCH_SEGMENT_BYTES": "67108864",
+        "HAWDB_SEARCH_MUTATION_BENCH_OPEN_FILES": "1024",
+        "HAWDB_SEARCH_MUTATION_BENCH_VECTOR_DIMENSIONS": "384",
+        "HAWDB_SEARCH_MUTATION_BENCH_COMPACTION_EVERY": "1",
+        "HAWDB_SEARCH_MUTATION_BENCH_REUSE_VALIDATION": "1"
+      },
+      "started_unix_seconds": 1791400165.5083158,
+      "state": "interrupted",
+      "cargo_pid": 43545,
+      "elapsed_seconds": 320.78594613075256,
+      "scratch_logical_highwater_bytes": 23641984261,
+      "scratch_allocated_highwater_bytes": 23657066496,
+      "observation": "Intentional cancellation after the same327680-document candidate failed a512-byte-body diagnostic at the unchanged256MiB ledger. New source streams completed descriptors and also fixes corpus metadata copies. First5GiB cell remains a completed passing result; later cells are not qualified.",
+      "cancellation_exit_code": 130,
+      "exit_code": null
+    }
+  ]
+}

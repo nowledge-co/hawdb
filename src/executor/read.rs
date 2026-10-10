@@ -32,12 +32,20 @@ pub(super) fn execute_bindings_with_limit(
             name,
             node_labels,
             rel_types,
+            relationship_predicates,
         } => {
-            let graph = try_projected_graph_with_node_filter(
+            let relationship_predicates =
+                hawdb_executor::analytics::bind_projected_relationship_predicates(
+                    relationship_predicates,
+                )?;
+            let graph = hawdb_executor::analytics::try_projected_graph_with_filters(
                 catalog,
                 store,
-                node_labels,
-                rel_types,
+                hawdb_executor::analytics::ProjectedGraphFilters {
+                    node_labels,
+                    rel_types,
+                    relationship_predicates: &relationship_predicates,
+                },
                 |_| true,
                 ProjectionLayout::Outgoing,
                 ProjectionMemoryBudget::new(context.memory.blocking_operator_bytes),
@@ -47,6 +55,7 @@ pub(super) fn execute_bindings_with_limit(
                 ProjectedGraphDefinition {
                     node_labels: node_labels.clone(),
                     rel_types: rel_types.clone(),
+                    relationship_predicates,
                 },
             )?;
             Ok(vec![Binding::values(BTreeMap::from([

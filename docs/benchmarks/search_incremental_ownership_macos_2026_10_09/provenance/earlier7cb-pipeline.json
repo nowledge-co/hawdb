@@ -1,0 +1,38 @@
+{
+  "state": "superseded-before-scale",
+  "commit": "7cb639b93249948d2f7953b10109826bf16aa6dd",
+  "source_receipt": "/private/tmp/hawdb-291-current-main-source.json",
+  "started_unix_seconds": 1791550493.84582,
+  "steps": [],
+  "scope": "Fresh post-979 qualification. Preserve original594 pipeline and serialize scale matrices; no historical cell substitutes.",
+  "prerequisites": {
+    "release": "passed",
+    "compressed-reference": "passed",
+    "native-recovery": "passed",
+    "full-five-search-profiles": "running",
+    "inherited-fuzz-and-required-checks": "passed"
+  },
+  "original_matrix": {
+    "pipeline_state": "fresh-three-cell-scale",
+    "step_state": "running",
+    "driver_pid": 98984,
+    "exit_code": null,
+    "cells": [
+      {
+        "label": "d81920-k10",
+        "state": "finished"
+      },
+      {
+        "label": "d327680-k10",
+        "state": "finished"
+      },
+      {
+        "label": "d327680-k100",
+        "state": "running"
+      }
+    ]
+  },
+  "replacement_commit": "41e10dacf8b2589e416c01b9b047db98dfe01acd",
+  "replacement_worktree": "/private/tmp/hawdb-291-post913-qualification",
+  "reason": "PR913 changes shared immutable-file validation; original594 and ongoing7cb native/full profile executions remain preserved. No7cb scale cell started."
+}

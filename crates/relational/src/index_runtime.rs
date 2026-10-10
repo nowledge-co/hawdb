@@ -22,18 +22,92 @@ use hawdb_storage::relational::{
     RelationalIndexReadLimits, RelationalIndexShadowError, RelationalKey, RelationalState,
 };
 use hawdb_storage::relational_index_view::{
-    RelationalIndexProbeStatistics, RelationalIndexReadViewBackendReport,
-    RelationalIndexReadViewReport, RelationalTransactionIndexView,
+    RelationalIndexProbeStatistics, RelationalIndexReadContext, RelationalIndexReadTarget,
+    RelationalIndexReadViewBackendReport, RelationalIndexReadViewReport,
+    RelationalTransactionIndexView,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::num::NonZeroUsize;
 
 /// Internal static-dispatch seam to the facade-selected committed index view.
 /// A missing view returns `None` without invoking the visitor. Implementations
 /// preserve reader errors and stop when the visitor returns false; query-level
 /// fallback, admission, and evidence remain owned by this runtime.
 pub trait RelationalIndexStoreReader {
+    /// True only when every context read admits each operation before I/O and
+    /// callbacks. Legacy/report-only providers retain strict positive preflight.
+    fn supports_relational_index_operation_admission(&self) -> bool {
+        false
+    }
+
+    /// Optional metadata-count capability of the facade-selected view.
+    /// Existing readers decline until they can retain provenance and accounting.
+    fn relational_index_exact_posting_count(
+        &self,
+        _table: &str,
+        _index: &str,
+        _key: &RelationalKey,
+        _limits: RelationalIndexReadLimits,
+    ) -> Option<std::result::Result<(u64, RelationalIndexReadViewReport), RelationalIndexShadowError>>
+    {
+        None
+    }
+
+    /// Metadata providers without shared operation admission decline before I/O.
+    fn relational_index_exact_posting_count_with_context(
+        &self,
+        _table: &str,
+        _index: &str,
+        _key: &RelationalKey,
+        _limits: RelationalIndexReadLimits,
+        _context: &RelationalIndexReadContext,
+    ) -> Option<std::result::Result<(u64, RelationalIndexReadViewReport), RelationalIndexShadowError>>
+    {
+        None
+    }
+
+    /// Providers without operation admission decline before any I/O or callback.
+    fn visit_relational_index_read_view_prefix_entries_with_context(
+        &self,
+        _table: &str,
+        _index: &str,
+        _prefix: &RelationalKey,
+        _limits: RelationalIndexReadLimits,
+        _visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        _context: &RelationalIndexReadContext,
+    ) -> Option<std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError>>
+    {
+        None
+    }
+
+    /// Providers without operation admission decline before any I/O or callback.
+    fn visit_relational_index_read_view_prefix_entries_many_with_context(
+        &self,
+        _table: &str,
+        _index: &str,
+        _prefixes: &[RelationalKey],
+        _limits: RelationalIndexReadLimits,
+        _visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        _context: &RelationalIndexReadContext,
+    ) -> Option<std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError>>
+    {
+        None
+    }
+
+    /// Providers without operation admission decline before any I/O or callback.
+    fn visit_relational_index_read_view_range_entries_with_context(
+        &self,
+        _table: &str,
+        _index: &str,
+        _scan: &hawdb_storage::relational::RelationalIndexRangeScan,
+        _limits: RelationalIndexReadLimits,
+        _visit: impl FnMut(&RelationalKey, &RelationalKey) -> bool,
+        _context: &RelationalIndexReadContext,
+    ) -> Option<std::result::Result<RelationalIndexReadViewReport, RelationalIndexShadowError>>
+    {
+        None
+    }
+
     fn relational_index_probe_statistics(
         &self,
         table: &str,
@@ -110,7 +184,10 @@ impl<R: RelationalIndexStoreReader> RelationalIndexReadMode<'_, R> {
 pub struct RelationalIndexExecutionEvidence {
     pub table: String,
     pub index: String,
+    /// All reported index reads, including planning metadata counts.
     pub lookups: usize,
+    /// Planning count attempts, including refusals and zero-I/O cache reuse.
+    pub metadata_count_lookups: usize,
     pub demand_paged_lookups: usize,
     pub authoritative_lookups: usize,
     pub transaction_workspace_lookups: usize,
@@ -162,7 +239,32 @@ impl RelationalIndexExecutionEvidence {
 pub struct RelationalIndexRuntime<'a, R = crate::RelationalMaterializedReader> {
     mode: RelationalIndexReadMode<'a, R>,
     limits: RelationalIndexReadLimits,
+    context: RelationalIndexRuntimeContext,
+}
+
+/// Statement ownership spans preparation and execution without retaining a
+/// generic provider or resetting its cumulative allowance at the phase boundary.
+pub(crate) struct RelationalIndexRuntimeContext {
+    read_context: RelationalIndexReadContext,
     state: RefCell<RelationalIndexRuntimeState>,
+    task: hawdb_core::RuntimeTaskContext,
+}
+
+impl RelationalIndexRuntimeContext {
+    pub(crate) fn new(
+        limits: RelationalIndexReadLimits,
+        task: hawdb_core::RuntimeTaskContext,
+    ) -> Self {
+        Self {
+            read_context: RelationalIndexReadContext::with_task(limits, task.clone()),
+            state: RefCell::new(RelationalIndexRuntimeState::default()),
+            task,
+        }
+    }
+
+    pub(crate) fn evidence(&self) -> Vec<RelationalIndexExecutionEvidence> {
+        self.state.borrow().evidence.values().cloned().collect()
+    }
 }
 
 #[derive(Default)]
@@ -186,17 +288,105 @@ enum RelationalIndexProbeSelector<'input> {
     Range(&'input hawdb_storage::relational::RelationalIndexRangeScan),
 }
 
+#[derive(Clone, Copy)]
+enum RelationalIndexReadPurpose<'input> {
+    MetadataCount,
+    ExecutionProbe(RelationalIndexProbeSelector<'input>),
+}
+
 impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
     pub fn new(mode: RelationalIndexReadMode<'a, R>, limits: RelationalIndexReadLimits) -> Self {
+        Self::with_context(
+            mode,
+            limits,
+            RelationalIndexRuntimeContext::new(limits, Default::default()),
+        )
+    }
+
+    pub(crate) fn with_context(
+        mode: RelationalIndexReadMode<'a, R>,
+        limits: RelationalIndexReadLimits,
+        context: RelationalIndexRuntimeContext,
+    ) -> Self {
         Self {
             mode,
             limits,
-            state: RefCell::new(RelationalIndexRuntimeState::default()),
+            context,
         }
     }
 
+    pub(crate) fn into_context(self) -> RelationalIndexRuntimeContext {
+        self.context
+    }
+
     pub fn evidence(&self) -> Vec<RelationalIndexExecutionEvidence> {
-        self.state.borrow().evidence.values().cloned().collect()
+        self.context.evidence()
+    }
+
+    pub(crate) fn exact_posting_count(
+        &self,
+        table: &str,
+        index: &str,
+        key: &RelationalKey,
+    ) -> Result<Option<u64>> {
+        hawdb_executor::pipeline::runtime_checkpoint(Some(&self.context.task))?;
+        let result = match self.mode {
+            RelationalIndexReadMode::DemandPaged(store)
+            | RelationalIndexReadMode::Authoritative(store) => store
+                .relational_index_exact_posting_count_with_context(
+                    table,
+                    index,
+                    key,
+                    self.limits,
+                    &self.context.read_context,
+                ),
+            RelationalIndexReadMode::AuthoritativeTransaction(view) => {
+                self.context.read_context.count_exact_postings(
+                    RelationalIndexReadTarget::Transaction(view),
+                    table,
+                    index,
+                    key,
+                    self.limits,
+                )
+            }
+            RelationalIndexReadMode::Materialized
+            | RelationalIndexReadMode::Shadow(_)
+            | RelationalIndexReadMode::TransactionWorkspace => None,
+        };
+        hawdb_executor::pipeline::runtime_checkpoint(Some(&self.context.task))?;
+        match result {
+            Some(Ok((count, report))) => {
+                self.record_admitted_success(
+                    table,
+                    index,
+                    &report,
+                    RelationalIndexReadPurpose::MetadataCount,
+                )?;
+                Ok(Some(count))
+            }
+            Some(Err(RelationalIndexShadowError::FileDescriptors(error))) => {
+                Err(HawDBError::FileDescriptors(error))
+            }
+            Some(Err(RelationalIndexShadowError::Admission(_)))
+                if matches!(self.mode, RelationalIndexReadMode::DemandPaged(_)) =>
+            {
+                self.record_metadata_fallback(table, index, "metadata_count_admission_rejected")?;
+                Ok(None)
+            }
+            Some(Err(RelationalIndexShadowError::MissingIndex { .. }))
+                if matches!(self.mode, RelationalIndexReadMode::DemandPaged(_)) =>
+            {
+                self.record_metadata_fallback(table, index, "metadata_count_missing_index")?;
+                Ok(None)
+            }
+            Some(Err(error @ RelationalIndexShadowError::Admission(_))) => {
+                Err(HawDBError::Execution(error.to_string()))
+            }
+            Some(Err(error)) => Err(HawDBError::StorageIntegrity(format!(
+                "relational index metadata count failed closed for {table}.{index}: {error}"
+            ))),
+            None => Ok(None),
+        }
     }
 
     pub fn visit_prefix(
@@ -332,20 +522,24 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
         };
         let attempt = match target {
             PersistentTarget::Store(store) => store
-                .visit_relational_index_read_view_prefix_entries_many(
+                .visit_relational_index_read_view_prefix_entries_many_with_context(
                     table,
                     index,
                     &prefixes,
                     remaining,
                     &mut visit_locator,
+                    &self.context.read_context,
                 ),
-            PersistentTarget::Transaction(view) => Some(view.visit_prefix_entries_many(
-                table,
-                index,
-                &prefixes,
-                remaining,
-                &mut visit_locator,
-            )),
+            PersistentTarget::Transaction(view) => {
+                Some(self.context.read_context.visit_prefix_entries_many(
+                    RelationalIndexReadTarget::Transaction(view),
+                    table,
+                    index,
+                    &prefixes,
+                    remaining,
+                    &mut visit_locator,
+                ))
+            }
         };
         if let Some(error) = callback_error {
             return Err(error);
@@ -355,11 +549,13 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
                 Err(HawDBError::FileDescriptors(error))
             }
             Some(Ok(report)) => {
-                self.record_success(
+                self.record_admitted_success(
                     table,
                     index,
                     &report,
-                    RelationalIndexProbeSelector::Prefix(&prefixes[0]),
+                    RelationalIndexReadPurpose::ExecutionProbe(
+                        RelationalIndexProbeSelector::Prefix(&prefixes[0]),
+                    ),
                 )?;
                 Ok(keep_going)
             }
@@ -502,28 +698,44 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
         let attempt = match target {
             PersistentTarget::Store(store) => match selector {
                 RelationalIndexProbeSelector::Prefix(prefix) => store
-                    .visit_relational_index_read_view_prefix_entries(
+                    .visit_relational_index_read_view_prefix_entries_with_context(
                         table,
                         index,
                         prefix,
                         remaining,
                         &mut visit_locator,
+                        &self.context.read_context,
                     ),
                 RelationalIndexProbeSelector::Range(scan) => store
-                    .visit_relational_index_read_view_range_entries(
+                    .visit_relational_index_read_view_range_entries_with_context(
                         table,
                         index,
                         scan,
                         remaining,
                         &mut visit_locator,
+                        &self.context.read_context,
                     ),
             },
             PersistentTarget::Transaction(view) => Some(match selector {
                 RelationalIndexProbeSelector::Prefix(prefix) => {
-                    view.visit_prefix_entries(table, index, prefix, remaining, &mut visit_locator)
+                    self.context.read_context.visit_prefix_entries(
+                        RelationalIndexReadTarget::Transaction(view),
+                        table,
+                        index,
+                        prefix,
+                        remaining,
+                        &mut visit_locator,
+                    )
                 }
                 RelationalIndexProbeSelector::Range(scan) => {
-                    view.visit_range_entries(table, index, scan, remaining, &mut visit_locator)
+                    self.context.read_context.visit_range_entries(
+                        RelationalIndexReadTarget::Transaction(view),
+                        table,
+                        index,
+                        scan,
+                        remaining,
+                        &mut visit_locator,
+                    )
                 }
             }),
         };
@@ -535,7 +747,12 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
                 Err(HawDBError::FileDescriptors(error))
             }
             Some(Ok(report)) => {
-                self.record_success(table, index, &report, selector)?;
+                self.record_admitted_success(
+                    table,
+                    index,
+                    &report,
+                    RelationalIndexReadPurpose::ExecutionProbe(selector),
+                )?;
                 Ok(keep_going)
             }
             Some(Err(RelationalIndexShadowError::Admission(_))) => {
@@ -590,26 +807,19 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
     }
 
     fn remaining_limits(&self) -> Option<RelationalIndexReadLimits> {
-        let state = self.state.borrow();
-        Some(RelationalIndexReadLimits {
-            max_pages: NonZeroUsize::new(
-                self.limits
-                    .max_pages
-                    .get()
-                    .checked_sub(state.logical_pages)?,
-            )?,
-            max_rows: NonZeroUsize::new(
-                self.limits.max_rows.get().checked_sub(state.rows_visited)?,
-            )?,
-            max_bytes: NonZeroUsize::new(
-                self.limits
-                    .max_bytes
-                    .get()
-                    .checked_sub(state.logical_bytes)?,
-            )?,
-            max_file_bytes: self.limits.max_file_bytes.checked_sub(state.file_bytes)?,
-            max_tree_height: self.limits.max_tree_height,
-        })
+        let native = match self.mode {
+            RelationalIndexReadMode::DemandPaged(store)
+            | RelationalIndexReadMode::Authoritative(store) => {
+                store.supports_relational_index_operation_admission()
+            }
+            RelationalIndexReadMode::AuthoritativeTransaction(_) => true,
+            _ => false,
+        };
+        if native {
+            self.context.read_context.native_operation_limits().ok()
+        } else {
+            self.context.read_context.remaining_limits().ok()
+        }
     }
 
     fn evidence_mut<'state>(
@@ -628,7 +838,7 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
     }
 
     fn record_fallback(&self, table: &str, index: &str, reason: &'static str) -> Result<()> {
-        let mut state = self.state.borrow_mut();
+        let mut state = self.context.state.borrow_mut();
         let evidence = Self::evidence_mut(&mut state, table, index);
         evidence.lookups = checked_add(evidence.lookups, 1, "index lookup count")?;
         evidence.canonical_fallback_lookups = checked_add(
@@ -640,6 +850,23 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
         Ok(())
     }
 
+    fn record_metadata_fallback(
+        &self,
+        table: &str,
+        index: &str,
+        reason: &'static str,
+    ) -> Result<()> {
+        let mut state = self.context.state.borrow_mut();
+        let evidence = Self::evidence_mut(&mut state, table, index);
+        evidence.lookups = checked_add(evidence.lookups, 1, "index lookup count")?;
+        evidence.metadata_count_lookups =
+            checked_add(evidence.metadata_count_lookups, 1, "index metadata count")?;
+        // Declining a planning count is not an executed canonical fallback.
+        evidence.fallback_reasons.insert(reason);
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn record_success(
         &self,
         table: &str,
@@ -647,8 +874,27 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
         report: &RelationalIndexReadViewReport,
         selector: RelationalIndexProbeSelector<'_>,
     ) -> Result<()> {
+        self.context
+            .read_context
+            .admit_reported_usage(report)
+            .map_err(|error| HawDBError::Execution(error.to_string()))?;
+        self.record_admitted_success(
+            table,
+            index,
+            report,
+            RelationalIndexReadPurpose::ExecutionProbe(selector),
+        )
+    }
+
+    fn record_admitted_success(
+        &self,
+        table: &str,
+        index: &str,
+        report: &RelationalIndexReadViewReport,
+        purpose: RelationalIndexReadPurpose<'_>,
+    ) -> Result<()> {
         let metrics = IndexReadMetrics::from_report(report)?;
-        let mut state = self.state.borrow_mut();
+        let mut state = self.context.state.borrow_mut();
         let logical_pages = checked_add(
             state.logical_pages,
             metrics.logical_pages,
@@ -693,33 +939,39 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
         let evidence = Self::evidence_mut(&mut state, table, index);
         ensure_identity(evidence, report)?;
         evidence.lookups = checked_add(evidence.lookups, 1, "index lookup count")?;
-        match self.mode {
-            RelationalIndexReadMode::DemandPaged(_) => {
-                evidence.demand_paged_lookups = checked_add(
-                    evidence.demand_paged_lookups,
-                    1,
-                    "demand-paged lookup count",
-                )?;
+        match purpose {
+            RelationalIndexReadPurpose::MetadataCount => {
+                evidence.metadata_count_lookups =
+                    checked_add(evidence.metadata_count_lookups, 1, "index metadata count")?;
             }
-            RelationalIndexReadMode::Authoritative(_) => {
-                evidence.authoritative_lookups = checked_add(
-                    evidence.authoritative_lookups,
-                    1,
-                    "authoritative lookup count",
-                )?;
-            }
-            RelationalIndexReadMode::AuthoritativeTransaction(_) => {
-                evidence.transaction_workspace_lookups = checked_add(
-                    evidence.transaction_workspace_lookups,
-                    1,
-                    "transaction workspace lookup count",
-                )?;
-            }
-            RelationalIndexReadMode::Materialized
-            | RelationalIndexReadMode::Shadow(_)
-            | RelationalIndexReadMode::TransactionWorkspace => {
-                unreachable!("materialized paths cannot record a persistent-index success")
-            }
+            RelationalIndexReadPurpose::ExecutionProbe(_) => match self.mode {
+                RelationalIndexReadMode::DemandPaged(_) => {
+                    evidence.demand_paged_lookups = checked_add(
+                        evidence.demand_paged_lookups,
+                        1,
+                        "demand-paged lookup count",
+                    )?;
+                }
+                RelationalIndexReadMode::Authoritative(_) => {
+                    evidence.authoritative_lookups = checked_add(
+                        evidence.authoritative_lookups,
+                        1,
+                        "authoritative lookup count",
+                    )?;
+                }
+                RelationalIndexReadMode::AuthoritativeTransaction(_) => {
+                    evidence.transaction_workspace_lookups = checked_add(
+                        evidence.transaction_workspace_lookups,
+                        1,
+                        "transaction workspace lookup count",
+                    )?;
+                }
+                RelationalIndexReadMode::Materialized
+                | RelationalIndexReadMode::Shadow(_)
+                | RelationalIndexReadMode::TransactionWorkspace => {
+                    unreachable!("materialized paths cannot record a persistent-index success")
+                }
+            },
         }
         metrics.accumulate(evidence)?;
         evidence.live_batches_visited = checked_add(
@@ -747,7 +999,10 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
             report.rows_visited,
             "index result row count",
         )?;
-        if let RelationalIndexProbeSelector::Range(scan) = selector {
+        if let RelationalIndexReadPurpose::ExecutionProbe(RelationalIndexProbeSelector::Range(
+            scan,
+        )) = purpose
+        {
             evidence.range_lookups = checked_add(evidence.range_lookups, 1, "range lookup count")?;
             if scan.exclusive_bound.is_some() {
                 evidence.exclusive_seek_lookups =
@@ -758,7 +1013,8 @@ impl<'a, R: RelationalIndexStoreReader> RelationalIndexRuntime<'a, R> {
                     checked_add(evidence.backward_lookups, 1, "backward lookup count")?;
             }
         }
-        if report.stopped_early {
+        if matches!(purpose, RelationalIndexReadPurpose::ExecutionProbe(_)) && report.stopped_early
+        {
             evidence.early_stop_lookups =
                 checked_add(evidence.early_stop_lookups, 1, "early-stop lookup count")?;
         }
@@ -871,11 +1127,9 @@ fn ensure_identity(
         evidence.visible_commit_epoch,
         evidence.root_set_digest.as_deref(),
     );
-    if (evidence.demand_paged_lookups != 0
-        || evidence.authoritative_lookups != 0
-        || evidence.transaction_workspace_lookups != 0)
-        && expected != observed
-    {
+    // Planning metadata binds an identity before any execution probe. Fallback
+    // reports leave it unbound; lookup counters cannot determine the binding.
+    if evidence.base_generation.is_some() && expected != observed {
         return Err(HawDBError::StorageIntegrity(
             "relational index view identity changed within one SQL statement".to_string(),
         ));

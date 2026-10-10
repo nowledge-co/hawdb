@@ -1,0 +1,98 @@
+{
+  "state": "passed",
+  "source_receipt": "/private/tmp/hawdb-291-current-main-source.json",
+  "commit": "7cb639b93249948d2f7953b10109826bf16aa6dd",
+  "checks": [
+    {
+      "label": "maintenance-facade",
+      "state": "passed",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hawdb",
+        "--all-features",
+        "--lib",
+        "incremental_maintenance",
+        "--",
+        "--test-threads=1"
+      ],
+      "log": "/private/tmp/hawdb-291-current-main-maintenance-facade.log",
+      "pid": 62083,
+      "exit_code": 0,
+      "elapsed_seconds": 41.692406958,
+      "test_summaries": [
+        [
+          "ok",
+          "4",
+          "0",
+          "0"
+        ]
+      ],
+      "log_sha256": "1fab78f3e504f96213b838d50ebff5eb5f281b958045d5f1c2cdfb88421de2a5"
+    },
+    {
+      "label": "rebuild-facade",
+      "state": "passed",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hawdb",
+        "--all-features",
+        "--lib",
+        "api::tests::search_projection_rebuild_facade::",
+        "--",
+        "--test-threads=1"
+      ],
+      "log": "/private/tmp/hawdb-291-current-main-rebuild-facade.log",
+      "pid": 62723,
+      "exit_code": 0,
+      "elapsed_seconds": 0.11721012499999972,
+      "test_summaries": [
+        [
+          "ok",
+          "5",
+          "0",
+          "0"
+        ]
+      ],
+      "log_sha256": "4763a8ae2315f20556ce27e94e5c60a1512327cd7073ffd420ad0eef2d617acb"
+    },
+    {
+      "label": "power-loss",
+      "state": "passed",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "hawdb",
+        "--all-features",
+        "--lib",
+        "api::tests::power_loss::search_projection::",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "log": "/private/tmp/hawdb-291-current-main-power-loss.log",
+      "pid": 62728,
+      "cut_families": 30,
+      "fault_plans": 3260,
+      "exit_code": 0,
+      "elapsed_seconds": 1553.5229791250001,
+      "test_summaries": [
+        [
+          "ok",
+          "11",
+          "0",
+          "0"
+        ]
+      ],
+      "log_sha256": "7aba033e8a9a22a3ae8dfd745182689f87135dd610fe0e1ab5723bc2d83a432f"
+    }
+  ],
+  "source_unchanged": true
+}

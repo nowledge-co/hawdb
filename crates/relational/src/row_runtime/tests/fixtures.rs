@@ -98,54 +98,85 @@ pub(super) struct Fixture {
 
 impl Fixture {
     pub fn new() -> Self {
+        Self::with_state(state())
+    }
+
+    pub fn with_state(state: RelationalState) -> Self {
+        Self::with_table_layouts(state, &[("docs", usize::MAX)])
+    }
+
+    pub fn with_table_layouts(state: RelationalState, layouts: &[(&str, usize)]) -> Self {
         let directory = std::env::temp_dir().join(format!(
             "hawdb-row-runtime-{}",
             hawdb_core::generate_uuidv7().unwrap()
         ));
         std::fs::create_dir(&directory).unwrap();
-        let state = state();
         let overflow_config = RelationalOverflowPublicationConfig::default();
         RelationalOverflowPublisher::new(overflow_config)
-            .publish(&directory, 1, 10, None, Vec::new())
+            .publish(
+                &directory,
+                1,
+                10,
+                None,
+                state
+                    .overflow_generation_inputs(false, 1024 * 1024)
+                    .unwrap(),
+            )
             .unwrap();
         let overflow = Arc::new(
             RelationalOverflowRootReader::open_latest(&directory, overflow_config)
                 .unwrap()
                 .unwrap(),
         );
-        let schema = state.table_schema("docs").unwrap();
-        let schema_digest = state.table_schema_digest("docs").unwrap().unwrap();
-        let row_config = RelationalRowPagePublicationConfig::default();
-        RelationalRowPagePublisher::new(row_config)
-            .publish_with_overflow_root(
-                &directory,
-                1,
-                10,
-                None,
-                vec![RelationalRowPageTableDelta {
-                    table: "docs".into(),
-                    schema: Some(schema.clone()),
-                    schema_digest,
-                    column_count: NonZeroU32::new(3).unwrap(),
-                    next_page_id: NonZeroU64::new(2).unwrap(),
-                    dirty_pages: vec![ImmutableRelationalRowPage {
+        let deltas = layouts
+            .iter()
+            .map(|&(table, rows_per_page)| {
+                assert!(rows_per_page > 0);
+                let schema = state.table_schema(table).unwrap();
+                let schema_digest = state.table_schema_digest(table).unwrap().unwrap();
+                let rows = state
+                    .rows(table)
+                    .map(|(key, row)| RelationalRowPageEntry {
+                        primary_key: key.clone(),
+                        row: row.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                // Keep the original one-page fixture for empty tables too.
+                let chunks = if rows.is_empty() {
+                    vec![rows.as_slice()]
+                } else {
+                    rows.chunks(rows_per_page).collect()
+                };
+                let dirty_pages = chunks
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, rows)| ImmutableRelationalRowPage {
                         generation: 1,
                         source_commit_epoch: 10,
-                        page_id: RelationalRowPageId::new(NonZeroU64::new(1).unwrap()),
+                        page_id: RelationalRowPageId::new(
+                            NonZeroU64::new(u64::try_from(index).unwrap() + 1).unwrap(),
+                        ),
                         schema_digest,
-                        column_count: 3,
-                        rows: state
-                            .rows("docs")
-                            .map(|(key, row)| RelationalRowPageEntry {
-                                primary_key: key.clone(),
-                                row: row.clone(),
-                            })
-                            .collect(),
-                    }],
+                        column_count: schema.columns.len(),
+                        rows: rows.to_vec(),
+                    })
+                    .collect::<Vec<_>>();
+                RelationalRowPageTableDelta {
+                    table: table.into(),
+                    schema: Some(schema.clone()),
+                    schema_digest,
+                    column_count: NonZeroU32::new(u32::try_from(schema.columns.len()).unwrap())
+                        .unwrap(),
+                    next_page_id: NonZeroU64::new(u64::try_from(dirty_pages.len()).unwrap() + 1)
+                        .unwrap(),
+                    dirty_pages,
                     deleted_page_ids: Vec::new(),
-                }],
-                &overflow,
-            )
+                }
+            })
+            .collect();
+        let row_config = RelationalRowPagePublicationConfig::default();
+        RelationalRowPagePublisher::new(row_config)
+            .publish_with_overflow_root(&directory, 1, 10, None, deltas, &overflow)
             .unwrap();
         let root = Arc::new(
             RelationalRowPageRootReader::open_latest(&directory, row_config)

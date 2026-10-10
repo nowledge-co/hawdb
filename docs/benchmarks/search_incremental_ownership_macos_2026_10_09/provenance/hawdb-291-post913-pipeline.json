@@ -1,0 +1,78 @@
+{
+  "state": "passed",
+  "commit": "41e10dacf8b2589e416c01b9b047db98dfe01acd",
+  "source_receipt": "/private/tmp/hawdb-291-post913-source.json",
+  "started_unix_seconds": 1791552109.113609,
+  "steps": [
+    {
+      "label": "fresh-three-cell-scale",
+      "state": "finished",
+      "command": [
+        "python3",
+        "/private/tmp/hawdb-291-post913-scale-driver.py"
+      ],
+      "script_sha256": "cc4f0fba0525b326685f25951f30ae08865dc6d18b99cd593d2c3854550f4cf1",
+      "log": "/private/tmp/hawdb-291-post913-scale-driver.log",
+      "started_unix_seconds": 1791569897.739077,
+      "pid": 66967,
+      "exit_code": 0,
+      "elapsed_seconds": 12321.663171768188,
+      "log_sha256": "3eafd5c701bb8a65d6b2d188337c766d8f6949a1eaa019bf81156d53eac3135b"
+    }
+  ],
+  "scope": "Fresh post-913 qualification. Preserve original594 pipeline and completed7cb native/profiles; serialize scale matrices; no historical cell substitutes.",
+  "prerequisites": {
+    "release": "passed",
+    "compressed-reference": "passed",
+    "native-recovery": "passed",
+    "full-five-search-profiles": "passed",
+    "fresh-fuzz-and-shared-IO-regressions": "passed"
+  },
+  "original_matrix": {
+    "pipeline_state": "passed",
+    "step_state": "finished",
+    "driver_pid": 98984,
+    "exit_code": 0,
+    "cells": [
+      {
+        "label": "d81920-k10",
+        "state": "finished"
+      },
+      {
+        "label": "d327680-k10",
+        "state": "finished"
+      },
+      {
+        "label": "d327680-k100",
+        "state": "finished"
+      }
+    ]
+  },
+  "original_terminal_receipts": {
+    "/private/tmp/hawdb-291-post-merge-verification.json": "047b80abd30813f91ec7f3a6710526bd140510887783dfb077f78eaf28d7cd1f",
+    "/private/tmp/hawdb-291-incremental-repair-scale-evidence/manifest.json": "ea25a132c7e47bdeff0c8725d0fdc985a5477e0756598d090a9204873f4c5291"
+  },
+  "prerequisite_receipts": {
+    "release": {
+      "path": "/private/tmp/hawdb-291-post913-release.json",
+      "sha256": "a687066153184c1910d51604589f6bf8d0be7298d2ec0713f9048f26b62a1c7f"
+    },
+    "compressed-reference": {
+      "path": "/private/tmp/hawdb-291-post913-compressed-probe.json",
+      "sha256": "8d5deac5baa2dc9046f3ba735a8edbff3e921f4da867bfba6583642f8e3f33fc"
+    },
+    "native-recovery": {
+      "path": "/private/tmp/hawdb-291-post913-native.json",
+      "sha256": "9f2211902245cbe247f16fb06419836ae45265318603377ed8a523daa6221a63"
+    },
+    "full-five-search-profiles": {
+      "path": "/private/tmp/hawdb-291-post913-bazel-evidence/receipt.json",
+      "sha256": "e278aa90ebe4a71db6f413d32f86bd4eec4638c274aac7f502e33bbaa82632c0"
+    },
+    "fresh-fuzz-and-shared-IO-regressions": {
+      "path": "/private/tmp/hawdb-291-post913-bazel-phase-evidence/receipt.json",
+      "sha256": "83dae7702c89d81ed3cc54c50d39a671d6fbd24811d8a774adb22f326cba5253"
+    }
+  },
+  "source_unchanged": true
+}

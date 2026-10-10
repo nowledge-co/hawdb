@@ -15,7 +15,7 @@
 use super::*;
 use crate::{
     GraphAnalyticsAlgorithm, GraphAnalyticsFreshness, GraphAnalyticsRequest, LouvainOptions,
-    PageRankOptions,
+    LouvainProcedureOptions, PageRankOptions, PageRankProcedureOptions,
 };
 use std::num::NonZeroUsize;
 
@@ -38,6 +38,91 @@ fn fixture(db: &mut Database) {
 
 fn ranks(db: &mut Database) -> Vec<BTreeMap<String, Value>> {
     db.query("MATCH (n:Memory) RETURN n.id AS id, n.rank AS rank, n.rank_computed_at_commit_epoch AS source, n.rank_published_at_commit_epoch AS published ORDER BY n.id").unwrap().rows.into_rows()
+}
+
+#[test]
+fn typed_analytics_binds_nondefault_options_like_ordinary_calls() {
+    for (algorithm, query, column) in [
+        (
+            GraphAnalyticsAlgorithm::PageRankProcedure(PageRankProcedureOptions {
+                iterations: 8,
+                damping: 0.4,
+                tolerance: 50.0,
+                normalize_initial: false,
+            }),
+            "CALL page_rank('graph', maxIterations := 8, dampingFactor := 0.4, tolerance := 50.0, normalizeInitial := false) RETURN node, pagerank_score",
+            "pagerank_score",
+        ),
+        (
+            GraphAnalyticsAlgorithm::LouvainProcedure(LouvainProcedureOptions {
+                hierarchy: true,
+                max_iterations: 3,
+                max_levels: 2,
+                resolution: 5.0,
+            }),
+            "CALL louvain('graph', maxIterations := 3, maxLevels := 2, resolution := 5.0) RETURN node, level, louvain_id",
+            "louvain_id",
+        ),
+    ] {
+        let mut db = Database::new();
+        fixture(&mut db);
+        let ordinary = db.query(query).unwrap();
+        let mut expected = BTreeMap::new();
+        for row in &ordinary.rows {
+            let Value::Int(node) = row["node"] else { panic!("invalid node") };
+            let level = row.get("level").cloned().unwrap_or(Value::Int(0));
+            let Value::Int(level) = level else { panic!("invalid level") };
+            let entry = expected.entry(node).or_insert((level, row[column].clone()));
+            if level > entry.0 { *entry = (level, row[column].clone()); }
+        }
+        let prepared = db.prepare_graph_analytics(request(algorithm), None).unwrap();
+        assert_eq!(prepared.execution_report().output_rows, ordinary.rows.len());
+        db.publish_graph_analytics(&prepared, "rank", None).unwrap();
+        let published = db.query("MATCH (n:Memory) RETURN id(n) AS node, n.rank AS value").unwrap();
+        assert_eq!(published.rows.len(), expected.len());
+        for row in &published.rows {
+            let Value::Int(node) = row["node"] else { panic!("invalid node") };
+            assert_eq!(row["value"], expected[&node].1);
+        }
+    }
+}
+
+#[test]
+fn typed_analytics_rejects_invalid_options_before_staging() {
+    let mut db = Database::new();
+    fixture(&mut db);
+    let epoch = db.commit_epoch().unwrap();
+    for (algorithm, message) in [
+        (
+            GraphAnalyticsAlgorithm::PageRank(PageRankOptions {
+                damping: 1.0,
+                ..PageRankOptions::default()
+            }),
+            "damping",
+        ),
+        (
+            GraphAnalyticsAlgorithm::PageRankProcedure(PageRankProcedureOptions {
+                tolerance: f64::NAN,
+                ..PageRankProcedureOptions::default()
+            }),
+            "tolerance",
+        ),
+        (
+            GraphAnalyticsAlgorithm::LouvainProcedure(LouvainProcedureOptions {
+                resolution: 0.0,
+                ..LouvainProcedureOptions::default()
+            }),
+            "resolution",
+        ),
+    ] {
+        assert!(db
+            .prepare_graph_analytics(request(algorithm), None)
+            .unwrap_err()
+            .to_string()
+            .contains(message));
+        assert_eq!(db.commit_epoch().unwrap(), epoch);
+        assert_eq!(ranks(&mut db)[0]["rank"], Value::Int(-1));
+    }
 }
 
 #[test]
@@ -122,7 +207,7 @@ fn louvain_publication_writes_only_the_highest_level_per_original_node() {
     db.query("CALL project_graph('graph', ['Memory'], ['LINK'])")
         .unwrap();
     let hierarchy = db
-        .query("CALL louvain('graph', maxIterations := 20, maxLevels := 3) RETURN node, level, louvain_id")
+        .query("CALL louvain('graph', maxIterations := 20, maxLevels := 3, resolution := 0.1) RETURN node, level, louvain_id")
         .unwrap();
     let mut expected = BTreeMap::new();
     let mut initial = BTreeMap::new();
@@ -145,10 +230,14 @@ fn louvain_publication_writes_only_the_highest_level_per_original_node() {
     assert!(expected
         .iter()
         .any(|(node, (_, value))| initial[node] != *value));
-    let mut options = request(GraphAnalyticsAlgorithm::Louvain(LouvainOptions {
-        max_iterations: 20,
-        max_levels: 3,
-    }));
+    let mut options = request(GraphAnalyticsAlgorithm::LouvainProcedure(
+        LouvainProcedureOptions {
+            max_iterations: 20,
+            max_levels: 3,
+            resolution: 0.1,
+            hierarchy: true,
+        },
+    ));
     // Raw hierarchy output remains bounded; retained state fits only eight rows.
     options.max_rows = NonZeroUsize::new(hierarchy.rows.len()).unwrap();
     options.max_staged_bytes = NonZeroUsize::new(1024 + 128 * 8).unwrap();
@@ -518,7 +607,7 @@ fn rss_child() {
     let mut records = Vec::new();
     for (algorithm, columns, count) in [
         ("page_rank", "node, pagerank_score", 128),
-        ("louvain", "node, level, louvain_id", 256),
+        ("louvain", "node, level, louvain_id", 128),
     ] {
         let bytes_before = db
             .storage_residency_report()

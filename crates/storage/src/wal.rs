@@ -461,6 +461,8 @@ pub enum WalOp {
         name: String,
         node_labels: Vec<String>,
         rel_types: Vec<String>,
+        relationship_predicates:
+            BTreeMap<String, crate::projection::ProjectedRelationshipPredicate>,
     },
     MarkInitialImportSource {
         source_fingerprint: String,
@@ -665,11 +667,15 @@ impl WalEntry {
                 name,
                 node_labels,
                 rel_types,
+                relationship_predicates,
             } => format!(
-                "project_graph\t{}\t{}\t{}",
+                "project_graph\t{}\t{}\t{}\t{}",
                 encode_string(name),
                 encode_string_vec(node_labels),
-                encode_string_vec(rel_types)
+                encode_string_vec(rel_types),
+                crate::projection::encode_projected_relationship_predicates(
+                    relationship_predicates
+                )
             ),
             WalOp::MarkInitialImportSource { source_fingerprint } => format!(
                 "mark_initial_import_source\t{}",
@@ -876,11 +882,13 @@ fn encode_wal_op_for_batch(op: &WalOp) -> Result<String> {
             name,
             node_labels,
             rel_types,
+            relationship_predicates,
         } => format!(
-            "project_graph,{},{},{}",
+            "project_graph,{},{},{},{}",
             encode_string(name),
             encode_string_vec(node_labels),
-            encode_string_vec(rel_types)
+            encode_string_vec(rel_types),
+            crate::projection::encode_projected_relationship_predicates(relationship_predicates)
         ),
         WalOp::MarkInitialImportSource { source_fingerprint } => format!(
             "mark_initial_import_source,{}",

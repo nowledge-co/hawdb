@@ -178,7 +178,7 @@ pub struct PageRankScore {
     pub score: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LouvainOptions {
     pub max_iterations: usize,
     pub max_levels: usize,

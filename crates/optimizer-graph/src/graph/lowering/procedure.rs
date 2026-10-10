@@ -25,22 +25,26 @@ pub(super) fn lower(
             name,
             node_labels,
             rel_types,
+            relationship_predicates,
         } => Some(PhysicalPlan::ProjectGraph {
             name: name.clone(),
             node_labels: node_labels.clone(),
             rel_types: rel_types.clone(),
+            relationship_predicates: relationship_predicates.clone(),
         }),
         LogicalPlan::GraphAlgorithm {
             algorithm,
             graph_name,
             options,
             score_column,
+            return_node_identity,
             node_visibility_predicate,
         } => Some(PhysicalPlan::GraphAlgorithm {
             algorithm: *algorithm,
             graph_name: graph_name.clone(),
             options: *options,
             score_column: score_column.clone(),
+            return_node_identity: *return_node_identity,
             node_visibility_predicate: node_visibility_predicate.clone(),
         }),
         LogicalPlan::VectorSeed {

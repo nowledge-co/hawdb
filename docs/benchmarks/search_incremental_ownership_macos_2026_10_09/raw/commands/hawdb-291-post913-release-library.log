@@ -1,0 +1,138 @@
+    Blocking waiting for file lock on package cache
+   Compiling libc v0.2.190
+   Compiling find-msvc-tools v0.1.9
+   Compiling shlex v2.0.1
+   Compiling memchr v2.8.3
+   Compiling cfg-if v1.0.4
+   Compiling regex-syntax v0.8.11
+   Compiling getrandom v0.4.3
+   Compiling proc-macro2 v1.0.106
+   Compiling uuid v1.27.0
+   Compiling quote v1.0.46
+   Compiling pkg-config v0.3.33
+   Compiling unicode-ident v1.0.24
+   Compiling zstd-safe v7.2.4
+   Compiling serde_core v1.0.229
+   Compiling version_check v0.9.5
+   Compiling zmij v1.0.23
+   Compiling aho-corasick v1.1.4
+   Compiling typenum v1.20.1
+   Compiling serde_json v1.0.151
+   Compiling generic-array v0.14.7
+   Compiling hawdb-plan-core v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/plan-core)
+   Compiling itoa v1.0.18
+   Compiling bitflags v2.13.1
+   Compiling crossbeam-utils v0.8.22
+   Compiling semver v1.0.28
+   Compiling objc2-core-foundation v0.3.2
+   Compiling crossbeam-epoch v0.9.20
+   Compiling regex-automata v0.4.18
+   Compiling rustc_version v0.4.1
+   Compiling autocfg v1.5.1
+   Compiling crossbeam-deque v0.8.7
+   Compiling rayon-core v1.13.0
+   Compiling jobserver v0.1.35
+   Compiling cc v1.2.67
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling cpufeatures v0.2.17
+   Compiling objc2-io-kit v0.3.2
+   Compiling crc32c v0.6.8
+   Compiling num-traits v0.2.19
+   Compiling digest v0.10.7
+   Compiling sysinfo v0.39.6
+   Compiling serde v1.0.229
+   Compiling hawdb-cgroup v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/cgroup)
+   Compiling regex v1.13.1
+   Compiling either v1.16.0
+   Compiling syn v3.0.3
+   Compiling bytemuck v1.25.2
+   Compiling byteorder v1.5.0
+   Compiling hawdb-core v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/core)
+   Compiling roaring v0.10.12
+   Compiling memmap2 v0.9.11
+   Compiling fs2 v0.4.3
+   Compiling syn v2.0.118
+   Compiling object v0.37.3
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+   Compiling hawdb-expression v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/expression)
+   Compiling hawdb-ddl v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/ddl)
+   Compiling hawdb-cypher v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/cypher)
+   Compiling sha2-asm v0.6.4
+   Compiling hawdb-qos v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/qos)
+   Compiling rayon v1.12.0
+   Compiling chrono v0.4.45
+   Compiling hawdb-analytics v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/analytics)
+   Compiling hawdb-telemetry v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/telemetry)
+   Compiling hawdb-plan-cypher v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/plan-cypher)
+   Compiling hawdb-cascades v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/cascades)
+   Compiling equivalent v1.0.2
+   Compiling crc32fast v1.5.2
+   Compiling serde_derive v1.0.229
+   Compiling foldhash v0.2.0
+   Compiling allocator-api2 v0.2.21
+   Compiling no_std_io2 v0.9.4
+   Compiling hashbrown v0.16.1
+   Compiling rle-decode-fast v1.0.3
+   Compiling hawdb-optimizer-vector v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/optimizer-vector)
+   Compiling sha2 v0.10.9
+   Compiling libflate_lz77 v2.3.0
+   Compiling ar_archive_writer v0.5.2
+   Compiling dary_heap v0.3.9
+   Compiling hawdb-integrity v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/integrity)
+   Compiling adler32 v1.2.0
+   Compiling libflate v2.3.1
+   Compiling hawdb-optimizer-predicate v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/optimizer-predicate)
+   Compiling stacker v0.1.24
+   Compiling proc-macro-error-attr3 v3.1.0
+   Compiling tinyvec_macros v0.1.1
+   Compiling crunchy v0.2.4
+   Compiling recursive-proc-macro-impl v0.1.1
+   Compiling tinyvec v1.12.0
+   Compiling fst v0.4.7
+   Compiling hawdb-plan-cache v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/plan-cache)
+   Compiling jieba-macros v0.11.0
+   Compiling proc-macro-error3 v3.1.0
+   Compiling psm v0.1.31
+   Compiling rustc-hash v2.1.3
+   Compiling unicode-normalization v0.1.25
+   Compiling bytecount v0.6.9
+   Compiling log v0.4.33
+   Compiling hawdb-evidence v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/evidence)
+   Compiling bitpacking v0.9.3
+   Compiling hawdb-optimizer-graph v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/optimizer-graph)
+   Compiling caseless v0.2.2
+   Compiling hawdb-optimizer-relational v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/optimizer-relational)
+   Compiling hawdb-sql-syntax v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/sql-syntax)
+   Compiling hawdb-query v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/query)
+   Compiling pin-project-lite v0.2.17
+   Compiling hawdb-route-ownership v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/route-ownership)
+   Compiling tokio v1.53.1
+   Compiling unicode-width v0.2.2
+   Compiling hawdb-fuzz-contracts v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/fuzz-contracts)
+   Compiling hawdb-optimizer v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/optimizer)
+   Compiling hawdb-query-policy v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/query-policy)
+   Compiling recursive v0.1.1
+   Compiling sqlparser v0.63.0
+   Compiling zstd v0.13.3
+   Compiling include-flate-compress v0.3.4
+   Compiling hawdb-storage v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/storage)
+   Compiling include-flate-codegen v0.3.4
+   Compiling include-flate v0.3.4
+   Compiling jieba-rs v0.11.0
+   Compiling hawdb-sql v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/sql)
+   Compiling hawdb-executor v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/executor)
+   Compiling hawdb-vector-projection v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/vector-projection)
+   Compiling hawdb-runtime-tokio v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/runtime-tokio)
+   Compiling hawdb-search v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/search)
+   Compiling hawdb-system-sql v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/system-sql)
+   Compiling hawdb-explain v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/explain)
+   Compiling hawdb-resource-profile v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/resource-profile)
+   Compiling hawdb-relational v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/relational)
+   Compiling hawdb-compat v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/compat)
+   Compiling hawdb-artifact v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/artifact)
+   Compiling hawdb-nowledge-contracts v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/nowledge-contracts)
+   Compiling hawdb-bootstrap v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/bootstrap)
+   Compiling hawdb-readiness v0.5.0 (/private/tmp/hawdb-291-post913-qualification/crates/readiness)
+   Compiling hawdb v0.5.0 (/private/tmp/hawdb-291-post913-qualification)
+    Finished `release` profile [optimized] target(s) in 1m 48s

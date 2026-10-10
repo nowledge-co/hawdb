@@ -96,6 +96,15 @@ in the correct shard. Partial shards never receive a full-campaign manifest.
 The separate mutant gate remains mandatory. CI keeps one shard by default;
 timeouts and resource settings are unchanged.
 
+## Search private-stage cleanup ownership
+
+`HawDBSearchStageCleanup` checks that interrupted writer cleanup and retained
+stage retries keep unresolved disk evidence and live ticket allocations covered
+by retained admission. The guard restores unfinished tickets; only confirmed
+removal may free a ticket and subsequently its reservation. Two controls reject
+forgetting the ticket on unwind and refunding admission before freeing it.
+See the [inductive argument, source mapping and proof limits](SEARCH_STAGE_CLEANUP_PROOF.md).
+
 ## Immutable root artifact bindings
 
 `HawDBImmutableRootBindings` models the manifest-to-object relation used by a
@@ -1996,3 +2005,62 @@ background aging and recurring foreground arrivals. See the
 `HawDBGovernedConflictRetry` models a shared first attempt and capacity escalation
 after conflict, with an explicit starvation control for fixed-weight retries.
 See [the retry-policy proof and workload](GOVERNED_CONFLICT_RETRY_PROOF.md).
+
+
+## Relational statement read budget
+
+`HawDBRelationalIndexAttemptLifecycle.tla` separately models native index read
+attempt health for one parent and one nested read with independent statement and
+transaction caps. `Admit` maps to paired operation preflight followed by both
+inline charges, before payload or visitor reentry. `Refuse` preserves health only
+for a typed owner-budget refusal before that attempt accepts any work; partial
+refusal, unknown error and unwind close the owners. Successful settlement and
+typed descriptor refusal retain all accepted charges. The `CloseZeroRefusal`
+mutant invalidates a legal parent resume; `ChargeBeforeOuterPreflight` fabricates
+partial accounting for an operation that neither owner allowed jointly.
+
+The bounded model abstracts logical pages and rows; it does not prove I/O,
+allocations, Rust borrow safety, codec integrity, cancellation or arbitrary retry
+sequences. Native `posting_count_tests` protect pre-payload refusal versus
+partially admitted nested failure. The runtime's `native_absent_*` guards protect
+row-free prefix, range and batch probes after actual locator work exhausts the
+row allowance in either or both owners. `native_live_delete_*` adds the same
+boundary for tombstone filtering and both constraint owners. Native traversal
+retains its finite configured row/candidate window; final locators must still
+pass the true cumulative Row owner before a visitor. The storage guard
+`transaction_private_delete_constraints_survive_consumed_row_allowance` protects
+the distinct transaction-private exact merge: deleted base candidates consume
+no Row charge, surviving base and insert locators share admission before their
+visitor, and the report counts final locators without refunding earlier work.
+SQL nested guards distinguish Page/Byte/FileBytes refusal before unknown damage
+from Row refusal on healthy candidates; a separately admitted corrupt page still
+fails integrity even when Row allowance is spent. Opaque providers retain
+strict positive preflight. These tests retain persistent-path and no-refund
+assertions independently of their result oracle.
+
+`HawDBRelationalStatementReadBudget.tla` models a parent traversal, one nested
+read, five cumulative resources and monotone limit attachment. `Admit` maps to
+the inline `CumulativeReadBudget` in the snapshot's demand reader; page and
+slot-byte admission is atomic, row admission precedes selected field decode,
+hydration and callbacks, and
+overlay cursors charge selected entries and increments in each invocation's
+peak before exposing rows. `Finish` retains work on success, rejection, early
+stop and unwind. `Rebind` maps to limit tightening that rejects caps below
+existing usage. Mixed projection row/byte charges use the same admission owner;
+projection frames remain distinct from the demand-reader page resource.
+Runtime preflight intersects its reported-work allowance with the owner's
+typed remaining admission, so failed hydration and earlier cap tightening
+cannot enlarge a later projection frame. These implementation boundaries are
+protected by the native `demand::tests::admission` and
+`row_runtime::tests::mixed_budget` guards; the latter retains public emission
+counts independently and covers both nested source directions.
+
+The bounded model checks aggregate active-plus-finished work and exact retained
+accounting. It does not prove Rust locking/memory safety, physical I/O, payload
+allocation, hydration, row order, visibility or pin counts; the existing demand
+and snapshot models and native tests cover those separate contracts. The
+`PrivateAdmission` mutant exposes the former per-traversal hole; `ForgetOnRebind`
+loses already accepted work. Both have explicit manual Bazel negative-control
+targets and entries in `mutants/mutants.txt`. Native row-runtime regressions
+cover owned/borrowed callbacks, page/byte/row/overlay admission, parent resume,
+complete admitted results and callback unwind.

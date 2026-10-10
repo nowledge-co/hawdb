@@ -1,0 +1,10 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/executor:hawdb_vector_seed_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+vector-seed-differential-v1 seeds=256 plan_cases=16384 stream_cases=16384
+test external::seed::tests::differential::vector_seed_differential_campaign ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 1.95s
+

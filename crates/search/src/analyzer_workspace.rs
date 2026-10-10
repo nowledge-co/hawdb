@@ -23,7 +23,8 @@ use std::mem::size_of;
 
 pub(crate) mod bounds;
 
-const STACK_BYTES: usize = 2 * 1024 * 1024;
+mod stack;
+use stack::STACK_BYTES;
 // Fixed std thread/packet/parking bookkeeping, separate from the captured closure
 // and result sizes. This allowance does not model OS metadata or process RSS.
 const THREAD_BOOKKEEPING_BYTES: usize = 4096;
@@ -121,9 +122,9 @@ where
     let _thread_memory = memory.retained.reserve(thread_bytes)?;
     let mut workspace = Workspace::new(memory.clone(), task.clone())?;
     #[cfg(test)]
-    let observation = entrypoint_tests::capture(memory);
+    let observation = observation::capture(&memory.ledger);
     #[cfg(test)]
-    let read_evidence = crate::out_of_core::analyzer_read_evidence::capture();
+    let read_evidence = crate::build_control::read_observation::capture();
     std::thread::scope(|scope| {
         // Only the worker may access the workspace. The parent owns both leases
         // until native join completes, including when the worker panics.
@@ -132,7 +133,7 @@ where
             .stack_size(STACK_BYTES)
             .spawn_scoped(scope, move || {
                 #[cfg(test)]
-                entrypoint_tests::install(observation);
+                observation::install(observation);
                 #[cfg(test)]
                 let _read_evidence = read_evidence.install();
                 worker_workspace.warm_up()?;
@@ -157,3 +158,6 @@ mod tests;
 
 #[cfg(test)]
 mod entrypoint_tests;
+
+#[cfg(test)]
+mod observation;

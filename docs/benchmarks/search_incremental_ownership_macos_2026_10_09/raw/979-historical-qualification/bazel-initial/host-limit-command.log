@@ -1,0 +1,80 @@
+Computing main repo mapping: 
+Loading: 
+Loading: 0 packages loaded
+Analyzing: target //:hawdb_branch_project_open_tests (1 packages loaded, 0 targets configured)
+Analyzing: target //:hawdb_branch_project_open_tests (1 packages loaded, 0 targets configured)
+
+INFO: Analyzed target //:hawdb_branch_project_open_tests (18 packages loaded, 1066 targets configured).
+[746 / 751] Compiling Rust rlib hawdb_compat (13 files); 1s darwin-sandbox ... (2 actions running)
+[748 / 751] Compiling Rust rlib hawdb (220 files); 0s darwin-sandbox
+[749 / 751] [Prepa] Compiling Rust bin hawdb_branch_project_open_tests (3 files)
+ERROR: /private/tmp/hawdb-979-os-policy-followup/BUILD.bazel:611:10: Compiling Rust bin hawdb_branch_project_open_tests (3 files) failed: (Exit 1): process_wrapper failed: error executing Rustc command (from rust_test rule target //:hawdb_branch_project_open_tests) bazel-out/darwin_arm64-opt-exec/bin/external/rules_rust+/util/process_wrapper/process_wrapper --arg-file ... (remaining 102 arguments skipped)
+
+Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging
+error[E0433]: cannot find module or crate `libc` in this scope
+  --> tests/branch_project_open.rs:97:25
+   |
+97 |     assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+   |                         ^^^^ use of unresolved module or unlinked crate `libc`
+   |
+   = help: if you wanted to use a crate named `libc`, use `cargo add libc` to add it to your `Cargo.toml`
+
+error[E0433]: cannot find module or crate `libc` in this scope
+  --> tests/branch_project_open.rs:97:41
+   |
+97 |     assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+   |                                         ^^^^ use of unresolved module or unlinked crate `libc`
+   |
+   = help: if you wanted to use a crate named `libc`, use `cargo add libc` to add it to your `Cargo.toml`
+
+error[E0433]: cannot find module or crate `libc` in this scope
+   --> tests/branch_project_open.rs:118:18
+    |
+118 |         unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut observed) },
+    |                  ^^^^ use of unresolved module or unlinked crate `libc`
+    |
+    = help: if you wanted to use a crate named `libc`, use `cargo add libc` to add it to your `Cargo.toml`
+
+error[E0433]: cannot find module or crate `libc` in this scope
+   --> tests/branch_project_open.rs:118:34
+    |
+118 |         unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut observed) },
+    |                                  ^^^^ use of unresolved module or unlinked crate `libc`
+    |
+    = help: if you wanted to use a crate named `libc`, use `cargo add libc` to add it to your `Cargo.toml`
+
+error[E0433]: cannot find module or crate `libc` in this scope
+  --> tests/branch_project_open.rs:91:15
+   |
+91 |     let soft: libc::rlim_t = soft.parse().unwrap();
+   |               ^^^^ use of unresolved module or unlinked crate `libc`
+   |
+   = help: if you wanted to use a crate named `libc`, use `cargo add libc` to add it to your `Cargo.toml`
+
+error[E0433]: cannot find module or crate `libc` in this scope
+  --> tests/branch_project_open.rs:92:17
+   |
+92 |     let limit = libc::rlimit {
+   |                 ^^^^ use of unresolved module or unlinked crate `libc`
+   |
+   = help: if you wanted to use a crate named `libc`, use `cargo add libc` to add it to your `Cargo.toml`
+
+error[E0433]: cannot find module or crate `libc` in this scope
+   --> tests/branch_project_open.rs:112:24
+    |
+112 |     let mut observed = libc::rlimit {
+    |                        ^^^^ use of unresolved module or unlinked crate `libc`
+    |
+    = help: if you wanted to use a crate named `libc`, use `cargo add libc` to add it to your `Cargo.toml`
+
+error: aborting due to 7 previous errors
+
+For more information about this error, try `rustc --explain E0433`.
+Target //:hawdb_branch_project_open_tests failed to build
+Use --verbose_failures to see the command lines of failed build steps.
+INFO: Elapsed time: 5.420s, Critical Path: 5.11s
+INFO: 14 processes: 11 action cache hit, 5 internal, 9 darwin-sandbox.
+ERROR: Build did NOT complete successfully
+//:hawdb_branch_project_open_tests                              FAILED TO BUILD
+
+Executed 0 out of 1 test: 1 fails to build.

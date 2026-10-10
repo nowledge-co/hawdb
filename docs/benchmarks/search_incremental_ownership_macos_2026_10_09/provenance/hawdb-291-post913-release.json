@@ -1,0 +1,54 @@
+{
+  "state": "passed",
+  "worktree": "/private/tmp/hawdb-291-post913-qualification",
+  "integrated_tree": "6026a7fb47580a56a72677463077fee383431fdd",
+  "source_receipt": "/private/tmp/hawdb-291-post913-source.json",
+  "source_receipt_sha256": "c1cc23842d613648c7ca43f4824b542968704aa9c2dc55c67e1c58af4ee2cf34",
+  "target_directory": "/private/tmp/hawdb-291-post913-release-target",
+  "checks": [
+    {
+      "label": "library",
+      "state": "finished",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--release",
+        "--lib"
+      ],
+      "log": "/private/tmp/hawdb-291-post913-release-library.log",
+      "pid": 81824,
+      "exit_code": 0,
+      "elapsed_seconds": 108.976494208,
+      "log_sha256": "d08b0de879cc4dee64da2628fa1bec125b7841afefd54a981a52ed3ccb9e6101"
+    },
+    {
+      "label": "bench",
+      "state": "finished",
+      "command": [
+        "cargo",
+        "bench",
+        "--locked",
+        "--bench",
+        "search_mutation",
+        "--no-run"
+      ],
+      "log": "/private/tmp/hawdb-291-post913-release-bench.log",
+      "pid": 83757,
+      "exit_code": 0,
+      "elapsed_seconds": 144.929412375,
+      "log_sha256": "a204231c47d3ae3b947305c53b497c7e786e41366d537acdb3a987fac6fd69da"
+    }
+  ],
+  "source_unchanged": true,
+  "library": {
+    "path": "/private/tmp/hawdb-291-post913-release-target/release/libhawdb.rlib",
+    "sha256": "2e32250610f6d2d404e161a5b598ead0a50bf86a08da3edee520105634db08c0"
+  },
+  "bench_binaries": [
+    {
+      "path": "/private/tmp/hawdb-291-post913-release-target/release/deps/search_mutation-51b6df72c602b639",
+      "sha256": "aa0083ca28e8915c1c000e92edfabc2b595a463d29135e2c889bd06d075c0d17"
+    }
+  ]
+}

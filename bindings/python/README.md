@@ -39,6 +39,30 @@ uv pip install maturin pytest
 maturin develop
 ```
 
+### Lite profile
+
+Constrained hosts — including the Pyodide/JupyterLite build — can link the
+extension against the minimal engine instead of the default feature set:
+
+```bash
+maturin build --no-default-features --features lite
+# or inside the venv: maturin develop --no-default-features --features lite
+```
+
+Lite is a build profile of the same package, not a second API: `open`,
+`execute`, `execute_sql`, and `QueryResult` behave the same. Statements that
+need a capability the minimal engine does not carry (full-text search, vector
+search, graph analytics, background maintenance) raise
+`hawdb.exceptions.CapabilityError` instead of silently returning an empty
+result. `hawdb.capabilities()` reports which capability flags were compiled
+into the extension as a read-only mapping:
+
+```python
+import hawdb
+
+hawdb.capabilities()["full_text_search"]   # False on a lite build
+```
+
 ## Usage
 
 ```python
@@ -55,15 +79,122 @@ db.execute_sql("SELECT 1")
 db.close()
 ```
 
+`db.transaction()` opens the engine's single user transaction: statements
+inside the `with` block see their own writes, a clean exit publishes them as
+one durable commit, and an exception rolls back and re-raises. A nested
+`db.transaction()` — and any `db.execute` / `db.execute_sql` on the parent —
+fails while a transaction is open.
+
+```python
+with db.transaction() as tx:
+    tx.execute("CREATE (s:Stock {code: $code})", {"code": "603122"})
+    tx.execute_sql("INSERT INTO trades (id) VALUES ($1)", [7])
+    tx.rollback()      # abandons both statements; omit it to commit
+```
+
+`db.read_transaction()` pins the committed state for a stable read scope;
+write statements on it raise the engine's read-transaction error.
+
+`hawdb.open()` without a path returns an empty in-memory database for tests,
+notebooks, and other hosts that already hold their data. It answers the same
+`execute` / `execute_sql` calls through the same embedded admission path;
+`close()` discards everything and a later `open()` does not see it.
+`db.path` is `None` for in-memory handles.
+
+```python
+db = hawdb.open()
+db.execute("CREATE (:Memory {id: $id})", {"id": 1})
+db.close()
+```
+
+Parameters accept `None`, `bool`, `int`, `float`, `str`, `bytes`,
+`uuid.UUID`, lists or tuples, and string-keyed dicts, nested up to 64 levels.
+They are stored exactly or rejected before the statement runs. Integers,
+including NumPy integer scalars, must fit the signed 64-bit range or raise
+`OverflowError`. NumPy `float16`/`float32` scalars widen to `float` exactly
+and are accepted. Any other type, including `Decimal`, `Fraction`, or NumPy
+`longdouble`, raises `TypeError`; convert such values explicitly, for example
+with `float(x)`. Deeper nesting, including a list or dict that contains
+itself, raises `ValueError`. These errors name where the value sits in the
+parameters: `$price`, `$2` for an `execute_sql` parameter, `$rows[3].price`
+inside a list of dicts, or `$m["first name"]` for a key that is not an
+identifier. A `str` that is not valid UTF-8, such as one with a lone
+surrogate, raises `UnicodeEncodeError`.
+
 Errors raise `hawdb.exceptions` subclasses (`ParseError`, `SemanticError`,
 `StorageError`, `ExecutionError`, `ConflictError`, ...), mapped from
 `HawDBError` kinds.
+
+## Pydantic rows (optional)
+
+The `pydantic` extra types the rows a statement returned and the parameters a
+statement takes with Pydantic v2 models. It does not generate Cypher or SQL.
+`import hawdb` does not import Pydantic; `hawdb.pydantic` loads on first use.
+
+```bash
+pip install 'hawdb[pydantic]'
+```
+
+```python
+from pydantic import BaseModel, Field
+
+import hawdb
+
+class Stock(BaseModel):
+    code: str
+    price: float
+
+class StockColumns(BaseModel):
+    code: str = Field(validation_alias="s.code")
+
+db = hawdb.open("./graph")
+db.execute(
+    "CREATE (s:Stock {code: $code, price: $price})",
+    hawdb.pydantic.params(Stock(code="603122", price=12.5)),
+)
+
+result = db.execute("MATCH (s:Stock) RETURN s.code AS code, s.price AS price")
+stocks = hawdb.pydantic.parse(result, Stock)
+
+# Columns that are not identifiers bind through a validation alias.
+codes = hawdb.pydantic.parse(db.execute("MATCH (s:Stock) RETURN s.code"), StockColumns)
+
+# A batch is a list of parameter dicts, loaded by one statement.
+listed = [Stock(code="000001", price=9.0), Stock(code="600000", price=7.2)]
+db.execute(
+    "UNWIND $rows AS row CREATE (:Stock {code: row.code, price: row.price})",
+    {"rows": [hawdb.pydantic.params(stock) for stock in listed]},
+)
+```
+
+`parse` consumes the remaining rows of a `QueryResult`. Unknown columns and
+missing fields follow the model's config. Invalid rows raise one
+`pydantic.ValidationError` located by row index, and no models are returned.
+Rows hold the binding's values: a UUID comes back as `str` and a tuple as a
+list, so a strict model needs `Field(strict=False)` on those fields.
+
+`params` returns `model_dump()`, whose keys become parameter names. Its
+values follow the parameter rules above and are checked when the statement
+runs, not by `params`: a `datetime`, `Decimal`, or plain `Enum` field raises
+`TypeError` there, named by its path, such as `$price` or `$rows[3].price` in
+a batch. Run statements that must all apply or none in `db.transaction()`.
+Engine errors stay `hawdb.exceptions`.
 
 ## Test
 
 ```bash
 pytest tests/
 ```
+
+`conftest.py` parametrizes statement-level tests over both backends: a
+file-backed project under `tmp_path` and the in-memory `hawdb.open()`.
+`test_stubs.py` keeps the hand-written `_hawdb.pyi` signatures in sync with
+the compiled module's runtime signatures.
+
+Without Pydantic installed, the extra's tests skip and the rest prove that
+`import hawdb` does not need it. Install `pydantic` to run them. Bazel runs the
+two environments as `//bindings/python:hawdb_python_tests` and
+`//bindings/python:hawdb_python_pydantic_tests`.
 
 To refresh the Bazel test dependency lock:
 
@@ -77,6 +208,5 @@ run `CARGO_BAZEL_REPIN=1 CARGO_BAZEL_REPIN_ONLY=python_crates bazel build //bind
 
 ## Scope and follow-ups
 
-Not included yet: async calls, explicit multi-statement transactions, Arrow
-output, schema introspection helpers. These are tracked for follow-up once
-the base surface settles.
+Not included yet: async calls, Arrow output, schema introspection helpers.
+These are tracked for follow-up once the base surface settles.

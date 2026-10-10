@@ -1,0 +1,151 @@
+Starting local Bazel server (9.3.0) and connecting to it...
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Loading: 
+Loading: 1 packages loaded
+Loading: 1 packages loaded
+    currently loading: crates/search
+Loading: 1 packages loaded
+    currently loading: crates/search
+Loading: 1 packages loaded
+    currently loading: crates/search
+Loading: 1 packages loaded
+    currently loading: crates/search
+Loading: 1 packages loaded
+    currently loading: crates/search
+Loading: 1 packages loaded
+    currently loading: crates/search
+Analyzing: 5 targets (6 packages loaded, 6 targets configured)
+Analyzing: 5 targets (6 packages loaded, 6 targets configured)
+
+Analyzing: 5 targets (62 packages loaded, 9 targets configured)
+
+Analyzing: 5 targets (63 packages loaded, 9 targets configured)
+
+Analyzing: 5 targets (63 packages loaded, 9 targets configured)
+
+Analyzing: 5 targets (279 packages loaded, 8818 targets configured)
+
+Analyzing: 5 targets (279 packages loaded, 8818 targets configured)
+
+Analyzing: 5 targets (289 packages loaded, 9329 targets configured)
+[1 / 1] no actions running
+INFO: Analyzed 5 targets (289 packages loaded, 9329 targets configured).
+[302 / 696] [Prepa] runfiles for @@rules_rust+//util/process_wrapper:process_wrapper
+[320 / 696] Compiling Rust rlib hashbrown v0.16.1 (37 files) [for tool]; 0s darwin-sandbox ... (15 actions, 14 running)
+[344 / 696] Running Cargo build script typeid [for tool]; 0s darwin-sandbox ... (7 actions running)
+[347 / 696] Running Cargo build script semver [for tool]; 1s darwin-sandbox ... (5 actions running)
+[352 / 696] Running Cargo build script num-traits [for tool]; 2s darwin-sandbox ... (3 actions running)
+[354 / 696] Running Cargo build script num-traits [for tool]; 3s darwin-sandbox ... (2 actions running)
+[358 / 696] Compiling Rust proc-macro icu_provider_macros v1.5.0 (2 files) [for tool]; 0s darwin-sandbox ... (6 actions running)
+[362 / 696] Compiling Rust proc-macro zerovec_derive v0.10.3 (9 files) [for tool]; 1s darwin-sandbox ... (5 actions running)
+[364 / 696] Compiling Rust proc-macro serde_derive v1.0.228 (28 files) [for tool]; 2s darwin-sandbox ... (3 actions running)
+[367 / 696] Compiling Rust rlib zerofrom v0.1.5 (3 files) [for tool]; 0s darwin-sandbox ... (2 actions running)
+[376 / 696] Compiling Rust rlib toml_edit v0.22.24 (58 files) [for tool]; 0s darwin-sandbox ... (2 actions running)
+[377 / 696] Compiling Rust rlib toml_edit v0.22.24 (58 files) [for tool]; 1s darwin-sandbox ... (3 actions running)
+[382 / 696] Compiling Rust rlib icu_provider v1.5.0 (20 files) [for tool]; 0s darwin-sandbox
+[384 / 696] Compiling Rust rlib icu_properties v1.5.1 (14 files) [for tool]; 0s darwin-sandbox
+[385 / 696] Compiling Rust rlib icu_normalizer v1.5.0 (13 files) [for tool]; 0s darwin-sandbox
+[387 / 696] Compiling Rust rlib idna v1.0.3 (11 files) [for tool]; 0s darwin-sandbox
+[389 / 696] Compiling Rust rlib cargo_util_schemas v0.3.1 (8 files) [for tool]; 0s darwin-sandbox
+[390 / 696] Compiling Rust bin cargo_toml_variable_extractor (1 file) [for tool]; 0s darwin-sandbox
+[391 / 696] [Prepa] runfiles for @@rules_rust+//cargo/private/cargo_toml_variable_extractor:cargo_toml_variable_extractor
+[465 / 696] Compiling Rust bin _bs_ (443 files) [for tool]; 0s darwin-sandbox ... (16 actions, 15 running)
+[562 / 696] Running Cargo build script generic-array; 0s darwin-sandbox ... (16 actions, 15 running)
+[622 / 696] Compiling Rust rlib regex_syntax v0.8.11 (34 files); 0s darwin-sandbox ... (15 actions, 14 running)
+[640 / 696] Compiling Rust rlib cc v1.2.67 (16 files) [for tool]; 2s darwin-sandbox ... (5 actions running)
+[646 / 696] Compiling Rust rlib syn v3.0.3 (96 files) [for tool]; 2s darwin-sandbox ... (6 actions running)
+[653 / 696] Compiling Rust rlib syn v3.0.3 (96 files) [for tool]; 3s darwin-sandbox ... (6 actions running)
+[662 / 696] Compiling Rust rlib syn v2.0.118 (97 files) [for tool]; 4s darwin-sandbox ... (6 actions running)
+[665 / 696] Running Cargo build script zstd-sys; 3s darwin-sandbox ... (3 actions running)
+[666 / 696] Running Cargo build script zstd-sys; 4s darwin-sandbox ... (3 actions running)
+[668 / 696] Running Cargo build script zstd-sys; 6s darwin-sandbox ... (2 actions running)
+[669 / 696] Running Cargo build script zstd-sys [for tool]; 10s darwin-sandbox ... (3 actions, 1 running)
+[673 / 696] Running Cargo build script zstd-sys [for tool]; 11s darwin-sandbox ... (2 actions, 1 running)
+[674 / 696] Running Cargo build script zstd-sys [for tool]; 13s darwin-sandbox ... (2 actions running)
+[675 / 696] Compiling Rust rlib hawdb_storage (231 files); 5s darwin-sandbox ... (3 actions, 1 running)
+[682 / 696] Compiling Rust rlib hawdb_storage (231 files); 6s darwin-sandbox ... (2 actions, 1 running)
+[683 / 696] Compiling Rust rlib hawdb_storage (231 files); 7s darwin-sandbox
+[684 / 696] [Prepa] Compiling Rust rlib hawdb_vector_projection (14 files) ... (2 actions, 0 running)
+[685 / 696] Compiling Rust rlib hawdb_executor (94 files); 1s darwin-sandbox
+[686 / 696] Compiling Rust bin hawdb_search_text_background_tests (202 files); 0s darwin-sandbox ... (5 actions running)
+[687 / 696] Compiling Rust bin hawdb_search_text_background_tests (202 files); 9s darwin-sandbox ... (5 actions, 4 running)
+[696 / 701] Testing //crates/search:hawdb_search_text_only_tests; 1s darwin-sandbox ... (5 actions, 1 running)
+[696 / 701] Testing //crates/search:hawdb_search_text_only_tests; 11s darwin-sandbox ... (5 actions, 1 running)
+[696 / 701] Testing //crates/search:hawdb_search_text_only_tests; 41s darwin-sandbox ... (5 actions, 1 running)
+[696 / 701] Testing //crates/search:hawdb_search_text_only_tests; 102s darwin-sandbox ... (5 actions, 1 running)
+[696 / 701] Testing //crates/search:hawdb_search_text_only_tests; 162s darwin-sandbox ... (5 actions, 1 running)
+[696 / 701] Testing //crates/search:hawdb_search_text_only_tests; 222s darwin-sandbox ... (5 actions, 1 running)
+[696 / 701] Testing //crates/search:hawdb_search_text_only_tests; 282s darwin-sandbox ... (5 actions, 1 running)
+[696 / 701] Testing //crates/search:hawdb_search_text_only_tests; 343s darwin-sandbox ... (5 actions, 1 running)
+[696 / 701] Testing //crates/search:hawdb_search_text_only_tests; 355s darwin-sandbox ... (5 actions, 2 running)
+[696 / 701] 1 / 5 tests; Testing //crates/search:hawdb_search_text_only_tests; 356s darwin-sandbox ... (5 actions, 2 running)
+[697 / 701] 1 / 5 tests; Testing //crates/search:hawdb_search_text_background_tests; 2s darwin-sandbox ... (4 actions, 1 running)
+[697 / 701] 1 / 5 tests; Testing //crates/search:hawdb_search_text_background_tests; 12s darwin-sandbox ... (4 actions, 1 running)
+[697 / 701] 1 / 5 tests; Testing //crates/search:hawdb_search_text_background_tests; 42s darwin-sandbox ... (4 actions, 1 running)
+[697 / 701] 1 / 5 tests; Testing //crates/search:hawdb_search_text_background_tests; 103s darwin-sandbox ... (4 actions, 1 running)
+[697 / 701] 1 / 5 tests; Testing //crates/search:hawdb_search_text_background_tests; 163s darwin-sandbox ... (4 actions, 1 running)
+[697 / 701] 1 / 5 tests; Testing //crates/search:hawdb_search_text_background_tests; 186s darwin-sandbox ... (4 actions, 2 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_tests; 1s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_tests; 12s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_tests; 42s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_tests; 102s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_tests; 163s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_tests; 223s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_tests; 284s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_tests; 344s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_tests; 353s darwin-sandbox ... (3 actions, 2 running)
+[699 / 701] 3 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 1s darwin-sandbox ... (2 actions, 1 running)
+[699 / 701] 3 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 11s darwin-sandbox ... (2 actions, 1 running)
+[699 / 701] 3 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 41s darwin-sandbox ... (2 actions, 1 running)
+[699 / 701] 3 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 102s darwin-sandbox ... (2 actions, 1 running)
+[699 / 701] 3 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 162s darwin-sandbox ... (2 actions, 1 running)
+[699 / 701] 3 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 222s darwin-sandbox ... (2 actions, 1 running)
+[699 / 701] 3 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 283s darwin-sandbox ... (2 actions, 1 running)
+[699 / 701] 3 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 322s darwin-sandbox ... (2 actions running)
+[700 / 701] 4 / 5 tests; Testing //crates/search:hawdb_search_acl_tests; 1s darwin-sandbox
+[700 / 701] 4 / 5 tests; Testing //crates/search:hawdb_search_acl_tests; 11s darwin-sandbox
+[700 / 701] 4 / 5 tests; Testing //crates/search:hawdb_search_acl_tests; 42s darwin-sandbox
+[700 / 701] 4 / 5 tests; Testing //crates/search:hawdb_search_acl_tests; 102s darwin-sandbox
+[700 / 701] 4 / 5 tests; Testing //crates/search:hawdb_search_acl_tests; 162s darwin-sandbox
+[700 / 701] 4 / 5 tests; Testing //crates/search:hawdb_search_acl_tests; 223s darwin-sandbox
+[700 / 701] 4 / 5 tests; Testing //crates/search:hawdb_search_acl_tests; 283s darwin-sandbox
+[700 / 701] 4 / 5 tests; Testing //crates/search:hawdb_search_acl_tests; 308s darwin-sandbox
+INFO: Found 5 test targets...
+INFO: Elapsed time: 1676.154s, Critical Path: 1587.81s
+INFO: 701 processes: 336 internal, 370 darwin-sandbox.
+INFO: Build completed successfully, 701 total actions
+//crates/search:hawdb_search_acl_tests                                   PASSED in 308.7s
+//crates/search:hawdb_search_tests                                       PASSED in 353.0s
+//crates/search:hawdb_search_text_background_tests                       PASSED in 186.0s
+//crates/search:hawdb_search_text_only_tests                             PASSED in 355.4s
+//crates/search:hawdb_search_text_vector_tests                           PASSED in 322.7s
+
+Executed 5 out of 5 tests: 5 tests pass.

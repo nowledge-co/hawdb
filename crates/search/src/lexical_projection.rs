@@ -267,6 +267,7 @@ struct ManifestBody {
     legacy_posting_bytes: u64,
     posting_bytes: u64,
     max_term_bytes: u64,
+    #[serde(deserialize_with = "manifest_encoding::deserialize_blocks")]
     blocks: Vec<BlockDescriptor>,
 }
 

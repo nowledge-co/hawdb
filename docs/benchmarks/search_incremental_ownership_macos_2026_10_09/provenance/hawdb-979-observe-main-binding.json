@@ -1,0 +1,17 @@
+{
+  "PR": 979,
+  "state": "MERGED",
+  "head": "a90dc40ced8c0c527e1035d79168d9d25b9a9657",
+  "merge_commit": "7cb639b93249948d2f7953b10109826bf16aa6dd",
+  "merged_at": "2026-10-09T12:00:55Z",
+  "head_required_CI": "4/4 SUCCESS",
+  "source_difference": [
+    "M\tdocs/specs/README.md",
+    "M\tdocs/specs/VECTORIZED_MORSEL_EXECUTION_SPEC.md",
+    "A\tdocs/specs/ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md"
+  ],
+  "runtime_and_test_build_inputs_identical_to_qualified_head": true,
+  "all_remaining_differences": "main documentation changes already present at d330; no runtime difference from head a90",
+  "frozen_594_scale_qualification_applies_to_this_source": false,
+  "recorded_unix_seconds": 1791548031.080906
+}

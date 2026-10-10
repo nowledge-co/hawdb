@@ -15,7 +15,8 @@
 use super::*;
 use crate::relational_join_cost::RelationalJoinCardinality;
 use crate::{
-    enumerate_relational_inner_joins, RelationalAccessPathDescriptor, RelationalAccessPathKind,
+    enumerate_relational_inner_joins, estimate_relational_access_path_cost,
+    RelationalAccessPathDescriptor, RelationalAccessPathKind,
 };
 use std::collections::BTreeSet;
 

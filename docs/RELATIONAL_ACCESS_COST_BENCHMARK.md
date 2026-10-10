@@ -2,7 +2,7 @@
 
 The `relational_index_access` benchmark retains its original in-memory
 `RelationalStore` measurements and adds a separate `persisted` result. This
-addresses the measurement prerequisite of #216: in-memory prefix timings do
+addresses the measurement prerequisite of [HawDB #216](https://github.com/nowledge-co/hawdb/issues/216): in-memory prefix timings do
 not establish the cost of persisted index traversal and canonical row fetches.
 The original v1 recording is retained below. Protocol v2 verifies the descriptor-aware
 policy in [the cost contract](OPTIMIZER_COST_MODEL.md); this benchmark alone does not
@@ -62,15 +62,18 @@ For each path it includes:
 - snapshot epochs and overflow hydration bytes where applicable.
 
 The harness requires a full scan for the unindexed predicate and a canonical
-point get for the primary key. For secondary prefixes, an independent policy
-oracle requires an index only when its `6 * estimated_candidates + 2` logical cost is below
-the scan cost `3 * rows + 4`. Fresh persisted statistics estimate the three
-buckets with `ceil(rows / 3)` and the all-rows prefix with `rows`. All-rows
-cases must choose a full scan; bucket cases retain the index, including the
-broad bucket whose true skew is not represented by average fanout. The second report is named
-`cost_selected`, so timing two full scans in a broad case is explicit. Historical
-v1 reports instead used `index` and required that operator for every prefix. The scan's access-row count must equal the complete table
-size, while point/prefix access counts must equal their matching counts. These
+point get for the primary key. The historical protocol-v2 NDV baseline required
+an index for secondary prefixes only when its `6 * estimated_candidates + 2`
+logical cost was below the scan cost `3 * rows + 4`. Fresh statistics estimated
+the three buckets with `ceil(rows / 3)` and the all-rows prefix with `rows`.
+That baseline selected a full scan for all-rows cases and an index for every
+bucket, including the broad bucket whose true skew average fanout did not
+represent. The [current selection oracle](#current-selection-oracle) uses exact
+counts and page geometry instead; broad and all-rows cases select a scan.
+The second report is named `cost_selected`, making paired full scans explicit.
+Historical v1 reports used `index` and required that operator for every prefix.
+The scan's access-row count must equal the complete table size, while point/prefix
+access counts must equal their matching counts. These
 are different from final result cardinality, which is checked independently.
 Canonical primary-key reads use row-page locators directly; an empty separate
 index-read profile is expected for that path.
@@ -147,13 +150,14 @@ main `366828ec`. It confirms the warm prefix row-fetch penalty on that
 revision and separates locality-dependent first-query observations from
 warm-cache results.
 
-The existing Cargo/Bazel benchmark registration and existing benchmark smoke
-test already execute the added module. No new CI job or configuration is
-required. Use the normal release benchmark for timing and the default Bazel
-configuration for smoke/contract verification:
+The existing benchmark and smoke test execute the persisted module. The manual
+release target configures the same binary and its dependencies with Bazel's
+optimized compilation mode, leaving the existing smoke registrations intact.
+Run it with the default Bazel command configuration for full-scale timing;
+the ordinary binary remains the debug-scale smoke/contract check:
 
 ```sh
-cargo bench --bench relational_index_access
+bazel run //:hawdb_bench_relational_index_access_release
 bazel run //:hawdb_bench_relational_index_access
 bazel test //:hawdb_linux_ci_benchmark_relational_index_access_smoke_test
 bazel test //crates/fuzz:hawdb_fuzz_tests //crates/fuzz:hawdb_fuzz_cli_tests //:hawdb_linux_ci_fuzz_smoke_test
@@ -163,3 +167,30 @@ Negative controls should corrupt a returned payload, change an expected ID,
 or make the indexed query use the unindexed mirror. Each must reject the
 benchmark before it can publish a successful report. Fuzz remains local; the
 existing fuzz targets are not added to CI by this work.
+
+## Current selection oracle
+
+The value-specific planner uses unchanged checkpoint metadata for complete
+secondary keys. The harness independently composes the documented logical
+policy from the fixture's exact matching count and default 256-row page bound:
+scan scalar `3*rows + 4 + 6*pages`, noncovering secondary scalar
+`matches*(8 + 7*(floor(log2(pages)) + 1)) + 2`. Each checked descriptor reads
+its fixed record and both nonempty bound keys: scans charge those three accesses
+sequentially and point-fetch searches charge them randomly. The unchanged
+random weight of two is applied once, alongside the existing CPU setup/search
+work. These are logical operations, not measured device pages or nanoseconds.
+Both payload widths fit the
+page-byte limit before that row-count bound; full-scan reports assert the
+expected page geometry. A primary-key point keeps its direct point operator.
+Sparse prefixes select an index; medium prefixes select an index at the
+256-row smoke scale and a scan at the 8192-row optimized scale. Broad/all-row
+prefixes select a scan. Complete ID/payload and actual-access-row assertions
+remain required for every arm.
+
+Index reports include planning metadata even when that secondary candidate is
+rejected in favor of a scan. Such reports have runtime path `not_executed` and
+visit zero rows; an executed index reports `authoritative` and adds the complete
+locator visits. Both cases must retain the planning metadata I/O. First-handle
+and warm reports both include this planning work. Historical v2 artifacts retain
+their named source's old NDV selection and do not establish current candidate
+timing or improvement.

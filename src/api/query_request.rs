@@ -22,6 +22,10 @@ use std::collections::BTreeMap;
 
 /// Optional engine-owned ranking of the complete returned candidate stream.
 /// Property names in the program refer to declared returned value aliases.
+/// Equal scores retain candidate arrival order, including through spills.
+/// Use a total upstream `ORDER BY` when ties must be reproducible across runs.
+/// A rejected missing feature or nonfinite score fails the entire request;
+/// scoring never silently drops a candidate or returns a partial ranking.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScoringRequest {
     program: ScoringProgram,

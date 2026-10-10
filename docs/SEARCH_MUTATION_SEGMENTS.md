@@ -2,8 +2,8 @@
 
 ## Status
 
-Implementation contract for the remaining work in issue #291 after append-only
-publication and bounded leveled compaction. Mutation-run encoding, integrity
+Implementation contract for issue #291's incremental publication and bounded
+leveled compaction. Mutation-run encoding, integrity
 inspection, shared serving visibility and a continuation writer exist. Ordinary
 new-ID updates still use the append path; updates to visible IDs publish a
 target-bound mutation run. Cleanup can validate and retain those artifacts.
@@ -36,7 +36,8 @@ Compaction rewrites the mutation run atomically with the selected range. A
 range containing the complete target closure materializes only visible
 documents and removes those entries; a partial closure retains entries targeting
 segments outside the range in a new run. Unaffected ranges retain their
-existing runs and may compact. Sustained qualification is still required.
+existing runs and may compact. The source-bound resource qualification below
+covers sustained writes and actual bounded merges.
 
 ## Goal
 
@@ -90,6 +91,59 @@ The initial import must publish bounded content segments at the same granularity
 as incremental appends. A manifest entry that owns a corpus-sized lexical or
 vector artifact is not a valid mutation target: replacing one ID would still
 rewrite that full artifact.
+
+`SearchOutOfCoreGenerationBuildOptions` applies the same input ownership policy
+to initial imports and incremental content publications: `max_content_documents`
+defaults to 8,192 and `max_content_artifact_bytes` defaults to 64 MiB. The byte
+target includes the descriptor, all three payload files, layout, complete lexical
+artifact and manifest, and optional RaBitQ artifact. Compaction outputs use the
+separate typed compaction input policy. Payload descriptor ranges retain their
+own existing limits. The document count is a hard per-owner bound. The byte
+target is a split threshold: an indivisible one-document owner may exceed it.
+Record, lexical source/token, compressed/uncompressed segment, operation memory,
+and whole-publication limits remain hard admission ceilings. Increasing source
+limits for large bodies does not require increasing this split target.
+
+Initial import and incremental append/replacement capture new bodies once in
+their immutable spool. Each content owner
+is built from a bounded spool range under the same operation memory ledger,
+task and descriptor admission. Oversized artifact candidates split into smaller
+ranges until they fit the byte target or contain one document. Global metadata-field
+and embedding identity remain consistent across the partitions, including fields
+absent from a particular partition. Private prefix manifests remain in the
+writer's stage. After every partition and its dependencies validate, one final
+manifest publishes the complete dataset in the real root. Cancellation or
+admission failure before that boundary retains the previous complete dataset;
+an absent previous selector remains absent. A lost response after the completed
+durability barriers may leave the full batch committed.
+
+An incremental batch joins its new owners to the captured active manifest once,
+retaining old content and mutation runs and adding one target-bound retraction
+run for the complete batch. Intermediate prefixes never expose partial edits
+or deletes. Old bodies are neither copied nor scanned for this final join.
+Host catch-up batches may exceed the per-owner document count without stalling
+at that boundary; operation count, memory, source and whole-publication admission
+still apply to the batch. Build reports include the new mutation run's bytes
+and the complete final selector, and retain the final logical count/digest.
+
+Compaction admission is independent of the split target and still counts every
+complete dependency. A one-document exception is observable through its owner
+document count and artifact lengths; it does not silently enlarge compaction
+budgets. Hosts admitting such large documents must configure enough compaction
+input admission to merge the selected owners. An insufficient policy reports
+bounded no-progress instead of an unbounded rewrite.
+
+Partition stages remain flat siblings under the real project root. A deferred
+partition deletion stays registered with `retry_staging_cleanup` for that root,
+including after publication. Build reports conservatively retain any observed
+partition cleanup debt until the host inspects or retries the registered stages.
+
+Build reports aggregate only the final content dependencies and final manifest,
+excluding intermediate private manifests. `published_content_segments` reports
+the new owners; the singular `rabitq_source_digest` is absent when zero or
+multiple new RaBitQ artifacts were produced. The completed fresh three-cell
+qualification below covers this initial ownership path. Earlier runs of the
+single-owner builder remain separate evidence.
 
 ### Mutation run
 
@@ -169,6 +223,67 @@ requested capacities under the pinned allocator-facing collection behavior,
 not process RSS; content artifacts and one-target hydration/analysis retain
 their independent limits.
 
+`SearchOutOfCoreReader::refresh` compares the complete checksummed durable
+manifest with its pinned identity before reopening. An unchanged head keeps the
+reader after checking that its referenced paths retain their admitted lengths.
+A newer head shares previously validated descriptor/layout metadata and payload,
+lexical and vector handles for content artifacts whose complete references are
+unchanged. It still
+validates new artifact references, run checksums and the aggregate visible
+closure, but can reuse target reanalysis when the run reference
+and every referenced content artifact are identical to the previously validated
+closure. Global embedding model, version and dimension must also match before
+any closure reuse. Fresh opens and changed run or target identities revalidate
+the targets.
+The typed refresh report counts opened/shared content artifacts and validated
+and reused retractions. This cache
+belongs to the reader and uses its existing closure; it adds no process-wide
+cache or persistent trust record. Artifacts must remain immutable while pinned.
+Regressed heads or changed identities at the same generation fail closed, and
+the Mem maintenance adapter detaches its serving reader after a refresh error.
+
+Incremental and compaction writers also retain an operation-local view of the
+validated input closure for post-publication cleanup discovery. The operation
+ledger admits copied manifest references and segment-handle slots before their
+allocation; descriptor/layout metadata and immutable files remain shared. The
+view survives dropping the original reader and is released with the writer.
+Cleanup rereads the durable checksummed head, validates new files and runs, and
+checks the complete closure under the inherited reader limits. Reuse requires
+the same content/run references and global embedding identity as reader refresh.
+Regressed or changed same-generation heads and missing referenced files fail
+validation, retain artifacts and request cleanup retry. Ordinary cleanup without
+an input view and ordinary fresh opens still validate the entire closure.
+This removes a second resident copy of corpus metadata during writer cleanup;
+manifest/run decoding and complete closure checks still depend on history size.
+
+A [same-snapshot macOS diagnostic](benchmarks/search_incremental_cleanup_macos_2026_10_08.json)
+records one changed-document publication against a complete 327,749-document,
+384-dimensional snapshot. Writer-local reuse reduces the measured lifetime RSS
+peak from 283,525,120 to 152,453,120 bytes with identical 47,302 published artifact
+bytes under the same 256 MiB reservation. The old result exceeds admission.
+The report retains source hashes, the typed prototype, configuration, process
+counters and measurement limits. This diagnostic remains separate from the
+completed fresh full-build and sustained qualification below.
+
+Immutable artifact reads validate the exact manifest-bound length against the
+opened file before reserving one encoded buffer. Bounded reads, EOF and checksum
+checks still reject truncation, growth and replacement inconsistencies. Mutable
+markers without a bound length retain progressive allocation. Lexical manifest
+block decoding moves validated records from temporary nodes into one exact
+final directory; the existing decode admission covers their overlap and the
+serialized format is unchanged. These paths avoid geometric reallocations of
+corpus-sized buffers, which retained resident pages in the measured macOS runs.
+
+The [allocation and cold-open diagnostic](benchmarks/search_bound_artifact_reads_macos_2026_10_08.json)
+retains genuine failing allocation regressions and all original measurements.
+The same complete immutable base with 32 cold seed publications and a K10
+replacement reached 691,470,336 bytes originally, 337,264,640 with exact file
+buffers alone, and 157,319,168 after both corrections. Fresh construction is
+excluded from that diagnostic. The original full 20 GiB sustained run failed
+its 256 MiB RSS budget despite completing all 128 updates and merges. The
+completed fresh qualification below covers the corrected, bounded initial
+ownership implementation and retains these earlier failures.
+
 In `Preferred` mode, only a typed compressed-search resource-budget error
 restarts exact scalar scoring with the same visibility, candidate set and task
 context. Reports include `compressed_vector_budget_exceeded`; `Required`
@@ -178,6 +293,14 @@ reader is alive; open validates checksums, and explicit deep verification can
 revalidate mapped payloads.
 
 ## Publication and recovery
+
+Writer admission uses the canonical ancestry barrier delivered in #900 before
+creating its private stage. Existing directories left by an interrupted attempt
+still require synchronization. A search root may be a symlink outside its
+registered project; the canonical ancestry walk then continues to the filesystem
+mount boundary rather than rejecting that root. A mounted filesystem's own
+persistence remains a platform assumption. This qualification reuses main's
+implementation rather than adding a second stage-level barrier.
 
 Mutation preparation has four ordered stages:
 
@@ -214,6 +337,39 @@ extended as later lifecycle states land.
 
 ## Compaction
 
+`DatabaseConfig::max_open_files` sets the shared project FD ceiling, default
+1024, without pre-opening handles. Native Unix observes the process soft
+descriptor limit and admits `min(max_open_files, soft.saturating_sub(64))`,
+leaving headroom for the host. It never changes process limits. Linux and macOS
+can therefore have different effective budgets; a soft limit of 256 admits
+192 project handles. Other platforms retain the configured admission ceiling.
+Metrics report `configured_limit`, `effective_limit`, `os_soft_limit`, and
+`os_limit_clamped`; the runtime readiness JSON exposes the reduced-capacity
+warning without making it a cutover blocker.
+
+At capacity, LRU closes only idle immutable handles. Each native read pins its
+handle for the complete I/O operation, so concurrent eviction cannot close it.
+Later reads reopen and validate an evicted object. A host retaining old snapshots
+must budget their handles alongside the new generation and temporary publication
+files. Compaction reduces the active owner's fan-out; old readers keep their
+complete immutable closures until released, so merging does not immediately
+release every old handle.
+
+Normal selection merges adjacent same-level owners. If no normal selection is
+eligible and the active owner count reaches `crisis_segment_count` (default 16),
+one attempt selects the smallest complete input among bounded adjacent pairs,
+including pairs at different levels. The output promotes from the highest
+selected level without exceeding the configured top level or demoting an
+existing higher level. The hard input limit remains 256 MiB by default and
+includes lexical artifacts and any rewritten mutation closure. Reader, writer,
+output-artifact and operation-memory limits remain independent.
+
+Hosts run attempts through the existing scheduled background API. A busy
+scheduler defers before staging; cancellation or a budget failure preserves the
+active generation. One call performs at most one merge, rather than synchronously
+draining the complete history on a foreground query or checkpoint. This does
+not start a worker automatically or increase the maintenance memory reservation.
+
 Content and mutation runs compact as one logical closure. A compaction that
 selects a target content segment materializes only visible documents into the
 replacement content segment. Entries targeting selected segments are absorbed;
@@ -225,6 +381,9 @@ Leveled selection remains bounded by the existing input-byte policy. If the
 visibility closure would exceed the selected budget, the run is deferred rather
 than widening the operation or silently retaining a partial result. QoS
 admission and cancellation use the scheduled compaction API introduced by #704.
+Input admission and reports include the complete lexical artifact as well as
+its manifest. Selecting any target also counts all input mutation-run artifact
+bytes, because the surviving target closure is rewritten in that publication.
 Selection borrows retractions without copying them before QoS admission.
 Preparation charges the retained entries, IDs, and term capacities to the build
 memory ledger and keeps that reservation until the writer releases them.
@@ -234,8 +393,9 @@ increase the transient decode requirement. Failure preserves the active manifest
 
 ## Delivery order
 
-1. Replace corpus-sized initial artifact ownership with independently published
-   bounded content segments, and add exact target-record lookup evidence.
+1. Replace corpus-sized initial artifact ownership with bounded content segments
+   selected by one complete final publication, and add exact target-record lookup
+   evidence.
 2. Add mutation-run encoding, manifest closure validation, publish-last
    recovery, pin-aware cleanup, and corruption tests.
 3. Install mutation runs in `prepare_delta` and make the text path use shared
@@ -252,6 +412,36 @@ contracts are complete.
 
 ## Verification matrix
 
+`api::tests::power_loss::search_projection` runs the real search writer and reader
+under storage's Unix `PowerLossModel`. It validates native IO coverage, then
+materializes and reopens loss of all uncovered operations, complete/reversed
+persistence, isolated pending operations, and prefix/suffix torn manifest
+temporary writes. Append and bounded compaction are observed after the last
+manifest temporary write; all three publication kinds are observed immediately
+before/after active manifest rename. Mutation's post-commit discovery writes
+validation scratch, so its single retained observation uses the exact rename
+path rather than the last write under the component. Every selected manifest
+must be byte-identical to the complete
+old or new selector; document hydration, text/vector/hybrid IDs and scores, and
+metadata filters must match that generation. Acknowledged publication must
+survive loss of all remaining uncovered operations. Initial one/two-level roots
+and retries of existing unsynchronized roots cover namespace ancestry, including
+admission denial and startup with only one descriptor available.
+
+Run the bounded qualification through its existing native CI owner:
+
+```console
+bash scripts/cargo-test-required.sh --locked -p hawdb --all-features --lib \
+  api::tests::power_loss::search_projection:: -- --nocapture --test-threads=1
+```
+
+The existing Linux/macOS `api::tests::power_loss::` CI discovery and execution
+include this module; default Bazel targets do not enable its `test-support` gate.
+The model assumes completed POSIX file/directory synchronization and atomic
+same-directory rename. These finite fixtures do not qualify native Windows
+namespace durability, physical storage hardware, sustained RSS, or the
+representative tens-of-GB workload required by #291.
+
 The current bounded checkpoint regression is
 `mutation_delete_publication_reuses_content_and_repeated_delete_is_a_noop`.
 It retains two immutable content segments, publishes a delete-only mutation,
@@ -261,6 +451,65 @@ lexical artifact bytes and requires the published bytes to stay below the
 existing closure size. This is a deterministic structural guard for `K`-sized
 updates; it is not the representative tens-of-GB benchmark or a process-RSS
 qualification.
+
+For an uncompacted-history comparison, set
+`HAWDB_SEARCH_MUTATION_BENCH_COMPACTION_EVERY=0` and run the same release fixture
+with `HAWDB_SEARCH_MUTATION_BENCH_REUSE_VALIDATION=0` (fresh-open reference) and
+`=1` (pinned refresh). Each round reports refresh time and the cached path's
+validated/reused target counts, alongside artifact bytes, count assertions and
+RSS. The default remains compaction every round; both modes use the same writer
+and integrity validation, and disabling compaction is measurement configuration
+for this developer benchmark, not a production maintenance policy.
+Uncompacted histories retain more immutable files. Record the OS descriptor
+limit and `HAWDB_SEARCH_MUTATION_BENCH_OPEN_FILES` separately; the latter selects
+the fixture's finite project descriptor admission (default 1024, matching the
+library default). Descriptor
+exhaustion remains a failed measurement and must be retained alongside any run
+using a larger explicit descriptor admission. The memory budget is independent.
+
+The benchmark sets a 64 MiB uncompressed segment limit through typed build
+options. Its 128-document range cap may bind first; neither limit bounds retained
+metadata across ranges. The operation memory admission remains 256 MiB by
+default. Override it with
+`HAWDB_SEARCH_MUTATION_BENCH_SEGMENT_BYTES` and record the emitted limit alongside
+the memory and descriptor budgets. A segment byte limit is not an operation
+memory limit; the memory ledger still rejects work that exceeds its admission.
+
+`HAWDB_SEARCH_MUTATION_BENCH_LEXICAL_BUILD_MEMORY_BYTES` selects the typed lexical
+build batch admission (default 32 MiB). Record it independently from the complete
+operation reservation. The qualification configuration uses 8 MiB batches with
+an unchanged 256 MiB operation reservation; allocator and reader overhead still
+require actual RSS measurements. A 327680-document, 512-byte-body diagnostic
+using the earlier 32 MiB batch and copied metadata completed its ledger checks
+but reached 321568768 resident bytes, exceeding that reservation. Retain that
+failed RSS evidence alongside the shared-metadata, 8 MiB diagnostic; the latter
+writes identical full/replacement/delete artifact bytes and peaks at 173064192
+bytes. This diagnostic is not the large-body sustained vector qualification.
+
+Set `HAWDB_SEARCH_MUTATION_BENCH_VECTOR_DIMENSIONS` to include deterministic
+ordinal/column-hashed embeddings (default zero means no embeddings). The JSON
+records the dimension, vector count, dense vector payload bytes and RaBitQ
+artifact bytes so a text-only scale run cannot be presented as vector scale
+evidence. Use the same dimensions and admission in both comparison modes.
+
+Completed document-range descriptors are encoded into a private spool as they
+are produced. The builder releases their owned ID and metadata summaries before
+starting the next range. Final descriptor output validates the spool length and
+checksum, streams the existing V3 grammar, and synchronizes the complete output
+before publication. The descriptor's cumulative admission and encoded-file limit
+remain enforced; the spool does not weaken the operation memory ledger. Layout
+metadata remains separately admitted. The many-range regression completes 500
+ranges for 1,000 documents under a 16 MiB operation budget and verifies every
+persisted ID summary. The pre-streaming implementation fails this exact fixture
+at document 310 after retaining 155 completed ranges.
+
+The benchmark replaces K existing documents with changed text and embeddings
+before measuring its K-document delete checkpoint. It records replacement
+artifact, dense-vector and RaBitQ bytes, source reads, elapsed time and RSS
+separately. Sustained rounds then replace one existing document and insert one
+interleaved ID, with their configured compaction cadence. Compare both K phases
+at fixed corpus size; a delete-only measurement cannot establish vector rewrite
+costs.
 
 The reproducible benchmark `search_mutation` supplies that measurement hook. It
 builds a complete immutable generation, applies `K` delete mutations through
@@ -336,6 +585,214 @@ qualification gates.
   against the host-selected production corpus, then run the existing full
   read-equivalence and recovery gates.
 
+## Historical initial ownership qualification
+
+The [source-bound report and raw results](benchmarks/search_initial_ownership_macos_2026_10_08/report.json)
+record fresh macOS ARM64 runs at commit
+`13aa6304450b8e1d9df46675f69bc634ade099f4`. They use pinned Rust 1.97.1 and
+complete 5 GiB/20 GiB body-shaped corpora, with 65,536-byte bodies,
+384-dimensional ordinal/column-hashed embeddings, and 32 cold seed segments.
+Each cell performs its initial build, `K` changed-text/vector replacements,
+`K` deletions, then 128 sustained rounds with two upserts and one actual
+compaction per round. All three fresh cells complete successfully; all 1,902
+source hashes, the committed head, clean worktree, and release benchmark agree
+before and after execution.
+
+| Logical corpus | K | Replacement checkpoint bytes | Delete checkpoint bytes | Lifetime peak RSS (MiB) | Maximum steady RSS (MiB) | Actual merges |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 5 GiB | 10 | 96,406 | 48,073 | 96.46875 | 86.71875 | 128 |
+| 20 GiB | 10 | 127,635 | 79,390 | 174.921875 | 168.09375 | 128 |
+| 20 GiB | 100 | 570,223 | 110,926 | 177.734375 | 170.828125 | 128 |
+
+Every peak/steady sample is available and within the original 256 MiB complete
+writer budget. Other unchanged limits are 8 MiB lexical build memory,
+64 MiB segment bytes, 1,024 admitted project descriptors, and an OS descriptor
+limit of 4,096. Validation reuse is enabled in every cell. At fixed K10, a
+fourfold corpus increase grows initial artifacts 4.00008 times but replacement
+checkpoint bytes 1.32393 times. At fixed 20 GiB, tenfold K grows changed dense
+vector payload 10.2063 times. These are measured fixture ratios, not a claim
+that every possible input has identical compression or metadata overhead.
+
+The matched historical `8cbe16f8` K10 checkpoint emits 1,630,468,181 artifact
+bytes for the same 327,680 base documents, 32 seed rows, body length, embedding
+dimension and replacements. The qualified implementation emits 127,635 bytes,
+a before/after artifact-byte ratio of 12,774.46. The historical initialization
+builds seed rows together; persistent formats, dependencies and admission APIs
+differ. This does not isolate throughput, RSS or device-write improvements.
+
+Forced per-round compaction records checkpoint/merge artifact totals of
+7,631,114/949,101,190 bytes, 11,408,495/2,907,016,737 bytes, and
+11,515,923/2,906,121,477 bytes for the three cells. Corresponding artifact-byte
+write amplification is 55.7198, 169.9681 and 169.9222, including all 384 actual
+merges. These totals are not device writes. Host/cache state is uncontrolled;
+elapsed times of 6,563.76, 16,401.31 and 11,318.13 seconds are supporting
+observations, not controlled throughput measurements.
+
+Reproduce the cells from the qualified commit with a separate temporary root:
+
+```sh
+scale_root=$(mktemp -d)
+ulimit -n 4096
+for scale_shape in 81920:10 327680:10 327680:100; do
+  scale_documents="${scale_shape%:*}"
+  scale_touches="${scale_shape#*:}"
+  TMPDIR="$scale_root" \
+    HAWDB_SEARCH_MUTATION_BENCH_DOCUMENTS="$scale_documents" \
+    HAWDB_SEARCH_MUTATION_BENCH_TOUCHES="$scale_touches" \
+    HAWDB_SEARCH_MUTATION_BENCH_CONTENT_BYTES=65536 \
+    HAWDB_SEARCH_MUTATION_BENCH_ROUNDS=128 \
+    HAWDB_SEARCH_MUTATION_BENCH_MEMORY_BYTES=268435456 \
+    HAWDB_SEARCH_MUTATION_BENCH_SEGMENT_BYTES=67108864 \
+    HAWDB_SEARCH_MUTATION_BENCH_LEXICAL_BUILD_MEMORY_BYTES=8388608 \
+    HAWDB_SEARCH_MUTATION_BENCH_OPEN_FILES=1024 \
+    HAWDB_SEARCH_MUTATION_BENCH_VECTOR_DIMENSIONS=384 \
+    HAWDB_SEARCH_MUTATION_BENCH_COMPACTION_EVERY=1 \
+    HAWDB_SEARCH_MUTATION_BENCH_REUSE_VALIDATION=1 \
+    cargo bench --locked --bench search_mutation
+done
+```
+
+Retain the complete benchmark JSON and process counters for each cell. The
+complete local source-bound qualification export retains command logs, raw
+results and hashes. The published report includes all three raw results and
+complete benchmark stdout/stderr with their hashes. Native recovery evidence
+includes 848 actual fault-image plans across 16 cut families, including private initial
+prefixes and final real-root selection. The unchanged bounded protocol model
+does not explicitly model adaptive initial partitions. Completed POSIX
+synchronization/atomic rename assumptions, finite differential coverage and
+hardware qualification limits remain explicit; these runs do not prove a
+universal ANN or hardware power-loss guarantee.
+
+The report retains the complete local root-suite failures: the post-scale macOS run passes 26/29 targets, with three original-deadline timeouts that
+also occur on clean main. Their full isolated executions and the current
+Linux 53-target root suite pass without extending deadlines. This supports a
+nonblocking disposition for this repair, without proving macOS whole-suite
+stability or a host cause. The post-scale complete fuzz command executes and
+passes all 96 targets freshly; its earlier 95/96 outcome remains recorded.
+All four required Linux checks pass at the qualified source, and platform CI
+passes 12/12 jobs. Documentation publication preserves every non-documentation
+source, test, benchmark, dependency and build file byte-for-byte; final-head
+CI and independent review remain separate delivery gates.
+
+## Initial and incremental ownership qualification
+
+The [current report and complete raw evidence](benchmarks/search_incremental_ownership_macos_2026_10_09/report.json) qualify
+main `41e10dacf8b2589e416c01b9b047db98dfe01acd` (tree `6026a7fb47580a56a72677463077fee383431fdd`), including #924's partitioned initial and
+incremental ownership, #977's recovery-reader lifetime correction, and #979's
+observed FD ceiling, idle LRU and bounded mixed-level crisis policy. #913's
+shared immutable validation/admission changes are included in this fresh run.
+The documentation branch starts directly from main `fb1f835fedc450602c0364e1f2866de3bc190a18`. The local
+search run uses the pinned Bazel 9.3.0. Its source binding classifies any
+later changes; required CI for the final documentation PR is recorded
+separately from earlier implementation CI.
+
+Later #982 advances package/module and C/Python/SQL version metadata to 0.6.0.
+Its exact 43-file delta preserves search/storage/benchmark source, features,
+external dependency blocks and dependency edges. These measurements remain
+bound to `41e10dacf8b2589e416c01b9b047db98dfe01acd` and its recorded binaries; they are not new measurements
+of rebuilt 0.6.0 binaries. The source binding retains both commit identities
+and every classified before/after hash.
+
+The later #985 change adds only Bazel configuration logging. #983 changes
+parameter conversion in the separate downstream Python binding workspace;
+its exact six-file delta does not change the Rust library/search benchmark
+dependency graph. These changes are classified separately and do not turn
+the source-bound measurements into a fresh run of those binding changes.
+
+All three fresh macOS ARM64 cells retain pinned Rust 1.97.1, repeated synthetic
+65,536-byte bodies, ordinal/column-hashed 384-dimensional dense vectors,
+32 cold seed segments, the original 256 MiB complete writer budget, 8 MiB
+lexical build memory, 64 MiB segment limit, and 1,024 project descriptors.
+The benchmark host explicitly selects a 4,096 OS soft FD limit; the embedded
+library only observes host limits. Each cell includes fresh construction,
+K changed-text/vector replacements, K deletions, and every one of 128 sustained
+rounds with two upserts and an actual merge. Every peak and steady RSS sample
+is available and within the admitted writer budget. All 1,993
+source hashes and the release binary remain unchanged across the matrix.
+
+| Logical body corpus | K | Replacement artifact bytes | Delete artifact bytes | Lifetime peak RSS MiB | Maximum steady RSS MiB | Actual merges | Sustained artifact amplification |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 5 GiB | 10 | 96,406 | 48,073 | 61.437500 | 61.406250 | 128 | 1.0402 |
+| 20 GiB | 10 | 127,635 | 79,390 | 142.125000 | 142.093750 | 128 | 1.5129 |
+| 20 GiB | 100 | 570,223 | 110,926 | 150.875000 | 150.750000 | 128 | 1.5136 |
+
+The sustained amplification denominator is every round's changed body and
+embedding bytes; its numerator is newly emitted checkpoint plus merge
+artifacts. It excludes device/filesystem writes and graph/WAL bytes. The raw
+report retains every round, initial/upsert vector and RaBitQ payload bytes,
+fixed-K corpus scaling and fixed-corpus K scaling.
+
+The artifact-byte qualification requires all three shapes: less than twofold
+checkpoint-byte growth at fixed K when the corpus grows fourfold; at most
+tenfold byte growth when K grows tenfold at fixed corpus; increasing changed
+vector/RaBitQ payloads; no base-document hydration; and incremental checkpoints
+below one percent of full artifacts. This is an empirical check including
+manifest overhead, not an asymptotic proof.
+
+For the matched 20 GiB/K10 shape, historical `8cbe16f8` writes 1,630,468,181 search
+artifact bytes at checkpoint, versus 127,635 here: an observed artifact-byte
+ratio of 12774.46. Historical initialization includes all 32 seed rows
+together. Persistent formats, locked dependencies and admission APIs differ,
+so this qualifies search artifact bytes only. Repeated synthetic text is
+compressible; logical corpus size is distinct from emitted artifact size.
+Host/cache state is uncontrolled and timing is supporting evidence.
+
+All five full current-source search profiles pass:
+
+- `hawdb_search_tests`: 802 passed, 0 failed, 20 dedicated campaigns ignored
+- `hawdb_search_acl_tests`: 804 passed, 0 failed, 20 dedicated campaigns ignored
+- `hawdb_search_text_background_tests`: 748 passed, 0 failed, 20 dedicated campaigns ignored
+- `hawdb_search_text_only_tests`: 731 passed, 0 failed, 20 dedicated campaigns ignored
+- `hawdb_search_text_vector_tests`: 785 passed, 0 failed, 20 dedicated campaigns ignored
+
+Coverage includes all six initial and six incremental ownership regressions,
+complete query results/scores, configurable tier/fan-in/crisis policy,
+bounded background QoS, cancellation, pinned old readers and rejection before
+publication. Background capability differences stay explicit across profiles.
+The release reference probe passes all 294 comparisons with distinct and
+changed vectors, required RaBitQ artifacts, three actual merges and retained
+reader checks.
+
+The complete recovery suite passes 11 actual cases, zero failed or
+ignored, covering 3,260 fault plans across 30 cut families. It
+retains the FD32 fixture, old/new hydration and query oracles, publication
+cuts and namespace cases. Its model covers loss, tearing and reordering
+around publication and overlapping merge boundaries. Finite fault images
+assume completed POSIX synchronization and same-directory atomic rename;
+process-kill tests alone are not hardware power-loss proof.
+
+Partitioned initial import covers both new and existing roots at data writes,
+private-prefix manifest renames and final real-selector publication. The
+append/mutation/compaction families check complete old/new documents and
+text/vector/hybrid query oracles, including partitioned batches. Named cases
+and every actual cut-family count are retained in the coverage evidence.
+
+The required 96-target local fuzz command runs at this fixed source, with
+unchanged target registration, seeds, cases, resource caps and deadlines.
+The initial exact command passes: 96 of 96 targets execute and 0 use passing cached results. No isolated retry is required.
+Every selected successful raw Rust summary is positive with zero failures or
+ignored cases; shell smoke coverage retains its positive XML case. All actual
+logs, XML, command outcomes and source/binary receipts remain in the report.
+Older #979 fuzz qualification is archived and does not substitute for this run.
+
+The original pre-#979 `594d8a00` matrix, older allocation/resource failures,
+and completed `7cb639b9` query/recovery suites are separate raw archives;
+none replaces a cell above. Fresh native formatting, strict all-feature/all-target
+workspace Clippy, explicit prek, Linux cross-Clippy and documented browser
+WASM Clippy pass on this fixed source. Linux cross-Clippy is compilation/lint
+evidence. The final documentation commit still runs its own required precommit
+checks, and its PR records independent review, required CI and actual main
+delivery.
+
+Reproduce with the unchanged commands and environment values in the report's
+scale manifest and scripts. Finite query witnesses are not universal ANN
+recall guarantees. Private adaptive partitions are not explicit states in
+the abstract model. Crash-orphan reclamation (#392), further owner-count
+lookup/FD work (#819) and rebuild bisection costs remain separate work.
+Large single-document owners retain hard publication/segment limits and
+require sufficient compaction input admission. This qualification does not
+authorize a stable Mem release or production activation.
+
 ## Non-goals
 
 This is not an LSM for primary graph or relational storage, a background thread
@@ -370,6 +827,8 @@ can publish just a new manifest (including source-epoch progress).
 The existing generation lease/CAS and manifest-last commit boundary apply.
 Cancellation, stale-generation rejection and budget failure leave the old
 manifest unchanged. Mutation-aware compaction supports complete and partial
-closures; unaffected ranges retain existing runs while compacting. Sustained
-RSS/write-amplification and host power-loss qualification remain explicit
-unfinished requirements in issue #291.
+closures; unaffected ranges retain existing runs while compacting. The
+source-bound qualification above records complete sustained RSS and artifact
+write amplification. Fault-image recovery evidence assumes the documented
+platform synchronization contract; hardware power-loss qualification is not
+provided by these software runs.

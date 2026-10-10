@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use crate::build_control::{checkpoint, CheckedWriter};
-use crate::build_memory::{AdmittedDocument, BuildMemory, SPOOL_BUFFER_BYTES};
+#[cfg(test)]
+use crate::build_memory::AdmittedDocument;
+use crate::build_memory::{BuildMemory, SPOOL_BUFFER_BYTES};
 #[cfg(test)]
 use crate::checksum_bytes;
 use crate::document_encoding::DocumentEncoding;
@@ -23,7 +25,9 @@ use crate::SearchDocument;
 use hawdb_core::RuntimeTaskContext;
 use hawdb_integrity::Crc32cHasher;
 use hawdb_storage::file_io::{self as fs, File};
-use std::io::{self, BufReader, Read, Write};
+#[cfg(test)]
+use std::io::BufReader;
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -97,8 +101,9 @@ mod write_tests;
 
 mod decoding;
 mod records;
-pub(super) use records::SpoolRecord;
+pub(super) use records::{SpoolCursor, SpoolRecord};
 
+#[cfg(test)]
 pub(super) fn decode_line_admitted(
     line: &[u8],
     ordinal: usize,
@@ -234,107 +239,14 @@ impl SpoolSource<'_> {
 }
 
 mod stage;
+#[cfg(test)]
+pub(super) use stage::evidence::fail_unlink;
 pub(in crate::out_of_core) use stage::retry_staging_cleanup;
 pub use stage::SearchStagingCleanupReport;
 pub(in crate::out_of_core) use stage::StageDirectory;
 
 #[cfg(test)]
-pub(crate) mod read_evidence {
-    use super::*;
-    use std::cell::RefCell;
-    use std::sync::{Arc, Mutex};
-
-    #[derive(Default)]
-    struct Observation {
-        opens: usize,
-        bytes: u64,
-        max_request: usize,
-        cancel_after: Option<(u64, crate::RuntimeCancellationToken)>,
-    }
-
-    thread_local! {
-        static CURRENT: RefCell<Arc<Mutex<Observation>>> = RefCell::new(Default::default());
-    }
-
-    // Keep each test isolated while explicitly following its analyzer worker.
-    pub(crate) struct Capture(Arc<Mutex<Observation>>);
-
-    pub(crate) fn capture() -> Capture {
-        CURRENT.with(|slot| Capture(Arc::clone(&slot.borrow())))
-    }
-
-    impl Capture {
-        pub(crate) fn install(self) -> Restore {
-            Restore(CURRENT.with(|slot| slot.replace(self.0)))
-        }
-    }
-
-    pub(crate) struct Restore(Arc<Mutex<Observation>>);
-
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            CURRENT.with(|slot| *slot.borrow_mut() = Arc::clone(&self.0));
-        }
-    }
-
-    fn observe<T>(work: impl FnOnce(&mut Observation) -> T) -> T {
-        CURRENT.with(|slot| work(&mut slot.borrow().lock().unwrap()))
-    }
-
-    pub(in super::super) struct CancelGuard;
-
-    impl Drop for CancelGuard {
-        fn drop(&mut self) {
-            observe(|state| state.cancel_after = None);
-        }
-    }
-
-    pub(in super::super) fn cancel_after_bytes(
-        bytes: u64,
-        token: crate::RuntimeCancellationToken,
-    ) -> CancelGuard {
-        observe(|state| state.cancel_after = Some((bytes, token)));
-        CancelGuard
-    }
-
-    pub(super) struct TrackedFile<R>(R);
-
-    pub(super) fn track<R: Read>(file: R) -> TrackedFile<R> {
-        observe(|state| state.opens += 1);
-        TrackedFile(file)
-    }
-
-    pub(in super::super) fn take() -> (usize, u64) {
-        observe(|state| {
-            (
-                std::mem::take(&mut state.opens),
-                std::mem::take(&mut state.bytes),
-            )
-        })
-    }
-
-    pub(in super::super) fn take_max_request() -> usize {
-        observe(|state| std::mem::take(&mut state.max_request))
-    }
-
-    impl<R: Read> Read for TrackedFile<R> {
-        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
-            observe(|state| state.max_request = state.max_request.max(output.len()));
-            let count = self.0.read(output)?;
-            observe(|state| {
-                state.bytes += count as u64;
-                if state
-                    .cancel_after
-                    .as_ref()
-                    .is_some_and(|(limit, _)| state.bytes >= *limit)
-                {
-                    state.cancel_after.take().unwrap().1.cancel();
-                }
-            });
-            Ok(count)
-        }
-    }
-}
+pub(crate) use crate::build_control::read_observation as read_evidence;
 
 #[cfg(test)]
 mod stage_tests;

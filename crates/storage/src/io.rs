@@ -30,6 +30,24 @@ pub fn read_exact_at(
     file.read_exact_at(buffer, offset)
 }
 
+/// Read a managed file while admitting any cold immutable identity validation.
+/// Returns the validation bytes in addition to the selected buffer's length.
+pub(crate) fn read_exact_at_admitted(
+    file: &crate::file_io::File,
+    buffer: &mut [u8],
+    offset: u64,
+    admit_validation: impl FnMut(u64) -> io::Result<()>,
+    admit_page: impl FnOnce() -> io::Result<()>,
+) -> io::Result<u64> {
+    file.with_native_admitted(admit_validation, |native| {
+        // Acquire the native lease first: descriptor admission must not be
+        // mistaken for payload I/O. Charge the slot before its first read.
+        admit_page()?;
+        read_native_exact_at(native, buffer, offset)
+    })
+    .map(|((), validation_bytes)| validation_bytes)
+}
+
 /// Internal positioned IO contract shared by native and admitted file handles.
 pub trait PositionedReadFile {
     fn read_exact_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<()>;

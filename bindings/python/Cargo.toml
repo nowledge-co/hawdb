@@ -21,14 +21,23 @@ edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/nowledge-co/hawdb"
 rust-version = "1.97.1"
-version = "0.4.0"
+version = "0.6.0"
 
 # Keep the binding outside the HawDB workspace: it builds with its own
 # lockfile and never joins the library's clippy/test gates.
 [workspace]
 
 [features]
+# Default profile: the engine's own default feature set (full-text, vector,
+# analytics, background maintenance, tokio runtime).
+default = ["hawdb/default"]
 abi3 = ["pyo3/abi3-py311"]
+# `lite` is the constrained-host profile: the engine links with
+# `default-features = false`, so capability-gated statements raise
+# `hawdb.exceptions.CapabilityError`. The extension-module plumbing is folded
+# in so the documented build is a single flag:
+#   maturin build --no-default-features --features lite
+lite = ["abi3", "pyo3/extension-module"]
 
 [lib]
 crate-type = ["cdylib"]
@@ -37,7 +46,9 @@ name = "_hawdb"
 
 [dependencies]
 # The binding is not published; it always builds against the in-tree facade.
-hawdb = { path = "../.." }
+# `default-features = false` here only takes effect under `--no-default-features`:
+# the crate's own `default` feature re-enables the full engine.
+hawdb = { path = "../..", default-features = false }
 pyo3 = "0.29"
 
 [profile.release]

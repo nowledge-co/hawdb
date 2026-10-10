@@ -35,13 +35,15 @@ mod streaming;
 
 /// Selection limits for one immutable out-of-core segment compaction.
 ///
-/// A compaction selects adjacent segments with the same level, rewrites their
-/// complete ordered document range, and publishes one segment at the next
+/// Normal compaction selects adjacent segments with the same level, rewrites
+/// their complete ordered document range, and publishes one segment at the next
 /// level. `max_input_bytes` accounts for every selected immutable artifact,
 /// including descriptor, payload, lexical, layout, metadata, and vector files.
 /// `level_zero_target_bytes` scales by `level_size_ratio` until the hard input
 /// limit; `level_count` caps promotion; and `crisis_segment_count` permits a
-/// bounded pair merge when normal tier selection cannot reduce fan-out.
+/// bounded pair merge when normal tier selection cannot reduce fan-out. Crisis
+/// selection may cross levels and chooses the pair with the smallest complete
+/// input. Promotion starts from the highest selected level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SearchOutOfCoreSegmentCompactionPolicy {
     level_fan_in: NonZeroUsize,
@@ -167,7 +169,7 @@ pub struct SearchOutOfCoreSegmentCompactionReport {
 /// The terminal outcome of one host-scheduled segment compaction attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchOutOfCoreSegmentCompactionStopReason {
-    /// The current manifest has no bounded same-level range eligible for compaction.
+    /// The current manifest has no bounded range eligible for compaction.
     NoEligibleSegments,
     /// The QoS scheduler deferred the work before it began.
     Deferred(QosAdmissionCode),
@@ -368,6 +370,11 @@ pub(super) fn prepare(
     // Keep dimension-only identity even when this batch has no vectors.
     writer.embedding_dimension = reader.manifest.embedding_dimension;
     writer.expected_active_generation = Some(reader.generation());
+    writer.cleanup_reuse = Some(super::super::reuse::ValidatedArtifacts::capture(
+        reader,
+        &memory,
+        &writer.task_context,
+    )?);
     writer.active_manifest_update = Some(ActiveManifestUpdate::Compact {
         expected_generation: reader.generation(),
         first_segment_id: selection.first_segment_id,
@@ -408,7 +415,7 @@ fn select_with_fan_in(
     reader: &SearchOutOfCoreReader,
     policy: SearchOutOfCoreSegmentCompactionPolicy,
     fan_in: usize,
-    enforce_tier_limit: bool,
+    normal_tier: bool,
     task: &RuntimeTaskContext,
 ) -> Result<Option<Selection>> {
     if reader.manifest.segments.len() < fan_in {
@@ -425,20 +432,47 @@ fn select_with_fan_in(
         let contains_target = candidates
             .iter()
             .any(|segment| reader.visibility.has_target_segment(segment.segment_id));
-        let source_level = candidates[0].level;
-        if candidates
+        let source_level = candidates
             .iter()
-            .any(|segment| segment.level != source_level)
+            .fold(0, |level, segment| level.max(segment.level));
+        if normal_tier
+            && candidates
+                .iter()
+                .any(|segment| segment.level != source_level)
         {
             continue;
         }
-        let source_bytes = candidates.iter().try_fold(0u64, |total, segment| {
-            total
-                .checked_add(segment_bytes(segment)?)
-                .ok_or_else(|| HawDBError::Storage("search segment byte count overflows".into()))
-        })?;
+        let source_bytes =
+            candidates
+                .iter()
+                .enumerate()
+                .try_fold(0u64, |total, (offset, segment)| {
+                    let lexical_artifact_bytes = reader.segments[start + offset]
+                        .lexical_projection
+                        .artifact_len();
+                    total
+                        .checked_add(segment_bytes(segment, lexical_artifact_bytes)?)
+                        .ok_or_else(|| {
+                            HawDBError::Storage("search segment byte count overflows".into())
+                        })
+                })?;
+        // A target rewrite serializes the complete retained mutation closure.
+        // Its input runs belong to the same admission as the selected content.
+        let source_bytes = if contains_target {
+            reader
+                .manifest
+                .mutation_runs
+                .iter()
+                .try_fold(source_bytes, |total, run| {
+                    total.checked_add(run.len).ok_or_else(|| {
+                        HawDBError::Storage("search mutation source byte count overflows".into())
+                    })
+                })?
+        } else {
+            source_bytes
+        };
         if source_bytes > policy.max_input_bytes.get()
-            || (enforce_tier_limit && source_bytes > policy.level_input_limit(source_level))
+            || (normal_tier && source_bytes > policy.level_input_limit(source_level))
         {
             continue;
         }
@@ -492,10 +526,14 @@ fn select_with_fan_in(
             rewrite_mutations: contains_target,
             source_bytes,
         };
-        if selected
-            .as_ref()
-            .is_none_or(|current: &Selection| source_level < current.source_level)
-        {
+        if selected.as_ref().is_none_or(|current: &Selection| {
+            if normal_tier {
+                source_level < current.source_level
+            } else {
+                // Reduce descriptor fan-out with the least admitted rewrite IO.
+                source_bytes < current.source_bytes
+            }
+        }) {
             selected = Some(candidate);
         }
     }
@@ -558,7 +596,10 @@ fn prepare_mutation_rewrite(
     }))
 }
 
-fn segment_bytes(segment: &crate::out_of_core::SearchOutOfCoreSegmentManifest) -> Result<u64> {
+fn segment_bytes(
+    segment: &crate::out_of_core::SearchOutOfCoreSegmentManifest,
+    lexical_artifact_bytes: u64,
+) -> Result<u64> {
     [
         segment.descriptor_len,
         segment.payload_len,
@@ -566,6 +607,7 @@ fn segment_bytes(segment: &crate::out_of_core::SearchOutOfCoreSegmentManifest) -
         segment.vector_payload_len,
         segment.layout_len,
         segment.lexical_manifest_len,
+        lexical_artifact_bytes,
         segment.rabitq_artifact_len.unwrap_or_default(),
     ]
     .into_iter()

@@ -7503,6 +7503,9 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
             )),
             CompatibilityCheck::Cypher(
                 CypherFixtureCheck::expect_rows(
+                    // The two source-to-sink pairs and one isolated node lose
+                    // dangling mass: base = (1 - 0.85) / 5, sink = base * 1.85.
+                    // The legacy projected-graph helper below keeps its oracle.
                     "page rank procedure",
                     CypherFixtureStatement::new(
                         "CALL page_rank('MemoryMentions', dampingFactor := 0.85, maxIterations := 20) RETURN node, pagerank_score",
@@ -7510,23 +7513,23 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
                     ExpectedRows::Exact(vec![
                         compatibility_row([
                             ("node", Value::Int(1)),
-                            ("pagerank_score", Value::Float(0.2761194029526352)),
+                            ("pagerank_score", Value::Float(0.0555)),
                         ]),
                         compatibility_row([
                             ("node", Value::Int(3)),
-                            ("pagerank_score", Value::Float(0.2761194029526352)),
+                            ("pagerank_score", Value::Float(0.0555)),
                         ]),
                         compatibility_row([
                             ("node", Value::Int(0)),
-                            ("pagerank_score", Value::Float(0.1492537318649099)),
+                            ("pagerank_score", Value::Float(0.03)),
                         ]),
                         compatibility_row([
                             ("node", Value::Int(2)),
-                            ("pagerank_score", Value::Float(0.1492537318649099)),
+                            ("pagerank_score", Value::Float(0.03)),
                         ]),
                         compatibility_row([
                             ("node", Value::Int(4)),
-                            ("pagerank_score", Value::Float(0.1492537318649099)),
+                            ("pagerank_score", Value::Float(0.03)),
                         ]),
                     ]),
                 )
@@ -7541,23 +7544,23 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
                     ExpectedRows::Exact(vec![
                         compatibility_row([
                             ("node", Value::Int(1)),
-                            ("rank", Value::Float(0.2761194029526352)),
+                            ("rank", Value::Float(0.0555)),
                         ]),
                         compatibility_row([
                             ("node", Value::Int(3)),
-                            ("rank", Value::Float(0.2761194029526352)),
+                            ("rank", Value::Float(0.0555)),
                         ]),
                         compatibility_row([
                             ("node", Value::Int(0)),
-                            ("rank", Value::Float(0.1492537318649099)),
+                            ("rank", Value::Float(0.03)),
                         ]),
                         compatibility_row([
                             ("node", Value::Int(2)),
-                            ("rank", Value::Float(0.1492537318649099)),
+                            ("rank", Value::Float(0.03)),
                         ]),
                         compatibility_row([
                             ("node", Value::Int(4)),
-                            ("rank", Value::Float(0.1492537318649099)),
+                            ("rank", Value::Float(0.03)),
                         ]),
                     ]),
                 )
@@ -7568,7 +7571,20 @@ pub fn nowledge_memory_core_fixture() -> CompatibilityFixture {
                 CypherFixtureStatement::new(
                     "CALL louvain('MemoryMentions', maxLevels := 2) RETURN node, level, louvain_id",
                 ),
-                ExpectedRows::RowCount(10),
+                // The contracted pairs are stationary; no duplicate level is
+                // emitted. Check every assignment instead of only cardinality.
+                ExpectedRows::Exact(
+                    [(0, 0), (1, 0), (2, 2), (3, 2), (4, 4)]
+                        .into_iter()
+                        .map(|(node, community)| {
+                            compatibility_row([
+                                ("node", Value::Int(node)),
+                                ("level", Value::Int(0)),
+                                ("louvain_id", Value::Int(community)),
+                            ])
+                        })
+                        .collect(),
+                ),
             )),
             CompatibilityCheck::ProjectedGraph(ProjectedGraphFixtureCheck {
                 name: "mentions projection".to_string(),

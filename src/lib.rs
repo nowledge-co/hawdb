@@ -12,6 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Embedded database facade.
+//!
+//! # Memory allocation
+//!
+//! HawDB does not install a global allocator or depend on an allocator
+//! implementation. The final host binary or WASM `cdylib` selects its Rust
+//! allocator with `#[global_allocator]`; HawDB's Rust allocations inherit that
+//! choice. Without an explicit host selection, Rust's target default applies.
+//! Allocator selection is module-wide, not a per-`Database` setting. HawDB's
+//! Zstd contexts also use that selection through explicit allocation callbacks.
+//! Mappings and independently linked native dependencies have separate ownership.
+
 pub mod analytics;
 pub mod api;
 pub mod compat;
@@ -70,9 +82,9 @@ pub mod sql {
 }
 
 pub use analytics::{
-    CommunityAssignment, GraphAlgorithmMemoryEstimate, LouvainOptions, PageRankOptions,
-    PageRankScore, ProjectedGraph, ProjectionLayout, ProjectionMemoryAdmissionError,
-    ProjectionMemoryBudget, ProjectionMemoryEstimate,
+    CommunityAssignment, GraphAlgorithmMemoryEstimate, LouvainOptions, LouvainProcedureOptions,
+    PageRankOptions, PageRankProcedureOptions, PageRankScore, ProjectedGraph, ProjectionLayout,
+    ProjectionMemoryAdmissionError, ProjectionMemoryBudget, ProjectionMemoryEstimate,
 };
 pub use api::{
     hawdb_lightning_initial_import_advance_checkpoint,
@@ -281,7 +293,6 @@ pub use hawdb_core::{
     DEFAULT_GRAPH_RAG_MAX_PROPERTIES_PER_SUBJECT, DEFAULT_GRAPH_RAG_MAX_RELATIONSHIP_TYPES,
     DEFAULT_GRAPH_RAG_MAX_ROUTES, GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL, MAX_GRAPH_RAG_QUERY_LIMIT,
 };
-pub use hawdb_executor::scoring::{HostScorer, HostScorerBatch, HostScorerDescriptor};
 pub use hawdb_optimizer::{
     AdaptiveVectorBackendPolicy, Distribution, GroupId, Memo as OptimizerMemo,
     MemoGroup as OptimizerMemoGroup, PhysicalProperties, RequiredProperties,
@@ -391,17 +402,18 @@ pub use nowledge_mem::{
     NowledgeMemCutoverControls, NowledgeMemCutoverControlsReport, NowledgeMemEmbeddedStore,
     NowledgeMemEmbeddedStoreHandle, NowledgeMemGraph, NowledgeMemGraphMode,
     NowledgeMemGraphReadRouteEvidenceKind, NowledgeMemGraphReadRouteOwner,
-    NowledgeMemGraphReadRouteSpec, NowledgeMemLibraryProductionPathSummary,
-    NowledgeMemLibraryReadinessReport, NowledgeMemOpenOptions, NowledgeMemOpenReport,
-    NowledgeMemOperationsReadinessReport, NowledgeMemOutOfCoreSearchCandidateOutput,
-    NowledgeMemOutOfCoreSearchProjection, NowledgeMemProductionStatus,
-    NowledgeMemQualifiedOutOfCoreSearchOptions, NowledgeMemQueryExecutionPath,
-    NowledgeMemQueryOutput, NowledgeMemQueryReport, NowledgeMemQueryReportOptions,
-    NowledgeMemReadControl, NowledgeMemReadOptions, NowledgeMemReadOutput, NowledgeMemReadReport,
-    NowledgeMemReadSnapshot, NowledgeMemReadSnapshotBudget, NowledgeMemReadSnapshotReport,
-    NowledgeMemReadinessAreaMap, NowledgeMemReadinessAreaSummary, NowledgeMemReadinessDashboard,
-    NowledgeMemReadinessOptions, NowledgeMemReadinessRedactionSummary, NowledgeMemRetrievalOutput,
-    NowledgeMemRetrievalReport, NowledgeMemRouteReadinessSummary, NowledgeMemRuntimeStatus,
+    NowledgeMemGraphReadRouteSpec, NowledgeMemIncrementalSearchMaintenanceOptions,
+    NowledgeMemLibraryProductionPathSummary, NowledgeMemLibraryReadinessReport,
+    NowledgeMemOpenOptions, NowledgeMemOpenReport, NowledgeMemOperationsReadinessReport,
+    NowledgeMemOutOfCoreSearchCandidateOutput, NowledgeMemOutOfCoreSearchProjection,
+    NowledgeMemProductionStatus, NowledgeMemQualifiedOutOfCoreSearchOptions,
+    NowledgeMemQueryExecutionPath, NowledgeMemQueryOutput, NowledgeMemQueryReport,
+    NowledgeMemQueryReportOptions, NowledgeMemReadControl, NowledgeMemReadOptions,
+    NowledgeMemReadOutput, NowledgeMemReadReport, NowledgeMemReadSnapshot,
+    NowledgeMemReadSnapshotBudget, NowledgeMemReadSnapshotReport, NowledgeMemReadinessAreaMap,
+    NowledgeMemReadinessAreaSummary, NowledgeMemReadinessDashboard, NowledgeMemReadinessOptions,
+    NowledgeMemReadinessRedactionSummary, NowledgeMemRetrievalOutput, NowledgeMemRetrievalReport,
+    NowledgeMemRouteReadinessSummary, NowledgeMemRuntimeStatus,
     NowledgeMemSearchCandidateFieldSummary, NowledgeMemSearchCandidateFilterPushdownEvidence,
     NowledgeMemSearchCandidateOutput, NowledgeMemSearchCandidateReadinessOptions,
     NowledgeMemSearchCandidateReadinessReport, NowledgeMemSearchCandidateReport,

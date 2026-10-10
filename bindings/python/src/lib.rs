@@ -17,9 +17,29 @@ mod errors;
 mod value;
 
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 
-pub use database::{open, Database, QueryResult};
+pub use database::{open, Database, QueryResult, ReadTransaction, Transaction};
 pub use errors::register_exceptions;
+
+/// Report the engine capabilities compiled into this extension.
+///
+/// Returns a read-only mapping of capability name to availability. Hosts
+/// consult it before issuing capability-gated statements; it cannot enable a
+/// capability that was not compiled in.
+#[pyfunction]
+fn capabilities(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+    let compiled = hawdb::compiled_runtime_capabilities();
+    let flags = PyDict::new(py);
+    flags.set_item("access_control", compiled.access_control)?;
+    flags.set_item("full_text_search", compiled.full_text_search)?;
+    flags.set_item("vector_search", compiled.vector_search)?;
+    flags.set_item("graph_analytics", compiled.graph_analytics)?;
+    flags.set_item("background_maintenance", compiled.background_maintenance)?;
+    py.import("types")?
+        .getattr("MappingProxyType")?
+        .call1((flags,))
+}
 
 // The `hawdb` Python package is a mixed layout: the public package is the
 // hand-written `python/hawdb/` directory, and this native module is built as
@@ -31,7 +51,10 @@ fn _hawdb(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     module.add_class::<Database>()?;
     module.add_class::<QueryResult>()?;
+    module.add_class::<Transaction>()?;
+    module.add_class::<ReadTransaction>()?;
     module.add_function(wrap_pyfunction!(open, module)?)?;
+    module.add_function(wrap_pyfunction!(capabilities, module)?)?;
 
     let exceptions = PyModule::new(py, "hawdb.exceptions")?;
     register_exceptions(py, &exceptions)?;

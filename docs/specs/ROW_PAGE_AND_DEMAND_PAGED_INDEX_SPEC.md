@@ -454,14 +454,79 @@ across every probe, including repeated inner-side join probes. A missing view,
 missing optional query index, or admission rejection before provisional output
 uses the observable canonical materialized fallback. Corruption, durability or
 generation mismatch, view-identity drift within a statement, and a locator
-whose canonical row is missing fail closed. A writable authoritative
+whose canonical row is missing fail closed. Each persistent-index statement
+uses a caller-owned `RelationalIndexReadContext` for per-operation
+admission, including committed-view and transaction-view probes. Its allowance
+may be narrower than the transaction allowance; each operation satisfies both
+before I/O or a nested callback. Complete per-probe reports retain attribution
+and reconcile already charged work once. Providers without operation-admission
+support decline before I/O: `DemandPaged` records its canonical fallback, while
+`Authoritative` fails closed.
+Fixed complete-key metadata counts used by planning share this same context;
+the owned context moves through the planning snapshot into execution without
+resetting allowance, task or accumulated attribution. Count eligibility rejects
+partial keys, matching live/private changes and recovery backends before I/O;
+known poison remains an error. Unsupported metadata providers retain statistical
+planning without invoking a legacy report-only read. Successful eligible counts
+may be reused only after retained-reader, identity, eligibility, task and
+ledger-health checks. Equal schema/root metadata, generation and epoch do not
+identify data from independent databases. The cache strongly retains one actual
+checkpoint reader; changing that reader discards earlier counts and key payload.
+Cache entries and retained key payload remain bounded by statement page/byte
+limits. Cache reuse reports zero page/file work and visits no canonical rows.
+Unique full-key candidates use their bounded 0/1 estimate without metadata I/O.
+In `DemandPaged` mode, metadata admission refusal or a missing optional index
+MUST decline the count and record a planning-specific fallback reason. This
+permits statistics-based planning, not an unavailable execution source.
+Authoritative metadata counts still fail closed on those errors. Corruption,
+durability, stale generation, descriptor rejection, cancellation, and deadline
+errors MUST remain errors in every mode. Admitted failed work MUST NOT be
+refunded, and declining a count MUST NOT reset or reopen its ledger. Ordinary
+EXPLAIN preserves its independent planning-task behavior and reports metadata
+work without claiming executed operator rows or backend probes. Total read
+lookups and I/O include planning; a separate metadata-count counter identifies
+that work, while backend, range and early-stop counters cover execution only.
+A typed file-descriptor acquisition rejection
+retains all operation charges and permits statement and transaction retry after capacity returns;
+it neither refunds the allowance nor poisons healthy backing data. Other admitted
+read errors and unwinds close the statement ledger conservatively. A writable authoritative
 transaction pins the committed row and index views at begin and appends every
 successful statement's row and index changes to private immutable overlays.
 Queries and constraint checks merge those pinned bases with all prior statement
 batches, so read-your-own-writes never consults the pre-transaction view alone
 and never reconstructs database-sized posting maps. The private overlay has
 cumulative entry and encoded-byte limits, and all index reads share a transaction-wide
-page/row/byte ledger. If staging, constraint validation, or overlay admission
+page/row/byte ledger. Each logical page and byte is admitted before cache or
+file access; cold file reads use the ledger's current file-byte allowance.
+For mounted immutable Base artifacts, a cold or evicted descriptor validates
+the complete object's length and digest. The read must admit that validation
+plus the selected slot before fetching any payload; descriptor rejection
+precedes payload charges. Validation hashes exactly the bound object length,
+then checks metadata for length drift without an extra EOF payload read.
+Physical file-byte reports and cumulative ledgers include validation bytes
+once. File-page counts still describe selected page slots. A retained warm
+descriptor performs no additional validation read, and a decoded page-cache
+hit consumes no file bytes. Budget refusal keeps the backing healthy; an
+admitted integrity failure poisons the selected reader.
+The default index file-byte allowance is 16 MiB. A mounted artifact larger than
+that allowance cannot pass cold whole-object validation, even for a selective
+point read; handle eviction restores that cold cost. Hosts needing this workload
+must admit validation plus the selected slots through typed resource limits.
+Warm-handle evidence does not qualify cold access under the default allowance.
+Cold recovery delta reads check the opened handle's length against its selected
+descriptor before reading payload. They read at most that exact admitted length
+and recheck the handle afterwards; an oversized or concurrently resized delta
+fails as corruption without reading an extra byte beyond the allowance.
+Consumed rows and live bytes are charged before nested callbacks. This keeps
+streaming and batched index joins within their cumulative allowance while
+permitting nested probes with sufficient budget. Complete reports reconcile
+already charged operations without charging them twice. A shared settlement
+policy covers statement metadata, transaction visitors and committed/private
+constraint readers. A successful admitted read records its complete usage;
+typed descriptor-acquisition refusal retains charges and ledger health for
+retry after capacity returns. Other read errors and unwinds close their owning
+ledgers before subsequent admission; they do not poison healthy backing pages. Ineligible
+metadata estimates do not start a read attempt. If staging, constraint validation, or overlay admission
 fails, the statement leaves the row workspace, accumulated WAL writes, and
 private index overlay unchanged. The observable runtime path is
 `transaction_workspace`, not a fallback to stale or materialized state. Commit
@@ -1896,6 +1961,44 @@ page and slot bytes, physical file reads, cache hits/misses/rejections, decoded
 and emitted rows, borrowed and owned callback rows, hydration bytes, peak pins,
 and early stop.
 
+SQL attaches its owned snapshot reader to one cumulative statement budget.
+Every page/slot-byte, decoded-row and selected overlay entry is admitted at the
+common reader before that action; each overlay operation charges increases in
+its peak resident bytes. Active parent traversals and nested callbacks share
+the same budget as later parent work. Completing a read does not charge it
+again. Admission rejection, early stop and callback unwind retain already
+admitted work and its available evidence. Logical page/slot attempts stay
+charged on failed I/O; physical/cache evidence requires a completed read.
+Failed row hydration retains the row admission without claiming row emission.
+Mixed-source preflight intersects reported-work allowance with the shared
+owner's actual remaining admission, including failed work and earlier cap
+tightening; output row counts cannot substitute for that remaining allowance.
+Exhaustion rejects only an action that consumes that resource: an overlay-only
+point may consume no row-root page/slot bytes, a base-only point may consume no
+overlay allowance, and an absent point may consume no row. Attached snapshot
+readers retain true zero in the shared owner; their legacy nonzero per-call
+limits are only an envelope, and cannot turn unused exhaustion into a global
+stop or authorize an action beyond the shared cap.
+An attached batch keeps its configured per-call input-key window; spending
+decoded-row allowance does not shrink that window. Missing keys do not consume
+row admission, and every selected row still passes the cumulative owner before
+decode. Standalone batch readers retain their existing per-call bounds.
+Projection frames retain their existing row/payload/record bounds and share
+the statement row/byte envelope. Their reported frame count is not a row-root
+demand page, so it does not consume the demand-reader page allowance.
+Reattachment may only tighten
+limits without going below prior usage; it never resets work. A later statement
+opens its own reader. Point and batch reads find a matching ordinal before
+admission and selected-field decode. Range cursors inspect key bounds and
+overlay precedence first, admitting only a selected base row before its field
+decode; shadowed base fields and out-of-range lookahead are not decoded or
+charged as selected rows. Standalone storage readers keep per-call limits until
+explicit attachment. The ledger is inline fixed-size metadata; no lock spans
+I/O, hydration, or user callbacks. Pin and descriptor-height bounds remain per
+invocation. `HawDBRelationalStatementReadBudget.tla` models this admission
+boundary and its private-admission/reset negative controls; demand/snapshot
+models retain row order, visibility, pins and corruption obligations.
+
 `RelationalRowPageDemandReader` remains the immutable checkpoint primitive. It
 MUST NOT be selected by SQL at an epoch newer than that checkpoint. Serving a
 base-only reader at a later visible epoch would be stale and is forbidden.
@@ -2124,6 +2227,11 @@ RSS hard watermark may reject new work even when logical accounting claims
 headroom.
 
 ## Derived projections
+
+Projection-generation batches retain separate logical-page evidence but do not
+consume canonical row-page admission. Their selected rows and payload bytes
+consume the shared row and byte allowances, including mixed and nested reads;
+this distinction does not grant an independent row or byte budget.
 
 Column groups, deletion vectors, BM25, vector ANN, statistics, and analytics
 artifacts are selected by source commit epoch, schema identity, algorithm/index

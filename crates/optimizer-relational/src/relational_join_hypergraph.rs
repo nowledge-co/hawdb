@@ -173,6 +173,24 @@ pub fn enumerate_relational_csg_cmp_joins_with_implementations(
     right_input_policy: RelationalCsgCmpRightInputPolicy,
     implementations: &[RelationalCsgCmpJoinImplementation],
 ) -> Result<RelationalCsgCmpEnumeration, RelationalJoinRewriteError> {
+    enumerate_relational_csg_cmp_joins_with_cost_contexts(
+        problem,
+        required_properties,
+        config,
+        right_input_policy,
+        implementations,
+        &crate::RelationalJoinCostContexts::default(),
+    )
+}
+
+pub fn enumerate_relational_csg_cmp_joins_with_cost_contexts(
+    problem: &RelationalJoinRewriteProblem,
+    required_properties: &RequiredProperties,
+    config: RelationalJoinEnumerationConfig,
+    right_input_policy: RelationalCsgCmpRightInputPolicy,
+    implementations: &[RelationalCsgCmpJoinImplementation],
+    cost_contexts: &crate::RelationalJoinCostContexts,
+) -> Result<RelationalCsgCmpEnumeration, RelationalJoinRewriteError> {
     let analysis = analyze_relational_join_conflicts(
         &problem.initial_tree,
         problem.post_join_filter.as_ref(),
@@ -185,6 +203,7 @@ pub fn enumerate_relational_csg_cmp_joins_with_implementations(
         config,
         right_input_policy,
         implementations,
+        cost_contexts,
     )
 }
 
@@ -195,6 +214,7 @@ fn binding_union(left: &BindingSet, right: &BindingSet) -> BindingSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod cost_contexts;
     mod implementations;
     mod memo_contracts;
     use crate::{

@@ -45,6 +45,12 @@ pub struct RelationalSqlReadProfile {
 pub struct RelationalSqlIndexReadProfile {
     pub table: String,
     pub index: String,
+    /// All admitted index operations, including planning metadata counts.
+    pub lookups: usize,
+    /// Planning counts do not establish an execution runtime path. Their I/O
+    /// remains included in every counter below, including count-cache reuse.
+    pub metadata_count_lookups: usize,
+    /// Execution authority only; metadata-only reads report `not_executed`.
     pub runtime_path: String,
     pub logical_pages: usize,
     pub logical_bytes: usize,

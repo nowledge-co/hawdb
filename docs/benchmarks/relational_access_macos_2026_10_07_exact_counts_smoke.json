@@ -1,0 +1,4700 @@
+{
+  "qualification": {
+    "scope": "default Bazel smoke; not full-scale release calibration or CI",
+    "base_head": "d97c0aab33fb7436bcfc01d948972db88bc2f94b",
+    "source_inventory_sha256": "d287facdb86aa3d26d5ac03ba37714dc27600d2b0a5b01f62d1c0a1a5df587cf",
+    "source_count": 1885,
+    "command": [
+      "bazel",
+      "test",
+      "//:hawdb_linux_ci_benchmark_relational_index_access_smoke_test",
+      "--nocache_test_results",
+      "--test_output=all"
+    ],
+    "default_configuration": true,
+    "test_seconds": 44.0,
+    "binary_sha256": "33b4ac698d7a2a64b8d4e038d11de729cb1173274261b89111cb98d843647a03",
+    "raw_stdout_sha256": "5553e1da9d9b977cd10730b76ca884d4f0a2769139f3cc5b4fe187a7d2ed65fc",
+    "raw_json_sha256": "87fcc6aa68e77dfe23673f255f5ab4b91e8eb794d852ed5b3538afb0f883f0e6",
+    "host_activity_and_device_cache": "uncontrolled",
+    "warm_sample_tail_scope": "p95 and p99 are maximum of three samples",
+    "warm_profile_encoding": "common plus samples expands losslessly to every original profile"
+  },
+  "benchmark": {
+    "persisted": {
+      "architecture": "aarch64",
+      "cache_capacity_bytes": 67108864,
+      "first_query_scope": "new_handle_after_checkpoint_and_reopen",
+      "os": "macos",
+      "os_page_cache": "uncontrolled_not_cold_disk",
+      "protocol": "hawdb-persisted-relational-access-v2",
+      "read_mode": "out_of_core_authoritative",
+      "result_validation": "complete_ids_and_payloads_against_fixture_oracle",
+      "results": [
+        {
+          "body_bytes": 64,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 1,
+              "bind_ns": 1166,
+              "estimated_rows": 1,
+              "execute_ns": 16794292,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 1,
+              "operator": "TablePointGetExec",
+              "parse_ns": 34375,
+              "plan_ns": 27292,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 1,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 16867959,
+            "open_ns": 111667,
+            "warm_execute_ns": {
+              "p50": 40000,
+              "p95": 51791,
+              "p99": 51791
+            },
+            "warm_plan_ns": {
+              "p50": 21417,
+              "p95": 23875,
+              "p99": 23875
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 1,
+                "estimated_rows": 1,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 1,
+                "operator": "TablePointGetExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 1,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1208,
+                  "execute_ns": 51791,
+                  "plan_ns": 23875
+                },
+                {
+                  "bind_ns": 1084,
+                  "execute_ns": 40000,
+                  "plan_ns": 21417
+                },
+                {
+                  "bind_ns": 958,
+                  "execute_ns": 35875,
+                  "plan_ns": 20292
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 70917,
+              "p95": 85167,
+              "p99": 85167
+            }
+          },
+          "layout": "clustered",
+          "matching_rows": 1,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 2208,
+              "estimated_rows": 256,
+              "execute_ns": 17204584,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 33667,
+              "plan_ns": 33709,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 17287667,
+            "open_ns": 203292,
+            "warm_execute_ns": {
+              "p50": 362666,
+              "p95": 368416,
+              "p99": 368416
+            },
+            "warm_plan_ns": {
+              "p50": 19959,
+              "p95": 22334,
+              "p99": 22334
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1250,
+                  "execute_ns": 368416,
+                  "plan_ns": 22334
+                },
+                {
+                  "bind_ns": 1082,
+                  "execute_ns": 362666,
+                  "plan_ns": 19959
+                },
+                {
+                  "bind_ns": 1041,
+                  "execute_ns": 361042,
+                  "plan_ns": 19125
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 389833,
+              "p95": 399333,
+              "p99": 399333
+            }
+          },
+          "selectivity": 0.00390625,
+          "shape": "point"
+        },
+        {
+          "body_bytes": 64,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 2,
+              "bind_ns": 917,
+              "estimated_rows": 2,
+              "execute_ns": 17198500,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [
+                {
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 2,
+                  "cache_misses": 2,
+                  "file_bytes": 131072,
+                  "file_pages": 2,
+                  "index": "access_rows_bucket",
+                  "logical_bytes": 262144,
+                  "logical_pages": 4,
+                  "rows_visited": 2,
+                  "runtime_path": "authoritative"
+                }
+              ],
+              "intermediate_rows": 2,
+              "operator": "IndexRangeScanExec",
+              "parse_ns": 29334,
+              "plan_ns": 516166,
+              "requires_row_fetch": true,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 1,
+                "cache_misses": 1,
+                "descriptor_reads": 2,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 2097152,
+                "logical_pages": 2,
+                "overlay_entries": 0,
+                "rows_visited": 2,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 17754459,
+            "open_ns": 109333,
+            "warm_execute_ns": {
+              "p50": 404084,
+              "p95": 439416,
+              "p99": 439416
+            },
+            "warm_plan_ns": {
+              "p50": 341292,
+              "p95": 381625,
+              "p99": 381625
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 2,
+                "estimated_rows": 2,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [
+                  {
+                    "cache_admission_rejections": 0,
+                    "cache_hits": 4,
+                    "cache_misses": 0,
+                    "file_bytes": 0,
+                    "file_pages": 0,
+                    "index": "access_rows_bucket",
+                    "logical_bytes": 262144,
+                    "logical_pages": 4,
+                    "rows_visited": 2,
+                    "runtime_path": "authoritative"
+                  }
+                ],
+                "intermediate_rows": 2,
+                "operator": "IndexRangeScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": true,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 2,
+                  "cache_misses": 0,
+                  "descriptor_reads": 2,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 2097152,
+                  "logical_pages": 2,
+                  "overlay_entries": 0,
+                  "rows_visited": 2,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1083,
+                  "execute_ns": 401041,
+                  "plan_ns": 341292
+                },
+                {
+                  "bind_ns": 918,
+                  "execute_ns": 404084,
+                  "plan_ns": 334666
+                },
+                {
+                  "bind_ns": 1292,
+                  "execute_ns": 439416,
+                  "plan_ns": 381625
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 750583,
+              "p95": 829416,
+              "p99": 829416
+            }
+          },
+          "layout": "clustered",
+          "matching_rows": 2,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 1125,
+              "estimated_rows": 256,
+              "execute_ns": 17099541,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 30209,
+              "plan_ns": 21375,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 17160209,
+            "open_ns": 96375,
+            "warm_execute_ns": {
+              "p50": 365833,
+              "p95": 366000,
+              "p99": 366000
+            },
+            "warm_plan_ns": {
+              "p50": 18416,
+              "p95": 19167,
+              "p99": 19167
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 959,
+                  "execute_ns": 363333,
+                  "plan_ns": 19167
+                },
+                {
+                  "bind_ns": 916,
+                  "execute_ns": 366000,
+                  "plan_ns": 18416
+                },
+                {
+                  "bind_ns": 916,
+                  "execute_ns": 365833,
+                  "plan_ns": 18000
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 390042,
+              "p95": 390834,
+              "p99": 390834
+            }
+          },
+          "selectivity": 0.0078125,
+          "shape": "sparse_prefix"
+        },
+        {
+          "body_bytes": 64,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 23,
+              "bind_ns": 1667,
+              "estimated_rows": 23,
+              "execute_ns": 17641084,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [
+                {
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 2,
+                  "cache_misses": 2,
+                  "file_bytes": 131072,
+                  "file_pages": 2,
+                  "index": "access_rows_bucket",
+                  "logical_bytes": 262144,
+                  "logical_pages": 4,
+                  "rows_visited": 23,
+                  "runtime_path": "authoritative"
+                }
+              ],
+              "intermediate_rows": 23,
+              "operator": "IndexRangeScanExec",
+              "parse_ns": 31917,
+              "plan_ns": 488833,
+              "requires_row_fetch": true,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 22,
+                "cache_misses": 1,
+                "descriptor_reads": 23,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 24117248,
+                "logical_pages": 23,
+                "overlay_entries": 0,
+                "rows_visited": 23,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 18175792,
+            "open_ns": 106167,
+            "warm_execute_ns": {
+              "p50": 869375,
+              "p95": 874792,
+              "p99": 874792
+            },
+            "warm_plan_ns": {
+              "p50": 363209,
+              "p95": 366292,
+              "p99": 366292
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 23,
+                "estimated_rows": 23,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [
+                  {
+                    "cache_admission_rejections": 0,
+                    "cache_hits": 4,
+                    "cache_misses": 0,
+                    "file_bytes": 0,
+                    "file_pages": 0,
+                    "index": "access_rows_bucket",
+                    "logical_bytes": 262144,
+                    "logical_pages": 4,
+                    "rows_visited": 23,
+                    "runtime_path": "authoritative"
+                  }
+                ],
+                "intermediate_rows": 23,
+                "operator": "IndexRangeScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": true,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 23,
+                  "cache_misses": 0,
+                  "descriptor_reads": 23,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 24117248,
+                  "logical_pages": 23,
+                  "overlay_entries": 0,
+                  "rows_visited": 23,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1292,
+                  "execute_ns": 874792,
+                  "plan_ns": 363209
+                },
+                {
+                  "bind_ns": 1126,
+                  "execute_ns": 869375,
+                  "plan_ns": 366292
+                },
+                {
+                  "bind_ns": 1084,
+                  "execute_ns": 862000,
+                  "plan_ns": 361333
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 1244541,
+              "p95": 1247834,
+              "p99": 1247834
+            }
+          },
+          "layout": "clustered",
+          "matching_rows": 23,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 1667,
+              "estimated_rows": 256,
+              "execute_ns": 17109417,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 29833,
+              "plan_ns": 38375,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 17188375,
+            "open_ns": 116000,
+            "warm_execute_ns": {
+              "p50": 367500,
+              "p95": 374625,
+              "p99": 374625
+            },
+            "warm_plan_ns": {
+              "p50": 18375,
+              "p95": 19334,
+              "p99": 19334
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 916,
+                  "execute_ns": 374625,
+                  "plan_ns": 19334
+                },
+                {
+                  "bind_ns": 876,
+                  "execute_ns": 367500,
+                  "plan_ns": 18375
+                },
+                {
+                  "bind_ns": 875,
+                  "execute_ns": 365875,
+                  "plan_ns": 18083
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 392125,
+              "p95": 400708,
+              "p99": 400708
+            }
+          },
+          "selectivity": 0.08984375,
+          "shape": "medium_prefix"
+        },
+        {
+          "body_bytes": 64,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 1667,
+              "estimated_rows": 256,
+              "execute_ns": 17216125,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [
+                {
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 0,
+                  "cache_misses": 2,
+                  "file_bytes": 131072,
+                  "file_pages": 2,
+                  "index": "access_rows_bucket",
+                  "logical_bytes": 131072,
+                  "logical_pages": 2,
+                  "rows_visited": 0,
+                  "runtime_path": "authoritative"
+                }
+              ],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 32208,
+              "plan_ns": 485084,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 17746583,
+            "open_ns": 92458,
+            "warm_execute_ns": {
+              "p50": 441584,
+              "p95": 443375,
+              "p99": 443375
+            },
+            "warm_plan_ns": {
+              "p50": 334749,
+              "p95": 340499,
+              "p99": 340499
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [
+                  {
+                    "cache_admission_rejections": 0,
+                    "cache_hits": 2,
+                    "cache_misses": 0,
+                    "file_bytes": 0,
+                    "file_pages": 0,
+                    "index": "access_rows_bucket",
+                    "logical_bytes": 131072,
+                    "logical_pages": 2,
+                    "rows_visited": 0,
+                    "runtime_path": "authoritative"
+                  }
+                ],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1292,
+                  "execute_ns": 438833,
+                  "plan_ns": 340499
+                },
+                {
+                  "bind_ns": 1125,
+                  "execute_ns": 441584,
+                  "plan_ns": 334749
+                },
+                {
+                  "bind_ns": 1042,
+                  "execute_ns": 443375,
+                  "plan_ns": 334375
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 785083,
+              "p95": 788042,
+              "p99": 788042
+            }
+          },
+          "layout": "clustered",
+          "matching_rows": 231,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 1292,
+              "estimated_rows": 256,
+              "execute_ns": 17177375,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 30666,
+              "plan_ns": 23124,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 17240917,
+            "open_ns": 120084,
+            "warm_execute_ns": {
+              "p50": 430250,
+              "p95": 433875,
+              "p99": 433875
+            },
+            "warm_plan_ns": {
+              "p50": 19041,
+              "p95": 20126,
+              "p99": 20126
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1082,
+                  "execute_ns": 433875,
+                  "plan_ns": 20126
+                },
+                {
+                  "bind_ns": 1000,
+                  "execute_ns": 430250,
+                  "plan_ns": 19041
+                },
+                {
+                  "bind_ns": 875,
+                  "execute_ns": 429792,
+                  "plan_ns": 18666
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 455958,
+              "p95": 461083,
+              "p99": 461083
+            }
+          },
+          "selectivity": 0.90234375,
+          "shape": "broad_prefix"
+        },
+        {
+          "body_bytes": 64,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 1375,
+              "estimated_rows": 256,
+              "execute_ns": 17212875,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [
+                {
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 0,
+                  "cache_misses": 2,
+                  "file_bytes": 131072,
+                  "file_pages": 2,
+                  "index": "access_rows_all",
+                  "logical_bytes": 131072,
+                  "logical_pages": 2,
+                  "rows_visited": 0,
+                  "runtime_path": "authoritative"
+                }
+              ],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 29666,
+              "plan_ns": 472916,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 17725375,
+            "open_ns": 98042,
+            "warm_execute_ns": {
+              "p50": 440583,
+              "p95": 444375,
+              "p99": 444375
+            },
+            "warm_plan_ns": {
+              "p50": 351500,
+              "p95": 361083,
+              "p99": 361083
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [
+                  {
+                    "cache_admission_rejections": 0,
+                    "cache_hits": 2,
+                    "cache_misses": 0,
+                    "file_bytes": 0,
+                    "file_pages": 0,
+                    "index": "access_rows_all",
+                    "logical_bytes": 131072,
+                    "logical_pages": 2,
+                    "rows_visited": 0,
+                    "runtime_path": "authoritative"
+                  }
+                ],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1083,
+                  "execute_ns": 444375,
+                  "plan_ns": 361083
+                },
+                {
+                  "bind_ns": 1000,
+                  "execute_ns": 440583,
+                  "plan_ns": 351500
+                },
+                {
+                  "bind_ns": 959,
+                  "execute_ns": 436125,
+                  "plan_ns": 330042
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 799000,
+              "p95": 812625,
+              "p99": 812625
+            }
+          },
+          "layout": "clustered",
+          "matching_rows": 256,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 1250,
+              "estimated_rows": 256,
+              "execute_ns": 17156042,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 31334,
+              "plan_ns": 22833,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 17219667,
+            "open_ns": 122416,
+            "warm_execute_ns": {
+              "p50": 437459,
+              "p95": 440958,
+              "p99": 440958
+            },
+            "warm_plan_ns": {
+              "p50": 18833,
+              "p95": 19708,
+              "p99": 19708
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1084,
+                  "execute_ns": 440958,
+                  "plan_ns": 19708
+                },
+                {
+                  "bind_ns": 1000,
+                  "execute_ns": 437459,
+                  "plan_ns": 18833
+                },
+                {
+                  "bind_ns": 917,
+                  "execute_ns": 436375,
+                  "plan_ns": 18625
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 462916,
+              "p95": 467833,
+              "p99": 467833
+            }
+          },
+          "selectivity": 1.0,
+          "shape": "all_rows_prefix"
+        },
+        {
+          "body_bytes": 64,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 1,
+              "bind_ns": 1249,
+              "estimated_rows": 1,
+              "execute_ns": 16762500,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 1,
+              "operator": "TablePointGetExec",
+              "parse_ns": 30416,
+              "plan_ns": 27501,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 1,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 16832125,
+            "open_ns": 117250,
+            "warm_execute_ns": {
+              "p50": 36792,
+              "p95": 39042,
+              "p99": 39042
+            },
+            "warm_plan_ns": {
+              "p50": 21042,
+              "p95": 22792,
+              "p99": 22792
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 1,
+                "estimated_rows": 1,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 1,
+                "operator": "TablePointGetExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 1,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1041,
+                  "execute_ns": 39042,
+                  "plan_ns": 22792
+                },
+                {
+                  "bind_ns": 916,
+                  "execute_ns": 36792,
+                  "plan_ns": 21042
+                },
+                {
+                  "bind_ns": 916,
+                  "execute_ns": 35750,
+                  "plan_ns": 20583
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 66208,
+              "p95": 70667,
+              "p99": 70667
+            }
+          },
+          "layout": "dispersed",
+          "matching_rows": 1,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 2166,
+              "estimated_rows": 256,
+              "execute_ns": 17127500,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 33917,
+              "plan_ns": 33042,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 17209166,
+            "open_ns": 159500,
+            "warm_execute_ns": {
+              "p50": 362834,
+              "p95": 370875,
+              "p99": 370875
+            },
+            "warm_plan_ns": {
+              "p50": 19959,
+              "p95": 22417,
+              "p99": 22417
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1292,
+                  "execute_ns": 370875,
+                  "plan_ns": 22417
+                },
+                {
+                  "bind_ns": 1124,
+                  "execute_ns": 362834,
+                  "plan_ns": 19959
+                },
+                {
+                  "bind_ns": 1084,
+                  "execute_ns": 360958,
+                  "plan_ns": 18958
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 390208,
+              "p95": 401542,
+              "p99": 401542
+            }
+          },
+          "selectivity": 0.00390625,
+          "shape": "point"
+        },
+        {
+          "body_bytes": 64,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 2,
+              "bind_ns": 1125,
+              "estimated_rows": 2,
+              "execute_ns": 17143958,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [
+                {
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 2,
+                  "cache_misses": 2,
+                  "file_bytes": 131072,
+                  "file_pages": 2,
+                  "index": "access_rows_bucket",
+                  "logical_bytes": 262144,
+                  "logical_pages": 4,
+                  "rows_visited": 2,
+                  "runtime_path": "authoritative"
+                }
+              ],
+              "intermediate_rows": 2,
+              "operator": "IndexRangeScanExec",
+              "parse_ns": 29291,
+              "plan_ns": 488459,
+              "requires_row_fetch": true,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 1,
+                "cache_misses": 1,
+                "descriptor_reads": 2,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 2097152,
+                "logical_pages": 2,
+                "overlay_entries": 0,
+                "rows_visited": 2,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 17672375,
+            "open_ns": 101125,
+            "warm_execute_ns": {
+              "p50": 384084,
+              "p95": 396375,
+              "p99": 396375
+            },
+            "warm_plan_ns": {
+              "p50": 354666,
+              "p95": 355875,
+              "p99": 355875
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 2,
+                "estimated_rows": 2,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [
+                  {
+                    "cache_admission_rejections": 0,
+                    "cache_hits": 4,
+                    "cache_misses": 0,
+                    "file_bytes": 0,
+                    "file_pages": 0,
+                    "index": "access_rows_bucket",
+                    "logical_bytes": 262144,
+                    "logical_pages": 4,
+                    "rows_visited": 2,
+                    "runtime_path": "authoritative"
+                  }
+                ],
+                "intermediate_rows": 2,
+                "operator": "IndexRangeScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": true,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 2,
+                  "cache_misses": 0,
+                  "descriptor_reads": 2,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 2097152,
+                  "logical_pages": 2,
+                  "overlay_entries": 0,
+                  "rows_visited": 2,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1000,
+                  "execute_ns": 373542,
+                  "plan_ns": 355875
+                },
+                {
+                  "bind_ns": 1000,
+                  "execute_ns": 384084,
+                  "plan_ns": 334000
+                },
+                {
+                  "bind_ns": 959,
+                  "execute_ns": 396375,
+                  "plan_ns": 354666
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 737292,
+              "p95": 758375,
+              "p99": 758375
+            }
+          },
+          "layout": "dispersed",
+          "matching_rows": 2,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 1167,
+              "estimated_rows": 256,
+              "execute_ns": 17138792,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 29459,
+              "plan_ns": 21375,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 17199000,
+            "open_ns": 108166,
+            "warm_execute_ns": {
+              "p50": 361541,
+              "p95": 364958,
+              "p99": 364958
+            },
+            "warm_plan_ns": {
+              "p50": 18667,
+              "p95": 19667,
+              "p99": 19667
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1000,
+                  "execute_ns": 364958,
+                  "plan_ns": 19667
+                },
+                {
+                  "bind_ns": 916,
+                  "execute_ns": 361541,
+                  "plan_ns": 18667
+                },
+                {
+                  "bind_ns": 917,
+                  "execute_ns": 359542,
+                  "plan_ns": 18417
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 386708,
+              "p95": 391417,
+              "p99": 391417
+            }
+          },
+          "selectivity": 0.0078125,
+          "shape": "sparse_prefix"
+        },
+        {
+          "body_bytes": 64,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 23,
+              "bind_ns": 1083,
+              "estimated_rows": 23,
+              "execute_ns": 17670667,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [
+                {
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 2,
+                  "cache_misses": 2,
+                  "file_bytes": 131072,
+                  "file_pages": 2,
+                  "index": "access_rows_bucket",
+                  "logical_bytes": 262144,
+                  "logical_pages": 4,
+                  "rows_visited": 23,
+                  "runtime_path": "authoritative"
+                }
+              ],
+              "intermediate_rows": 23,
+              "operator": "IndexRangeScanExec",
+              "parse_ns": 28709,
+              "plan_ns": 471000,
+              "requires_row_fetch": true,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 22,
+                "cache_misses": 1,
+                "descriptor_reads": 23,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 24117248,
+                "logical_pages": 23,
+                "overlay_entries": 0,
+                "rows_visited": 23,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 18180791,
+            "open_ns": 91417,
+            "warm_execute_ns": {
+              "p50": 865792,
+              "p95": 870333,
+              "p99": 870333
+            },
+            "warm_plan_ns": {
+              "p50": 355416,
+              "p95": 356625,
+              "p99": 356625
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 23,
+                "estimated_rows": 23,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [
+                  {
+                    "cache_admission_rejections": 0,
+                    "cache_hits": 4,
+                    "cache_misses": 0,
+                    "file_bytes": 0,
+                    "file_pages": 0,
+                    "index": "access_rows_bucket",
+                    "logical_bytes": 262144,
+                    "logical_pages": 4,
+                    "rows_visited": 23,
+                    "runtime_path": "authoritative"
+                  }
+                ],
+                "intermediate_rows": 23,
+                "operator": "IndexRangeScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": true,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 23,
+                  "cache_misses": 0,
+                  "descriptor_reads": 23,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 24117248,
+                  "logical_pages": 23,
+                  "overlay_entries": 0,
+                  "rows_visited": 23,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 958,
+                  "execute_ns": 870333,
+                  "plan_ns": 356625
+                },
+                {
+                  "bind_ns": 1083,
+                  "execute_ns": 842708,
+                  "plan_ns": 334875
+                },
+                {
+                  "bind_ns": 917,
+                  "execute_ns": 865792,
+                  "plan_ns": 355416
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 1228875,
+              "p95": 1234917,
+              "p99": 1234917
+            }
+          },
+          "layout": "dispersed",
+          "matching_rows": 23,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 1125,
+              "estimated_rows": 256,
+              "execute_ns": 17103000,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 29208,
+              "plan_ns": 20875,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 17162375,
+            "open_ns": 104167,
+            "warm_execute_ns": {
+              "p50": 365792,
+              "p95": 369000,
+              "p99": 369000
+            },
+            "warm_plan_ns": {
+              "p50": 18584,
+              "p95": 19042,
+              "p99": 19042
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1000,
+                  "execute_ns": 369000,
+                  "plan_ns": 19042
+                },
+                {
+                  "bind_ns": 875,
+                  "execute_ns": 365792,
+                  "plan_ns": 18584
+                },
+                {
+                  "bind_ns": 959,
+                  "execute_ns": 364666,
+                  "plan_ns": 18125
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 390708,
+              "p95": 394792,
+              "p99": 394792
+            }
+          },
+          "selectivity": 0.08984375,
+          "shape": "medium_prefix"
+        },
+        {
+          "body_bytes": 64,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 1125,
+              "estimated_rows": 256,
+              "execute_ns": 17171375,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [
+                {
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 0,
+                  "cache_misses": 2,
+                  "file_bytes": 131072,
+                  "file_pages": 2,
+                  "index": "access_rows_bucket",
+                  "logical_bytes": 131072,
+                  "logical_pages": 2,
+                  "rows_visited": 0,
+                  "runtime_path": "authoritative"
+                }
+              ],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 29041,
+              "plan_ns": 475750,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 17685292,
+            "open_ns": 93542,
+            "warm_execute_ns": {
+              "p50": 429917,
+              "p95": 438167,
+              "p99": 438167
+            },
+            "warm_plan_ns": {
+              "p50": 356500,
+              "p95": 358125,
+              "p99": 358125
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [
+                  {
+                    "cache_admission_rejections": 0,
+                    "cache_hits": 2,
+                    "cache_misses": 0,
+                    "file_bytes": 0,
+                    "file_pages": 0,
+                    "index": "access_rows_bucket",
+                    "logical_bytes": 131072,
+                    "logical_pages": 2,
+                    "rows_visited": 0,
+                    "runtime_path": "authoritative"
+                  }
+                ],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 958,
+                  "execute_ns": 429333,
+                  "plan_ns": 356500
+                },
+                {
+                  "bind_ns": 916,
+                  "execute_ns": 429917,
+                  "plan_ns": 332583
+                },
+                {
+                  "bind_ns": 917,
+                  "execute_ns": 438167,
+                  "plan_ns": 358125
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 792792,
+              "p95": 802750,
+              "p99": 802750
+            }
+          },
+          "layout": "dispersed",
+          "matching_rows": 231,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 1208,
+              "estimated_rows": 256,
+              "execute_ns": 17216958,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 29625,
+              "plan_ns": 21125,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 17276708,
+            "open_ns": 105000,
+            "warm_execute_ns": {
+              "p50": 431625,
+              "p95": 434250,
+              "p99": 434250
+            },
+            "warm_plan_ns": {
+              "p50": 18416,
+              "p95": 19083,
+              "p99": 19083
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 958,
+                  "execute_ns": 434250,
+                  "plan_ns": 19083
+                },
+                {
+                  "bind_ns": 916,
+                  "execute_ns": 429166,
+                  "plan_ns": 18416
+                },
+                {
+                  "bind_ns": 958,
+                  "execute_ns": 431625,
+                  "plan_ns": 18042
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 455833,
+              "p95": 460000,
+              "p99": 460000
+            }
+          },
+          "selectivity": 0.90234375,
+          "shape": "broad_prefix"
+        },
+        {
+          "body_bytes": 64,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 1041,
+              "estimated_rows": 256,
+              "execute_ns": 17147542,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [
+                {
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 0,
+                  "cache_misses": 2,
+                  "file_bytes": 131072,
+                  "file_pages": 2,
+                  "index": "access_rows_all",
+                  "logical_bytes": 131072,
+                  "logical_pages": 2,
+                  "rows_visited": 0,
+                  "runtime_path": "authoritative"
+                }
+              ],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 28666,
+              "plan_ns": 477541,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 17663000,
+            "open_ns": 100583,
+            "warm_execute_ns": {
+              "p50": 437000,
+              "p95": 437250,
+              "p99": 437250
+            },
+            "warm_plan_ns": {
+              "p50": 349875,
+              "p95": 356167,
+              "p99": 356167
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [
+                  {
+                    "cache_admission_rejections": 0,
+                    "cache_hits": 2,
+                    "cache_misses": 0,
+                    "file_bytes": 0,
+                    "file_pages": 0,
+                    "index": "access_rows_all",
+                    "logical_bytes": 131072,
+                    "logical_pages": 2,
+                    "rows_visited": 0,
+                    "runtime_path": "authoritative"
+                  }
+                ],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 917,
+                  "execute_ns": 437250,
+                  "plan_ns": 349875
+                },
+                {
+                  "bind_ns": 916,
+                  "execute_ns": 437000,
+                  "plan_ns": 356167
+                },
+                {
+                  "bind_ns": 917,
+                  "execute_ns": 433833,
+                  "plan_ns": 329500
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 793875,
+              "p95": 799667,
+              "p99": 799667
+            }
+          },
+          "layout": "dispersed",
+          "matching_rows": 256,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 1083,
+              "estimated_rows": 256,
+              "execute_ns": 17180083,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 28625,
+              "plan_ns": 20875,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 17238166,
+            "open_ns": 97792,
+            "warm_execute_ns": {
+              "p50": 440792,
+              "p95": 442125,
+              "p99": 442125
+            },
+            "warm_plan_ns": {
+              "p50": 18292,
+              "p95": 19167,
+              "p99": 19167
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 958,
+                  "execute_ns": 440792,
+                  "plan_ns": 19167
+                },
+                {
+                  "bind_ns": 875,
+                  "execute_ns": 439375,
+                  "plan_ns": 18292
+                },
+                {
+                  "bind_ns": 833,
+                  "execute_ns": 442125,
+                  "plan_ns": 17750
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 465917,
+              "p95": 466541,
+              "p99": 466541
+            }
+          },
+          "selectivity": 1.0,
+          "shape": "all_rows_prefix"
+        },
+        {
+          "body_bytes": 1024,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 1,
+              "bind_ns": 1375,
+              "estimated_rows": 1,
+              "execute_ns": 18012750,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 1,
+              "operator": "TablePointGetExec",
+              "parse_ns": 35333,
+              "plan_ns": 30167,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 1,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 18091458,
+            "open_ns": 102958,
+            "warm_execute_ns": {
+              "p50": 37041,
+              "p95": 42708,
+              "p99": 42708
+            },
+            "warm_plan_ns": {
+              "p50": 21209,
+              "p95": 22583,
+              "p99": 22583
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 1,
+                "estimated_rows": 1,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 1,
+                "operator": "TablePointGetExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 1,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 917,
+                  "execute_ns": 42708,
+                  "plan_ns": 22583
+                },
+                {
+                  "bind_ns": 917,
+                  "execute_ns": 37041,
+                  "plan_ns": 21209
+                },
+                {
+                  "bind_ns": 875,
+                  "execute_ns": 36333,
+                  "plan_ns": 20499
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 66542,
+              "p95": 74459,
+              "p99": 74459
+            }
+          },
+          "layout": "clustered",
+          "matching_rows": 1,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 2459,
+              "estimated_rows": 256,
+              "execute_ns": 18309917,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 33583,
+              "plan_ns": 32249,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 18391042,
+            "open_ns": 169875,
+            "warm_execute_ns": {
+              "p50": 380208,
+              "p95": 381792,
+              "p99": 381792
+            },
+            "warm_plan_ns": {
+              "p50": 19666,
+              "p95": 22166,
+              "p99": 22166
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1167,
+                  "execute_ns": 381792,
+                  "plan_ns": 22166
+                },
+                {
+                  "bind_ns": 1084,
+                  "execute_ns": 380208,
+                  "plan_ns": 19666
+                },
+                {
+                  "bind_ns": 958,
+                  "execute_ns": 370958,
+                  "plan_ns": 18958
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 407083,
+              "p95": 412167,
+              "p99": 412167
+            }
+          },
+          "selectivity": 0.00390625,
+          "shape": "point"
+        },
+        {
+          "body_bytes": 1024,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 2,
+              "bind_ns": 1209,
+              "estimated_rows": 2,
+              "execute_ns": 18356459,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [
+                {
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 2,
+                  "cache_misses": 2,
+                  "file_bytes": 131072,
+                  "file_pages": 2,
+                  "index": "access_rows_bucket",
+                  "logical_bytes": 262144,
+                  "logical_pages": 4,
+                  "rows_visited": 2,
+                  "runtime_path": "authoritative"
+                }
+              ],
+              "intermediate_rows": 2,
+              "operator": "IndexRangeScanExec",
+              "parse_ns": 29250,
+              "plan_ns": 474916,
+              "requires_row_fetch": true,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 1,
+                "cache_misses": 1,
+                "descriptor_reads": 2,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 2097152,
+                "logical_pages": 2,
+                "overlay_entries": 0,
+                "rows_visited": 2,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 18871625,
+            "open_ns": 94667,
+            "warm_execute_ns": {
+              "p50": 393208,
+              "p95": 397500,
+              "p99": 397500
+            },
+            "warm_plan_ns": {
+              "p50": 354874,
+              "p95": 359209,
+              "p99": 359209
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 2,
+                "estimated_rows": 2,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [
+                  {
+                    "cache_admission_rejections": 0,
+                    "cache_hits": 4,
+                    "cache_misses": 0,
+                    "file_bytes": 0,
+                    "file_pages": 0,
+                    "index": "access_rows_bucket",
+                    "logical_bytes": 262144,
+                    "logical_pages": 4,
+                    "rows_visited": 2,
+                    "runtime_path": "authoritative"
+                  }
+                ],
+                "intermediate_rows": 2,
+                "operator": "IndexRangeScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": true,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 2,
+                  "cache_misses": 0,
+                  "descriptor_reads": 2,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 2097152,
+                  "logical_pages": 2,
+                  "overlay_entries": 0,
+                  "rows_visited": 2,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 917,
+                  "execute_ns": 397500,
+                  "plan_ns": 359209
+                },
+                {
+                  "bind_ns": 959,
+                  "execute_ns": 391583,
+                  "plan_ns": 334375
+                },
+                {
+                  "bind_ns": 834,
+                  "execute_ns": 393208,
+                  "plan_ns": 354874
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 755250,
+              "p95": 764541,
+              "p99": 764541
+            }
+          },
+          "layout": "clustered",
+          "matching_rows": 2,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 1125,
+              "estimated_rows": 256,
+              "execute_ns": 18333959,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 29708,
+              "plan_ns": 22042,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 18395250,
+            "open_ns": 111125,
+            "warm_execute_ns": {
+              "p50": 378166,
+              "p95": 383959,
+              "p99": 383959
+            },
+            "warm_plan_ns": {
+              "p50": 18458,
+              "p95": 19292,
+              "p99": 19292
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 999,
+                  "execute_ns": 378166,
+                  "plan_ns": 19292
+                },
+                {
+                  "bind_ns": 917,
+                  "execute_ns": 383959,
+                  "plan_ns": 18458
+                },
+                {
+                  "bind_ns": 834,
+                  "execute_ns": 375167,
+                  "plan_ns": 18083
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 404125,
+              "p95": 408875,
+              "p99": 408875
+            }
+          },
+          "selectivity": 0.0078125,
+          "shape": "sparse_prefix"
+        },
+        {
+          "body_bytes": 1024,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 23,
+              "bind_ns": 4666,
+              "estimated_rows": 23,
+              "execute_ns": 20491834,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [
+                {
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 2,
+                  "cache_misses": 2,
+                  "file_bytes": 131072,
+                  "file_pages": 2,
+                  "index": "access_rows_bucket",
+                  "logical_bytes": 262144,
+                  "logical_pages": 4,
+                  "rows_visited": 23,
+                  "runtime_path": "authoritative"
+                }
+              ],
+              "intermediate_rows": 23,
+              "operator": "IndexRangeScanExec",
+              "parse_ns": 83125,
+              "plan_ns": 593876,
+              "requires_row_fetch": true,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 22,
+                "cache_misses": 1,
+                "descriptor_reads": 23,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 24117248,
+                "logical_pages": 23,
+                "overlay_entries": 0,
+                "rows_visited": 23,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 21201458,
+            "open_ns": 100500,
+            "warm_execute_ns": {
+              "p50": 908583,
+              "p95": 938167,
+              "p99": 938167
+            },
+            "warm_plan_ns": {
+              "p50": 422042,
+              "p95": 523083,
+              "p99": 523083
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 23,
+                "estimated_rows": 23,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [
+                  {
+                    "cache_admission_rejections": 0,
+                    "cache_hits": 4,
+                    "cache_misses": 0,
+                    "file_bytes": 0,
+                    "file_pages": 0,
+                    "index": "access_rows_bucket",
+                    "logical_bytes": 262144,
+                    "logical_pages": 4,
+                    "rows_visited": 23,
+                    "runtime_path": "authoritative"
+                  }
+                ],
+                "intermediate_rows": 23,
+                "operator": "IndexRangeScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": true,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 23,
+                  "cache_misses": 0,
+                  "descriptor_reads": 23,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 24117248,
+                  "logical_pages": 23,
+                  "overlay_entries": 0,
+                  "rows_visited": 23,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 6750,
+                  "execute_ns": 938167,
+                  "plan_ns": 523083
+                },
+                {
+                  "bind_ns": 2416,
+                  "execute_ns": 908583,
+                  "plan_ns": 422042
+                },
+                {
+                  "bind_ns": 1417,
+                  "execute_ns": 883250,
+                  "plan_ns": 395374
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 1345167,
+              "p95": 1494792,
+              "p99": 1494792
+            }
+          },
+          "layout": "clustered",
+          "matching_rows": 23,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 1000,
+              "estimated_rows": 256,
+              "execute_ns": 18287417,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 29333,
+              "plan_ns": 21291,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 18347250,
+            "open_ns": 94916,
+            "warm_execute_ns": {
+              "p50": 383166,
+              "p95": 393500,
+              "p99": 393500
+            },
+            "warm_plan_ns": {
+              "p50": 18542,
+              "p95": 19207,
+              "p99": 19207
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 917,
+                  "execute_ns": 380792,
+                  "plan_ns": 19207
+                },
+                {
+                  "bind_ns": 875,
+                  "execute_ns": 383166,
+                  "plan_ns": 18542
+                },
+                {
+                  "bind_ns": 833,
+                  "execute_ns": 393500,
+                  "plan_ns": 18334
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 408125,
+              "p95": 418000,
+              "p99": 418000
+            }
+          },
+          "selectivity": 0.08984375,
+          "shape": "medium_prefix"
+        },
+        {
+          "body_bytes": 1024,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 1166,
+              "estimated_rows": 256,
+              "execute_ns": 18417250,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [
+                {
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 0,
+                  "cache_misses": 2,
+                  "file_bytes": 131072,
+                  "file_pages": 2,
+                  "index": "access_rows_bucket",
+                  "logical_bytes": 131072,
+                  "logical_pages": 2,
+                  "rows_visited": 0,
+                  "runtime_path": "authoritative"
+                }
+              ],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 30167,
+              "plan_ns": 475792,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 18933334,
+            "open_ns": 120333,
+            "warm_execute_ns": {
+              "p50": 449000,
+              "p95": 450792,
+              "p99": 450792
+            },
+            "warm_plan_ns": {
+              "p50": 334291,
+              "p95": 335667,
+              "p99": 335667
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [
+                  {
+                    "cache_admission_rejections": 0,
+                    "cache_hits": 2,
+                    "cache_misses": 0,
+                    "file_bytes": 0,
+                    "file_pages": 0,
+                    "index": "access_rows_bucket",
+                    "logical_bytes": 131072,
+                    "logical_pages": 2,
+                    "rows_visited": 0,
+                    "runtime_path": "authoritative"
+                  }
+                ],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1041,
+                  "execute_ns": 450792,
+                  "plan_ns": 335667
+                },
+                {
+                  "bind_ns": 916,
+                  "execute_ns": 448417,
+                  "plan_ns": 334291
+                },
+                {
+                  "bind_ns": 917,
+                  "execute_ns": 449000,
+                  "plan_ns": 333209
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 789667,
+              "p95": 793833,
+              "p99": 793833
+            }
+          },
+          "layout": "clustered",
+          "matching_rows": 231,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 2167,
+              "estimated_rows": 256,
+              "execute_ns": 18413833,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 32750,
+              "plan_ns": 28125,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 18488333,
+            "open_ns": 183708,
+            "warm_execute_ns": {
+              "p50": 448083,
+              "p95": 454041,
+              "p99": 454041
+            },
+            "warm_plan_ns": {
+              "p50": 19917,
+              "p95": 21084,
+              "p99": 21084
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1207,
+                  "execute_ns": 454041,
+                  "plan_ns": 21084
+                },
+                {
+                  "bind_ns": 1083,
+                  "execute_ns": 444542,
+                  "plan_ns": 19917
+                },
+                {
+                  "bind_ns": 1000,
+                  "execute_ns": 448083,
+                  "plan_ns": 18792
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 473542,
+              "p95": 482833,
+              "p99": 482833
+            }
+          },
+          "selectivity": 0.90234375,
+          "shape": "broad_prefix"
+        },
+        {
+          "body_bytes": 1024,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 1667,
+              "estimated_rows": 256,
+              "execute_ns": 18421625,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [
+                {
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 0,
+                  "cache_misses": 2,
+                  "file_bytes": 131072,
+                  "file_pages": 2,
+                  "index": "access_rows_all",
+                  "logical_bytes": 131072,
+                  "logical_pages": 2,
+                  "rows_visited": 0,
+                  "runtime_path": "authoritative"
+                }
+              ],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 32583,
+              "plan_ns": 483750,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 18951625,
+            "open_ns": 114042,
+            "warm_execute_ns": {
+              "p50": 457209,
+              "p95": 457500,
+              "p99": 457500
+            },
+            "warm_plan_ns": {
+              "p50": 355042,
+              "p95": 361250,
+              "p99": 361250
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [
+                  {
+                    "cache_admission_rejections": 0,
+                    "cache_hits": 2,
+                    "cache_misses": 0,
+                    "file_bytes": 0,
+                    "file_pages": 0,
+                    "index": "access_rows_all",
+                    "logical_bytes": 131072,
+                    "logical_pages": 2,
+                    "rows_visited": 0,
+                    "runtime_path": "authoritative"
+                  }
+                ],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1416,
+                  "execute_ns": 457209,
+                  "plan_ns": 361250
+                },
+                {
+                  "bind_ns": 1207,
+                  "execute_ns": 454583,
+                  "plan_ns": 336792
+                },
+                {
+                  "bind_ns": 1082,
+                  "execute_ns": 457500,
+                  "plan_ns": 355042
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 819958,
+              "p95": 827333,
+              "p99": 827333
+            }
+          },
+          "layout": "clustered",
+          "matching_rows": 256,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 1291,
+              "estimated_rows": 256,
+              "execute_ns": 18396208,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 29708,
+              "plan_ns": 21375,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 18456500,
+            "open_ns": 99125,
+            "warm_execute_ns": {
+              "p50": 455375,
+              "p95": 456208,
+              "p99": 456208
+            },
+            "warm_plan_ns": {
+              "p50": 18417,
+              "p95": 19250,
+              "p99": 19250
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 958,
+                  "execute_ns": 455125,
+                  "plan_ns": 19250
+                },
+                {
+                  "bind_ns": 959,
+                  "execute_ns": 456208,
+                  "plan_ns": 18417
+                },
+                {
+                  "bind_ns": 875,
+                  "execute_ns": 455375,
+                  "plan_ns": 17958
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 481000,
+              "p95": 481250,
+              "p99": 481250
+            }
+          },
+          "selectivity": 1.0,
+          "shape": "all_rows_prefix"
+        },
+        {
+          "body_bytes": 1024,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 1,
+              "bind_ns": 2209,
+              "estimated_rows": 1,
+              "execute_ns": 18071042,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 1,
+              "operator": "TablePointGetExec",
+              "parse_ns": 44333,
+              "plan_ns": 36917,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 1,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 18168833,
+            "open_ns": 141708,
+            "warm_execute_ns": {
+              "p50": 36875,
+              "p95": 49083,
+              "p99": 49083
+            },
+            "warm_plan_ns": {
+              "p50": 21667,
+              "p95": 25667,
+              "p99": 25667
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 1,
+                "estimated_rows": 1,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 1,
+                "operator": "TablePointGetExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 1,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1417,
+                  "execute_ns": 49083,
+                  "plan_ns": 25667
+                },
+                {
+                  "bind_ns": 958,
+                  "execute_ns": 36875,
+                  "plan_ns": 21667
+                },
+                {
+                  "bind_ns": 917,
+                  "execute_ns": 36458,
+                  "plan_ns": 20792
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 67000,
+              "p95": 85000,
+              "p99": 85000
+            }
+          },
+          "layout": "dispersed",
+          "matching_rows": 1,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 4542,
+              "estimated_rows": 256,
+              "execute_ns": 18317375,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 64250,
+              "plan_ns": 53958,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 18458166,
+            "open_ns": 239875,
+            "warm_execute_ns": {
+              "p50": 374542,
+              "p95": 377500,
+              "p99": 377500
+            },
+            "warm_plan_ns": {
+              "p50": 20250,
+              "p95": 24251,
+              "p99": 24251
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1458,
+                  "execute_ns": 377500,
+                  "plan_ns": 24251
+                },
+                {
+                  "bind_ns": 1125,
+                  "execute_ns": 371708,
+                  "plan_ns": 20250
+                },
+                {
+                  "bind_ns": 1000,
+                  "execute_ns": 374542,
+                  "plan_ns": 19084
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 400292,
+              "p95": 410625,
+              "p99": 410625
+            }
+          },
+          "selectivity": 0.00390625,
+          "shape": "point"
+        },
+        {
+          "body_bytes": 1024,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 2,
+              "bind_ns": 5625,
+              "estimated_rows": 2,
+              "execute_ns": 19152625,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [
+                {
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 2,
+                  "cache_misses": 2,
+                  "file_bytes": 131072,
+                  "file_pages": 2,
+                  "index": "access_rows_bucket",
+                  "logical_bytes": 262144,
+                  "logical_pages": 4,
+                  "rows_visited": 2,
+                  "runtime_path": "authoritative"
+                }
+              ],
+              "intermediate_rows": 2,
+              "operator": "IndexRangeScanExec",
+              "parse_ns": 110042,
+              "plan_ns": 608625,
+              "requires_row_fetch": true,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 1,
+                "cache_misses": 1,
+                "descriptor_reads": 2,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 2097152,
+                "logical_pages": 2,
+                "overlay_entries": 0,
+                "rows_visited": 2,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 19904750,
+            "open_ns": 233500,
+            "warm_execute_ns": {
+              "p50": 352541,
+              "p95": 389292,
+              "p99": 389292
+            },
+            "warm_plan_ns": {
+              "p50": 338416,
+              "p95": 390583,
+              "p99": 390583
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 2,
+                "estimated_rows": 2,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [
+                  {
+                    "cache_admission_rejections": 0,
+                    "cache_hits": 4,
+                    "cache_misses": 0,
+                    "file_bytes": 0,
+                    "file_pages": 0,
+                    "index": "access_rows_bucket",
+                    "logical_bytes": 262144,
+                    "logical_pages": 4,
+                    "rows_visited": 2,
+                    "runtime_path": "authoritative"
+                  }
+                ],
+                "intermediate_rows": 2,
+                "operator": "IndexRangeScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": true,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 2,
+                  "cache_misses": 0,
+                  "descriptor_reads": 2,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 2097152,
+                  "logical_pages": 2,
+                  "overlay_entries": 0,
+                  "rows_visited": 2,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 5167,
+                  "execute_ns": 389292,
+                  "plan_ns": 390583
+                },
+                {
+                  "bind_ns": 1376,
+                  "execute_ns": 352541,
+                  "plan_ns": 317166
+                },
+                {
+                  "bind_ns": 1083,
+                  "execute_ns": 349000,
+                  "plan_ns": 338416
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 695459,
+              "p95": 804458,
+              "p99": 804458
+            }
+          },
+          "layout": "dispersed",
+          "matching_rows": 2,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 6750,
+              "estimated_rows": 256,
+              "execute_ns": 18616083,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 105166,
+              "plan_ns": 85833,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 18845000,
+            "open_ns": 144083,
+            "warm_execute_ns": {
+              "p50": 450958,
+              "p95": 514750,
+              "p99": 514750
+            },
+            "warm_plan_ns": {
+              "p50": 48416,
+              "p95": 127792,
+              "p99": 127792
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 8500,
+                  "execute_ns": 514750,
+                  "plan_ns": 127792
+                },
+                {
+                  "bind_ns": 3917,
+                  "execute_ns": 450958,
+                  "plan_ns": 48416
+                },
+                {
+                  "bind_ns": 2333,
+                  "execute_ns": 387125,
+                  "plan_ns": 31667
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 527916,
+              "p95": 702084,
+              "p99": 702084
+            }
+          },
+          "selectivity": 0.0078125,
+          "shape": "sparse_prefix"
+        },
+        {
+          "body_bytes": 1024,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 23,
+              "bind_ns": 5583,
+              "estimated_rows": 23,
+              "execute_ns": 20019584,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [
+                {
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 2,
+                  "cache_misses": 2,
+                  "file_bytes": 131072,
+                  "file_pages": 2,
+                  "index": "access_rows_bucket",
+                  "logical_bytes": 262144,
+                  "logical_pages": 4,
+                  "rows_visited": 23,
+                  "runtime_path": "authoritative"
+                }
+              ],
+              "intermediate_rows": 23,
+              "operator": "IndexRangeScanExec",
+              "parse_ns": 83750,
+              "plan_ns": 580375,
+              "requires_row_fetch": true,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 22,
+                "cache_misses": 1,
+                "descriptor_reads": 23,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 24117248,
+                "logical_pages": 23,
+                "overlay_entries": 0,
+                "rows_visited": 23,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 20718042,
+            "open_ns": 228042,
+            "warm_execute_ns": {
+              "p50": 922583,
+              "p95": 934250,
+              "p99": 934250
+            },
+            "warm_plan_ns": {
+              "p50": 393000,
+              "p95": 424125,
+              "p99": 424125
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 23,
+                "estimated_rows": 23,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [
+                  {
+                    "cache_admission_rejections": 0,
+                    "cache_hits": 4,
+                    "cache_misses": 0,
+                    "file_bytes": 0,
+                    "file_pages": 0,
+                    "index": "access_rows_bucket",
+                    "logical_bytes": 262144,
+                    "logical_pages": 4,
+                    "rows_visited": 23,
+                    "runtime_path": "authoritative"
+                  }
+                ],
+                "intermediate_rows": 23,
+                "operator": "IndexRangeScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": true,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 23,
+                  "cache_misses": 0,
+                  "descriptor_reads": 23,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 24117248,
+                  "logical_pages": 23,
+                  "overlay_entries": 0,
+                  "rows_visited": 23,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 4917,
+                  "execute_ns": 934250,
+                  "plan_ns": 424125
+                },
+                {
+                  "bind_ns": 1542,
+                  "execute_ns": 922583,
+                  "plan_ns": 393000
+                },
+                {
+                  "bind_ns": 1749,
+                  "execute_ns": 880167,
+                  "plan_ns": 364375
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 1328917,
+              "p95": 1382375,
+              "p99": 1382375
+            }
+          },
+          "layout": "dispersed",
+          "matching_rows": 23,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 6709,
+              "estimated_rows": 256,
+              "execute_ns": 19409083,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 112375,
+              "plan_ns": 102417,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 19662292,
+            "open_ns": 172041,
+            "warm_execute_ns": {
+              "p50": 445916,
+              "p95": 447625,
+              "p99": 447625
+            },
+            "warm_plan_ns": {
+              "p50": 28000,
+              "p95": 82917,
+              "p99": 82917
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 6917,
+                  "execute_ns": 445916,
+                  "plan_ns": 82917
+                },
+                {
+                  "bind_ns": 1542,
+                  "execute_ns": 444875,
+                  "plan_ns": 23834
+                },
+                {
+                  "bind_ns": 1500,
+                  "execute_ns": 447625,
+                  "plan_ns": 28000
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 484834,
+              "p95": 558084,
+              "p99": 558084
+            }
+          },
+          "selectivity": 0.08984375,
+          "shape": "medium_prefix"
+        },
+        {
+          "body_bytes": 1024,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 4625,
+              "estimated_rows": 256,
+              "execute_ns": 18558542,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [
+                {
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 0,
+                  "cache_misses": 2,
+                  "file_bytes": 131072,
+                  "file_pages": 2,
+                  "index": "access_rows_bucket",
+                  "logical_bytes": 131072,
+                  "logical_pages": 2,
+                  "rows_visited": 0,
+                  "runtime_path": "authoritative"
+                }
+              ],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 60333,
+              "plan_ns": 525792,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 19168917,
+            "open_ns": 148083,
+            "warm_execute_ns": {
+              "p50": 448625,
+              "p95": 455041,
+              "p99": 455041
+            },
+            "warm_plan_ns": {
+              "p50": 356833,
+              "p95": 358709,
+              "p99": 358709
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [
+                  {
+                    "cache_admission_rejections": 0,
+                    "cache_hits": 2,
+                    "cache_misses": 0,
+                    "file_bytes": 0,
+                    "file_pages": 0,
+                    "index": "access_rows_bucket",
+                    "logical_bytes": 131072,
+                    "logical_pages": 2,
+                    "rows_visited": 0,
+                    "runtime_path": "authoritative"
+                  }
+                ],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 1708,
+                  "execute_ns": 455041,
+                  "plan_ns": 348625
+                },
+                {
+                  "bind_ns": 1208,
+                  "execute_ns": 448625,
+                  "plan_ns": 358709
+                },
+                {
+                  "bind_ns": 1042,
+                  "execute_ns": 447125,
+                  "plan_ns": 356833
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 814084,
+              "p95": 815166,
+              "p99": 815166
+            }
+          },
+          "layout": "dispersed",
+          "matching_rows": 231,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 4458,
+              "estimated_rows": 256,
+              "execute_ns": 18720084,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 64334,
+              "plan_ns": 57458,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 18865208,
+            "open_ns": 190583,
+            "warm_execute_ns": {
+              "p50": 446125,
+              "p95": 459292,
+              "p99": 459292
+            },
+            "warm_plan_ns": {
+              "p50": 20083,
+              "p95": 39625,
+              "p99": 39625
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 3000,
+                  "execute_ns": 459292,
+                  "plan_ns": 39625
+                },
+                {
+                  "bind_ns": 1042,
+                  "execute_ns": 446125,
+                  "plan_ns": 20083
+                },
+                {
+                  "bind_ns": 1000,
+                  "execute_ns": 444042,
+                  "plan_ns": 18833
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 473333,
+              "p95": 513208,
+              "p99": 513208
+            }
+          },
+          "selectivity": 0.90234375,
+          "shape": "broad_prefix"
+        },
+        {
+          "body_bytes": 1024,
+          "cost_selected": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 6417,
+              "estimated_rows": 256,
+              "execute_ns": 19229000,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [
+                {
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 0,
+                  "cache_misses": 2,
+                  "file_bytes": 131072,
+                  "file_pages": 2,
+                  "index": "access_rows_all",
+                  "logical_bytes": 131072,
+                  "logical_pages": 2,
+                  "rows_visited": 0,
+                  "runtime_path": "authoritative"
+                }
+              ],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 103541,
+              "plan_ns": 577791,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 19951000,
+            "open_ns": 178917,
+            "warm_execute_ns": {
+              "p50": 468750,
+              "p95": 516209,
+              "p99": 516209
+            },
+            "warm_plan_ns": {
+              "p50": 376709,
+              "p95": 459084,
+              "p99": 459084
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [
+                  {
+                    "cache_admission_rejections": 0,
+                    "cache_hits": 2,
+                    "cache_misses": 0,
+                    "file_bytes": 0,
+                    "file_pages": 0,
+                    "index": "access_rows_all",
+                    "logical_bytes": 131072,
+                    "logical_pages": 2,
+                    "rows_visited": 0,
+                    "runtime_path": "authoritative"
+                  }
+                ],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 9124,
+                  "execute_ns": 516209,
+                  "plan_ns": 459084
+                },
+                {
+                  "bind_ns": 1709,
+                  "execute_ns": 463042,
+                  "plan_ns": 340833
+                },
+                {
+                  "bind_ns": 2041,
+                  "execute_ns": 468750,
+                  "plan_ns": 376709
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 856500,
+              "p95": 1011250,
+              "p99": 1011250
+            }
+          },
+          "layout": "dispersed",
+          "matching_rows": 256,
+          "scan": {
+            "first_profile": {
+              "actual_rows": 256,
+              "bind_ns": 2125,
+              "estimated_rows": 256,
+              "execute_ns": 18941792,
+              "fully_consumed": true,
+              "hydrated_compressed_bytes": 0,
+              "hydrated_decompressed_bytes": 0,
+              "hydrated_rows": 0,
+              "index_reads": [],
+              "intermediate_rows": 256,
+              "operator": "TableFullScanExec",
+              "parse_ns": 36542,
+              "plan_ns": 38042,
+              "requires_row_fetch": false,
+              "row_read": {
+                "base_commit_epoch": 6,
+                "cache_admission_rejections": 0,
+                "cache_hits": 0,
+                "cache_misses": 1,
+                "descriptor_reads": 1,
+                "file_bytes": 1048576,
+                "file_pages": 1,
+                "logical_bytes": 1048576,
+                "logical_pages": 1,
+                "overlay_entries": 0,
+                "rows_visited": 256,
+                "runtime_path": "snapshot_rows",
+                "visible_commit_epoch": 6
+              }
+            },
+            "first_query_ns": 19039917,
+            "open_ns": 141375,
+            "warm_execute_ns": {
+              "p50": 478458,
+              "p95": 478666,
+              "p99": 478666
+            },
+            "warm_plan_ns": {
+              "p50": 24708,
+              "p95": 34041,
+              "p99": 34041
+            },
+            "warm_profiles": {
+              "common": {
+                "actual_rows": 256,
+                "estimated_rows": 256,
+                "fully_consumed": true,
+                "hydrated_compressed_bytes": 0,
+                "hydrated_decompressed_bytes": 0,
+                "hydrated_rows": 0,
+                "index_reads": [],
+                "intermediate_rows": 256,
+                "operator": "TableFullScanExec",
+                "parse_ns": 0,
+                "requires_row_fetch": false,
+                "row_read": {
+                  "base_commit_epoch": 6,
+                  "cache_admission_rejections": 0,
+                  "cache_hits": 1,
+                  "cache_misses": 0,
+                  "descriptor_reads": 1,
+                  "file_bytes": 0,
+                  "file_pages": 0,
+                  "logical_bytes": 1048576,
+                  "logical_pages": 1,
+                  "overlay_entries": 0,
+                  "rows_visited": 256,
+                  "runtime_path": "snapshot_rows",
+                  "visible_commit_epoch": 6
+                }
+              },
+              "samples": [
+                {
+                  "bind_ns": 2125,
+                  "execute_ns": 478458,
+                  "plan_ns": 34041
+                },
+                {
+                  "bind_ns": 1125,
+                  "execute_ns": 478666,
+                  "plan_ns": 21375
+                },
+                {
+                  "bind_ns": 1376,
+                  "execute_ns": 475834,
+                  "plan_ns": 24708
+                }
+              ]
+            },
+            "warm_query_ns": {
+              "p50": 514541,
+              "p95": 524708,
+              "p99": 524708
+            }
+          },
+          "selectivity": 1.0,
+          "shape": "all_rows_prefix"
+        }
+      ],
+      "rows": 256,
+      "smoke": true,
+      "snapshot_scope": "one_pinned_snapshot_per_path",
+      "warm_samples": 3
+    },
+    "results": [
+      {
+        "full_scan_ns_p50": 134584,
+        "full_scan_ns_p95": 166708,
+        "full_scan_ns_p99": 177542,
+        "keyset_cursors": [
+          {
+            "backward_rows_visited": 25,
+            "cursor_order": 25,
+            "exclusive_backward_ns_p50": 7083,
+            "exclusive_backward_ns_p95": 7375,
+            "exclusive_backward_ns_p99": 9917,
+            "exclusive_forward_ns_p50": 7084,
+            "exclusive_forward_ns_p95": 7375,
+            "exclusive_forward_ns_p99": 11667,
+            "forward_rows_visited": 25,
+            "position": "first"
+          },
+          {
+            "backward_rows_visited": 25,
+            "cursor_order": 500,
+            "exclusive_backward_ns_p50": 7167,
+            "exclusive_backward_ns_p95": 7583,
+            "exclusive_backward_ns_p99": 9417,
+            "exclusive_forward_ns_p50": 7375,
+            "exclusive_forward_ns_p95": 7500,
+            "exclusive_forward_ns_p99": 8500,
+            "forward_rows_visited": 25,
+            "position": "middle"
+          },
+          {
+            "backward_rows_visited": 25,
+            "cursor_order": 974,
+            "exclusive_backward_ns_p50": 7042,
+            "exclusive_backward_ns_p95": 7208,
+            "exclusive_backward_ns_p99": 7208,
+            "exclusive_forward_ns_p50": 7083,
+            "exclusive_forward_ns_p95": 7125,
+            "exclusive_forward_ns_p99": 7833,
+            "forward_rows_visited": 25,
+            "position": "deep"
+          }
+        ],
+        "keyset_page_rows": 25,
+        "matched_rows": 1000,
+        "p50_speedup": 0.1401672833996586,
+        "resident_delta_bytes": 2768896,
+        "selected_equality_prefix_len": 2,
+        "selected_path": "idx_messages_space_thread_order",
+        "space_prefix_rows": 2000,
+        "streaming_composite_prefix_ns_p50": 960167,
+        "streaming_composite_prefix_ns_p95": 1065625,
+        "streaming_composite_prefix_ns_p99": 1074917,
+        "target_prefix_rows": 1000,
+        "total_rows": 2000
+      },
+      {
+        "full_scan_ns_p50": 1320625,
+        "full_scan_ns_p95": 1357917,
+        "full_scan_ns_p99": 1359792,
+        "keyset_cursors": [
+          {
+            "backward_rows_visited": 25,
+            "cursor_order": 25,
+            "exclusive_backward_ns_p50": 7208,
+            "exclusive_backward_ns_p95": 7541,
+            "exclusive_backward_ns_p99": 10167,
+            "exclusive_forward_ns_p50": 7333,
+            "exclusive_forward_ns_p95": 7750,
+            "exclusive_forward_ns_p99": 12125,
+            "forward_rows_visited": 25,
+            "position": "first"
+          },
+          {
+            "backward_rows_visited": 25,
+            "cursor_order": 5000,
+            "exclusive_backward_ns_p50": 7041,
+            "exclusive_backward_ns_p95": 7208,
+            "exclusive_backward_ns_p99": 7291,
+            "exclusive_forward_ns_p50": 6958,
+            "exclusive_forward_ns_p95": 7000,
+            "exclusive_forward_ns_p99": 8459,
+            "forward_rows_visited": 25,
+            "position": "middle"
+          },
+          {
+            "backward_rows_visited": 25,
+            "cursor_order": 9974,
+            "exclusive_backward_ns_p50": 7166,
+            "exclusive_backward_ns_p95": 7292,
+            "exclusive_backward_ns_p99": 7333,
+            "exclusive_forward_ns_p50": 7208,
+            "exclusive_forward_ns_p95": 7333,
+            "exclusive_forward_ns_p99": 7750,
+            "forward_rows_visited": 25,
+            "position": "deep"
+          }
+        ],
+        "keyset_page_rows": 25,
+        "matched_rows": 10000,
+        "p50_speedup": 0.10798536934696336,
+        "resident_delta_bytes": 29360128,
+        "selected_equality_prefix_len": 2,
+        "selected_path": "idx_messages_space_thread_order",
+        "space_prefix_rows": 20000,
+        "streaming_composite_prefix_ns_p50": 12229666,
+        "streaming_composite_prefix_ns_p95": 12370625,
+        "streaming_composite_prefix_ns_p99": 12617291,
+        "target_prefix_rows": 10000,
+        "total_rows": 20000
+      },
+      {
+        "full_scan_ns_p50": 7023167,
+        "full_scan_ns_p95": 7479416,
+        "full_scan_ns_p99": 7604167,
+        "keyset_cursors": [
+          {
+            "backward_rows_visited": 25,
+            "cursor_order": 25,
+            "exclusive_backward_ns_p50": 7459,
+            "exclusive_backward_ns_p95": 7792,
+            "exclusive_backward_ns_p99": 12375,
+            "exclusive_forward_ns_p50": 7500,
+            "exclusive_forward_ns_p95": 9500,
+            "exclusive_forward_ns_p99": 22833,
+            "forward_rows_visited": 25,
+            "position": "first"
+          },
+          {
+            "backward_rows_visited": 25,
+            "cursor_order": 25000,
+            "exclusive_backward_ns_p50": 7625,
+            "exclusive_backward_ns_p95": 7791,
+            "exclusive_backward_ns_p99": 9416,
+            "exclusive_forward_ns_p50": 7542,
+            "exclusive_forward_ns_p95": 7750,
+            "exclusive_forward_ns_p99": 18458,
+            "forward_rows_visited": 25,
+            "position": "middle"
+          },
+          {
+            "backward_rows_visited": 25,
+            "cursor_order": 49974,
+            "exclusive_backward_ns_p50": 7708,
+            "exclusive_backward_ns_p95": 7834,
+            "exclusive_backward_ns_p99": 7916,
+            "exclusive_forward_ns_p50": 7666,
+            "exclusive_forward_ns_p95": 7750,
+            "exclusive_forward_ns_p99": 10000,
+            "forward_rows_visited": 25,
+            "position": "deep"
+          }
+        ],
+        "keyset_page_rows": 25,
+        "matched_rows": 50000,
+        "p50_speedup": 0.09545702378383705,
+        "resident_delta_bytes": 132907008,
+        "selected_equality_prefix_len": 2,
+        "selected_path": "idx_messages_space_thread_order",
+        "space_prefix_rows": 100000,
+        "streaming_composite_prefix_ns_p50": 73574125,
+        "streaming_composite_prefix_ns_p95": 75702083,
+        "streaming_composite_prefix_ns_p99": 76564417,
+        "target_prefix_rows": 50000,
+        "total_rows": 100000
+      },
+      {
+        "full_scan_ns_p50": 14324416,
+        "full_scan_ns_p95": 14709583,
+        "full_scan_ns_p99": 14798875,
+        "keyset_cursors": [
+          {
+            "backward_rows_visited": 25,
+            "cursor_order": 25,
+            "exclusive_backward_ns_p50": 8083,
+            "exclusive_backward_ns_p95": 8292,
+            "exclusive_backward_ns_p99": 13125,
+            "exclusive_forward_ns_p50": 8208,
+            "exclusive_forward_ns_p95": 8958,
+            "exclusive_forward_ns_p99": 30625,
+            "forward_rows_visited": 25,
+            "position": "first"
+          },
+          {
+            "backward_rows_visited": 25,
+            "cursor_order": 50000,
+            "exclusive_backward_ns_p50": 7667,
+            "exclusive_backward_ns_p95": 7875,
+            "exclusive_backward_ns_p99": 9625,
+            "exclusive_forward_ns_p50": 7666,
+            "exclusive_forward_ns_p95": 7833,
+            "exclusive_forward_ns_p99": 18708,
+            "forward_rows_visited": 25,
+            "position": "middle"
+          },
+          {
+            "backward_rows_visited": 25,
+            "cursor_order": 99974,
+            "exclusive_backward_ns_p50": 7834,
+            "exclusive_backward_ns_p95": 7958,
+            "exclusive_backward_ns_p99": 8167,
+            "exclusive_forward_ns_p50": 7833,
+            "exclusive_forward_ns_p95": 8083,
+            "exclusive_forward_ns_p99": 14875,
+            "forward_rows_visited": 25,
+            "position": "deep"
+          }
+        ],
+        "keyset_page_rows": 25,
+        "matched_rows": 100000,
+        "p50_speedup": 0.09048797432121382,
+        "resident_delta_bytes": 167395328,
+        "selected_equality_prefix_len": 2,
+        "selected_path": "idx_messages_space_thread_order",
+        "space_prefix_rows": 200000,
+        "streaming_composite_prefix_ns_p50": 158301875,
+        "streaming_composite_prefix_ns_p95": 160471084,
+        "streaming_composite_prefix_ns_p99": 161488708,
+        "target_prefix_rows": 100000,
+        "total_rows": 200000
+      }
+    ],
+    "samples": 31
+  }
+}

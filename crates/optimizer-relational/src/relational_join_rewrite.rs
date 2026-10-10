@@ -514,6 +514,20 @@ pub fn enumerate_relational_join_rewrites(
     required_properties: &RequiredProperties,
     config: RelationalJoinEnumerationConfig,
 ) -> Result<RelationalJoinRewriteEnumeration, RelationalJoinRewriteError> {
+    enumerate_relational_join_rewrites_with_cost_contexts(
+        problem,
+        required_properties,
+        config,
+        &crate::RelationalJoinCostContexts::default(),
+    )
+}
+
+pub fn enumerate_relational_join_rewrites_with_cost_contexts(
+    problem: &RelationalJoinRewriteProblem,
+    required_properties: &RequiredProperties,
+    config: RelationalJoinEnumerationConfig,
+    cost_contexts: &crate::RelationalJoinCostContexts,
+) -> Result<RelationalJoinRewriteEnumeration, RelationalJoinRewriteError> {
     let analysis = analyze_relational_join_conflicts(
         &problem.initial_tree,
         problem.post_join_filter.as_ref(),
@@ -524,6 +538,7 @@ pub fn enumerate_relational_join_rewrites(
         analysis,
         required_properties,
         config,
+        cost_contexts,
     )
 }
 

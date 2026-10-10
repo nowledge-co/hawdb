@@ -75,7 +75,8 @@ pub(super) fn encode_segment_payload_with_context<T: crate::document_encoding::R
     let result = (|| {
         #[cfg(test)]
         evidence::started();
-        let mut encoder = zstd::stream::write::Encoder::new(buffer, SEARCH_COMPRESSION_LEVEL)?;
+        let mut encoder =
+            hawdb_storage::compression::Encoder::new(buffer, SEARCH_COMPRESSION_LEVEL)?;
         let mut digest = Crc32cHasher::new();
         encoding.write_to(&mut CheckedWriter::new(
             &mut DigestWriter {

@@ -122,9 +122,10 @@ impl PhysicalPlan {
                 name,
                 node_labels,
                 rel_types,
+                relationship_predicates,
             } => {
                 format!(
-                    "{pad}ProjectGraph name={name} node_labels={node_labels:?} rel_types={rel_types:?}"
+                    "{pad}ProjectGraph name={name} node_labels={node_labels:?} rel_types={rel_types:?} relationship_predicates={relationship_predicates:?}"
                 )
             }
             PhysicalPlan::GraphAlgorithm {
@@ -132,10 +133,11 @@ impl PhysicalPlan {
                 graph_name,
                 options,
                 score_column,
+                return_node_identity,
                 ..
             } => {
                 format!(
-                    "{pad}GraphAlgorithm algorithm={algorithm:?} graph={graph_name} options={options:?} score_column={score_column}"
+                    "{pad}GraphAlgorithm algorithm={algorithm:?} graph={graph_name} options={options:?} score_column={score_column} return_node_identity={return_node_identity}"
                 )
             }
             PhysicalPlan::VectorSeedScan {

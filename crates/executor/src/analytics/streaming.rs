@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::*;
-use crate::binding::{node_memory_bytes, relationship_memory_bytes};
+use crate::binding::{node_memory_bytes, relationship_memory_bytes, value_memory_bytes};
 use hawdb_analytics::{AnalyticsEdgeSource, StreamingGraph};
 use hawdb_storage::{adjacency::AdjacencyDirection, NodeId};
 use std::cell::Cell;
@@ -28,6 +28,8 @@ const PAGE_RANK_NODE_STATE_BYTES: usize = 192;
 struct EdgeSource<'a> {
     context: GraphAlgorithmContext<'a>,
     rel_types: &'a [String],
+    relationship_predicates:
+        &'a BTreeMap<String, hawdb_storage::projection::ProjectedRelationshipPredicate>,
     record_budget: usize,
     record_peak: Cell<usize>,
     record_account: crate::QueryMemoryAccount,
@@ -61,6 +63,15 @@ impl AnalyticsEdgeSource for EdgeSource<'_> {
                     }
                     let _record = self.record_account.reserve(bytes)?;
                     self.record_peak.set(self.record_peak.get().max(bytes));
+                    if self
+                        .context
+                        .catalog
+                        .rel_type_name(relationship.rel_type)
+                        .and_then(|name| self.relationship_predicates.get(name))
+                        .is_some_and(|predicate| !predicate.matches(&relationship.properties))
+                    {
+                        return Ok(ScanControl::Continue);
+                    }
                     visitor(match direction {
                         AdjacencyDirection::Outgoing => relationship.target,
                         AdjacencyDirection::Incoming => relationship.source,
@@ -104,6 +115,7 @@ impl GraphAlgorithmSpec<'_> {
                     self.graph_name
                 ))
             })?;
+        self.validate_options()?;
         let visibility = self
             .node_visibility_predicate
             .as_ref()
@@ -122,11 +134,13 @@ impl GraphAlgorithmSpec<'_> {
             runtime_checkpoint(context.task_context)?;
             let levels = match self.algorithm {
                 GraphAlgorithmKind::PageRank => 1,
-                GraphAlgorithmKind::Louvain => self
-                    .options
-                    .max_levels
-                    .unwrap_or(LouvainOptions::default().max_levels)
-                    .max(1),
+                GraphAlgorithmKind::Louvain => {
+                    if self.louvain_options()?.hierarchy {
+                        self.louvain_options()?.max_levels.max(1)
+                    } else {
+                        1
+                    }
+                }
             };
             let result_per_node = match self.algorithm {
                 GraphAlgorithmKind::PageRank => {
@@ -145,7 +159,7 @@ impl GraphAlgorithmSpec<'_> {
             let per_node = state_per_node.saturating_add(result_per_node);
             let mut nodes = Vec::new();
             let mut ordinal = 0usize;
-            let control = context.store.visit_nodes_owned(None, &mut |node| {
+            let mut consume = |node: NodeRecord| {
                 if ordinal.is_multiple_of(1024) {
                     runtime_checkpoint(context.task_context)?;
                 }
@@ -175,7 +189,20 @@ impl GraphAlgorithmSpec<'_> {
                 nodes.push(node.id);
                 tracker.release(transient);
                 Ok(ScanControl::Continue)
-            })?;
+            };
+            let control = if visibility.is_none() {
+                context
+                    .store
+                    .visit_projected_nodes_owned(None, &BTreeSet::new(), &mut |node| {
+                        consume(NodeRecord {
+                            id: node.id,
+                            labels: node.labels,
+                            properties: node.properties,
+                        })
+                    })?
+            } else {
+                context.store.visit_nodes_owned(None, &mut consume)?
+            };
             if control == ScanControl::Stop {
                 return Err(HawDBError::Execution(
                     "streaming analytics node scan is incomplete".into(),
@@ -186,6 +213,7 @@ impl GraphAlgorithmSpec<'_> {
             let source = EdgeSource {
                 context,
                 rel_types: &definition.rel_types,
+                relationship_predicates: &definition.relationship_predicates,
                 record_budget: tracker.budget_bytes.saturating_sub(tracker.used_bytes),
                 record_peak: Cell::new(0),
                 record_account: context.memory_ledger.account(
@@ -203,34 +231,13 @@ impl GraphAlgorithmSpec<'_> {
             let result_rows: Result<_> = match self.algorithm {
                 GraphAlgorithmKind::PageRank => {
                     let rows = graph
-                        .page_rank(
-                            PageRankOptions {
-                                iterations: self
-                                    .options
-                                    .max_iterations
-                                    .unwrap_or(PageRankOptions::default().iterations),
-                                damping: self
-                                    .options
-                                    .damping
-                                    .unwrap_or(PageRankOptions::default().damping),
-                            },
-                            context.task_context,
-                        )
+                        .page_rank_procedure(self.page_rank_options()?, context.task_context)
                         .map(AlgorithmRows::PageRank);
                     drop(graph);
                     rows
                 }
                 GraphAlgorithmKind::Louvain => graph
-                    .hierarchical_louvain(
-                        LouvainOptions {
-                            max_iterations: self
-                                .options
-                                .max_iterations
-                                .unwrap_or(LouvainOptions::default().max_iterations),
-                            max_levels: levels,
-                        },
-                        context.task_context,
-                    )
+                    .louvain_procedure(self.louvain_options()?, context.task_context)
                     .map(AlgorithmRows::Louvain),
             };
             tracker.peak_bytes = tracker
@@ -242,15 +249,76 @@ impl GraphAlgorithmSpec<'_> {
             tracker.reset();
             let result_bytes = rows.memory_bytes();
             charge_graph_algorithm_memory("streaming", "result", &mut tracker, result_bytes)?;
+            // Hydrate once per original node before emitting, so a late lookup
+            // failure cannot expose a prefix of identity-bearing algorithm rows.
+            let mut identities = BTreeMap::new();
+            if self.return_node_identity {
+                charge_graph_algorithm_memory(
+                    "streaming",
+                    "identity staging header",
+                    &mut tracker,
+                    1024,
+                )?;
+                for (ordinal, node) in rows
+                    .node_ids()
+                    .take(execution_limit.output_rows.unwrap_or(usize::MAX))
+                    .enumerate()
+                {
+                    if ordinal.is_multiple_of(1024) {
+                        runtime_checkpoint(context.task_context)?;
+                    }
+                    if identities.contains_key(&node) {
+                        continue;
+                    }
+                    let mut values = BTreeMap::new();
+                    let transient = append_node_identity(
+                        &mut values,
+                        context.catalog,
+                        context.store,
+                        node,
+                        &definition.node_labels,
+                        "streaming",
+                        &mut tracker,
+                    )?;
+                    let id = values
+                        .remove("node_id")
+                        .expect("identity helper fills node_id");
+                    let label = values
+                        .remove("node_label")
+                        .expect("identity helper fills node_label");
+                    let bytes = std::mem::size_of::<(NodeId, (Value, Value))>()
+                        .saturating_mul(3)
+                        .saturating_add(value_memory_bytes(&id))
+                        .saturating_add(value_memory_bytes(&label));
+                    charge_graph_algorithm_memory(
+                        "streaming",
+                        "identity staging",
+                        &mut tracker,
+                        bytes,
+                    )?;
+                    identities.insert(node, (id, label));
+                    tracker.release(transient);
+                }
+            }
             let mut batch = Vec::new();
             let mut batch_bytes = 0usize;
-            for (ordinal, row) in rows
+            for (ordinal, mut row) in rows
                 .bindings(self.score_column)
                 .take(execution_limit.output_rows.unwrap_or(usize::MAX))
                 .enumerate()
             {
                 if ordinal.is_multiple_of(1024) {
                     runtime_checkpoint(context.task_context)?;
+                }
+                if self.return_node_identity {
+                    let Some(Value::Int(node)) = row.values.get("node") else {
+                        return Err(HawDBError::StorageIntegrity(
+                            "graph algorithm returned an invalid node identity".into(),
+                        ));
+                    };
+                    let (id, label) = &identities[&NodeId(*node as u64)];
+                    row.values.insert("node_id".into(), id.clone());
+                    row.values.insert("node_label".into(), label.clone());
                 }
                 let bytes = crate::binding::binding_memory_bytes(&row);
                 if bytes > context.memory.batch_payload_bytes.get() {
@@ -293,6 +361,13 @@ enum AlgorithmRows {
 }
 
 impl AlgorithmRows {
+    fn node_ids(&self) -> Box<dyn Iterator<Item = NodeId> + '_> {
+        match self {
+            Self::PageRank(rows) => Box::new(rows.iter().map(|row| row.node)),
+            Self::Louvain(rows) => Box::new(rows.iter().map(|row| row.node)),
+        }
+    }
+
     fn memory_bytes(&self) -> usize {
         match self {
             Self::PageRank(rows) => {

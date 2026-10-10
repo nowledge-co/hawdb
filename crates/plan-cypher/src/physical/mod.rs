@@ -217,12 +217,14 @@ pub enum PhysicalPlan {
         name: String,
         node_labels: Vec<String>,
         rel_types: Vec<String>,
+        relationship_predicates: BTreeMap<String, Predicate>,
     },
     GraphAlgorithm {
         algorithm: GraphAlgorithmKind,
         graph_name: String,
         options: GraphAlgorithmOptions,
         score_column: String,
+        return_node_identity: bool,
         node_visibility_predicate: Option<Predicate>,
     },
     VectorSeedScan {

@@ -56,14 +56,18 @@ fn round_trip(bytes: usize, report: bool) -> usize {
 #[test]
 fn generation_finish_does_not_allocate_an_encoded_source_copy() {
     // Initialize shared analyzer state before observing allocator requests.
-    round_trip(1024, false);
+    let baseline_bytes = 1024;
+    round_trip(baseline_bytes, false);
+    let baseline = round_trip(baseline_bytes, true);
     let results = [1024 * 1024, 3 * 1024 * 1024].map(|bytes| (bytes, round_trip(bytes, true)));
     for (bytes, requested) in results {
-        // The complete finish path still allocates decoded input and analyzer
-        // state. Its cumulative requests must leave out the old encoded copies.
+        // Host accounting now includes fixed native Zstd workspaces. Exclude
+        // the warmed small-input floor while retaining the per-byte budget for
+        // decoded input and analyzer state, without the old encoded copies.
+        let growth = requested.saturating_sub(baseline);
         assert!(
-            requested <= bytes * 8,
-            "source={bytes}, requested={requested}"
+            growth <= (bytes - baseline_bytes) * 8,
+            "source={bytes}, requested={requested}, baseline={baseline}, growth={growth}"
         );
     }
 }

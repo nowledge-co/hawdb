@@ -1,0 +1,830 @@
+{
+  "state": "passed",
+  "qualification_base": "41e10dacf8b2589e416c01b9b047db98dfe01acd",
+  "qualification_tree": "6026a7fb47580a56a72677463077fee383431fdd",
+  "documentation_base": "fb1f835fedc450602c0364e1f2866de3bc190a18",
+  "verified_current_origin_main": "fb1f835fedc450602c0364e1f2866de3bc190a18",
+  "runtime_and_benchmark_build_inputs_unchanged": false,
+  "runtime_and_benchmark_semantics_unchanged": true,
+  "working_tree_clean": true,
+  "changes": [
+    {
+      "path": ".bazelrc",
+      "scope": "verified #985 configuration logging only; no action or runtime options changed",
+      "sha256": "e8be53595bf7461fa7d1a32cb3af4bec15161da09c135b0059151786356d416b"
+    },
+    {
+      "path": "Cargo.lock",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "9cadf4262248861eef65b5a039500c7d941657edd624da8dbac93a628f41a785"
+    },
+    {
+      "path": "Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "c72df8e1e10391d0024e5c5706772ab332ce0f3aa114933a7e68316bdb380ed5"
+    },
+    {
+      "path": "MODULE.bazel",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "3094cdca89ba8e79b9ae642b433e1b563445f95dfa59058da6a1643d87f5a6ab"
+    },
+    {
+      "path": "README.md",
+      "scope": "verified #982 installation example",
+      "sha256": "14e8fe5ce3ba2db8fd4be35a06ca7d4de3b9f21e451dbefb1f846d890d8767e4"
+    },
+    {
+      "path": "bindings/ffi/BUILD.bazel",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "adf3fd35c1fbfe3dbb625f05e68bb0b56f9a0bb45ccc388dbe0de6d5365ad9f1"
+    },
+    {
+      "path": "bindings/ffi/Cargo.lock",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "12a1f916ac1aa1c07ec16a88ba402bf37da7dc38320daf73d045f7f20f097276"
+    },
+    {
+      "path": "bindings/ffi/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "609fed8c01846e97515d98cb3b9cd901943b226543a13d788a6d4cc0ede40071"
+    },
+    {
+      "path": "bindings/python/BUILD.bazel",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "788f5404923ecff379af0c4763eb01c0218570794ab071c1a9580ff3f96f91b7"
+    },
+    {
+      "path": "bindings/python/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "a4d9349636029fececaca33a2eb4195b5d650ab39cf37850cf97bafb5571b27e"
+    },
+    {
+      "path": "bindings/python/README.md",
+      "scope": "verified #983 independent Python binding workspace; outside Rust library/search benchmark dependency graph",
+      "sha256": "9b4501392c9937c7c3b1e96a4f72235d959c18e301947957dd8fd8c2169c4e83"
+    },
+    {
+      "path": "bindings/python/python/hawdb/pydantic.py",
+      "scope": "verified #983 independent Python binding workspace; outside Rust library/search benchmark dependency graph",
+      "sha256": "9971e91a09f01ec3ff5a37cc595eb751a1021ada380ae6701603ebbc0756e6c7"
+    },
+    {
+      "path": "bindings/python/src/database.rs",
+      "scope": "verified #983 independent Python binding workspace; outside Rust library/search benchmark dependency graph",
+      "sha256": "15f93fcf0bf3e728c8254acc1a635184693fbee87d03339ad46533a9b806a97e"
+    },
+    {
+      "path": "bindings/python/src/value.rs",
+      "scope": "verified #983 independent Python binding workspace; outside Rust library/search benchmark dependency graph",
+      "sha256": "7198fa4278ee25aa89c2713c172b48d33c54d231908c4fd0cc4b625b6383855e"
+    },
+    {
+      "path": "bindings/python/tests/test_params.py",
+      "scope": "verified #983 independent Python binding workspace; outside Rust library/search benchmark dependency graph",
+      "sha256": "4397249736335ac3992a5f588f5c9f49084bf6f358c5d270dfaf60d8dff1909c"
+    },
+    {
+      "path": "bindings/python/tests/test_pydantic.py",
+      "scope": "verified #983 independent Python binding workspace; outside Rust library/search benchmark dependency graph",
+      "sha256": "1ed08ebba6d34591a5892041db357ab02aa844f9a54726fd349d10a633cf0057"
+    },
+    {
+      "path": "crates/analytics/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "eceb8c81f8a1040fd5accebf6f4c3969f49b9157d1158ae1e1a101e40ecbedcd"
+    },
+    {
+      "path": "crates/artifact/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "acbc5fd174cafc85289b15b0e991d44a61d42e01beaa25caf020cd0c584606e2"
+    },
+    {
+      "path": "crates/bootstrap/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "3b4ee8f9d42b62d3333befa22038f260cf923dfe5657a66409fcaa388a7d96ca"
+    },
+    {
+      "path": "crates/compat/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "b8b9529a5cfeecec7bfa55e1fc785496995e306670a01c770c715e024813fde0"
+    },
+    {
+      "path": "crates/cypher/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "9b599643582cfd355637758f86d0081c2d7ad21dc36b25351b491d967acde066"
+    },
+    {
+      "path": "crates/ddl/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "7b1b0d59b78810d1335ed3f2a0159533c0baaa22acc2fa3f1d3fda611e01a6c6"
+    },
+    {
+      "path": "crates/evidence/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "a9fb2a504a8f016c686acc9a4a6d4a03a50996542a9ca6f374a8b1e802159511"
+    },
+    {
+      "path": "crates/executor/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "2d3a74b27310e594398e89af452dd8c949dbbb08079e5329f011725d9630e031"
+    },
+    {
+      "path": "crates/explain/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "dbbd7ced7bac687d3d0302961aa7cc2983ec71a78b946bcf2dba8fe891f21c45"
+    },
+    {
+      "path": "crates/expression/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "2800007f5dfbe83495b87ae29234cc936e45e4b74a6f73cc134ba091a3d313b6"
+    },
+    {
+      "path": "crates/fuzz-contracts/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "4355ce43c8be2a365f9518dbb4de519c4a83c8cee4d9f23eb1c82f3e167b36a0"
+    },
+    {
+      "path": "crates/fuzz/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "3ecd9c971866fe97ae7fb60ebe74fd33e8a944de3b8394c7d9670dcbe416ffb2"
+    },
+    {
+      "path": "crates/nowledge-contracts/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "01b9e7e66daa4d61d145010377afeee40e54dd676ecc9ec5b3560fb06fdcacd6"
+    },
+    {
+      "path": "crates/optimizer-graph/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "092d9e32dc5894f833946b2d21c6374de58ee67fcfb6f7e07dbe67e8709f1e90"
+    },
+    {
+      "path": "crates/optimizer-predicate/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "4b726cb3414e36386a85f245cd1391819aaac2871d9891bc3cad16735a8779a4"
+    },
+    {
+      "path": "crates/optimizer-relational/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "94d431a9f9bdcfd14392f389da7dfc1f24ca7ba8133d98807d00d54e0c618e28"
+    },
+    {
+      "path": "crates/optimizer-vector/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "cff603a0e958395ef33bafc404f4d0fa3c47ead4b9ae3a810f32c7938c2a905b"
+    },
+    {
+      "path": "crates/optimizer/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "d39af9c6c4df077338f93bd1afeaca04112afce8d27e0096fbf7a1c57035a17f"
+    },
+    {
+      "path": "crates/plan-cache/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "9a02811cce01082eb415a74dd27c93924abb89aec7326b335150492263c84b28"
+    },
+    {
+      "path": "crates/plan-cypher/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "3a463e0bc6c0d674c0dcd31bca26dbb7629243b48d345f86f350512ee98e7abc"
+    },
+    {
+      "path": "crates/qos/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "15c112c01e2fb4b302ed3a353f50dce46a7096595f3b77ef39cd1006edaebb73"
+    },
+    {
+      "path": "crates/qualification/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "e6b4e856405c2713c537ada82815a168d6e968378894858f7c440d80c86bd501"
+    },
+    {
+      "path": "crates/query-policy/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "7e852f06a2dfe4c855446046008cfa8378b32413787962eaa9e18cf62bc3aa32"
+    },
+    {
+      "path": "crates/readiness/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "4619d3b136ddc824cb3d95356a2fd513bc83fec3426bb076f233f2f6d6527e2f"
+    },
+    {
+      "path": "crates/relational/BUILD.bazel",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "53774ef53c9902197ddc73cfee283e7a8561e62961c47f3878a8a6f933a6615a"
+    },
+    {
+      "path": "crates/relational/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "5a270ba4ca2e06e9e3cb8c4e70321e82ca5338e1c6c61a14399aaa23e1569adc"
+    },
+    {
+      "path": "crates/resource-profile/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "07ce48022cf553216ec50fefb600b7127b8d0204aa9900699c12f8a4b278d7e7"
+    },
+    {
+      "path": "crates/runtime-tokio/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "e14399a8093b667dc6d192d3a586bd3f686cb7d4cdea1608a9412d02de87a2b6"
+    },
+    {
+      "path": "crates/search/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "97d58f1ccd0b280826fa4fd2660ecf7f56256506bfab776c16b880f531f56ea7"
+    },
+    {
+      "path": "crates/sql/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "98a4b76272341cbf32c4d47da8803e4bdc6038c3accdadd742dbdeeb4c77a1ee"
+    },
+    {
+      "path": "crates/storage/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "7d394223eb10f40f2d83e3e4aff14c0fcf9ca0955761fe5fdcfe50a76b690ed4"
+    },
+    {
+      "path": "crates/system-sql/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "91f16a91e9b000320146557226b8b09a479bb493208425a071d1156951b57b5d"
+    },
+    {
+      "path": "crates/telemetry/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "5a01b345e0fc1da7799ce859f3e966ec5040e95ffc594b3818c3b71c81539f49"
+    },
+    {
+      "path": "crates/vector-projection/Cargo.toml",
+      "scope": "verified #982 version-only metadata",
+      "sha256": "7c7905a3b58439db3cbfacef375ad306e9449d425faca1731e7a838c400d1e23"
+    }
+  ],
+  "main_change_classification": {
+    "qualified_commit": "41e10dacf8b2589e416c01b9b047db98dfe01acd",
+    "compared_revision": "fb1f835fedc450602c0364e1f2866de3bc190a18",
+    "search_runtime_benchmark_tests_and_external_dependencies_unchanged": true,
+    "literal_build_inputs_unchanged": false,
+    "unqualified_changes": [],
+    "changes": [
+      {
+        "path": ".bazelrc",
+        "scope": "verified #985 configuration logging only; no action or runtime options changed",
+        "sha256": "e8be53595bf7461fa7d1a32cb3af4bec15161da09c135b0059151786356d416b"
+      },
+      {
+        "path": "Cargo.lock",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "9cadf4262248861eef65b5a039500c7d941657edd624da8dbac93a628f41a785"
+      },
+      {
+        "path": "Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "c72df8e1e10391d0024e5c5706772ab332ce0f3aa114933a7e68316bdb380ed5"
+      },
+      {
+        "path": "MODULE.bazel",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "3094cdca89ba8e79b9ae642b433e1b563445f95dfa59058da6a1643d87f5a6ab"
+      },
+      {
+        "path": "README.md",
+        "scope": "verified #982 installation example",
+        "sha256": "14e8fe5ce3ba2db8fd4be35a06ca7d4de3b9f21e451dbefb1f846d890d8767e4"
+      },
+      {
+        "path": "bindings/ffi/BUILD.bazel",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "adf3fd35c1fbfe3dbb625f05e68bb0b56f9a0bb45ccc388dbe0de6d5365ad9f1"
+      },
+      {
+        "path": "bindings/ffi/Cargo.lock",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "12a1f916ac1aa1c07ec16a88ba402bf37da7dc38320daf73d045f7f20f097276"
+      },
+      {
+        "path": "bindings/ffi/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "609fed8c01846e97515d98cb3b9cd901943b226543a13d788a6d4cc0ede40071"
+      },
+      {
+        "path": "bindings/python/BUILD.bazel",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "788f5404923ecff379af0c4763eb01c0218570794ab071c1a9580ff3f96f91b7"
+      },
+      {
+        "path": "bindings/python/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "a4d9349636029fececaca33a2eb4195b5d650ab39cf37850cf97bafb5571b27e"
+      },
+      {
+        "path": "bindings/python/README.md",
+        "scope": "verified #983 independent Python binding workspace; outside Rust library/search benchmark dependency graph",
+        "sha256": "9b4501392c9937c7c3b1e96a4f72235d959c18e301947957dd8fd8c2169c4e83"
+      },
+      {
+        "path": "bindings/python/python/hawdb/pydantic.py",
+        "scope": "verified #983 independent Python binding workspace; outside Rust library/search benchmark dependency graph",
+        "sha256": "9971e91a09f01ec3ff5a37cc595eb751a1021ada380ae6701603ebbc0756e6c7"
+      },
+      {
+        "path": "bindings/python/src/database.rs",
+        "scope": "verified #983 independent Python binding workspace; outside Rust library/search benchmark dependency graph",
+        "sha256": "15f93fcf0bf3e728c8254acc1a635184693fbee87d03339ad46533a9b806a97e"
+      },
+      {
+        "path": "bindings/python/src/value.rs",
+        "scope": "verified #983 independent Python binding workspace; outside Rust library/search benchmark dependency graph",
+        "sha256": "7198fa4278ee25aa89c2713c172b48d33c54d231908c4fd0cc4b625b6383855e"
+      },
+      {
+        "path": "bindings/python/tests/test_params.py",
+        "scope": "verified #983 independent Python binding workspace; outside Rust library/search benchmark dependency graph",
+        "sha256": "4397249736335ac3992a5f588f5c9f49084bf6f358c5d270dfaf60d8dff1909c"
+      },
+      {
+        "path": "bindings/python/tests/test_pydantic.py",
+        "scope": "verified #983 independent Python binding workspace; outside Rust library/search benchmark dependency graph",
+        "sha256": "1ed08ebba6d34591a5892041db357ab02aa844f9a54726fd349d10a633cf0057"
+      },
+      {
+        "path": "crates/analytics/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "eceb8c81f8a1040fd5accebf6f4c3969f49b9157d1158ae1e1a101e40ecbedcd"
+      },
+      {
+        "path": "crates/artifact/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "acbc5fd174cafc85289b15b0e991d44a61d42e01beaa25caf020cd0c584606e2"
+      },
+      {
+        "path": "crates/bootstrap/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "3b4ee8f9d42b62d3333befa22038f260cf923dfe5657a66409fcaa388a7d96ca"
+      },
+      {
+        "path": "crates/compat/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "b8b9529a5cfeecec7bfa55e1fc785496995e306670a01c770c715e024813fde0"
+      },
+      {
+        "path": "crates/cypher/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "9b599643582cfd355637758f86d0081c2d7ad21dc36b25351b491d967acde066"
+      },
+      {
+        "path": "crates/ddl/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "7b1b0d59b78810d1335ed3f2a0159533c0baaa22acc2fa3f1d3fda611e01a6c6"
+      },
+      {
+        "path": "crates/evidence/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "a9fb2a504a8f016c686acc9a4a6d4a03a50996542a9ca6f374a8b1e802159511"
+      },
+      {
+        "path": "crates/executor/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "2d3a74b27310e594398e89af452dd8c949dbbb08079e5329f011725d9630e031"
+      },
+      {
+        "path": "crates/explain/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "dbbd7ced7bac687d3d0302961aa7cc2983ec71a78b946bcf2dba8fe891f21c45"
+      },
+      {
+        "path": "crates/expression/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "2800007f5dfbe83495b87ae29234cc936e45e4b74a6f73cc134ba091a3d313b6"
+      },
+      {
+        "path": "crates/fuzz-contracts/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "4355ce43c8be2a365f9518dbb4de519c4a83c8cee4d9f23eb1c82f3e167b36a0"
+      },
+      {
+        "path": "crates/fuzz/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "3ecd9c971866fe97ae7fb60ebe74fd33e8a944de3b8394c7d9670dcbe416ffb2"
+      },
+      {
+        "path": "crates/nowledge-contracts/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "01b9e7e66daa4d61d145010377afeee40e54dd676ecc9ec5b3560fb06fdcacd6"
+      },
+      {
+        "path": "crates/optimizer-graph/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "092d9e32dc5894f833946b2d21c6374de58ee67fcfb6f7e07dbe67e8709f1e90"
+      },
+      {
+        "path": "crates/optimizer-predicate/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "4b726cb3414e36386a85f245cd1391819aaac2871d9891bc3cad16735a8779a4"
+      },
+      {
+        "path": "crates/optimizer-relational/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "94d431a9f9bdcfd14392f389da7dfc1f24ca7ba8133d98807d00d54e0c618e28"
+      },
+      {
+        "path": "crates/optimizer-vector/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "cff603a0e958395ef33bafc404f4d0fa3c47ead4b9ae3a810f32c7938c2a905b"
+      },
+      {
+        "path": "crates/optimizer/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "d39af9c6c4df077338f93bd1afeaca04112afce8d27e0096fbf7a1c57035a17f"
+      },
+      {
+        "path": "crates/plan-cache/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "9a02811cce01082eb415a74dd27c93924abb89aec7326b335150492263c84b28"
+      },
+      {
+        "path": "crates/plan-cypher/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "3a463e0bc6c0d674c0dcd31bca26dbb7629243b48d345f86f350512ee98e7abc"
+      },
+      {
+        "path": "crates/qos/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "15c112c01e2fb4b302ed3a353f50dce46a7096595f3b77ef39cd1006edaebb73"
+      },
+      {
+        "path": "crates/qualification/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "e6b4e856405c2713c537ada82815a168d6e968378894858f7c440d80c86bd501"
+      },
+      {
+        "path": "crates/query-policy/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "7e852f06a2dfe4c855446046008cfa8378b32413787962eaa9e18cf62bc3aa32"
+      },
+      {
+        "path": "crates/readiness/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "4619d3b136ddc824cb3d95356a2fd513bc83fec3426bb076f233f2f6d6527e2f"
+      },
+      {
+        "path": "crates/relational/BUILD.bazel",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "53774ef53c9902197ddc73cfee283e7a8561e62961c47f3878a8a6f933a6615a"
+      },
+      {
+        "path": "crates/relational/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "5a270ba4ca2e06e9e3cb8c4e70321e82ca5338e1c6c61a14399aaa23e1569adc"
+      },
+      {
+        "path": "crates/resource-profile/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "07ce48022cf553216ec50fefb600b7127b8d0204aa9900699c12f8a4b278d7e7"
+      },
+      {
+        "path": "crates/runtime-tokio/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "e14399a8093b667dc6d192d3a586bd3f686cb7d4cdea1608a9412d02de87a2b6"
+      },
+      {
+        "path": "crates/search/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "97d58f1ccd0b280826fa4fd2660ecf7f56256506bfab776c16b880f531f56ea7"
+      },
+      {
+        "path": "crates/sql/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "98a4b76272341cbf32c4d47da8803e4bdc6038c3accdadd742dbdeeb4c77a1ee"
+      },
+      {
+        "path": "crates/storage/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "7d394223eb10f40f2d83e3e4aff14c0fcf9ca0955761fe5fdcfe50a76b690ed4"
+      },
+      {
+        "path": "crates/system-sql/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "91f16a91e9b000320146557226b8b09a479bb493208425a071d1156951b57b5d"
+      },
+      {
+        "path": "crates/telemetry/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "5a01b345e0fc1da7799ce859f3e966ec5040e95ffc594b3818c3b71c81539f49"
+      },
+      {
+        "path": "crates/vector-projection/Cargo.toml",
+        "scope": "verified #982 version-only metadata",
+        "sha256": "7c7905a3b58439db3cbfacef375ad306e9449d425faca1731e7a838c400d1e23"
+      }
+    ],
+    "later_changes": [
+      {
+        "commit": "be564913c50f8cb3b70e76a44994c14a1b4aed01",
+        "PR": 985,
+        "present_on_compared_revision": true,
+        "paths": [
+          ".bazelrc"
+        ],
+        "scope": "Adds only build --announce_rc diagnostic output."
+      },
+      {
+        "commit": "fb1f835fedc450602c0364e1f2866de3bc190a18",
+        "PR": 983,
+        "present_on_compared_revision": true,
+        "paths": [
+          "bindings/python/README.md",
+          "bindings/python/python/hawdb/pydantic.py",
+          "bindings/python/src/database.rs",
+          "bindings/python/src/value.rs",
+          "bindings/python/tests/test_params.py",
+          "bindings/python/tests/test_pydantic.py"
+        ],
+        "scope": "Parameter conversion in the separate downstream Python binding workspace; root library manifests, search/storage/benchmark source and dependency graph remain unchanged."
+      }
+    ],
+    "release_metadata": {
+      "commit": "1519433bb70900bf3f51f5a3ed93de0873072713",
+      "PR": 982,
+      "present_on_compared_revision": true,
+      "local_lock_package_counts": {
+        "Cargo.lock": 42,
+        "bindings/ffi/Cargo.lock": 41
+      },
+      "files": [
+        {
+          "path": "Cargo.lock",
+          "before_sha256": "f38a634e363863631a37d891354a3f5098b2913e7e7b2ff7419084d933a974cc",
+          "after_sha256": "9cadf4262248861eef65b5a039500c7d941657edd624da8dbac93a628f41a785",
+          "scope": "local HawDB package versions only; every external block and dependency edge unchanged"
+        },
+        {
+          "path": "Cargo.toml",
+          "before_sha256": "32c96b591c2a1b75573f36d5f500ef821b7688ba8839566aa8ff77421526023c",
+          "after_sha256": "c72df8e1e10391d0024e5c5706772ab332ce0f3aa114933a7e68316bdb380ed5",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "MODULE.bazel",
+          "before_sha256": "290c9e0409d8b2e42c12b53e6011f1c61ee3654ff55d7cb916238c5c19f4143c",
+          "after_sha256": "3094cdca89ba8e79b9ae642b433e1b563445f95dfa59058da6a1643d87f5a6ab",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "README.md",
+          "before_sha256": "ed445392f2131e2cdbe78075cb7bd08154ff4876ee063a291087ec07bf99a046",
+          "after_sha256": "14e8fe5ce3ba2db8fd4be35a06ca7d4de3b9f21e451dbefb1f846d890d8767e4",
+          "scope": "installation example"
+        },
+        {
+          "path": "bindings/ffi/BUILD.bazel",
+          "before_sha256": "9afa1f5f723918e4f02fb96197948617088c535771c4d27adad1b34ee397ce4d",
+          "after_sha256": "adf3fd35c1fbfe3dbb625f05e68bb0b56f9a0bb45ccc388dbe0de6d5365ad9f1",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "bindings/ffi/Cargo.lock",
+          "before_sha256": "22164e85081d27c65a95d54548bad3c17773af46960236b216f0d373ba168e68",
+          "after_sha256": "12a1f916ac1aa1c07ec16a88ba402bf37da7dc38320daf73d045f7f20f097276",
+          "scope": "local HawDB package versions only; every external block and dependency edge unchanged"
+        },
+        {
+          "path": "bindings/ffi/Cargo.toml",
+          "before_sha256": "1b6a360507d20eda0ebc30df70e9ea51ccb9e56947c0e94a3d7123c3e02d3fde",
+          "after_sha256": "609fed8c01846e97515d98cb3b9cd901943b226543a13d788a6d4cc0ede40071",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "bindings/python/BUILD.bazel",
+          "before_sha256": "79596f21a4dc3eb04fa66f4163c600c6c020dba50e45f436058c83b656ba6ccf",
+          "after_sha256": "788f5404923ecff379af0c4763eb01c0218570794ab071c1a9580ff3f96f91b7",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "bindings/python/Cargo.toml",
+          "before_sha256": "7a1bfbb3adc2b43a8888064493681871913304ee2240725797434fc1cd24c76b",
+          "after_sha256": "a4d9349636029fececaca33a2eb4195b5d650ab39cf37850cf97bafb5571b27e",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/analytics/Cargo.toml",
+          "before_sha256": "65889702e6e5e407c1bb7910c6af0184e9869e5cca6136e305323349925991c9",
+          "after_sha256": "eceb8c81f8a1040fd5accebf6f4c3969f49b9157d1158ae1e1a101e40ecbedcd",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/artifact/Cargo.toml",
+          "before_sha256": "e76dd81c2ba1ae96ec0d4f5b901080ebf68d104cbd9f5ff1e9d8404bb92ba045",
+          "after_sha256": "acbc5fd174cafc85289b15b0e991d44a61d42e01beaa25caf020cd0c584606e2",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/bootstrap/Cargo.toml",
+          "before_sha256": "b260d7e0e7acaf5a452b675fdb2844186e429801c6e34480917fb47a57bc7721",
+          "after_sha256": "3b4ee8f9d42b62d3333befa22038f260cf923dfe5657a66409fcaa388a7d96ca",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/compat/Cargo.toml",
+          "before_sha256": "959813e48018b7e29efe4095873ae16e61aabf4129c805bb9cd4166559943a8a",
+          "after_sha256": "b8b9529a5cfeecec7bfa55e1fc785496995e306670a01c770c715e024813fde0",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/cypher/Cargo.toml",
+          "before_sha256": "09aa649f6a0c28b5dc5897c466fde1b07124f48164ae9f08594911055d554c71",
+          "after_sha256": "9b599643582cfd355637758f86d0081c2d7ad21dc36b25351b491d967acde066",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/ddl/Cargo.toml",
+          "before_sha256": "84ef3a8228aa4f3e5a3de3494c26636de723f7907b86b95ade80b1dbf72086a0",
+          "after_sha256": "7b1b0d59b78810d1335ed3f2a0159533c0baaa22acc2fa3f1d3fda611e01a6c6",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/evidence/Cargo.toml",
+          "before_sha256": "6de838377e42b4812db0c86b0fa5da5cc78d61d2713de08b37cb9de997cc6ec6",
+          "after_sha256": "a9fb2a504a8f016c686acc9a4a6d4a03a50996542a9ca6f374a8b1e802159511",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/executor/Cargo.toml",
+          "before_sha256": "1cfdf309b8da426a6525f4880b37c38b37d4db61391323c4f2bf64310bf8ca08",
+          "after_sha256": "2d3a74b27310e594398e89af452dd8c949dbbb08079e5329f011725d9630e031",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/explain/Cargo.toml",
+          "before_sha256": "9ceea2c0a7cfc2a85943c9db408dd56a1dc9d6e66740e6a933eabab9ab27f558",
+          "after_sha256": "dbbd7ced7bac687d3d0302961aa7cc2983ec71a78b946bcf2dba8fe891f21c45",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/expression/Cargo.toml",
+          "before_sha256": "fb827044ef66a90bfd219bf3d625415444d63d782a5155920743daa5cc6a1136",
+          "after_sha256": "2800007f5dfbe83495b87ae29234cc936e45e4b74a6f73cc134ba091a3d313b6",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/fuzz-contracts/Cargo.toml",
+          "before_sha256": "5a2a6a768ccbcab2bc6b751665e282d917fed7950800c93627c1b87510f1eccf",
+          "after_sha256": "4355ce43c8be2a365f9518dbb4de519c4a83c8cee4d9f23eb1c82f3e167b36a0",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/fuzz/Cargo.toml",
+          "before_sha256": "c62ff59d03f187b444dca69658d06e6c773a71dc9ec5b501a64b9870f566f058",
+          "after_sha256": "3ecd9c971866fe97ae7fb60ebe74fd33e8a944de3b8394c7d9670dcbe416ffb2",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/nowledge-contracts/Cargo.toml",
+          "before_sha256": "405e11a550a13ea11d94a5bf90960fff0ec3c4ba2bc1779a70ba608ceefd0932",
+          "after_sha256": "01b9e7e66daa4d61d145010377afeee40e54dd676ecc9ec5b3560fb06fdcacd6",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/optimizer-graph/Cargo.toml",
+          "before_sha256": "d84021ef416cdc751f124efe6acea6e6ae30cb97220ddee5ec02d8c908cb46ee",
+          "after_sha256": "092d9e32dc5894f833946b2d21c6374de58ee67fcfb6f7e07dbe67e8709f1e90",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/optimizer-predicate/Cargo.toml",
+          "before_sha256": "b89611a1eb43ffc49e6e2d3ce83a4fa08e4007833d1258182fcd52e3e19742b0",
+          "after_sha256": "4b726cb3414e36386a85f245cd1391819aaac2871d9891bc3cad16735a8779a4",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/optimizer-relational/Cargo.toml",
+          "before_sha256": "64257e7c49cd511d6499ae30d31f2720038bcf14c8966a1897bf195076aac541",
+          "after_sha256": "94d431a9f9bdcfd14392f389da7dfc1f24ca7ba8133d98807d00d54e0c618e28",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/optimizer-vector/Cargo.toml",
+          "before_sha256": "ee726d1cead2f81c6ad8afaacb8c41893810e06131f844691447863b4d9cd7b7",
+          "after_sha256": "cff603a0e958395ef33bafc404f4d0fa3c47ead4b9ae3a810f32c7938c2a905b",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/optimizer/Cargo.toml",
+          "before_sha256": "de057f0f550e34b8a796f57fabd65e0653385d2aa67800af2277489bf69ae0b3",
+          "after_sha256": "d39af9c6c4df077338f93bd1afeaca04112afce8d27e0096fbf7a1c57035a17f",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/plan-cache/Cargo.toml",
+          "before_sha256": "458fb31d8b8a52688e46b0f4bd9509d818204628e48fd49b88522dc69589e1cb",
+          "after_sha256": "9a02811cce01082eb415a74dd27c93924abb89aec7326b335150492263c84b28",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/plan-cypher/Cargo.toml",
+          "before_sha256": "30264c0d6a3943bebe16416681042c5a9ee5fbbdb5cd699f05fe37276c69f6ce",
+          "after_sha256": "3a463e0bc6c0d674c0dcd31bca26dbb7629243b48d345f86f350512ee98e7abc",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/qos/Cargo.toml",
+          "before_sha256": "f5d471f41833e490f1822859ec5975fc4049e7537284026abfbbe8a6fd25c5a0",
+          "after_sha256": "15c112c01e2fb4b302ed3a353f50dce46a7096595f3b77ef39cd1006edaebb73",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/qualification/Cargo.toml",
+          "before_sha256": "99df55c3ecc1769d09f6b9c38f3953844f0661c396d54222e314ac40fe885cce",
+          "after_sha256": "e6b4e856405c2713c537ada82815a168d6e968378894858f7c440d80c86bd501",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/query-policy/Cargo.toml",
+          "before_sha256": "323bf0af121fd0e49820baee6f613d8d3e0c646018d8df36119eda17e6d472ac",
+          "after_sha256": "7e852f06a2dfe4c855446046008cfa8378b32413787962eaa9e18cf62bc3aa32",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/readiness/Cargo.toml",
+          "before_sha256": "c8e251c30273d93425dc9a6e94e6ee683c1113a3496153aebfa6a06947de8c33",
+          "after_sha256": "4619d3b136ddc824cb3d95356a2fd513bc83fec3426bb076f233f2f6d6527e2f",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/relational/BUILD.bazel",
+          "before_sha256": "5af0f425ee46638ae96fe998df4ce0e74b2388098f25ff87d3fedb6b77a30c40",
+          "after_sha256": "53774ef53c9902197ddc73cfee283e7a8561e62961c47f3878a8a6f933a6615a",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/relational/Cargo.toml",
+          "before_sha256": "49bdcc5bc6180be4f975a0aed0785483991370f99ea7b17965ef58882855bab3",
+          "after_sha256": "5a270ba4ca2e06e9e3cb8c4e70321e82ca5338e1c6c61a14399aaa23e1569adc",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/resource-profile/Cargo.toml",
+          "before_sha256": "5feb1a4c6274c444545fab549345fcf35dc376787205a4b739aeed7512a4596a",
+          "after_sha256": "07ce48022cf553216ec50fefb600b7127b8d0204aa9900699c12f8a4b278d7e7",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/runtime-tokio/Cargo.toml",
+          "before_sha256": "e442757671ee5bd9d237e58099d871cc9bfb6b7fac458d3f8fa4a857ed095071",
+          "after_sha256": "e14399a8093b667dc6d192d3a586bd3f686cb7d4cdea1608a9412d02de87a2b6",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/search/Cargo.toml",
+          "before_sha256": "734d6376e1e50912623d33c592dc67ca61d8047378ed0eda0418fcd576582c23",
+          "after_sha256": "97d58f1ccd0b280826fa4fd2660ecf7f56256506bfab776c16b880f531f56ea7",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/sql/Cargo.toml",
+          "before_sha256": "5708a86c71ae21cab1a9c6aba330a023b1803a7ae665a97bdadeea25b87cb75f",
+          "after_sha256": "98a4b76272341cbf32c4d47da8803e4bdc6038c3accdadd742dbdeeb4c77a1ee",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/storage/Cargo.toml",
+          "before_sha256": "cc43800648b31460be73dabbbb5ee76b03ebd9e3f8a693d3d9ed7d2ca6bb9caa",
+          "after_sha256": "7d394223eb10f40f2d83e3e4aff14c0fcf9ca0955761fe5fdcfe50a76b690ed4",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/system-sql/Cargo.toml",
+          "before_sha256": "50f9782266a46a267fef4811c02e4abe979cebc000f3930f3c366b605911bfb3",
+          "after_sha256": "91f16a91e9b000320146557226b8b09a479bb493208425a071d1156951b57b5d",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/telemetry/Cargo.toml",
+          "before_sha256": "17fc549c209ad2a3a4a5808fad1dd7549721eeb06b4ff457fd744eb00379baa2",
+          "after_sha256": "5a01b345e0fc1da7799ce859f3e966ec5040e95ffc594b3818c3b71c81539f49",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        },
+        {
+          "path": "crates/vector-projection/Cargo.toml",
+          "before_sha256": "0171cd5c6cac4ed8476b9cca150b3bcad31b9b57d24359c64da3b98de12eafea",
+          "after_sha256": "7c7905a3b58439db3cbfacef375ad306e9449d425faca1731e7a838c400d1e23",
+          "scope": "package/module version and local HawDB dependency requirements only"
+        }
+      ],
+      "version_macro_uses": [
+        "41e10dacf8b2589e416c01b9b047db98dfe01acd:bindings/ffi/src/lib.rs:593:    unsafe { set_buffer(out, concat!(\"hawdb \", env!(\"CARGO_PKG_VERSION\"))) };",
+        "41e10dacf8b2589e416c01b9b047db98dfe01acd:bindings/python/src/lib.rs:51:    module.add(\"__version__\", env!(\"CARGO_PKG_VERSION\"))?;",
+        "41e10dacf8b2589e416c01b9b047db98dfe01acd:crates/relational/src/query/expression.rs:321:            env!(\"CARGO_PKG_VERSION\")"
+      ],
+      "scope": "Only package metadata and C/Python/SQL version strings advance. Measured binaries, source hashes, timings and RSS remain bound to 41e10dac; no new 0.6 binary measurement is claimed."
+    }
+  },
+  "toolchain_pin": {
+    "actual_bazel": "bazel 9.3.0",
+    "local_search_run_uses_pinned_version": true,
+    "CI_scope": "Final documentation PR required checks remain separate. Version-only metadata does not rebind measured binaries or resource results."
+  },
+  "includes_PR979": true,
+  "includes_PR913": true,
+  "qualification_gate": "This binds source only. Current-main scale, reference, native and profile receipts must separately pass before publication.",
+  "publication_gate": "Fetch live main and classify runtime/test/build changes before delivery and issue closure."
+}

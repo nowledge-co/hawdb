@@ -1,0 +1,16 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/storage:hawdb_storage_file_lock_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 4 tests
+relational-overflow.lock: 32 seeds, 2048 actions; action counts [325, 357, 340, 316, 343, 367]
+relational-row-delta.lock: 32 seeds, 2048 actions; action counts [325, 357, 340, 316, 343, test relational::overflow::publication::publisher::lock_tests::publication_lock_state_machine_campaign ... ok
+367]
+test relational::row_page::delta::builder::lock_tests::publication_lock_state_machine_campaign ... relational-row-pages.lock: 32 seeds, 2048 actions; action counts [325, ok
+357, 340, 316, 343, 367]
+test relational::row_page::publication::publisher::lock_tests::publication_lock_state_machine_campaign ... ok
+relational-index-shadow.lock: 32 seeds, 2048 actions; action counts [325, 357, 340, 316, 343, 367]
+test relational::index_shadow::lock_tests::publication_lock_state_machine_campaign ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1131 filtered out; finished in 1.35s
+
