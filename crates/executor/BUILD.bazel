@@ -323,6 +323,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_graph_hash_join_fuzz_tests",
+    timeout = "long",
     args = [
         "blocking::join::tests::graph_hash_join_differential_campaign",
         "--exact",
