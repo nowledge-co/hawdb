@@ -325,6 +325,12 @@ impl RetainedCursor {
             ("source_constructed_bytes", profile.source_constructed_bytes),
             ("source_pinned_rows", profile.source_pinned_rows),
             ("source_pinned_pages", profile.source_pinned_pages),
+            (
+                "source_pinned_capacity_bytes",
+                profile.source_pinned_capacity_bytes,
+            ),
+            ("query_peak_bytes", profile.query_peak_bytes),
+            ("source_preflight_rows", profile.source_preflight_rows),
             ("outstanding_batches", cursor.outstanding_batches()),
             ("delivered_rows", state.delivered_rows),
             ("delivered_batches", state.delivered_batches),

@@ -3,9 +3,10 @@
 
 //! Experimental demand-driven delivery for the materialized numeric plan.
 //!
-//! Native payload handoff is allocation-preserving. Pinned node-page capacity,
-//! planning workspace and foreign adapters are not yet fully qualified; this is not a
-//! general query, source-reuse, or whole-operation memory-bounded capability.
+//! Native payload handoff is allocation-preserving. Source capacities have
+//! conservative per-cursor query/runtime admission. Whole-operation source,
+//! planning and foreign workspace qualification remain incomplete; this is not
+//! a general query, source-reuse, or whole-operation memory-bounded capability.
 
 use super::{query_runtime, Database, DatabaseReadTransaction, QuerySystemVariables};
 use crate::store::{GraphStore, MaterializedNodeReadSource};
@@ -27,8 +28,8 @@ use hawdb_executor::{
 };
 use hawdb_plan_cypher::ProjectionExpression;
 use hawdb_qos::{
-    IoConcurrencyBudget, RuntimeAdmissionError, RuntimeRetainedResult, RuntimeRetainedResultError,
-    RuntimeWorkRequest,
+    IoConcurrencyBudget, RuntimeAdmissionError, RuntimeRetainedMemory, RuntimeRetainedResult,
+    RuntimeRetainedResultError, RuntimeWorkRequest,
 };
 use hawdb_storage::NodeId;
 use std::collections::BTreeMap;
@@ -248,6 +249,10 @@ pub struct RetainedQueryProfile {
     pub source_pinned_pages: usize,
     /// Shared directory capacity only; excludes node-page payload allocations.
     pub source_directory_capacity_bytes: usize,
+    /// Conservative capacity of all source allocations pinned by this cursor.
+    pub source_pinned_capacity_bytes: usize,
+    /// Source records inspected during borrowed capacity preflight, before pulls.
+    pub source_preflight_rows: usize,
     pub pulls: usize,
     pub visited_rows: usize,
     pub predicate_selected_rows: usize,
@@ -430,6 +435,10 @@ pub struct RetainedQueryCursor {
 struct RetainedSource {
     nodes: MaterializedNodeReadSource,
     task_context: Option<RuntimeTaskContext>,
+    // Source destruction precedes charge release. Result owners never keep
+    // these leases, so an exported numeric view cannot prolong source pins.
+    _memory: QueryMemoryLease,
+    _runtime_memory: RuntimeRetainedMemory,
 }
 
 fn require_materialized_source(
@@ -650,14 +659,32 @@ impl RetainedQueryCursor {
             config.max_read_result_payload_bytes,
             options.max_result_payload_bytes,
         );
+        let (source_bytes, source_preflight_rows) = store
+            .materialized_node_read_source_capacity_preflight()?
+            .ok_or(RetainedQueryError::CopyRequired)?;
+        if let Some(context) = &task_context {
+            context.checkpoint().map_err(RetainedQueryError::Stopped)?;
+        }
+        let source_account = ledger.account(
+            QueryMemoryClass::ExternalRead,
+            "retained_source",
+            config.execution_memory.query_memory_bytes,
+        );
+        let source_memory = source_account.reserve(source_bytes)?;
+        let source_runtime = permit.reserve_retained_memory(
+            u64::try_from(source_bytes).map_err(|_| RetainedQueryError::SizeOverflow)?,
+        )?;
         let source = RetainedSource {
             nodes: store
                 .try_materialized_node_read_source()?
                 .ok_or(RetainedQueryError::CopyRequired)?,
             task_context,
+            _memory: source_memory,
+            _runtime_memory: source_runtime,
         };
         let profile = RetainedQueryProfile {
             source_snapshot_rows: source.nodes.row_count(),
+            source_preflight_rows,
             ..RetainedQueryProfile::default()
         };
         let shared = Arc::new(CursorShared {
@@ -713,6 +740,10 @@ impl RetainedQueryCursor {
                 .source
                 .as_ref()
                 .map_or(0, |source| source.nodes.directory_capacity_bytes()),
+            source_pinned_capacity_bytes: self
+                .source
+                .as_ref()
+                .map_or(0, |source| source._memory.bytes()),
             ..self.profile
         }
     }

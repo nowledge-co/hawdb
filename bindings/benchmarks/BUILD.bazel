@@ -24,6 +24,13 @@ py_binary(
     tags = ["manual"],
 )
 
+py_binary(
+    name = "retained_write_control",
+    srcs = ["retained_write_control.py"],
+    deps = ["//bindings/python:hawdb"],
+    tags = ["manual"],
+)
+
 py_test(
     name = "driver_tests",
     srcs = ["compare.py", "run.py", "test_run.py"],

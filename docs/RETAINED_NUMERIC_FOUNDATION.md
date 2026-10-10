@@ -3,7 +3,7 @@
 This implements ownership building blocks and an experimental native cursor for
 [issue #987](https://github.com/nowledge-co/hawdb/issues/987), under the
 [columnar interchange proposal](specs/ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md).
-Source snapshot/planning workspace qualification, complete C/Go resource
+Whole-operation source/planning qualification, complete C/Go resource
 qualification, Python/Arrow resource and platform qualification
 remain incomplete. Native C Data/C Stream, Python capsules and a scoped optional
 PyArrow consumer path now have layout and lifetime evidence. The complete
@@ -186,6 +186,55 @@ These heap-only node pages survive database destruction and later writes use
 copy-on-write publication. No persistent canonical pages are decoded by this
 path. Shared storage poison signals still fail subsequent source access closed.
 
+Before capturing the source, creation admits a conservative bound on its entire
+materialized node directory, pages, B-tree nodes, labels, property containers,
+and recursively owned string/binary/list/map capacities. Unrequested properties
+and unrelated labels are included. Both the query ledger and aggregate runtime
+memory policy hold source leases until close, completion, failure or
+cancellation. Numeric batches and foreign views do not retain these leases.
+Overflow or excessive value nesting refuses admission without publishing a
+cursor. Canonical/out-of-core sources remain unsupported.
+
+The bound uses the pinned Rust 1.97.1 B-tree layout. A cold preflight borrows all
+records without cloning source values; a snapshot-local inline cache avoids
+repeating that walk for an unchanged version. Writer mutations invalidate only
+their own cache, and ordinary writes do not recalculate capacity. Admission
+conservatively charges each cursor's full source bound, even when cursors share
+pages. This can refuse a narrow projection over a large row store, or multiple
+cursors over one shared source, earlier than an allocation-deduplicated policy.
+The cold walk checks cancellation before and after creation, not between rows.
+
+The source admission argument has four invariants:
+
+1. For a nonempty pinned-toolchain B-tree with `n` entries and `t` nodes,
+   the root has at least one entry and every other node at least five, so
+   `t <= 1 + floor((n - 1) / 5)`. An empty tree is charged for one root.
+   The per-node bound includes eleven inline pairs, twelve child pointers and
+   header/alignment padding for the concrete source types.
+2. Container allocations and recursively owned buffer capacities are added
+   with checked arithmetic. Shared pages appear once in a source directory;
+   charging the entire source separately to each cursor conservatively bounds
+   the union of allocations retained by admitted cursors.
+3. Every mutable map access invalidates the writer's cached bound before
+   publication. An older snapshot's immutable directory and cached bound remain
+   unchanged. A cached bound therefore describes the same source version.
+4. Both memory reservations precede source capture. Failed construction drops
+   provisional leases. Terminal release destroys source references before its
+   query/runtime charges; produced result owners retain neither source nor
+   source charges.
+
+These are source-level arguments with mutation, refusal and lifetime regressions,
+not a machine-checked proof of allocator/RSS or whole-query boundedness.
+
+Arrow export itself does not change WAL or commit processing. Source retention
+can affect concurrent writes: while a cursor holds an old page, modifying that
+page requires COW publication; slow consumers extend that retention window.
+The capacity cache also adds inline metadata to the shared segmented map, its
+clone path and mutation invalidation. Qualification must therefore measure
+ordinary writes and writes while a slow cursor remains open separately, with
+identical durability and workload. A read-boundary speedup does not establish
+write neutrality or qualify these shared storage changes.
+
 Pulling is serialized by Rust's mutable cursor borrow. Slot/byte/handle pressure
 returns a retryable error before source advancement, without waiting for a
 same-thread consumer to release its own view. A larger explicitly configured
@@ -219,6 +268,10 @@ deliveries only. Profiles also report original source cardinality and currently
 pinned rows/pages without scanning records; completion, failure and close drop
 the current source counts to zero. Directory capacity counts only the shared
 directory allocation, excluding node-page and record payload capacities.
+`source_pinned_capacity_bytes` reports the admitted live source bound and becomes
+zero at terminal release. `source_preflight_rows` reports records actually
+inspected by a cold capacity walk; a cache hit reports zero. `query_peak_bytes`
+includes source leases and remains a historical peak after their release.
 
 Adapters can set additional cursor metadata and a minimum usable shared-handle
 count through RetainedQueryOptions. next_batch_with_metadata includes foreign
@@ -418,8 +471,10 @@ small Python objects outside the strict payload view. See the
 
 This is not yet a qualified whole-operation memory bound. Parsing and optimizer
 workspace still need a complete admission/capacity audit. The cursor pins all
-materialized node pages, including unrelated labels; their complete retained
-capacity is not yet admitted. Avoiding a full read-snapshot clone and reporting
+materialized node pages, including unrelated labels, under the conservative
+source admission described above. Allocation-deduplicated source accounting,
+cold-walk cancellation latency, allocator/RSS and complete foreign workspace
+qualification remain open. Avoiding a full read-snapshot clone and reporting
 source counts does not resolve these remaining gates. Current counters cover
 numeric source construction, selection
 and native payload handoff; they do not establish a complete allocator/RSS or
@@ -445,7 +500,7 @@ schemas, terminal cumulative budgets and bounded sparse-label source work.
 Explicitly increasing slots from two to four cannot bypass shared handles;
 larger cursor row/payload options cannot bypass database limits.
 
-Remaining #987 work includes source/planning workspace admission, complete
+Remaining #987 work includes whole-operation source/planning qualification, complete
 copy/resource/performance profiles, complete C/Go resource and platform
 qualification, Python buffer/opaque-consumer resource and platform
 qualification, and complete Arrow resource/platform qualification.

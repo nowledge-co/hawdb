@@ -80,6 +80,35 @@ impl MaterializedNodeReadSource {
 }
 
 impl GraphStore {
+    /// Bound every heap allocation pinned by the same materialized directory
+    /// before a caller adopts it. This preflight borrows all source records.
+    #[doc(hidden)]
+    pub fn materialized_node_read_source_capacity_bytes(&self) -> Result<Option<usize>> {
+        Ok(self
+            .materialized_node_read_source_capacity_preflight()?
+            .map(|(bytes, _)| bytes))
+    }
+
+    /// Return capacity and the records inspected on a cold snapshot preflight.
+    #[doc(hidden)]
+    pub fn materialized_node_read_source_capacity_preflight(
+        &self,
+    ) -> Result<Option<(usize, usize)>> {
+        self.ensure_usable()?;
+        if self.is_out_of_core() || self.canonical_base.is_some() {
+            return Ok(None);
+        }
+        let (capacity, inspected) = self.nodes.retained_capacity_preflight();
+        capacity
+            .and_then(|bytes| bytes.checked_add(64))
+            .map(|bytes| Some((bytes, inspected)))
+            .ok_or_else(|| {
+                HawDBError::Execution(
+                    "retained source capacity overflow or excessive value nesting".into(),
+                )
+            })
+    }
+
     /// Capture a heap-only materialized source without cloning the whole store.
     /// Caller admission of source capacities remains a separate requirement.
     #[doc(hidden)]

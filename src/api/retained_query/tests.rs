@@ -14,10 +14,16 @@ fn nz(n: usize) -> NonZeroUsize {
     NonZeroUsize::new(n).unwrap()
 }
 fn governor_with_handles(handles: usize) -> RuntimeGovernor {
+    governor_with_budget(handles, 64 * 1024 * 1024)
+}
+fn governor_with_budget(handles: usize, memory_bytes: u64) -> RuntimeGovernor {
     RuntimeGovernor::new(
         RuntimeGovernorConfig {
             retained_result_handle_limit: nz(handles),
-            memory_budget_bytes: Some(64 * 1024 * 1024),
+            memory_budget_bytes: Some(memory_bytes),
+            result_budget_bytes: RuntimeGovernorConfig::shared_host()
+                .result_budget_bytes
+                .min(memory_bytes / 4),
             ..RuntimeGovernorConfig::shared_host()
         },
         RuntimeResourceSnapshot::from_parts(
@@ -59,6 +65,126 @@ fn scores(batch: &RetainedQueryBatch) -> Vec<i64> {
         .iter()
         .map(|row| values[*row as usize])
         .collect()
+}
+
+fn fixture_with_unrequested_payload(bytes: usize) -> Database {
+    let mut db = fixture();
+    db.query_with_params(
+        "CREATE (:Other {pad: $pad})",
+        &BTreeMap::from([("pad".into(), Value::String("x".repeat(bytes)))]),
+    )
+    .unwrap();
+    db
+}
+
+#[test]
+fn unrequested_source_capacity_refuses_before_pinning_and_rolls_back_admission() {
+    let mut db = fixture_with_unrequested_payload(128 * 1024);
+    db.config.execution_memory.query_memory_bytes = nz(64 * 1024);
+    let error = db
+        .query_with_params_retained(QUERY, &params(), options())
+        .unwrap_err();
+    assert!(matches!(&error, RetainedQueryError::Execution(_)));
+    assert!(error
+        .to_string()
+        .contains("retained_source (external_read)"));
+    let governor = db.retained_runtime.bound.get().unwrap();
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+    assert_eq!(governor.retained_result_snapshot().retained_bytes, 0);
+    assert_eq!(governor.retained_result_snapshot().buffer_owners, 0);
+    assert_eq!(governor.retained_result_snapshot().view_handles, 0);
+}
+
+#[test]
+fn source_capacity_charge_survives_database_close_and_ends_without_revoking_views() {
+    let db = fixture_with_unrequested_payload(128 * 1024);
+    let mut cursor = db
+        .query_with_params_retained(QUERY, &params(), options())
+        .unwrap();
+    let source_bytes = cursor.profile().source_pinned_capacity_bytes;
+    assert!(source_bytes >= 128 * 1024);
+    assert!(cursor.profile().query_peak_bytes >= source_bytes);
+    let governor = cursor.governor.clone();
+    drop(db);
+    let batch = cursor.next_batch().unwrap().unwrap();
+    let before = governor.snapshot().admitted_memory_bytes;
+    cursor.close();
+    assert_eq!(cursor.profile().source_pinned_capacity_bytes, 0);
+    assert_eq!(
+        governor.snapshot().admitted_memory_bytes,
+        before - source_bytes as u64
+    );
+    assert_eq!(scores(&batch), vec![2]);
+    assert!(governor.retained_result_snapshot().retained_bytes > 0);
+    drop(batch);
+    drop(cursor);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}
+
+#[test]
+fn demanded_eof_releases_source_capacity_while_last_batch_remains_owned() {
+    let db = fixture_with_unrequested_payload(128 * 1024);
+    let mut cursor = db
+        .query_with_params_retained(
+            QUERY,
+            &params(),
+            RetainedQueryOptions {
+                batch_rows: nz(16),
+                ..options()
+            },
+        )
+        .unwrap();
+    let governor = cursor.governor.clone();
+    let batch = cursor.next_batch().unwrap().unwrap();
+    assert_eq!(scores(&batch), vec![2, 3, 4, 5, 6, 7, 8]);
+    let before = governor.snapshot().admitted_memory_bytes;
+    let source_bytes = cursor.profile().source_pinned_capacity_bytes;
+    assert!(cursor.next_batch().unwrap().is_none());
+    assert_eq!(cursor.profile().source_pinned_capacity_bytes, 0);
+    assert_eq!(
+        governor.snapshot().admitted_memory_bytes,
+        before - source_bytes as u64
+    );
+    assert_eq!(scores(&batch), vec![2, 3, 4, 5, 6, 7, 8]);
+}
+
+#[test]
+fn distinct_pinned_source_generations_share_aggregate_memory_admission() {
+    let mut db = fixture_with_unrequested_payload(128 * 1024);
+    let source_bytes = db
+        .runtime
+        .get()
+        .unwrap()
+        .store
+        .materialized_node_read_source_capacity_bytes()
+        .unwrap()
+        .unwrap();
+    let governor = governor_with_budget(128, (source_bytes + 64 * 1024) as u64);
+    db.set_runtime_governor(governor.clone());
+    let mut first = db
+        .query_with_params_retained(QUERY, &params(), options())
+        .unwrap();
+    db.query_with_params(
+        "MATCH (n:Other) SET n.pad = $pad",
+        &BTreeMap::from([("pad".into(), Value::String("y".repeat(128 * 1024)))]),
+    )
+    .unwrap();
+    let before = governor.snapshot().admitted_memory_bytes;
+    let error = db
+        .query_with_params_retained(QUERY, &params(), options())
+        .unwrap_err();
+    assert!(matches!(error, RetainedQueryError::Admission(_)));
+    assert!(error.is_retryable());
+    assert_eq!(governor.snapshot().admitted_memory_bytes, before);
+    assert_eq!(first.profile().visited_rows, 0);
+    first.close();
+    let mut second = db
+        .query_with_params_retained(QUERY, &params(), options())
+        .unwrap();
+    second.close();
+    drop(second);
+    drop(first);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
 }
 
 #[test]

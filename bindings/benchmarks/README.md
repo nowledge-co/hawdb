@@ -64,6 +64,25 @@ The separate `retained_boundary` Python tool and `BenchmarkNumericResultDelivery
 Go benchmark compare complete numeric query consumption. Their scope, raw
 samples, default-budget refusals and review follow-up performance criterion are
 in [RETAINED_RESULTS.md](RETAINED_RESULTS.md).
+
+`retained_write_control` measures the same bulk `SET` with no cursor, a cursor
+closed before writing, or an unconsumed retained cursor held throughout writing.
+Each mode uses a separate database with an integer score and an unrequested
+fixed-size string per node. Source admission, later consumption of the old
+snapshot and verification of the newly written scores are outside the write
+timer. Mode order rotates, one iteration is discarded, and all result owners
+must release before the next iteration. Persistent writes retain the default
+`SyncOnEveryWrite`. No Arrow API is called. `--mode ordinary` can compare an
+ordinary baseline without retained APIs; the other modes require this PR's
+experimental source admission. This bulk-update control does not replace the
+five-case matrix, single-write controls or whole-operation memory measurement.
+
+```console
+bazel build -c opt //bindings/benchmarks:retained_write_control
+bazel-bin/bindings/benchmarks/retained_write_control \
+  --rows 1000 --pad-bytes 4096 --samples 7 --backend file
+```
+
 Process wall time and peak RSS also include fixture parsing, setup, warmup and
 the host runtime; they are not query-only resource charges.
 

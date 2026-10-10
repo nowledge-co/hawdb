@@ -62,6 +62,15 @@ status observes late failures. `profile_copy` distinguishes native emissions
 from successfully delivered Python batches. `retained_snapshot_copy` observes
 the shared resource owner.
 
+`profile_copy` also exposes `source_pinned_capacity_bytes`, the conservative
+source capacity admitted to query/runtime memory before cursor creation,
+`source_preflight_rows`, the cold capacity-walk work, and `query_peak_bytes`.
+The source bound includes unrelated labels and unrequested property capacities;
+close or EOF releases it while already produced numeric views remain readable.
+The peak is historical and can grow when Arrow descriptors are admitted without
+advancing the cursor. Source capacity is charged per cursor, including shared
+pages; an unchanged source can reuse its cached bound without rescanning rows.
+
 Close batches/exporters explicitly and release each memoryview when finished.
 Each native buffer acquisition has a separately admitted lease; existing views
 remain readable after parent or database closure. A derived view shares the
@@ -128,7 +137,7 @@ PYTHONPATH="$PWD/bazel-bin/bindings/python/hawdb_python_retained_tests.runfiles/
   --rootdir="$PWD" bindings/python/tests/test_arrow_consumer.py -v
 ```
 
-This is experimental. Complete source/planning admission, opaque derived-view
+This is experimental. Whole-operation source/planning qualification, opaque derived-view
 and allocator/RSS accounting, platform and performance qualification remain
 open. Current native result-buffer evidence does not bound whole-operation or
 interpreter RSS. See [the full scope and remaining gates](../../docs/RETAINED_NUMERIC_FOUNDATION.md).

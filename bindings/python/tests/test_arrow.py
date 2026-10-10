@@ -78,7 +78,12 @@ def test_array_capsules_identity_offsets_and_moved_lifetime(db):
     schema_cap, array_cap = batch.__arrow_c_array__()
     schema = pointer(schema_cap, Schema, b"arrow_schema")
     array = pointer(array_cap, Array, b"arrow_array")
-    assert query.profile_copy() == before
+    after = query.profile_copy()
+    # Export admits descriptor capacity but does not advance execution/source work.
+    assert after["query_peak_bytes"] >= before["query_peak_bytes"]
+    assert {key: value for key, value in after.items() if key != "query_peak_bytes"} == {
+        key: value for key, value in before.items() if key != "query_peak_bytes"
+    }
     assert schema.contents.format == b"+s"
     assert schema.contents.children[0].contents.format == b"l"
     assert schema.contents.children[1].contents.format == b"L"

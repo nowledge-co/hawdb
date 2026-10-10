@@ -74,6 +74,33 @@ def assert_empty(db):
     assert state["buffer_owners"] == 0
 
 
+def test_source_capacity_includes_unrequested_data_and_releases_at_eof(db):
+    fixture(db)
+    db.execute("CREATE (:Other {pad: $pad})", {"pad": "x" * (128 * 1024)})
+    query = cursor(db, rows=16)
+    before = query.profile_copy()
+    assert before["visited_rows"] == 0
+    assert before["source_preflight_rows"] == 10
+    assert before["source_pinned_capacity_bytes"] >= 128 * 1024
+    assert before["query_peak_bytes"] >= before["source_pinned_capacity_bytes"]
+    batch = query.next_batch()
+    column = batch.column(0)
+    values = memoryview(column)
+    db.close()
+    assert query.profile_copy()["source_pinned_capacity_bytes"] == before["source_pinned_capacity_bytes"]
+    assert query.next_batch() is None
+    after = query.profile_copy()
+    assert after["source_pinned_capacity_bytes"] == 0
+    assert after["source_pinned_pages"] == 0
+    assert after["query_peak_bytes"] >= before["source_pinned_capacity_bytes"]
+    assert list(values) == list(range(9))
+    column.close()
+    batch.close()
+    query.close()
+    assert list(values) == list(range(9))
+    values.release()
+
+
 def test_numeric_identity_selection_and_readonly(db):
     fixture(db)
     query = cursor(db, rows=9, suffix=" SKIP 1 LIMIT 2")

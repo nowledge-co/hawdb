@@ -19,7 +19,10 @@ use crate::{adjacency::AdjacencyPostingList, NodeId, NodeRecord, RelId, RelRecor
 use hawdb_core::{LabelId, RelTypeId, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+#[path = "cow/retained_capacity.rs"]
+mod retained_capacity;
 
 /// An immutable snapshot segment that is cloned only when a writer mutates it.
 ///
@@ -232,6 +235,9 @@ fn cow_map_segment_bytes<K: CowPageWeight, V: CowPageWeight>(segment: &BTreeMap<
 pub struct CowSegmentedMap<K, V> {
     segments: Arc<Vec<Arc<BTreeMap<K, V>>>>,
     len: usize,
+    // Snapshot-local metadata: ordinary maps never allocate a cache owner.
+    // Mutation invalidates only the writer's cache, preserving older snapshots.
+    retained_capacity: OnceLock<Option<usize>>,
 }
 
 impl<K, V> Clone for CowSegmentedMap<K, V> {
@@ -239,6 +245,7 @@ impl<K, V> Clone for CowSegmentedMap<K, V> {
         Self {
             segments: Arc::clone(&self.segments),
             len: self.len,
+            retained_capacity: self.retained_capacity.clone(),
         }
     }
 }
@@ -248,6 +255,7 @@ impl<K, V> Default for CowSegmentedMap<K, V> {
         Self {
             segments: Arc::new(Vec::new()),
             len: 0,
+            retained_capacity: OnceLock::new(),
         }
     }
 }
@@ -276,6 +284,7 @@ impl<K: Ord + CowPageWeight, V: CowPageWeight> From<BTreeMap<K, V>> for CowSegme
         Self {
             segments: Arc::new(segments),
             len,
+            retained_capacity: OnceLock::new(),
         }
     }
 }
@@ -365,6 +374,7 @@ mod retained_scan_tests;
 
 impl<K: Ord + Clone + CowPageWeight, V: Clone + CowPageWeight> CowSegmentedMap<K, V> {
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        self.retained_capacity.take();
         if self.segments.is_empty() {
             self.segments = Arc::new(vec![Arc::new(BTreeMap::from([(key, value)]))]);
             self.len = 1;
@@ -422,6 +432,7 @@ impl<K: Ord + Clone + CowPageWeight, V: Clone + CowPageWeight> CowSegmentedMap<K
         let Some(index) = self.segment_index(key) else {
             return;
         };
+        self.retained_capacity.take();
         let segments = Arc::make_mut(&mut self.segments);
         Self::split_oversized_segment(segments, index);
     }
@@ -431,6 +442,7 @@ impl<K: Ord + Clone + CowPageWeight, V: Clone + CowPageWeight> CowSegmentedMap<K
         if !self.segments[index].contains_key(key) {
             return None;
         }
+        self.retained_capacity.take();
         let segments = Arc::make_mut(&mut self.segments);
         Arc::make_mut(&mut segments[index]).get_mut(key)
     }
@@ -451,6 +463,7 @@ impl<K: Ord + Clone + CowPageWeight, V: Clone + CowPageWeight> CowSegmentedMap<K
         if !self.segments[index].contains_key(key) {
             return None;
         }
+        self.retained_capacity.take();
         let segments = Arc::make_mut(&mut self.segments);
         let removed = Arc::make_mut(&mut segments[index]).remove(key);
         if removed.is_some() {
@@ -463,6 +476,7 @@ impl<K: Ord + Clone + CowPageWeight, V: Clone + CowPageWeight> CowSegmentedMap<K
     }
 
     pub fn retain(&mut self, mut keep: impl FnMut(&K, &mut V) -> bool) {
+        self.retained_capacity.take();
         let segments = Arc::make_mut(&mut self.segments);
         for segment in segments.iter_mut() {
             let segment = Arc::make_mut(segment);
