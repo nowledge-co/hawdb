@@ -45,6 +45,7 @@ struct Fixture {
     fail_node_at: Option<usize>,
     fail_rel_scan: Option<usize>,
     cancel_after_nodes: Option<RuntimeCancellationToken>,
+    cancel_node_at: Option<(usize, RuntimeCancellationToken)>,
     adjacency_visits: Cell<usize>,
     fail_adjacency_at: Option<usize>,
     fail_identity_node: Option<NodeId>,
@@ -104,6 +105,7 @@ impl Fixture {
             fail_node_at: None,
             fail_rel_scan: None,
             cancel_after_nodes: None,
+            cancel_node_at: None,
             adjacency_visits: Cell::new(0),
             fail_adjacency_at: None,
             fail_identity_node: None,
@@ -421,7 +423,17 @@ fn projection_budget_is_inclusive_and_stops_before_more_node_reads() {
 #[test]
 fn storage_scan_failure_and_early_stop_preserve_adapter_control() {
     let mut fixture = Fixture::new();
-    let source = GraphExecutionProjectionSource(&fixture, None, None);
+    let source = GraphExecutionProjectionSource(
+        &fixture,
+        None,
+        None,
+        QueryMemoryLedger::new(nz(1024 * 1024)).account(
+            QueryMemoryClass::BlockingState,
+            "projection source test",
+            nz(1024 * 1024),
+        ),
+        None,
+    );
     assert_eq!(
         source
             .visit_projection_nodes(&mut |_| ProjectionScanControl::Stop)
@@ -458,7 +470,7 @@ fn storage_scan_failure_and_early_stop_preserve_adapter_control() {
                 "relationship scan sentinel"
             }));
             assert!(output.batches.is_empty() && output.reports.blocking_memory.is_empty());
-            assert_eq!(output.peak_bytes, 0);
+            assert!(output.peak_bytes <= 1024 * 1024);
         }
     }
 }
@@ -513,26 +525,18 @@ fn definition_predicate_and_cancellation_keep_existing_precedence() {
 }
 
 #[test]
-fn projection_scratch_and_binding_admission_fail_without_partial_rows() {
+fn source_and_projection_admission_fail_without_partial_rows() {
     let fixture = Fixture::new();
     let graph = reference_graph(&fixture, false, ProjectionLayout::Outgoing);
     let projection = graph.memory_estimate().estimated_bytes;
     let scratch = graph.page_rank_memory_estimate().algorithm_peak_bytes;
+    // These graph-only estimates cannot bypass a larger live source lease.
+    // Small operator caps now refuse before publishing algorithm reports.
     for (block, query, fragment, reports) in [
-        (1, 1024 * 1024, "streaming node scan", 1),
-        (64 * 1024, projection - 1, "exceeding query_memory_bytes", 0),
-        (
-            projection + scratch - 1,
-            1024 * 1024,
-            "streaming node scan",
-            1,
-        ),
-        (
-            projection + scratch,
-            1024 * 1024,
-            "blocking_operator_bytes",
-            1,
-        ),
+        (1, 1024 * 1024, "exceeding its 1-byte budget", 0),
+        (64 * 1024, projection - 1, "exceeding", 0),
+        (projection + scratch - 1, 1024 * 1024, "exceeding", 0),
+        (projection + scratch, 1024 * 1024, "exceeding", 0),
     ] {
         let mut options = RunOptions::default();
         options.memory.blocking_operator_bytes = nz(block);
@@ -725,4 +729,55 @@ fn mem_pagerank_reference_values_match_resident_and_forced_streaming() {
             }
         }
     }
+}
+
+#[test]
+fn resident_projection_admits_root_before_accumulating_node_buffers() {
+    let mut fixture = Fixture::new();
+    fixture.nodes = (0..1024)
+        .map(|id| NodeRecord {
+            id: NodeId(id),
+            labels: BTreeSet::new(),
+            properties: BTreeMap::new(),
+        })
+        .collect();
+    fixture.relationships.clear();
+    let mut options = RunOptions::default();
+    options.memory.query_memory_bytes = nz(4096);
+    options.memory.blocking_operator_bytes = nz(1024 * 1024);
+    let output = run(&fixture, &options, None);
+    assert!(output.result.is_err());
+    assert!(
+        fixture.node_visits.get() < 128,
+        "projection owned the full graph before root admission: {}",
+        fixture.node_visits.get()
+    );
+    assert!(output.batches.is_empty());
+    assert!(output.peak_bytes <= 4096);
+}
+
+#[test]
+fn resident_projection_admits_root_before_allocating_adjacency_buffers() {
+    let mut fixture = Fixture::new();
+    fixture.relationships = (0..1024)
+        .map(|id| RelRecord {
+            id: RelId(id),
+            source: NodeId(0),
+            target: NodeId(7),
+            rel_type: fixture.relationships[0].rel_type,
+            properties: BTreeMap::new(),
+        })
+        .collect();
+    let mut options = RunOptions::default();
+    options.memory.query_memory_bytes = nz(4096);
+    options.memory.blocking_operator_bytes = nz(1024 * 1024);
+    let output = run(&fixture, &options, None);
+    assert!(output.result.is_err());
+    assert_eq!(
+        fixture.rel_scans.get(),
+        1,
+        "graph allocated adjacency before root admission"
+    );
+    assert!(output.batches.is_empty());
+    assert!(output.peak_bytes <= 4096);
 }

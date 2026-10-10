@@ -448,6 +448,80 @@ impl GraphStore {
         }
     }
 
+    /// Stream live relationships in ID order, admitting each full record before
+    /// cloning or decoding. Callback errors and normal Stop keep the reader healthy.
+    pub fn visit_relationships_with_allocation(
+        &self,
+        rel_type: Option<RelTypeId>,
+        admit: &mut ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(AdmittedRelationshipRecord) -> Result<GraphScanControl>,
+    ) -> Result<GraphScanControl> {
+        let mut visit = |id| match self.relationship_with_allocation(id, admit)? {
+            AdmittedRelationshipRead::Missing => Ok(GraphScanControl::Continue),
+            AdmittedRelationshipRead::Stopped => Ok(GraphScanControl::Stop),
+            AdmittedRelationshipRead::Relationship(record) => consumer(record),
+        };
+        let mut delta = self.relationships.iter().peekable();
+        if let Some(reader) = &self.canonical_base {
+            let mut stopped = false;
+            let mut callback_error = None;
+            reader
+                .scan_relationship_layouts_control(|id, layout| {
+                    let result = (|| {
+                        while delta.peek().is_some_and(|(next, _)| **next < id) {
+                            let (next, record) = delta.next().expect("peeked delta exists");
+                            if !self.relationship_tombstones.contains(next)
+                                && self.relationship_matches_type(record, rel_type)
+                                && visit(*next)? == GraphScanControl::Stop
+                            {
+                                return Ok(GraphScanControl::Stop);
+                            }
+                        }
+                        if delta.peek().is_some_and(|(next, _)| **next == id) {
+                            let (next, record) = delta.next().expect("matching delta exists");
+                            if !self.relationship_tombstones.contains(next)
+                                && self.relationship_matches_type(record, rel_type)
+                            {
+                                return visit(*next);
+                            }
+                        } else if !self.relationship_tombstones.contains(&id)
+                            && rel_type.is_none_or(|selected| selected == layout.rel_type)
+                        {
+                            return visit(id);
+                        }
+                        Ok(GraphScanControl::Continue)
+                    })();
+                    match result {
+                        Ok(GraphScanControl::Continue) => Ok(CanonicalScanControl::Continue),
+                        Ok(GraphScanControl::Stop) => {
+                            stopped = true;
+                            Ok(CanonicalScanControl::Stop)
+                        }
+                        Err(error) => {
+                            callback_error = Some(error);
+                            Ok(CanonicalScanControl::Stop)
+                        }
+                    }
+                })
+                .map_err(canonical_segment_error)?;
+            if let Some(error) = callback_error {
+                return Err(error);
+            }
+            if stopped {
+                return Ok(GraphScanControl::Stop);
+            }
+        }
+        for (id, record) in delta {
+            if !self.relationship_tombstones.contains(id)
+                && self.relationship_matches_type(record, rel_type)
+                && visit(*id)? == GraphScanControl::Stop
+            {
+                return Ok(GraphScanControl::Stop);
+            }
+        }
+        Ok(GraphScanControl::Continue)
+    }
+
     pub fn visit_relationships_owned(
         &self,
         rel_type: Option<RelTypeId>,

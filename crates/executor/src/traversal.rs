@@ -15,12 +15,11 @@
 //! Shortest-path and relationship traversal operators.
 
 use crate::binding::{
-    binding_memory_bytes, relationship_memory_bytes, value_memory_bytes, Binding,
+    binding_memory_bytes, relationship_memory_bytes, value_memory_bytes, value_payload_bytes,
+    Binding,
 };
 use crate::blocking::in_memory_report;
-use crate::kernel::{
-    ensure_operator_item_fits, push_bounded_operator_binding, OperatorMemoryTracker,
-};
+use crate::kernel::{push_bounded_operator_binding, OperatorMemoryTracker};
 use crate::observer::ExecutionObserver;
 use crate::pipeline::{runtime_checkpoint, AccountedBindingSet};
 use crate::predicate::{
@@ -40,7 +39,7 @@ use hawdb_plan_cypher::{
     RelationshipCountFilter, RelationshipCountLeg, ShortestPathProjection,
     ShortestPathProjectionExpression,
 };
-use hawdb_storage::read_view::AdmittedNodeRead;
+use hawdb_storage::read_view::{AdmittedNodeRead, AdmittedNodeRecord};
 use hawdb_storage::{
     adjacency::AdjacencyDirection, mutation::PropertyFilter, NodeId, NodeRecord, RelRecord,
 };
@@ -87,16 +86,35 @@ pub fn execute_shortest_path(
         observer,
     } = context;
     runtime_checkpoint(task_context)?;
-    let Some(source) =
-        find_node_by_id_property(catalog, store, input.source_label, input.source_id)?
+    let blocking_account = memory_ledger.account(
+        QueryMemoryClass::BlockingState,
+        "ShortestPathExec",
+        memory.blocking_operator_bytes,
+    );
+    let Some(source) = find_node_by_id_property(
+        catalog,
+        store,
+        input.source_label,
+        input.source_id,
+        &blocking_account,
+        task_context,
+    )?
     else {
         return Ok(empty_accounted_binding_set(memory, memory_ledger));
     };
-    let Some(target) =
-        find_node_by_id_property(catalog, store, input.target_label, input.target_id)?
+    let (source, source_allocation) = source;
+    let Some(target) = find_node_by_id_property(
+        catalog,
+        store,
+        input.target_label,
+        input.target_id,
+        &blocking_account,
+        task_context,
+    )?
     else {
         return Ok(empty_accounted_binding_set(memory, memory_ledger));
     };
+    let (target, target_allocation) = target;
     if input
         .source_visibility_filter
         .map(|filter| !node_matches_property_filter(&source, filter))
@@ -116,11 +134,9 @@ pub fn execute_shortest_path(
         };
         Some(rel_type_id)
     };
-    let blocking_account = memory_ledger.account(
-        QueryMemoryClass::BlockingState,
-        "ShortestPathExec",
-        memory.blocking_operator_bytes,
-    );
+    let source_id = source.id;
+    let target_id = target.id;
+    drop((source, source_allocation, target, target_allocation));
     let ShortestPathSearchResult {
         paths,
         tracker: mut search_tracker,
@@ -128,8 +144,8 @@ pub fn execute_shortest_path(
     } = search_shortest_paths(
         store,
         ShortestPathSearch {
-            source: source.id,
-            target: target.id,
+            source: source_id,
+            target: target_id,
             rel_type_id,
             direction: input.direction,
             min_hops: input.min_hops,
@@ -142,8 +158,10 @@ pub fn execute_shortest_path(
         task_context,
         observer,
     )?;
-    let mut output_tracker =
-        OperatorMemoryTracker::with_account(memory.blocking_operator_bytes, blocking_account);
+    let mut output_tracker = OperatorMemoryTracker::with_account(
+        memory.blocking_operator_bytes,
+        blocking_account.clone(),
+    );
     output_tracker.try_charge(paths.len().saturating_mul(std::mem::size_of::<Binding>()))?;
     let mut output = Vec::with_capacity(paths.len());
     let mut peak_bytes = search_tracker.peak_bytes.max(
@@ -153,16 +171,14 @@ pub fn execute_shortest_path(
     );
     for path in paths {
         runtime_checkpoint(task_context)?;
-        let binding = shortest_path_binding(store, &path, input.returns)?;
-        let bytes = binding_memory_bytes(&binding).saturating_sub(std::mem::size_of::<Binding>());
-        ensure_operator_item_fits("ShortestPathExec result", bytes, &output_tracker)?;
-        if output_tracker.would_exceed(bytes) {
-            return Err(HawDBError::Execution(format!(
-                "ShortestPathExec result state exceeds blocking_operator_bytes {}",
-                output_tracker.budget_bytes
-            )));
-        }
-        output_tracker.try_charge(bytes)?;
+        let binding = shortest_path_binding(
+            store,
+            &path,
+            input.returns,
+            &mut output_tracker,
+            &blocking_account,
+            task_context,
+        )?;
         peak_bytes = peak_bytes.max(
             search_tracker
                 .used_bytes
@@ -180,7 +196,7 @@ pub fn execute_shortest_path(
     observer.record_blocking_memory_report(in_memory_report(
         "ShortestPathExec",
         &output_tracker,
-        peak_bytes,
+        peak_bytes.max(blocking_account.peak_bytes()),
         visited_paths,
         memory,
     ));
@@ -209,7 +225,14 @@ fn find_node_by_id_property(
     store: &dyn GraphExecutionRead,
     label: &str,
     id: &Value,
-) -> Result<Option<NodeRecord>> {
+    account: &QueryMemoryAccount,
+    task_context: Option<&RuntimeTaskContext>,
+) -> Result<
+    Option<(
+        NodeRecord,
+        Box<dyn hawdb_storage::read_view::GraphReadAllocation>,
+    )>,
+> {
     let label_id = if label.is_empty() {
         None
     } else {
@@ -219,15 +242,18 @@ fn find_node_by_id_property(
         Some(label_id)
     };
     let mut matched = None;
-    let mut visit = |node: NodeRecord| {
+    let mut admit = |bytes| crate::store::admit_graph_read(account, task_context, bytes).map(Some);
+    let mut visit = |input: AdmittedNodeRecord| {
+        runtime_checkpoint(task_context)?;
+        let (node, allocation) = input.into_parts();
         if node.properties.get("id") == Some(id) {
-            matched = Some(node);
+            matched = Some((node, allocation));
             Ok(ScanControl::Stop)
         } else {
             Ok(ScanControl::Continue)
         }
     };
-    store.visit_nodes_owned(label_id, &mut visit)?;
+    store.visit_nodes_with_allocation(label_id, &mut admit, &mut visit)?;
     Ok(matched)
 }
 
@@ -270,21 +296,55 @@ fn shortest_path_binding(
     store: &dyn GraphExecutionRead,
     path: &[NodeId],
     returns: &[ShortestPathProjection],
+    tracker: &mut OperatorMemoryTracker,
+    account: &QueryMemoryAccount,
+    task_context: Option<&RuntimeTaskContext>,
 ) -> Result<Binding> {
     let mut values = BTreeMap::new();
     for projection in returns {
+        runtime_checkpoint(task_context)?;
+        tracker.try_charge(
+            projection
+                .name
+                .len()
+                .saturating_add(std::mem::size_of::<usize>() * 6),
+        )?;
         let value = match &projection.expression {
-            ShortestPathProjectionExpression::NodePropertyList { property } => Value::List(
-                path.iter()
-                    .map(|node_id| {
-                        Ok(store
-                            .node_owned(*node_id)?
-                            .and_then(|node| node.properties.get(property).cloned())
-                            .unwrap_or(Value::Null))
-                    })
-                    .collect::<Result<Vec<_>>>()?,
-            ),
-            ShortestPathProjectionExpression::Length => Value::Int(path.len() as i64 - 1),
+            ShortestPathProjectionExpression::NodePropertyList { property } => {
+                tracker.try_charge(
+                    std::mem::size_of::<Vec<Value>>()
+                        .saturating_add(path.len().saturating_mul(std::mem::size_of::<Value>())),
+                )?;
+                let mut result = Vec::with_capacity(path.len());
+                let mut admit =
+                    |bytes| crate::store::admit_graph_read(account, task_context, bytes).map(Some);
+                for node_id in path {
+                    runtime_checkpoint(task_context)?;
+                    match store.node_with_allocation(*node_id, None, &mut admit)? {
+                        AdmittedNodeRead::Node(input) => {
+                            let (node, _allocation) = input.into_parts();
+                            let value = node.properties.get(property).unwrap_or(&Value::Null);
+                            tracker.try_charge(
+                                value_memory_bytes(value)
+                                    .saturating_sub(std::mem::size_of::<Value>()),
+                            )?;
+                            result.push(value.clone());
+                        }
+                        AdmittedNodeRead::Missing => result.push(Value::Null),
+                        AdmittedNodeRead::Stopped => {
+                            return Err(HawDBError::Execution(
+                                "ShortestPathExec property scan is incomplete".into(),
+                            ))
+                        }
+                    }
+                }
+                Value::List(result)
+            }
+            ShortestPathProjectionExpression::Length => {
+                let value = Value::Int(path.len() as i64 - 1);
+                tracker.try_charge(value_payload_bytes(&value))?;
+                value
+            }
         };
         values.insert(projection.name.clone(), value);
     }
@@ -361,7 +421,8 @@ pub(crate) fn visit_one_hop_relationships_with_context(
     let mut visit_direction = |adjacency_direction: AdjacencyDirection,
                                skip_undirected_self_loops: bool|
      -> Result<ScanControl> {
-        let mut visit = |relationship: RelRecord| {
+        let mut visit = |input: hawdb_storage::read_view::AdmittedRelationshipRecord| {
+            let (relationship, _allocation) = input.into_parts();
             crate::pipeline::runtime_checkpoint(task_context)?;
             if skip_undirected_self_loops
                 && relationship.source == spec.source
@@ -372,12 +433,11 @@ pub(crate) fn visit_one_hop_relationships_with_context(
             admit_relationship(relationship)
         };
         if let Some(filter) = relationship_filter.as_ref() {
-            let (control, report) = store.visit_ordered_adjacent_relationships_with_filter_owned(
-                spec.source,
-                spec.rel_type_id,
-                adjacency_direction,
+            let (control, report) = store.visit_filtered_ordered_relationships_with_allocation(
+                (spec.source, spec.rel_type_id, adjacency_direction),
                 filter,
                 memory,
+                &mut |bytes| memory.admit_node(bytes, 0, task_context).map(Some),
                 &mut visit,
             )?;
             if let Some(report) = report {
@@ -385,11 +445,12 @@ pub(crate) fn visit_one_hop_relationships_with_context(
             }
             Ok(control)
         } else {
-            store.visit_ordered_adjacent_relationships_owned(
+            store.visit_ordered_adjacent_relationships_with_allocation(
                 spec.source,
                 spec.rel_type_id,
                 adjacency_direction,
                 memory,
+                &mut |bytes| memory.admit_node(bytes, 0, task_context).map(Some),
                 &mut visit,
             )
         }
@@ -622,11 +683,12 @@ fn count_one_hop_relationships(
 ) -> Result<usize> {
     runtime_checkpoint(task_context)?;
     let mut count = 0usize;
-    visit_one_hop_relationships_with_budget(
+    visit_one_hop_relationships_with_context(
         store,
         spec,
         memory,
         observer,
+        task_context,
         &mut |relationship, _| {
             runtime_checkpoint(task_context)?;
             if relationship_count_filter_matches(&relationship, count_filter) {
@@ -674,6 +736,23 @@ impl ThreadRepairThread {
             space_id,
             message_count,
         }
+    }
+
+    fn borrowed_memory_bytes(node: &NodeRecord, thread_id_property: &str) -> usize {
+        let null = Value::Null;
+        let bytes = |key: &str| value_memory_bytes(node.properties.get(key).unwrap_or(&null));
+        let space_bytes = match node.properties.get("space_id") {
+            Some(Value::String(value)) if !value.is_empty() => {
+                value_memory_bytes(&Value::Null).saturating_add(value.len())
+            }
+            _ => std::mem::size_of::<Value>().saturating_add("default".len()),
+        };
+        std::mem::size_of::<Self>()
+            .saturating_add(bytes("id"))
+            .saturating_add(bytes(thread_id_property))
+            .saturating_add(bytes("thread_id"))
+            .saturating_add(space_bytes)
+            .saturating_add(bytes("message_count"))
     }
 
     fn memory_bytes(&self) -> usize {
@@ -741,15 +820,18 @@ pub fn thread_repair_stats_rows(
     );
     let mut tracker = OperatorMemoryTracker::with_account(memory_budget, blocking_account.clone());
     let mut identity_bytes = 0usize;
-    let mut visit = |node: NodeRecord| {
+    let mut admit =
+        |bytes| crate::store::admit_graph_read(&blocking_account, task_context, bytes).map(Some);
+    let mut visit = |input: AdmittedNodeRecord| {
+        let (node, _allocation) = input.into_parts();
         runtime_checkpoint(task_context)?;
         if node_matches_label_pattern(&node, identity_label_ids.as_deref())
-            && let Some(identity_ref) = node.properties.get(identity_ref_property).cloned()
+            && let Some(identity_ref) = node.properties.get(identity_ref_property)
         {
-            if let Some(count) = identity_counts.get_mut(&identity_ref) {
+            if let Some(count) = identity_counts.get_mut(identity_ref) {
                 *count = count.saturating_add(1);
             } else {
-                let bytes = thread_repair_identity_entry_bytes(&identity_ref);
+                let bytes = thread_repair_identity_entry_bytes(identity_ref);
                 if tracker.would_exceed(bytes) {
                     return Err(HawDBError::Execution(format!(
                         "ThreadRepairStatsExec state exceeds blocking_operator_bytes {}",
@@ -758,12 +840,11 @@ pub fn thread_repair_stats_rows(
                 }
                 tracker.try_charge(bytes)?;
                 identity_bytes = identity_bytes.saturating_add(bytes);
-                identity_counts.insert(identity_ref, 1);
+                identity_counts.insert(identity_ref.clone(), 1);
             }
         }
         if node_matches_label_pattern(&node, thread_label_ids.as_deref()) {
-            let thread = ThreadRepairThread::from_node(node, thread_id_property);
-            let bytes = thread.memory_bytes();
+            let bytes = ThreadRepairThread::borrowed_memory_bytes(&node, thread_id_property);
             if tracker.would_exceed(bytes) {
                 return Err(HawDBError::Execution(format!(
                     "ThreadRepairStatsExec state exceeds blocking_operator_bytes {}",
@@ -771,16 +852,16 @@ pub fn thread_repair_stats_rows(
                 )));
             }
             tracker.try_charge(bytes)?;
-            threads.try_reserve(1).map_err(|_| {
+            threads.try_reserve_exact(1).map_err(|_| {
                 HawDBError::Execution(
                     "ThreadRepairStatsExec cannot reserve thread state".to_string(),
                 )
             })?;
-            threads.push(thread);
+            threads.push(ThreadRepairThread::from_node(node, thread_id_property));
         }
         Ok(ScanControl::Continue)
     };
-    store.visit_nodes_owned(None, &mut visit)?;
+    store.visit_nodes_with_allocation(None, &mut admit, &mut visit)?;
     threads.sort_by(|left, right| left.id.cmp(&right.id));
     let mut rows = Vec::new();
     for thread in threads {

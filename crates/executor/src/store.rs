@@ -289,6 +289,20 @@ pub trait GraphExecutionRead {
         consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl>;
 
+    /// Full relationship admission is transferable and precedes payload ownership.
+    fn visit_relationships_with_allocation(
+        &self,
+        _rel_type: Option<RelTypeId>,
+        _admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        _consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedRelationshipRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        Err(hawdb_core::HawDBError::Execution(
+            "storage reader does not support admitted relationship scans".into(),
+        ))
+    }
+
     /// Admit owned input before cloning/decoding; retain its allocation through
     /// the consumer call. An unsupported reader must refuse this contract.
     fn visit_projected_nodes_admitted(
@@ -506,6 +520,40 @@ pub trait GraphExecutionRead {
         Err(hawdb_core::HawDBError::Execution(
             "storage reader does not support admitted ordered relationship reads".into(),
         ))
+    }
+
+    /// Filtered ordered sources preserve the allocation and live task at the
+    /// source boundary, including records rejected by the predicate.
+    fn visit_filtered_ordered_relationships_with_allocation(
+        &self,
+        adjacency: (NodeId, Option<RelTypeId>, AdjacencyDirection),
+        filter: &PropertyFilter,
+        memory: AdjacencyReadMemory<'_>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedRelationshipRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<(ScanControl, Option<ScanPruningReport>)> {
+        self.visit_ordered_adjacent_relationships_with_allocation(
+            adjacency.0,
+            adjacency.1,
+            adjacency.2,
+            memory,
+            admit,
+            &mut |input| {
+                let relationship = input.relationship();
+                if crate::predicate::property_filter_matches_values(
+                    filter,
+                    relationship.id.0,
+                    &relationship.properties,
+                ) {
+                    consumer(input)
+                } else {
+                    Ok(ScanControl::Continue)
+                }
+            },
+        )
+        .map(|control| (control, None))
     }
 
     fn visit_adjacent_relationships_with_filter_owned(

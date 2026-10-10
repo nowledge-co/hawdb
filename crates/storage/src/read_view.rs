@@ -77,6 +77,11 @@ impl AdmittedRelationshipRecord {
         })
     }
 
+    /// Borrow the admitted record while its source allocation remains owned.
+    pub fn relationship(&self) -> &crate::RelRecord {
+        &self.relationship
+    }
+
     pub fn into_parts(self) -> (crate::RelRecord, Box<dyn GraphReadAllocation>) {
         (self.relationship, self.allocation)
     }
@@ -95,6 +100,23 @@ impl AdmittedProjectedNode {
         allocation: Box<dyn GraphReadAllocation>,
     ) -> Self {
         Self { node, allocation }
+    }
+
+    /// Custom readers admit the selected allocation before copying any values.
+    pub fn clone_admitted(
+        node: &crate::NodeRecord,
+        properties: &std::collections::BTreeSet<String>,
+        allocation: Box<dyn GraphReadAllocation>,
+    ) -> hawdb_core::Result<Self> {
+        if allocation.bytes() < hawdb_core::ids::projected_node_allocation_bytes(node, properties) {
+            return Err(hawdb_core::HawDBError::Execution(
+                "projected node admission returned an insufficient allocation permit".into(),
+            ));
+        }
+        Ok(Self {
+            node: hawdb_core::ids::project_node_record_ref(node, properties),
+            allocation,
+        })
     }
 
     pub fn into_parts(self) -> (crate::ProjectedNodeRecord, Box<dyn GraphReadAllocation>) {

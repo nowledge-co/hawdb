@@ -456,6 +456,9 @@ impl ProjectedGraph {
             .map_err(ProjectionMemoryAdmissionError::storage)?;
         let memory_estimate = projection_memory_estimate(layout, nodes.len(), relationship_count);
         admit_projection(memory_estimate, budget)?;
+        store
+            .admit_projection_memory(memory_estimate.estimated_bytes)
+            .map_err(ProjectionMemoryAdmissionError::storage)?;
 
         let mut adjacency = layout
             .stores_outgoing()
@@ -476,12 +479,15 @@ impl ProjectedGraph {
                     return ProjectionScanControl::Continue;
                 };
                 if let Some(adjacency) = adjacency.as_mut() {
+                    adjacency[source].reserve_exact(1);
                     adjacency[source].push(target);
                     if layout == ProjectionLayout::Undirected && source != target {
+                        adjacency[target].reserve_exact(1);
                         adjacency[target].push(source);
                     }
                 }
                 if let Some(incoming) = incoming.as_mut() {
+                    incoming[target].reserve_exact(1);
                     incoming[target].push(source);
                 }
                 ProjectionScanControl::Continue
@@ -1101,6 +1107,14 @@ where
                 admission_error = Some(error);
                 return ProjectionScanControl::Stop;
             }
+            if let Err(error) = store.admit_projection_memory(estimate.estimated_bytes) {
+                admission_error = Some(ProjectionMemoryAdmissionError::storage(error));
+                return ProjectionScanControl::Stop;
+            }
+            if let Err(error) = nodes.try_reserve_exact(1) {
+                admission_error = Some(ProjectionMemoryAdmissionError::storage(error.to_string()));
+                return ProjectionScanControl::Stop;
+            }
             nodes.push(node.id);
             ProjectionScanControl::Continue
         })
@@ -1173,7 +1187,8 @@ fn admit_projection(
 
 fn build_compressed_adjacency(mut adjacency: Vec<Vec<usize>>) -> (Vec<usize>, Vec<usize>) {
     let mut offsets = Vec::with_capacity(adjacency.len() + 1);
-    let mut neighbors = Vec::new();
+    let neighbor_count = adjacency.iter().map(Vec::len).sum();
+    let mut neighbors = Vec::with_capacity(neighbor_count);
     offsets.push(0);
     for neighbors_for_node in &mut adjacency {
         neighbors_for_node.sort_unstable();

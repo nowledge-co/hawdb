@@ -30,6 +30,13 @@ pub enum ProjectionScanControl {
 
 /// Storage-neutral source consumed while building an immutable projection.
 pub trait ProjectionSource {
+    /// Admit cumulative graph storage before node/adjacency allocation. Query
+    /// sources retain this reservation until the projection's owner takes it.
+    /// Standalone sources may keep their existing projection-only local budget.
+    fn admit_projection_memory(&self, _total_bytes: usize) -> Result<(), String> {
+        Ok(())
+    }
+
     fn visit_projection_nodes(
         &self,
         visitor: &mut dyn FnMut(NodeRecord) -> ProjectionScanControl,

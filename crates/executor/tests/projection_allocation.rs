@@ -2762,6 +2762,22 @@ fn full_node_lookup_key_copy_admitted_before_parameter_clone() {
 }
 
 fn run_count_sum_source_admission(persisted: bool) {
+    run_blocking_source_admission(persisted, BlockingSource::CountSum);
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BlockingSource {
+    CountSum,
+    ThreadRepair,
+    ShortestPath,
+    GraphAlgorithm,
+    ThreadKey,
+    ThreadState,
+    ShortestOutput,
+    GraphRelationship,
+}
+
+fn run_blocking_source_admission(persisted: bool, source: BlockingSource) {
     let size = 1024 * 1024 + 137;
     let directory = persisted.then(StoredPropertyDirectory::new);
     let replay = hawdb_storage::store::WalReplayConfig {
@@ -2780,7 +2796,7 @@ fn run_count_sum_source_admission(persisted: bool) {
     } else {
         GraphStore::default()
     };
-    for label in ["Memory", "Other"] {
+    for label in ["Memory", "Other", "Identity"] {
         store.create_node_table(&mut catalog, label).unwrap();
         store
             .create_property_descriptor(
@@ -2793,13 +2809,106 @@ fn run_count_sum_source_admission(persisted: bool) {
             )
             .unwrap();
     }
+    let (label, property) = match source {
+        BlockingSource::ThreadKey => ("Identity", "ref"),
+        BlockingSource::ThreadState => ("Memory", "thread_id"),
+        _ => ("Other", "body"),
+    };
+    if property != "body" {
+        store
+            .create_property_descriptor(
+                &mut catalog,
+                TableKind::Node,
+                label,
+                property,
+                PropertyType::String,
+                false,
+            )
+            .unwrap();
+    }
     let id = store
         .create_node(
             &mut catalog,
-            "Other",
-            BTreeMap::from([("body".into(), Value::String("X".repeat(size)))]),
+            label,
+            BTreeMap::from([
+                ("body".into(), Value::String(String::new())),
+                (
+                    property.into(),
+                    Value::String(if matches!(source, BlockingSource::GraphRelationship) {
+                        String::new()
+                    } else {
+                        "X".repeat(size)
+                    }),
+                ),
+            ]),
         )
         .unwrap();
+    if matches!(
+        source,
+        BlockingSource::ShortestOutput | BlockingSource::GraphRelationship
+    ) {
+        store
+            .create_property_descriptor(
+                &mut catalog,
+                TableKind::Node,
+                "Memory",
+                "id",
+                PropertyType::Int,
+                false,
+            )
+            .unwrap();
+        let first = store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                BTreeMap::from([
+                    ("body".into(), Value::String(String::new())),
+                    ("id".into(), Value::Int(1)),
+                ]),
+            )
+            .unwrap();
+        let last = store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                BTreeMap::from([
+                    ("body".into(), Value::String(String::new())),
+                    ("id".into(), Value::Int(2)),
+                ]),
+            )
+            .unwrap();
+        store
+            .create_relationship_table(&mut catalog, "LINK")
+            .unwrap();
+        if matches!(source, BlockingSource::GraphRelationship) {
+            store
+                .create_property_descriptor(
+                    &mut catalog,
+                    TableKind::Relationship,
+                    "LINK",
+                    "body",
+                    PropertyType::String,
+                    false,
+                )
+                .unwrap();
+            store
+                .create_relationship(
+                    &mut catalog,
+                    first,
+                    last,
+                    "LINK",
+                    BTreeMap::from([("body".into(), Value::String("X".repeat(size)))]),
+                )
+                .unwrap();
+        } else {
+            store
+                .create_relationship(&mut catalog, first, id, "LINK", BTreeMap::new())
+                .unwrap();
+            store
+                .create_relationship(&mut catalog, id, last, "LINK", BTreeMap::new())
+                .unwrap();
+        }
+    }
     if let Some(directory) = &directory {
         store.checkpoint(&catalog).unwrap();
         drop(store);
@@ -2813,21 +2922,103 @@ fn run_count_sum_source_admission(persisted: bool) {
         .unwrap();
     }
     assert_eq!(store.is_out_of_core(), persisted);
-    let plan = PhysicalPlan::OptionalRelationshipCountSumExec {
-        variable: "n".into(),
-        label: "Memory".into(),
-        properties: BTreeMap::new(),
-        legs: vec![hawdb_plan_cypher::RelationshipCountLeg {
-            rel_type: "RELATES_TO".into(),
-            direction: hawdb_core::RelationshipDirection::Outgoing,
-            distinct: true,
-            filter: None,
-        }],
-        output: "count".into(),
+    let plan = match source {
+        BlockingSource::CountSum => PhysicalPlan::OptionalRelationshipCountSumExec {
+            variable: "n".into(),
+            label: "Memory".into(),
+            properties: BTreeMap::new(),
+            legs: vec![hawdb_plan_cypher::RelationshipCountLeg {
+                rel_type: "RELATES_TO".into(),
+                direction: hawdb_core::RelationshipDirection::Outgoing,
+                distinct: true,
+                filter: None,
+            }],
+            output: "count".into(),
+        },
+        BlockingSource::ThreadRepair | BlockingSource::ThreadKey | BlockingSource::ThreadState => {
+            PhysicalPlan::ThreadRepairStatsExec {
+                label: "Memory".into(),
+                identity_label: "Identity".into(),
+                identity_ref_property: "ref".into(),
+                thread_id_property: "thread_id".into(),
+                message_rel_type: "MESSAGE".into(),
+                message_label: "Message".into(),
+                memory_rel_type: "MEMORY".into(),
+                memory_label: "Memory".into(),
+            }
+        }
+        BlockingSource::ShortestPath | BlockingSource::ShortestOutput => {
+            PhysicalPlan::ShortestPathExec {
+                source_variable: "s".into(),
+                source_label: if matches!(source, BlockingSource::ShortestOutput) {
+                    "Memory".into()
+                } else {
+                    String::new()
+                },
+                source_id: Value::Int(1),
+                source_visibility_predicate: None,
+                rel_type: String::new(),
+                direction: hawdb_core::RelationshipDirection::Outgoing,
+                target_variable: "t".into(),
+                target_label: if matches!(source, BlockingSource::ShortestOutput) {
+                    "Memory".into()
+                } else {
+                    String::new()
+                },
+                target_id: Value::Int(2),
+                target_visibility_predicate: None,
+                min_hops: 1,
+                max_hops: 3,
+                returns: if matches!(source, BlockingSource::ShortestOutput) {
+                    vec![hawdb_plan_cypher::ShortestPathProjection {
+                        name: "bodies".into(),
+                        expression:
+                            hawdb_plan_cypher::ShortestPathProjectionExpression::NodePropertyList {
+                                property: "body".into(),
+                            },
+                    }]
+                } else {
+                    vec![]
+                },
+            }
+        }
+        BlockingSource::GraphAlgorithm | BlockingSource::GraphRelationship => {
+            store
+                .register_projected_graph(
+                    "graph",
+                    hawdb_storage::projection::ProjectedGraphDefinition {
+                        node_labels: vec!["Memory".into()],
+                        rel_types: vec![],
+                        relationship_predicates: BTreeMap::new(),
+                    },
+                )
+                .unwrap();
+            PhysicalPlan::GraphAlgorithm {
+                algorithm: hawdb_plan_cypher::GraphAlgorithmKind::PageRank,
+                graph_name: "graph".into(),
+                options: Default::default(),
+                score_column: "score".into(),
+                return_node_identity: false,
+                node_visibility_predicate: Some(Predicate::PropertyEq {
+                    variable: "n".into(),
+                    property: "visible".into(),
+                    value: Value::Bool(true),
+                }),
+            }
+        }
     };
     let memory = ExecutionMemoryConfig {
         query_memory_bytes: nz(16 * 1024 * 1024),
-        blocking_operator_bytes: nz(4096),
+        blocking_operator_bytes: nz(
+            if matches!(
+                source,
+                BlockingSource::ThreadKey | BlockingSource::ThreadState
+            ) {
+                size + 8192
+            } else {
+                4096
+            },
+        ),
         batch_payload_bytes: nz(4096),
         batch_rows: nz(8192),
         ..Default::default()
@@ -2862,8 +3053,11 @@ fn run_count_sum_source_admission(persisted: bool) {
     );
     assert_eq!(
         window.allocations(),
-        0,
-        "count sum copied an unused node payload before source admission"
+        usize::from(matches!(
+            source,
+            BlockingSource::ThreadKey | BlockingSource::ThreadState
+        )),
+        "{source:?} copied an unused node payload before source admission"
     );
     drop(window);
     assert!(matches!(result, Err(HawDBError::Execution(_))));
@@ -2881,4 +3075,74 @@ fn count_sum_admits_native_unused_payload_before_copy() {
 #[test]
 fn count_sum_admits_cold_unused_payload_before_decode() {
     run_count_sum_source_admission(true);
+}
+
+#[test]
+fn thread_repair_admits_native_unused_payload_before_copy() {
+    run_blocking_source_admission(false, BlockingSource::ThreadRepair);
+}
+
+#[test]
+fn thread_repair_admits_cold_unused_payload_before_copy() {
+    run_blocking_source_admission(true, BlockingSource::ThreadRepair);
+}
+
+#[test]
+fn shortest_path_admits_native_endpoint_payload_before_copy() {
+    run_blocking_source_admission(false, BlockingSource::ShortestPath);
+}
+
+#[test]
+fn shortest_path_admits_cold_endpoint_payload_before_copy() {
+    run_blocking_source_admission(true, BlockingSource::ShortestPath);
+}
+
+#[test]
+fn graph_algorithm_admits_native_visibility_payload_before_copy() {
+    run_blocking_source_admission(false, BlockingSource::GraphAlgorithm);
+}
+
+#[test]
+fn graph_algorithm_admits_cold_visibility_payload_before_copy() {
+    run_blocking_source_admission(true, BlockingSource::GraphAlgorithm);
+}
+
+#[test]
+fn thread_identity_key_admits_native_retained_clone_before_copy() {
+    run_blocking_source_admission(false, BlockingSource::ThreadKey);
+}
+
+#[test]
+fn thread_identity_key_admits_cold_retained_clone_before_copy() {
+    run_blocking_source_admission(true, BlockingSource::ThreadKey);
+}
+
+#[test]
+fn thread_retained_fields_admits_native_retained_clone_before_copy() {
+    run_blocking_source_admission(false, BlockingSource::ThreadState);
+}
+
+#[test]
+fn thread_retained_fields_admits_cold_retained_clone_before_copy() {
+    run_blocking_source_admission(true, BlockingSource::ThreadState);
+}
+
+#[test]
+fn shortest_output_property_admits_native_payload_before_copy() {
+    run_blocking_source_admission(false, BlockingSource::ShortestOutput);
+}
+
+#[test]
+fn shortest_output_property_admits_cold_payload_before_copy() {
+    run_blocking_source_admission(true, BlockingSource::ShortestOutput);
+}
+
+#[test]
+fn graph_relationship_scan_admits_native_payload_before_copy() {
+    run_blocking_source_admission(false, BlockingSource::GraphRelationship);
+}
+
+#[test]
+fn graph_relationship_scan_admits_cold_payload_before_copy() {
+    run_blocking_source_admission(true, BlockingSource::GraphRelationship);
 }

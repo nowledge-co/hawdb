@@ -227,6 +227,63 @@ impl GraphExecutionRead for ReadFixture {
         )
     }
 
+    fn visit_relationships_with_allocation(
+        &self,
+        rel_type: Option<RelTypeId>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedRelationshipRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        for record in &self.relationships {
+            if rel_type.is_some_and(|selected| record.rel_type != selected) {
+                continue;
+            }
+            let Some(allocation) = admit(hawdb_core::ids::relationship_allocation_bytes(record))?
+            else {
+                return Ok(ScanControl::Stop);
+            };
+            if consumer(
+                hawdb_storage::read_view::AdmittedRelationshipRecord::clone_admitted(
+                    record, allocation,
+                )?,
+            )? == ScanControl::Stop
+            {
+                return Ok(ScanControl::Stop);
+            }
+        }
+        Ok(ScanControl::Continue)
+    }
+    fn visit_projected_nodes_with_allocation(
+        &self,
+        label: Option<LabelId>,
+        properties: &BTreeSet<String>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedProjectedNode,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        for node in &self.nodes {
+            if label.is_some_and(|selected| !node.labels.contains(&selected)) {
+                continue;
+            }
+            let Some(allocation) = admit(hawdb_core::ids::projected_node_allocation_bytes(
+                node, properties,
+            ))?
+            else {
+                return Ok(ScanControl::Stop);
+            };
+            if consumer(
+                hawdb_storage::read_view::AdmittedProjectedNode::clone_admitted(
+                    node, properties, allocation,
+                )?,
+            )? == ScanControl::Stop
+            {
+                return Ok(ScanControl::Stop);
+            }
+        }
+        Ok(ScanControl::Continue)
+    }
     fn visit_relationships_owned(
         &self,
         rel_type: Option<RelTypeId>,
