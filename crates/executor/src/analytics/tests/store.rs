@@ -26,6 +26,166 @@ use hawdb_storage::{
 };
 
 impl GraphExecutionRead for Fixture {
+    fn visit_nodes_with_allocation(
+        &self,
+        label: Option<LabelId>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedNodeRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        self.node_scans.set(self.node_scans.get() + 1);
+        for (index, node) in self.nodes.iter().enumerate() {
+            if self.fail_node_at == Some(index) {
+                return Err(HawDBError::StorageIntegrity("node scan sentinel".into()));
+            }
+            if label.is_some_and(|selected| !node.labels.contains(&selected)) {
+                continue;
+            }
+            if let Some((at, token)) = &self.cancel_node_at
+                && *at == index
+            {
+                token.cancel();
+            }
+            let Some(allocation) = admit(hawdb_core::ids::node_allocation_bytes(node))? else {
+                return Ok(ScanControl::Stop);
+            };
+            self.node_visits.set(self.node_visits.get() + 1);
+            if consumer(
+                hawdb_storage::read_view::AdmittedNodeRecord::clone_admitted(node, allocation)?,
+            )? == ScanControl::Stop
+            {
+                return Ok(ScanControl::Stop);
+            }
+        }
+        if let Some(token) = &self.cancel_after_nodes {
+            token.cancel();
+        }
+        Ok(ScanControl::Continue)
+    }
+    fn visit_projected_nodes_with_allocation(
+        &self,
+        label: Option<LabelId>,
+        properties: &BTreeSet<String>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedProjectedNode,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        self.node_scans.set(self.node_scans.get() + 1);
+        for (index, node) in self.nodes.iter().enumerate() {
+            if self.fail_node_at == Some(index) {
+                return Err(HawDBError::StorageIntegrity("node scan sentinel".into()));
+            }
+            if label.is_some_and(|selected| !node.labels.contains(&selected)) {
+                continue;
+            }
+            if let Some((at, token)) = &self.cancel_node_at
+                && *at == index
+            {
+                token.cancel();
+            }
+            let Some(allocation) = admit(hawdb_core::ids::projected_node_allocation_bytes(
+                node, properties,
+            ))?
+            else {
+                return Ok(ScanControl::Stop);
+            };
+            self.node_visits.set(self.node_visits.get() + 1);
+            if consumer(
+                hawdb_storage::read_view::AdmittedProjectedNode::clone_admitted(
+                    node, properties, allocation,
+                )?,
+            )? == ScanControl::Stop
+            {
+                return Ok(ScanControl::Stop);
+            }
+        }
+        if let Some(token) = &self.cancel_after_nodes {
+            token.cancel();
+        }
+        Ok(ScanControl::Continue)
+    }
+    fn visit_relationships_with_allocation(
+        &self,
+        rel_type: Option<RelTypeId>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedRelationshipRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        self.rel_scans.set(self.rel_scans.get() + 1);
+        if self.fail_rel_scan == Some(self.rel_scans.get()) {
+            return Err(HawDBError::StorageIntegrity(
+                "relationship scan sentinel".into(),
+            ));
+        }
+        for record in &self.relationships {
+            if rel_type.is_some_and(|selected| record.rel_type != selected) {
+                continue;
+            }
+            let Some(allocation) = admit(hawdb_core::ids::relationship_allocation_bytes(record))?
+            else {
+                return Ok(ScanControl::Stop);
+            };
+            self.rel_visits.set(self.rel_visits.get() + 1);
+            if consumer(
+                hawdb_storage::read_view::AdmittedRelationshipRecord::clone_admitted(
+                    record, allocation,
+                )?,
+            )? == ScanControl::Stop
+            {
+                return Ok(ScanControl::Stop);
+            }
+        }
+        Ok(ScanControl::Continue)
+    }
+    fn visit_ordered_adjacent_relationships_with_allocation(
+        &self,
+        node_id: NodeId,
+        rel_type: Option<RelTypeId>,
+        direction: AdjacencyDirection,
+        _: crate::store::AdjacencyReadMemory<'_>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedRelationshipRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        for record in &self.relationships {
+            let endpoint = match direction {
+                AdjacencyDirection::Outgoing => record.source,
+                AdjacencyDirection::Incoming => record.target,
+            };
+            if endpoint != node_id || rel_type.is_some_and(|selected| record.rel_type != selected) {
+                continue;
+            }
+            let ordinal = self.adjacency_visits.get();
+            if self.fail_adjacency_at == Some(ordinal) {
+                return Err(HawDBError::StorageIntegrity(
+                    "adjacency scan sentinel".into(),
+                ));
+            }
+            if let Some((at, token)) = &self.cancel_adjacency_at
+                && *at == ordinal
+            {
+                token.cancel();
+            }
+            let Some(allocation) = admit(hawdb_core::ids::relationship_allocation_bytes(record))?
+            else {
+                return Ok(ScanControl::Stop);
+            };
+            self.adjacency_visits.set(ordinal + 1);
+            if consumer(
+                hawdb_storage::read_view::AdmittedRelationshipRecord::clone_admitted(
+                    record, allocation,
+                )?,
+            )? == ScanControl::Stop
+            {
+                return Ok(ScanControl::Stop);
+            }
+        }
+        Ok(ScanControl::Continue)
+    }
     fn is_out_of_core(&self) -> bool {
         panic!("unexpected graph execution read: is_out_of_core")
     }
@@ -118,6 +278,11 @@ impl GraphExecutionRead for Fixture {
         for (index, node) in self.nodes.iter().enumerate() {
             if self.fail_node_at == Some(index) {
                 return Err(HawDBError::StorageIntegrity("node scan sentinel".into()));
+            }
+            if let Some((at, token)) = &self.cancel_node_at
+                && *at == index
+            {
+                token.cancel();
             }
             self.node_visits.set(self.node_visits.get() + 1);
             if consumer(node.clone())? == ScanControl::Stop {

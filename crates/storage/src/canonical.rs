@@ -2067,9 +2067,75 @@ impl CanonicalSegmentReader {
         id: NodeId,
         required_properties: &BTreeSet<String>,
     ) -> Result<Option<usize>, CanonicalSegmentError> {
+        self.selected_node_allocation_bytes(id, Some(required_properties), None)
+    }
+
+    /// Full point-read ownership bound, with an optional borrowed label filter
+    /// evaluated from the encoded header before any property is owned.
+    pub fn node_allocation_bytes(
+        &self,
+        id: NodeId,
+        label_ids: Option<&[LabelId]>,
+    ) -> Result<Option<usize>, CanonicalSegmentError> {
+        self.selected_node_allocation_bytes(id, None, label_ids)
+    }
+
+    fn selected_node_allocation_bytes(
+        &self,
+        id: NodeId,
+        required_properties: Option<&BTreeSet<String>>,
+        label_ids: Option<&[LabelId]>,
+    ) -> Result<Option<usize>, CanonicalSegmentError> {
+        self.point_allocation_bytes(CanonicalSegmentKind::Nodes, id.0, |payload| {
+            let input = CanonicalNodeInput {
+                id,
+                payload,
+                property_keys: self.property_keys(),
+                property_spills: self.property_spills.as_ref(),
+            };
+            if let Some(labels) = label_ids {
+                let mut matches = false;
+                for &label in labels {
+                    matches |= input.has_label(label)?;
+                }
+                if !matches {
+                    return Ok(None);
+                }
+            }
+            node_payload_allocation_bytes(
+                payload,
+                self.property_keys(),
+                self.property_spills.as_ref(),
+                required_properties,
+            )
+            .map(Some)
+        })
+    }
+
+    /// Bound full relationship ownership from encoded properties before decode.
+    pub fn relationship_allocation_bytes(
+        &self,
+        id: RelId,
+    ) -> Result<Option<usize>, CanonicalSegmentError> {
+        self.point_allocation_bytes(CanonicalSegmentKind::Relationships, id.0, |payload| {
+            relationship_payload_layout(
+                payload,
+                Some(self.property_keys()),
+                self.property_spills.as_ref(),
+            )
+            .map(|layout| Some(layout.allocation_bytes))
+        })
+    }
+
+    fn point_allocation_bytes(
+        &self,
+        kind: CanonicalSegmentKind,
+        id: u64,
+        mut measure: impl FnMut(&[u8]) -> Result<Option<usize>, CanonicalSegmentError>,
+    ) -> Result<Option<usize>, CanonicalSegmentError> {
         self.ensure_healthy()?;
         let result = (|| {
-            let (segment, _) = self.find_descriptor_for_id(CanonicalSegmentKind::Nodes, id.0)?;
+            let (segment, _) = self.find_descriptor_for_id(kind, id)?;
             let Some(segment) = segment else {
                 return Ok(None);
             };
@@ -2080,50 +2146,11 @@ impl CanonicalSegmentReader {
                 self.manifest.generation,
                 &segment,
                 |record_id, payload| {
-                    if record_id < id.0 {
+                    if record_id < id {
                         return Ok(CanonicalScanControl::Continue);
                     }
-                    if record_id == id.0 {
-                        let mut cursor = SliceCursor::new(payload);
-                        let labels = cursor.read_u32()? as usize;
-                        cursor.read_exact(labels.checked_mul(4).ok_or_else(|| {
-                            CanonicalSegmentError::Corrupt("node label allocation overflow".into())
-                        })?)?;
-                        let mut bytes = std::mem::size_of::<ProjectedNodeRecord>()
-                            .saturating_add(labels.saturating_mul(128));
-                        let count = cursor.read_u32()?;
-                        for _ in 0..count {
-                            let key_id = cursor.read_u32()? as usize;
-                            let key = self.property_keys().get(key_id).ok_or_else(|| {
-                                CanonicalSegmentError::Corrupt(
-                                    "unknown property key in node allocation preflight".into(),
-                                )
-                            })?;
-                            if required_properties.contains(key) {
-                                bytes = bytes
-                                    .saturating_add(1024)
-                                    .saturating_add(key.len())
-                                    .saturating_add(encoded_value_allocation_bytes(
-                                        &mut cursor,
-                                        1,
-                                        self.property_spills.as_ref(),
-                                    )?);
-                            } else {
-                                validate_encoded_value(
-                                    &mut cursor,
-                                    1,
-                                    self.property_spills
-                                        .as_ref()
-                                        .map(|reader| reader.manifest().value_count),
-                                )?;
-                            }
-                        }
-                        if !cursor.is_empty() {
-                            return Err(CanonicalSegmentError::Corrupt(
-                                "node allocation preflight has trailing bytes".into(),
-                            ));
-                        }
-                        found = Some(bytes);
+                    if record_id == id {
+                        found = measure(payload)?;
                     }
                     Ok(CanonicalScanControl::Stop)
                 },
@@ -2230,10 +2257,55 @@ impl CanonicalSegmentReader {
             ProjectedNodeRecord,
         ) -> Result<CanonicalScanControl, CanonicalSegmentError>,
     ) -> Result<(CanonicalReadReport, CanonicalScanControl), CanonicalSegmentError> {
+        self.scan_node_inputs_control(|input| {
+            let (node, ()) = input.decode_selected(required_properties, |_| Ok(()))?;
+            consumer(node)
+        })
+    }
+
+    /// Visits encoded inputs before allocating their labels or selected values.
+    /// The callback controls whether a visible input is decoded and admitted.
+    #[doc(hidden)]
+    pub fn scan_node_inputs_control(
+        &self,
+        consumer: impl FnMut(
+            CanonicalNodeInput<'_>,
+        ) -> Result<CanonicalScanControl, CanonicalSegmentError>,
+    ) -> Result<(CanonicalReadReport, CanonicalScanControl), CanonicalSegmentError> {
+        self.scan_node_inputs_with_bloom(None, consumer)
+    }
+
+    #[doc(hidden)]
+    pub fn scan_node_inputs_by_property_control(
+        &self,
+        label: LabelId,
+        property: &str,
+        value: &Value,
+        consumer: impl FnMut(
+            CanonicalNodeInput<'_>,
+        ) -> Result<CanonicalScanControl, CanonicalSegmentError>,
+    ) -> Result<(CanonicalReadReport, CanonicalScanControl), CanonicalSegmentError> {
+        self.scan_node_inputs_with_bloom(
+            Some(node_property_bloom_key(label, property, value)?),
+            consumer,
+        )
+    }
+
+    fn scan_node_inputs_with_bloom(
+        &self,
+        bloom_key: Option<u64>,
+        mut consumer: impl FnMut(
+            CanonicalNodeInput<'_>,
+        ) -> Result<CanonicalScanControl, CanonicalSegmentError>,
+    ) -> Result<(CanonicalReadReport, CanonicalScanControl), CanonicalSegmentError> {
         self.ensure_healthy()?;
         let mut report = self.empty_read_report();
         let result = self.scan_descriptor_kind(CanonicalSegmentKind::Nodes, |descriptor| {
             report.segments_considered = report.segments_considered.saturating_add(1);
+            if bloom_key.is_some_and(|key| !descriptor.node_property_bloom.might_contain(key)) {
+                report.segments_pruned = report.segments_pruned.saturating_add(1);
+                return Ok(CanonicalScanControl::Continue);
+            }
             let read = self.read_segment_with_report(descriptor)?;
             update_report_for_segment(&mut report, &read);
             decode_segment_records_control(
@@ -2241,13 +2313,14 @@ impl CanonicalSegmentReader {
                 self.manifest.generation,
                 descriptor,
                 |id, payload| {
-                    let control = consumer(decode_projected_node_with_property_spills(
-                        id,
+                    let control = consumer(CanonicalNodeInput {
+                        id: NodeId(id),
                         payload,
-                        self.property_spills.as_ref(),
-                        Some(self.property_keys()),
-                        required_properties,
-                    )?)?;
+                        property_spills: self.property_spills.as_ref(),
+                        property_keys: self.property_keys(),
+                    })?;
+                    // Record envelopes are decoded even when overlay visibility
+                    // allows the callback to leave property values encoded.
                     report.records_decoded = report.records_decoded.saturating_add(1);
                     Ok(control)
                 },
@@ -2276,6 +2349,39 @@ impl CanonicalSegmentReader {
         &self,
         mut consumer: impl FnMut(RelRecord) -> Result<CanonicalScanControl, CanonicalSegmentError>,
     ) -> Result<(CanonicalReadReport, CanonicalScanControl), CanonicalSegmentError> {
+        self.scan_relationship_payloads_control(|id, payload| {
+            consumer(decode_relationship_with_property_spills(
+                id.0,
+                payload,
+                self.property_spills.as_ref(),
+                Some(self.property_keys()),
+            )?)
+        })
+    }
+
+    pub(crate) fn scan_relationship_layouts_control(
+        &self,
+        mut consumer: impl FnMut(
+            RelId,
+            CanonicalRelationshipLayout,
+        ) -> Result<CanonicalScanControl, CanonicalSegmentError>,
+    ) -> Result<(CanonicalReadReport, CanonicalScanControl), CanonicalSegmentError> {
+        self.scan_relationship_payloads_control(|id, payload| {
+            consumer(
+                id,
+                relationship_payload_layout(
+                    payload,
+                    Some(self.property_keys()),
+                    self.property_spills.as_ref(),
+                )?,
+            )
+        })
+    }
+
+    fn scan_relationship_payloads_control(
+        &self,
+        mut consumer: impl FnMut(RelId, &[u8]) -> Result<CanonicalScanControl, CanonicalSegmentError>,
+    ) -> Result<(CanonicalReadReport, CanonicalScanControl), CanonicalSegmentError> {
         self.ensure_healthy()?;
         let mut report = self.empty_read_report();
         let result = self.scan_descriptor_kind(CanonicalSegmentKind::Relationships, |descriptor| {
@@ -2287,12 +2393,7 @@ impl CanonicalSegmentReader {
                 self.manifest.generation,
                 descriptor,
                 |id, payload| {
-                    let control = consumer(decode_relationship_with_property_spills(
-                        id,
-                        payload,
-                        self.property_spills.as_ref(),
-                        Some(self.property_keys()),
-                    )?)?;
+                    let control = consumer(RelId(id), payload)?;
                     report.records_decoded = report.records_decoded.saturating_add(1);
                     Ok(control)
                 },
@@ -3391,6 +3492,177 @@ fn decode_node_with_property_spills(
     )
 }
 
+/// Deferred canonical node input. Selected values remain encoded until the
+/// caller has resolved visibility and admitted the owned record allocation.
+#[doc(hidden)]
+#[derive(Clone, Copy)]
+pub struct CanonicalNodeInput<'a> {
+    id: NodeId,
+    payload: &'a [u8],
+    property_keys: &'a [String],
+    property_spills: Option<&'a PropertySpillReader>,
+}
+
+impl CanonicalNodeInput<'_> {
+    pub fn id(&self) -> NodeId {
+        self.id
+    }
+
+    pub fn has_label(&self, label: LabelId) -> Result<bool, CanonicalSegmentError> {
+        let mut cursor = SliceCursor::new(self.payload);
+        let count = cursor.read_u32()?;
+        let mut matches = false;
+        for _ in 0..count {
+            matches |= cursor.read_u32()? == label.0;
+        }
+        Ok(matches)
+    }
+
+    pub fn decode_selected<P>(
+        self,
+        required_properties: &BTreeSet<String>,
+        admit: impl FnOnce(usize) -> Result<P, CanonicalSegmentError>,
+    ) -> Result<(ProjectedNodeRecord, P), CanonicalSegmentError> {
+        self.decode_selection(Some(required_properties), admit)
+    }
+
+    pub(crate) fn decode_selection<P>(
+        self,
+        required_properties: Option<&BTreeSet<String>>,
+        admit: impl FnOnce(usize) -> Result<P, CanonicalSegmentError>,
+    ) -> Result<(ProjectedNodeRecord, P), CanonicalSegmentError> {
+        let bytes = node_payload_allocation_bytes(
+            self.payload,
+            self.property_keys,
+            self.property_spills,
+            required_properties,
+        )?;
+        let allocation = admit(bytes)?;
+        let node = match required_properties {
+            Some(required) => decode_projected_node_with_property_spills(
+                self.id.0,
+                self.payload,
+                self.property_spills,
+                Some(self.property_keys),
+                required,
+            )?,
+            None => {
+                let node = decode_node_with_property_spills(
+                    self.id.0,
+                    self.payload,
+                    self.property_spills,
+                    Some(self.property_keys),
+                )?;
+                ProjectedNodeRecord {
+                    id: node.id,
+                    labels: node.labels,
+                    properties: node.properties,
+                }
+            }
+        };
+        Ok((node, allocation))
+    }
+}
+
+fn node_payload_allocation_bytes(
+    payload: &[u8],
+    property_keys: &[String],
+    property_spills: Option<&PropertySpillReader>,
+    required_properties: Option<&BTreeSet<String>>,
+) -> Result<usize, CanonicalSegmentError> {
+    let mut cursor = SliceCursor::new(payload);
+    let labels = cursor.read_u32()? as usize;
+    cursor.read_exact(labels.checked_mul(4).ok_or_else(|| {
+        CanonicalSegmentError::Corrupt("node label allocation overflow".into())
+    })?)?;
+    let bytes =
+        std::mem::size_of::<ProjectedNodeRecord>().saturating_add(labels.saturating_mul(128));
+    record_properties_allocation_bytes(
+        &mut cursor,
+        Some(property_keys),
+        property_spills,
+        required_properties,
+    )
+    .map(|properties| bytes.saturating_add(properties))
+}
+
+pub(crate) struct CanonicalRelationshipLayout {
+    pub(crate) source: NodeId,
+    pub(crate) target: NodeId,
+    pub(crate) rel_type: RelTypeId,
+    pub(crate) allocation_bytes: usize,
+}
+
+/// Parse and validate the entire relationship while leaving every value borrowed.
+pub(crate) fn relationship_payload_layout(
+    payload: &[u8],
+    property_keys: Option<&[String]>,
+    property_spills: Option<&PropertySpillReader>,
+) -> Result<CanonicalRelationshipLayout, CanonicalSegmentError> {
+    let mut cursor = SliceCursor::new(payload);
+    let source = NodeId(cursor.read_u64()?);
+    let target = NodeId(cursor.read_u64()?);
+    let rel_type = RelTypeId(cursor.read_u32()?);
+    let properties =
+        record_properties_allocation_bytes(&mut cursor, property_keys, property_spills, None)?;
+    Ok(CanonicalRelationshipLayout {
+        source,
+        target,
+        rel_type,
+        allocation_bytes: std::mem::size_of::<RelRecord>().saturating_add(properties),
+    })
+}
+
+fn record_properties_allocation_bytes(
+    cursor: &mut SliceCursor<'_>,
+    property_keys: Option<&[String]>,
+    property_spills: Option<&PropertySpillReader>,
+    required_properties: Option<&BTreeSet<String>>,
+) -> Result<usize, CanonicalSegmentError> {
+    let mut bytes = 0usize;
+    let mut selected = 0usize;
+    for _ in 0..cursor.read_u32()? {
+        let key = if let Some(keys) = property_keys {
+            keys.get(cursor.read_u32()? as usize)
+                .ok_or_else(|| {
+                    CanonicalSegmentError::Corrupt(
+                        "unknown property key in allocation preflight".into(),
+                    )
+                })?
+                .as_str()
+        } else {
+            let length = cursor.read_u32()? as usize;
+            std::str::from_utf8(cursor.read_exact(length)?).map_err(|_| {
+                CanonicalSegmentError::Corrupt(
+                    "invalid UTF-8 property key in allocation preflight".into(),
+                )
+            })?
+        };
+        if required_properties.is_none_or(|required| required.contains(key)) {
+            selected = selected.saturating_add(1);
+            bytes = bytes
+                .saturating_add(key.len())
+                .saturating_add(encoded_value_allocation_bytes(cursor, 1, property_spills)?);
+        } else {
+            validate_encoded_value(
+                cursor,
+                1,
+                property_spills.map(|reader| reader.manifest().value_count),
+            )?;
+        }
+    }
+    if !cursor.is_empty() {
+        return Err(CanonicalSegmentError::Corrupt(
+            "record allocation preflight has trailing bytes".into(),
+        ));
+    }
+    Ok(
+        bytes.saturating_add(hawdb_core::ids::property_container_allocation_bytes(
+            selected,
+        )),
+    )
+}
+
 fn decode_projected_node_with_property_spills(
     id: u64,
     payload: &[u8],
@@ -3979,85 +4251,95 @@ fn encoded_value_allocation_bytes(
 ) -> Result<usize, CanonicalSegmentError> {
     ensure_depth(depth)?;
     let base = std::mem::size_of::<Value>();
-    let payload = match cursor.read_u8()? {
-        0 => 0,
-        1 => {
-            match cursor.read_u8()? {
-                0 | 1 => {}
-                _ => {
-                    return Err(CanonicalSegmentError::Corrupt(
-                        "invalid canonical boolean".into(),
-                    ))
-                }
-            };
-            0
-        }
-        2 | 3 => {
-            cursor.read_u64()?;
-            0
-        }
-        4 | 8 => {
-            let length = cursor.read_u32()? as usize;
-            cursor.read_exact(length)?;
-            length
-        }
-        5 => {
-            let count = cursor.read_u32()?;
-            let mut bytes = 32usize;
-            for _ in 0..count {
-                bytes = bytes.saturating_add(
-                    encoded_value_allocation_bytes(cursor, depth.saturating_add(1), spills)?
-                        .saturating_mul(2),
-                );
+    let payload =
+        match cursor.read_u8()? {
+            0 => 0,
+            1 => {
+                match cursor.read_u8()? {
+                    0 | 1 => {}
+                    _ => {
+                        return Err(CanonicalSegmentError::Corrupt(
+                            "invalid canonical boolean".into(),
+                        ))
+                    }
+                };
+                0
             }
-            bytes
-        }
-        6 => {
-            let count = cursor.read_u32()?;
-            let mut bytes = 32usize;
-            for _ in 0..count {
+            2 | 3 => {
+                cursor.read_u64()?;
+                0
+            }
+            4 => {
+                let length = cursor.read_u32()? as usize;
+                std::str::from_utf8(cursor.read_exact(length)?).map_err(|_| {
+                    CanonicalSegmentError::Corrupt(
+                        "invalid UTF-8 value in allocation preflight".into(),
+                    )
+                })?;
+                length
+            }
+            8 => {
                 let length = cursor.read_u32()? as usize;
                 cursor.read_exact(length)?;
-                bytes = bytes
-                    .saturating_add(1024)
-                    .saturating_add(length)
-                    .saturating_add(encoded_value_allocation_bytes(
-                        cursor,
-                        depth.saturating_add(2),
-                        spills,
-                    )?);
+                length
             }
-            bytes
-        }
-        7 => {
-            let id = cursor.read_u64()?;
-            let encoded = spills
-                .ok_or_else(|| {
-                    CanonicalSegmentError::Corrupt("missing property spill artifact".into())
-                })?
-                .get(id)?
-                .ok_or_else(|| {
-                    CanonicalSegmentError::Corrupt("missing selected property spill".into())
-                })?;
-            let mut spilled = SliceCursor::new(&encoded);
-            let bytes = encoded_value_allocation_bytes(&mut spilled, depth, None)?;
-            if !spilled.is_empty() {
-                return Err(CanonicalSegmentError::Corrupt(
-                    "property spill allocation preflight has trailing bytes".into(),
-                ));
+            5 => {
+                let count = cursor.read_u32()?;
+                let mut bytes = 32usize;
+                for _ in 0..count {
+                    bytes = bytes.saturating_add(
+                        encoded_value_allocation_bytes(cursor, depth.saturating_add(1), spills)?
+                            .saturating_mul(2),
+                    );
+                }
+                bytes
             }
-            return Ok(bytes);
-        }
-        9 => {
-            cursor.read_exact(16)?;
-            16
-        }
-        tag => {
-            return Err(CanonicalSegmentError::Corrupt(format!(
-                "unknown canonical value tag {tag}"
-            )))
-        }
-    };
+            6 => {
+                let count = cursor.read_u32()?;
+                let mut bytes =
+                    hawdb_core::ids::property_container_allocation_bytes(count as usize);
+                for _ in 0..count {
+                    let length = cursor.read_u32()? as usize;
+                    std::str::from_utf8(cursor.read_exact(length)?).map_err(|_| {
+                        CanonicalSegmentError::Corrupt(
+                            "invalid UTF-8 map key in allocation preflight".into(),
+                        )
+                    })?;
+                    bytes = bytes.saturating_add(length).saturating_add(
+                        encoded_value_allocation_bytes(cursor, depth.saturating_add(2), spills)?,
+                    );
+                }
+                bytes
+            }
+            7 => {
+                let id = cursor.read_u64()?;
+                let encoded = spills
+                    .ok_or_else(|| {
+                        CanonicalSegmentError::Corrupt("missing property spill artifact".into())
+                    })?
+                    .get(id)?
+                    .ok_or_else(|| {
+                        CanonicalSegmentError::Corrupt("missing selected property spill".into())
+                    })?;
+                let mut spilled = SliceCursor::new(&encoded);
+                let bytes = encoded_value_allocation_bytes(&mut spilled, depth, None)?;
+                if !spilled.is_empty() {
+                    return Err(CanonicalSegmentError::Corrupt(
+                        "property spill allocation preflight has trailing bytes".into(),
+                    ));
+                }
+                return Ok(bytes);
+            }
+            9 => {
+                cursor.read_exact(16)?;
+                16
+            }
+            tag => {
+                return Err(CanonicalSegmentError::Corrupt(format!(
+                    "unknown canonical value tag {tag}"
+                )))
+            }
+        };
     Ok(base.saturating_add(payload))
 }
 

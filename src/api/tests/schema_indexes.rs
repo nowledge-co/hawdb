@@ -1510,9 +1510,7 @@ fn exact_property_union_deduplication_is_memory_admitted() {
             "MATCH (m:Memory) WHERE m.id = 'needle' OR m.external_id = 'needle' RETURN m.title AS title",
         )
         .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("operator state would use 128 bytes"));
+    assert!(error.to_string().contains("64-byte budget"), "{error}");
 }
 
 #[test]

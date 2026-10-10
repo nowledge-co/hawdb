@@ -171,7 +171,10 @@ fn stream_scoring_batches(
     )
 }
 
-struct ScoringObserver<'a>(&'a dyn ExecutionObserver, &'static str);
+pub(super) struct ScoringObserver<'a>(
+    pub(super) &'a dyn ExecutionObserver,
+    pub(super) &'static str,
+);
 
 impl ExecutionObserver for ScoringObserver<'_> {
     fn record_scan_pruning_report(&self, report: ScanPruningReport) {
@@ -222,10 +225,10 @@ impl BindingBatchSource for ScoringSource<'_, '_> {
             let mut output_bytes = 0usize;
             for mut binding in batch {
                 runtime_checkpoint(context.task_context)?;
-                let features = crate::scoring::BindingScoreFeatures::with_vector_graph_input(
+                let features = crate::scoring::BindingScoreFeatures::with_seed_graph_input(
                     &binding,
                     self.score_column,
-                    context.observer.vector_graph_scoring_input(),
+                    context.observer.seed_graph_scoring_input(),
                 );
                 let score = self.spec.evaluate(&features, self.reference_time)?;
                 runtime_checkpoint(context.task_context)?;
@@ -235,8 +238,8 @@ impl BindingBatchSource for ScoringSource<'_, '_> {
                     ));
                 }
                 let original_bytes = binding_memory_bytes(&binding);
-                if context.observer.vector_graph_scoring_input().is_some() {
-                    crate::scoring::strip_vector_annotations(&mut binding);
+                if context.observer.seed_graph_scoring_input().is_some() {
+                    crate::scoring::strip_seed_annotations(&mut binding);
                 }
                 let bytes = binding_memory_bytes_replacing_value(
                     &binding,

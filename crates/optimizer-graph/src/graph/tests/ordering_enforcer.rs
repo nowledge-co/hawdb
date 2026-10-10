@@ -183,6 +183,7 @@ fn ordering_enforcer_checks_typed_keys_directions_and_projection_overwrites() {
         property: "id".to_string(),
         column: "other".to_string(),
         optional: false,
+        node_visibility_predicate: None,
         input: Box::new(range_plan()),
     };
     assert!(!satisfies_ordering(&lookup, &[key("n", "rank")], &catalog));

@@ -118,7 +118,9 @@ impl<'a> QueryExecutionOptions<'a> {
             capture_trace: false,
             access_control: request.access_control,
             task_context: request.task_context.or(fallback_context),
-            scoring: request.scoring.map(ScoringRequest::bind),
+            scoring: request
+                .scoring
+                .map(super::query_request::ScoringAttachment::bind),
             output_limits: request.output_limits,
         }
     }
@@ -779,7 +781,8 @@ impl Database {
                         output_limits.max_payload_bytes,
                     ),
                 )
-                .with_optional_task_context(task_context);
+                .with_optional_task_context(task_context)
+                .with_optional_host_scorer(scoring.and_then(BoundScoringRequest::host_scorer));
                 let profiled = if executor::requires_write_access(&optimized.physical_plan) {
                     // Projection registration is a procedure result, but its
                     // WAL append must use the same guard as other writes.
@@ -881,7 +884,10 @@ impl Database {
                         options.output_limits.max_payload_bytes,
                     ),
                 )
-                .with_optional_task_context(task_context),
+                .with_optional_task_context(task_context)
+                .with_optional_host_scorer(
+                    options.scoring.and_then(BoundScoringRequest::host_scorer),
+                ),
                 external,
             )?;
             let row = explain_analyze_output_row(

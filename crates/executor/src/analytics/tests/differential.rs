@@ -364,12 +364,21 @@ fn check_stream(fixture: &Fixture, options: &RunOptions, only_visible: bool, ide
         .iter()
         .all(|report| report.peak_tracked_bytes <= report.budget_bytes));
     let output = run(fixture, options, None);
-    assert_eq!(
-        output.reports.blocking_memory,
-        vec![expected_report],
+    assert_eq!(output.reports.blocking_memory.len(), 1, "{identity}");
+    let actual_report = &output.reports.blocking_memory[0];
+    assert!(
+        actual_report.peak_tracked_bytes >= peak
+            && actual_report.peak_tracked_bytes <= options.memory.blocking_operator_bytes.get(),
         "{identity}"
     );
-    assert_eq!(output.peak_bytes, peak, "{identity}");
+    let mut source_independent_report = actual_report.clone();
+    source_independent_report.peak_tracked_bytes = peak;
+    assert_eq!(source_independent_report, expected_report, "{identity}");
+    assert!(
+        output.peak_bytes >= actual_report.peak_tracked_bytes
+            && output.peak_bytes <= options.memory.query_memory_bytes.get(),
+        "{identity}"
+    );
     assert!(output.reports.scan_pruning.is_empty() && output.reports.vector_execution.is_empty());
     assert!(output.reports.graph_expansion.is_empty());
     if !expected.is_empty() && options.exit == Exit::Error {

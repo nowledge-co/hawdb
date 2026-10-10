@@ -64,11 +64,13 @@ fn assert_ordered(store: &GraphStore, catalog: &Catalog) {
         assert_eq!(actual, expected);
         let mut projected = Vec::new();
         store
-            .visit_projected_nodes_by_property_range_owned(
+            .visit_projected_nodes_by_access_owned(
                 label,
-                "rank",
-                lower.as_ref(),
-                upper.as_ref(),
+                &hawdb_plan_cypher::NodeProjectionAccess::PropertyRange {
+                    property: "rank".into(),
+                    lower: lower.clone(),
+                    upper: upper.clone(),
+                },
                 &BTreeSet::new(),
                 |node| {
                     projected.push((node.properties["rank"].clone(), node.id));
@@ -95,11 +97,13 @@ fn assert_ordered(store: &GraphStore, catalog: &Catalog) {
             assert_eq!(first, expected[..1]);
             let mut calls = 0;
             let control = store
-                .visit_projected_nodes_by_property_range_owned(
+                .visit_projected_nodes_by_access_owned(
                     label,
-                    "rank",
-                    lower.as_ref(),
-                    upper.as_ref(),
+                    &hawdb_plan_cypher::NodeProjectionAccess::PropertyRange {
+                        property: "rank".into(),
+                        lower: lower.clone(),
+                        upper: upper.clone(),
+                    },
                     &BTreeSet::new(),
                     |node| {
                         assert_eq!((node.properties["rank"].clone(), node.id), expected[0]);

@@ -34,7 +34,7 @@ fn admitted_tokenizer_throttles_deadline_checks() {
             &text,
             &SearchAnalyzerLexicon::default(),
             Control {
-                memory: Some(&memory),
+                memory: Some(crate::analyzer_memory::Memory::Build(&memory)),
                 task: Some(&task),
                 workspace: None,
                 checkpoint_throttle: None,

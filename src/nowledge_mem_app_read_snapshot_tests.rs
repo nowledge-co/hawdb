@@ -21,6 +21,9 @@ use crate::{Database, DatabaseConfig, SearchIndex, Value};
 use hawdb_core::{RuntimeCancellationToken, RuntimeTaskContext};
 use std::collections::BTreeMap;
 
+#[path = "nowledge_mem_snapshot_scoring_tests.rs"]
+mod scoring_tests;
+
 fn snapshot_governor() -> hawdb_qos::RuntimeGovernor {
     use hawdb_qos::{RuntimeMemorySnapshot, RuntimeResourceBudget, RuntimeResourceSnapshot};
     hawdb_qos::RuntimeGovernor::new(

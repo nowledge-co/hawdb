@@ -140,6 +140,13 @@ impl PhysicalPlan {
                     "{pad}GraphAlgorithm algorithm={algorithm:?} graph={graph_name} options={options:?} score_column={score_column} return_node_identity={return_node_identity}"
                 )
             }
+            PhysicalPlan::GraphSeedScan { query_parameter, label, variable, score_column, top_k, node_visibility_predicate } => format!(
+                "{pad}GraphSeedScan query=${query_parameter} label={label:?} node={variable} score={score_column} candidate_top_k={top_k} canonical_visibility={node_visibility_predicate:?}"
+            ),
+            PhysicalPlan::TextSeedScan { query_parameter, top_k, output_external_id, metadata_filters, resource_profile } => format!(
+                "{pad}TextSeedScan query=${query_parameter} top_k={top_k} output_external_id={output_external_id} metadata_filter_fields={:?} priority={} max_parallelism={} max_working_memory_bytes={:?}",
+                metadata_filters.keys().collect::<Vec<_>>(), resource_profile.priority,
+                resource_profile.max_parallelism, resource_profile.max_working_memory_bytes),
             PhysicalPlan::VectorSeedScan {
                 embedding_parameter,
                 output_external_id,
@@ -397,10 +404,11 @@ impl PhysicalPlan {
                 property,
                 column,
                 optional,
+                node_visibility_predicate,
                 ..
             } => {
                 format!(
-                    "{pad}NodeColumnLookupExec variable={variable} label={label} property={property} column={column} optional={optional}"
+                    "{pad}NodeColumnLookupExec variable={variable} label={label} property={property} column={column} optional={optional} visibility={node_visibility_predicate:?}"
                 )
             }
             PhysicalPlan::IndexNodeSeek {
@@ -633,9 +641,12 @@ impl PhysicalPlan {
                 format!("{pad}LimitExec offset={offset} limit={limit:?}")
             }
             PhysicalPlan::ScoringProgramExec {
-                score_column, vector_graph_input, program, reference_time_millis, limit, ..
+                score_column, seed_graph_input, program, reference_time_millis, limit, ..
             } => format!(
-                "{pad}ScoringProgramExec score_column={score_column} limit={limit} vector_graph_input={vector_graph_input:?} reference_time_millis={reference_time_millis} program={program:?}"
+                "{pad}ScoringProgramExec score_column={score_column} limit={limit} seed_graph_input={seed_graph_input:?} reference_time_millis={reference_time_millis} program={program:?}"
+            ),
+            PhysicalPlan::HostScoringExec { scoring, reference_time_millis, .. } => format!(
+                "{pad}HostScoringExec scoring={scoring:?} reference_time_millis={reference_time_millis}"
             ),
             PhysicalPlan::ScoringRerankExec {
                 score_column,

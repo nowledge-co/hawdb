@@ -193,6 +193,7 @@ fn generated_plan(seed: u64, depth: usize) -> LogicalPlan {
             property: "id".to_string(),
             column: "id".to_string(),
             optional: seed.is_multiple_of(2),
+            node_visibility_predicate: None,
             input,
         },
         _ => LogicalPlan::Filter {

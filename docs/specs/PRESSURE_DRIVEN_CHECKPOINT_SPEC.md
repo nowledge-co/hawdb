@@ -2432,3 +2432,16 @@ destruction retains authoritative artifacts. Reclamation failure marks the
 owner unhealthy before releasing waiters. This ordering does not bound the
 physical reclamation scan or qualify the remaining whole-candidate memory and
 continuous-write performance gates.
+
+Ordinary and controlled relational field decoders share the length/limit rules
+and cumulative string byte-budget updates. Controlled inputs retain their
+whole-field truncation check before chunked reads, cooperative units and UTF-8
+validation. This removes duplicate interpretation rules; it does not establish
+complete allocation ownership for relational reconstruction.
+
+Concurrent group completion is covered by a mixed graph/SQL transaction that
+pauses before its shared durability barrier. Automatic work does not select an
+unacknowledged group. After the writer finishes, observing only the owner Control
+must see automatic publication without another frontend access. Old snapshots,
+complete reopened values and resource release remain checked. This addresses
+the idle completion notification path, not sustained-write performance.

@@ -22,7 +22,7 @@ pub(crate) fn visit(
 ) -> Result<u64> {
     let _scratch = control
         .memory
-        .map(|memory| memory.spool.reserve(BUFFER_BYTES + 4))
+        .map(|memory| memory.spool().reserve(BUFFER_BYTES + 4))
         .transpose()?;
     let mut total = 0u64;
     let mut buffer = [0u8; BUFFER_BYTES + 4];

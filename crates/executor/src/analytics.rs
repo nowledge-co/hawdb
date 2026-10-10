@@ -138,10 +138,22 @@ impl GraphAlgorithmSpec<'_> {
         };
         let budget = ProjectionMemoryBudget::new(context.memory.blocking_operator_bytes);
         let no_properties = BTreeSet::new();
-        let source = GraphExecutionProjectionSource(
+        let source_account = context.memory_ledger.account(
+            QueryMemoryClass::BlockingState,
+            "GraphAlgorithm",
+            context.memory.blocking_operator_bytes,
+        );
+        let mut source = GraphExecutionProjectionSource(
             context.store,
             context.task_context,
             node_visibility_filter.is_none().then_some(&no_properties),
+            source_account.clone(),
+            Some(std::cell::RefCell::new(
+                OperatorMemoryTracker::with_account(
+                    context.memory.blocking_operator_bytes,
+                    source_account.clone(),
+                ),
+            )),
         );
         let admitted = if let Some(filter) = node_visibility_filter.as_ref() {
             try_projected_graph_with_filters_admitted(
@@ -180,11 +192,13 @@ impl GraphAlgorithmSpec<'_> {
                 };
                 if estimate.total_peak_bytes > context.memory.blocking_operator_bytes.get() {
                     drop(graph);
+                    drop(source);
                     return self.stream_external(context, execution_limit, emit);
                 }
                 graph
             }
             Err(error) if error.storage_error.is_none() => {
+                drop(source);
                 return self.stream_external(context, execution_limit, emit);
             }
             Err(error) => {
@@ -196,24 +210,12 @@ impl GraphAlgorithmSpec<'_> {
             }
         };
         runtime_checkpoint(context.task_context)?;
-        let mut tracker = OperatorMemoryTracker::with_account(
-            context.memory.blocking_operator_bytes,
-            context.memory_ledger.account(
-                QueryMemoryClass::BlockingState,
-                "GraphAlgorithm",
-                context.memory.blocking_operator_bytes,
-            ),
-        );
-        let projection_bytes = graph.memory_estimate().estimated_bytes;
-        charge_graph_algorithm_memory(
-            match algorithm {
-                GraphAlgorithmKind::PageRank => "PageRank",
-                GraphAlgorithmKind::Louvain => "Louvain",
-            },
-            "projection",
-            &mut tracker,
-            projection_bytes,
-        )?;
+        let mut tracker = source
+            .4
+            .take()
+            .expect("query projection owns its retained reservation")
+            .into_inner();
+        tracker.peak_bytes = tracker.peak_bytes.max(source_account.peak_bytes());
         let input_rows = graph.node_count();
         let output_limit = execution_limit.output_rows.unwrap_or(usize::MAX);
         let execution_result: Result<Vec<Binding>> = (|| {
@@ -416,7 +418,12 @@ fn charge_graph_algorithm_memory(
             tracker.budget_bytes,
         )));
     }
-    tracker.try_charge(bytes)?;
+    tracker.try_charge(bytes).map_err(|error| match error {
+        HawDBError::Execution(message) => HawDBError::Execution(format!(
+            "GraphAlgorithm {algorithm} {phase} memory admission failed: {message}"
+        )),
+        error => error,
+    })?;
     Ok(())
 }
 
@@ -478,9 +485,21 @@ pub fn try_projected_graph_with_filters(
     layout: ProjectionLayout,
     budget: ProjectionMemoryBudget,
 ) -> Result<ProjectedGraph> {
+    // This standalone API bounds projection output; query execution instead
+    // provides a bounded shared root account for source and retained graph.
     try_projected_graph_with_filters_admitted(
         catalog,
-        &GraphExecutionProjectionSource(store, None, None),
+        &GraphExecutionProjectionSource(
+            store,
+            None,
+            None,
+            QueryMemoryLedger::new(std::num::NonZeroUsize::new(usize::MAX).unwrap()).account(
+                QueryMemoryClass::BlockingState,
+                "GraphAlgorithm standalone source",
+                std::num::NonZeroUsize::new(usize::MAX).unwrap(),
+            ),
+            None,
+        ),
         filters,
         include_node,
         layout,
@@ -620,9 +639,23 @@ struct GraphExecutionProjectionSource<'a>(
     &'a dyn GraphExecutionRead,
     Option<&'a RuntimeTaskContext>,
     Option<&'a BTreeSet<String>>,
+    crate::QueryMemoryAccount,
+    Option<std::cell::RefCell<OperatorMemoryTracker>>,
 );
 
 impl hawdb_analytics::ProjectionSource for GraphExecutionProjectionSource<'_> {
+    fn admit_projection_memory(&self, total_bytes: usize) -> std::result::Result<(), String> {
+        runtime_checkpoint(self.1).map_err(|error| error.to_string())?;
+        if let Some(tracker) = &self.4 {
+            let mut tracker = tracker.borrow_mut();
+            let additional = total_bytes.saturating_sub(tracker.used_bytes);
+            tracker
+                .try_charge(additional)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
     fn visit_projection_nodes(
         &self,
         visitor: &mut dyn FnMut(NodeRecord) -> hawdb_analytics::ProjectionScanControl,
@@ -638,17 +671,27 @@ impl hawdb_analytics::ProjectionSource for GraphExecutionProjectionSource<'_> {
                 hawdb_analytics::ProjectionScanControl::Stop => ScanControl::Stop,
             })
         };
+        let mut admit = |bytes| crate::store::admit_graph_read(&self.3, self.1, bytes).map(Some);
         let control = match self.2 {
-            Some(properties) => self
-                .0
-                .visit_projected_nodes_owned(None, properties, &mut |node| {
+            Some(properties) => self.0.visit_projected_nodes_with_allocation(
+                None,
+                properties,
+                &mut admit,
+                &mut |input| {
+                    let (node, _allocation) = input.into_parts();
                     consume(NodeRecord {
                         id: node.id,
                         labels: node.labels,
                         properties: node.properties,
                     })
+                },
+            ),
+            None => self
+                .0
+                .visit_nodes_with_allocation(None, &mut admit, &mut |input| {
+                    let (node, _allocation) = input.into_parts();
+                    consume(node)
                 }),
-            None => self.0.visit_nodes_owned(None, &mut consume),
         };
         control
             .map(|control| match control {
@@ -663,8 +706,10 @@ impl hawdb_analytics::ProjectionSource for GraphExecutionProjectionSource<'_> {
         visitor: &mut dyn FnMut(RelRecord) -> hawdb_analytics::ProjectionScanControl,
     ) -> std::result::Result<hawdb_analytics::ProjectionScanControl, String> {
         let mut ordinal = 0usize;
+        let mut admit = |bytes| crate::store::admit_graph_read(&self.3, self.1, bytes).map(Some);
         self.0
-            .visit_relationships_owned(None, &mut |relationship| {
+            .visit_relationships_with_allocation(None, &mut admit, &mut |input| {
+                let (relationship, _allocation) = input.into_parts();
                 if ordinal.is_multiple_of(1024) {
                     runtime_checkpoint(self.1)?;
                 }

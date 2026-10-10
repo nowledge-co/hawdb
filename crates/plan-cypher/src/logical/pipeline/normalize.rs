@@ -84,6 +84,7 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
             property,
             column,
             optional,
+            node_visibility_predicate,
             input,
         } => LogicalPlan::NodeColumnLookup {
             variable,
@@ -91,6 +92,7 @@ pub(super) fn normalize(plan: LogicalPlan) -> LogicalPlan {
             property,
             column,
             optional,
+            node_visibility_predicate,
             input: Box::new(normalize(*input)),
         },
         plan => plan,
@@ -183,6 +185,7 @@ fn column_node_lookup(program: &GraphMatchProgram, input: LogicalPlan) -> Option
         property: property.clone(),
         column: column.clone(),
         optional: program.optional,
+        node_visibility_predicate: None,
         input: Box::new(input),
     })
 }
@@ -223,7 +226,8 @@ fn disjoint_native_bindings(input: &LogicalPlan, variables: &BTreeSet<&str>, dep
     let next = depth + 1;
     match input {
         LogicalPlan::NodeScan { variable, .. } => !variables.contains(variable.as_str()),
-        LogicalPlan::VectorSeed { .. } => true,
+        LogicalPlan::VectorSeed { .. } | LogicalPlan::TextSeed { .. } => true,
+        LogicalPlan::GraphSeed { variable, .. } => !variables.contains(variable.as_str()),
         // Aggregate constructs fresh value-only bindings, including its spill
         // paths. No native entity binding survives from the input.
         LogicalPlan::Aggregate { .. } => true,

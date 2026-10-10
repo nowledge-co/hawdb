@@ -63,8 +63,7 @@ use crate::value::Value;
 use canonical_snapshot::export_canonical_graph_snapshot_for;
 use explain::{empty_read_execution_profile, explain_analyze_output_row, explain_output_row};
 use hawdb_optimizer::{
-    normalize_search_enum_value, search_field_is_enum_like, SearchPredicate, SearchPredicateOp,
-    SearchPredicateSet,
+    search_field_is_enum_like, SearchPredicate, SearchPredicateOp, SearchPredicateSet,
 };
 use plan_cache::{
     optimized_query_plan_for, statement_uses_plan_cache, OptimizedQueryPlan,
@@ -92,6 +91,8 @@ mod canonical_snapshot;
 mod concurrent;
 mod explain;
 mod graph_analytics;
+mod knowledge_graph_filters;
+mod knowledge_graph_read;
 pub use graph_analytics::{
     GraphAnalyticsAlgorithm, GraphAnalyticsFreshness, GraphAnalyticsPublicationStatus,
     GraphAnalyticsRequest, PreparedGraphAnalytics,
@@ -133,7 +134,7 @@ pub use hawdb_storage::branch_create_recovery::{
     BranchCreateRecoveryStatus,
 };
 use query_request::BoundScoringRequest;
-pub use query_request::{QueryRequest, ScoringRequest};
+pub use query_request::{HostScoringRequest, QueryRequest, ScoringRequest};
 pub(crate) use query_runtime::PreparedRuntimeQuery;
 #[cfg(feature = "tokio-runtime")]
 pub(crate) use query_runtime::RuntimePlanningSnapshot;
@@ -5237,45 +5238,44 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
                 self.query_memory_budget,
                 self.result_payload_budget,
             )?;
+        let graph_read_account = pipeline.working_account();
+        let graph = KnowledgeRetrievalPipelineContext {
+            catalog: self.catalog,
+            store: self.store,
+            query_memory_budget: self.query_memory_budget,
+            account: &graph_read_account,
+            owned: knowledge_graph_read::KnowledgeOwnedState::new(&graph_read_account)?,
+        };
         pipeline.enter(KnowledgeRetrievalStage::SearchCandidate)?;
         pipeline.enter(KnowledgeRetrievalStage::MetadataFilter)?;
         let canonical_search_nodes =
-            self.canonical_search_nodes(&search, &request.metadata_filters)?;
+            graph.canonical_search_nodes(&search, &request.metadata_filters)?;
         let search_hit_count = search.hits.len();
         search
             .hits
             .retain(|hit| canonical_search_nodes.contains_key(&hit.id));
         let canonical_identity_filtered_out_count =
             search_hit_count.saturating_sub(search.hits.len());
-        let graph_seed_search = self.search_knowledge_graph_seeds(
+        let graph_seed_search = graph.search_knowledge_graph_seeds(
             &request.query_text,
             request.graph_seed_limit,
             &request.metadata_filters,
         )?;
-        pipeline.retain_working(knowledge_search_node_map_memory_bytes(
-            &canonical_search_nodes,
-        ))?;
-        pipeline.retain_working(knowledge_graph_seed_candidates_memory_bytes(
-            &graph_seed_search.seeds,
-        ))?;
         pipeline.enter(KnowledgeRetrievalStage::AuthorizedGraphExpand)?;
-        let graph_context_search = self.expand_knowledge_context(
+        let graph_context_search = graph.expand_knowledge_context(
             &canonical_search_nodes,
             &graph_seed_search.seeds,
             &request.metadata_filters,
             request.graph_context_limit,
             request.graph_context_max_hops,
         )?;
-        pipeline.retain_working(knowledge_graph_context_candidates_memory_bytes(
-            &graph_context_search.paths,
-        ))?;
-        let evidence = self.knowledge_evidence_for_search(
+        let evidence = graph.knowledge_evidence_for_search(
             &search,
             &canonical_search_nodes,
             &graph_context_search.paths,
         );
         pipeline.enter(KnowledgeRetrievalStage::Rerank)?;
-        let mut candidates = self.knowledge_candidates(
+        let mut candidates = graph.knowledge_candidates(
             &search,
             &evidence,
             &graph_seed_search.seeds,
@@ -5297,7 +5297,7 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
             }
         }
         pipeline.enter(KnowledgeRetrievalStage::CanonicalHydration)?;
-        let (graph_seeds, graph_context_paths, canonical_hydrated_node_count) = self
+        let (graph_seeds, graph_context_paths, canonical_hydrated_node_count) = graph
             .hydrate_knowledge_output(
                 &mut candidates,
                 &graph_seed_search.seeds,
@@ -5339,6 +5339,7 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
                 fanout_reason_details: &fanout_reason_details,
                 fanout_reasons: &fanout_reasons,
             });
+        graph.owned.release_for_result(&graph_read_account)?;
         pipeline.retain_result(result_memory_bytes, result_payload_bytes)?;
         let pipeline_report = pipeline.finish(
             graph_commit_epoch,
@@ -5403,7 +5404,18 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
             fanout_reasons,
         })
     }
+}
 
+/// The graph stages cannot execute without the pipeline's query ledger.
+struct KnowledgeRetrievalPipelineContext<'a, S> {
+    catalog: &'a Catalog,
+    store: &'a S,
+    query_memory_budget: NonZeroUsize,
+    account: &'a hawdb_executor::QueryMemoryAccount,
+    owned: knowledge_graph_read::KnowledgeOwnedState,
+}
+
+impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalPipelineContext<'_, S> {
     fn expand_knowledge_context(
         &self,
         search_nodes: &BTreeMap<String, NodeId>,
@@ -5412,6 +5424,7 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
         graph_context_limit: usize,
         graph_context_max_hops: usize,
     ) -> Result<KnowledgeGraphContextSearchOutput> {
+        let temporary = knowledge_graph_read::KnowledgeOwnedState::new(self.account)?;
         let mut paths = Vec::new();
         let mut fanout_reasons = Vec::new();
         let mut truncation_reasons = Vec::new();
@@ -5421,14 +5434,30 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
         let mut frontier = VecDeque::new();
 
         for (hit_id, seed_node) in search_nodes {
-            if seen_frontier_nodes.insert((hit_id.clone(), seed_node.0)) {
+            let _lookup = self.account.reserve(hit_id.len())?;
+            let key = (hit_id.clone(), seed_node.0);
+            if !seen_frontier_nodes.contains(&key) {
+                temporary.reserve(hit_id.len().saturating_mul(2).saturating_add(
+                    128 + 11 * std::mem::size_of::<(String, u64)>()
+                        + 2 * std::mem::size_of::<(String, NodeId, usize)>(),
+                ))?;
+                seen_frontier_nodes.insert(key);
+                frontier.reserve_exact(1);
                 frontier.push_back((hit_id.clone(), *seed_node, 0usize));
             }
         }
         for seed in graph_seeds {
-            let seed_id = graph_seed_candidate_id_internal(seed);
             let seed_node = seed.node_id;
-            if seen_frontier_nodes.insert((seed_id.clone(), seed_node.0)) {
+            let _lookup = self.account.reserve(seed.id.len())?;
+            let key = (seed.id.clone(), seed_node.0);
+            if !seen_frontier_nodes.contains(&key) {
+                temporary.reserve(seed.id.len().saturating_mul(2).saturating_add(
+                    128 + 11 * std::mem::size_of::<(String, u64)>()
+                        + 2 * std::mem::size_of::<(String, NodeId, usize)>(),
+                ))?;
+                let seed_id = graph_seed_candidate_id_internal(seed);
+                seen_frontier_nodes.insert(key);
+                frontier.reserve_exact(1);
                 frontier.push_back((seed_id, seed_node, 0usize));
             }
         }
@@ -5450,21 +5479,30 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
                 &mut reported_dense_groups,
                 &mut fanout_reasons,
             );
-            for edge in knowledge_expansion_edges_for_node(
+            let edges = knowledge_graph_read::expansion_edges(
                 self.store,
                 current_node,
-                None,
-                KnowledgeNeighborDirection::Both,
                 graph_context_limit
                     .saturating_sub(paths.len())
                     .saturating_add(1),
-            )? {
+                self.query_memory_budget.get(),
+                self.account,
+            )?;
+            for edge in &edges.edges {
                 if !self.graph_expansion_node_is_authorized(edge.next_node, metadata_filters)? {
                     continue;
                 }
-                if !seen_relationships.insert((seed_hit_id.clone(), edge.relationship.id.0)) {
+                let _lookup = self.account.reserve(seed_hit_id.len())?;
+                let relationship_key = (seed_hit_id.clone(), edge.relationship.id.0);
+                if seen_relationships.contains(&relationship_key) {
                     continue;
                 }
+                temporary.reserve(
+                    seed_hit_id
+                        .len()
+                        .saturating_add(128 + 11 * std::mem::size_of::<(String, u64)>()),
+                )?;
+                seen_relationships.insert(relationship_key);
                 if paths.len() >= graph_context_limit {
                     let detail = KnowledgeFanoutReasonDetail::graph_context_limit(
                         graph_context_limit,
@@ -5481,6 +5519,8 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
                         truncation_reasons,
                     });
                 }
+                self.owned.reserve_vec(&mut paths)?;
+                self.owned.reserve(seed_hit_id.len())?;
                 paths.push(KnowledgeGraphContextCandidate {
                     seed_hit_id: seed_hit_id.clone(),
                     hop: depth + 1,
@@ -5489,7 +5529,15 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
                     source_node_id: edge.relationship.source,
                     target_node_id: edge.relationship.target,
                 });
-                if seen_frontier_nodes.insert((seed_hit_id.clone(), edge.next_node.0)) {
+                let _lookup = self.account.reserve(seed_hit_id.len())?;
+                let frontier_key = (seed_hit_id.clone(), edge.next_node.0);
+                if !seen_frontier_nodes.contains(&frontier_key) {
+                    temporary.reserve(seed_hit_id.len().saturating_mul(2).saturating_add(
+                        128 + 11 * std::mem::size_of::<(String, u64)>()
+                            + 2 * std::mem::size_of::<(String, NodeId, usize)>(),
+                    ))?;
+                    seen_frontier_nodes.insert(frontier_key);
+                    frontier.reserve_exact(1);
                     frontier.push_back((seed_hit_id.clone(), edge.next_node, depth + 1));
                 }
             }
@@ -5514,10 +5562,18 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
         if scope_filters.is_empty() {
             return Ok(true);
         }
-        let Some(node) = self.store.node_owned(node_id)? else {
+        let Some(node) = knowledge_graph_read::node(self.store, node_id, None, self.account)?
+        else {
             return Ok(false);
         };
-        try_knowledge_graph_seed_matches_filters(self.catalog, self.store, &node, &scope_filters)
+        knowledge_graph_filters::PreparedKnowledgeFilter::new(&scope_filters, self.account)?
+            .matches(
+                self.catalog,
+                self.store,
+                &node.node,
+                self.account,
+                self.query_memory_budget.get(),
+            )
     }
 
     fn seed_node_for_hit(
@@ -5525,23 +5581,30 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
         kind: Option<&str>,
         external_id: Option<&str>,
         metadata_filters: &BTreeMap<String, String>,
-    ) -> Result<Option<NodeRecord>> {
+    ) -> Result<Option<knowledge_graph_read::KnowledgeReadNode>> {
         let Some(external_id) = external_id else {
             return Ok(None);
         };
         let Some(label) = kind.and_then(search_kind_to_label) else {
             return Ok(None);
         };
-        let Some(node) =
-            try_seed_node_by_label_and_external_id(self.catalog, self.store, label, external_id)?
+        let Some(node) = knowledge_graph_read::seed_by_external_id(
+            self.catalog,
+            self.store,
+            label,
+            external_id,
+            self.account,
+        )?
         else {
             return Ok(None);
         };
-        if !try_knowledge_graph_seed_matches_filters(
+        if !knowledge_graph_filters::PreparedKnowledgeFilter::new(metadata_filters, self.account)?
+            .matches(
             self.catalog,
             self.store,
-            &node,
-            metadata_filters,
+            &node.node,
+            self.account,
+            self.query_memory_budget.get(),
         )? {
             return Ok(None);
         }
@@ -5561,14 +5624,32 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
                 hit.external_id.as_deref(),
                 &scope_filters,
             )? {
-                nodes.insert(hit.id.clone(), node.id);
+                self.owned.reserve(
+                    hit.id
+                        .len()
+                        .saturating_add(128 + 11 * std::mem::size_of::<(String, NodeId)>()),
+                )?;
+                nodes.insert(hit.id.clone(), node.node.id);
             }
         }
         Ok(nodes)
     }
 
-    fn knowledge_entity_from_node(&self, node: &NodeRecord) -> KnowledgeEntity {
-        knowledge_entity_from_node(self.catalog, node)
+    fn knowledge_entity_from_node(&self, node: &NodeRecord) -> Result<KnowledgeEntity> {
+        let labels = node
+            .labels
+            .iter()
+            .filter_map(|id| self.catalog.label_name(*id))
+            .fold(0usize, |bytes, label| {
+                bytes.saturating_add(label.len() + std::mem::size_of::<String>())
+            });
+        self.owned.reserve(
+            hawdb_core::ids::node_allocation_bytes(node)
+                .saturating_mul(2)
+                .saturating_add(labels)
+                .saturating_add(128),
+        )?;
+        Ok(knowledge_entity_from_node(self.catalog, node))
     }
 
     fn knowledge_evidence_for_search(
@@ -5619,7 +5700,7 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
     ) -> Result<KnowledgeCandidateScoreBreakdown> {
         let node = if needs_properties {
             node_id
-                .map(|node_id| self.store.node_owned(node_id))
+                .map(|node_id| knowledge_graph_read::node(self.store, node_id, None, self.account))
                 .transpose()?
                 .flatten()
         } else {
@@ -5632,7 +5713,7 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
             // distance from a seed is zero; expanded nodes only appear as
             // graph context today.
             hop_distance: Some(0),
-            node: node.as_ref(),
+            node: node.as_ref().map(|node| &node.node),
         };
         Ok(knowledge_candidate_score_breakdown(
             &source,
@@ -5759,7 +5840,9 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
         Vec<KnowledgeGraphContextPath>,
         usize,
     )> {
-        let node_ids = candidates
+        let temporary = knowledge_graph_read::KnowledgeOwnedState::new(self.account)?;
+        let mut node_ids = BTreeSet::new();
+        for id in candidates
             .iter()
             .filter_map(|candidate| candidate.canonical_node_id.map(NodeId))
             .chain(graph_seeds.iter().map(|seed| seed.node_id))
@@ -5768,34 +5851,53 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
                     .iter()
                     .flat_map(|path| [path.source_node_id, path.target_node_id]),
             )
-            .collect::<BTreeSet<_>>();
+        {
+            if !node_ids.contains(&id) {
+                temporary.reserve(128 + 11 * std::mem::size_of::<NodeId>())?;
+                node_ids.insert(id);
+            }
+        }
         let entities = self.hydrate_knowledge_entities(&node_ids)?;
 
         for candidate in candidates {
-            candidate.entity = candidate
+            if let Some(entity) = candidate
                 .canonical_node_id
-                .and_then(|node_id| entities.get(&NodeId(node_id)).cloned());
+                .and_then(|id| entities.get(&NodeId(id)))
+            {
+                self.owned
+                    .reserve(knowledge_entity_allocation_bytes(entity))?;
+                candidate.entity = Some(entity.clone());
+            }
         }
-        let hydrated_seeds = graph_seeds
-            .iter()
-            .map(|seed| {
-                let entity = entities.get(&seed.node_id).cloned().ok_or_else(|| {
-                    HawDBError::StorageIntegrity(format!(
-                        "knowledge retrieval graph seed references missing canonical node {}",
-                        seed.node_id.0
-                    ))
-                })?;
-                Ok(KnowledgeGraphSeed {
-                    entity,
-                    score: seed.score,
-                    matched_properties: seed.matched_properties.clone(),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let hydrated_paths = graph_context_paths
-            .iter()
-            .map(|path| self.hydrate_graph_context_path(path, &entities))
-            .collect::<Result<Vec<_>>>()?;
+        let mut hydrated_seeds = Vec::new();
+        for seed in graph_seeds {
+            let entity = entities.get(&seed.node_id).ok_or_else(|| {
+                HawDBError::StorageIntegrity(format!(
+                    "knowledge retrieval graph seed references missing canonical node {}",
+                    seed.node_id.0,
+                ))
+            })?;
+            self.owned.reserve_vec(&mut hydrated_seeds)?;
+            self.owned.reserve(
+                knowledge_entity_allocation_bytes(entity)
+                    .saturating_add(string_slice_bytes(&seed.matched_properties))
+                    .saturating_add(
+                        seed.matched_properties
+                            .len()
+                            .saturating_mul(std::mem::size_of::<String>()),
+                    ),
+            )?;
+            hydrated_seeds.push(KnowledgeGraphSeed {
+                entity: entity.clone(),
+                score: seed.score,
+                matched_properties: seed.matched_properties.clone(),
+            });
+        }
+        let mut hydrated_paths = Vec::new();
+        for path in graph_context_paths {
+            self.owned.reserve_vec(&mut hydrated_paths)?;
+            hydrated_paths.push(self.hydrate_graph_context_path(path, &entities)?);
+        }
         Ok((hydrated_seeds, hydrated_paths, entities.len()))
     }
 
@@ -5805,13 +5907,16 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
     ) -> Result<BTreeMap<NodeId, KnowledgeEntity>> {
         let mut entities = BTreeMap::new();
         for node_id in node_ids {
-            let Some(node) = self.store.node_owned(*node_id)? else {
+            let Some(node) = knowledge_graph_read::node(self.store, *node_id, None, self.account)?
+            else {
                 return Err(HawDBError::StorageIntegrity(format!(
                     "knowledge retrieval canonical hydration references missing node {}",
                     node_id.0
                 )));
             };
-            entities.insert(*node_id, self.knowledge_entity_from_node(&node));
+            self.owned
+                .reserve(128 + 11 * std::mem::size_of::<(NodeId, KnowledgeEntity)>())?;
+            entities.insert(*node_id, self.knowledge_entity_from_node(&node.node)?);
         }
         Ok(entities)
     }
@@ -5821,15 +5926,14 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
         path: &KnowledgeGraphContextCandidate,
         entities: &BTreeMap<NodeId, KnowledgeEntity>,
     ) -> Result<KnowledgeGraphContextPath> {
-        let relationship = self
-            .store
-            .relationship_owned(path.relationship_id)?
-            .ok_or_else(|| {
-                HawDBError::StorageIntegrity(format!(
-                    "knowledge retrieval graph context references missing relationship {}",
-                    path.relationship_id.0
-                ))
-            })?;
+        let relationship =
+            knowledge_graph_read::relationship(self.store, path.relationship_id, self.account)?
+                .ok_or_else(|| {
+                    HawDBError::StorageIntegrity(format!(
+                        "knowledge retrieval graph context references missing relationship {}",
+                        path.relationship_id.0
+                    ))
+                })?;
         let source = entities.get(&path.source_node_id).ok_or_else(|| {
             HawDBError::StorageIntegrity(format!(
                 "knowledge retrieval graph context references missing source node {}",
@@ -5842,6 +5946,29 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
                 path.target_node_id.0
             ))
         })?;
+        let labels =
+            string_slice_bytes(&source.labels).saturating_add(string_slice_bytes(&target.labels));
+        let label_slots = source
+            .labels
+            .len()
+            .saturating_add(target.labels.len())
+            .saturating_mul(std::mem::size_of::<String>());
+        self.owned.reserve(
+            path.seed_hit_id
+                .len()
+                .saturating_add(labels)
+                .saturating_add(label_slots)
+                .saturating_add(option_string_bytes(&source.external_id))
+                .saturating_add(option_string_bytes(&target.external_id))
+                .saturating_add(
+                    self.catalog
+                        .rel_type_name(relationship.relationship.rel_type)
+                        .unwrap_or("<unknown>")
+                        .len(),
+                ),
+        )?;
+        self.owned.retain_source(relationship._allocation)?;
+        let relationship = relationship.relationship;
         Ok(KnowledgeGraphContextPath {
             seed_hit_id: path.seed_hit_id.clone(),
             hop: path.hop,
@@ -5868,65 +5995,83 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
         limit: usize,
         metadata_filters: &BTreeMap<String, String>,
     ) -> Result<KnowledgeGraphSeedSearchOutput> {
+        use hawdb_executor::graph_seed::GraphSeedScorer;
+        use hawdb_executor::store::{admit_graph_read, ScanControl};
+        use hawdb_storage::read_view::{AdmittedVec, GraphReadAdmission};
+
+        let account = self.account;
         if limit == 0 {
             return Ok(KnowledgeGraphSeedSearchOutput::default());
         }
-        let query_terms = knowledge_query_terms(query_text);
-        if query_terms.is_empty() {
+        let scorer = GraphSeedScorer::new(query_text, account, None)?;
+        if scorer.is_empty() {
             return Ok(KnowledgeGraphSeedSearchOutput::default());
         }
-        let normalized_query = query_text.trim().to_ascii_lowercase();
+        let filter =
+            knowledge_graph_filters::PreparedKnowledgeFilter::new(metadata_filters, account)?;
+        let mut allocate_slots = |bytes| admit_graph_read(account, None, bytes);
+        let mut scored = AdmittedVec::<KnowledgeGraphSeedCandidate>::new(
+            &GraphReadAdmission::new(&mut allocate_slots),
+        )?;
         let mut input_candidate_count = 0usize;
         let mut input_filtered_out_count = 0usize;
         let mut candidate_count = 0usize;
-        let mut scored = Vec::new();
-        let mut scan_error = None;
-        crate::store::InternalGraphEngine::visit_nodes_owned(self.store, None, |node| {
-            let matches = match try_knowledge_graph_seed_matches_filters(
-                self.catalog,
-                self.store,
-                &node,
-                metadata_filters,
-            ) {
-                Ok(matches) => matches,
-                Err(error) => {
-                    scan_error = Some(error);
-                    return crate::store::GraphScanControl::Stop;
+        self.store.visit_nodes_with_allocation(
+            None,
+            &mut |bytes| admit_graph_read(account, None, bytes).map(Some),
+            &mut |input| {
+                let (node, _input_allocation) = input.into_parts();
+                if !filter.matches(
+                    self.catalog,
+                    self.store,
+                    &node,
+                    account,
+                    self.query_memory_budget.get(),
+                )? {
+                    input_filtered_out_count = input_filtered_out_count.saturating_add(1);
+                    return Ok(ScanControl::Continue);
                 }
-            };
-            if !matches {
-                input_filtered_out_count += 1;
-                return crate::store::GraphScanControl::Continue;
-            }
-            input_candidate_count += 1;
-            if let Some(seed) = {
-                let (score, matched_properties) =
-                    graph_seed_score(&node, &query_terms, &normalized_query);
-                (score > 0.0).then(|| KnowledgeGraphSeedCandidate {
-                    id: graph_seed_candidate_id_from_node(self.catalog, &node),
-                    node_id: node.id,
-                    score,
-                    matched_properties,
-                })
-            } {
+                input_candidate_count = input_candidate_count.saturating_add(1);
+                let relevance = scorer.score(&node)?;
+                if relevance.score <= 0.0 {
+                    return Ok(ScanControl::Continue);
+                }
                 candidate_count = candidate_count.saturating_add(1);
-                scored.push(seed);
-                scored.sort_by(|left, right| {
-                    right
-                        .score
-                        .partial_cmp(&left.score)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then_with(|| left.node_id.cmp(&right.node_id))
-                });
-                scored.truncate(limit);
-            }
-            crate::store::GraphScanControl::Continue
+                // Select before allocating owned candidate ids and property names.
+                let replace = if scored.as_slice().len() < limit {
+                    None
+                } else {
+                    let (index, worst) = scored
+                        .as_slice()
+                        .iter()
+                        .enumerate()
+                        .max_by(|(_, left), (_, right)| knowledge_graph_seed_order(left, right))
+                        .expect("nonzero seed window is full");
+                    if relevance.score < worst.score
+                        || (relevance.score == worst.score && node.id >= worst.node_id)
+                    {
+                        return Ok(ScanControl::Continue);
+                    }
+                    Some(index)
+                };
+                let seed = graph_seed_candidate_from_node(self.catalog, &node, relevance, account)?;
+                if let Some(index) = replace {
+                    scored.as_mut_slice()[index] = seed;
+                } else {
+                    scored.try_push(seed)?;
+                }
+                Ok(ScanControl::Continue)
+            },
+        )?;
+        let (mut seeds, slots) = scored.into_parts();
+        seeds.sort_unstable_by(knowledge_graph_seed_order);
+        // The one bounded diagnostic contains at most two usize renderings.
+        let report_allocation = account.reserve(if candidate_count > limit {
+            std::mem::size_of::<KnowledgeFanoutReasonDetail>() + 256
+        } else {
+            0
         })?;
-        if let Some(error) = scan_error {
-            return Err(error);
-        }
-
-        let fanout_reasons = if candidate_count > limit {
+        let fanout_reason_details = if candidate_count > limit {
             vec![KnowledgeFanoutReasonDetail::graph_seed_limit(
                 limit,
                 candidate_count,
@@ -5935,11 +6080,13 @@ impl<S: crate::executor::ExecutionStore> KnowledgeRetrievalGraphContext<'_, S> {
             Vec::new()
         };
         Ok(KnowledgeGraphSeedSearchOutput {
-            seeds: scored,
+            seeds,
             input_candidate_count,
             input_filtered_out_count,
             candidate_count,
-            fanout_reason_details: fanout_reasons,
+            fanout_reason_details,
+            _slots: Some(slots),
+            _report_allocation: Some(report_allocation),
         })
     }
 }
@@ -5953,17 +6100,20 @@ struct KnowledgeGraphContextSearchOutput {
     truncation_reasons: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Default)]
 struct KnowledgeGraphSeedSearchOutput {
     seeds: Vec<KnowledgeGraphSeedCandidate>,
+    _slots: Option<Box<dyn hawdb_storage::read_view::GraphReadAllocation>>,
+    _report_allocation: Option<hawdb_executor::QueryMemoryLease>,
     input_candidate_count: usize,
     input_filtered_out_count: usize,
     candidate_count: usize,
     fanout_reason_details: Vec<KnowledgeFanoutReasonDetail>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct KnowledgeGraphSeedCandidate {
+    _allocation: hawdb_executor::QueryMemoryLease,
     id: String,
     node_id: NodeId,
     score: f64,
@@ -5980,34 +6130,14 @@ struct KnowledgeGraphContextCandidate {
     target_node_id: NodeId,
 }
 
-fn knowledge_search_node_map_memory_bytes(nodes: &BTreeMap<String, NodeId>) -> usize {
-    std::mem::size_of::<BTreeMap<String, NodeId>>().saturating_add(nodes.iter().fold(
-        0usize,
-        |bytes, (hit_id, _)| {
-            bytes
-                .saturating_add(std::mem::size_of::<(String, NodeId)>() * 3)
-                .saturating_add(hit_id.len())
-        },
-    ))
-}
-
-fn knowledge_graph_seed_candidates_memory_bytes(seeds: &[KnowledgeGraphSeedCandidate]) -> usize {
-    std::mem::size_of_val(seeds).saturating_add(seeds.iter().fold(0usize, |bytes, seed| {
-        bytes
-            .saturating_add(std::mem::size_of::<KnowledgeGraphSeedCandidate>())
-            .saturating_add(seed.id.len())
-            .saturating_add(string_slice_bytes(&seed.matched_properties))
-    }))
-}
-
-fn knowledge_graph_context_candidates_memory_bytes(
-    paths: &[KnowledgeGraphContextCandidate],
-) -> usize {
-    std::mem::size_of_val(paths).saturating_add(paths.iter().fold(0usize, |bytes, path| {
-        bytes
-            .saturating_add(std::mem::size_of::<KnowledgeGraphContextCandidate>())
-            .saturating_add(path.seed_hit_id.len())
-    }))
+fn knowledge_graph_seed_order(
+    left: &KnowledgeGraphSeedCandidate,
+    right: &KnowledgeGraphSeedCandidate,
+) -> std::cmp::Ordering {
+    right
+        .score
+        .total_cmp(&left.score)
+        .then(left.node_id.cmp(&right.node_id))
 }
 
 fn knowledge_candidates_memory_bytes(candidates: &[KnowledgeCandidate]) -> usize {
@@ -6128,6 +6258,21 @@ fn search_hit_payload_bytes(hit: &crate::search::SearchHit) -> usize {
                 .fold(0usize, usize::saturating_add),
         )
         .saturating_add(string_slice_bytes(&hit.fallback_reasons))
+}
+
+fn knowledge_entity_allocation_bytes(entity: &KnowledgeEntity) -> usize {
+    std::mem::size_of::<KnowledgeEntity>()
+        .saturating_add(string_slice_bytes(&entity.labels))
+        .saturating_add(
+            entity
+                .labels
+                .len()
+                .saturating_mul(std::mem::size_of::<String>()),
+        )
+        .saturating_add(option_string_bytes(&entity.external_id))
+        .saturating_add(hawdb_executor::binding::map_memory_bytes(
+            &entity.properties,
+        ))
 }
 
 fn knowledge_entity_payload_bytes(entity: &KnowledgeEntity) -> usize {
@@ -6852,18 +6997,51 @@ fn graph_seed_candidate_id_internal(seed: &KnowledgeGraphSeedCandidate) -> Strin
     seed.id.clone()
 }
 
-fn graph_seed_candidate_id_from_node(catalog: &Catalog, node: &NodeRecord) -> String {
+fn graph_seed_candidate_from_node(
+    catalog: &Catalog,
+    node: &NodeRecord,
+    relevance: hawdb_executor::graph_seed::GraphSeedRelevance,
+    account: &hawdb_executor::QueryMemoryAccount,
+) -> Result<KnowledgeGraphSeedCandidate> {
+    use hawdb_executor::graph_seed::property_text;
+    use std::borrow::Cow;
     let label = node
         .labels
         .iter()
         .find_map(|label_id| catalog.label_name(*label_id))
         .unwrap_or("node");
-    let external_id = projected_node_external_id(node);
-    if external_id.is_empty() {
-        format!("node:{}", node.id.0)
+    let (external_id, _external_allocation) = if let Some(value) = node.properties.get("id") {
+        property_text(value, account, None)?
     } else {
-        format!("{label}:{external_id}")
-    }
+        (Cow::Borrowed(""), None)
+    };
+    // u64 decimal fallback requires at most twenty bytes.
+    let _fallback_allocation = account.reserve(if external_id.is_empty() { 20 } else { 0 })?;
+    let external_id = if external_id.is_empty() {
+        Cow::Owned(node.id.0.to_string())
+    } else {
+        external_id
+    };
+    let property_count = relevance.matched_properties().count();
+    let property_bytes = relevance.matched_properties().map(str::len).sum::<usize>();
+    let bytes = label
+        .len()
+        .checked_add(1)
+        .and_then(|bytes| bytes.checked_add(external_id.len()))
+        .and_then(|bytes| bytes.checked_add(property_count * std::mem::size_of::<String>()))
+        .and_then(|bytes| bytes.checked_add(property_bytes))
+        .ok_or_else(|| HawDBError::Execution("graph seed candidate size overflow".into()))?;
+    let allocation = account.reserve(bytes)?;
+    let id = format!("{label}:{external_id}");
+    let mut matched_properties = Vec::with_capacity(property_count);
+    matched_properties.extend(relevance.matched_properties().map(str::to_string));
+    Ok(KnowledgeGraphSeedCandidate {
+        id,
+        node_id: node.id,
+        score: relevance.score,
+        matched_properties,
+        _allocation: allocation,
+    })
 }
 
 fn knowledge_graph_expansion_scope_filters(
@@ -6956,6 +7134,7 @@ fn scoring_reference_time_millis() -> u64 {
         .unwrap_or(0)
 }
 
+#[cfg(test)]
 fn graph_seed_score(
     node: &NodeRecord,
     query_terms: &BTreeSet<String>,
@@ -7004,6 +7183,7 @@ fn knowledge_graph_seed_matches_filters(
         .unwrap_or(false)
 }
 
+#[cfg(test)]
 fn try_knowledge_graph_seed_matches_filters(
     catalog: &Catalog,
     store: &impl crate::executor::ExecutionStore,
@@ -7014,6 +7194,7 @@ fn try_knowledge_graph_seed_matches_filters(
     knowledge_graph_seed_matches_predicates(catalog, store, node, &pushdown.predicates)
 }
 
+#[cfg(test)]
 fn knowledge_graph_seed_matches_predicates(
     catalog: &Catalog,
     store: &impl crate::executor::ExecutionStore,
@@ -7031,6 +7212,7 @@ fn knowledge_graph_seed_matches_predicates(
     Ok(true)
 }
 
+#[cfg(test)]
 fn knowledge_graph_seed_matches_predicate(
     catalog: &Catalog,
     store: &impl crate::executor::ExecutionStore,
@@ -7110,6 +7292,7 @@ fn knowledge_graph_seed_matches_predicate(
     })
 }
 
+#[cfg(test)]
 fn knowledge_graph_seed_matches_numeric_filter(
     node: &NodeRecord,
     key: &str,
@@ -7126,20 +7309,7 @@ fn knowledge_graph_seed_matches_numeric_filter(
 }
 
 fn knowledge_graph_seed_filter_numeric_value(node: &NodeRecord, key: &str) -> Option<f64> {
-    match key {
-        "kind" => None,
-        "external_id" => parse_metadata_filter_number(&projected_node_external_id(node)),
-        "source_id" => node_projection_source_id(node)
-            .as_deref()
-            .and_then(parse_metadata_filter_number),
-        "space_id" => parse_metadata_filter_number(&normalized_node_space_id(node)),
-        _ => node
-            .properties
-            .get(key)
-            .map(value_to_external_id)
-            .as_deref()
-            .and_then(parse_metadata_filter_number),
-    }
+    hawdb_executor::graph_seed::numeric_property(node, key)
 }
 
 fn parse_metadata_filter_number(value: &str) -> Option<f64> {
@@ -7147,6 +7317,7 @@ fn parse_metadata_filter_number(value: &str) -> Option<f64> {
     number.is_finite().then_some(number)
 }
 
+#[cfg(test)]
 fn knowledge_graph_seed_filter_values(
     catalog: &Catalog,
     store: &impl crate::executor::ExecutionStore,
@@ -7174,6 +7345,7 @@ fn knowledge_graph_seed_filter_values(
     })
 }
 
+#[cfg(test)]
 fn knowledge_graph_seed_business_labels(
     catalog: &Catalog,
     store: &impl crate::executor::ExecutionStore,
@@ -7225,6 +7397,7 @@ fn knowledge_graph_seed_business_labels(
     Ok(labels.into_iter().collect())
 }
 
+#[cfg(test)]
 fn first_non_empty_node_value(node: &NodeRecord, keys: &[&str]) -> Option<String> {
     keys.iter()
         .filter_map(|key| node.properties.get(*key).map(value_to_external_id))
@@ -7239,21 +7412,15 @@ fn knowledge_graph_seed_filter_value_matches(key: &str, actual: &str, expected: 
         return search_label_to_kind(expected_label)
             .is_some_and(|expected_kind| actual == expected_kind);
     }
-    if key == "space_id" {
-        return normalize_graph_seed_string_filter_value(actual)
-            == normalize_graph_seed_string_filter_value(expected);
+    if key != "space_id" && search_field_is_enum_like(key) {
+        return actual.trim().eq_ignore_ascii_case(expected.trim());
     }
-    if search_field_is_enum_like(key) {
-        return normalize_search_enum_value(actual) == normalize_search_enum_value(expected);
-    }
-    normalize_graph_seed_string_filter_value(actual)
-        == normalize_graph_seed_string_filter_value(expected)
+    // String conversion preserves contextual Unicode rules, including final
+    // sigma. Per-character lowercase is not the same normalization contract.
+    actual.trim().to_lowercase() == expected.trim().to_lowercase()
 }
 
-fn normalize_graph_seed_string_filter_value(value: &str) -> String {
-    value.trim().to_lowercase()
-}
-
+#[cfg(test)]
 fn normalized_node_space_id(node: &NodeRecord) -> String {
     node.properties
         .get("space_id")
@@ -7262,6 +7429,7 @@ fn normalized_node_space_id(node: &NodeRecord) -> String {
         .unwrap_or_else(|| "default".to_string())
 }
 
+#[cfg(test)]
 fn node_projection_source_id(node: &NodeRecord) -> Option<String> {
     ["source_id", "thread_id", "source"]
         .into_iter()
@@ -7269,6 +7437,7 @@ fn node_projection_source_id(node: &NodeRecord) -> Option<String> {
         .find(|source_id| !source_id.is_empty())
 }
 
+#[cfg(test)]
 fn knowledge_query_terms(text: &str) -> BTreeSet<String> {
     text.split(|ch: char| !ch.is_alphanumeric() && ch != '_')
         .map(str::trim)
@@ -19358,65 +19527,12 @@ fn knowledge_graph_path_node_count(paths: &[KnowledgeGraphPath]) -> usize {
         .len()
 }
 
-struct KnowledgeExpansionEdge {
-    direction: KnowledgeGraphPathDirection,
-    next_node: NodeId,
-    relationship: RelRecord,
-}
-
 struct DenseAdjacencyDiagnosticContext<'a, S = GraphStore> {
     catalog: &'a Catalog,
     store: &'a S,
     operation: &'a str,
     relationship_type: Option<crate::schema::RelTypeId>,
     requested_direction: KnowledgeNeighborDirection,
-}
-
-fn knowledge_expansion_edges_for_node(
-    store: &impl crate::executor::ExecutionStore,
-    node_id: NodeId,
-    relationship_type: Option<crate::schema::RelTypeId>,
-    requested_direction: KnowledgeNeighborDirection,
-    max_edges_per_direction: usize,
-) -> Result<Vec<KnowledgeExpansionEdge>> {
-    let mut edges = Vec::new();
-    let mut seen_relationships = BTreeSet::new();
-    for adjacency_direction in adjacency_directions_for_request(requested_direction) {
-        let mut direction_edges = BTreeMap::new();
-        crate::store::InternalGraphEngine::visit_adjacent_relationships_owned(
-            store,
-            node_id,
-            relationship_type,
-            adjacency_direction,
-            |relationship| {
-                let next_node = match adjacency_direction {
-                    AdjacencyDirection::Outgoing => relationship.target,
-                    AdjacencyDirection::Incoming => relationship.source,
-                };
-                let key = (next_node, relationship.id);
-                direction_edges.insert(
-                    key,
-                    KnowledgeExpansionEdge {
-                        direction: knowledge_path_direction_for_adjacency(adjacency_direction),
-                        next_node,
-                        relationship,
-                    },
-                );
-                if direction_edges.len() > max_edges_per_direction
-                    && let Some(last_key) = direction_edges.keys().next_back().copied()
-                {
-                    direction_edges.remove(&last_key);
-                }
-                crate::store::GraphScanControl::Continue
-            },
-        )?;
-        edges.extend(
-            direction_edges
-                .into_values()
-                .filter(|edge| seen_relationships.insert(edge.relationship.id.0)),
-        );
-    }
-    Ok(edges)
 }
 
 fn record_dense_adjacency_diagnostics<S: crate::executor::ExecutionStore>(
@@ -19490,6 +19606,7 @@ fn adjacency_direction_name(adjacency_direction: AdjacencyDirection) -> &'static
     }
 }
 
+#[cfg(test)]
 fn try_seed_node_by_label_and_external_id(
     catalog: &Catalog,
     store: &impl crate::executor::ExecutionStore,
@@ -21874,32 +21991,6 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
         )
     }
 
-    pub(crate) fn query_with_params_streaming_external(
-        &mut self,
-        cypher_text: &str,
-        parameters: &BTreeMap<String, Value>,
-        options: QueryStreamOptions,
-        external: &mut dyn executor::ExternalReadOperator,
-        mut consumer: impl FnMut(Row) -> Result<()>,
-    ) -> Result<QueryStreamReport> {
-        self.store.ensure_usable()?;
-        let task_context = self.task_context.clone();
-        self.query_with_params_streaming_prepared_external_internal(
-            cypher_text,
-            query_runtime::parse_runtime_execution(cypher_text)?,
-            parameters,
-            options,
-            ReadStreamingExecutionContext {
-                task_context: task_context.as_ref(),
-                external: Some(external),
-                delivery: executor::StreamDelivery::Validated,
-                scoring: None,
-                access_control: None,
-            },
-            &mut consumer,
-        )
-    }
-
     #[cfg_attr(not(feature = "tokio-runtime"), allow(dead_code))]
     pub(crate) fn query_prepared_with_params_streaming_context(
         &mut self,
@@ -21982,20 +22073,24 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
                 "read transaction query must not be a mutation".to_string(),
             ));
         }
-        let streamed = executor::execute_with_row_consumer_profile_with_delivery(
-            &optimized.physical_plan,
-            &mut self.catalog,
-            &mut self.store,
-            parameters,
-            context
-                .external
-                .unwrap_or(&mut executor::NoExternalReadOperator),
-            max_rows,
-            max_payload_bytes,
-            consumer,
-            context.task_context,
-            &self.config.execution_memory,
+        let streamed = executor::execute_with_request_consumer_with_delivery(
+            executor::ExecutionRequest::new(
+                &optimized.physical_plan,
+                parameters,
+                &self.config.execution_memory,
+            )
+            .with_output_limits(max_rows, max_payload_bytes)
+            .with_optional_task_context(context.task_context)
+            .with_optional_host_scorer(context.scoring.and_then(BoundScoringRequest::host_scorer)),
+            executor::ExecutionResources::new(
+                &mut self.catalog,
+                &mut self.store,
+                context
+                    .external
+                    .unwrap_or(&mut executor::NoExternalReadOperator),
+            ),
             context.delivery,
+            consumer,
         );
         self.store.poison_on_storage_error(&streamed);
         let streamed = streamed?;
@@ -22191,7 +22286,10 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
                         options.output_limits.max_payload_bytes,
                     ),
                 )
-                .with_optional_task_context(task_context),
+                .with_optional_task_context(task_context)
+                .with_optional_host_scorer(
+                    options.scoring.and_then(BoundScoringRequest::host_scorer),
+                ),
                 executor::ExecutionResources::new(
                     &mut self.catalog,
                     &mut self.store,
@@ -22886,3 +22984,6 @@ fn relational_state_counts(state: &hawdb_storage::relational::RelationalState) -
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod legacy_graph_seed_budget_tests;

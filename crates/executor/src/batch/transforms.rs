@@ -22,6 +22,38 @@ struct PreparedTransformSource<'a> {
     context: BatchReadContext<'a>,
 }
 
+pub(super) fn stream_host_scoring_batches(
+    input: &PhysicalPlan,
+    scoring: &hawdb_plan_cypher::HostScoringPlan,
+    reference_time_millis: u64,
+    scorer: &mut dyn crate::scoring::HostScorer,
+    context: BatchReadContext<'_>,
+    execution_limit: ExecutionLimit,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
+    let mut source = PreparedTransformSource { context };
+    executor_transform::stream_host_scoring_batches(
+        input,
+        executor_transform::HostScoringOptions {
+            score_column: scoring.score_column(),
+            max_candidate_rows: scoring.max_candidate_rows(),
+            reference_time_millis,
+            limit: scoring.limit(),
+            expected_identity: Some(crate::scoring::HostScorerDescriptor::new(
+                scoring.name(),
+                scoring.version(),
+                scoring.cpu_units_per_row(),
+            )?),
+            rank_policy: scoring.rank_policy(),
+        },
+        scorer,
+        &mut source,
+        context.kernel_context(),
+        execution_limit,
+        emit,
+    )
+}
+
 impl BindingBatchSource for PreparedTransformSource<'_> {
     fn execute(
         &mut self,
@@ -120,6 +152,7 @@ pub(super) fn stream_filter_batches(
                     budget_bytes: context.memory.blocking_operator_bytes.get(),
                     account: Some(&predicate_account),
                 },
+                context.task_context,
             )
         },
         emit,
@@ -133,7 +166,7 @@ pub(super) fn stream_projection_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    if context.observer.vector_graph_scoring_input().is_none()
+    if context.observer.seed_graph_scoring_input().is_none()
         && let Some(result) =
             try_stream_columnar_projection_batches(items, input, context, execution_limit, emit)
     {

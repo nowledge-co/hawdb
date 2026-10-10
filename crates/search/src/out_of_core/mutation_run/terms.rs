@@ -84,6 +84,13 @@ impl Terms {
         }
     }
     pub(in crate::out_of_core) fn cursor(&self) -> Result<Cursor<'_>> {
+        self.cursor_with_query_context(None)
+    }
+
+    fn cursor_with_query_context(
+        &self,
+        context: Option<crate::lexical_projection::QueryContext<'_>>,
+    ) -> Result<Cursor<'_>> {
         match self {
             Self::Owned(terms) => Ok(Cursor::Owned(terms.iter())),
             Self::Stored {
@@ -95,14 +102,22 @@ impl Terms {
                 checksum,
                 memory,
             } => {
-                let lease = memory
-                    .as_ref()
-                    .map(|memory| {
+                let lease = match context {
+                    Some(context) => {
+                        context.checkpoint()?;
                         let bytes = usize::try_from(self.workspace_bytes()?)
                             .map_err(|_| size_overflow())?;
-                        memory.spool.reserve(bytes)
-                    })
-                    .transpose()?;
+                        Some(context.memory.reserve(bytes)?)
+                    }
+                    None => memory
+                        .as_ref()
+                        .map(|memory| {
+                            let bytes = usize::try_from(self.workspace_bytes()?)
+                                .map_err(|_| size_overflow())?;
+                            memory.spool.reserve(bytes)
+                        })
+                        .transpose()?,
+                };
                 let mut reader = BufReader::with_capacity(
                     8192,
                     super::super::hydration::CheckedReader::new(
@@ -126,11 +141,33 @@ impl Terms {
             }
         }
     }
-    pub(crate) fn visit(&self, mut emit: impl FnMut(&str) -> Result<()>) -> Result<()> {
-        let mut cursor = self.cursor()?;
-        while let Some(term) = cursor.next()? {
+    pub(crate) fn visit_with_query_context(
+        &self,
+        context: Option<crate::lexical_projection::QueryContext<'_>>,
+        mut emit: impl FnMut(&str) -> Result<()>,
+    ) -> Result<()> {
+        let checkpoint = || context.map_or(Ok(()), |context| context.checkpoint());
+        checkpoint()?;
+        // Owned terms are borrowed by the cursor, which clones only one scalar.
+        // Stored cursors own their buffer/scalar admission inside the cursor.
+        let _owned_scalar =
+            match (context, self) {
+                (Some(context), Self::Owned(_)) => Some(context.memory.reserve(
+                    usize::try_from(self.workspace_bytes()?).map_err(|_| size_overflow())?,
+                )?),
+                _ => None,
+            };
+        let mut cursor = self.cursor_with_query_context(context)?;
+        loop {
+            checkpoint()?;
+            let Some(term) = cursor.next()? else {
+                break;
+            };
+            checkpoint()?;
             emit(&term)?;
+            checkpoint()?;
         }
+        checkpoint()?;
         Ok(())
     }
     pub(crate) fn validate(&self) -> Result<()> {
@@ -266,7 +303,7 @@ impl PartialEq for Terms {
         let collect = |terms: &Self| {
             let mut result = Vec::new();
             terms
-                .visit(|term| {
+                .visit_with_query_context(None, |term| {
                     result.push(term.to_owned());
                     Ok(())
                 })
@@ -411,7 +448,7 @@ impl Terms {
     }
     pub(in crate::out_of_core) fn to_vec(&self) -> Vec<String> {
         let mut terms = Vec::new();
-        self.visit(|term| {
+        self.visit_with_query_context(None, |term| {
             terms.push(term.to_owned());
             Ok(())
         })

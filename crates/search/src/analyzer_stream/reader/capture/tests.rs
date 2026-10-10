@@ -112,7 +112,7 @@ fn captured_body_exceeds_memory_and_cleanup_denial_keeps_bytes_for_retry() {
         bytes,
         None,
         Control {
-            memory: Some(&memory),
+            memory: Some(crate::analyzer_memory::Memory::Build(&memory)),
             task: Some(&task),
             ..Control::default()
         },
@@ -171,7 +171,7 @@ fn capture_admits_scratch_before_reading_and_refunds_after_failure() {
         0,
         None,
         Control {
-            memory: Some(&memory),
+            memory: Some(crate::analyzer_memory::Memory::Build(&memory)),
             task: Some(&task),
             ..Control::default()
         },
@@ -183,7 +183,7 @@ fn capture_admits_scratch_before_reading_and_refunds_after_failure() {
         .with_memory_reservation(RuntimeMemoryReservation::new((BUFFER_BYTES + 4) as u64, 0));
     let memory = BuildMemory::new(&task).unwrap();
     let control = Control {
-        memory: Some(&memory),
+        memory: Some(crate::analyzer_memory::Memory::Build(&memory)),
         task: Some(&task),
         ..Control::default()
     };

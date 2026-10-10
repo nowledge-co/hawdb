@@ -35,7 +35,7 @@ pub struct QueryExecutionReports {
 /// operator events are recorded. Final host/process metrics are added outside.
 pub struct QueryExecutionObserver {
     reports: RefCell<QueryExecutionReports>,
-    vector_graph_input: Option<hawdb_plan_cypher::ScoringVectorGraphInput>,
+    seed_graph_input: Option<hawdb_plan_cypher::ScoringSeedGraphInput>,
     operator_ids: BTreeMap<usize, PhysicalOperatorId>,
 }
 
@@ -43,7 +43,7 @@ impl Default for QueryExecutionObserver {
     fn default() -> Self {
         Self {
             reports: RefCell::new(QueryExecutionReports::default()),
-            vector_graph_input: None,
+            seed_graph_input: None,
             operator_ids: BTreeMap::new(),
         }
     }
@@ -66,10 +66,13 @@ impl QueryExecutionObserver {
         });
         Self {
             reports: RefCell::new(reports),
-            vector_graph_input: match plan {
+            seed_graph_input: match plan {
                 PhysicalPlan::ScoringProgramExec {
-                    vector_graph_input, ..
-                } => vector_graph_input.clone(),
+                    seed_graph_input, ..
+                } => seed_graph_input.clone(),
+                PhysicalPlan::HostScoringExec { scoring, .. } => {
+                    scoring.seed_graph_input().cloned()
+                }
                 _ => None,
             },
             operator_ids,
@@ -190,7 +193,13 @@ fn plan_address(plan: &PhysicalPlan) -> usize {
 
 impl ExecutionObserver for QueryExecutionObserver {
     fn vector_graph_scoring_input(&self) -> Option<&hawdb_plan_cypher::ScoringVectorGraphInput> {
-        self.vector_graph_input.as_ref()
+        self.seed_graph_input
+            .as_ref()
+            .filter(|source| source.kind() == hawdb_plan_cypher::ScoringSeedKind::Vector)
+    }
+
+    fn seed_graph_scoring_input(&self) -> Option<&hawdb_plan_cypher::ScoringSeedGraphInput> {
+        self.seed_graph_input.as_ref()
     }
 
     fn record_scan_pruning_report(&self, report: ScanPruningReport) {
@@ -214,6 +223,8 @@ fn collect_blocking_operator_kinds(plan: &PhysicalPlan, output: &mut BTreeSet<St
             operator,
             PhysicalPlan::GraphAlgorithm { .. }
                 | PhysicalPlan::VectorSeedScan { .. }
+                | PhysicalPlan::GraphSeedScan { .. }
+                | PhysicalPlan::TextSeedScan { .. }
                 | PhysicalPlan::ShortestPathExec { .. }
                 | PhysicalPlan::AggregateExec { .. }
                 | PhysicalPlan::DistinctExec { .. }
@@ -221,6 +232,7 @@ fn collect_blocking_operator_kinds(plan: &PhysicalPlan, output: &mut BTreeSet<St
                 | PhysicalPlan::TopNExec { .. }
                 | PhysicalPlan::ScoringRerankExec { .. }
                 | PhysicalPlan::ScoringProgramExec { .. }
+                | PhysicalPlan::HostScoringExec { .. }
                 | PhysicalPlan::NodeCartesianProductExec { .. }
                 | PhysicalPlan::HashJoinExec { .. }
         ) {

@@ -17,7 +17,7 @@
 use crate::build_memory::shared::Shared;
 use crate::build_memory::{checked_add, BuildMemory};
 use crate::{HawDBError, Result};
-use hawdb_executor::QueryMemoryLease;
+use hawdb_executor::{QueryMemoryAccount, QueryMemoryLease};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
@@ -59,11 +59,26 @@ impl Term {
         memory: Option<&BuildMemory>,
         build: impl FnOnce() -> String,
     ) -> Result<Self> {
+        Self::build_with_account(capacity, memory.map(|memory| &memory.retained), build)
+    }
+
+    pub(crate) fn copy_with_account(
+        text: &str,
+        memory: Option<&QueryMemoryAccount>,
+    ) -> Result<Self> {
+        Self::build_with_account(text.len(), memory, || text.to_owned())
+    }
+
+    pub(crate) fn build_with_account(
+        capacity: usize,
+        memory: Option<&QueryMemoryAccount>,
+        build: impl FnOnce() -> String,
+    ) -> Result<Self> {
         let Some(memory) = memory else {
             return Ok(Self(Value::Untracked(build())));
         };
         let header = Self::tracking_overhead();
-        let mut lease = memory.retained.reserve(checked_add(capacity, header)?)?;
+        let mut lease = memory.reserve(checked_add(capacity, header)?)?;
         let text = build();
         if text.capacity() > capacity {
             return Err(HawDBError::Execution(

@@ -25,14 +25,7 @@ fn length<I: DecodeInput>(
     max: usize,
     context: &str,
 ) -> Result<usize, RelationalError> {
-    let len = usize::try_from(decoder.u64()?).map_err(|_| {
-        RelationalError::Corruption(format!("decoded {context} length overflows usize"))
-    })?;
-    if len > max {
-        return Err(RelationalError::Admission(format!(
-            "decoded {context} contains {len} bytes, exceeding limit {max}"
-        )));
-    }
+    let len = decoder.bounded_byte_length(max, context)?;
     // Preserve the ordinary input's whole-field truncation check before any
     // payload read; chunking must not consume a partial logical field first.
     let end = decoder
@@ -125,15 +118,7 @@ pub(crate) fn string<I: DecodeInput>(
     }
     // Ordinary string decode checks the cumulative byte budget after reading
     // the complete field, before reporting UTF-8 failure. Retain that order.
-    decoder.value_bytes = decoder
-        .value_bytes
-        .checked_add(len)
-        .ok_or_else(|| RelationalError::Admission("decoded value byte count overflow".into()))?;
-    if decoder.value_bytes > decoder.limits.max_record_bytes {
-        return Err(RelationalError::Admission(
-            "decoded string bytes exceed record budget".into(),
-        ));
-    }
+    decoder.charge_string_bytes(len)?;
     work.checkpoint().map_err(work_error)?;
     if let Some(error) = first_error {
         return Err(error);

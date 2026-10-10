@@ -189,6 +189,7 @@ fn with_context<T>(
         memory_ledger: &ledger,
         task_context,
         observer: &observer,
+        host_scorer: None,
     };
     let result = run(context);
     assert_eq!(ledger.snapshot().used_bytes, 0);
@@ -583,6 +584,7 @@ fn mutation_scan_predicate_errors_do_not_commit_partial_writes() {
                 memory_ledger: &ledger,
                 task_context: None,
                 observer: &observer,
+                host_scorer: None,
             };
             // The legacy plain SET path accepts storage predicates only and
             // does not use the callback being refactored here.

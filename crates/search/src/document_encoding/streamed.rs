@@ -102,7 +102,7 @@ pub(crate) fn write_record(
         .map_err(|_| HawDBError::Storage("streamed record exceeds usize".into()))?;
     let _scratch = control
         .memory
-        .map(|memory| memory.spool.reserve(HEX_BUFFER_BYTES))
+        .map(|memory| memory.spool().reserve(HEX_BUFFER_BYTES))
         .transpose()?;
     if let Some(task) = control.task {
         crate::build_control::checkpoint(task)?;

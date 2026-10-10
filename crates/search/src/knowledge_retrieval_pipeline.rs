@@ -14,7 +14,8 @@
 
 use hawdb_core::{HawDBError, Result};
 use hawdb_executor::{
-    QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger, QueryMemoryLedgerSnapshot,
+    QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease, QueryMemoryLedger,
+    QueryMemoryLedgerSnapshot,
 };
 use std::num::NonZeroUsize;
 
@@ -121,6 +122,15 @@ impl KnowledgeRetrievalPipelineBudget {
         }
         self.stages.push(stage);
         Ok(())
+    }
+
+    /// Short-lived and transferable reads share the pipeline's root budget.
+    pub fn working_account(&self) -> QueryMemoryAccount {
+        self.ledger.account(
+            QueryMemoryClass::BlockingState,
+            "knowledge_retrieval_graph_read",
+            NonZeroUsize::new(self.ledger.snapshot().budget_bytes).expect("positive query budget"),
+        )
     }
 
     pub fn retain_working(&mut self, bytes: usize) -> Result<()> {

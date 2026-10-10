@@ -22,20 +22,22 @@ use std::collections::BTreeSet;
 #[doc(hidden)]
 pub const SCORING_PROVENANCE_PREFIX: &str = "\0hawdb.scoring.";
 
-/// One declared vector seed and the canonical candidate reached from it.
+/// One declared retriever seed and the canonical candidate reached from it.
 /// Admission proves a connected, row-preserving physical producer chain.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ScoringVectorGraphInput {
+pub struct ScoringSeedGraphInput {
+    kind: ScoringSeedKind,
     seed_variable: String,
     candidate_variable: String,
 }
 
-impl ScoringVectorGraphInput {
+impl ScoringSeedGraphInput {
     pub fn new(
         seed_variable: impl Into<String>,
         candidate_variable: impl Into<String>,
     ) -> Result<Self> {
         let input = Self {
+            kind: ScoringSeedKind::Vector,
             seed_variable: seed_variable.into(),
             candidate_variable: candidate_variable.into(),
         };
@@ -50,6 +52,28 @@ impl ScoringVectorGraphInput {
         Ok(input)
     }
 
+    pub fn new_text(
+        seed_variable: impl Into<String>,
+        candidate_variable: impl Into<String>,
+    ) -> Result<Self> {
+        let mut input = Self::new(seed_variable, candidate_variable)?;
+        input.kind = ScoringSeedKind::Text;
+        Ok(input)
+    }
+
+    pub fn new_graph(
+        seed_variable: impl Into<String>,
+        candidate_variable: impl Into<String>,
+    ) -> Result<Self> {
+        let mut input = Self::new(seed_variable, candidate_variable)?;
+        input.kind = ScoringSeedKind::Graph;
+        Ok(input)
+    }
+
+    pub fn kind(&self) -> ScoringSeedKind {
+        self.kind
+    }
+
     pub fn seed_variable(&self) -> &str {
         &self.seed_variable
     }
@@ -62,30 +86,56 @@ impl ScoringVectorGraphInput {
         let state = self.validate_stage(plan, 0)?;
         if state.variable.as_deref() != Some(self.candidate_variable()) {
             return Err(invalid(
-                "candidate variable does not end the declared vector expansion chain",
+                "candidate variable does not end the declared retriever expansion chain",
             ));
         }
         Ok(())
     }
 
+    fn producer_stage(output_external_id: bool) -> Result<Stage> {
+        let mut id_columns = BTreeSet::from(["id".to_string()]);
+        if output_external_id {
+            id_columns.insert("external_id".to_string());
+        }
+        Ok(Stage {
+            id_columns,
+            variable: None,
+            seen: BTreeSet::new(),
+        })
+    }
+
     fn validate_stage(&self, plan: &PhysicalPlan, depth: usize) -> Result<Stage> {
         if depth > 256 {
-            return Err(invalid("vector scoring chain exceeds maximum depth"));
+            return Err(invalid("seed scoring chain exceeds maximum depth"));
         }
         match plan {
-            PhysicalPlan::VectorSeedScan {
-                output_external_id, ..
-            } => {
-                let mut id_columns = BTreeSet::from(["id".to_string()]);
-                if *output_external_id {
-                    id_columns.insert("external_id".to_string());
+            PhysicalPlan::GraphSeedScan {
+                variable,
+                score_column,
+                node_visibility_predicate,
+                ..
+            } if self.kind == ScoringSeedKind::Graph && variable == self.seed_variable() => {
+                if !public_name(score_column)
+                    || node_visibility_predicate
+                        .as_ref()
+                        .is_some_and(|predicate| !public_predicate(predicate, 0))
+                {
+                    return Err(invalid(
+                        "reserved scoring annotation in graph seed visibility",
+                    ));
                 }
                 Ok(Stage {
-                    id_columns,
-                    variable: None,
-                    seen: BTreeSet::new(),
+                    id_columns: BTreeSet::new(),
+                    variable: Some(variable.clone()),
+                    seen: BTreeSet::from([variable.clone()]),
                 })
             }
+            PhysicalPlan::VectorSeedScan {
+                output_external_id, ..
+            } if self.kind == ScoringSeedKind::Vector => Self::producer_stage(*output_external_id),
+            PhysicalPlan::TextSeedScan {
+                output_external_id, ..
+            } if self.kind == ScoringSeedKind::Text => Self::producer_stage(*output_external_id),
             PhysicalPlan::ProjectExec { items, input } => {
                 if items
                     .iter()
@@ -95,7 +145,7 @@ impl ScoringVectorGraphInput {
                     != items.len()
                 {
                     return Err(invalid(
-                        "ambiguous duplicate vector scoring projection aliases",
+                        "ambiguous duplicate seed scoring projection aliases",
                     ));
                 }
                 if items.iter().any(|item| {
@@ -123,9 +173,16 @@ impl ScoringVectorGraphInput {
                 property,
                 column,
                 optional,
+                node_visibility_predicate,
                 input,
                 ..
             } => {
+                if node_visibility_predicate
+                    .as_ref()
+                    .is_some_and(|predicate| !public_predicate(predicate, 0))
+                {
+                    return Err(invalid("reserved scoring annotation in lookup predicate"));
+                }
                 let mut state = self.validate_stage(input, depth + 1)?;
                 if *optional
                     || state.variable.is_some()
@@ -134,7 +191,7 @@ impl ScoringVectorGraphInput {
                     || !state.id_columns.contains(column)
                 {
                     return Err(invalid(
-                        "seed lookup must use an unmodified vector-produced ID column",
+                        "seed lookup must use an unmodified retriever-produced ID column",
                     ));
                 }
                 state.variable = Some(variable.clone());
@@ -158,7 +215,7 @@ impl ScoringVectorGraphInput {
                     || !state.seen.insert(target_variable.clone())
                 {
                     return Err(invalid(
-                        "vector scoring requires a connected expansion without variable rebinding",
+                        "seed scoring requires a connected expansion without variable rebinding",
                     ));
                 }
                 state.variable = Some(target_variable.clone());
@@ -171,7 +228,7 @@ impl ScoringVectorGraphInput {
                 let mut state = self.validate_stage(input, depth + 1)?;
                 if !program.imports.is_empty() {
                     return Err(invalid(
-                        "vector scoring cannot infer imported MATCH provenance",
+                        "seed scoring cannot infer imported MATCH provenance",
                     ));
                 }
                 // Runtime clears every introduced binding before MATCH executes.
@@ -182,7 +239,7 @@ impl ScoringVectorGraphInput {
                     .any(|name| state.seen.contains(name) || !public_name(name))
                 {
                     return Err(invalid(
-                        "vector scoring cannot reintroduce a certified graph variable",
+                        "seed scoring cannot reintroduce a certified graph variable",
                     ));
                 }
                 if program
@@ -205,7 +262,7 @@ impl ScoringVectorGraphInput {
                         }
                         _ => {
                             return Err(invalid(
-                                "vector scoring MATCH must retain one connected expansion chain",
+                                "seed scoring MATCH must retain one connected expansion chain",
                             ))
                         }
                     }
@@ -227,11 +284,22 @@ impl ScoringVectorGraphInput {
             }
             PhysicalPlan::LimitExec { input, .. } => self.validate_stage(input, depth + 1),
             _ => Err(invalid(
-                "unsupported or ambiguous vector scoring producer chain",
+                "unsupported or ambiguous seed scoring producer chain",
             )),
         }
     }
 }
+
+/// Declared retriever identity is part of physical/request cache shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ScoringSeedKind {
+    Vector,
+    Text,
+    Graph,
+}
+
+/// Compatibility name for callers of the original vector-only attachment.
+pub type ScoringVectorGraphInput = ScoringSeedGraphInput;
 
 struct Stage {
     id_columns: BTreeSet<String>,
@@ -375,6 +443,7 @@ mod tests {
             property: "id".into(),
             column: "seed_id".into(),
             optional: false,
+            node_visibility_predicate: None,
             input: Box::new(PhysicalPlan::ProjectExec {
                 items,
                 input: Box::new(producer()),
@@ -389,8 +458,97 @@ mod tests {
     }
 
     #[test]
+    fn lookup_visibility_rejects_reserved_scoring_reads_for_text_and_vector() {
+        for kind in [ScoringSeedKind::Vector, ScoringSeedKind::Text] {
+            let source = if kind == ScoringSeedKind::Text {
+                ScoringSeedGraphInput::new_text("seed", "seed")
+            } else {
+                ScoringSeedGraphInput::new("seed", "seed")
+            }
+            .unwrap();
+            let make_plan = |predicate| {
+                let mut plan = lookup(vec![known_id()]);
+                let PhysicalPlan::NodeColumnLookupExec {
+                    node_visibility_predicate,
+                    input,
+                    ..
+                } = &mut plan
+                else {
+                    unreachable!()
+                };
+                *node_visibility_predicate = Some(predicate);
+                if kind == ScoringSeedKind::Text {
+                    let PhysicalPlan::ProjectExec { input, .. } = input.as_mut() else {
+                        unreachable!()
+                    };
+                    **input = PhysicalPlan::TextSeedScan {
+                        query_parameter: "text".into(),
+                        top_k: 1,
+                        output_external_id: true,
+                        metadata_filters: Default::default(),
+                        resource_profile: VectorExecutionResourceProfile {
+                            priority: 1,
+                            max_parallelism: 1,
+                            max_working_memory_bytes: None,
+                        },
+                    };
+                }
+                plan
+            };
+            source
+                .validate_plan(&make_plan(Predicate::PropertyIn {
+                    variable: "seed".into(),
+                    property: "space_id".into(),
+                    values: vec![Value::String("allowed".into())],
+                }))
+                .unwrap();
+            for name in ["seed_score", "hops"] {
+                let private =
+                    ProjectionExpression::Column(format!("{SCORING_PROVENANCE_PREFIX}{name}"));
+                for expression in [
+                    private.clone(),
+                    ProjectionExpression::Coalesce(vec![
+                        ProjectionExpression::Literal(Value::Null),
+                        private,
+                    ]),
+                ] {
+                    for private_on_rhs in [false, true] {
+                        let public = ProjectionExpression::Literal(Value::Float(1.0));
+                        let predicate = if private_on_rhs {
+                            Predicate::ExpressionEq {
+                                expression: public,
+                                value: expression.clone(),
+                            }
+                        } else {
+                            Predicate::ExpressionEq {
+                                expression: expression.clone(),
+                                value: public,
+                            }
+                        };
+                        for predicate in [
+                            predicate.clone(),
+                            Predicate::And(vec![
+                                Predicate::ConstantBool(true),
+                                Predicate::Not(Box::new(predicate)),
+                            ]),
+                        ] {
+                            assert!(
+                                matches!(
+                                    source.validate_plan(&make_plan(predicate)),
+                                    Err(HawDBError::Semantic(_))
+                                ),
+                                "{kind:?} lookup admitted private {name} read"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn validates_producer_id_lineage_and_rejects_replacement_or_ambiguous_aliases() {
-        let source = ScoringVectorGraphInput::new("seed", "seed").unwrap();
+        let source = ScoringSeedGraphInput::new("seed", "seed").unwrap();
         source.validate_plan(&lookup(vec![known_id()])).unwrap();
         let forged = Projection {
             name: "seed_id".into(),
@@ -406,7 +564,7 @@ mod tests {
 
     #[test]
     fn rejects_reserved_annotation_forgery_and_projection_reads() {
-        let source = ScoringVectorGraphInput::new("seed", "seed").unwrap();
+        let source = ScoringSeedGraphInput::new("seed", "seed").unwrap();
         for item in [
             Projection {
                 name: format!("{SCORING_PROVENANCE_PREFIX}vector_score"),
@@ -434,12 +592,12 @@ mod tests {
     fn rejects_unbound_candidate_and_collapsing_input() {
         let plan = lookup(vec![known_id()]);
         assert!(matches!(
-            ScoringVectorGraphInput::new("seed", "candidate")
+            ScoringSeedGraphInput::new("seed", "candidate")
                 .unwrap()
                 .validate_plan(&plan),
             Err(HawDBError::Semantic(_))
         ));
-        let source = ScoringVectorGraphInput::new("seed", "seed").unwrap();
+        let source = ScoringSeedGraphInput::new("seed", "seed").unwrap();
         source.validate_plan(&plan).unwrap();
         assert!(matches!(
             source.validate_plan(&PhysicalPlan::DistinctExec {
@@ -457,7 +615,7 @@ mod tests {
 
     fn reject_private_plan(plan: PhysicalPlan) {
         assert!(matches!(
-            ScoringVectorGraphInput::new("seed", "seed")
+            ScoringSeedGraphInput::new("seed", "seed")
                 .unwrap()
                 .validate_plan(&plan),
             Err(HawDBError::Semantic(_))
@@ -510,7 +668,7 @@ mod tests {
                 input: Box::new(lookup(vec![known_id()])),
             });
         }
-        ScoringVectorGraphInput::new("seed", "seed")
+        ScoringSeedGraphInput::new("seed", "seed")
             .unwrap()
             .validate_plan(&PhysicalPlan::ProjectExec {
                 items: vec![Projection {

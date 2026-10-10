@@ -250,7 +250,7 @@ impl CartesianOutput {
             operator,
             batch_rows,
             execution_limit,
-            batch: Vec::with_capacity(batch_rows),
+            batch: Vec::new(),
             emitted: 0,
             tracker: OperatorMemoryTracker::with_account(memory_budget, account),
         }
@@ -275,6 +275,7 @@ impl CartesianOutput {
         let actual_bytes = binding_memory_bytes(&binding);
         self.tracker
             .release(reserved_bytes.saturating_sub(actual_bytes));
+        crate::pipeline::reserve_binding_slot(&mut self.batch);
         self.batch.push(binding);
         self.emitted = self.emitted.saturating_add(1);
         if self.batch.len() == self.batch_rows && self.emit(emit)? == BatchControl::Stop {
@@ -302,7 +303,7 @@ impl CartesianOutput {
         &mut self,
         emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
     ) -> Result<BatchControl> {
-        let outgoing = std::mem::replace(&mut self.batch, Vec::with_capacity(self.batch_rows));
+        let outgoing = std::mem::take(&mut self.batch);
         self.tracker.reset();
         emit(outgoing)
     }

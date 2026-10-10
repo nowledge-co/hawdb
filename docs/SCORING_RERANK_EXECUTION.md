@@ -2,10 +2,10 @@
 
 This records the physical scoring operator's resource contract for
 [issue #293](https://github.com/nowledge-co/hawdb/issues/293). It is not the
-complete Mem route migration. The ordinary query attachment and cache contract
-below are implemented; opt-in vector/observed-hop provenance is implemented,
-while text/graph-seed producer attachment and a Mem consumer
-remain part of that issue's acceptance boundary.
+complete Mem route migration. The ordinary query attachment and cache contract,
+opt-in vector/text and observed-hop provenance, and canonical graph-seed producer
+below are implemented. The Mem route migration, complete runtime acceptance and
+delivery qualification remain part of that issue's acceptance boundary.
 
 `ScoringRerankExec` validates its `ScoringSpec`, captures time once for the
 operator execution, and evaluates every candidate before selecting its result
@@ -117,8 +117,9 @@ its current expression and estimated scoring cardinality/cost. Scalar program
 evaluation allocates no per-row diagnostic vectors.
 
 This does not yet complete https://github.com/nowledge-co/hawdb/issues/293:
-text/graph-seed producers, one real Mem route and full delivery qualification
-remain required. No product weights or runtime
+the actual Mem route, complete runtime acceptance and delivery qualification
+remain required. The canonical graph-seed producer below supplies the distinct
+graph-relevance signal in the ordinary query pipeline. No product weights or runtime
 activation are selected by these templates.
 
 ## Vector provenance through graph expansion
@@ -164,27 +165,168 @@ clause pipeline; the same scoring, provenance and parity guards qualify that
 integration. Post-MATCH projections exercise the public entrypoint. This is controlled
 producer/engine graph evidence, not RaBitQ retrieval, browser or Mem route proof.
 
+## Text provenance through graph expansion
+
+`CALL text_search($query, topK := $window)` uses a separate logical text seed
+and `TextSeedScan`, with the `FullTextSearch` runtime capability. Query text must be a string parameter; the nonnegative producer window may
+be a literal or bound parameter and defaults to 10. Plain CALL/RETURN and YIELD aliases expose document `id` and raw `score`.
+A graph read requires YIELD followed immediately by a nonoptional seeded
+MATCH. It uses the producer's canonical `external_id`, independently of its
+document ID, and shares the existing bounded graph expansion contract.
+
+`ScoringRequest::with_text_graph_input(seed_variable, candidate_variable)`
+validates a real text producer and the same canonical lookup/connected
+expansion lineage. `SearchScore` reads raw BM25; canonical properties and
+observed hops survive projections that replace public score/property/hop
+aliases. A vector descriptor cannot certify a text producer. Both seed kinds
+use private query annotations; `GraphSeedScore` remains absent. Descriptor
+kind participates in scoring-request and physical instance identity. Text
+procedure plans retain the vector procedure's explicit cache bypass, so
+coefficient/parameter changes do not constitute a text cache-hit claim.
+Lookup visibility predicates use the same reserved-reference admission as
+Filter and MATCH, including nested expressions and either comparison operand.
+A hand-built text or vector scoring plan cannot read private seed/hop
+annotations through that executable predicate slot.
+
+The external text method defaults to an unavailable-projection error, preserving
+existing vector providers. Hosts receive separate working and result accounts
+backed by an up-front reservation in the current query root. The result builder
+reserves row storage before allocation and ID payload before copying. It retains
+the reservation with its rows; borrowing cannot detach ownership. A builder
+transitions from healthy to permanently failed after any rejected append, and
+execution refuses its staged rows even if a provider catches that error. Foreign
+result accounts are refused. The executor checkpoints before and after the read,
+charges binding copies before allocation, and retains those charges through
+delivery. Empty producer/final windows skip the source.
+
+Canonical `NodeColumnLookup` applies the request's node visibility predicate
+before accepting the node, independently of projection metadata. This applies
+to text and vector seeds and ordinary normalized column lookups. A forbidden
+optional match remains unmatched and emits its null row; it cannot retain the
+forbidden node. The predicate survives logical rewrites, physical lowering,
+parameter binding, instance fingerprinting and EXPLAIN. Ordinary cached lookup
+plans rebind the actor's policy values, while text/vector procedures keep their
+explicit cache bypass. Projection selection before the producer window is
+still the host adapter's responsibility; this graph check does not supply that
+missing actual Mem adapter.
+
+Owned seed emission reuses the producer's allocation for short results. Larger
+results stage only actual rows, with the next batch allocated after the previous
+emit returns. Empty results allocate no staging batch. Configured `batch_rows`
+therefore cannot amplify one admitted row into a large unused staging buffer.
+The text producer retains its binding-copy charge through Stop/error/delivery;
+the same shared owned-row emitter serves vector and graph-algorithm outputs.
+A direct capacity/root guard covers a one-row result with `batch_rows=8192`,
+multiple batches, consumer Stop/error, zero windows and terminal lease release.
+Ordinary projection, filter, limit, graph expansion, generic MATCH and
+Cartesian output buffers also allocate slots only for admitted actual rows.
+Shared accounted batches and owned sets avoid configured empty capacity and
+eager replacement. Transforms bound row-slot capacity by their admitted payload
+allowance. The lookup wrapper owns a separate bounded output lease, retained
+through final delivery, and propagates the consumer's Stop/error. Real physical
+text pipelines cover these independent buffers and terminal release; these
+guards do not claim complete allocator/RSS accounting of every producer.
+
+The immutable `SearchOutOfCoreReader::text_seed_scores_with_context` provides
+raw BM25 over the complete live corpus, bounded retained scores, accounted
+analysis/lexical work and caller-supplied scope selection before its producer
+window. Its document-byte report includes lexical ID/length mapping blocks;
+it is not a document-body hydration counter. `topK` bounds output, not corpus
+or posting work. Text scan estimates currently provide an output-transfer
+floor for an opaque host producer, not a calibrated estimate of all reader work.
+
+Ordinary-query tests exercise this real immutable reader with distinct document
+and canonical IDs, a stored graph, spoofed public aliases, a late graph winner,
+independent final K, EXPLAIN, parameter/weight changes, cancellation, unavailable
+capability/provider and result ownership refusal. Their pinned ID adapter is a
+test fixture. The actual Mem scoped provider, complete-cohort score/reason parity,
+graph seed and final qualification/delivery remain required for the full issue.
+
 ## Host-scoring escape hatch
 
-The executor keeps a batch-oriented `HostScorer` declaration for the issue's
-future extension, with a validated borrowed `HostScorerDescriptor` (name, version and
+The planned identity is checked before candidate staging and retained through
+the callback's pre/post checks. Direct cohort kernels capture their identity
+before executing the source. A source cannot change shared callback name,
+version or declared cost and establish a replacement baseline. Explicit
+candidate windows complete at their LIMIT owner; consumer stop and incomplete
+upstream execution retain their distinct stop behavior.
+
+Scoring attachments admit only candidate queries supported by the batch
+pipeline. An unsupported administrative procedure such as `project_graph`
+returns a semantic refusal for execution, EXPLAIN and ANALYZE; the same
+statement remains available without scoring. Manually constructed legacy,
+Program and Host scoring plans also return a typed refusal if their input
+forces the materialized fallback, including plans under unary or binary
+ancestors. The materialized owner checks the complete plan before executing
+any unsupported scoring input.
+
+The facade exports the batch-oriented `HostScorer` contract required by the
+issue, with a validated borrowed `HostScorerDescriptor` (name, version and
 nonzero logical CPU units per row) and `HostScorerBatch`. Batch inputs borrow
 feature rows, one fixed clock, task context and the existing query scratch
 account. The host writes into an engine-owned score slice in input order;
 scratch allocation must reserve the supplied account first and release its
-leases before returning. The descriptor identifies deterministic behavior,
-including any host configuration that affects scores.
+leases before returning. Name/version identify the scoring implementation and
+semantic policy; per-request parameters remain on the current callback.
 
-The facade does not export these declarations while no query request registers
-or invokes the trait. A concrete non-template
-formula must establish the need before callback execution is added. That future
-attachment must capture a stable descriptor, include identity/version in the
-cache key or bypass it, account the input/output buffers, checkpoint before and
-after the callback, and reject incomplete/nonfinite output before ranking or
-delivery. Mid-call work must check the borrowed cancellation context. Native
-shared-library discovery, WASM UDFs and a new scorer runtime are outside this
-contract. This declaration supplies an extension contract, not execution or
-resource-acceptance evidence for a callback pipeline.
+Mem's adopted policy establishes the concrete demand: PageRank normalization
+uses the exact complete cut candidate window, while lifecycle only refines
+contiguous exact direct-score and byte-identical reason ties. That policy cannot
+be evaluated independently per transfer batch. `HostScoringRequest` borrows a
+callback and attaches through `QueryRequest::with_host_scoring`. Its cached
+`HostScoringPlan` owns only validated name/version/cost, input column, finite
+candidate cap, final K and optional vector/text producer metadata. Cache identity
+includes all these structural fields and the explicit candidate-window choice;
+the clock is captured once before parsing and rebound on every invocation.
+The executing request supplies its own callback, including its current
+parameters. A recursive borrow of the same callback returns an execution error.
+
+`HostScoringExec` stages the complete admitted stream, with candidate capacity,
+retained payload, feature/trait-view arrays and callback identity/output charged
+before retention or allocation. Candidate cap is independent of final K and
+output admission; an existing query LIMIT/OFFSET requires the explicit retained
+candidate-window opt-in. Cohort-dependent callbacks require their finite cohort
+to fit resident memory. Cohort and downstream TopN share the blocking allowance;
+insufficient capacity fails closed. TopN still uses its existing bounded,
+stable, spillable implementation. Callback output starts as NaN and cannot
+reach ranking until cancellation, complete finite output and unchanged identity
+validate. Mid-call work must check the borrowed cancellation context.
+
+`ScoringFeatureSource::returned_value` borrows declared result metadata, such as
+the exact reason/tie key; it neither exposes private NUL annotations nor proves
+retrieval provenance. Vector/text score, hop and candidate properties retain their
+producer attachment. The actual Mem text provider and distinct GraphSeed attachments, the
+actual private Mem route and adopted full-result parity remain required for
+whole-issue acceptance. The reusable callback/query fixtures alone do not prove
+that route. Native shared-library discovery, WASM UDFs and a new scorer runtime
+remain outside this contract.
+
+## Projection admission around scoring inputs
+
+Streaming projection borrows existing literals, columns, properties and selected
+default/CASE values until the complete output row is admitted. Its row estimate
+uses the same deterministic `binding_memory_bytes` rules as the owned result,
+including unique aliases, retained graph bindings and private seed annotations.
+A large literal or several repeated columns can therefore refuse without first
+copying those payloads. CASE/COALESCE retain lazy branch selection; LEFT can
+construct a short result from a borrowed large string.
+
+Expressions that construct strings or node/relationship maps admit their
+temporary values to a separate `ProjectExec expressions` working account before
+allocation. Working map/alias storage is also admitted before construction.
+These leases remain live while their temporary values are retained. They release
+before the consumer boundary, on output ownership transfer, and on refusal,
+stop or error. The output builder splits on actual aggregate row bytes. When
+the next row needs a new batch, its preparation is discarded before offering
+the existing batch to the consumer and repeated only after Continue. Consumer
+Stop prevents that next owned row.
+
+These are deterministic value and batch accounting contracts, not process-RSS
+or every-allocation measurements. Owned expression helpers outside this streaming
+projection retain their existing caller-owned validation contract. Dedicated
+allocation observations cover the executing test thread. TextSeed guards begin
+after input admission; stored-property guards include the actual scan producer,
+property selection, and hydration. Fixture and plan construction are excluded.
 
 ## Regression coverage
 
@@ -317,3 +459,88 @@ results belong in its final qualification packet. These are local observations,
 not an incremental CI timing claim. Current parser selection and hidden
 normalization qualification remain separate from the actual public
 legacy/pipeline parity oracle.
+
+
+## Canonical graph-seed provenance
+
+`CALL graph_seed_search($query, label := $label, topK := $window)` yields
+`node` and `score`. Query text must be a string parameter; label is a required
+nonempty string literal or parameter. `topK` (also spelled `limit`) is a
+nonnegative seed window, defaulting to 10. Unknown labels, empty term sets and
+zero windows produce no candidates. YIELD aliases preserve the node's native
+canonical binding, including when different nodes share the same business ID.
+There is no projection-ID rebinding or host score map.
+
+The producer preserves the existing knowledge graph retriever's relevance:
+for each of `id`, `title`, `name`, `summary`, `content`, `body`, and `text`,
+count distinct query terms matching distinct property terms; add two for a
+case-insensitive ASCII substring match and eight for an exact `id` match.
+Term boundaries use Unicode alphanumeric characters and underscore. Other
+property types use the existing external-ID text representation. Scores select
+the bounded seed window in descending order, breaking ties by canonical node
+ID. Request visibility predicates filter canonical nodes before this window.
+Ordinary WHERE clauses retain their explicit position in the query pipeline.
+
+`ScoringRequest::with_graph_seed_input(seed_variable, candidate_variable)`
+(and the equivalent host-scoring attachment) supplies `GraphSeedScore`, observed
+cumulative hops and pinned canonical candidate properties. `SearchScore` stays
+absent for this producer; replacing a public score or property alias cannot
+change these features. Connected expansion remains bounded to two hops and
+uses the existing fail-closed producer-chain admission: imported graph
+identities, rebinding, unrelated scans, joins and aggregates remain unsupported.
+
+The scan admits every owned canonical record before cloning or decoding and
+retains only the requested best seeds. Token buffers, non-string property text,
+retained candidates and emission ownership share the query ledger; runtime
+checkpoints cover admission, per-property/per-term scoring and emission.
+Operator, query-root and validated result budgets fail the whole query.
+Candidate K and final ranking K remain independent. Plan kinds, costed full-label
+scan work, fingerprints, parameter/visibility traversal and EXPLAIN identify the
+producer and its typed scoring kind. Procedure plans retain the explicit cache
+bypass used by text/vector procedures; no cached procedure execution is claimed.
+
+
+## Seeded expansion resource limits
+
+Every budgeted graph, text or vector expansion refuses the query on resource
+exhaustion, including ordinary materialized reads, scalar ranking, and inputs
+to host scoring through Sort or TopN. Candidate exhaustion returns
+`HawDBError::GraphExpansionCandidateLimitExceeded { requested, limit }` in rows;
+payload exhaustion returns `GraphExpansionPayloadLimitExceeded` in bytes.
+These errors propagate from the expansion admission owner before accepting the
+next row. A scorer is never invoked with a resource-truncated cohort. An explicit
+Cypher LIMIT or declared retrieval result window retains its query semantics.
+
+The default expansion allowance is
+`max(topK, min(max(topK, 1) * max(hops, 1) * 64, 8192))` rows and 8 MiB of
+cumulative logical payload. These values double the previous allowances. A
+host can set `DatabaseConfig.execution_memory.graph_expansion_budget` to
+`Some(GraphExpansionBudget { candidate_limit, payload_byte_limit })`; `None`
+uses the optimizer-derived allowance. This override applies to the actual
+execution of each budgeted expansion, including reused plans. The error names
+the matching configuration field and its unit. Raising either expansion limit
+does not raise `query_memory_bytes`, `blocking_operator_bytes` or
+`batch_payload_bytes`; live allocations must still fit those memory budgets.
+The cumulative expansion payload limit bounds traversal work, rather than
+measuring current resident memory after filtering.
+
+Shared `binding_memory_bytes` now estimates retained resident ownership,
+including property-map container storage and nested List/Map values. Sort,
+TopN, joins, aggregation and owned batches all use that estimate. The same
+numeric cap can therefore refuse a row accepted by the former logical-payload
+estimate. Standalone expansion also checks this estimate and, with a query
+account, admits simultaneous source and output ownership before copying. Its
+supplied numeric cap and existing execution-error family remain, while its
+accepted-input set may be narrower.
+
+Public Filter and Limit kernels admit a complete owned row and flush on byte
+boundaries before pushing it. Public projection and optimized projection
+producers recheck the supplied task after a flush callback returns Continue,
+before recreating expressions or owning the next payload. Native dispatcher
+checks remain additional protection; custom public sources need not implement
+the dispatcher's task or byte validation.
+
+Contiguous evidence bands use the caller-declared public score and reason
+columns in stream order. They do not validate how the caller ordered or
+constructed those columns. Private producer provenance still protects
+SearchScore, GraphSeedScore, hop distance and canonical candidate properties.

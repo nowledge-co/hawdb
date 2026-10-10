@@ -20,7 +20,9 @@ use crate::{
 };
 
 mod scoring_input;
-pub use scoring_input::{ScoringVectorGraphInput, SCORING_PROVENANCE_PREFIX};
+pub use scoring_input::{
+    ScoringSeedGraphInput, ScoringSeedKind, ScoringVectorGraphInput, SCORING_PROVENANCE_PREFIX,
+};
 
 /// Score column every `VectorSeedScan` row carries: the similarity the vector
 /// projection returned for that row, as a `Value::Float`.
@@ -53,7 +55,10 @@ pub use plan_node::PhysicalPlanChildren;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphExpansionBudget {
+    /// Maximum output rows visited by one seeded adjacency expansion.
     pub candidate_limit: usize,
+    /// Maximum cumulative logical payload bytes of those rows, distinct from
+    /// the live resident-memory limits in ExecutionMemoryConfig.
     pub payload_byte_limit: usize,
 }
 
@@ -226,6 +231,21 @@ pub enum PhysicalPlan {
         score_column: String,
         return_node_identity: bool,
         node_visibility_predicate: Option<Predicate>,
+    },
+    GraphSeedScan {
+        query_parameter: String,
+        label: String,
+        variable: String,
+        score_column: String,
+        top_k: usize,
+        node_visibility_predicate: Option<Predicate>,
+    },
+    TextSeedScan {
+        query_parameter: String,
+        top_k: usize,
+        output_external_id: bool,
+        metadata_filters: BTreeMap<String, String>,
+        resource_profile: crate::VectorExecutionResourceProfile,
     },
     VectorSeedScan {
         embedding_parameter: String,
@@ -443,6 +463,7 @@ pub enum PhysicalPlan {
         property: String,
         column: String,
         optional: bool,
+        node_visibility_predicate: Option<Predicate>,
         input: Box<PhysicalPlan>,
     },
     IndexNodeSeek {
@@ -600,13 +621,22 @@ pub enum PhysicalPlan {
     /// Host-selected sum/product program with one fixed execution clock.
     ScoringProgramExec {
         score_column: String,
-        vector_graph_input: Option<ScoringVectorGraphInput>,
+        seed_graph_input: Option<ScoringSeedGraphInput>,
         program: hawdb_core::graph_rag::ScoringProgram,
         reference_time_millis: u64,
         limit: usize,
         input: Box<PhysicalPlan>,
     },
+    /// A request-owned callback over one complete finite candidate cohort.
+    HostScoringExec {
+        scoring: HostScoringPlan,
+        reference_time_millis: u64,
+        input: Box<PhysicalPlan>,
+    },
 }
+
+mod host_scoring;
+pub use host_scoring::{HostScoringPlan, HostScoringRankPolicy};
 
 pub use domain::{
     AccessPhysicalPlanRef, MutationPhysicalPlanRef, PhysicalOperatorDomain, PhysicalPlanDomainRef,

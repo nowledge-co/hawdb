@@ -310,9 +310,19 @@ fn marker_use_in_logical_plan(plan: &LogicalPlan, name: &str) -> MarkerUse {
             }
             marker_use
         }
-        LogicalPlan::NodeColumnLookup { input, .. }
-        | LogicalPlan::Distinct { input }
-        | LogicalPlan::Limit { input, .. } => marker_use_in_logical_plan(input, name),
+        LogicalPlan::NodeColumnLookup {
+            input,
+            node_visibility_predicate,
+            ..
+        } => {
+            let policy = node_visibility_predicate
+                .as_ref()
+                .map_or(MarkerUse::None, |p| marker_use_in_predicate(p, name));
+            policy.combine(marker_use_in_logical_plan(input, name))
+        }
+        LogicalPlan::Distinct { input } | LogicalPlan::Limit { input, .. } => {
+            marker_use_in_logical_plan(input, name)
+        }
         LogicalPlan::Expand {
             rel_properties,
             input,
@@ -380,6 +390,10 @@ fn marker_use_in_logical_plan(plan: &LogicalPlan, name: &str) -> MarkerUse {
             marker_use
         }
         LogicalPlan::GraphAlgorithm {
+            node_visibility_predicate,
+            ..
+        }
+        | LogicalPlan::GraphSeed {
             node_visibility_predicate,
             ..
         } => node_visibility_predicate
@@ -555,6 +569,10 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: &BTreeMap<String, Val
         PhysicalPlan::GraphAlgorithm {
             node_visibility_predicate,
             ..
+        }
+        | PhysicalPlan::GraphSeedScan {
+            node_visibility_predicate,
+            ..
         } => bind_optional_predicate(node_visibility_predicate, parameters)?,
         PhysicalPlan::SourceSegmentScan { predicate, .. } => {
             bind_predicate(predicate, parameters)?;
@@ -596,11 +614,19 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: &BTreeMap<String, Val
                 bind_physical_plan(input, parameters)?;
             }
         }
-        PhysicalPlan::NodeColumnLookupExec { input, .. }
-        | PhysicalPlan::AdjacencyExistsExec { input, .. }
+        PhysicalPlan::NodeColumnLookupExec {
+            input,
+            node_visibility_predicate,
+            ..
+        } => {
+            bind_optional_predicate(node_visibility_predicate, parameters)?;
+            bind_physical_plan(input, parameters)?;
+        }
+        PhysicalPlan::AdjacencyExistsExec { input, .. }
         | PhysicalPlan::DistinctExec { input }
         | PhysicalPlan::ScoringRerankExec { input, .. }
         | PhysicalPlan::ScoringProgramExec { input, .. }
+        | PhysicalPlan::HostScoringExec { input, .. }
         | PhysicalPlan::LimitExec { input, .. } => bind_physical_plan(input, parameters)?,
         PhysicalPlan::IndexNodeSeek { value, .. } => bind_value(value, parameters)?,
         PhysicalPlan::IndexNodeMultiSeek { values, .. } => {
@@ -697,6 +723,7 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: &BTreeMap<String, Val
         | PhysicalPlan::CreateRelationshipPropertyExistsConstraint { .. }
         | PhysicalPlan::ProjectGraph { .. }
         | PhysicalPlan::VectorSeedScan { .. }
+        | PhysicalPlan::TextSeedScan { .. }
         | PhysicalPlan::CreateNode { .. }
         | PhysicalPlan::UnwindMutation { .. }
         | PhysicalPlan::MergeNode { .. }
@@ -777,14 +804,26 @@ fn bind_logical_plan(plan: &mut LogicalPlan, parameters: &BTreeMap<String, Value
         LogicalPlan::GraphAlgorithm {
             node_visibility_predicate,
             ..
+        }
+        | LogicalPlan::GraphSeed {
+            node_visibility_predicate,
+            ..
         } => bind_optional_predicate(node_visibility_predicate, parameters)?,
         LogicalPlan::NodeCartesianProduct { left, right } => {
             bind_logical_plan(left, parameters)?;
             bind_logical_plan(right, parameters)?;
         }
-        LogicalPlan::NodeColumnLookup { input, .. }
-        | LogicalPlan::Distinct { input }
-        | LogicalPlan::Limit { input, .. } => bind_logical_plan(input, parameters)?,
+        LogicalPlan::NodeColumnLookup {
+            input,
+            node_visibility_predicate,
+            ..
+        } => {
+            bind_optional_predicate(node_visibility_predicate, parameters)?;
+            bind_logical_plan(input, parameters)?;
+        }
+        LogicalPlan::Distinct { input } | LogicalPlan::Limit { input, .. } => {
+            bind_logical_plan(input, parameters)?
+        }
         LogicalPlan::Expand {
             rel_properties,
             input,

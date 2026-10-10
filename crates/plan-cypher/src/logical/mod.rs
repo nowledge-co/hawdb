@@ -19,7 +19,7 @@ use hawdb_cypher::{
     GraphAlgorithmOptions as CypherGraphAlgorithmOptions, OrderDirection as CypherOrderDirection,
     OrderExpression, OrderItem, PropertyPredicate, RelationshipDirection, ReturnExpression,
     ReturnItem, ScalarExpression, SetProperty, SetValueExpression, ShortestPathReturnExpression,
-    Statement, ValueExpression, VectorSearch as CypherVectorSearch,
+    Statement, TextSearch as CypherTextSearch, ValueExpression, VectorSearch as CypherVectorSearch,
 };
 use hawdb_cypher::{
     AstNode, ReturnExpressionKind, ReturnItemKind, ScalarExpressionKind, ValueExpressionKind,
@@ -51,7 +51,7 @@ use case::*;
 use projection::*;
 pub use statement::{plan, plan_with_params};
 
-const MAX_VECTOR_SEEDED_GRAPH_HOPS: usize = 2;
+const MAX_RETRIEVER_SEEDED_GRAPH_HOPS: usize = 2;
 
 /// A mutation property resolved from one bounded `UNWIND` row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +151,19 @@ pub enum LogicalPlan {
         score_column: String,
         return_node_identity: bool,
         node_visibility_predicate: Option<Predicate>,
+    },
+    GraphSeed {
+        query_parameter: String,
+        label: String,
+        variable: String,
+        score_column: String,
+        top_k: usize,
+        node_visibility_predicate: Option<Predicate>,
+    },
+    TextSeed {
+        query_parameter: String,
+        top_k: usize,
+        output_external_id: bool,
     },
     VectorSeed {
         embedding_parameter: String,
@@ -339,6 +352,7 @@ pub enum LogicalPlan {
         property: String,
         column: String,
         optional: bool,
+        node_visibility_predicate: Option<Predicate>,
         input: Box<LogicalPlan>,
     },
     Expand {

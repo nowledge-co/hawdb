@@ -1699,6 +1699,13 @@ impl<I: DecodeInput> Decoder<I> {
         if let Some(work) = self.input.checkpoint_work_context().cloned() {
             return checkpoint::decode_bytes_with_work_context(self, max, context, &work);
         }
+        let len = self.bounded_byte_length(max, context)?;
+        let mut bytes = vec![0_u8; len];
+        self.input.read_exact(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    fn bounded_byte_length(&mut self, max: usize, context: &str) -> Result<usize, RelationalError> {
         let len = usize::try_from(self.u64()?).map_err(|_| {
             RelationalError::Corruption(format!("decoded {context} length overflows usize"))
         })?;
@@ -1707,9 +1714,7 @@ impl<I: DecodeInput> Decoder<I> {
                 "decoded {context} contains {len} bytes, exceeding limit {max}"
             )));
         }
-        let mut bytes = vec![0_u8; len];
-        self.input.read_exact(&mut bytes)?;
-        Ok(bytes)
+        Ok(len)
     }
 
     fn string(&mut self) -> Result<String, RelationalError> {
@@ -1717,7 +1722,14 @@ impl<I: DecodeInput> Decoder<I> {
             return checkpoint::decode_string_with_work_context(self, &work);
         }
         let bytes = self.bounded_bytes(self.limits.max_value_bytes, "string")?;
-        self.value_bytes = self.value_bytes.checked_add(bytes.len()).ok_or_else(|| {
+        self.charge_string_bytes(bytes.len())?;
+        String::from_utf8(bytes).map_err(|error| {
+            RelationalError::Corruption(format!("durable string is not valid UTF-8: {error}"))
+        })
+    }
+
+    fn charge_string_bytes(&mut self, len: usize) -> Result<(), RelationalError> {
+        self.value_bytes = self.value_bytes.checked_add(len).ok_or_else(|| {
             RelationalError::Admission("decoded value byte count overflow".to_string())
         })?;
         if self.value_bytes > self.limits.max_record_bytes {
@@ -1725,9 +1737,7 @@ impl<I: DecodeInput> Decoder<I> {
                 "decoded string bytes exceed record budget".to_string(),
             ));
         }
-        String::from_utf8(bytes).map_err(|error| {
-            RelationalError::Corruption(format!("durable string is not valid UTF-8: {error}"))
-        })
+        Ok(())
     }
 
     fn overflow_segment(&mut self) -> Result<DecodedOverflowSegment, RelationalError> {

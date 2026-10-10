@@ -81,7 +81,7 @@ impl SearchOutOfCoreGenerationWriter {
                 source,
                 self.options.max_record_bytes.get(),
                 Control {
-                    memory: Some(&self.memory),
+                    memory: Some(crate::analyzer_memory::Memory::Build(&self.memory)),
                     task: Some(&self.task_context),
                     ..Control::default()
                 },

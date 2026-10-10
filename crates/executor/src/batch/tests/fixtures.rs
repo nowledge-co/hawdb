@@ -179,6 +179,31 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
             true,
         ),
         (
+            PhysicalPlan::GraphSeedScan {
+                query_parameter: "text".into(),
+                label: "Memory".into(),
+                variable: "seed".into(),
+                score_column: "score".into(),
+                top_k: 0,
+                node_visibility_predicate: None,
+            },
+            true,
+        ),
+        (
+            PhysicalPlan::TextSeedScan {
+                query_parameter: String::new(),
+                top_k: 0,
+                output_external_id: false,
+                metadata_filters: BTreeMap::new(),
+                resource_profile: VectorExecutionResourceProfile {
+                    priority: 0,
+                    max_parallelism: 1,
+                    max_working_memory_bytes: None,
+                },
+            },
+            true,
+        ),
+        (
             PhysicalPlan::CreateNode {
                 label: String::new(),
                 properties: BTreeMap::new(),
@@ -452,6 +477,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                 property: String::new(),
                 column: String::new(),
                 optional: false,
+                node_visibility_predicate: None,
                 input: Box::new(PhysicalPlan::EmptyExec),
             },
             true,
@@ -673,7 +699,7 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
         ),
         (
             PhysicalPlan::ScoringProgramExec {
-                vector_graph_input: None,
+                seed_graph_input: None,
                 score_column: "score".into(),
                 program: hawdb_core::graph_rag::ScoringProgram::new(
                     hawdb_core::graph_rag::ScoringCombination::WeightedProduct,
@@ -683,6 +709,22 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
                 .unwrap(),
                 reference_time_millis: 1_000,
                 limit: 1,
+                input: Box::new(PhysicalPlan::EmptyExec),
+            },
+            true,
+        ),
+        (
+            PhysicalPlan::HostScoringExec {
+                scoring: HostScoringPlan::new(
+                    "fixture",
+                    "v1",
+                    std::num::NonZeroU64::MIN,
+                    "score",
+                    std::num::NonZeroUsize::MIN,
+                    1,
+                )
+                .unwrap(),
+                reference_time_millis: 1_000,
                 input: Box::new(PhysicalPlan::EmptyExec),
             },
             true,

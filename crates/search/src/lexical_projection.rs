@@ -20,7 +20,7 @@ use super::{
 use crate::bounded_file::read_bounded_file;
 use crate::build_control::checkpoint;
 use crate::build_memory::reserved::{native_path, Grant};
-use crate::build_memory::{BuildMemory, MAP_ENTRY_BYTES};
+use crate::build_memory::{checked_add, BuildMemory, MAP_ENTRY_BYTES};
 use crate::build_term::Term;
 use crate::error::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
@@ -28,6 +28,7 @@ use hawdb_executor::QueryMemoryLease;
 use hawdb_integrity::Crc32cHasher as Digest;
 use hawdb_storage::file_io::{self as fs, File};
 use serde::{Deserialize, Serialize};
+use std::borrow::Borrow;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -48,6 +49,12 @@ pub(crate) mod source;
 pub(crate) use source::DocumentSource;
 mod documents;
 use documents::DocumentLookup;
+mod query_context;
+use query_context::AccountedQueryReport;
+pub(super) use query_context::{QueryContext, ScoringInputs};
+mod corpus_query;
+pub(super) use corpus_query::AccountedCorpusStatistics;
+mod raw_query;
 mod spill_control;
 use spill_control::Control as SpillControl;
 mod spill_memory;
@@ -733,6 +740,18 @@ impl<'a> DocumentAnalysis<'a> {
         config: LexicalProjectionConfig,
         memory: Option<&BuildMemory>,
     ) -> Result<Self> {
+        Self::new_with_accounts(
+            document_id,
+            config,
+            memory.map(crate::analyzer_memory::Memory::Build),
+        )
+    }
+
+    fn new_with_accounts(
+        document_id: &'a str,
+        config: LexicalProjectionConfig,
+        memory: Option<crate::analyzer_memory::Memory<'_>>,
+    ) -> Result<Self> {
         let analysis = Self {
             document_id,
             config,
@@ -740,7 +759,7 @@ impl<'a> DocumentAnalysis<'a> {
             frequencies: BTreeMap::new(),
             resident_bytes: document_id.len() as u64 + 64,
             map_memory: memory
-                .map(|memory| memory.retained.reserve(0))
+                .map(|memory| memory.retained().reserve(0))
                 .transpose()?,
         };
         analysis.admit_map_bytes(analysis.resident_bytes, 0)?;
@@ -894,10 +913,13 @@ impl LexicalCorpusStatistics {
             .ok_or_else(|| HawDBError::Storage("lexical corpus length overflow".into()))?;
         self.bytes_read = self.bytes_read.saturating_add(other.bytes_read);
         for (term, frequency) in &other.document_frequencies {
-            let entry = self.document_frequencies.entry(term.clone()).or_default();
-            *entry = entry.checked_add(*frequency).ok_or_else(|| {
-                HawDBError::Storage("lexical corpus document frequency overflow".into())
-            })?;
+            if let Some(entry) = self.document_frequencies.get_mut(term.as_str()) {
+                *entry = entry.checked_add(*frequency).ok_or_else(|| {
+                    HawDBError::Storage("lexical corpus document frequency overflow".into())
+                })?;
+            } else {
+                self.document_frequencies.insert(term.clone(), *frequency);
+            }
         }
         Ok(())
     }
@@ -943,15 +965,25 @@ impl LexicalCorpusStatistics {
         &mut self,
         retractions: impl Iterator<Item = (u64, &'a crate::out_of_core::mutation_run::terms::Terms)>,
     ) -> Result<()> {
+        self.retract_streamed_with_context(retractions, None)
+    }
+
+    pub(super) fn retract_streamed_with_context<'a>(
+        &mut self,
+        retractions: impl Iterator<Item = (u64, &'a crate::out_of_core::mutation_run::terms::Terms)>,
+        context: Option<QueryContext<'_>>,
+    ) -> Result<()> {
+        query_context::check(context)?;
         let invalid = || HawDBError::Storage("invalid lexical corpus retraction".into());
         let mut staged = self.clone();
         for (length, terms) in retractions {
+            query_context::check(context)?;
             let count = staged.document_count.checked_sub(1).ok_or_else(invalid)?;
             let total_len = staged
                 .total_document_len
                 .checked_sub(length)
                 .ok_or_else(invalid)?;
-            terms.visit(|term| {
+            terms.visit_with_query_context(context, |term| {
                 if let Some(frequency) = staged.document_frequencies.get_mut(term) {
                     *frequency = frequency.checked_sub(1).ok_or_else(invalid)?;
                 }
@@ -968,8 +1000,13 @@ impl LexicalCorpusStatistics {
             staged.document_count = count;
             staged.total_document_len = total_len;
         }
+        query_context::check(context)?;
         *self = staged;
         Ok(())
+    }
+
+    pub(super) const fn document_count(&self) -> usize {
+        self.document_count
     }
 
     fn document_frequency(&self, term: &str) -> u64 {
@@ -1227,6 +1264,25 @@ impl LexicalProjectionReader {
         query_terms: &BTreeSet<String>,
         max_term_bytes: NonZeroU64,
     ) -> Result<LexicalCorpusStatistics> {
+        self.query_statistics_with_context(query_terms, max_term_bytes, None)
+    }
+
+    fn query_statistics_with_context(
+        &self,
+        query_terms: &BTreeSet<String>,
+        max_term_bytes: NonZeroU64,
+        context: Option<QueryContext<'_>>,
+    ) -> Result<LexicalCorpusStatistics> {
+        self.query_statistics_for_terms(query_terms, max_term_bytes, context)
+    }
+
+    fn query_statistics_for_terms<T: Borrow<str> + Ord>(
+        &self,
+        query_terms: &BTreeSet<T>,
+        max_term_bytes: NonZeroU64,
+        context: Option<QueryContext<'_>>,
+    ) -> Result<LexicalCorpusStatistics> {
+        query_context::check(context)?;
         self.validate_term_limit(max_term_bytes)?;
         if query_terms.len() > self.config.max_query_terms.get() {
             return Err(HawDBError::Storage(format!(
@@ -1235,23 +1291,10 @@ impl LexicalProjectionReader {
                 self.config.max_query_terms
             )));
         }
-        for term in query_terms {
+        for term in query_terms.iter().map(query_term) {
             admit_term_bytes(term.len() as u64, max_term_bytes)?;
         }
-        let relevant_block_bytes = self
-            .manifest
-            .blocks
-            .iter()
-            .filter(|block| {
-                block.kind == BlockKind::Postings
-                    && query_terms.iter().any(|term| {
-                        term.as_str() >= block.min_key.as_str()
-                            && term.as_str() <= block.max_key.as_str()
-                    })
-            })
-            .map(|block| block.length)
-            .max()
-            .unwrap_or_default();
+        let relevant_block_bytes = self.statistics_block_bytes(query_terms);
         if relevant_block_bytes > self.config.query_memory_bytes.get() {
             return Err(HawDBError::Storage(format!(
                 "lexical query statistics require {relevant_block_bytes} bytes, exceeding {}",
@@ -1260,25 +1303,26 @@ impl LexicalProjectionReader {
         }
         let mut document_frequencies = query_terms
             .iter()
-            .map(|term| (term.clone(), 0u64))
+            .map(query_term)
+            .map(|term| (term.to_owned(), 0u64))
             .collect::<BTreeMap<_, _>>();
         let mut bytes_read = 0u64;
         for block in &self.manifest.blocks {
+            query_context::check(context)?;
             if block.kind != BlockKind::Postings
-                || !query_terms.iter().any(|term| {
-                    term.as_str() >= block.min_key.as_str()
-                        && term.as_str() <= block.max_key.as_str()
-                })
+                || !query_terms
+                    .iter()
+                    .map(query_term)
+                    .any(|term| term >= block.min_key.as_str() && term <= block.max_key.as_str())
             {
                 continue;
             }
-            let bytes = self.read_block(block)?;
+            let bytes = self.read_block_with_task(block, context.map(|context| context.task))?;
             bytes_read = bytes_read.saturating_add(bytes.len() as u64);
             let posting_block = split_posting_block(&bytes, self.manifest.generation, block)?;
             dictionary_map(posting_block.dictionary, |dictionary| {
-                for term in query_terms.iter().filter(|term| {
-                    term.as_str() >= block.min_key.as_str()
-                        && term.as_str() <= block.max_key.as_str()
+                for term in query_terms.iter().map(query_term).filter(|term| {
+                    *term >= block.min_key.as_str() && *term <= block.max_key.as_str()
                 }) {
                     let Some(value) = dictionary.get(term) else {
                         continue;
@@ -1379,10 +1423,49 @@ impl LexicalProjectionReader {
         retained_score_limit: Option<usize>,
         global_statistics: Option<&LexicalCorpusStatistics>,
         prune_blocks: bool,
-        mut allowed: impl FnMut(&str) -> Result<bool>,
+        allowed: impl FnMut(&str) -> Result<bool>,
     ) -> Result<LexicalQueryReport> {
+        self.score_accounted(
+            query_terms,
+            ScoringInputs {
+                delta,
+                max_term_bytes,
+                retained_score_limit,
+                global_statistics,
+                prune_blocks,
+                context: None,
+            },
+            allowed,
+        )
+        .map(|output| output.report)
+    }
+
+    fn score_accounted(
+        &self,
+        query_terms: &BTreeSet<String>,
+        inputs: ScoringInputs<'_>,
+        allowed: impl FnMut(&str) -> Result<bool>,
+    ) -> Result<AccountedQueryReport> {
+        self.score_terms_accounted(query_terms, inputs, allowed)
+    }
+
+    pub(super) fn score_terms_accounted<T: Borrow<str> + Ord>(
+        &self,
+        query_terms: &BTreeSet<T>,
+        inputs: ScoringInputs<'_>,
+        mut allowed: impl FnMut(&str) -> Result<bool>,
+    ) -> Result<AccountedQueryReport> {
+        let ScoringInputs {
+            delta,
+            max_term_bytes,
+            retained_score_limit,
+            global_statistics,
+            prune_blocks,
+            context,
+        } = inputs;
+        query_context::check(context)?;
         self.validate_term_limit(max_term_bytes)?;
-        for term in query_terms {
+        for term in query_terms.iter().map(query_term) {
             admit_term_bytes(term.len() as u64, max_term_bytes)?;
         }
         if query_terms.len() > self.config.max_query_terms.get() {
@@ -1393,7 +1476,13 @@ impl LexicalProjectionReader {
             )));
         }
         if query_terms.is_empty() {
-            return Ok(LexicalQueryReport::default());
+            return query_context::complete(
+                context,
+                AccountedQueryReport {
+                    report: LexicalQueryReport::default(),
+                    _memory: None,
+                },
+            );
         }
         let document_mapping_bytes = self
             .manifest
@@ -1404,42 +1493,76 @@ impl LexicalProjectionReader {
             .max()
             .unwrap_or(0);
         let admitted_stream_bytes =
-            document_mapping_bytes.saturating_add(query_terms.iter().fold(0u64, |bytes, term| {
-                let (max_block, max_entries, references) = self.posting_blocks(term).fold(
-                    (0u64, 0u64, 0u64),
-                    |(max, entries, count), block| {
-                        (
-                            max.max(block.length),
-                            entries.max(u64::from(block.entry_count)),
-                            count.saturating_add(1),
+            document_mapping_bytes.saturating_add(query_terms.iter().map(query_term).fold(
+                0u64,
+                |bytes, term| {
+                    let (max_block, max_entries, references) = self.posting_blocks(term).fold(
+                        (0u64, 0u64, 0u64),
+                        |(max, entries, count), block| {
+                            (
+                                max.max(block.length),
+                                entries.max(u64::from(block.entry_count)),
+                                count.saturating_add(1),
+                            )
+                        },
+                    );
+                    // Reserve actual validated posting and document block extents,
+                    // old/new decoded Vec capacity during block transitions,
+                    // encoded/decoded strings and heap keys, pointer-vector growth,
+                    // and retained query term copies.
+                    bytes
+                        .saturating_add(max_block.saturating_mul(4))
+                        .saturating_add(
+                            max_entries.saturating_mul(4 * std::mem::size_of::<Posting>() as u64),
                         )
-                    },
-                );
-                // Reserve actual validated posting and document block extents,
-                // old/new decoded Vec capacity during block transitions,
-                // encoded/decoded strings and heap keys, pointer-vector growth,
-                // and retained query term copies.
-                bytes
-                    .saturating_add(max_block.saturating_mul(4))
-                    .saturating_add(
-                        max_entries.saturating_mul(4 * std::mem::size_of::<Posting>() as u64),
-                    )
-                    .saturating_add(
-                        references
-                            .saturating_mul(2 * std::mem::size_of::<&BlockDescriptor>() as u64),
-                    )
-                    .saturating_add((term.len() as u64).saturating_mul(3))
-                    .saturating_add(32)
-            }));
+                        .saturating_add(
+                            references
+                                .saturating_mul(2 * std::mem::size_of::<&BlockDescriptor>() as u64),
+                        )
+                        .saturating_add((term.len() as u64).saturating_mul(3))
+                        .saturating_add(32)
+                },
+            ));
         if admitted_stream_bytes > self.config.query_memory_bytes.get() {
             return Err(HawDBError::Storage(format!(
                 "lexical query streams require {admitted_stream_bytes} bytes, exceeding {}",
                 self.config.query_memory_bytes
             )));
         }
+        let _working = context
+            .map(|context| {
+                let mut bytes = usize::try_from(admitted_stream_bytes).map_err(|_| {
+                    HawDBError::Execution("lexical query workspace exceeds address space".into())
+                })?;
+                // Block transitions retain encoded data and decoded IDs.
+                // Each decoded Posting owns a copy of its dictionary term.
+                let document_bytes = usize::try_from(document_mapping_bytes).map_err(|_| {
+                    HawDBError::Execution("lexical document block exceeds address space".into())
+                })?;
+                for _ in 0..3 {
+                    bytes = checked_add(bytes, document_bytes)?;
+                }
+                for term in query_terms.iter().map(query_term) {
+                    let entries = self
+                        .posting_blocks(term)
+                        .map(|block| block.entry_count as usize)
+                        .max()
+                        .unwrap_or_default();
+                    let copies = entries
+                        .checked_mul(term.len())
+                        .and_then(|bytes| bytes.checked_mul(4))
+                        .ok_or_else(|| {
+                            HawDBError::Execution("lexical decoded term capacity overflow".into())
+                        })?;
+                    bytes = checked_add(bytes, copies)?;
+                    bytes = checked_add(bytes, 4 * MAP_ENTRY_BYTES)?;
+                }
+                context.memory.reserve(bytes)
+            })
+            .transpose()?;
         let local_statistics = global_statistics
             .is_none()
-            .then(|| self.query_statistics(query_terms, max_term_bytes))
+            .then(|| self.query_statistics_for_terms(query_terms, max_term_bytes, context))
             .transpose()?;
         let (document_count, total_document_len) = global_statistics.map_or_else(
             || {
@@ -1450,17 +1573,24 @@ impl LexicalProjectionReader {
             },
             |statistics| (statistics.document_count, statistics.total_document_len),
         );
+        query_context::check(context)?;
         let mut bytes_read = local_statistics
             .as_ref()
             .map_or(0, |statistics| statistics.bytes_read);
         if document_count == 0 {
-            return Ok(LexicalQueryReport::default());
+            return query_context::complete(
+                context,
+                AccountedQueryReport {
+                    report: LexicalQueryReport::default(),
+                    _memory: None,
+                },
+            );
         }
         let mut document_frequency = BTreeMap::new();
         let mut postings_visited = 0u64;
-        for term in query_terms {
+        for term in query_terms.iter().map(query_term) {
             document_frequency.insert(
-                term.clone(),
+                term.to_owned(),
                 match global_statistics {
                     Some(statistics) => {
                         usize::try_from(statistics.document_frequency(term)).unwrap_or(usize::MAX)
@@ -1479,19 +1609,23 @@ impl LexicalProjectionReader {
         let mut collector = ScoreCollector::new(
             retained_score_limit,
             self.config.max_query_score_entries.get(),
+            context,
         )?;
         let mut streams = Vec::new();
         let mut stream_idf = Vec::new();
         let mut candidate_postings = 0u64;
-        for term in query_terms {
+        for term in query_terms.iter().map(query_term) {
             let df = document_frequency.get(term).copied().unwrap_or(0);
             candidate_postings = candidate_postings.saturating_add(df as u64);
             if df > 0 {
-                streams.push(TermPostingStream::new(self, term));
+                streams.push(match context {
+                    Some(context) => TermPostingStream::with_context(self, term, Some(context)),
+                    None => TermPostingStream::new(self, term),
+                });
                 stream_idf.push(idf(document_count, df));
             }
         }
-        let mut documents = DocumentLookup::new(self);
+        let mut documents = DocumentLookup::new(self, context.map(|context| context.task));
         let mut group: Vec<(usize, Posting)> = Vec::new();
         let mut order: Vec<(u64, usize)> = Vec::with_capacity(streams.len());
         let mut blocks_skipped = 0u64;
@@ -1499,6 +1633,7 @@ impl LexicalProjectionReader {
             && collector.has_floor()
             && candidate_postings >= self.config.pruning_min_postings;
         loop {
+            query_context::check(context)?;
             order.clear();
             for (index, stream) in streams.iter_mut().enumerate() {
                 if let Some(ordinal) = stream.peek_ordinal()? {
@@ -1607,11 +1742,12 @@ impl LexicalProjectionReader {
         }
         if global_statistics.is_none() {
             for (id, document) in &delta.upserts {
-                if !allowed(id)? {
+                query_context::check(context)?;
+                if !query_context::allowed(context, id, &mut allowed)? {
                     continue;
                 }
                 let mut score = 0.0;
-                for term in query_terms {
+                for term in query_terms.iter().map(query_term) {
                     let Some(frequency) = document.frequencies.get(term) else {
                         continue;
                     };
@@ -1626,23 +1762,41 @@ impl LexicalProjectionReader {
                     }
                 }
                 if score > 0.0 {
-                    collector.push(id.clone(), score)?;
+                    collector.push(id, score)?;
                 }
             }
         }
         let matching_document_count = collector.matching_count;
-        let scores = collector.finish();
-        Ok(LexicalQueryReport {
-            scores,
-            matching_document_count,
-            postings_visited,
-            bytes_read: bytes_read.saturating_add(documents.bytes_read),
-            document_bytes_read: documents.bytes_read,
-            blocks_skipped,
-        })
+        query_context::check(context)?;
+        let (scores, memory) = collector.finish()?;
+        query_context::complete(
+            context,
+            AccountedQueryReport {
+                report: LexicalQueryReport {
+                    scores,
+                    matching_document_count,
+                    postings_visited,
+                    bytes_read: bytes_read.saturating_add(documents.bytes_read),
+                    document_bytes_read: documents.bytes_read,
+                    blocks_skipped,
+                },
+                _memory: memory,
+            },
+        )
     }
 
     fn read_block(&self, block: &BlockDescriptor) -> Result<Vec<u8>> {
+        self.read_block_with_task(block, None)
+    }
+
+    fn read_block_with_task(
+        &self,
+        block: &BlockDescriptor,
+        task: Option<&RuntimeTaskContext>,
+    ) -> Result<Vec<u8>> {
+        if let Some(task) = task {
+            query_context::checkpoint(task)?;
+        }
         if block.length > self.config.max_block_bytes.get() {
             return Err(HawDBError::Storage(format!(
                 "lexical block {} exceeds the read budget",
@@ -1659,6 +1813,9 @@ impl LexicalProjectionReader {
         // File clones can share a cursor. Each read must carry its own offset
         // so concurrent posting streams cannot redirect one another's I/O.
         hawdb_storage::io::read_exact_at(&self.file, &mut bytes, block.offset)?;
+        if let Some(task) = task {
+            query_context::checkpoint(task)?;
+        }
         if checksum(&bytes) != block.checksum {
             return Err(HawDBError::Storage(format!(
                 "lexical block {} checksum mismatch",
@@ -1681,6 +1838,7 @@ fn validate_posting_length(posting: &Posting, document_len: u32) -> Result<()> {
 struct TermPostingStream<'a> {
     projection: &'a LexicalProjectionReader,
     term: &'a str,
+    context: Option<QueryContext<'a>>,
     blocks: Vec<&'a BlockDescriptor>,
     block_index: usize,
     current: std::vec::IntoIter<Posting>,
@@ -1694,10 +1852,19 @@ struct TermPostingStream<'a> {
 
 impl<'a> TermPostingStream<'a> {
     fn new(projection: &'a LexicalProjectionReader, term: &'a str) -> Self {
+        Self::with_context(projection, term, None)
+    }
+
+    fn with_context(
+        projection: &'a LexicalProjectionReader,
+        term: &'a str,
+        context: Option<QueryContext<'a>>,
+    ) -> Self {
         let blocks = projection.posting_blocks(term).collect();
         Self {
             projection,
             term,
+            context,
             blocks,
             block_index: 0,
             current: Vec::new().into_iter(),
@@ -1710,6 +1877,7 @@ impl<'a> TermPostingStream<'a> {
     }
 
     fn peek(&mut self) -> Result<Option<&Posting>> {
+        query_context::check(self.context)?;
         if self.peeked.is_none() {
             self.peeked = self.advance()?;
         }
@@ -1766,6 +1934,7 @@ impl<'a> TermPostingStream<'a> {
 
     fn advance(&mut self) -> Result<Option<Posting>> {
         loop {
+            query_context::check(self.context)?;
             if let Some(posting) = self.current.next() {
                 return Ok(Some(posting));
             }
@@ -1781,11 +1950,14 @@ impl<'a> TermPostingStream<'a> {
     /// skipped with its payload left undecoded.
     fn load_next_block_above(&mut self, target: u64) -> Result<bool> {
         loop {
+            query_context::check(self.context)?;
             let Some(block) = self.blocks.get(self.block_index).copied() else {
                 return Ok(false);
             };
             self.block_index = self.block_index.saturating_add(1);
-            let bytes = self.projection.read_block(block)?;
+            let bytes = self
+                .projection
+                .read_block_with_task(block, self.context.map(|context| context.task))?;
             self.bytes_read = self.bytes_read.saturating_add(bytes.len() as u64);
             let Some(bounds) = term_block_bounds(
                 &bytes,
@@ -1807,6 +1979,7 @@ impl<'a> TermPostingStream<'a> {
                 block,
                 self.term,
                 |entry| {
+                    query_context::check(self.context)?;
                     if entry.ordinal >= self.projection.manifest.document_count {
                         return Err(HawDBError::Storage(
                             "lexical posting ordinal exceeds its generation".to_string(),
@@ -1864,34 +2037,63 @@ enum ScoreStorage {
     },
 }
 
-struct ScoreCollector {
+pub(super) struct ScoreCollector<'a> {
     storage: ScoreStorage,
     matching_count: usize,
     max_entries: usize,
+    context: Option<QueryContext<'a>>,
+    memory: Option<QueryMemoryLease>,
 }
 
-impl ScoreCollector {
-    fn new(retained_limit: Option<usize>, max_entries: usize) -> Result<Self> {
+impl<'a> ScoreCollector<'a> {
+    pub(super) fn new(
+        retained_limit: Option<usize>,
+        max_entries: usize,
+        context: Option<QueryContext<'a>>,
+    ) -> Result<Self> {
         if retained_limit.is_some_and(|limit| limit > max_entries) {
             return Err(HawDBError::Storage(format!(
                 "lexical rank window exceeds the admitted {max_entries} score entries"
             )));
         }
+        let heap_capacity = retained_limit
+            .map(|limit| {
+                limit.checked_add(1).ok_or_else(|| {
+                    HawDBError::Execution("lexical score heap capacity overflow".into())
+                })
+            })
+            .transpose()?;
+        let memory = context
+            .map(|context| {
+                context.checkpoint()?;
+                let bytes = heap_capacity
+                    .unwrap_or_default()
+                    .checked_mul(std::mem::size_of::<ScoredDocument>())
+                    .ok_or_else(|| {
+                        HawDBError::Execution("lexical score heap capacity overflow".into())
+                    })?;
+                context.memory.reserve(bytes)
+            })
+            .transpose()?;
         Ok(Self {
             storage: match retained_limit {
                 Some(limit) => ScoreStorage::TopK {
                     limit,
-                    heap: BinaryHeap::with_capacity(limit.saturating_add(1)),
+                    heap: BinaryHeap::with_capacity(heap_capacity.expect("heap limit is present")),
                 },
                 None => ScoreStorage::Full(BTreeMap::new()),
             },
             matching_count: 0,
             max_entries,
+            context,
+            memory,
         })
     }
 
-    fn push(&mut self, id: String, score: f64) -> Result<()> {
+    pub(super) fn push(&mut self, id: &str, score: f64) -> Result<()> {
+        query_context::check(self.context)?;
         self.matching_count = self.matching_count.saturating_add(1);
+        let memory = &mut self.memory;
         match &mut self.storage {
             ScoreStorage::Full(scores) => {
                 if scores.len() >= self.max_entries {
@@ -1900,35 +2102,66 @@ impl ScoreCollector {
                         self.max_entries
                     )));
                 }
-                scores.insert(id, score);
+                if let Some(value) = scores.get_mut(id) {
+                    *value = score;
+                    return Ok(());
+                }
+                if let Some(memory) = memory {
+                    memory.grow(checked_add(id.len(), MAP_ENTRY_BYTES)?)?;
+                }
+                scores.insert(id.to_owned(), score);
             }
             ScoreStorage::TopK { limit, heap } => {
                 if *limit == 0 {
                     return Ok(());
                 }
-                let candidate = ScoredDocument { id, score };
-                if heap.len() < *limit {
-                    heap.push(Reverse(candidate));
-                } else if heap
-                    .peek()
-                    .is_some_and(|Reverse(worst)| candidate.cmp(worst).is_gt())
+                let full = heap.len() == *limit;
+                if full
+                    && heap.peek().is_some_and(|Reverse(worst)| {
+                        !score
+                            .total_cmp(&worst.score)
+                            .then_with(|| worst.id.as_str().cmp(id))
+                            .is_gt()
+                    })
                 {
-                    heap.pop();
-                    heap.push(Reverse(candidate));
+                    return Ok(());
                 }
+                if let Some(memory) = memory {
+                    memory.grow(checked_add(id.len(), MAP_ENTRY_BYTES)?)?;
+                }
+                // Admission covers both IDs until the evicted owner drops.
+                let candidate = ScoredDocument {
+                    id: id.to_owned(),
+                    score,
+                };
+                if full {
+                    let Reverse(evicted) = heap.pop().expect("retained heap is full");
+                    let released = checked_add(evicted.id.capacity(), MAP_ENTRY_BYTES)?;
+                    drop(evicted);
+                    if let Some(memory) = memory {
+                        memory.shrink(released);
+                    }
+                }
+                heap.push(Reverse(candidate));
             }
         }
         Ok(())
     }
 
-    fn finish(self) -> BTreeMap<String, f64> {
-        match self.storage {
+    pub(super) fn finish(self) -> Result<(BTreeMap<String, f64>, Option<QueryMemoryLease>)> {
+        query_context::check(self.context)?;
+        let scores = match self.storage {
             ScoreStorage::Full(scores) => scores,
-            ScoreStorage::TopK { heap, .. } => heap
-                .into_iter()
-                .map(|Reverse(candidate)| (candidate.id, candidate.score))
-                .collect(),
-        }
+            ScoreStorage::TopK { heap, .. } => {
+                let mut scores = BTreeMap::new();
+                for Reverse(candidate) in heap {
+                    query_context::check(self.context)?;
+                    scores.insert(candidate.id, candidate.score);
+                }
+                scores
+            }
+        };
+        Ok((scores, self.memory))
     }
 
     /// Whether the retained set can bound a query at all.
@@ -1947,6 +2180,10 @@ impl ScoreCollector {
         }
         heap.peek().map(|Reverse(worst)| worst.score)
     }
+}
+
+fn query_term<T: Borrow<str>>(term: &T) -> &str {
+    term.borrow()
 }
 
 fn idf(document_count: usize, document_frequency: usize) -> f64 {
@@ -1984,12 +2221,13 @@ fn score_document(
     global_statistics: Option<&LexicalCorpusStatistics>,
     average_document_len: f64,
     allowed: &mut impl FnMut(&str) -> Result<bool>,
-    collector: &mut ScoreCollector,
+    collector: &mut ScoreCollector<'_>,
 ) -> Result<()> {
     let mut score = 0.0;
     for (index, posting) in postings {
         validate_posting_length(posting, document_len)?;
-        if (global_statistics.is_some() || !delta.overrides(&document_id)) && allowed(&document_id)?
+        if (global_statistics.is_some() || !delta.overrides(&document_id))
+            && query_context::allowed(collector.context, &document_id, allowed)?
         {
             score += bm25_term_score(
                 stream_idf[*index],
@@ -2000,7 +2238,7 @@ fn score_document(
         }
     }
     if score > 0.0 {
-        collector.push(document_id, score)?;
+        collector.push(&document_id, score)?;
     }
     Ok(())
 }
@@ -2232,7 +2470,7 @@ impl<'workspace> LexicalProjectionWriter<'workspace> {
                 &mut runs,
                 &mut chunk,
                 crate::analyzer_stream::Control {
-                    memory: Some(&memory),
+                    memory: Some(crate::analyzer_memory::Memory::Build(&memory)),
                     task: Some(&task),
                     workspace: self.analyzer_workspace,
                     checkpoint_throttle: None,
@@ -3237,6 +3475,7 @@ mod tests {
     #[cfg(feature = "full-text-search")]
     mod checkpoint;
     mod pruning;
+    mod query_context;
     mod robustness;
 
     fn projection_root(name: &str) -> PathBuf {

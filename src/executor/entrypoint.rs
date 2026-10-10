@@ -139,6 +139,7 @@ pub(super) fn execute_profiled_consumer<S: ExecutionStore>(
         memory_ledger: &memory_ledger,
         task_context,
         observer: &observer,
+        host_scorer: request.host_scorer(),
     };
 
     if let Some(batch_plan) = batch_plan {
@@ -152,6 +153,7 @@ pub(super) fn execute_profiled_consumer<S: ExecutionStore>(
             memory_ledger: &memory_ledger,
             task_context,
             observer: context.observer,
+            host_scorer: context.host_scorer,
         };
         execute_prepared_binding_batches(
             batch_plan,

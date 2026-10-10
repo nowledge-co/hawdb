@@ -624,13 +624,15 @@ fn projected_graph_registration_and_admission_include_canonical_edges() {
                 .db()
                 .query(&format!("CALL {algorithm}('selected')"))
                 .unwrap_err();
+            // Source ownership can lawfully refuse before streaming state is
+            // selected. Both owners preserve the same one-below request cap.
             assert!(
                 error
                     .to_string()
-                    .contains("GraphAlgorithm streaming node scan")
+                    .contains("query memory account GraphAlgorithm")
                     && error
                         .to_string()
-                        .contains(&format!("exceeding blocking_operator_bytes {}", bytes - 1)),
+                        .contains(&format!("{}-byte budget", bytes - 1)),
                 "{mode:?} {algorithm}: {error}"
             );
             assert_eq!(fixture.db().commit_epoch(), epoch);
