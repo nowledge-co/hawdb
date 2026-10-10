@@ -151,6 +151,8 @@ enum Phase {
     Preparing,
     Draining,
     Finalizing,
+    // Off-gate private cleanup; manual work still waits for Idle.
+    Discarding,
     Handoff,
     Retiring,
 }
@@ -205,6 +207,12 @@ pub(super) struct State {
     report: AutomaticCheckpointReport,
     #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
     prefix_seal_probe: Option<Arc<PrefixSealProbe>>,
+    #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+    publication_probe: Option<Arc<OwnerPauseProbe>>,
+    #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+    discard_probe: Option<Arc<OwnerPauseProbe>>,
+    #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+    manual_wait_probe: Option<std::sync::mpsc::Sender<Phase>>,
     #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
     idle_start_probe: Option<Arc<OwnerPauseProbe>>,
     #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
@@ -437,6 +445,10 @@ impl Suspension {
     pub(super) fn wait_idle(&self) -> Result<()> {
         let mut state = self.control.lock()?;
         while state.phase != Phase::Idle {
+            #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+            if let Some(probe) = &state.manual_wait_probe {
+                let _ = probe.send(state.phase);
+            }
             state = self
                 .control
                 .changed
@@ -903,6 +915,12 @@ fn run(
                     })?;
                 let mut state = control.lock()?;
                 state.phase = Phase::Draining;
+                #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+                if let Some(probe) = state.publication_probe.take() {
+                    drop(state);
+                    probe.observe();
+                    state = control.lock()?;
+                }
                 if state.sync_group_active {
                     // A foreground flush may need the same I/O pool. Never
                     // retain its capacity while waiting for that flush.
@@ -1014,7 +1032,29 @@ fn run(
                 }
                 drop(state);
             }
-            // Cleanup and COW destruction precede releasing the manual owner.
+            // The cancelled attempt no longer owns a publication barrier.
+            // Wake ordinary writers before database-sized private cleanup;
+            // manual maintenance waits for Idle to reuse this generation.
+            {
+                let mut state = control
+                    .state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                state.phase = Phase::Discarding;
+                state.report.preparing = false;
+                control.changed.notify_all();
+            }
+            #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+            let discard_probe = control
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .discard_probe
+                .take();
+            #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+            if let Some(probe) = discard_probe {
+                probe.observe();
+            }
             drop(candidate);
             drop(admission);
             let mut state = control
@@ -1273,6 +1313,7 @@ fn retire(retired: Retired, pins: &Mutex<ReaderPins>) -> Result<()> {
 
 #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
 mod tests {
+    mod discard;
     mod execution_progress;
     mod handoff_execution;
     mod memory_progress;

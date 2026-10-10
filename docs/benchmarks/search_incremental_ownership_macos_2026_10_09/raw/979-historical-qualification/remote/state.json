@@ -1,0 +1,24 @@
+{
+  "head": "a90dc40ced8c0c527e1035d79168d9d25b9a9657",
+  "state": "MERGED",
+  "CI": {
+    "ci/skein-bazel-build": {
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS"
+    },
+    "ci/skein-bazel-test-crates": {
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS"
+    },
+    "ci/skein-bazel-test-root": {
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS"
+    },
+    "ci/skein-storage-crash-recovery": {
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS"
+    }
+  },
+  "fuzz": "failed",
+  "checked_unix_seconds": 1791548318.513355
+}

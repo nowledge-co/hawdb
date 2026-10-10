@@ -117,8 +117,14 @@ pub fn value_memory_bytes(value: &Value) -> usize {
 }
 
 pub fn binding_payload_bytes(binding: &Binding) -> usize {
-    map_payload_bytes(&binding.values)
-        .saturating_add(binding.nodes.iter().fold(0usize, |total, (name, node)| {
+    map_payload_bytes(&binding.values).saturating_add(graph_binding_payload_bytes(binding))
+}
+
+fn graph_binding_payload_bytes(binding: &Binding) -> usize {
+    binding
+        .nodes
+        .iter()
+        .fold(0usize, |total, (name, node)| {
             total
                 .saturating_add(name.len())
                 .saturating_add(std::mem::size_of_val(&node.id))
@@ -128,7 +134,7 @@ pub fn binding_payload_bytes(binding: &Binding) -> usize {
                         .saturating_mul(std::mem::size_of::<LabelId>()),
                 )
                 .saturating_add(map_payload_bytes(&node.properties))
-        }))
+        })
         .saturating_add(
             binding
                 .relationships
@@ -146,12 +152,50 @@ pub fn binding_payload_bytes(binding: &Binding) -> usize {
 }
 
 pub fn binding_memory_bytes(binding: &Binding) -> usize {
+    binding_memory_bytes_with_values(
+        binding,
+        binding
+            .values
+            .iter()
+            .map(|(name, value)| (name.as_str(), value)),
+    )
+}
+
+/// Admit the final row before allocating or replacing an output value.
+pub(crate) fn binding_memory_bytes_replacing_value(
+    binding: &Binding,
+    name: &str,
+    value: &Value,
+) -> usize {
+    binding_memory_bytes_with_values(
+        binding,
+        binding
+            .values
+            .iter()
+            .filter(|(existing, _)| existing.as_str() != name)
+            .map(|(name, value)| (name.as_str(), value))
+            .chain(std::iter::once((name, value))),
+    )
+}
+
+fn binding_memory_bytes_with_values<'a>(
+    binding: &Binding,
+    values: impl Iterator<Item = (&'a str, &'a Value)>,
+) -> usize {
+    let (value_count, value_payload) =
+        values.fold((0usize, 0usize), |(count, bytes), (name, value)| {
+            (
+                count.saturating_add(1),
+                bytes
+                    .saturating_add(name.len())
+                    .saturating_add(value_payload_bytes(value)),
+            )
+        });
     std::mem::size_of::<Binding>()
-        .saturating_add(binding_payload_bytes(binding))
+        .saturating_add(value_payload)
+        .saturating_add(graph_binding_payload_bytes(binding))
         .saturating_add(
-            binding
-                .values
-                .len()
+            value_count
                 .saturating_add(binding.nodes.len())
                 .saturating_add(binding.relationships.len())
                 .saturating_mul(std::mem::size_of::<usize>() * 6),
@@ -237,5 +281,31 @@ mod tests {
 
         assert!(binding_payload_bytes(&binding) > "nested".len() + "two".len());
         assert!(binding_memory_bytes(&binding) > binding_payload_bytes(&binding));
+    }
+
+    #[test]
+    fn replacement_admission_matches_final_rows_without_mutating_input() {
+        let column = hawdb_plan_cypher::SCORING_RERANK_SCORE_COLUMN;
+        for previous in [
+            None,
+            Some(Value::Null),
+            Some(Value::Float(-1.0)),
+            Some(Value::List(vec![Value::Map(BTreeMap::from([(
+                "nested".into(),
+                Value::String("x".repeat(1_024)),
+            )]))])),
+        ] {
+            let mut input = Binding::scalar("score", Value::Float(0.5));
+            if let Some(previous) = previous {
+                input.values.insert(column.into(), previous);
+            }
+            let original = input.clone();
+            let estimate =
+                binding_memory_bytes_replacing_value(&input, column, &Value::Float(0.25));
+            assert_eq!(input, original, "admission must not alter the candidate");
+            let mut output = input;
+            output.values.insert(column.into(), Value::Float(0.25));
+            assert_eq!(estimate, binding_memory_bytes(&output));
+        }
     }
 }

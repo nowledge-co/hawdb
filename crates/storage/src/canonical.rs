@@ -23,6 +23,7 @@ mod checkpoint_bloom_memory_tests;
 mod checkpoint_decode;
 #[cfg(test)]
 mod checkpoint_descriptor_memory_tests;
+mod record_decode;
 
 #[cfg(test)]
 mod checkpoint_descriptor_tree_memory_tests;
@@ -3381,23 +3382,13 @@ fn decode_node_with_property_spills(
     property_spills: Option<&PropertySpillReader>,
     property_keys: Option<&[String]>,
 ) -> Result<NodeRecord, CanonicalSegmentError> {
-    let mut cursor = SliceCursor::new(payload);
-    let label_count = cursor.read_u32()? as usize;
-    let mut labels = BTreeSet::new();
-    for _ in 0..label_count {
-        labels.insert(LabelId(cursor.read_u32()?));
-    }
-    let properties = decode_record_properties(&mut cursor, property_spills, property_keys)?;
-    if !cursor.is_empty() {
-        return Err(CanonicalSegmentError::Corrupt(
-            "node record has trailing bytes".to_string(),
-        ));
-    }
-    Ok(NodeRecord {
-        id: NodeId(id),
-        labels,
-        properties,
-    })
+    record_decode::node(
+        id,
+        payload,
+        property_spills,
+        property_keys,
+        &record_decode::OrdinaryDecoder,
+    )
 }
 
 fn decode_projected_node_with_property_spills(
@@ -3468,23 +3459,13 @@ fn decode_relationship_with_property_spills(
     property_spills: Option<&PropertySpillReader>,
     property_keys: Option<&[String]>,
 ) -> Result<RelRecord, CanonicalSegmentError> {
-    let mut cursor = SliceCursor::new(payload);
-    let source = NodeId(cursor.read_u64()?);
-    let target = NodeId(cursor.read_u64()?);
-    let rel_type = RelTypeId(cursor.read_u32()?);
-    let properties = decode_record_properties(&mut cursor, property_spills, property_keys)?;
-    if !cursor.is_empty() {
-        return Err(CanonicalSegmentError::Corrupt(
-            "relationship record has trailing bytes".to_string(),
-        ));
-    }
-    Ok(RelRecord {
-        id: RelId(id),
-        source,
-        target,
-        rel_type,
-        properties,
-    })
+    record_decode::relationship(
+        id,
+        payload,
+        property_spills,
+        property_keys,
+        &record_decode::OrdinaryDecoder,
+    )
 }
 
 fn encode_properties(
@@ -3545,42 +3526,6 @@ fn encode_properties_with_property_spills(
     Ok(())
 }
 
-fn decode_record_properties(
-    cursor: &mut SliceCursor<'_>,
-    property_spills: Option<&PropertySpillReader>,
-    property_keys: Option<&[String]>,
-) -> Result<BTreeMap<String, Value>, CanonicalSegmentError> {
-    let count = cursor.read_u32()? as usize;
-    let mut properties = BTreeMap::new();
-    for _ in 0..count {
-        let key = match property_keys {
-            Some(keys) => {
-                let key_id = cursor.read_u32()?;
-                keys.get(key_id as usize)
-                    .ok_or_else(|| {
-                        CanonicalSegmentError::Corrupt(format!(
-                            "canonical record references unknown property key id {key_id}"
-                        ))
-                    })?
-                    .clone()
-            }
-            None => cursor.read_string()?,
-        };
-        if properties
-            .insert(
-                key,
-                decode_value_with_property_spills(cursor, 1, property_spills)?,
-            )
-            .is_some()
-        {
-            return Err(CanonicalSegmentError::Corrupt(
-                "canonical property map has duplicate keys".to_string(),
-            ));
-        }
-    }
-    Ok(properties)
-}
-
 fn decode_projected_record_properties(
     cursor: &mut SliceCursor<'_>,
     property_spills: Option<&PropertySpillReader>,
@@ -3630,35 +3575,6 @@ fn decode_projected_record_properties(
             } else {
                 validate_encoded_value(cursor, 1, spill_count)?;
             }
-        }
-    }
-    Ok(properties)
-}
-
-fn decode_properties_with_property_spills(
-    cursor: &mut SliceCursor<'_>,
-    depth: usize,
-    property_spills: Option<&PropertySpillReader>,
-) -> Result<BTreeMap<String, Value>, CanonicalSegmentError> {
-    ensure_depth(depth)?;
-    let count = cursor.read_u32()? as usize;
-    let mut properties = BTreeMap::new();
-    for _ in 0..count {
-        let key = cursor.read_string()?;
-        if properties
-            .insert(
-                key,
-                decode_value_with_property_spills(
-                    cursor,
-                    depth.saturating_add(1),
-                    property_spills,
-                )?,
-            )
-            .is_some()
-        {
-            return Err(CanonicalSegmentError::Corrupt(
-                "canonical property map has duplicate keys".to_string(),
-            ));
         }
     }
     Ok(properties)
@@ -4150,71 +4066,12 @@ fn decode_value_with_property_spills(
     depth: usize,
     property_spills: Option<&PropertySpillReader>,
 ) -> Result<Value, CanonicalSegmentError> {
-    ensure_depth(depth)?;
-    match cursor.read_u8()? {
-        0 => Ok(Value::Null),
-        1 => match cursor.read_u8()? {
-            0 => Ok(Value::Bool(false)),
-            1 => Ok(Value::Bool(true)),
-            value => Err(CanonicalSegmentError::Corrupt(format!(
-                "invalid canonical boolean {value}"
-            ))),
-        },
-        2 => Ok(Value::Int(cursor.read_i64()?)),
-        3 => Ok(Value::Float(f64::from_bits(cursor.read_u64()?))),
-        4 => Ok(Value::String(cursor.read_string()?)),
-        5 => {
-            let count = cursor.read_u32()? as usize;
-            let mut values = Vec::with_capacity(count.min(1024));
-            for _ in 0..count {
-                values.push(decode_value_with_property_spills(
-                    cursor,
-                    depth.saturating_add(1),
-                    property_spills,
-                )?);
-            }
-            Ok(Value::List(values))
-        }
-        6 => Ok(Value::Map(decode_properties_with_property_spills(
-            cursor,
-            depth.saturating_add(1),
-            property_spills,
-        )?)),
-        7 => {
-            let spill_id = cursor.read_u64()?;
-            let reader = property_spills.ok_or_else(|| {
-                CanonicalSegmentError::Corrupt(format!(
-                    "canonical value references property spill {spill_id} without a published spill artifact"
-                ))
-            })?;
-            let encoded = reader.get(spill_id)?.ok_or_else(|| {
-                CanonicalSegmentError::Corrupt(format!(
-                    "canonical value references missing property spill {spill_id}"
-                ))
-            })?;
-            let mut spilled = SliceCursor::new(&encoded);
-            let value = decode_value(&mut spilled, depth)?;
-            if !spilled.is_empty() {
-                return Err(CanonicalSegmentError::Corrupt(format!(
-                    "property spill {spill_id} has trailing bytes"
-                )));
-            }
-            Ok(value)
-        }
-        8 => {
-            let length = cursor.read_u32()? as usize;
-            Ok(Value::Binary(cursor.read_exact(length)?.to_vec()))
-        }
-        9 => Ok(Value::Uuid(hawdb_core::Uuid::from_bytes(
-            cursor
-                .read_exact(16)?
-                .try_into()
-                .expect("UUID has a fixed length"),
-        ))),
-        tag => Err(CanonicalSegmentError::Corrupt(format!(
-            "unknown canonical value tag {tag}"
-        ))),
-    }
+    record_decode::value(
+        cursor,
+        depth,
+        property_spills,
+        &record_decode::OrdinaryDecoder,
+    )
 }
 
 fn encode_string(value: &str, output: &mut Vec<u8>) -> Result<(), CanonicalSegmentError> {

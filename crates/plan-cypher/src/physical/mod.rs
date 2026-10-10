@@ -19,6 +19,9 @@ use crate::{
     SetNodePropertiesReturnMode, SetValue, ShortestPathProjection, SortItem,
 };
 
+mod scoring_input;
+pub use scoring_input::{ScoringVectorGraphInput, SCORING_PROVENANCE_PREFIX};
+
 /// Score column every `VectorSeedScan` row carries: the similarity the vector
 /// projection returned for that row, as a `Value::Float`.
 ///
@@ -591,6 +594,15 @@ pub enum PhysicalPlan {
         /// Row column that carries the search score.
         score_column: String,
         spec: hawdb_core::graph_rag::ScoringSpec,
+        limit: usize,
+        input: Box<PhysicalPlan>,
+    },
+    /// Host-selected sum/product program with one fixed execution clock.
+    ScoringProgramExec {
+        score_column: String,
+        vector_graph_input: Option<ScoringVectorGraphInput>,
+        program: hawdb_core::graph_rag::ScoringProgram,
+        reference_time_millis: u64,
         limit: usize,
         input: Box<PhysicalPlan>,
     },

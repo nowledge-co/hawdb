@@ -24,6 +24,8 @@ use hawdb_storage::{NodeId, NodeRecord, RelId, RelRecord};
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
+mod scoring;
+
 struct Source<'a> {
     rows: Vec<Binding>,
     batch_rows: usize,

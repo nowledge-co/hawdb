@@ -1,0 +1,270 @@
+{
+  "state": "passed",
+  "commit": "41e10dacf8b2589e416c01b9b047db98dfe01acd",
+  "steps": [
+    {
+      "label": "release-old-owned-bazel-server",
+      "state": "finished",
+      "command": [
+        "bazel",
+        "--output_base=/private/tmp/hawdb-fd-owner-bazel",
+        "shutdown"
+      ],
+      "log": "/private/tmp/hawdb-291-post913-bazel-phase-evidence/release-old-owned-bazel-server.log",
+      "started_unix_seconds": 1791557002.554728,
+      "pid": 91297,
+      "exit_code": 0,
+      "elapsed_seconds": 0.4133009910583496,
+      "log_sha256": "68d0ca197c75398439b5a17923c54a163cafe4324b6756ade406ef8baa658b70"
+    },
+    {
+      "label": "full-five-profiles",
+      "state": "finished",
+      "command": [
+        "python3",
+        "/private/tmp/hawdb-291-post913-bazel.py"
+      ],
+      "log": "/private/tmp/hawdb-291-post913-bazel-phase-evidence/full-five-profiles.log",
+      "started_unix_seconds": 1791557003.080082,
+      "pid": 91308,
+      "exit_code": 0,
+      "elapsed_seconds": 1677.838231086731,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "shared-fd-and-pinned-read",
+      "state": "finished",
+      "command": [
+        "bazel",
+        "--output_base=/private/tmp/hawdb-291-post913-bazel",
+        "test",
+        "//crates/storage:hawdb_storage_tests",
+        "--test_arg=file_descriptors::tests::",
+        "--test_arg=--test-threads=1",
+        "--local_test_jobs=1",
+        "--test_output=errors"
+      ],
+      "log": "/private/tmp/hawdb-291-post913-bazel-phase-evidence/shared-fd-and-pinned-read.log",
+      "started_unix_seconds": 1791558681.1939251,
+      "pid": 15620,
+      "exit_code": 0,
+      "elapsed_seconds": 28.24425506591797,
+      "log_sha256": "4394ac225ae19b9bd525d5e2c3599b6d051e51712dffe6fc9c4a8b7a534fbb3e",
+      "actual_test_summaries": [
+        [
+          "ok",
+          "24",
+          "0",
+          "0"
+        ]
+      ],
+      "artifacts": [
+        {
+          "path": "/private/tmp/hawdb-291-post913-bazel-phase-evidence/shared-fd-and-pinned-read/test.log",
+          "sha256": "23b1fb056f2e04d70e9ddf36b26a000cf64601b2c8cd2e3edacab9f7fb524cf1",
+          "bytes": 2773
+        },
+        {
+          "path": "/private/tmp/hawdb-291-post913-bazel-phase-evidence/shared-fd-and-pinned-read/test.xml",
+          "sha256": "745b3856e1bad7a78afba1daa67b183dd3722647254e64337b46245eeff2dff9",
+          "bytes": 3188
+        }
+      ],
+      "actual_validation": "passed"
+    },
+    {
+      "label": "typed-readiness",
+      "state": "finished",
+      "command": [
+        "bazel",
+        "--output_base=/private/tmp/hawdb-291-post913-bazel",
+        "test",
+        "//crates/readiness:hawdb_readiness_tests",
+        "--test_arg=nowledge_mem_runtime_status::tests::",
+        "--test_arg=--test-threads=1",
+        "--local_test_jobs=1",
+        "--test_output=errors"
+      ],
+      "log": "/private/tmp/hawdb-291-post913-bazel-phase-evidence/typed-readiness.log",
+      "started_unix_seconds": 1791558709.558111,
+      "pid": 15902,
+      "exit_code": 0,
+      "elapsed_seconds": 30.58173418045044,
+      "log_sha256": "146e3597b68a33c703fd4cf248a9204d0842e7c2395259414a706f83232d742d",
+      "actual_test_summaries": [
+        [
+          "ok",
+          "2",
+          "0",
+          "0"
+        ]
+      ],
+      "artifacts": [
+        {
+          "path": "/private/tmp/hawdb-291-post913-bazel-phase-evidence/typed-readiness/test.log",
+          "sha256": "d50785160105c99962326230c3d55fbb437d2f41e40f2f73c30e0e1ac5136802",
+          "bytes": 520
+        },
+        {
+          "path": "/private/tmp/hawdb-291-post913-bazel-phase-evidence/typed-readiness/test.xml",
+          "sha256": "622846d3c8787da6b52b677b802d4735bbc875ee586ef426c5b9c5cd0fee9b5f",
+          "bytes": 943
+        }
+      ],
+      "actual_validation": "passed"
+    },
+    {
+      "label": "complete-root-recovery",
+      "state": "finished",
+      "command": [
+        "bazel",
+        "--output_base=/private/tmp/hawdb-291-post913-bazel",
+        "test",
+        "//:hawdb_unit_recovery_tests",
+        "--test_arg=--test-threads=1",
+        "--local_test_jobs=1",
+        "--test_output=errors"
+      ],
+      "log": "/private/tmp/hawdb-291-post913-bazel-phase-evidence/complete-root-recovery.log",
+      "started_unix_seconds": 1791558740.317555,
+      "pid": 16374,
+      "exit_code": 0,
+      "elapsed_seconds": 811.9844558238983,
+      "log_sha256": "da1d975404508c9de4d621c405e0bee732b148b770b8cc69474d2a25c45bd53c",
+      "actual_test_summaries": [
+        [
+          "ok",
+          "139",
+          "0",
+          "1"
+        ]
+      ],
+      "artifacts": [
+        {
+          "path": "/private/tmp/hawdb-291-post913-bazel-phase-evidence/complete-root-recovery/test.log",
+          "sha256": "0ab1a55391cab38f9106bb096230350ea0501ed7df9cb0efbb947ec4eda7b0ae",
+          "bytes": 15588
+        },
+        {
+          "path": "/private/tmp/hawdb-291-post913-bazel-phase-evidence/complete-root-recovery/test.xml",
+          "sha256": "18d58436a561fcbdf33c73a464b7cb8cedae2fea9d3230e3bcd00fe2968495e8",
+          "bytes": 15989
+        }
+      ],
+      "actual_validation": "passed"
+    },
+    {
+      "label": "constrained-default-host",
+      "state": "finished",
+      "command": [
+        "bazel",
+        "--output_base=/private/tmp/hawdb-291-post913-bazel",
+        "test",
+        "//:hawdb_branch_project_open_tests",
+        "--test_arg=default_project_remains_usable_under_a_host_owned_descriptor_limit",
+        "--test_arg=--exact",
+        "--test_arg=--test-threads=1",
+        "--local_test_jobs=1",
+        "--test_output=errors"
+      ],
+      "log": "/private/tmp/hawdb-291-post913-bazel-phase-evidence/constrained-default-host.log",
+      "started_unix_seconds": 1791559552.42358,
+      "pid": 21646,
+      "exit_code": 0,
+      "elapsed_seconds": 14.16124415397644,
+      "log_sha256": "eb8080b9635c7b6d9e5c755cfef5f0152d740114f519af17766bbf63aef1050f",
+      "actual_test_summaries": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ],
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ]
+      ],
+      "artifacts": [
+        {
+          "path": "/private/tmp/hawdb-291-post913-bazel-phase-evidence/constrained-default-host/test.log",
+          "sha256": "05fca040839326193dbef56717f8e953d8bba440033434886c2e3f97063d6e80",
+          "bytes": 754
+        },
+        {
+          "path": "/private/tmp/hawdb-291-post913-bazel-phase-evidence/constrained-default-host/test.xml",
+          "sha256": "3c39f467d8c51cb25610b93662be125e6da5a9caa5a718739537656eedba50ec",
+          "bytes": 1163
+        }
+      ],
+      "actual_validation": "passed"
+    },
+    {
+      "label": "explicit-FD32-regression",
+      "state": "finished",
+      "command": [
+        "bazel",
+        "--output_base=/private/tmp/hawdb-291-post913-bazel",
+        "test",
+        "//:hawdb_branch_project_open_tests",
+        "--test_arg=live_writer_reclamation_retains_readers_descendants_and_budget_retries",
+        "--test_arg=--exact",
+        "--test_arg=--test-threads=1",
+        "--local_test_jobs=1",
+        "--test_output=errors"
+      ],
+      "log": "/private/tmp/hawdb-291-post913-bazel-phase-evidence/explicit-FD32-regression.log",
+      "started_unix_seconds": 1791559566.697463,
+      "pid": 21793,
+      "exit_code": 0,
+      "elapsed_seconds": 7.993789911270142,
+      "log_sha256": "a643a0931f1e4d037b5e18bcac258aa3810ee32785da3f2719a2c49bdc958913",
+      "actual_test_summaries": [
+        [
+          "ok",
+          "1",
+          "0",
+          "0"
+        ]
+      ],
+      "artifacts": [
+        {
+          "path": "/private/tmp/hawdb-291-post913-bazel-phase-evidence/explicit-FD32-regression/test.log",
+          "sha256": "417d54e01a4c659312138aa19c17297d08878114aa4c9397b5050b9932984996",
+          "bytes": 374
+        },
+        {
+          "path": "/private/tmp/hawdb-291-post913-bazel-phase-evidence/explicit-FD32-regression/test.xml",
+          "sha256": "957daac6a005d35cd5ebaa25e41da681732ea2cd37c06ce4c8645e3f9552d425",
+          "bytes": 783
+        }
+      ],
+      "actual_validation": "passed"
+    },
+    {
+      "label": "required96-fuzz",
+      "state": "finished",
+      "command": [
+        "python3",
+        "/private/tmp/hawdb-291-post913-fuzz.py"
+      ],
+      "log": "/private/tmp/hawdb-291-post913-bazel-phase-evidence/required96-fuzz.log",
+      "started_unix_seconds": 1791559574.80084,
+      "pid": 21874,
+      "exit_code": 0,
+      "elapsed_seconds": 1276.565767288208,
+      "log_sha256": "b230de9297a0018e093be773d3c4c2c0d7093b1a442188b303a3026911797bb8"
+    }
+  ],
+  "source_receipt": "/private/tmp/hawdb-291-post913-source.json",
+  "fuzz_outcome": "original required command passed",
+  "source_unchanged": true
+}

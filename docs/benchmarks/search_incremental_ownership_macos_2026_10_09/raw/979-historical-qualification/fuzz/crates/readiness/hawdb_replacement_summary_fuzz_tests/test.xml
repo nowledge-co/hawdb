@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="crates/readiness/hawdb_replacement_summary_fuzz_tests" tests="1" failures="0" errors="0">
+    <testcase name="crates/readiness/hawdb_replacement_summary_fuzz_tests" classname="" status="run" duration="60" time="60"></testcase>
+      <system-out>
+Generated test.log (if the file is not UTF-8, then this may be unreadable):
+<![CDATA[exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/readiness:hawdb_replacement_summary_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+replacement-summary-differential-v1 seeds=128 rejected_cases=9472 option_comparisons=38400
+test replacement_summary::tests::differential::replacement_summary_differential_campaign ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 359 filtered out; finished in 59.94s]]>
+      </system-out>
+    </testsuite>
+</testsuites>

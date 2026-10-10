@@ -1,0 +1,10 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/executor:hawdb_mutation_preflight_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+mutation preflight: 256 seeds, 35840 budget/error cases
+test mutation::preflight::tests::mutation_preflight_differential_campaign ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 4.09s
+

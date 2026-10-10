@@ -1,0 +1,10 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/readiness:hawdb_graph_route_readiness_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+graph-route-readiness-differential-v1 seeds=128 coverage_cases=2560 contradiction_cases=8192 accepted_cases=128
+test graph_route::differential::graph_route_readiness_differential_campaign ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 359 filtered out; finished in 38.47s
+

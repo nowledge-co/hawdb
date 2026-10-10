@@ -128,3 +128,111 @@ fn checkpoint_units_canonical_decode_matches_independent_corrupt_record_rejectio
         }
     }
 }
+
+#[test]
+fn checkpoint_units_canonical_shared_record_backend_generated_byte_mutations_agree() {
+    use hawdb_qos::{LocalQosPolicy, LocalQosScheduler};
+    let scheduler = LocalQosScheduler::new(LocalQosPolicy {
+        max_background_operations: Some(1),
+        max_total_background_operations: Some(1),
+        ..Default::default()
+    });
+    let work = CheckpointWorkContext::default().with_scheduler(scheduler.clone());
+    let keys = vec!["p".into(), "other".into()];
+    let values = [
+        Value::Null,
+        Value::Bool(true),
+        Value::Int(i64::MIN),
+        Value::Float(f64::from_bits(0x7ff8_0000_0000_0042)),
+        Value::String("界x".into()),
+        Value::Binary(vec![0, 1, 255]),
+        Value::Uuid(hawdb_core::Uuid::from_bytes([0xa5; 16])),
+        Value::List(vec![Value::Null, Value::Int(7)]),
+        Value::Map(BTreeMap::from([("k".into(), Value::Bool(false))])),
+    ];
+    let mut cases = 0usize;
+    let mut accepted = 0usize;
+    let mut rejected = 0usize;
+    for value in values {
+        for is_relationship in [false, true] {
+            let base = payload(&value, is_relationship);
+            for offset in 0..base.len() {
+                for byte in 0..=255u8 {
+                    let mut mutated = base.clone();
+                    mutated[offset] = byte;
+                    let ordinary = if is_relationship {
+                        decode_relationship_with_property_spills(17, &mutated, None, Some(&keys))
+                            .map(|record| {
+                                (
+                                    record.id.0,
+                                    record.source.0,
+                                    record.target.0,
+                                    record.rel_type.0,
+                                    Vec::<u32>::new(),
+                                    encoded(&record.properties),
+                                )
+                            })
+                    } else {
+                        decode_node_with_property_spills(9, &mutated, None, Some(&keys)).map(
+                            |record| {
+                                (
+                                    record.id.0,
+                                    0,
+                                    0,
+                                    0,
+                                    record
+                                        .labels
+                                        .iter()
+                                        .map(|label| label.0)
+                                        .collect::<Vec<_>>(),
+                                    encoded(&record.properties),
+                                )
+                            },
+                        )
+                    };
+                    let controlled = if is_relationship {
+                        relationship(17, &mutated, None, &keys, &work).map(|record| {
+                            (
+                                record.id.0,
+                                record.source.0,
+                                record.target.0,
+                                record.rel_type.0,
+                                Vec::<u32>::new(),
+                                encoded(&record.properties),
+                            )
+                        })
+                    } else {
+                        node(9, &mutated, None, &keys, &work).map(|record| {
+                            (
+                                record.id.0,
+                                0,
+                                0,
+                                0,
+                                record
+                                    .labels
+                                    .iter()
+                                    .map(|label| label.0)
+                                    .collect::<Vec<_>>(),
+                                encoded(&record.properties),
+                            )
+                        })
+                    };
+                    match (ordinary, controlled) {
+                        (Ok(ordinary), Ok(controlled)) => {
+                            assert_eq!(ordinary, controlled,
+                                "relationship={is_relationship}, offset={offset}, byte={byte}");
+                            accepted += 1;
+                        }
+                        (Err(CanonicalSegmentError::Corrupt(_)),
+                         Err(CanonicalSegmentError::Corrupt(_))) => rejected += 1,
+                        other => panic!("relationship={is_relationship}, offset={offset}, byte={byte}: {other:?}"),
+                    }
+                    assert_eq!(scheduler.state().running_background_operations, 0);
+                    cases += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 134_144);
+    assert!(accepted > 0 && rejected > 0);
+}

@@ -1,0 +1,10 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/relational:hawdb_relational_field_plan_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+field planning: 128 seeds, 8192 cases, 32768 exact map comparisons; shapes=[809, 855, 839, 803, 816, 784, 848, 813, 779, 846]
+test field_plan::tests::field_planning_differential_campaign ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 224 filtered out; finished in 0.49s
+

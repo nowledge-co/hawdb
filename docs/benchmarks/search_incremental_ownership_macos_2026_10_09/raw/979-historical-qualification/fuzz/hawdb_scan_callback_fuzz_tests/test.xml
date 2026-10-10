@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="hawdb_scan_callback_fuzz_tests" tests="1" failures="0" errors="0">
+    <testcase name="hawdb_scan_callback_fuzz_tests" classname="" status="run" duration="5" time="5"></testcase>
+      <system-out>
+Generated test.log (if the file is not UTF-8, then this may be unreadable):
+<![CDATA[exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //:hawdb_scan_callback_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+scan callback differential campaign: 288 cases
+test executor::columnar::scan_error_tests::scan_callback_differential_campaign ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1786 filtered out; finished in 3.93s]]>
+      </system-out>
+    </testsuite>
+</testsuites>

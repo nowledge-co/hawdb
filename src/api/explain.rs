@@ -13,8 +13,15 @@
 // limitations under the License.
 
 use super::plan_cache::OptimizedQueryPlan;
+use super::query_runtime::{query_runtime_checkpoint, QueryExecutionOptions};
+use super::{restrictive_query_limit, DatabaseConfig, QueryOutput};
 use crate::executor::{self, Row};
 use crate::qos::WorkRequest;
+use hawdb_core::Result;
+use hawdb_executor::binding::Binding;
+use hawdb_executor::memory::{enforced_query_memory_budget, enforced_result_memory_budget};
+use hawdb_executor::result_delivery::{ConsumerMemoryMode, OutputLimits, QueryOutputAccumulator};
+use hawdb_executor::QueryMemoryLedger;
 use hawdb_explain::json::{
     empty_read_execution_profile as owner_empty_read_execution_profile,
     explain_analyze_output_row as owner_explain_analyze_output_row,
@@ -65,4 +72,42 @@ pub(super) fn explain_analyze_output_row(
 
 pub(super) fn empty_read_execution_profile() -> executor::ReadExecutionProfile {
     owner_empty_read_execution_profile()
+}
+
+/// The diagnostic row is read output too, independently of ANALYZE's data rows.
+pub(super) fn admit_explain_output(
+    row: Row,
+    config: &DatabaseConfig,
+    options: QueryExecutionOptions<'_>,
+) -> Result<QueryOutput> {
+    query_runtime_checkpoint(options.task_context)?;
+    let ledger = QueryMemoryLedger::new(enforced_query_memory_budget(
+        &config.execution_memory,
+        options.task_context,
+    )?);
+    let mut rows = Vec::new();
+    let mut consumer = |row| {
+        rows.push(row);
+        Ok(())
+    };
+    let mut accumulator = QueryOutputAccumulator::new(
+        OutputLimits {
+            max_rows: restrictive_query_limit(
+                config.max_read_result_rows,
+                options.output_limits.max_rows,
+            ),
+            max_payload_bytes: restrictive_query_limit(
+                config.max_read_result_payload_bytes,
+                options.output_limits.max_payload_bytes,
+            ),
+        },
+        enforced_result_memory_budget(&config.execution_memory, options.task_context)?,
+        &ledger,
+        ConsumerMemoryMode::Retained,
+        &mut consumer,
+    )?;
+    accumulator.emit(Binding::values(row))?;
+    query_runtime_checkpoint(options.task_context)?;
+    drop(accumulator);
+    Ok(QueryOutput { rows: rows.into() })
 }

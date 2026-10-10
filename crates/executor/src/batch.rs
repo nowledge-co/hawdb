@@ -876,6 +876,33 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
                 stream_sort_batches(input, items, context, execution_limit, emit)
             })
         }
+        PhysicalPlan::ScoringProgramExec {
+            score_column,
+            vector_graph_input,
+            program,
+            reference_time_millis,
+            limit,
+            input,
+        } => dispatch.supported(|context, execution_limit, emit| {
+            if let Some(source) = vector_graph_input {
+                source.validate_plan(input)?;
+                if context.observer.vector_graph_scoring_input() != Some(source) {
+                    return Err(HawDBError::Execution(
+                        "vector scoring requires its query-owned producer descriptor".into(),
+                    ));
+                }
+            }
+            stream_scoring_program_batches(
+                input,
+                score_column,
+                program,
+                *reference_time_millis,
+                *limit,
+                context,
+                execution_limit,
+                emit,
+            )
+        }),
         PhysicalPlan::ScoringRerankExec {
             score_column,
             spec,

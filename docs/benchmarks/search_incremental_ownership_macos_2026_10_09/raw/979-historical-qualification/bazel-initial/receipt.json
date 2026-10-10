@@ -1,0 +1,99 @@
+{
+  "state": "failed",
+  "source_receipt": "/private/tmp/hawdb-979-observe-regressions.json",
+  "checks": [
+    {
+      "label": "fd",
+      "target": "//crates/storage:hawdb_storage_tests",
+      "command": [
+        "bazel",
+        "--output_base=/private/tmp/hawdb-fd-owner-bazel",
+        "test",
+        "//crates/storage:hawdb_storage_tests",
+        "--test_output=errors",
+        "--test_arg=--test-threads=1",
+        "--test_arg=file_descriptors::tests::"
+      ],
+      "state": "passed",
+      "log": "/private/tmp/hawdb-979-observe-evidence/bazel/fd-command.log",
+      "exit_code": 0,
+      "elapsed_seconds": 57.649002708000005,
+      "artifacts": [
+        {
+          "path": "/private/tmp/hawdb-979-observe-evidence/bazel/fd/test.log",
+          "sha256": "c26dbd58a22289fbc0fe20feb817a20f1e9e3f4f3605d95d6dd60805b517bdc3",
+          "bytes": 2773
+        },
+        {
+          "path": "/private/tmp/hawdb-979-observe-evidence/bazel/fd/test.xml",
+          "sha256": "652b9aa44d6e4a9529943bc1aa089a891cb92e06f34421bfc2ba1df8f6f3a185",
+          "bytes": 3188
+        }
+      ],
+      "test_summaries": [
+        [
+          "ok",
+          "24",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "label": "readiness",
+      "target": "//crates/readiness:hawdb_readiness_tests",
+      "command": [
+        "bazel",
+        "--output_base=/private/tmp/hawdb-fd-owner-bazel",
+        "test",
+        "//crates/readiness:hawdb_readiness_tests",
+        "--test_output=errors",
+        "--test_arg=--test-threads=1",
+        "--test_arg=nowledge_mem_runtime_status::tests::"
+      ],
+      "state": "passed",
+      "log": "/private/tmp/hawdb-979-observe-evidence/bazel/readiness-command.log",
+      "exit_code": 0,
+      "elapsed_seconds": 21.679810542,
+      "artifacts": [
+        {
+          "path": "/private/tmp/hawdb-979-observe-evidence/bazel/readiness/test.log",
+          "sha256": "6039cf31405f0f4575f3570e54b1ed0a43ddacefec301aefbb0330cee8be5413",
+          "bytes": 520
+        },
+        {
+          "path": "/private/tmp/hawdb-979-observe-evidence/bazel/readiness/test.xml",
+          "sha256": "7692fbf5150b3b55a2db428daf622d9f42d24a137f4eeb7a5f797dfd7dd55649",
+          "bytes": 943
+        }
+      ],
+      "test_summaries": [
+        [
+          "ok",
+          "2",
+          "0",
+          "0"
+        ]
+      ]
+    },
+    {
+      "label": "host-limit",
+      "target": "//:hawdb_branch_project_open_tests",
+      "command": [
+        "bazel",
+        "--output_base=/private/tmp/hawdb-fd-owner-bazel",
+        "test",
+        "//:hawdb_branch_project_open_tests",
+        "--test_output=errors",
+        "--test_arg=--test-threads=1",
+        "--test_arg=default_project_remains_usable_under_a_host_owned_descriptor_limit",
+        "--test_arg=--exact"
+      ],
+      "state": "failed",
+      "log": "/private/tmp/hawdb-979-observe-evidence/bazel/host-limit-command.log",
+      "exit_code": 1,
+      "elapsed_seconds": 6.376194209000005,
+      "artifacts": []
+    }
+  ]
+}

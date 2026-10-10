@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="crates/fuzz/hawdb_fuzz_append_seed_7_tests" tests="1" failures="0" errors="0">
+    <testcase name="crates/fuzz/hawdb_fuzz_append_seed_7_tests" classname="" status="run" duration="73" time="73"></testcase>
+      <system-out>
+Generated test.log (if the file is not UTF-8, then this may be unreadable):
+<![CDATA[exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/fuzz:hawdb_fuzz_append_seed_7_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+test append_oracle::tests::append_state_machine_matches_reference_model_across_reopen has been running for over 60 seconds
+test append_oracle::tests::append_state_machine_matches_reference_model_across_reopen ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 46 filtered out; finished in 72.16s]]>
+      </system-out>
+    </testsuite>
+</testsuites>

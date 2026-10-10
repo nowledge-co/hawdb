@@ -1,0 +1,32 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/storage:hawdb_storage_tests
+-----------------------------------------------------------------------------
+
+running 24 tests
+test file_descriptors::tests::a_new_project_can_start_while_an_independent_project_is_full ... ok
+test file_descriptors::tests::admission_quota_is_shared_by_nested_calls_and_leaves_unreserved_capacity_available ... ok
+test file_descriptors::tests::ancestry_barriers_use_one_project_descriptor_at_a_time ... ok
+test file_descriptors::tests::cross_project_rename_admits_both_domains_before_mutation ... ok
+test file_descriptors::tests::default_budget_admits_large_reader_reservations_without_opening_files ... ok
+test file_descriptors::tests::descriptor_cap_covers_clones_failures_and_reservation_reuse ... ok
+test file_descriptors::tests::descriptor_exhaustion_preserves_relational_checkpoint_for_retry ... ok
+test file_descriptors::tests::directory_entries_retain_one_permit_and_nested_removal_is_bounded ... ok
+test file_descriptors::tests::failed_copy_on_write_preserves_the_logical_binding_and_snapshot ... ok
+test file_descriptors::tests::immutable_handle_eviction_preserves_a_concurrent_native_read ... ok
+test file_descriptors::tests::immutable_handle_pressure_evicts_the_least_recently_used_idle_file ... ok
+test file_descriptors::tests::immutable_identity_includes_kind_version_and_project ... ok
+test file_descriptors::tests::immutable_logical_cursors_survive_eviction_and_share_only_between_clones ... ok
+test file_descriptors::tests::immutable_logical_files_do_not_retain_a_native_descriptor_per_alias ... ok
+test file_descriptors::tests::independent_contexts_share_the_limit_and_reject_conflicting_configuration ... ok
+test file_descriptors::tests::mutable_reopen_invalidates_only_future_readers_of_a_logical_path ... ok
+test file_descriptors::tests::nested_admission_rejects_insufficient_remaining_quota_before_opening ... ok
+test file_descriptors::tests::project_admission_observes_the_os_soft_limit_and_reuses_the_configured_domain ... ok
+test file_descriptors::tests::project_admission_preserves_a_low_hard_limit_and_admits_a_smaller_budget ... ok
+test file_descriptors::tests::project_admission_reports_insufficient_os_capacity_without_installing_a_root ... ok
+test file_descriptors::tests::same_project_rename_and_hard_link_use_one_remaining_slot ... ok
+test file_descriptors::tests::shared_immutable_handles_evict_only_idle_files_and_revalidate_on_reopen ... ok
+test file_descriptors::tests::shared_positioned_reads_do_not_share_a_logical_cursor ... ok
+test file_descriptors::tests::writable_admission_retries_root_ancestry_after_a_read_only_domain ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 1051 filtered out; finished in 0.27s
+

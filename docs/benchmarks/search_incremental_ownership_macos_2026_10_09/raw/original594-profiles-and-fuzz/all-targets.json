@@ -1,0 +1,903 @@
+{
+  "source_commit": "594d8a00de444f0696c1bd2ee80a3a72d202543f",
+  "main_tree_identical": "20023771aa8f10a71ca004414a468aa7202699b5",
+  "targets": [
+    {
+      "label": "//:hawdb_concurrent_key_range_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 3.5,
+      "log_sha256": "6442a37bf80716b050fdfe6c5661af994e4772f301ea43c804428d45264586d8",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1786 filtered out; finished in 0.14s"
+      ]
+    },
+    {
+      "label": "//:hawdb_graph_projection_residency_fuzz_first_half_tests",
+      "state": "PASSED",
+      "seconds": 293.0,
+      "log_sha256": "1ceb653887cf7314d070501db7a538e808554a30d3057042d69692e5aaf9c280",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1786 filtered out; finished in 290.93s"
+      ]
+    },
+    {
+      "label": "//:hawdb_graph_projection_residency_fuzz_second_half_tests",
+      "state": "PASSED",
+      "seconds": 520.1,
+      "log_sha256": "5616953171fed29da2a331f4faa2b3e646ec05975e5fb920d9e0eaea5bd967c8",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1786 filtered out; finished in 517.13s"
+      ]
+    },
+    {
+      "label": "//:hawdb_linux_ci_fuzz_smoke_test",
+      "state": "PASSED",
+      "seconds": 535.3,
+      "log_sha256": "39a8074ffb316bc145747528fc427d5aa07a63870080cab075ae99cdfeeb8059",
+      "harness_results": []
+    },
+    {
+      "label": "//:hawdb_scan_callback_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 48.4,
+      "log_sha256": "00b6b91a1765aa4c9b77efbb60a77fdddaebf5e45b9faf48cd883b43204fdf52",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1786 filtered out; finished in 46.73s"
+      ]
+    },
+    {
+      "label": "//crates/compat:hawdb_compat_contract_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.0,
+      "log_sha256": "c4085dab25670c1a0831beb04147ce71f9f50b2120a01abccf71c412c5788fd0",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 0.30s"
+      ]
+    },
+    {
+      "label": "//crates/cypher:hawdb_cypher_backtracking_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 2.7,
+      "log_sha256": "9e42bd61eee408144b49bcafda9ee4808e330bd441289279a67200e87201813c",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 174 filtered out; finished in 2.14s"
+      ]
+    },
+    {
+      "label": "//crates/evidence:hawdb_inventory_health_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 3.5,
+      "log_sha256": "069d23c663725d7d3ee1585ca70c96306a66a0d7f4c651776b40dbb901b4603d",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 3.02s"
+      ]
+    },
+    {
+      "label": "//crates/evidence:hawdb_resource_profile_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.3,
+      "log_sha256": "b6d5fdee6cff4745fd6febc7679419ca16463a17cb5a86a8225ab1f45d688d97",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.84s"
+      ]
+    },
+    {
+      "label": "//crates/evidence:hawdb_source_inventory_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.6,
+      "log_sha256": "c2b5679cd053d93e28f7e25dc2e4ce64480004293c69a472140d11c7a393803f",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 1.12s"
+      ]
+    },
+    {
+      "label": "//crates/executor:hawdb_batch_dispatch_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.5,
+      "log_sha256": "e9f095cd56cf3fe00b216061a2d0d4bceb4ee9aa44e6ea712dcab8c7b4cbe4d1",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 0.40s"
+      ]
+    },
+    {
+      "label": "//crates/executor:hawdb_execution_lifecycle_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.1,
+      "log_sha256": "b0509f4601db7035e84ea8fc268a35a1b8d737810aab42dd01b8baa9728f41ca",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 0.23s"
+      ]
+    },
+    {
+      "label": "//crates/executor:hawdb_execution_report_value_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 4.6,
+      "log_sha256": "afc0c7e6214cbfb6f7e71646ae8566e9c397c6b50a35cdfbde7dce8abe2add0a",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 3.83s"
+      ]
+    },
+    {
+      "label": "//crates/executor:hawdb_graph_algorithm_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 6.8,
+      "log_sha256": "6ef41b02e465ae4ab5876b3e780246ed28d6fb680b5de5e424e5cbfe8f5a1ecb",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 6.01s"
+      ]
+    },
+    {
+      "label": "//crates/executor:hawdb_graph_hash_join_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 93.0,
+      "log_sha256": "d3b35be10f370e204c78d98946d87d25007592c8d666dcbe5f6586e560215062",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 92.22s"
+      ]
+    },
+    {
+      "label": "//crates/executor:hawdb_morsel_oracle_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.5,
+      "log_sha256": "9d0c5ad9c5f3eb731c59ddb36f9052395553f92da06ba88a10a8c89b5df1d096",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.89s"
+      ]
+    },
+    {
+      "label": "//crates/executor:hawdb_mutation_lowering_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 0.9,
+      "log_sha256": "4e17d13ea3a7d1e681dd68302362f34aa8b3cc4aa0e75bbc931ae3040a65289c",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 0.05s"
+      ]
+    },
+    {
+      "label": "//crates/executor:hawdb_mutation_preflight_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 4.9,
+      "log_sha256": "63c8752e52685483735e431a9ae57fe9a9c02ba8870ebad7fa955401f8c7539b",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 4.09s"
+      ]
+    },
+    {
+      "label": "//crates/executor:hawdb_numeric_execution_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 2.1,
+      "log_sha256": "24f40598f6978cb017da1a31f9723ae3bf46910b712619da0ce31de6794a195b",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 1.08s"
+      ]
+    },
+    {
+      "label": "//crates/executor:hawdb_query_observer_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.0,
+      "log_sha256": "a197371df5900cc8a9dc88804303bf1e457e1d837b2c8f3a80cb0ddaecc7f1ad",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 0.11s"
+      ]
+    },
+    {
+      "label": "//crates/executor:hawdb_result_delivery_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 2.1,
+      "log_sha256": "97929b60b609ea764afe807d07f6362d77159964dc48c69a32d00f4321fbc49c",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 1.27s"
+      ]
+    },
+    {
+      "label": "//crates/executor:hawdb_sort_merge_account_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 34.6,
+      "log_sha256": "bb56e232d70af4f13904f53d48f2a16691ee41fbba7140d41d1d89a2b103ada0",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 33.80s"
+      ]
+    },
+    {
+      "label": "//crates/executor:hawdb_transform_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 3.7,
+      "log_sha256": "80961868af2993553455b94eacd3dd7e8335fe6ce8e40ea4082559c985f6f177",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 2.94s"
+      ]
+    },
+    {
+      "label": "//crates/executor:hawdb_vector_seed_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 2.8,
+      "log_sha256": "493f2eb728e1781d116da1738421796594bc99317d2acc2153eb6a5e66b06beb",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 1.95s"
+      ]
+    },
+    {
+      "label": "//crates/fuzz:hawdb_append_fuzz_cli_tests",
+      "state": "PASSED",
+      "seconds": 130.6,
+      "log_sha256": "53043956aae770185ea8554336befed7ef6549748258661e1f331a9fc7bcf8ea",
+      "harness_results": [
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 129.15s"
+      ]
+    },
+    {
+      "label": "//crates/fuzz:hawdb_fuzz_append_replay_tests",
+      "state": "PASSED",
+      "seconds": 43.0,
+      "log_sha256": "c56aaea528e6a79cf3f8333fd10e762d3583b4b39a0349010212972af9fae781",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 46 filtered out; finished in 41.12s"
+      ]
+    },
+    {
+      "label": "//crates/fuzz:hawdb_fuzz_append_seed_7_tests",
+      "state": "PASSED",
+      "seconds": 73.8,
+      "log_sha256": "feadde5a8701cc95f82125aa092a87ab5c7c59f7b1914ba66c9f7fde36f8497e",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 46 filtered out; finished in 72.16s"
+      ]
+    },
+    {
+      "label": "//crates/fuzz:hawdb_fuzz_cli_tests",
+      "state": "PASSED",
+      "seconds": 0.9,
+      "log_sha256": "b0955e6c92a3238999655991ec9a9257ae91177416e4632110dd5c5fe6eb67df",
+      "harness_results": [
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s"
+      ]
+    },
+    {
+      "label": "//crates/fuzz:hawdb_fuzz_fast_tests",
+      "state": "PASSED",
+      "seconds": 317.5,
+      "log_sha256": "a4ecc0c100c93df187995eb7da25c710b2574c91ec08c06ca809d3f8ce03a0c3",
+      "harness_results": [
+        "test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 312.82s"
+      ]
+    },
+    {
+      "label": "//crates/fuzz:hawdb_fuzz_relational_join_rewrite_tests",
+      "state": "PASSED",
+      "seconds": 5.4,
+      "log_sha256": "d9fb08bfe62dd74ac3ec833f3ba39cfb719e7178aebfd74e6c992e64cd72c97f",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 46 filtered out; finished in 2.68s"
+      ]
+    },
+    {
+      "label": "//crates/fuzz:hawdb_parser_fuzz_cli_tests",
+      "state": "PASSED",
+      "seconds": 0.9,
+      "log_sha256": "3d1dd05112534a4db3e915c1744f9cd7a2c4479b20d3d8d367d91159ad4da52a",
+      "harness_results": [
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s"
+      ]
+    },
+    {
+      "label": "//crates/fuzz:hawdb_storage_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 122.0,
+      "log_sha256": "91aa617ab4a538c508f8a397fd6b9fecc58455f57f728852e026ae20c6099529",
+      "harness_results": [
+        "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 119.91s"
+      ]
+    },
+    {
+      "label": "//crates/optimizer-graph:hawdb_optimizer_candidate_fingerprint_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 2.2,
+      "log_sha256": "e16922c3830c1689cd18bb710e598ba425e3dcd4a74f4084705f7204b028b8d8",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in 0.87s"
+      ]
+    },
+    {
+      "label": "//crates/optimizer-graph:hawdb_optimizer_cardinality_defaults_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.1,
+      "log_sha256": "1f1e50fe0a250acc0ecb73b463d9fe6dc1c61d45b8f537204c129d11ee179932",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in 0.44s"
+      ]
+    },
+    {
+      "label": "//crates/optimizer-graph:hawdb_optimizer_cardinality_metadata_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 2.2,
+      "log_sha256": "18f842b6b5b90e6bfcc2d3f8781dbd50245804767d5cd73b7f19e3bbb1ee4302",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in 1.16s"
+      ]
+    },
+    {
+      "label": "//crates/optimizer-graph:hawdb_optimizer_ddl_command_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 0.8,
+      "log_sha256": "6287a94f2ac37f210fb3c9bca675935af54c16e71a49e957adcb94e3f9998a8d",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in 0.13s"
+      ]
+    },
+    {
+      "label": "//crates/optimizer-graph:hawdb_optimizer_full_text_cost_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.0,
+      "log_sha256": "b569c868b217725fc3ec9af03b2446c4e1fd0b05bcff0f22275bd2724c2c1c86",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in 0.29s"
+      ]
+    },
+    {
+      "label": "//crates/optimizer-graph:hawdb_optimizer_trace_cost_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.4,
+      "log_sha256": "0ab1bd8741f21b22ceac08061baf4408f54197a59ff9224d0e7e1cc338784ddc",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in 0.11s"
+      ]
+    },
+    {
+      "label": "//crates/optimizer-relational:hawdb_optimizer_access_cost_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 3.7,
+      "log_sha256": "2905a1d7f89592880584c2bab309f9683067028b4af88031482ab83b6edbb5f7",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 65 filtered out; finished in 3.13s"
+      ]
+    },
+    {
+      "label": "//crates/plan-cypher:hawdb_plan_cypher_explain_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 0.7,
+      "log_sha256": "8ac3481db9062628d1c524fc93547b7ae56ae79c61566a0edc2ba437cfebc3c4",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.07s"
+      ]
+    },
+    {
+      "label": "//crates/readiness:hawdb_graph_route_readiness_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 43.5,
+      "log_sha256": "95d0968b27c790b0801d7fe70416b43c6969f21463daf62dca5617b2e5b2c9aa",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 359 filtered out; finished in 42.21s"
+      ]
+    },
+    {
+      "label": "//crates/readiness:hawdb_integration_bundle_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 24.2,
+      "log_sha256": "a3d2cacaeecd3b7df94c348f000d8b475875ca3b1c381df1a4b64cbce5ddb5a3",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 359 filtered out; finished in 23.55s"
+      ]
+    },
+    {
+      "label": "//crates/readiness:hawdb_replacement_summary_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 66.5,
+      "log_sha256": "2afb8de83bb01227e90af04c410d3d21302244065c3f2cd93f9113ffbf44744a",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 359 filtered out; finished in 65.74s"
+      ]
+    },
+    {
+      "label": "//crates/readiness:hawdb_source_mutation_readiness_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 49.5,
+      "log_sha256": "dd1113f2faadbe57ea0d4617da0565ddd75d2fdfde715da82b9460bbcca3f8b6",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 359 filtered out; finished in 48.84s"
+      ]
+    },
+    {
+      "label": "//crates/relational:hawdb_relational_aggregate_state_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 34.7,
+      "log_sha256": "2331b60ff47a785da12eae76648b838c4a7bf37985bb9a3cf6f7f25480016802",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 165 filtered out; finished in 33.11s"
+      ]
+    },
+    {
+      "label": "//crates/relational:hawdb_relational_columnar_aggregate_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 10.9,
+      "log_sha256": "3ca2b451ea13db3ba17d67f19f0cf75f38455e7dbcd40d76ce726e625975e9ab",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 165 filtered out; finished in 9.79s"
+      ]
+    },
+    {
+      "label": "//crates/relational:hawdb_relational_explain_report_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 18.8,
+      "log_sha256": "9272f9e5b8e806c3a0c3a9042bea45d2c4f429308f83d51e1dd4a93f02168c14",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 165 filtered out; finished in 17.35s"
+      ]
+    },
+    {
+      "label": "//crates/relational:hawdb_relational_field_plan_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 2.6,
+      "log_sha256": "35d113c39fbebe364c9bfa08b58becb281da2bbac5633face98dfd0b5ff33390",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 165 filtered out; finished in 0.99s"
+      ]
+    },
+    {
+      "label": "//crates/relational:hawdb_relational_index_runtime_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 146.3,
+      "log_sha256": "822536864df7abf432efa88339c2dbc2a64043d6de9b1ad609c24a434a84c5fa",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 165 filtered out; finished in 145.03s"
+      ]
+    },
+    {
+      "label": "//crates/relational:hawdb_relational_physical_plan_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 3.3,
+      "log_sha256": "e06e693e554c9096ca55713b71557391dac26e97ad22ea445fe0c6b2d9d19bd1",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 165 filtered out; finished in 1.91s"
+      ]
+    },
+    {
+      "label": "//crates/relational:hawdb_relational_qualification_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 3.4,
+      "log_sha256": "54bbb674c0419e08dcba6f8c086845b952e8335e51881d0c8b08bdb22fc3bb76",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 165 filtered out; finished in 1.69s"
+      ]
+    },
+    {
+      "label": "//crates/relational:hawdb_relational_row_runtime_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 51.1,
+      "log_sha256": "bafb0ed4649073970a1874754f53320c1093db82411df24c2b2ecf85315a8723",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 165 filtered out; finished in 49.71s"
+      ]
+    },
+    {
+      "label": "//crates/relational:hawdb_relational_statement_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.9,
+      "log_sha256": "1705fa6e51bfed2106620ef292ae826eb57d05c2d3064c487cbe35181b313094",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 165 filtered out; finished in 0.09s"
+      ]
+    },
+    {
+      "label": "//crates/route-ownership:hawdb_graph_route_ownership_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 23.3,
+      "log_sha256": "0dba2b6b81e8b0b0c857fcfa8fd8fc669b99fd195b4017ad9c8a7be467bf73a0",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 20 filtered out; finished in 22.39s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_acl_tests",
+      "state": "PASSED",
+      "seconds": 793.6,
+      "log_sha256": "d7a05a58698918ed9f9a3e00ed52b215667cef313726d3d514a852e70966525c",
+      "harness_results": [
+        "test result: ok. 801 passed; 0 failed; 20 ignored; 0 measured; 0 filtered out; finished in 792.40s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_block_encoding_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 2.8,
+      "log_sha256": "409d18a8e8d1a24a276bbb58a947efd4e1099a3c21fc8a061319a75d527ac623",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 1.79s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_bounded_file_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 3.5,
+      "log_sha256": "c3e2dd66683940b481545ce383dafa8f775b1709135463dc763c5bc47a0b3268",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 0.65s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_candidate_evidence_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.7,
+      "log_sha256": "13616fa75cd310f83a66ad710d024a8df5a1f56ee49391754b628f0ddfdf0dc4",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 0.60s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_compression_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.8,
+      "log_sha256": "9327676f0e7389422072305b4b400b6b6966740f53b806c90a683ea7c3f17a19",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 0.44s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_concurrent_read_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.8,
+      "log_sha256": "0967fd55d35b1eab1f493fee28eb8460dca262006713ec97b8c6c745aa3b90bc",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 0.78s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_document_analysis_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 33.4,
+      "log_sha256": "90f0cc92e1ea2296f9f682de33c3f2bc1c8ae3e42d5118579d924c83e201a51b",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 32.15s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_hex_decoding_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.0,
+      "log_sha256": "75bcfa646dca07430b5f75f3cf7fb2ad7def9438722873607f4aa7ed94bb7ac3",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 0.09s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_hydration_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.4,
+      "log_sha256": "9345b03354847a93f6c3bdb5c10b38cb507493202f9963ce28969c30f931fede",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 0.43s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_manifest_encoding_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.5,
+      "log_sha256": "819deabe2fcacdb0c80952b959c8914645829a2bd443d694e655104374934b9e",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 0.57s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_mini_delta_snapshot_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 2.1,
+      "log_sha256": "7ddc7c558ee50bcfcdcd1099f3b0da9cee40479e9fe797db88d9aeb68b57f812",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 0.90s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_spool_decoding_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 42.4,
+      "log_sha256": "9f27c32610b077c9a2ddd5f789b596b0e488b397950f5f7dea19a2c5f65a04a1",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 41.14s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_spool_encoding_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 2.6,
+      "log_sha256": "51eb3d46061092638f2859d33a22a3e57fcc4d1c05812b17689bd2c5d715788d",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 1.21s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_term_policy_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 184.6,
+      "log_sha256": "c37a41cb5835da16ee52ee8e688ec5ca1e08018987619e6ebc76577ea880f65d",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 183.48s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_tests",
+      "state": "PASSED",
+      "seconds": 779.1,
+      "log_sha256": "9f8f7afe99662de685b56ebb6b6ce153fd1860267a894883ad591e3ae7e9aafd",
+      "harness_results": [
+        "test result: ok. 799 passed; 0 failed; 20 ignored; 0 measured; 0 filtered out; finished in 777.92s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_text_background_tests",
+      "state": "PASSED",
+      "seconds": 648.4,
+      "log_sha256": "7316f37a6c9552ee81b2f584ea5768ca5b69ca1356d298d56e0934bf2c983ea6",
+      "harness_results": [
+        "test result: ok. 745 passed; 0 failed; 20 ignored; 0 measured; 0 filtered out; finished in 647.17s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_text_only_tests",
+      "state": "PASSED",
+      "seconds": 300.4,
+      "log_sha256": "8a408b8b188d47f5a5c021062d6309fe7831779e12f338fa6bb4bcbb8496eeda",
+      "harness_results": [
+        "test result: ok. 729 passed; 0 failed; 20 ignored; 0 measured; 0 filtered out; finished in 299.48s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_text_vector_tests",
+      "state": "PASSED",
+      "seconds": 811.3,
+      "log_sha256": "cee7dfa50f577f58d451eab753a43caefdcf290c83f03799c5694ac05a954d0a",
+      "harness_results": [
+        "test result: ok. 783 passed; 0 failed; 20 ignored; 0 measured; 0 filtered out; finished in 810.16s"
+      ]
+    },
+    {
+      "label": "//crates/sql:hawdb_sql_clause_diagnostics_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 2.6,
+      "log_sha256": "ba8504d598bfbb594606e383c1b494f78df5de8ed515c6836675be1594312e26",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 1.85s"
+      ]
+    },
+    {
+      "label": "//crates/sql:hawdb_sql_create_binding_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.0,
+      "log_sha256": "299fcd1e050fcfc9d124b3ff29a2a5729f6d171f175b03f1b20bd737b678a815",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.27s"
+      ]
+    },
+    {
+      "label": "//crates/sql:hawdb_sql_frontend_corpus_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.6,
+      "log_sha256": "5c4ce8adef15f1228ea307146db21f6818a816d9b7830d5a74d0d72f33fd1db9",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.79s"
+      ]
+    },
+    {
+      "label": "//crates/sql-syntax:hawdb_sql_alias_boundary_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 0.7,
+      "log_sha256": "e6f8449198326872d6bae8568f15997ffdc775c2f96034a9c6b7919e8405a356",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.19s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_artifact_binding_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.7,
+      "log_sha256": "ef40edadecad4f210e409d17ca9ccf48ffd6a77331681931c6f017390ed2fc2a",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 0.33s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_backup_hex_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.5,
+      "log_sha256": "53e72535ac490f5b2979c4992066a52384f7963ac1c44780dc2e81bc18ce2e04",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 0.06s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_durable_envelope_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 6.5,
+      "log_sha256": "8141b39547d95747eeae7bd1c9149eb7f140c904ce71ec67dd7918ea4d7ef8a8",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 4.92s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_durable_manifest_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 11.3,
+      "log_sha256": "6a0133ecfe99e24272767129b92d9509dd2f96b43cdf7970fc7f286abe691141",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 9.73s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_file_lock_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 5.3,
+      "log_sha256": "1a9855e70e61971fa36e680c2acf95156a48359701f01e1a347f2dd22bfa07a0",
+      "harness_results": [
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1065 filtered out; finished in 3.79s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_graph_constraints_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.9,
+      "log_sha256": "efe9510d5d49b43fbc128ad8bbf7f2323ed36b989e2dafd3e93a593c0da8c026",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 0.51s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_graph_overlay_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 19.8,
+      "log_sha256": "58002647644aa58544db61c7db67a84961d0ca1e4e75a5ea50d1e5d9c801238b",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 18.31s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_positioned_read_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.6,
+      "log_sha256": "4c304e70fb961825e13c4375cd1e2bd62d218b0a5a5b652e9f4de59d82767ef1",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 0.05s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_projected_artifact_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 6.1,
+      "log_sha256": "f7a18c740665e62129d546d486ee014adf9ec709e0be310e450e51130241d80c",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 4.46s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_property_projection_hex_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.5,
+      "log_sha256": "eba5280313ef41646932f7f349f89afa8b8e56465707f51e57a89f038bcc254d",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 0.15s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_relational_index_view_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 218.0,
+      "log_sha256": "93f08e60a1bd4fc44d99ea7143423979db08b81217de75ae7885bf64189ad2af",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 215.90s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_relational_row_workspace_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 43.2,
+      "log_sha256": "e4bfa00cc717e5d70a7566f04c5ff187b09868b11407a8ae70ec89ede2894edd",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 41.57s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_set_value_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 2.0,
+      "log_sha256": "f3c27bd92b7eebe764d9355e52230fd7965c38ed2fda2932e52e6c00e1e0b1d0",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 0.56s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_shadow_metadata_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 2.5,
+      "log_sha256": "c639ce280f42aa1e8e94c87fe3b58fce6013a6d62e94b0fac878d692ff57d2b8",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 1.07s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_sharded_cache_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 4.2,
+      "log_sha256": "19600780c28f33669b3c4f8d9f51e88770b89bf27571915d2d11ec37bd712822",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 2.35s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_source_scan_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 63.8,
+      "log_sha256": "1d1e06dd6f23ff9052dc0ca7439c1555b0adb20674d58ca6fb08bc557c8c53ba",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 62.31s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_statistics_refresh_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 37.6,
+      "log_sha256": "a4cd507ce5397aec928fa7c80f227ac1d8af8b06cddd405a600b88439d6504a6",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 35.91s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_text_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.4,
+      "log_sha256": "ebdb8d9eeaebac7a9199fe516c115e25c1279b63b3df93a94bbbbcc4417f37a9",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 0.06s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_transaction_compaction_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 12.1,
+      "log_sha256": "4c39d66adfc012fa036cd60c193e20f97438dbc779027a266fd59dad5829b826",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 9.71s"
+      ]
+    },
+    {
+      "label": "//crates/storage:hawdb_storage_transaction_locks_fuzz_tests",
+      "state": "PASSED",
+      "seconds": 1.8,
+      "log_sha256": "4b7a0a5b45d720c9b71f71f8082dc6320b6a95312090d9ad5fbe383295435835",
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 0.49s"
+      ]
+    },
+    {
+      "label": "//crates/executor:hawdb_spill_compaction_fuzz_tests",
+      "state": "TIMEOUT",
+      "seconds": 900.1,
+      "log_sha256": "682a36c096758528c57448aa6e5fdf8e5eb3112a25e942561b29ce0b49bdb5e9",
+      "harness_results": []
+    },
+    {
+      "label": "//crates/search:hawdb_search_document_frequency_fuzz_tests",
+      "state": "TIMEOUT",
+      "seconds": 300.1,
+      "log_sha256": "1eb86f7b04f55bb898e09687d2e19471bc392a9565735413e44526929a768a6e",
+      "harness_results": []
+    },
+    {
+      "label": "//crates/search:hawdb_search_lexical_spill_fuzz_tests",
+      "state": "TIMEOUT",
+      "seconds": 900.1,
+      "log_sha256": "3a483b77058e0bb18de18efad9656f3eaa3140b59c4917968638a7b4f17f8018",
+      "harness_results": []
+    },
+    {
+      "label": "//crates/search:hawdb_search_manifest_budget_fuzz_tests",
+      "state": "TIMEOUT",
+      "seconds": 300.1,
+      "log_sha256": "92193bf5b38916aaadba17b1e8bdb48d6db6aa57c55489f733ee8d31014db909",
+      "harness_results": []
+    },
+    {
+      "label": "//crates/search:hawdb_search_projection_evidence_fuzz_tests",
+      "state": "TIMEOUT",
+      "seconds": 300.4,
+      "log_sha256": "0d11153ac2410962ca921a0becbfc3ae0fe5b32e8cba5bbe3eb5a48dddb563a8",
+      "harness_results": []
+    }
+  ]
+}

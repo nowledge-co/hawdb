@@ -1,0 +1,397 @@
+{
+  "state": "passed",
+  "commit": "a90dc40ced8c0c527e1035d79168d9d25b9a9657",
+  "merged_commit": "7cb639b93249948d2f7953b10109826bf16aa6dd",
+  "initial_command_outcome": "95 pass, 1 timeout at original 300-second deadline; Bazel executed79 of96, including the timeout; passing cached targets retained",
+  "isolated_retry_outcome": "manifest budget same64 cases pass in62 seconds, deadline unchanged; 1 positive native test, zero failed/ignored",
+  "final_required_command": "0 fresh executions, all96 cached pass; not96 fresh successful executions",
+  "source_unchanged": true,
+  "all96_positive_XML_and_Rust_summaries_verified": true,
+  "qualification_rows": [
+    {
+      "target": "//:hawdb_concurrent_key_range_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//:hawdb_graph_projection_residency_fuzz_first_half_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//:hawdb_graph_projection_residency_fuzz_second_half_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//:hawdb_linux_ci_fuzz_smoke_test",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//:hawdb_scan_callback_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/compat:hawdb_compat_contract_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/cypher:hawdb_cypher_backtracking_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/evidence:hawdb_inventory_health_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/evidence:hawdb_resource_profile_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/evidence:hawdb_source_inventory_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/executor:hawdb_batch_dispatch_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/executor:hawdb_execution_lifecycle_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/executor:hawdb_execution_report_value_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/executor:hawdb_graph_algorithm_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/executor:hawdb_graph_hash_join_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/executor:hawdb_morsel_oracle_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/executor:hawdb_mutation_lowering_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/executor:hawdb_mutation_preflight_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/executor:hawdb_numeric_execution_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/executor:hawdb_query_observer_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/executor:hawdb_result_delivery_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/executor:hawdb_sort_merge_account_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/executor:hawdb_spill_compaction_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/executor:hawdb_transform_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/executor:hawdb_vector_seed_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/fuzz:hawdb_append_fuzz_cli_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/fuzz:hawdb_fuzz_append_replay_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/fuzz:hawdb_fuzz_append_seed_7_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/fuzz:hawdb_fuzz_cli_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/fuzz:hawdb_fuzz_fast_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/fuzz:hawdb_fuzz_relational_join_rewrite_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/fuzz:hawdb_parser_fuzz_cli_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/fuzz:hawdb_storage_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/optimizer-graph:hawdb_optimizer_candidate_fingerprint_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/optimizer-graph:hawdb_optimizer_cardinality_defaults_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/optimizer-graph:hawdb_optimizer_cardinality_metadata_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/optimizer-graph:hawdb_optimizer_ddl_command_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/optimizer-graph:hawdb_optimizer_full_text_cost_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/optimizer-graph:hawdb_optimizer_trace_cost_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/optimizer-relational:hawdb_optimizer_access_cost_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/plan-cypher:hawdb_plan_cypher_explain_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/readiness:hawdb_graph_route_readiness_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/readiness:hawdb_integration_bundle_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/readiness:hawdb_replacement_summary_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/readiness:hawdb_source_mutation_readiness_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/relational:hawdb_relational_aggregate_state_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/relational:hawdb_relational_columnar_aggregate_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/relational:hawdb_relational_explain_report_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/relational:hawdb_relational_field_plan_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/relational:hawdb_relational_index_runtime_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/relational:hawdb_relational_physical_plan_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/relational:hawdb_relational_qualification_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/relational:hawdb_relational_row_runtime_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/relational:hawdb_relational_statement_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/route-ownership:hawdb_graph_route_ownership_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/search:hawdb_search_block_encoding_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/search:hawdb_search_bounded_file_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/search:hawdb_search_candidate_evidence_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/search:hawdb_search_compression_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/search:hawdb_search_concurrent_read_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/search:hawdb_search_document_analysis_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/search:hawdb_search_document_frequency_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/search:hawdb_search_hex_decoding_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/search:hawdb_search_hydration_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/search:hawdb_search_lexical_spill_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/search:hawdb_search_manifest_budget_fuzz_tests",
+      "qualification": "fresh isolated retry"
+    },
+    {
+      "target": "//crates/search:hawdb_search_manifest_encoding_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/search:hawdb_search_mini_delta_snapshot_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/search:hawdb_search_projection_evidence_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/search:hawdb_search_spool_decoding_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/search:hawdb_search_spool_encoding_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/search:hawdb_search_term_policy_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/sql-syntax:hawdb_sql_alias_boundary_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/sql:hawdb_sql_clause_diagnostics_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/sql:hawdb_sql_create_binding_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/sql:hawdb_sql_frontend_corpus_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_artifact_binding_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_backup_hex_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_durable_envelope_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_durable_manifest_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_file_lock_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_graph_constraints_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_graph_overlay_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_positioned_read_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_projected_artifact_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_property_projection_hex_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_relational_index_view_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_relational_row_workspace_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_set_value_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_shadow_metadata_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_sharded_cache_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_source_scan_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_statistics_refresh_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_text_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_transaction_compaction_fuzz_tests",
+      "qualification": "original required command passed target"
+    },
+    {
+      "target": "//crates/storage:hawdb_storage_transaction_locks_fuzz_tests",
+      "qualification": "original required command passed target"
+    }
+  ],
+  "checked_unix_seconds": 1791548582.138794
+}

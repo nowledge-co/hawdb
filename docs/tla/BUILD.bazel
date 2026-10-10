@@ -42,6 +42,19 @@ alias(
 
 [
     tla_check(
+        name = "HawDBSearchStageCleanup" + control + "_check",
+        module = "HawDBSearchStageCleanup.tla",
+        config = "mutants/HawDBSearchStageCleanup" + control + ".cfg",
+        expect = "invariant_violation",
+        tags = ["manual"],
+        timeout_seconds = 1800,
+        tlc_args = ["-cleanup", "-workers", "auto"],
+    )
+    for control in ["ForgetOnUnwind", "ReleaseBeforeTicketFree"]
+]
+
+[
+    tla_check(
         name = "HawDBRelationalStatementReadBudget" + control + "_check",
         module = "HawDBRelationalStatementReadBudget.tla",
         config = "mutants/HawDBRelationalStatementReadBudget" + control + ".cfg",

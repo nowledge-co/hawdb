@@ -154,66 +154,6 @@ impl<'a> Decoder<'a> {
         Ok(output)
     }
 
-    fn string_field(&self, cursor: &mut SliceCursor<'_>) -> Result<String, CanonicalSegmentError> {
-        let unit = self.work.start_unit()?;
-        let length = cursor.read_u32()? as usize;
-        let bytes = cursor.read_exact(length)?;
-        unit.finish();
-        self.work.checkpoint()?;
-        self.string(bytes)
-    }
-
-    fn properties(
-        &self,
-        cursor: &mut SliceCursor<'_>,
-        depth: usize,
-        spills: Option<&PropertySpillReader>,
-        keys: Option<&[String]>,
-    ) -> Result<BTreeMap<String, Value>, CanonicalSegmentError> {
-        let unit = self.work.start_unit()?;
-        ensure_depth(depth)?;
-        // Indexed record roots supply the value depth directly. Nested maps
-        // count their map head and then each entry, as the ordinary decoder does.
-        let value_depth = if keys.is_some() {
-            depth
-        } else {
-            depth.saturating_add(1)
-        };
-        let count = cursor.read_u32()? as usize;
-        count_fits(cursor, count, 5)?;
-        unit.finish();
-        self.work.checkpoint()?;
-        let mut output = BTreeMap::new();
-        let mut admitted_nodes = 0;
-        for _ in 0..count {
-            let key = if let Some(keys) = keys {
-                let unit = self.work.start_unit()?;
-                let key_id = cursor.read_u32()?;
-                let key = keys.get(key_id as usize).ok_or_else(|| {
-                    CanonicalSegmentError::Corrupt(format!(
-                        "canonical record references unknown property key id {key_id}"
-                    ))
-                })?;
-                unit.finish();
-                self.work.checkpoint()?;
-                self.string(key.as_bytes())?
-            } else {
-                self.string_field(cursor)?
-            };
-            let value = self.value(cursor, value_depth, spills)?;
-            let unit = self.work.start_unit()?;
-            self.tree_node::<String, Value>(output.len(), &mut admitted_nodes)?;
-            if output.insert(key, value).is_some() {
-                return Err(CanonicalSegmentError::Corrupt(
-                    "canonical property map has duplicate keys".into(),
-                ));
-            }
-            unit.finish();
-            self.work.checkpoint()?;
-        }
-        Ok(output)
-    }
-
     fn tree_node<K, V>(
         &self,
         len: usize,
@@ -240,114 +180,6 @@ impl<'a> Decoder<'a> {
         }
         Ok(())
     }
-
-    fn value(
-        &self,
-        cursor: &mut SliceCursor<'_>,
-        depth: usize,
-        spills: Option<&PropertySpillReader>,
-    ) -> Result<Value, CanonicalSegmentError> {
-        let unit = self.work.start_unit()?;
-        ensure_depth(depth)?;
-        let tag = cursor.read_u8()?;
-        let value = match tag {
-            0 => Value::Null,
-            1 => match cursor.read_u8()? {
-                0 => Value::Bool(false),
-                1 => Value::Bool(true),
-                n => {
-                    return Err(CanonicalSegmentError::Corrupt(format!(
-                        "invalid canonical boolean {n}"
-                    )));
-                }
-            },
-            2 => Value::Int(cursor.read_i64()?),
-            3 => Value::Float(f64::from_bits(cursor.read_u64()?)),
-            4 => {
-                unit.finish();
-                self.work.checkpoint()?;
-                return self.string_field(cursor).map(Value::String);
-            }
-            5 => {
-                let count = cursor.read_u32()? as usize;
-                count_fits(cursor, count, 1)?;
-                let bytes = count.checked_mul(size_of::<Value>()).ok_or_else(|| {
-                    self.allocation("canonical list capacity overflow", usize::MAX)
-                })?;
-                self.reserve(bytes)?;
-                let mut values = Vec::new();
-                values
-                    .try_reserve_exact(count)
-                    .map_err(|e| self.allocation(e, bytes))?;
-                if values.capacity() != count {
-                    return Err(self.allocation("canonical list capacity exceeds admission", bytes));
-                }
-                unit.finish();
-                self.work.checkpoint()?;
-                for _ in 0..count {
-                    values.push(self.value(cursor, depth.saturating_add(1), spills)?);
-                }
-                return Ok(Value::List(values));
-            }
-            6 => {
-                unit.finish();
-                self.work.checkpoint()?;
-                return self
-                    .properties(cursor, depth.saturating_add(1), spills, None)
-                    .map(Value::Map);
-            }
-            7 => {
-                let id = cursor.read_u64()?;
-                let reader = spills.ok_or_else(|| {
-                    CanonicalSegmentError::Corrupt(format!(
-                        "canonical value references property spill {id} without a published spill artifact"
-                    ))
-                })?;
-                unit.finish();
-                self.work.checkpoint()?;
-                let encoded = reader
-                    .checkpoint_value(id, self.work)
-                    .map_err(|e| match e {
-                        PropertySpillError::Work(e) => CanonicalSegmentError::Work(e),
-                        e => CanonicalSegmentError::PropertySpill(e),
-                    })?
-                    .ok_or_else(|| {
-                        CanonicalSegmentError::Corrupt(format!(
-                            "canonical value references missing property spill {id}"
-                        ))
-                    })?;
-                let mut spilled = SliceCursor::new(&encoded);
-                let value = self.value(&mut spilled, depth, None)?;
-                if !spilled.is_empty() {
-                    return Err(CanonicalSegmentError::Corrupt(format!(
-                        "property spill {id} has trailing bytes"
-                    )));
-                }
-                return Ok(value);
-            }
-            8 => {
-                let length = cursor.read_u32()? as usize;
-                let bytes = cursor.read_exact(length)?;
-                unit.finish();
-                self.work.checkpoint()?;
-                return self.bytes(bytes).map(Value::Binary);
-            }
-            9 => Value::Uuid(hawdb_core::Uuid::from_bytes(
-                cursor
-                    .read_exact(16)?
-                    .try_into()
-                    .expect("fixed UUID length"),
-            )),
-            tag => {
-                return Err(CanonicalSegmentError::Corrupt(format!(
-                    "unknown canonical value tag {tag}"
-                )));
-            }
-        };
-        unit.finish();
-        self.work.checkpoint()?;
-        Ok(value)
-    }
 }
 
 fn count_fits(
@@ -371,35 +203,8 @@ pub(super) fn node(
     work: &CheckpointWorkContext,
 ) -> Result<CheckpointRecord<NodeRecord>, CanonicalSegmentError> {
     let decoder = Decoder::new(work);
-    let mut cursor = SliceCursor::new(payload);
-    let unit = work.start_unit()?;
-    let count = cursor.read_u32()? as usize;
-    count_fits(&cursor, count, 4)?;
-    unit.finish();
-    work.checkpoint()?;
-    let mut labels = BTreeSet::new();
-    let mut admitted = 0;
-    for _ in 0..count {
-        let unit = work.start_unit()?;
-        let label = LabelId(cursor.read_u32()?);
-        if !labels.contains(&label) {
-            decoder.tree_node::<LabelId, ()>(labels.len(), &mut admitted)?;
-            labels.insert(label);
-        }
-        unit.finish();
-        work.checkpoint()?;
-    }
-    let properties = decoder.properties(&mut cursor, 1, spills, Some(keys))?;
-    if !cursor.is_empty() {
-        return Err(CanonicalSegmentError::Corrupt(
-            "node record has trailing bytes".into(),
-        ));
-    }
-    decoder.finish(NodeRecord {
-        id: NodeId(id),
-        labels,
-        properties,
-    })
+    let record = record_decode::node(id, payload, spills, Some(keys), &decoder)?;
+    decoder.finish(record)
 }
 
 pub(super) fn relationship(
@@ -410,24 +215,91 @@ pub(super) fn relationship(
     work: &CheckpointWorkContext,
 ) -> Result<CheckpointRecord<RelRecord>, CanonicalSegmentError> {
     let decoder = Decoder::new(work);
-    let mut cursor = SliceCursor::new(payload);
-    let unit = work.start_unit()?;
-    let source = NodeId(cursor.read_u64()?);
-    let target = NodeId(cursor.read_u64()?);
-    let rel_type = RelTypeId(cursor.read_u32()?);
-    unit.finish();
-    work.checkpoint()?;
-    let properties = decoder.properties(&mut cursor, 1, spills, Some(keys))?;
-    if !cursor.is_empty() {
-        return Err(CanonicalSegmentError::Corrupt(
-            "relationship record has trailing bytes".into(),
-        ));
+    let record = record_decode::relationship(id, payload, spills, Some(keys), &decoder)?;
+    decoder.finish(record)
+}
+
+impl record_decode::Decoder for Decoder<'_> {
+    type Unit = crate::background::CheckpointWorkUnit;
+
+    fn start_unit(&self) -> Result<Self::Unit, CanonicalSegmentError> {
+        self.work.start_unit().map_err(Into::into)
     }
-    decoder.finish(RelRecord {
-        id: RelId(id),
-        source,
-        target,
-        rel_type,
-        properties,
-    })
+
+    fn finish_unit(&self, unit: Self::Unit) -> Result<(), CanonicalSegmentError> {
+        unit.finish();
+        self.work.checkpoint().map_err(Into::into)
+    }
+
+    fn validate_count(
+        &self,
+        cursor: &SliceCursor<'_>,
+        count: usize,
+        minimum: usize,
+    ) -> Result<(), CanonicalSegmentError> {
+        count_fits(cursor, count, minimum)
+    }
+
+    fn string(&self, bytes: &[u8]) -> Result<String, CanonicalSegmentError> {
+        self.string(bytes)
+    }
+
+    fn key(&self, key: &str) -> Result<String, CanonicalSegmentError> {
+        self.string(key.as_bytes())
+    }
+
+    fn bytes(&self, bytes: &[u8]) -> Result<Vec<u8>, CanonicalSegmentError> {
+        self.bytes(bytes)
+    }
+
+    fn list(&self, count: usize) -> Result<Vec<Value>, CanonicalSegmentError> {
+        let bytes = count
+            .checked_mul(size_of::<Value>())
+            .ok_or_else(|| self.allocation("canonical list capacity overflow", usize::MAX))?;
+        self.reserve(bytes)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(count)
+            .map_err(|error| self.allocation(error, bytes))?;
+        if values.capacity() != count {
+            return Err(self.allocation("canonical list capacity exceeds admission", bytes));
+        }
+        Ok(values)
+    }
+
+    fn insert_label(
+        &self,
+        labels: &mut BTreeSet<LabelId>,
+        label: LabelId,
+        admitted: &mut usize,
+    ) -> Result<(), CanonicalSegmentError> {
+        if !labels.contains(&label) {
+            self.tree_node::<LabelId, ()>(labels.len(), admitted)?;
+            labels.insert(label);
+        }
+        Ok(())
+    }
+
+    fn before_map_insert(
+        &self,
+        len: usize,
+        admitted: &mut usize,
+    ) -> Result<(), CanonicalSegmentError> {
+        self.tree_node::<String, Value>(len, admitted)
+    }
+
+    fn visit_spill<T>(
+        &self,
+        reader: &PropertySpillReader,
+        id: u64,
+        visitor: impl FnOnce(Option<&[u8]>) -> Result<T, CanonicalSegmentError>,
+    ) -> Result<T, CanonicalSegmentError> {
+        let encoded = reader
+            .checkpoint_value(id, self.work)
+            .map_err(|error| match error {
+                PropertySpillError::Work(error) => CanonicalSegmentError::Work(error),
+                error => CanonicalSegmentError::PropertySpill(error),
+            })?;
+        visitor(encoded.as_deref())
+    }
 }

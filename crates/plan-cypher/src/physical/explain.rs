@@ -632,6 +632,11 @@ impl PhysicalPlan {
             } => {
                 format!("{pad}LimitExec offset={offset} limit={limit:?}")
             }
+            PhysicalPlan::ScoringProgramExec {
+                score_column, vector_graph_input, program, reference_time_millis, limit, ..
+            } => format!(
+                "{pad}ScoringProgramExec score_column={score_column} limit={limit} vector_graph_input={vector_graph_input:?} reference_time_millis={reference_time_millis} program={program:?}"
+            ),
             PhysicalPlan::ScoringRerankExec {
                 score_column,
                 spec,

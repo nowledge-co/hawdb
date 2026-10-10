@@ -118,6 +118,7 @@ impl PhysicalPlan {
             PhysicalPlan::TopNExec { .. } => PhysicalPlanKind::TopNExec,
             PhysicalPlan::LimitExec { .. } => PhysicalPlanKind::LimitExec,
             PhysicalPlan::ScoringRerankExec { .. } => PhysicalPlanKind::ScoringRerankExec,
+            PhysicalPlan::ScoringProgramExec { .. } => PhysicalPlanKind::ScoringProgramExec,
         }
     }
 
@@ -143,7 +144,8 @@ impl PhysicalPlan {
             | PhysicalPlan::SortExec { input, .. }
             | PhysicalPlan::TopNExec { input, .. }
             | PhysicalPlan::LimitExec { input, .. }
-            | PhysicalPlan::ScoringRerankExec { input, .. } => PlanChildren::Unary(input),
+            | PhysicalPlan::ScoringRerankExec { input, .. }
+            | PhysicalPlan::ScoringProgramExec { input, .. } => PlanChildren::Unary(input),
             PhysicalPlan::CreateNodeLabel { .. }
             | PhysicalPlan::CreateRelationshipType { .. }
             | PhysicalPlan::CreateNodeTable { .. }

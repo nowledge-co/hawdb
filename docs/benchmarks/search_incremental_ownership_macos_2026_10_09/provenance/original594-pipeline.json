@@ -1,0 +1,59 @@
+{
+  "state": "passed",
+  "steps": [
+    {
+      "label": "isolated-original-deadline-fuzz",
+      "command": [
+        "bazel",
+        "test",
+        "//crates/search:hawdb_search_projection_evidence_fuzz_tests",
+        "//crates/search:hawdb_search_manifest_budget_fuzz_tests",
+        "//crates/search:hawdb_search_document_frequency_fuzz_tests",
+        "//crates/search:hawdb_search_lexical_spill_fuzz_tests",
+        "//crates/executor:hawdb_spill_compaction_fuzz_tests",
+        "--local_test_jobs=1",
+        "--test_output=errors"
+      ],
+      "state": "finished",
+      "log": "/private/tmp/hawdb-291-post-merge-isolated-original-deadline-fuzz.log",
+      "started": 1791529818.559857,
+      "pid": 95751,
+      "exit_code": 0,
+      "elapsed": 130.55473613739014,
+      "log_sha256": "a0edb751ed72f9b9861f4d5d2c4d8b0570cc3e7ba73606b1eb9cef2b9ac65347"
+    },
+    {
+      "label": "required-complete-fuzz",
+      "command": [
+        "bazel",
+        "test",
+        "//crates/fuzz:hawdb_fuzz_tests",
+        "//crates/fuzz:hawdb_fuzz_cli_tests",
+        "//:hawdb_linux_ci_fuzz_smoke_test"
+      ],
+      "state": "finished",
+      "log": "/private/tmp/hawdb-291-post-merge-required-complete-fuzz.log",
+      "started": 1791529949.252498,
+      "pid": 98966,
+      "exit_code": 0,
+      "elapsed": 3.1551458835601807,
+      "log_sha256": "fc0ccc7ba532ba0a7b4c77597d91a1fee0492d7b2a5f86286c9070e21730a093"
+    },
+    {
+      "label": "fresh-three-cell-scale",
+      "command": [
+        "python3",
+        "/private/tmp/hawdb-291-incremental-repair-scale-driver.py"
+      ],
+      "state": "finished",
+      "log": "/private/tmp/hawdb-291-post-merge-fresh-three-cell-scale.log",
+      "started": 1791529952.526366,
+      "pid": 98984,
+      "exit_code": 0,
+      "elapsed": 39942.32318687439,
+      "log_sha256": "2f55e5079d069873e2180255a417e69e0c9ce7ae1f0f73fa91a7170502213a65"
+    }
+  ],
+  "native_state": "passed",
+  "source_unchanged": true
+}

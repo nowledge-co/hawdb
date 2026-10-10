@@ -1,0 +1,3 @@
+WARNING: Running Bazel server needs to be killed, because the following startup options are different:
+  - Only in old server: --workspace_directory=/private/tmp/hawdb-291-current-main-qualification bazel(hawdb-291-current-main-qualification)
+  - Only in new server: --workspace_directory=/private/tmp/hawdb-291-post913-qualification bazel(hawdb-291-post913-qualification)

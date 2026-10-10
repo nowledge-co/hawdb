@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="crates/readiness/hawdb_readiness_tests" tests="1" failures="0" errors="0">
+    <testcase name="crates/readiness/hawdb_readiness_tests" classname="" status="run" duration="0" time="0"></testcase>
+      <system-out>
+Generated test.log (if the file is not UTF-8, then this may be unreadable):
+<![CDATA[exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/readiness:hawdb_readiness_tests
+-----------------------------------------------------------------------------
+
+running 2 tests
+test nowledge_mem_runtime_status::tests::production_status_fails_closed_without_route_or_projection_evidence ... ok
+test nowledge_mem_runtime_status::tests::runtime_status_reports_changefeed_lag_without_host_state ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 358 filtered out; finished in 0.01s]]>
+      </system-out>
+    </testsuite>
+</testsuites>

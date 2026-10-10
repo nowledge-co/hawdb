@@ -556,9 +556,12 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: &BTreeMap<String, Val
             node_visibility_predicate,
             ..
         } => bind_optional_predicate(node_visibility_predicate, parameters)?,
-        PhysicalPlan::SourceSegmentScan { predicate, .. }
-        | PhysicalPlan::FilterExec { predicate, .. } => {
+        PhysicalPlan::SourceSegmentScan { predicate, .. } => {
             bind_predicate(predicate, parameters)?;
+        }
+        PhysicalPlan::FilterExec { predicate, input } => {
+            bind_predicate(predicate, parameters)?;
+            bind_physical_plan(input, parameters)?;
         }
         PhysicalPlan::NodeProjectionScanExec {
             access,
@@ -594,7 +597,10 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: &BTreeMap<String, Val
             }
         }
         PhysicalPlan::NodeColumnLookupExec { input, .. }
+        | PhysicalPlan::AdjacencyExistsExec { input, .. }
         | PhysicalPlan::DistinctExec { input }
+        | PhysicalPlan::ScoringRerankExec { input, .. }
+        | PhysicalPlan::ScoringProgramExec { input, .. }
         | PhysicalPlan::LimitExec { input, .. } => bind_physical_plan(input, parameters)?,
         PhysicalPlan::IndexNodeSeek { value, .. } => bind_value(value, parameters)?,
         PhysicalPlan::IndexNodeMultiSeek { values, .. } => {
@@ -674,14 +680,47 @@ fn bind_physical_plan(plan: &mut PhysicalPlan, parameters: &BTreeMap<String, Val
             bind_sort_items(items, parameters)?;
             bind_physical_plan(input, parameters)?;
         }
-        _ => {}
-    }
-    if let PhysicalPlan::SourceSegmentScan { .. } | PhysicalPlan::FilterExec { .. } = plan {
-        match plan {
-            PhysicalPlan::FilterExec { input, .. } => bind_physical_plan(input, parameters)?,
-            PhysicalPlan::SourceSegmentScan { .. } => {}
-            _ => unreachable!(),
-        }
+        PhysicalPlan::CreateNodeLabel { .. }
+        | PhysicalPlan::CreateRelationshipType { .. }
+        | PhysicalPlan::CreateNodeTable { .. }
+        | PhysicalPlan::CreateRelationshipTable { .. }
+        | PhysicalPlan::CreateProperty { .. }
+        | PhysicalPlan::AlterTableState { .. }
+        | PhysicalPlan::AlterPropertyState { .. }
+        | PhysicalPlan::CreateIndex { .. }
+        | PhysicalPlan::CreateCompositeIndex { .. }
+        | PhysicalPlan::CreateRangeIndex { .. }
+        | PhysicalPlan::CreateFullTextIndex { .. }
+        | PhysicalPlan::CreateUniqueConstraint { .. }
+        | PhysicalPlan::CreateNodePropertyExistsConstraint { .. }
+        | PhysicalPlan::CreateRelationshipUniqueConstraint { .. }
+        | PhysicalPlan::CreateRelationshipPropertyExistsConstraint { .. }
+        | PhysicalPlan::ProjectGraph { .. }
+        | PhysicalPlan::VectorSeedScan { .. }
+        | PhysicalPlan::CreateNode { .. }
+        | PhysicalPlan::UnwindMutation { .. }
+        | PhysicalPlan::MergeNode { .. }
+        | PhysicalPlan::MergeRelationship { .. }
+        | PhysicalPlan::MergeMatchedRelationship { .. }
+        | PhysicalPlan::MergeRelationshipFromMatchedRelationship { .. }
+        | PhysicalPlan::MergeRelationshipToMatchedTarget { .. }
+        | PhysicalPlan::MergeRelationshipFromMatchedTarget { .. }
+        | PhysicalPlan::CreateMatchedRelationship { .. }
+        | PhysicalPlan::SetNodeProperty { .. }
+        | PhysicalPlan::SetNodeProperties { .. }
+        | PhysicalPlan::SetNodePropertiesReturn { .. }
+        | PhysicalPlan::SetRelationshipProperty { .. }
+        | PhysicalPlan::SetRelationshipProperties { .. }
+        | PhysicalPlan::DeleteNode { .. }
+        | PhysicalPlan::DeleteRelationship { .. }
+        | PhysicalPlan::DeleteRelationshipTargetNodes { .. }
+        | PhysicalPlan::CreateRelationship { .. }
+        | PhysicalPlan::EmptyExec
+        | PhysicalPlan::SeqNodeScan { .. }
+        | PhysicalPlan::IndexNodeTextSeek { .. }
+        | PhysicalPlan::NodeCountExec { .. }
+        | PhysicalPlan::RelationshipCountExec { .. }
+        | PhysicalPlan::ThreadRepairStatsExec { .. } => {}
     }
     Ok(())
 }
@@ -1139,6 +1178,111 @@ mod tests {
 
         assert!(rebound.explain(0).contains("second"));
         assert!(!rebound.explain(0).contains("hawdb_parameter_slot"));
+    }
+
+    #[test]
+    fn scoring_rerank_rebinds_its_input_and_rejects_missing_parameter_slots() {
+        let spec = hawdb_core::graph_rag::ScoringSpec::weighted_scores(2.0, 1.0);
+        let template = PhysicalPlan::ScoringRerankExec {
+            score_column: "seed_score".into(),
+            spec: spec.clone(),
+            limit: 3,
+            input: Box::new(PhysicalPlan::IndexNodeSeek {
+                variable: "n".into(),
+                label: "Item".into(),
+                property: "scope".into(),
+                value: parameter_marker("scope", &Value::String("template".into()), &[]),
+            }),
+        };
+        for scope in ["first", "second"] {
+            let rebound = bind_physical_plan_parameters(
+                &template,
+                &BTreeMap::from([("scope".into(), Value::String(scope.into()))]),
+                true,
+            )
+            .unwrap();
+            let PhysicalPlan::ScoringRerankExec {
+                score_column,
+                spec: rebound_spec,
+                limit,
+                input,
+            } = rebound
+            else {
+                panic!("scoring operator must be preserved");
+            };
+            assert_eq!(score_column, "seed_score");
+            assert_eq!(rebound_spec, spec);
+            assert_eq!(limit, 3);
+            let PhysicalPlan::IndexNodeSeek { value, .. } = *input else {
+                panic!("scoring input seek must be preserved");
+            };
+            assert_eq!(
+                value,
+                Value::String(scope.into()),
+                "scoring input must use current request values"
+            );
+        }
+        assert!(bind_physical_plan_parameters(&template, &BTreeMap::new(), true).is_err());
+        let PhysicalPlan::ScoringRerankExec { input, .. } = &template else {
+            unreachable!()
+        };
+        let PhysicalPlan::IndexNodeSeek { value, .. } = input.as_ref() else {
+            unreachable!()
+        };
+        assert_eq!(
+            *value,
+            parameter_marker("scope", &Value::String("template".into()), &[]),
+            "binding must not mutate the retained template"
+        );
+    }
+
+    #[test]
+    fn adjacency_exists_rebinds_its_input_and_rejects_missing_parameter_slots() {
+        let marker = parameter_marker("scope", &Value::String("template".into()), &[]);
+        let template = PhysicalPlan::AdjacencyExistsExec {
+            source_variable: "n".into(),
+            rel_type: "REL".into(),
+            direction: cypher::RelationshipDirection::Outgoing,
+            target_variable: "s".into(),
+            input: Box::new(PhysicalPlan::IndexNodeSeek {
+                variable: "n".into(),
+                label: "Item".into(),
+                property: "scope".into(),
+                value: marker.clone(),
+            }),
+        };
+        let original = template.clone();
+        for scope in ["first", "second"] {
+            let rebound = bind_physical_plan_parameters(
+                &template,
+                &BTreeMap::from([("scope".into(), Value::String(scope.into()))]),
+                true,
+            )
+            .unwrap();
+            let PhysicalPlan::AdjacencyExistsExec {
+                source_variable,
+                rel_type,
+                direction,
+                target_variable,
+                input,
+            } = rebound
+            else {
+                panic!("EXISTS operator must be preserved");
+            };
+            assert_eq!(source_variable, "n");
+            assert_eq!(rel_type, "REL");
+            assert_eq!(direction, cypher::RelationshipDirection::Outgoing);
+            assert_eq!(target_variable, "s");
+            let PhysicalPlan::IndexNodeSeek { value, .. } = *input else {
+                panic!("EXISTS input seek must be preserved");
+            };
+            assert_eq!(value, Value::String(scope.into()));
+        }
+        assert!(bind_physical_plan_parameters(&template, &BTreeMap::new(), true).is_err());
+        assert_eq!(
+            template, original,
+            "binding must preserve the cached template"
+        );
     }
 
     #[test]

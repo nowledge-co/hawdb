@@ -230,6 +230,11 @@ background catch-up on the same pinned base rather than replaying or mounting
 under the final gate. A publication I/O wave is acquired outside the gate and
 released before waiting for an existing foreground sync group. After that
 group finishes, the same candidate seals its new complete prefix and retries.
+Cancelled unselected work leaves `Draining`/`Finalizing` before destroying
+private artifacts, COW data and admission. `Discarding` wakes ordinary writers
+without allowing manual generation reuse: synchronous checkpoint, backup and
+compaction still wait for `Idle`, which is reported only after private cleanup
+finishes. The admission remains alive while its owned candidate is destroyed.
 The owner serializes captured sources, selector
 publication, frontend handoff and off-gate retirement. Manual checkpoint
 sources retain a suspension through preparation and selection; branch
@@ -2373,3 +2378,14 @@ identity, fresh cancellation, temporary competing memory and a real owner's
 recovery without frontend work; every persisted value is checked after reopen.
 These are operation-count/correctness assertions, not release latency or RSS
 measurements. Both synchronous manual checkpoint APIs retain their contracts.
+
+
+WAL operation dispatch, record envelopes/frames and value/map wire parsing now
+share statically dispatched implementations. Canonical node/relationship,
+property-map and tagged-value parsing also share one implementation; ordinary
+reads use no-work hooks while maintenance retains its original allocation and
+unit-admission strategy. The shared canonical backend campaign mutates every
+byte of nine scalar/container fixtures across both record kinds (134,144 cases),
+compares complete decoded identifiers/labels/endpoints/types and value bytes,
+and verifies released unit admission. This is backend parity evidence, not the
+remaining range-path, copied-codec or resource/scaling qualification.

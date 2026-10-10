@@ -672,6 +672,22 @@ pub(super) fn operators() -> Vec<(PhysicalPlan, bool)> {
             true,
         ),
         (
+            PhysicalPlan::ScoringProgramExec {
+                vector_graph_input: None,
+                score_column: "score".into(),
+                program: hawdb_core::graph_rag::ScoringProgram::new(
+                    hawdb_core::graph_rag::ScoringCombination::WeightedProduct,
+                    hawdb_core::graph_rag::MissingScoringFeature::Reject,
+                    hawdb_core::graph_rag::ScoringSpec::weighted_scores(1.0, 1.0),
+                )
+                .unwrap(),
+                reference_time_millis: 1_000,
+                limit: 1,
+                input: Box::new(PhysicalPlan::EmptyExec),
+            },
+            true,
+        ),
+        (
             PhysicalPlan::ScoringRerankExec {
                 score_column: hawdb_plan_cypher::VECTOR_SEED_SCORE_COLUMN.to_string(),
                 spec: hawdb_core::graph_rag::ScoringSpec {

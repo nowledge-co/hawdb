@@ -21,7 +21,7 @@ use super::{
 use crate::binding::Binding;
 use crate::kernel::collect_bounded_operator_bindings_with_account;
 use crate::memory::external_read_memory_budget;
-use crate::observer::QueryExecutionObserver;
+use crate::observer::{ExecutionObserver, QueryExecutionObserver};
 use crate::pipeline::{emit_owned_binding_batches, BatchControl, BindingBatch};
 use crate::{ExecutionLimit, ExecutionMemoryConfig, QueryMemoryClass, QueryMemoryLedger};
 use hawdb_core::{HawDBError, Result, RuntimeTaskContext, Value};
@@ -217,6 +217,9 @@ impl VectorSeedScanSpec<'_> {
                         Value::Float(row.score),
                     ),
                 ]);
+                if context.observer.vector_graph_scoring_input().is_some() {
+                    crate::scoring::annotate_vector_seed(&mut values, row.score);
+                }
                 if *output_external_id && let Some(external_id) = row.external_id {
                     values.insert("external_id".to_string(), Value::String(external_id));
                 }

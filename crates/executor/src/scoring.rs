@@ -16,18 +16,146 @@
 
 use crate::binding::Binding;
 use hawdb_core::graph_rag::ScoringFeatureSource;
-use hawdb_core::Value;
+use hawdb_core::{HawDBError, Result, RuntimeTaskContext, Value};
+use hawdb_plan_cypher::ScoringVectorGraphInput;
+use std::num::NonZeroU64;
+
+/// Validated identity and logical per-row cost for a host's batch scorer.
+/// A future query attachment must include name/version in its cache identity
+/// or bypass the cache. This cost is a planning hint, not elapsed time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostScorerDescriptor<'a> {
+    name: &'a str,
+    version: &'a str,
+    cpu_units_per_row: NonZeroU64,
+}
+
+impl<'a> HostScorerDescriptor<'a> {
+    pub fn new(name: &'a str, version: &'a str, cpu_units_per_row: NonZeroU64) -> Result<Self> {
+        if [name, version]
+            .iter()
+            .any(|value| value.is_empty() || value.chars().any(char::is_control))
+        {
+            return Err(HawDBError::Semantic(
+                "host scorer name and version must be nonempty without control characters".into(),
+            ));
+        }
+        Ok(Self {
+            name,
+            version,
+            cpu_units_per_row,
+        })
+    }
+
+    pub fn name(self) -> &'a str {
+        self.name
+    }
+
+    pub fn version(self) -> &'a str {
+        self.version
+    }
+
+    pub fn cpu_units_per_row(self) -> NonZeroU64 {
+        self.cpu_units_per_row
+    }
+}
+
+/// Borrowed inputs for the host-scoring escape hatch.
+/// Scratch allocations must reserve this query account before allocation and
+/// release their leases before returning; feature rows cannot escape the call.
+pub struct HostScorerBatch<'a> {
+    pub features: &'a [&'a dyn ScoringFeatureSource],
+    pub reference_time_millis: u64,
+    pub task_context: Option<&'a RuntimeTaskContext>,
+    pub scratch_account: &'a crate::QueryMemoryAccount,
+}
+
+impl HostScorerBatch<'_> {
+    pub fn checkpoint(&self) -> Result<()> {
+        crate::pipeline::runtime_checkpoint(self.task_context)
+    }
+}
+
+/// Batch scorer contract for a concrete formula that templates cannot express.
+///
+/// This declaration does not register or execute callbacks in queries. When
+/// integrated, the engine owns a score slice exactly matching the feature-row
+/// count, checkpoints cancellation before/after the call, and validates every
+/// finite output before TopN or consumer delivery. Implementations must write
+/// every score in input order, be deterministic for the declared identity,
+/// parameters and clock, and obey the scratch/cancellation contract.
+pub trait HostScorer {
+    fn descriptor(&self) -> HostScorerDescriptor<'_>;
+
+    fn score_batch(&mut self, request: HostScorerBatch<'_>, scores: &mut [f64]) -> Result<()>;
+}
+
+const VECTOR_SCORE_ANNOTATION: &str = "\0hawdb.scoring.vector_score";
+const VECTOR_HOP_ANNOTATION: &str = "\0hawdb.scoring.hops";
+
+pub(crate) fn annotate_vector_seed(
+    values: &mut std::collections::BTreeMap<String, Value>,
+    score: f64,
+) {
+    values.insert(VECTOR_SCORE_ANNOTATION.into(), Value::Float(score));
+    values.insert(VECTOR_HOP_ANNOTATION.into(), Value::Int(0));
+}
+
+pub(crate) fn advance_vector_hop(binding: &mut Binding, hop: usize, matched: bool) -> Result<()> {
+    let previous = binding.values.get(VECTOR_HOP_ANNOTATION).ok_or_else(|| {
+        HawDBError::Execution("vector scoring lost producer hop provenance".into())
+    })?;
+    let next = if !matched || previous == &Value::Null {
+        Value::Null
+    } else {
+        let Value::Int(previous) = previous else {
+            return Err(HawDBError::Execution(
+                "invalid vector hop provenance".into(),
+            ));
+        };
+        let hop = i64::try_from(hop).map_err(|_| {
+            HawDBError::Execution("vector hop distance exceeds supported range".into())
+        })?;
+        Value::Int(
+            previous
+                .checked_add(hop)
+                .ok_or_else(|| HawDBError::Execution("vector hop distance overflow".into()))?,
+        )
+    };
+    *binding
+        .values
+        .get_mut(VECTOR_HOP_ANNOTATION)
+        .expect("provenance key was checked") = next;
+    Ok(())
+}
+
+pub(crate) fn preserve_vector_annotations(
+    values: &mut std::collections::BTreeMap<String, Value>,
+    binding: &Binding,
+) {
+    for name in [VECTOR_SCORE_ANNOTATION, VECTOR_HOP_ANNOTATION] {
+        if let Some(value) = binding.values.get(name) {
+            values.insert(name.into(), value.clone());
+        }
+    }
+}
+
+pub(crate) fn strip_vector_annotations(binding: &mut Binding) {
+    binding
+        .values
+        .retain(|name, _| !name.starts_with(hawdb_plan_cypher::SCORING_PROVENANCE_PREFIX));
+}
 
 /// Reads scoring features from one row.
 ///
-/// The search score comes from the declared score column the seed stage
-/// produced; property features come from row values of the same name, which is
-/// how node and relationship properties reach a row. Features this stage cannot
-/// supply — the graph-seed score and the hop distance — are reported absent so
-/// the specification records them instead of scoring them as zero.
+/// The legacy source reads the declared score column and returned value aliases.
+/// The opt-in vector source reads engine-owned original similarity/observed hop
+/// annotations and properties of its canonical pinned candidate node. Graph-seed
+/// relevance remains a distinct absent signal in both paths.
 pub struct BindingScoreFeatures<'a> {
     binding: &'a Binding,
     score_column: &'a str,
+    vector_graph_input: Option<&'a ScoringVectorGraphInput>,
 }
 
 impl<'a> BindingScoreFeatures<'a> {
@@ -35,6 +163,31 @@ impl<'a> BindingScoreFeatures<'a> {
         Self {
             binding,
             score_column,
+            vector_graph_input: None,
+        }
+    }
+
+    pub(crate) fn with_vector_graph_input(
+        binding: &'a Binding,
+        score_column: &'a str,
+        source: Option<&'a ScoringVectorGraphInput>,
+    ) -> Self {
+        Self {
+            binding,
+            score_column,
+            vector_graph_input: source,
+        }
+    }
+
+    fn property(&self, name: &str) -> Option<&Value> {
+        match self.vector_graph_input {
+            Some(source) => self
+                .binding
+                .nodes
+                .get(source.candidate_variable())?
+                .properties
+                .get(name),
+            None => self.binding.values.get(name),
         }
     }
 
@@ -49,7 +202,15 @@ impl<'a> BindingScoreFeatures<'a> {
 
 impl ScoringFeatureSource for BindingScoreFeatures<'_> {
     fn search_score(&self) -> Option<f64> {
-        self.numeric(self.binding.values.get(self.score_column))
+        self.numeric(
+            self.binding
+                .values
+                .get(if self.vector_graph_input.is_some() {
+                    VECTOR_SCORE_ANNOTATION
+                } else {
+                    self.score_column
+                }),
+        )
     }
 
     fn graph_seed_score(&self) -> Option<f64> {
@@ -57,15 +218,20 @@ impl ScoringFeatureSource for BindingScoreFeatures<'_> {
     }
 
     fn hop_distance(&self) -> Option<usize> {
-        None
+        let source = self.vector_graph_input?;
+        self.binding.nodes.get(source.candidate_variable())?;
+        match self.binding.values.get(VECTOR_HOP_ANNOTATION)? {
+            Value::Int(hops) => usize::try_from(*hops).ok(),
+            _ => None,
+        }
     }
 
     fn numeric_property(&self, property: &str) -> Option<f64> {
-        self.numeric(self.binding.values.get(property))
+        self.numeric(self.property(property))
     }
 
     fn timestamp_millis(&self, property: &str) -> Option<u64> {
-        match self.binding.values.get(property)? {
+        match self.property(property)? {
             Value::Int(millis) => u64::try_from(*millis).ok(),
             _ => None,
         }
@@ -182,24 +348,83 @@ mod tests {
 
     #[test]
     fn rerank_keeps_the_best_rows_with_a_deterministic_tie_break() {
-        let row = |value: i64| Binding {
-            values: BTreeMap::from([("value".to_string(), Value::Int(value))]),
-            nodes: BTreeMap::new(),
-            relationships: BTreeMap::new(),
+        use crate::observer::NoopExecutionObserver;
+        use crate::pipeline::{
+            BatchControl, BatchExecutionContext, BindingBatch, BindingBatchSource,
         };
-        let mut retained = vec![
-            (1.0, 0usize, row(0)),
-            (3.0, 1, row(1)),
-            (3.0, 2, row(2)),
-            (2.0, 3, row(3)),
-        ];
-        crate::transform::retain_best_scored(&mut retained, 3);
-        let order: Vec<usize> = retained.iter().map(|(_, order, _)| *order).collect();
-        // Highest score first, and equal scores keep their input order.
-        assert_eq!(order, vec![1, 2, 3]);
-        assert_eq!(retained.len(), 3);
+        use crate::{ExecutionLimit, ExecutionMemoryConfig, QueryMemoryLedger};
+        use hawdb_core::{Catalog, Result};
+        use hawdb_plan_cypher::PhysicalPlan;
 
-        crate::transform::retain_best_scored(&mut retained, 0);
-        assert!(retained.is_empty());
+        struct Source(Vec<Binding>);
+        impl BindingBatchSource for Source {
+            fn execute(
+                &mut self,
+                _: &PhysicalPlan,
+                limit: ExecutionLimit,
+                emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+            ) -> Result<BatchControl> {
+                assert_eq!(limit, ExecutionLimit::unlimited());
+                emit(std::mem::take(&mut self.0))
+            }
+        }
+        let original: Vec<_> = [1.0, 3.0, 3.0, 2.0]
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, score)| {
+                binding([
+                    ("value", Value::Int(ordinal as i64)),
+                    ("score", Value::Float(score)),
+                ])
+            })
+            .collect();
+        let catalog = Catalog::default();
+        let memory = ExecutionMemoryConfig::default();
+        let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+        let spec = ScoringSpec {
+            terms: vec![ScoringTerm {
+                weight: 1.0,
+                feature: ScoreFeature::SearchScore,
+            }],
+            decay: Vec::new(),
+        };
+        for limit in [3, 0] {
+            let mut source = Source(original.clone());
+            let mut retained = Vec::new();
+            crate::transform::stream_scoring_rerank_batches(
+                &PhysicalPlan::EmptyExec,
+                "score",
+                &spec,
+                limit,
+                &mut source,
+                BatchExecutionContext {
+                    catalog: &catalog,
+                    memory: &memory,
+                    memory_ledger: &ledger,
+                    task_context: None,
+                    observer: &NoopExecutionObserver,
+                },
+                ExecutionLimit::unlimited(),
+                &mut |batch| {
+                    retained.extend(batch);
+                    Ok(BatchControl::Continue)
+                },
+            )
+            .unwrap();
+            let expected = if limit == 0 {
+                Vec::new()
+            } else {
+                vec![Value::Int(1), Value::Int(2), Value::Int(3)]
+            };
+            assert_eq!(
+                retained
+                    .iter()
+                    .map(|row| row.values["value"].clone())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(retained.len(), limit);
+            assert_eq!(ledger.snapshot().used_bytes, 0);
+        }
     }
 }

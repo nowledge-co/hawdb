@@ -21,9 +21,7 @@ use crate::expression::{
 };
 use crate::kernel::{ensure_operator_item_fits, OperatorMemoryTracker, SpillBudgetTracker};
 use crate::observer::ExecutionObserver;
-use crate::pipeline::{
-    emit_binding_iterator, runtime_checkpoint, AccountedBindingBatch, BatchControl, BindingBatch,
-};
+use crate::pipeline::{runtime_checkpoint, AccountedBindingBatch, BatchControl, BindingBatch};
 use crate::spill;
 use crate::{
     BlockingOperatorMemoryReport, ExecutionLimit, ExecutionMemoryConfig, QueryMemoryAccount,

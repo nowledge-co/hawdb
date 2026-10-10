@@ -1324,6 +1324,20 @@ impl PhysicalPlan {
                 input.write_instance_fingerprint(output);
                 output.push(')');
             }
+            PhysicalPlan::ScoringProgramExec {
+                score_column,
+                vector_graph_input,
+                program,
+                reference_time_millis,
+                limit,
+                input,
+            } => {
+                output.push_str("ScoringProgramExec(score_column=");
+                write_identifier(output, score_column);
+                output.push_str(&format!(",vector_graph_input={vector_graph_input:?},program={program:?},reference_time_millis={reference_time_millis},limit={limit},input="));
+                input.write_instance_fingerprint(output);
+                output.push(')');
+            }
             PhysicalPlan::ScoringRerankExec {
                 score_column,
                 spec,

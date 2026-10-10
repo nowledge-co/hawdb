@@ -346,6 +346,7 @@ fn retains_blocking_state(plan: &PhysicalPlan) -> bool {
             | PhysicalPlan::SortExec { .. }
             | PhysicalPlan::TopNExec { .. }
             | PhysicalPlan::ScoringRerankExec { .. }
+            | PhysicalPlan::ScoringProgramExec { .. }
     )
 }
 

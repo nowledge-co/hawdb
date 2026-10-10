@@ -1,0 +1,10 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/readiness:hawdb_readiness_tests
+-----------------------------------------------------------------------------
+
+running 2 tests
+test nowledge_mem_runtime_status::tests::production_status_fails_closed_without_route_or_projection_evidence ... ok
+test nowledge_mem_runtime_status::tests::runtime_status_reports_changefeed_lag_without_host_state ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 358 filtered out; finished in 0.00s
+

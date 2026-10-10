@@ -585,7 +585,7 @@ qualification gates.
   against the host-selected production corpus, then run the existing full
   read-equivalence and recovery gates.
 
-## Source-bound resource qualification
+## Historical initial ownership qualification
 
 The [source-bound report and raw results](benchmarks/search_initial_ownership_macos_2026_10_08/report.json)
 record fresh macOS ARM64 runs at commit
@@ -673,6 +673,125 @@ All four required Linux checks pass at the qualified source, and platform CI
 passes 12/12 jobs. Documentation publication preserves every non-documentation
 source, test, benchmark, dependency and build file byte-for-byte; final-head
 CI and independent review remain separate delivery gates.
+
+## Initial and incremental ownership qualification
+
+The [current report and complete raw evidence](benchmarks/search_incremental_ownership_macos_2026_10_09/report.json) qualify
+main `41e10dacf8b2589e416c01b9b047db98dfe01acd` (tree `6026a7fb47580a56a72677463077fee383431fdd`), including #924's partitioned initial and
+incremental ownership, #977's recovery-reader lifetime correction, and #979's
+observed FD ceiling, idle LRU and bounded mixed-level crisis policy. #913's
+shared immutable validation/admission changes are included in this fresh run.
+The documentation branch starts directly from main `fb1f835fedc450602c0364e1f2866de3bc190a18`. The local
+search run uses the pinned Bazel 9.3.0. Its source binding classifies any
+later changes; required CI for the final documentation PR is recorded
+separately from earlier implementation CI.
+
+Later #982 advances package/module and C/Python/SQL version metadata to 0.6.0.
+Its exact 43-file delta preserves search/storage/benchmark source, features,
+external dependency blocks and dependency edges. These measurements remain
+bound to `41e10dacf8b2589e416c01b9b047db98dfe01acd` and its recorded binaries; they are not new measurements
+of rebuilt 0.6.0 binaries. The source binding retains both commit identities
+and every classified before/after hash.
+
+The later #985 change adds only Bazel configuration logging. #983 changes
+parameter conversion in the separate downstream Python binding workspace;
+its exact six-file delta does not change the Rust library/search benchmark
+dependency graph. These changes are classified separately and do not turn
+the source-bound measurements into a fresh run of those binding changes.
+
+All three fresh macOS ARM64 cells retain pinned Rust 1.97.1, repeated synthetic
+65,536-byte bodies, ordinal/column-hashed 384-dimensional dense vectors,
+32 cold seed segments, the original 256 MiB complete writer budget, 8 MiB
+lexical build memory, 64 MiB segment limit, and 1,024 project descriptors.
+The benchmark host explicitly selects a 4,096 OS soft FD limit; the embedded
+library only observes host limits. Each cell includes fresh construction,
+K changed-text/vector replacements, K deletions, and every one of 128 sustained
+rounds with two upserts and an actual merge. Every peak and steady RSS sample
+is available and within the admitted writer budget. All 1,993
+source hashes and the release binary remain unchanged across the matrix.
+
+| Logical body corpus | K | Replacement artifact bytes | Delete artifact bytes | Lifetime peak RSS MiB | Maximum steady RSS MiB | Actual merges | Sustained artifact amplification |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 5 GiB | 10 | 96,406 | 48,073 | 61.437500 | 61.406250 | 128 | 1.0402 |
+| 20 GiB | 10 | 127,635 | 79,390 | 142.125000 | 142.093750 | 128 | 1.5129 |
+| 20 GiB | 100 | 570,223 | 110,926 | 150.875000 | 150.750000 | 128 | 1.5136 |
+
+The sustained amplification denominator is every round's changed body and
+embedding bytes; its numerator is newly emitted checkpoint plus merge
+artifacts. It excludes device/filesystem writes and graph/WAL bytes. The raw
+report retains every round, initial/upsert vector and RaBitQ payload bytes,
+fixed-K corpus scaling and fixed-corpus K scaling.
+
+The artifact-byte qualification requires all three shapes: less than twofold
+checkpoint-byte growth at fixed K when the corpus grows fourfold; at most
+tenfold byte growth when K grows tenfold at fixed corpus; increasing changed
+vector/RaBitQ payloads; no base-document hydration; and incremental checkpoints
+below one percent of full artifacts. This is an empirical check including
+manifest overhead, not an asymptotic proof.
+
+For the matched 20 GiB/K10 shape, historical `8cbe16f8` writes 1,630,468,181 search
+artifact bytes at checkpoint, versus 127,635 here: an observed artifact-byte
+ratio of 12774.46. Historical initialization includes all 32 seed rows
+together. Persistent formats, locked dependencies and admission APIs differ,
+so this qualifies search artifact bytes only. Repeated synthetic text is
+compressible; logical corpus size is distinct from emitted artifact size.
+Host/cache state is uncontrolled and timing is supporting evidence.
+
+All five full current-source search profiles pass:
+
+- `hawdb_search_tests`: 802 passed, 0 failed, 20 dedicated campaigns ignored
+- `hawdb_search_acl_tests`: 804 passed, 0 failed, 20 dedicated campaigns ignored
+- `hawdb_search_text_background_tests`: 748 passed, 0 failed, 20 dedicated campaigns ignored
+- `hawdb_search_text_only_tests`: 731 passed, 0 failed, 20 dedicated campaigns ignored
+- `hawdb_search_text_vector_tests`: 785 passed, 0 failed, 20 dedicated campaigns ignored
+
+Coverage includes all six initial and six incremental ownership regressions,
+complete query results/scores, configurable tier/fan-in/crisis policy,
+bounded background QoS, cancellation, pinned old readers and rejection before
+publication. Background capability differences stay explicit across profiles.
+The release reference probe passes all 294 comparisons with distinct and
+changed vectors, required RaBitQ artifacts, three actual merges and retained
+reader checks.
+
+The complete recovery suite passes 11 actual cases, zero failed or
+ignored, covering 3,260 fault plans across 30 cut families. It
+retains the FD32 fixture, old/new hydration and query oracles, publication
+cuts and namespace cases. Its model covers loss, tearing and reordering
+around publication and overlapping merge boundaries. Finite fault images
+assume completed POSIX synchronization and same-directory atomic rename;
+process-kill tests alone are not hardware power-loss proof.
+
+Partitioned initial import covers both new and existing roots at data writes,
+private-prefix manifest renames and final real-selector publication. The
+append/mutation/compaction families check complete old/new documents and
+text/vector/hybrid query oracles, including partitioned batches. Named cases
+and every actual cut-family count are retained in the coverage evidence.
+
+The required 96-target local fuzz command runs at this fixed source, with
+unchanged target registration, seeds, cases, resource caps and deadlines.
+The initial exact command passes: 96 of 96 targets execute and 0 use passing cached results. No isolated retry is required.
+Every selected successful raw Rust summary is positive with zero failures or
+ignored cases; shell smoke coverage retains its positive XML case. All actual
+logs, XML, command outcomes and source/binary receipts remain in the report.
+Older #979 fuzz qualification is archived and does not substitute for this run.
+
+The original pre-#979 `594d8a00` matrix, older allocation/resource failures,
+and completed `7cb639b9` query/recovery suites are separate raw archives;
+none replaces a cell above. Fresh native formatting, strict all-feature/all-target
+workspace Clippy, explicit prek, Linux cross-Clippy and documented browser
+WASM Clippy pass on this fixed source. Linux cross-Clippy is compilation/lint
+evidence. The final documentation commit still runs its own required precommit
+checks, and its PR records independent review, required CI and actual main
+delivery.
+
+Reproduce with the unchanged commands and environment values in the report's
+scale manifest and scripts. Finite query witnesses are not universal ANN
+recall guarantees. Private adaptive partitions are not explicit states in
+the abstract model. Crash-orphan reclamation (#392), further owner-count
+lookup/FD work (#819) and rebuild bisection costs remain separate work.
+Large single-document owners retain hard publication/segment limits and
+require sufficient compaction input admission. This qualification does not
+authorize a stable Mem release or production activation.
 
 ## Non-goals
 

@@ -1,0 +1,10 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/optimizer-graph:hawdb_optimizer_cardinality_metadata_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+Cardinality metadata campaign: 2304 catalog/plan cases, 20748 operators, 1161888 metadata comparisons
+test graph::cardinality::bindings::tests::cardinality_metadata_differential_campaign ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in 1.16s
+
