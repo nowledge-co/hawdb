@@ -565,7 +565,11 @@ retained candidate releases the displaced candidate before admitting its
 replacement. Ordered relationship keys and cold equality/union/lookup dedup
 keys also take the retained allowance before their containers grow. Direct
 public scan contexts attach their supplied retained limit at this read boundary;
-standalone allocators retain their explicit numeric policy.
+the outer union and cold reader reuse one account for concurrently retained
+keys. Standalone allocators retain their explicit numeric policy. Streaming
+analytics stages canonical output identities under result materialization on
+the query root, keeping that grant while the identity map is alive. Its scalar
+algorithm result vector still obeys the retained-state allowance.
 
 Native full-node Filter pushes its complete predicate into the scan; optional
 property pruning does not replace predicate evaluation. Its other store-backed

@@ -265,14 +265,19 @@ impl GraphAlgorithmSpec<'_> {
             charge_graph_algorithm_memory("streaming", "result", &mut tracker, result_bytes)?;
             // Hydrate once per original node before emitting, so a late lookup
             // failure cannot expose a prefix of identity-bearing algorithm rows.
+            // Canonical output identities use the query allowance independently
+            // of the scalar algorithm result vector's retained-state cap.
+            let mut identity_tracker = OperatorMemoryTracker::with_account(
+                context.memory.query_memory_bytes,
+                context.memory_ledger.account(
+                    QueryMemoryClass::ResultMaterialization,
+                    "GraphAlgorithm streaming identity staging",
+                    context.memory.query_memory_bytes,
+                ),
+            );
             let mut identities = BTreeMap::new();
             if self.return_node_identity {
-                charge_graph_algorithm_memory(
-                    "streaming",
-                    "identity staging header",
-                    &mut tracker,
-                    1024,
-                )?;
+                identity_tracker.try_charge(1024)?;
                 for (ordinal, node) in rows
                     .node_ids()
                     .take(execution_limit.output_rows.unwrap_or(usize::MAX))
@@ -302,12 +307,7 @@ impl GraphAlgorithmSpec<'_> {
                         .saturating_mul(3)
                         .saturating_add(value_memory_bytes(&id))
                         .saturating_add(value_memory_bytes(&label));
-                    charge_graph_algorithm_memory(
-                        "streaming",
-                        "identity staging",
-                        &mut tracker,
-                        bytes,
-                    )?;
+                    identity_tracker.try_charge(bytes)?;
                     identities.insert(node, (id, label));
                     drop(hydration);
                 }

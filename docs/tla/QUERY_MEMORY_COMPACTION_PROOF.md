@@ -148,7 +148,10 @@ charges, and both remain subject to R <= Q. Native rejected full-node rows drop
 before the next source read; still-live batches, worker/spill allowances and
 unconsumed lookup/GraphSeed rows retain their original charges. Result
 materialization uses a separate root account, preserving the blocking bound on
-algorithm/traversal state.
+algorithm/traversal state. Streaming canonical identity staging keeps its
+result-materialization grant while its output map is alive. Concurrent outer
+union and cold-reader key sets share one retained account, so their combined
+charge remains bounded by that operator's B[a].
 
 The policy does not alter the ledger transition algorithm or strengthen this
 proof into a statement about exact heap/RSS or arbitrary decoder allocation.

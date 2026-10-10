@@ -1044,6 +1044,13 @@ pub fn stream_index_node_union_seek_batches(
     let Some(label_id) = context.catalog.label_id(label) else {
         return Ok(BatchControl::Continue);
     };
+    // The outer union and cold storage reader can retain keys concurrently.
+    // Attach once so public contexts also share one operator allowance.
+    let source_account = context.source_account();
+    let context = NodeScanContext {
+        memory_account: &source_account,
+        ..context
+    };
     let key_account = context.retained_account("IndexNodeUnionSeekExec union keys");
     let mut allocate_keys =
         |bytes| crate::store::admit_graph_read(&key_account, context.task_context, bytes);

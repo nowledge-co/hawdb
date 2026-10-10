@@ -4087,3 +4087,143 @@ fn source_memory_cold_full_seek_keeps_storage_dedup_cap() {
 fn source_memory_cold_projected_seek_keeps_storage_dedup_cap() {
     run_cold_source_retained_keys(true);
 }
+
+#[test]
+fn source_memory_cold_union_shares_one_retained_allowance() {
+    use hawdb_executor::scan::{NodeProjectionScanSpec, NodeScanContext};
+    use hawdb_executor::QueryMemoryClass;
+    use hawdb_plan_cypher::ExactPropertySeekBranch;
+    let directory = StoredPropertyDirectory::new();
+    let replay = hawdb_storage::store::WalReplayConfig {
+        residency_mode: hawdb_storage::store::StorageResidencyMode::OutOfCore,
+        ..Default::default()
+    };
+    let mut catalog = Catalog::default();
+    let mut store = GraphStore::open_with_durability_and_replay_config(
+        &directory.0,
+        &mut catalog,
+        Default::default(),
+        replay,
+    )
+    .unwrap();
+    store.create_node_table(&mut catalog, "Memory").unwrap();
+    store
+        .create_property_descriptor(
+            &mut catalog,
+            TableKind::Node,
+            "Memory",
+            "id",
+            PropertyType::Int,
+            false,
+        )
+        .unwrap();
+    store
+        .create_property_index(&mut catalog, "Memory", "id")
+        .unwrap();
+    let expected: Vec<_> = [1, 2]
+        .into_iter()
+        .map(|id| {
+            store
+                .create_node(
+                    &mut catalog,
+                    "Memory",
+                    BTreeMap::from([("id".into(), Value::Int(id))]),
+                )
+                .unwrap()
+        })
+        .collect();
+    store.checkpoint(&catalog).unwrap();
+    drop(store);
+    catalog = Catalog::default();
+    store = GraphStore::open_with_durability_and_replay_config(
+        &directory.0,
+        &mut catalog,
+        Default::default(),
+        replay,
+    )
+    .unwrap();
+    assert!(store.is_out_of_core());
+    let branches = [1, 1, 2].map(|id| ExactPropertySeekBranch {
+        property: "id".into(),
+        values: vec![Value::Int(id)],
+    });
+    // Direct public full/projected callers need not attach retained metadata.
+    for projected in [false, true] {
+        for cap in [512, 4096] {
+            let ledger = QueryMemoryLedger::new(nz(128 * 1024));
+            let source = ledger.account(
+                QueryMemoryClass::ExternalRead,
+                "cold union source",
+                nz(32 * 1024),
+            );
+            let output = ledger.account(
+                QueryMemoryClass::PipelineBatch,
+                "cold union output",
+                nz(16 * 1024),
+            );
+            let context = NodeScanContext {
+                catalog: &catalog,
+                store: &store,
+                execution_limit: ExecutionLimit::unlimited(),
+                memory_budget: nz(cap),
+                memory_account: &source,
+                batch_memory_budget: nz(16 * 1024),
+                batch_memory_account: &output,
+                batch_rows: 1,
+                task_context: None,
+            };
+            let mut ids = Vec::new();
+            let mut emit = |batch: BindingBatch| {
+                let snapshot = ledger.snapshot();
+                let retained = snapshot
+                    .classes
+                    .iter()
+                    .find(|item| item.class == QueryMemoryClass::BlockingState)
+                    .unwrap();
+                assert!(
+                    retained.used_bytes <= cap,
+                    "public union split its retained allowance: {snapshot:?}"
+                );
+                ids.extend(batch.into_iter().map(|row| row.nodes["n"].id));
+                Ok(BatchControl::Continue)
+            };
+            let observer = QueryExecutionObserver::default();
+            let result = if projected {
+                hawdb_executor::scan::stream_node_projection_scan_batches(
+                    NodeProjectionScanSpec {
+                        variable: "n",
+                        label: "Memory",
+                        access: &NodeProjectionAccess::PropertyUnion {
+                            branches: branches.to_vec(),
+                        },
+                        required_properties: &[],
+                        predicate: None,
+                        items: &[],
+                    },
+                    context,
+                    &observer,
+                    &mut emit,
+                )
+            } else {
+                hawdb_executor::scan::stream_index_node_union_seek_batches(
+                    "n", "Memory", &branches, context, &observer, &mut emit,
+                )
+            };
+            if cap == 512 {
+                let error = result.unwrap_err();
+                assert!(error.to_string().contains("512-byte budget"), "{error}");
+                assert!(
+                    ids.is_empty(),
+                    "cold inner and outer sets cannot fit together"
+                );
+            } else {
+                assert_eq!(result.unwrap(), BatchControl::Continue);
+                assert_eq!(
+                    ids, expected,
+                    "duplicate keys must not grow the retained set"
+                );
+            }
+            assert_eq!(ledger.snapshot().used_bytes, 0);
+        }
+    }
+}
