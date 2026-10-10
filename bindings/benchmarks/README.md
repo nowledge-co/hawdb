@@ -82,6 +82,43 @@ competing work if an exploratory run shares the host.
 
 ## Allocation and conversion observations
 
+### Manual two-revision Linux comparison
+
+The Native Bindings workflow has an opt-in `boundary_comparison` dispatch.
+It never runs this benchmark on pull requests or ordinary pushes. It builds
+both native producers with default Bazel configuration and `-c opt`, finishes
+compilation before measurement, and runs the unchanged five-case driver for
+Rust, Python and Go. The dispatch defaults retain all three sizes, both
+backends, one discarded iteration and three measured iterations. Large cases
+can reach the workflow's six-hour execution ceiling; partial reports and raw
+failures are uploaded and cannot count as completed qualification.
+
+`compare.py` pins baseline `69d526a2d2d4b75741a731d0203949ffc1d123fb` and records
+the candidate HEAD and staged tree. The isolated baseline adds the identical
+ordinary harness and the patch in `main-baseline-adapters.json`: an untimed
+in-memory constructor/Go opening adapter and the exhaustive Python error mapping
+needed to compile this main revision. Query, conversion, write and durability
+implementations remain the baseline's. The patch is not applied to production
+main and refuses any other baseline revision. Build logs, exact staged source,
+native/launcher hashes and all raw matrix outcomes remain in the artifact.
+Each driver's source/artifact guards still apply. Result ratios are ratios of
+medians from sequential baseline/candidate runs, not alternated paired samples.
+Any refused, incomplete or failed sample prevents a group speedup claim.
+
+```console
+gh workflow run native-bindings.yml --ref feat/978-boundary-baseline \
+  -f boundary_comparison=true
+```
+
+Narrower `benchmark_sizes`, `benchmark_cases` and `benchmark_samples` inputs
+are available for wiring checks and staged qualification; their exact scope is
+recorded and does not satisfy omitted workloads. This default-configuration
+Linux path avoids the local macOS 27 stripped-dylib loading failure without
+changing target flags or repairing benchmark binaries. The ordinary owned
+matrix remains separate from retained/Arrow query and memory qualification.
+
+### Instrumented local observations
+
 Instrumented runs are separate from ordinary latency results. Build these
 manual targets explicitly:
 

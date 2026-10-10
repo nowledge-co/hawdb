@@ -13,6 +13,7 @@ import unittest
 from unittest import mock
 
 import run as driver
+import compare
 
 
 def complete_profile(layer):
@@ -146,6 +147,53 @@ class DriverTests(unittest.TestCase):
             path.write_bytes(b"after!")
             with self.assertRaisesRegex(RuntimeError, "artifacts changed"):
                 driver.require_artifact_identity((path,), identity)
+
+
+class ComparisonTests(unittest.TestCase):
+    def report(self, elapsed=20):
+        return {"samples": 2, "terminal": True, "records": [
+            {"layer": "python", "case": "point", "size": 1000, "backend": "file",
+             "iteration": iteration, "discarded": False, "status": "ok",
+             "process_exit": 0, "parity": True, "profile_valid": True,
+             "phase_timing_valid": True, "elapsed_ns": elapsed,
+             "query_boundary_ns": elapsed, "write_boundary_ns": 0, "read_boundary_ns": elapsed}
+            for iteration in (1, 2)
+        ]}
+
+    def test_complete_groups_compare_independent_read_and_write_phases(self):
+        group = compare.summarize(self.report(), self.report(10))[0]
+        self.assertTrue(group["qualified"])
+        self.assertEqual(group["read_boundary_ns_median_speedup"], 2)
+        self.assertIsNone(group["write_boundary_ns_median_speedup"])
+
+    def test_one_refusal_prevents_median_speedup_claim(self):
+        after = self.report(10)
+        after["records"][1].update(status="error", parity=None, process_exit=1)
+        group = compare.summarize(self.report(), after)[0]
+        self.assertFalse(group["qualified"])
+        self.assertNotIn("elapsed_ns_median_speedup", group)
+
+    def test_missing_sample_or_nonterminal_report_cannot_qualify(self):
+        for kind in ("missing", "nonterminal"):
+            with self.subTest(kind=kind):
+                after = self.report()
+                if kind == "missing":
+                    after["records"].pop()
+                else:
+                    after["terminal"] = False
+                self.assertFalse(compare.summarize(self.report(), after)[0]["qualified"])
+
+    def test_failed_parity_cannot_qualify_even_with_zero_exit(self):
+        after = self.report()
+        after["records"][0]["parity"] = False
+        self.assertFalse(compare.summarize(self.report(), after)[0]["qualified"])
+
+    def test_baseline_adapter_refuses_unqualified_or_mutable_revision(self):
+        compare.validate_revision(compare.BASELINE)
+        for revision in ("main", "69d526a2", "f" * 40):
+            with self.subTest(revision=revision):
+                with self.assertRaises(ValueError):
+                    compare.validate_revision(revision)
 
 
 if __name__ == "__main__":
