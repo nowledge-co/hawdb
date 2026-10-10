@@ -14,10 +14,25 @@
 
 use super::*;
 
+/// Allocation ownership accounted by one maintenance controller. Lease charges
+/// include their concrete permit payload. This is not a process RSS sample or
+/// proof that a caller passed every allocation through the controller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeMaintenanceMemoryReport {
+    pub incremental: bool,
+    pub working_ceiling_bytes: u64,
+    /// Reserved mode covers allocations within this charge. Incremental mode
+    /// charges allocations in addition to this fixed controller reservation.
+    pub upfront_reserved_bytes: u64,
+    pub live_accounted_bytes: u64,
+    pub peak_accounted_bytes: u64,
+}
+
 /// One resumable background maintenance operation on a single governor.
 ///
-/// The original conservative memory and process-memory reservations cover all
-/// candidate state until this owner closes and its allocation leases die.
+/// Whole-reservation work retains its original conservative memory/process
+/// charge. Incremental work retains a fixed controller charge and admits each
+/// allocation separately, refunding it after the allocation is destroyed.
 /// Pausing releases CPU and task capacity; physical I/O waves retain their own
 /// charges until their guards drop. No second memory admission is needed to
 /// resume. Callers must pause only at a cooperative execution boundary, after
@@ -42,15 +57,54 @@ impl RuntimeGovernor {
         io_slots: usize,
         parent: RuntimeTaskContext,
     ) -> Result<RuntimeMaintenanceWork, RuntimeAdmissionError> {
+        self.try_admit_maintenance_memory(memory_bytes, None, io_slots, parent)
+    }
+
+    /// Admits a fixed maintenance owner and charges concrete allocations as
+    /// their leases are created. `working_ceiling_bytes` limits simultaneous
+    /// allocation ownership; it is a ceiling, not an upfront reservation.
+    ///
+    /// Every new allocation competes for the same governor/process memory as
+    /// other work and sheds under critical background pressure. Leases may
+    /// survive pause, resume and owner closure without keeping execution live.
+    /// Callers must account all allocations through the returned context and
+    /// include their shared control structures in `owner_memory_bytes`.
+    pub fn try_admit_incremental_maintenance(
+        &self,
+        owner_memory_bytes: u64,
+        working_ceiling_bytes: u64,
+        io_slots: usize,
+        parent: RuntimeTaskContext,
+    ) -> Result<RuntimeMaintenanceWork, RuntimeAdmissionError> {
+        self.try_admit_maintenance_memory(
+            owner_memory_bytes,
+            Some(working_ceiling_bytes),
+            io_slots,
+            parent,
+        )
+    }
+
+    fn try_admit_maintenance_memory(
+        &self,
+        memory_bytes: u64,
+        working_ceiling: Option<u64>,
+        io_slots: usize,
+        parent: RuntimeTaskContext,
+    ) -> Result<RuntimeMaintenanceWork, RuntimeAdmissionError> {
         let request =
             RuntimeWorkRequest::background_maintenance(memory_bytes).with_io_wave_slots(io_slots);
         let mut execution = self.try_admit(request)?;
         // Transfer the memory owner before releasing any execution admission.
         // The initial charge remains in the governor and the host RSS policy.
-        let memory = execution
+        let mut memory = execution
             .memory_controller
             .take()
             .expect("background maintenance owns a working-memory controller");
+        if let Some(ceiling) = working_ceiling {
+            Arc::get_mut(&mut memory)
+                .expect("working memory has not been bound to a task")
+                .enable_incremental(ceiling);
+        }
         execution.request.memory_bytes = 0;
         let mut work = RuntimeMaintenanceWork {
             governor: self.clone(),
@@ -65,6 +119,10 @@ impl RuntimeGovernor {
 }
 
 impl RuntimeMaintenanceWork {
+    pub fn memory_report(&self) -> RuntimeMaintenanceMemoryReport {
+        self.memory.report()
+    }
+
     /// Returns the current admitted context, or `None` while paused.
     pub fn task_context(&self) -> Option<&RuntimeTaskContext> {
         self.task.as_ref()
@@ -83,7 +141,7 @@ impl RuntimeMaintenanceWork {
 
     /// Reacquires execution capacity on the original governor.
     ///
-    /// A denial leaves this owner paused with its original memory charge.
+    /// A denial leaves this owner paused with its retained memory charges.
     /// An already running operation keeps its current context unchanged.
     pub fn try_resume(&mut self, parent: RuntimeTaskContext) -> Result<(), RuntimeAdmissionError> {
         if self.execution.is_none() {
@@ -95,7 +153,7 @@ impl RuntimeMaintenanceWork {
     }
 
     fn bind(&mut self, parent: RuntimeTaskContext) {
-        let reservation = RuntimeMemoryReservation::new(self.request.memory_bytes, 0);
+        let reservation = RuntimeMemoryReservation::new(self.memory.ceiling(), 0);
         let reservation = parent
             .memory_reservation()
             .map_or(reservation, |ceiling| reservation.intersect(ceiling));
@@ -121,3 +179,6 @@ impl Drop for RuntimeMaintenanceWork {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod incremental_tests;

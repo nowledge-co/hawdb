@@ -2246,3 +2246,77 @@ while cleanup owns CPU/task/I/O. All fixtures preserve the one-CPU limit,
 200 MiB candidate budget, 16 KiB out-of-core delta limit, 512-byte values,
 pinned old readers and independent reopen. Both synchronous manual checkpoint
 APIs continue to complete below thresholds and during background denial.
+
+### Incremental allocation ledger foundation
+
+`RuntimeGovernor::try_admit_incremental_maintenance` admits a fixed controller
+reservation and then admits each concrete allocation lease against the original
+governor and process-memory policy. Its working ceiling limits simultaneous
+allocation ownership rather than reserving that whole ceiling upfront. The
+existing whole-reservation maintenance API keeps its original behavior. Both
+modes share pause/resume execution ownership and retain cancellation, deadline,
+physical I/O-wave accounting and explicit caller memory ceilings.
+
+Incremental allocation admission includes the concrete lease payload. A unit
+that cannot fit even after other allocations are released, including its own
+irreducible controller reservation, returns a typed permanent denial. Competing
+allocations, critical pressure and unavailable process-memory headroom retain
+their retryable classification. Failed admission changes no existing ownership.
+Dropping an allocation refunds its own memory/process charge. Closing work
+cancels execution; closed task clones and allocation leases retain the fixed
+controller charge until their final owner drops, without retaining CPU, task or
+I/O execution. `RuntimeMaintenanceMemoryReport` exposes live and peak accounted
+allocation bytes separately from the upfront reservation. It is not an RSS
+sample or a claim that all caller allocations were accounted.
+
+A storage regression prepares a 1025-node materialized checkpoint, applies a
+controlled one-record suffix after pause/resume, publishes, preserves every old
+reader value and independently reopens every current value. On the same source,
+the legacy estimate is 143,959,328 bytes and cannot fit the 16 MiB governor. The
+incremental path starts with a 64 KiB controller reservation, observes nonzero
+scratch allocation peaks within that unchanged governor budget, releases the
+scratch buffers before handoff, and retains the controlled suffix allocations
+through publication. All governor charges reach zero after their owners drop.
+Separate resource tests cover simultaneous allocation limits, epoch reuse,
+lower parent ceilings, pressure recovery, process-policy sharing and the
+irreducible-owner permanent-denial boundary.
+
+This foundation does not yet replace the automatic owner's conservative
+whole-candidate admission. Before that switch, preparation must account its
+remaining allocations and retain resumable builder state at bounded resource
+denials. Known paths requiring inspection include property-projection
+definition vectors/strings and relationship-definition deduplication, relational
+checkpoint planning and final serving-reader construction. Complete CPU,
+descriptor, I/O, temporary-disk, cache and cleanup ledgers, out-of-core delta
+scaling and typed owner-level permanent-denial reporting remain required. The
+same synchronous manual API contract remains in force.
+
+### Publication lock scope and duplicated descriptors
+
+The initial full storage suite exposed a controlled overflow cancellation case
+returning a busy-lock denial after its preceding publication scope had exited.
+The isolated case passed. A deterministic duplicated-descriptor reproduction
+then failed for both overflow and row-page publication, in both ordinary and
+controlled acquisition modes: closing the original file alone leaves the lock
+held until its duplicate closes. Concurrent process creation can temporarily
+inherit the same descriptor before close-on-exec; this is consistent with the
+parallel-suite symptom, not a claim that its exact process interleaving was
+captured.
+
+Both actual publisher adapters now return the same private
+`PublicationLockGuard`, constructed only after successful acquisition. Dropping
+the publication scope explicitly unlocks before closing its original file,
+including when a controlled post-operation cancellation rejects the result.
+Failed acquisition never constructs a guard or unlocks another owner. The
+existing descriptor admission, fail-fast controlled contention, blocking
+ordinary acquisition, persistent sidecar bytes and publication/durability
+ordering are preserved. File closure remains the fallback if unlocking fails;
+this does not introduce a new unlock-error reporting guarantee.
+
+Two byte-identical before/after regressions keep a duplicated descriptor alive,
+verify contention while the publication scope is active, require immediate
+controlled reacquisition after that scope exits, and preserve every sidecar
+byte. Their baseline uses the uncommitted incremental-ledger foundation over
+`b25a086f`, with the original lock implementation. The helper releases every
+descriptor before asserting its recorded failure, without subprocess timing,
+extra retries, relaxed limits or changed cancellation assertions.

@@ -18,6 +18,7 @@
 
 use super::*;
 use crate::background::CheckpointWorkError;
+use crate::file_io::PublicationLockGuard;
 
 pub(in crate::relational::overflow::publication) const BLOCK_BYTES: usize = 64 * 1024;
 
@@ -182,9 +183,9 @@ pub(in crate::relational::overflow::publication) fn publish(
 pub(in crate::relational::overflow::publication) fn lock(
     directory: &Path,
     work: Option<&CheckpointWorkContext>,
-) -> Result<File, RelationalOverflowPublicationError> {
+) -> Result<PublicationLockGuard, RelationalOverflowPublicationError> {
     if work.is_none() {
-        return acquire_publication_lock(directory);
+        return acquire_publication_lock(directory).map(PublicationLockGuard::new);
     }
     io(work, || {
         let lock = OpenOptions::new()
@@ -195,7 +196,7 @@ pub(in crate::relational::overflow::publication) fn lock(
             .open(directory.join(RELATIONAL_OVERFLOW_PUBLICATION_LOCK_FILE))
             .map_err(durability("open overflow publication lock"))?;
         match lock.try_lock() {
-            Ok(()) => Ok(lock),
+            Ok(()) => Ok(PublicationLockGuard::new(lock)),
             Err(std::fs::TryLockError::WouldBlock) => {
                 Err(RelationalOverflowPublicationError::Admission(
                     "overflow publication lock is busy".into(),

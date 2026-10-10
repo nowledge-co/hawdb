@@ -44,6 +44,10 @@ mod verbatim_tests;
 #[path = "graph_checkpoint_candidate/unit_qos_tests.rs"]
 mod unit_qos_tests;
 
+#[cfg(test)]
+#[path = "graph_checkpoint_candidate/incremental_memory_tests.rs"]
+mod incremental_memory_tests;
+
 /// Identity of the complete foreground prefix from which a worker publishes.
 /// Opaque fields prevent a facade caller from manufacturing a partial receipt.
 #[doc(hidden)]

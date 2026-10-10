@@ -47,7 +47,7 @@ const BACKGROUND_ADMISSION_AGING: Duration = Duration::from_millis(100);
 mod maintenance;
 mod retained_memory;
 mod working_memory;
-pub use maintenance::RuntimeMaintenanceWork;
+pub use maintenance::{RuntimeMaintenanceMemoryReport, RuntimeMaintenanceWork};
 pub use retained_memory::RuntimeRetainedMemory;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -37,6 +37,13 @@ pub enum RuntimeMemoryError {
         requested_bytes: u64,
         available_bytes: u64,
     },
+    /// A concrete allocation was denied by its resource ledger. A retryable
+    /// denial may recover after pressure or retained allocations change.
+    AdmissionDenied {
+        requested_bytes: u64,
+        available_bytes: u64,
+        retryable: bool,
+    },
     Closed,
     Pressure,
 }
@@ -47,6 +54,8 @@ impl Display for RuntimeMemoryError {
             Self::Stopped(reason) => Display::fmt(reason, formatter),
             Self::ReservationExceeded { requested_bytes, available_bytes } => write!(formatter,
                 "runtime memory allocation requested {requested_bytes} bytes, exceeding the {available_bytes}-byte remaining reservation"),
+            Self::AdmissionDenied { requested_bytes, available_bytes, retryable } => write!(formatter,
+                "runtime memory allocation admission denied: requested {requested_bytes} bytes, available {available_bytes} bytes, retryable {retryable}"),
             Self::Closed => formatter.write_str("runtime memory reservation is closed"),
             Self::Pressure => formatter.write_str("background memory pressure defers allocation"),
         }

@@ -1183,6 +1183,15 @@ mod lock_tests {
     use super::*;
 
     #[test]
+    fn publication_lock_release_does_not_wait_for_a_duplicated_descriptor() {
+        let work = crate::background::CheckpointWorkContext::default();
+        crate::file_lock_tests::assert_owner_release_with_duplicate(
+            RELATIONAL_ROW_PAGE_PUBLICATION_LOCK_FILE,
+            |directory, controlled| checkpoint::lock(directory, controlled.then_some(&work)),
+        );
+    }
+
+    #[test]
     fn publication_lock_contract() {
         crate::file_lock_tests::assert_contract(
             RELATIONAL_ROW_PAGE_PUBLICATION_LOCK_FILE,

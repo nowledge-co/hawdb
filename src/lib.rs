@@ -301,9 +301,9 @@ pub use hawdb_qos::{
     IoConcurrencyBudget, ProcessMemoryCapabilities, ProcessMemoryPolicy, ProcessMemoryPolicyConfig,
     ProcessMemoryPolicySnapshot, ProcessMemoryProfile, ProcessMemorySnapshot, RuntimeAdmissionCode,
     RuntimeAdmissionError, RuntimeGovernor, RuntimeGovernorConfig, RuntimeGovernorLimits,
-    RuntimeGovernorSnapshot, RuntimeIoReservationScope, RuntimeMaintenanceWork,
-    RuntimeMemoryPressure, RuntimeMemorySnapshot, RuntimePermit, RuntimeResourceBudget,
-    RuntimeResourceSnapshot, RuntimeRetainedMemory, RuntimeTelemetryEvent,
+    RuntimeGovernorSnapshot, RuntimeIoReservationScope, RuntimeMaintenanceMemoryReport,
+    RuntimeMaintenanceWork, RuntimeMemoryPressure, RuntimeMemorySnapshot, RuntimePermit,
+    RuntimeResourceBudget, RuntimeResourceSnapshot, RuntimeRetainedMemory, RuntimeTelemetryEvent,
     RuntimeTelemetryEventKind, RuntimeTelemetrySink, RuntimeWorkKind, RuntimeWorkPriority,
     RuntimeWorkRequest, StorageDeviceDiscoverySource, StorageDeviceProfile, StorageMediaKind,
 };

@@ -10,18 +10,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Actual background allocations share one already admitted working ceiling.
-//! After execution closes, retain the complete original memory reservation
-//! until the last allocation lease drops. This conservative overlap also keeps
-//! the original process-memory reservation, without readmitting CPU or I/O.
+//! Actual background allocations share one working ceiling. Reserved work
+//! retains its original working/process reservation through the last lease.
+//! Incremental work charges each allocation separately and keeps a fixed
+//! controller reservation through its final owner, without retaining execution.
 
 use super::*;
 use hawdb_core::{RuntimeMemoryController, RuntimeMemoryError, RuntimeMemoryPermit};
+
+mod incremental;
 
 #[derive(Debug)]
 pub(super) struct GovernorMemoryController {
     governor: Arc<RuntimeGovernorInner>,
     ceiling: u64,
+    incremental: bool,
     state: Mutex<WorkingMemoryState>,
 }
 
@@ -29,6 +32,7 @@ pub(super) struct GovernorMemoryController {
 struct WorkingMemoryState {
     active: bool,
     charged_bytes: u64,
+    peak_charged_bytes: u64,
     reservation: Option<WorkingMemoryReservation>,
 }
 
@@ -58,9 +62,11 @@ impl GovernorMemoryController {
         Self {
             governor: governor.clone(),
             ceiling: request.memory_bytes,
+            incremental: false,
             state: Mutex::new(WorkingMemoryState {
                 active: true,
                 charged_bytes: 0,
+                peak_charged_bytes: 0,
                 reservation: Some(WorkingMemoryReservation {
                     governor,
                     bytes: request.reserved_memory_bytes(),
@@ -70,11 +76,31 @@ impl GovernorMemoryController {
         }
     }
 
+    pub(super) fn enable_incremental(&mut self, ceiling: u64) {
+        self.ceiling = ceiling;
+        self.incremental = true;
+    }
+
+    pub(super) fn ceiling(&self) -> u64 {
+        self.ceiling
+    }
+
+    pub(super) fn report(&self) -> RuntimeMaintenanceMemoryReport {
+        let state = mutex_lock(&self.state);
+        RuntimeMaintenanceMemoryReport {
+            incremental: self.incremental,
+            working_ceiling_bytes: self.ceiling,
+            upfront_reserved_bytes: state.reservation.as_ref().map_or(0, |owner| owner.bytes),
+            live_accounted_bytes: state.charged_bytes,
+            peak_accounted_bytes: state.peak_charged_bytes,
+        }
+    }
+
     pub(super) fn close(&self) {
         let reservation = {
             let mut state = mutex_lock(&self.state);
             state.active = false;
-            if state.charged_bytes == 0 {
+            if state.charged_bytes == 0 && !self.incremental {
                 state.reservation.take()
             } else {
                 None
@@ -92,6 +118,9 @@ impl RuntimeMemoryController for GovernorMemoryBinding {
         bytes: u64,
         ceiling: u64,
     ) -> Result<Box<dyn RuntimeMemoryPermit>, RuntimeMemoryError> {
+        if self.0.incremental {
+            return self.0.reserve_incremental(bytes, ceiling);
+        }
         if mutex_lock(&self.0.governor.state).resources.memory.pressure
             == RuntimeMemoryPressure::Critical
         {
@@ -117,6 +146,7 @@ impl RuntimeMemoryController for GovernorMemoryBinding {
                 available_bytes: available,
             })?;
         state.charged_bytes += charged;
+        state.peak_charged_bytes = state.peak_charged_bytes.max(state.charged_bytes);
         drop(state);
         Ok(Box::new(GovernorMemoryPermit {
             controller: self.0.clone(),

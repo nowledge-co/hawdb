@@ -18,6 +18,7 @@
 
 use super::*;
 use crate::background::CheckpointWorkContext;
+use crate::file_io::PublicationLockGuard;
 
 pub(super) fn cpu<T>(
     work: Option<&CheckpointWorkContext>,
@@ -119,9 +120,9 @@ pub(in crate::relational::row_page::publication) fn io<T>(
 pub(super) fn lock(
     directory: &Path,
     work: Option<&CheckpointWorkContext>,
-) -> Result<File, RelationalRowPagePublicationError> {
+) -> Result<PublicationLockGuard, RelationalRowPagePublicationError> {
     if work.is_none() {
-        return acquire_publication_lock(directory);
+        return acquire_publication_lock(directory).map(PublicationLockGuard::new);
     }
     io(work, || {
         let lock = OpenOptions::new()
@@ -132,7 +133,7 @@ pub(super) fn lock(
             .open(directory.join(RELATIONAL_ROW_PAGE_PUBLICATION_LOCK_FILE))
             .map_err(durability("open row-page publication lock"))?;
         match lock.try_lock() {
-            Ok(()) => Ok(lock),
+            Ok(()) => Ok(PublicationLockGuard::new(lock)),
             Err(std::fs::TryLockError::WouldBlock) => {
                 Err(RelationalRowPagePublicationError::Admission(
                     "row-page publication lock is busy".into(),
