@@ -230,8 +230,8 @@ fn temporary_handle_pressure_rolls_back_and_release_allows_export_retry() {
         .query_with_params_retained(QUERY, &params(), options())
         .unwrap();
     let batch = cursor.next_batch().unwrap().unwrap();
-    // Exercise failure before construction, after schema construction, and
-    // after partial child-array construction; every path must roll back.
+    // Exercise failure before construction and during complete descriptor
+    // reservation after schema construction; every path must roll back.
     for occupancy in [11, 6, 3] {
         let mut views = Vec::new();
         while governor.retained_result_snapshot().view_handles < occupancy {

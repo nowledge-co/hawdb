@@ -38,7 +38,10 @@ use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 mod arrow;
-pub use arrow::{ArrowArray, ArrowSchema, RetainedArrowExport, RetainedArrowSchema};
+pub use arrow::{
+    ArrowArray, ArrowArrayStream, ArrowSchema, RetainedArrowCodeOwner, RetainedArrowExport,
+    RetainedArrowSchema, RetainedArrowStream,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RetainedQueryError {
@@ -739,6 +742,13 @@ impl RetainedQueryCursor {
             .store(RetainedQueryStatus::Completed as u8, Ordering::Release);
         self.source.take();
     }
+    fn can_complete_without_output(&self) -> bool {
+        self.limit == Some(0)
+            || self
+                .source
+                .as_ref()
+                .is_some_and(|source| self.profile.visited_rows == source.nodes.row_count())
+    }
     pub fn next_batch(&mut self) -> Result<Option<RetainedQueryBatch>> {
         self.next_batch_with_metadata(0)
     }
@@ -841,7 +851,11 @@ impl RetainedQueryCursor {
         if let Some(context) = &source.task_context {
             context.checkpoint().map_err(RetainedQueryError::Stopped)?;
         }
-        if self.limit == Some(0) {
+        if self.can_complete_without_output() {
+            // Demand-confirmed EOF needs no new payload slot or descriptor.
+            // Validate the pinned source's fail-closed flags without reading
+            // another record, even when all delivered slots remain leased.
+            let _ = source.nodes.iter_after(self.last_node)?;
             self.complete();
             return Ok(None);
         }

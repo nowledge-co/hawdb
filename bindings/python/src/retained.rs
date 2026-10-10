@@ -19,6 +19,9 @@ use std::ffi::{c_int, c_void, CStr};
 use std::num::NonZeroUsize;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
+use std::sync::Arc;
+
+mod arrow;
 
 pub(crate) fn error(py: Python<'_>, source: &RetainedQueryError) -> PyErr {
     let retryable = source.is_retryable();
@@ -149,15 +152,32 @@ impl RetainedOptions {
 #[pyclass(module = "hawdb")]
 pub struct RetainedCursor {
     inner: Option<RetainedQueryCursor>,
-    module: Option<Py<PyAny>>,
+    module: Option<Arc<Py<PyAny>>>,
     delivered_rows: usize,
     delivered_batches: usize,
+}
+fn clone_module(py: Python<'_>, module: &Option<Arc<Py<PyAny>>>) -> Option<Arc<Py<PyAny>>> {
+    // Each Python owner contributes its own refcount/GC edge. Only native
+    // descriptor owners share this Arc with that particular Python owner.
+    module.as_ref().map(|module| Arc::new(module.clone_ref(py)))
+}
+fn visit_module(
+    module: &Option<Arc<Py<PyAny>>>,
+    visit: PyVisit<'_>,
+) -> Result<(), PyTraverseError> {
+    if let Some(module) = module
+        && Arc::strong_count(module) == 1
+    {
+        visit.call(module.as_ref())?;
+    }
+    // A shared native owner is an external GC root, not another Python edge.
+    Ok(())
 }
 impl RetainedCursor {
     pub(crate) fn new(inner: RetainedQueryCursor, module: Py<PyAny>) -> Self {
         Self {
             inner: Some(inner),
-            module: Some(module),
+            module: Some(Arc::new(module)),
             delivered_rows: 0,
             delivered_batches: 0,
         }
@@ -165,6 +185,17 @@ impl RetainedCursor {
 }
 #[pymethods]
 impl RetainedCursor {
+    fn __arrow_c_schema__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        arrow::cursor_schema(py, self)
+    }
+    #[pyo3(signature = (requested_schema = None))]
+    fn __arrow_c_stream__<'py>(
+        &mut self,
+        py: Python<'py>,
+        requested_schema: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        arrow::cursor_stream(py, self, requested_schema)
+    }
     fn next_batch(&mut self, py: Python<'_>) -> PyResult<Option<Py<RetainedBatch>>> {
         let metadata = metadata::<RetainedBatch>(py)?;
         let cursor = self.inner.as_mut().ok_or_else(|| closed(py))?;
@@ -185,7 +216,7 @@ impl RetainedCursor {
             py,
             RetainedBatch {
                 inner: Some(native),
-                module: self.module.as_ref().map(|module| module.clone_ref(py)),
+                module: clone_module(py, &self.module),
             },
         ) {
             Ok(batch) => {
@@ -209,10 +240,7 @@ impl RetainedCursor {
         self.inner.take();
     }
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
-        if let Some(module) = &self.module {
-            visit.call(module)?;
-        }
-        Ok(())
+        visit_module(&self.module, visit)
     }
     fn __clear__(&mut self) {
         self.close();
@@ -276,7 +304,7 @@ impl RetainedCursor {
 #[pyclass(module = "hawdb")]
 pub struct RetainedBatch {
     inner: Option<RetainedQueryBatch>,
-    module: Option<Py<PyAny>>,
+    module: Option<Arc<Py<PyAny>>>,
 }
 impl RetainedBatch {
     fn required(&self, py: Python<'_>) -> PyResult<&RetainedQueryBatch> {
@@ -285,14 +313,22 @@ impl RetainedBatch {
 }
 #[pymethods]
 impl RetainedBatch {
+    fn __arrow_c_schema__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        arrow::batch_schema(py, self)
+    }
+    #[pyo3(signature = (requested_schema = None))]
+    fn __arrow_c_array__<'py>(
+        &self,
+        py: Python<'py>,
+        requested_schema: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+        arrow::batch_array(py, self, requested_schema)
+    }
     fn close(&mut self) {
         self.inner.take();
     }
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
-        if let Some(module) = &self.module {
-            visit.call(module)?;
-        }
-        Ok(())
+        visit_module(&self.module, visit)
     }
     fn __clear__(&mut self) {
         self.close();
@@ -321,7 +357,7 @@ impl RetainedBatch {
                     .try_retain(metadata::<Self>(py)?)
                     .map_err(|source| error(py, &source))?,
             ),
-            module: self.module.as_ref().map(|module| module.clone_ref(py)),
+            module: clone_module(py, &self.module),
         })
     }
     #[pyo3(signature = (index, *, writable = false, dtype = None))]
@@ -397,7 +433,7 @@ pub struct RetainedBuffer {
     inner: Option<RetainedQueryBatch>,
     kind: BufferKind,
     // A native exporter/lease keeps the exact code module, never a database.
-    module: Option<Py<PyAny>>,
+    module: Option<Arc<Py<PyAny>>>,
 }
 struct BufferSpec {
     data: *mut c_void,
@@ -475,7 +511,7 @@ impl RetainedBuffer {
         py: Python<'_>,
         batch: &RetainedQueryBatch,
         kind: BufferKind,
-        module: &Option<Py<PyAny>>,
+        module: &Option<Arc<Py<PyAny>>>,
     ) -> PyResult<Self> {
         spec(batch, kind).map_err(|source| error(py, &source))?;
         let inner = batch
@@ -484,7 +520,7 @@ impl RetainedBuffer {
         Ok(Self {
             inner: Some(inner),
             kind,
-            module: module.as_ref().map(|module| module.clone_ref(py)),
+            module: clone_module(py, module),
         })
     }
     fn required(&self, py: Python<'_>) -> PyResult<&RetainedQueryBatch> {
@@ -497,10 +533,7 @@ impl RetainedBuffer {
         self.inner.take();
     }
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
-        if let Some(module) = &self.module {
-            visit.call(module)?;
-        }
-        Ok(())
+        visit_module(&self.module, visit)
     }
     fn __clear__(&mut self) {
         self.close();

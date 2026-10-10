@@ -101,10 +101,10 @@ mod plan_cache;
 mod query_runtime;
 mod retained_query;
 pub use retained_query::{
-    ArrowArray, ArrowSchema, RetainedArrowExport, RetainedArrowSchema, RetainedColumnRole,
-    RetainedColumnSchema, RetainedColumnType, RetainedColumnValues, RetainedQueryBatch,
-    RetainedQueryCursor, RetainedQueryError, RetainedQueryOptions, RetainedQueryProfile,
-    RetainedQueryStatus,
+    ArrowArray, ArrowArrayStream, ArrowSchema, RetainedArrowCodeOwner, RetainedArrowExport,
+    RetainedArrowSchema, RetainedArrowStream, RetainedColumnRole, RetainedColumnSchema,
+    RetainedColumnType, RetainedColumnValues, RetainedQueryBatch, RetainedQueryCursor,
+    RetainedQueryError, RetainedQueryOptions, RetainedQueryProfile, RetainedQueryStatus,
 };
 mod resource_profile;
 mod runtime_cell;

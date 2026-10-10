@@ -4,9 +4,9 @@ This implements ownership building blocks and an experimental native cursor for
 [issue #987](https://github.com/nowledge-co/hawdb/issues/987), under the
 [columnar interchange proposal](specs/ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md).
 Source snapshot/planning workspace qualification, complete C/Go resource
-qualification, Python buffer resource/platform qualification and Arrow
-C Stream/PyCapsule/consumer qualification
-remain incomplete. The complete
+qualification, Python/Arrow resource and platform qualification
+remain incomplete. Native C Data/C Stream, Python capsules and a scoped optional
+PyArrow consumer path now have layout and lifetime evidence. The complete
 proposal and #987 remain unfinished.
 Production hosts continue
 to use the root `hawdb` facade; this internal executor module is not a new
@@ -160,7 +160,7 @@ batch through the standard `ArrowSchema` and `ArrowArray` layouts. The Rust
 `RetainedArrowExport` releases both descriptors on drop. `into_raw` transfers
 their release obligations to a C Data consumer, which must follow the standard
 move/release rules and keep producer code loaded. This is a root library API;
-it does not yet add a C ABI entrypoint or a Python/Go Arrow consumer interface.
+it does not yet add a C ABI frontend or a Go Arrow consumer interface.
 The Rust export also exposes shared completion/error status and the original
 allocation identity/generation/capacity with its selected value byte range.
 
@@ -189,8 +189,54 @@ independent arrays; final schema/array release returns all native charges.
 Native regression tests cover pointer/range identity, nonzero offsets, child
 movement, schema-only slot release, partial admission rollback, nullable IEEE
 bits, empty/all-null schema, sparse refusal and exact final native release.
-This is Rust-to-C-descriptor evidence, not third-party Arrow consumer, C Stream,
-PyCapsule, platform, allocator/RSS or complete source/planning qualification.
+This is descriptor identity/lifetime evidence, not platform, allocator/RSS or
+complete source/planning qualification.
+
+## Experimental native Arrow C Stream and Python capsules
+
+`RetainedArrowStream::try_take_cursor` admits the stream before adopting a root
+cursor; a failed admission leaves the original cursor and source position
+unchanged. `into_cursor` can recover that cursor if a foreign wrapper allocation
+fails. The consuming `into_arrow_stream` convenience method drops its consumed
+cursor when export fails. Construction, schema export and observations
+never pull or prefetch. Each demanded array reserves all child descriptors and
+handles before native source work; a mutex serializes concurrent pulls.
+
+Retryable pressure returns a nonzero stream error with an initialized released
+output, never successful EOF. Releasing arrays permits retry at the same source
+position. Terminal failures repeat and remain visible after schema requests.
+The prepaid stream diagnostic workspace avoids allocating at a full allowance;
+oversized diagnostics produce an explicit error. A demand that confirms the
+immutable source is exhausted needs no additional descriptor, byte or payload
+slot. Cancellation and source poison checks still apply. Final delivered arrays
+remain provisional until successful terminal confirmation.
+
+Python batches implement `__arrow_c_array__` and `__arrow_c_schema__`; cursors
+implement `__arrow_c_stream__` and `__arrow_c_schema__`. Each named capsule is
+consumed once and owns an independently admitted descriptor, sharing the
+existing payload. Successful stream export adopts the cursor, so the original
+Python cursor reports closed and cannot pull again. Requested-schema arguments
+currently refuse with `CopyRequired`; sparse selections refuse with
+`SelectionRequiresMaterialization`. There is no implicit gather or cast.
+
+Unconsumed capsules release their descriptors at destruction; moved descriptors
+have null release callbacks and are not released twice. Every independently
+moved array/schema child keeps the code module until its own final release.
+Python owners have individual module refcount/GC edges; shared native owners
+are external GC roots. Native release on a detached thread may safely defer the
+final Python decref until the next attached PyO3 entry. Arrays survive stream,
+Python parent and database closure. Schema-only capsules keep metadata without
+keeping a numeric payload slot. Python capsule allocation failure restores an
+adopted cursor without advancing its source.
+
+Optional tests use public `pyarrow.record_batch`, `pyarrow.schema` and
+`RecordBatchReader.from_stream`. PyArrow 26.0.0 on macOS ARM64/CPython 3.11
+preserves original value addresses, nonzero offsets, repeated projection,
+identity metadata, IEEE bits and tiny-slice lifetime. Tests also cover empty
+schema, sparse/cast refusals, explicit pressure/retry and stream/database close.
+These are scoped consumer layout/lifetime checks, not complete copy/allocator,
+RSS, performance or platform qualification. PyArrow remains optional and is
+absent from the engine, package dependencies and default test environment.
 
 ## Experimental C views
 
@@ -249,7 +295,7 @@ for values, I for selection and Q for validity words; bit r uses word r/64,
 least-significant-bit r%64. Exporting writable data or requesting a dtype change
 refuses before transferring ownership. Source/plans/types outside the recorded
 numeric capability refuse without an owned-result fallback. PyArrow is not an
-import dependency; Arrow protocols are still absent.
+import dependency; the separate capsule protocols are described above.
 
 Each owner retains the native Python module and participates in GC traversal.
 Python objects use their actual type basicsize plus conservative padding;
@@ -301,7 +347,7 @@ larger cursor row/payload options cannot bypass database limits.
 Remaining #987 work includes source/planning workspace admission, complete
 copy/resource/performance profiles, complete C/Go resource and platform
 qualification, Python buffer/opaque-consumer resource and platform
-qualification, and compatible Arrow export/refusal.
+qualification, and complete Arrow resource/platform qualification.
 The representative large-size
 baseline and measured bulk boundary in #976 also remain incomplete. UTF-8,
 binary, packed boolean, UUID, recursive layouts, SIMD, graph and FTS extensions

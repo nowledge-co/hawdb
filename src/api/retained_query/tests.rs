@@ -7,6 +7,9 @@ use crate::{RuntimeMemorySnapshot, RuntimeResourceBudget};
 #[path = "arrow/tests.rs"]
 mod arrow;
 
+#[path = "arrow/stream_tests.rs"]
+mod arrow_stream;
+
 fn nz(n: usize) -> NonZeroUsize {
     NonZeroUsize::new(n).unwrap()
 }
@@ -115,9 +118,12 @@ fn two_slots_apply_before_source_work_and_last_view_release_allows_retry() {
     drop(view);
     let third = cursor.next_batch().unwrap().unwrap();
     assert_eq!(scores(&third), vec![6, 7, 8]);
-    drop((second, third));
     assert!(cursor.next_batch().unwrap().is_none());
     assert_eq!(cursor.status(), RetainedQueryStatus::Completed);
+    assert_eq!(cursor.outstanding_batches(), 2);
+    assert_eq!(second.status(), RetainedQueryStatus::Completed);
+    assert_eq!(scores(&third), vec![6, 7, 8]);
+    drop((second, third));
     assert_eq!(cursor.profile().visited_rows, 9);
     assert_eq!(cursor.profile().emitted_rows, 7);
     assert_eq!(cursor.profile().handoff_payload_copy_bytes, 0);

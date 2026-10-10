@@ -10,6 +10,15 @@ use std::ffi::{c_char, c_void, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
+mod stream;
+pub use stream::{ArrowArrayStream, RetainedArrowStream};
+
+/// Foreign code lifetime shared by every descriptor, including moved children.
+/// The owner must keep release code usable throughout the final callback.
+pub trait RetainedArrowCodeOwner: std::fmt::Debug + Send + Sync {}
+impl<T: std::fmt::Debug + Send + Sync> RetainedArrowCodeOwner for T {}
+type CodeOwner = Option<Arc<dyn RetainedArrowCodeOwner>>;
+
 /// Standard Arrow C Data schema. Raw consumers must obey Arrow's move/release
 /// contract. Do not copy a live descriptor without marking its source released.
 #[repr(C)]
@@ -150,16 +159,18 @@ impl Drop for RetainedArrowExport {
 #[derive(Debug)]
 struct MetadataLease {
     _shared: Arc<CursorShared>,
+    _code: CodeOwner,
     _memory: QueryMemoryLease,
     _runtime: RuntimeRetainedResult,
 }
-fn admit(shared: &Arc<CursorShared>, bytes: usize) -> Result<MetadataLease> {
+fn admit(shared: &Arc<CursorShared>, bytes: usize, code: &CodeOwner) -> Result<MetadataLease> {
     let runtime = shared._runtime.try_retain(bytes as u64)?;
     let memory = shared.account.reserve(
         usize::try_from(runtime.handle_bytes()).map_err(|_| RetainedQueryError::SizeOverflow)?,
     )?;
     Ok(MetadataLease {
         _shared: Arc::clone(shared),
+        _code: code.clone(),
         _memory: memory,
         _runtime: runtime,
     })
@@ -206,7 +217,11 @@ unsafe extern "C" fn release_schema(schema: *mut ArrowSchema) {
     }));
 }
 
-fn schema(shared: &Arc<CursorShared>, wrapper_bytes: usize) -> Result<RetainedArrowSchema> {
+fn schema(
+    shared: &Arc<CursorShared>,
+    wrapper_bytes: usize,
+    code: &CodeOwner,
+) -> Result<RetainedArrowSchema> {
     if shared
         .schema
         .iter()
@@ -226,7 +241,7 @@ fn schema(shared: &Arc<CursorShared>, wrapper_bytes: usize) -> Result<RetainedAr
         .and_then(|n| n.checked_add(wrapper_bytes))
         .and_then(|n| n.checked_add(std::mem::size_of::<ArrowSchema>()))
         .ok_or(RetainedQueryError::SizeOverflow)?;
-    let lease = admit(shared, capacity::<SchemaOwner>(parent_bytes)?)?;
+    let lease = admit(shared, capacity::<SchemaOwner>(parent_bytes)?, code)?;
     let mut parent = Box::new(SchemaOwner {
         name: None,
         metadata: Vec::new(),
@@ -242,7 +257,7 @@ fn schema(shared: &Arc<CursorShared>, wrapper_bytes: usize) -> Result<RetainedAr
             .checked_add(1)
             .and_then(|n| n.checked_add(35 * usize::from(identity)))
             .ok_or(RetainedQueryError::SizeOverflow)?;
-        let lease = admit(shared, capacity::<SchemaOwner>(name_bytes)?)?;
+        let lease = admit(shared, capacity::<SchemaOwner>(name_bytes)?, code)?;
         let mut owner = Box::new(SchemaOwner {
             name: Some(
                 CString::new(column.name.as_bytes())
@@ -343,45 +358,50 @@ fn range(batch: &RetainedQueryBatch) -> Result<(i64, i64)> {
     ))
 }
 
-impl RetainedQueryBatch {
-    /// Strict Arrow C Data export of a numeric record batch. Sparse/reordered
-    /// selection refuses explicitly. Caller wrapper capacity is prepaid in the
-    /// schema and array descriptors separately. No source or payload is copied.
-    pub fn export_arrow(&self, wrapper_bytes: usize) -> Result<RetainedArrowExport> {
-        let (offset, length) = range(self)?;
-        let shared = &self.slot.shared;
-        let count = self.schema().len();
-        handles(
-            shared,
-            count
-                .checked_mul(2)
-                .and_then(|n| n.checked_add(5))
-                .ok_or(RetainedQueryError::SizeOverflow)?,
-        )?;
-        let schema = schema(shared, wrapper_bytes)?;
+// Admit every descriptor before a stream asks its native cursor for a batch.
+// Temporary reservation-directory capacity stays conservatively charged in the
+// parent lease, including while final descriptors are being constructed.
+struct ArrayReservation {
+    parent: MetadataLease,
+    children: Vec<MetadataLease>,
+}
+impl ArrayReservation {
+    fn new(shared: &Arc<CursorShared>, wrapper_bytes: usize, code: &CodeOwner) -> Result<Self> {
+        let count = shared.schema.len();
         let extra = count
-            .checked_mul(std::mem::size_of::<ArrowArray>() + std::mem::size_of::<*mut ArrowArray>())
+            .checked_mul(
+                std::mem::size_of::<ArrowArray>()
+                    + std::mem::size_of::<*mut ArrowArray>()
+                    + std::mem::size_of::<MetadataLease>(),
+            )
             .and_then(|n| n.checked_add(wrapper_bytes))
             .and_then(|n| n.checked_add(std::mem::size_of::<ArrowArray>()))
             .and_then(|n| n.checked_add(std::mem::size_of::<Arc<RetainedQueryBatch>>()))
             .ok_or(RetainedQueryError::SizeOverflow)?;
-        let lease = admit(shared, capacity::<ArrayOwner>(extra)?)?;
-        let batch = Arc::new(self.try_retain(capacity::<Arc<RetainedQueryBatch>>(0)?)?);
+        let parent = admit(shared, capacity::<ArrayOwner>(extra)?, code)?;
+        let mut children = Vec::with_capacity(count);
+        for _ in 0..count {
+            children.push(admit(shared, capacity::<ArrayOwner>(0)?, code)?);
+        }
+        Ok(Self { parent, children })
+    }
+    fn build(self, batch: Arc<RetainedQueryBatch>) -> Result<ArrowArray> {
+        let (offset, length) = range(&batch)?;
+        let count = self.children.len();
         let mut parent = Box::new(ArrayOwner {
             buffers: [ptr::null(); 2],
             children: Vec::with_capacity(count),
             pointers: Vec::with_capacity(count),
             _batch: None,
-            _lease: lease,
+            _lease: self.parent,
         });
-        for index in 0..count {
-            let lease = admit(shared, capacity::<ArrayOwner>(0)?)?;
-            let values = match self.column(index)? {
+        for (index, lease) in self.children.into_iter().enumerate() {
+            let values = match batch.column(index)? {
                 RetainedColumnValues::Int64(values) => values.as_ptr().cast(),
                 RetainedColumnValues::Float64(values) => values.as_ptr().cast(),
                 RetainedColumnValues::UInt64(values) => values.as_ptr().cast(),
             };
-            let (validity, null_count) = match self.validity(index)? {
+            let (validity, null_count) = match batch.validity(index)? {
                 ValidityView::All { .. } => (ptr::null(), 0),
                 ValidityView::Bitmap { words, .. } => {
                     (words.as_ptr().cast(), if length == 0 { 0 } else { -1 })
@@ -409,7 +429,7 @@ impl RetainedQueryBatch {
         parent
             .pointers
             .extend(parent.children.iter_mut().map(|child| child as *mut _));
-        let array = ArrowArray {
+        Ok(ArrowArray {
             length,
             n_buffers: 1,
             n_children: i64::try_from(count).map_err(|_| RetainedQueryError::SizeOverflow)?,
@@ -418,12 +438,56 @@ impl RetainedQueryBatch {
             release: Some(release_array),
             private_data: Box::into_raw(parent).cast(),
             ..ArrowArray::default()
-        };
+        })
+    }
+}
+
+impl RetainedQueryBatch {
+    /// Strict Arrow C Data export. Sparse/reordered selection refuses explicitly.
+    /// Wrapper capacity is prepaid separately in schema and array descriptors.
+    pub fn export_arrow(&self, wrapper_bytes: usize) -> Result<RetainedArrowExport> {
+        self.export_arrow_with_code_owner(wrapper_bytes, None)
+    }
+    /// The supplied module/library owner follows every independently moved child.
+    /// Its allocation belongs in the caller's prepaid wrapper capacity.
+    pub fn export_arrow_with_code_owner(
+        &self,
+        wrapper_bytes: usize,
+        code: Option<Arc<dyn RetainedArrowCodeOwner>>,
+    ) -> Result<RetainedArrowExport> {
+        range(self)?;
+        let shared = &self.slot.shared;
+        handles(
+            shared,
+            self.schema()
+                .len()
+                .checked_mul(2)
+                .and_then(|n| n.checked_add(5))
+                .ok_or(RetainedQueryError::SizeOverflow)?,
+        )?;
+        let schema = schema(shared, wrapper_bytes, &code)?;
+        let reservation = ArrayReservation::new(shared, wrapper_bytes, &code)?;
+        let batch = Arc::new(self.try_retain(capacity::<Arc<RetainedQueryBatch>>(0)?)?);
+        let array = reservation.build(Arc::clone(&batch))?;
         Ok(RetainedArrowExport {
             schema,
             array,
             batch,
         })
+    }
+    pub fn export_arrow_schema_with_code_owner(
+        &self,
+        wrapper_bytes: usize,
+        code: Option<Arc<dyn RetainedArrowCodeOwner>>,
+    ) -> Result<RetainedArrowSchema> {
+        handles(
+            &self.slot.shared,
+            self.schema()
+                .len()
+                .checked_add(3)
+                .ok_or(RetainedQueryError::SizeOverflow)?,
+        )?;
+        schema(&self.slot.shared, wrapper_bytes, &code)
     }
     /// Independently admitted metadata export without retaining the result slot.
     pub fn export_arrow_schema(&self, wrapper_bytes: usize) -> Result<RetainedArrowSchema> {
@@ -434,12 +498,19 @@ impl RetainedQueryBatch {
                 .checked_add(3)
                 .ok_or(RetainedQueryError::SizeOverflow)?,
         )?;
-        schema(&self.slot.shared, wrapper_bytes)
+        schema(&self.slot.shared, wrapper_bytes, &None)
     }
 }
 
 impl RetainedQueryCursor {
+    pub fn export_arrow_schema_with_code_owner(
+        &self,
+        wrapper_bytes: usize,
+        code: Option<Arc<dyn RetainedArrowCodeOwner>>,
+    ) -> Result<RetainedArrowSchema> {
+        schema(&self.shared, wrapper_bytes, &code)
+    }
     pub fn export_arrow_schema(&self, wrapper_bytes: usize) -> Result<RetainedArrowSchema> {
-        schema(&self.shared, wrapper_bytes)
+        schema(&self.shared, wrapper_bytes, &None)
     }
 }

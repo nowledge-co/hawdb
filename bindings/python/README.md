@@ -74,8 +74,43 @@ not the database or source iterator.
 The strict payload path builds no Python row list, result JSON or IPC envelope.
 `value_copy` and metadata/diagnostic copy methods are explicit object
 materialization. Writable buffer requests and dtype changes refuse before
-ownership transfer. The extension imports without NumPy or PyArrow; Arrow
-protocols remain unimplemented.
+ownership transfer. The extension imports without NumPy or PyArrow.
+
+Compatible batches expose standard `__arrow_c_array__` capsules and both
+batches/cursors expose schema-only `__arrow_c_schema__`. Cursor
+`__arrow_c_stream__` exports a demand-driven stream, adopting the cursor;
+the original cursor then reports closed. Exporting a capsule does not pull.
+Only empty/contiguous selections are eligible; sparse selections and requested
+schema arguments refuse explicitly. Capsules are consumed once, and abandoned
+capsules release their owners. Arrays already handed to a consumer remain
+readable after stream or database close.
+
+With optional PyArrow installed, use its public protocol APIs:
+
+```python
+reader = pyarrow.RecordBatchReader.from_stream(query)
+try:
+    for batch in reader:
+        consume(batch)  # release each batch before retaining more than two
+finally:
+    reader.close()
+```
+
+`pyarrow.record_batch(batch)` imports an eligible retained batch. Collecting all
+stream batches, including `read_all()`, still obeys shared limits and may raise
+an Arrow resource error; it does not enlarge the native pool. EOF confirmation
+after the immutable source is exhausted needs no new slot/descriptor.
+
+The optional public-consumer tests are skipped without PyArrow. After building
+the default test target, they can be run in a separate environment containing
+pytest and PyArrow (locally verified with 26.0.0):
+
+```bash
+bazel test //bindings/python:hawdb_python_tests
+PYTHONPATH="$PWD/bazel-bin/bindings/python/hawdb_python_tests.runfiles/_main/bindings/python/python" \
+  /path/to/consumer-venv/bin/python -m pytest --import-mode=importlib \
+  --rootdir="$PWD" bindings/python/tests/test_arrow_consumer.py -v
+```
 
 This is experimental. Complete source/planning admission, opaque derived-view
 and allocator/RSS accounting, platform and performance qualification remain
@@ -274,5 +309,5 @@ run `CARGO_BAZEL_REPIN=1 CARGO_BAZEL_REPIN_ONLY=python_crates bazel build //bind
 
 ## Scope and follow-ups
 
-Not included yet: async calls, Arrow output, schema introspection helpers.
+Not included yet: async calls, general-query Arrow output, schema introspection helpers.
 These are tracked for follow-up once the base surface settles.

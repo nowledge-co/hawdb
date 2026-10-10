@@ -184,10 +184,10 @@ pub use api::{
     STORAGE_RESOURCE_PROFILE_PROTOCOL,
 };
 pub use api::{
-    ArrowArray, ArrowSchema, RetainedArrowExport, RetainedArrowSchema, RetainedColumnRole,
-    RetainedColumnSchema, RetainedColumnType, RetainedColumnValues, RetainedQueryBatch,
-    RetainedQueryCursor, RetainedQueryError, RetainedQueryOptions, RetainedQueryProfile,
-    RetainedQueryStatus,
+    ArrowArray, ArrowArrayStream, ArrowSchema, RetainedArrowCodeOwner, RetainedArrowExport,
+    RetainedArrowSchema, RetainedArrowStream, RetainedColumnRole, RetainedColumnSchema,
+    RetainedColumnType, RetainedColumnValues, RetainedQueryBatch, RetainedQueryCursor,
+    RetainedQueryError, RetainedQueryOptions, RetainedQueryProfile, RetainedQueryStatus,
 };
 pub use background_maintenance_evidence::nowledge_background_maintenance_evidence_json;
 pub use blackbox::{
