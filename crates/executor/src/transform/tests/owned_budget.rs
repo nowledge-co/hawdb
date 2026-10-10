@@ -94,3 +94,70 @@ fn public_transform_owned_limit_flushes_by_bytes_and_propagates_stop() {
         limit: None,
     });
 }
+
+fn cancel_after_continue(kernel: Kernel, output_batch_rows: usize, payload_size: usize) {
+    let mut source = Source::new(input(payload_size, 3), 3);
+    let token = RuntimeCancellationToken::new();
+    let task = RuntimeTaskContext::without_deadline(token.clone());
+    let mut calls = 0;
+    let mut delivered = 0;
+    let result = with_context(output_batch_rows, 64 * 1024, |context| {
+        kernel.execute(
+            &mut source,
+            BatchExecutionContext {
+                task_context: Some(&task),
+                ..context
+            },
+            None,
+            &mut |batch| {
+                calls += 1;
+                delivered += batch.len();
+                token.cancel();
+                Ok(BatchControl::Continue)
+            },
+        )
+    });
+    let error =
+        result.expect_err("a cancelled public kernel must refuse the remaining source batch");
+    assert!(error.to_string().contains("cancelled"), "{error:?}");
+    assert_eq!(calls, 1, "no callback after the first callback cancels");
+    assert_eq!(delivered, 1, "no row after the first callback cancels");
+    assert_eq!(
+        source.calls, 1,
+        "cancellation occurs within a single source batch"
+    );
+}
+
+#[test]
+fn public_transform_owned_filter_cancel_after_continue_at_row_flush() {
+    cancel_after_continue(Kernel::Filter, 1, 0);
+}
+
+#[test]
+fn public_transform_owned_filter_cancel_after_continue_at_byte_flush() {
+    cancel_after_continue(Kernel::Filter, 16, 2048);
+}
+
+#[test]
+fn public_transform_owned_limit_cancel_after_continue_at_row_flush() {
+    cancel_after_continue(
+        Kernel::Limit {
+            offset: 0,
+            limit: None,
+        },
+        1,
+        0,
+    );
+}
+
+#[test]
+fn public_transform_owned_limit_cancel_after_continue_at_byte_flush() {
+    cancel_after_continue(
+        Kernel::Limit {
+            offset: 0,
+            limit: None,
+        },
+        16,
+        2048,
+    );
+}

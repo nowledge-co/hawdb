@@ -14,9 +14,9 @@
 
 //! Storage-neutral streaming filter, projection, and limit kernels.
 //!
-//! Sources retain cancellation and input validation; consumers retain output
-//! validation. Kernels reserve transform memory and propagate stop/error across
-//! those boundaries without taking ownership of recursive plan dispatch.
+//! Sources retain input validation; consumers retain output validation.
+//! Kernels honor the supplied task, reserve transform memory, and propagate
+//! stop/error without taking ownership of recursive plan dispatch.
 
 use crate::binding::{binding_memory_bytes, binding_memory_bytes_with_values, Binding};
 use crate::expression::{
@@ -45,8 +45,10 @@ pub fn stream_filter_batches(
     predicate: &mut dyn FnMut(&Binding) -> Result<bool>,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
+    runtime_checkpoint(context.task_context)?;
     let emitted = Cell::new(0usize);
     source.execute(input, ExecutionLimit::unlimited(), &mut |batch| {
+        runtime_checkpoint(context.task_context)?;
         let remaining = execution_limit
             .output_rows
             .unwrap_or(usize::MAX)
@@ -62,10 +64,17 @@ pub fn stream_filter_batches(
         )?;
         let mut emit_filtered = |output: BindingBatch| {
             emitted.set(emitted.get().saturating_add(output.len()));
-            emit(output)
+            let control = emit(output)?;
+            if control == BatchControl::Continue {
+                runtime_checkpoint(context.task_context)?;
+            }
+            Ok(control)
         };
         for binding in batch {
-            if predicate(&binding)? {
+            runtime_checkpoint(context.task_context)?;
+            let matches = predicate(&binding)?;
+            runtime_checkpoint(context.task_context)?;
+            if matches {
                 if filtered.reserve_row_before_allocation(
                     binding_memory_bytes(&binding),
                     &mut emit_filtered,
@@ -207,6 +216,7 @@ pub fn stream_limit_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
+    runtime_checkpoint(context.task_context)?;
     let skipped = Cell::new(0usize);
     let emitted = Cell::new(0usize);
     let consumer_stopped = Cell::new(false);
@@ -222,6 +232,7 @@ pub fn stream_limit_batches(
             output_rows: Some(offset.saturating_add(output_cap)),
         },
         &mut |batch| {
+            runtime_checkpoint(context.task_context)?;
             let mut output = TransformBatchBuilder::new(
                 "LimitExec",
                 context.memory.batch_rows.get(),
@@ -232,9 +243,13 @@ pub fn stream_limit_batches(
                 emitted.set(emitted.get().saturating_add(batch.len()));
                 let control = emit(batch)?;
                 consumer_stopped.set(consumer_stopped.get() || control == BatchControl::Stop);
+                if control == BatchControl::Continue {
+                    runtime_checkpoint(context.task_context)?;
+                }
                 Ok(control)
             };
             for binding in batch {
+                runtime_checkpoint(context.task_context)?;
                 if skipped.get() < offset {
                     skipped.set(skipped.get().saturating_add(1));
                     continue;
