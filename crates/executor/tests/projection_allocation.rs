@@ -3585,3 +3585,50 @@ fn thread_repair_counts_native_targets_without_copying_unused_payloads() {
 fn thread_repair_counts_cold_targets_without_copying_unused_payloads() {
     run_blocking_source_admission(true, BlockingSource::ThreadCountTarget);
 }
+
+#[test]
+fn property_union_key_admission_keeps_duplicate_charge_and_refuses_second_id() {
+    use hawdb_executor::store::admit_graph_read;
+    use hawdb_storage::read_view::{AdmittedKeySet, GraphReadAdmission};
+
+    let limit = nz(960);
+    let ledger = QueryMemoryLedger::new(limit);
+    let source_account = ledger.account(
+        hawdb_executor::QueryMemoryClass::ExternalRead,
+        "property union source and descriptor",
+        limit,
+    );
+    let account = ledger.account(
+        hawdb_executor::QueryMemoryClass::BlockingState,
+        "property union key admission",
+        limit,
+    );
+    // Source and access-descriptor grants remain live while union keys grow.
+    // The remaining root budget admits one key, but cannot admit a second.
+    let source = admit_graph_read(&source_account, None, 512).unwrap();
+    let descriptor = admit_graph_read(&source_account, None, 128).unwrap();
+    let mut allocate = |bytes| admit_graph_read(&account, None, bytes);
+    let admission = GraphReadAdmission::new(&mut allocate);
+    let mut seen = AdmittedKeySet::new(&admission).unwrap();
+    let first = hawdb_core::ids::NodeId(7);
+    let second = hawdb_core::ids::NodeId(8);
+    assert!(seen.try_insert(first).unwrap());
+    let charged = ledger.snapshot();
+    assert!(charged.used_bytes > source.bytes() + descriptor.bytes());
+    assert!(charged.used_bytes <= limit.get());
+    assert!(!seen.try_insert(first).unwrap());
+    assert_eq!(
+        ledger.snapshot(),
+        charged,
+        "duplicates must not grow the grant"
+    );
+    let error = seen.try_insert(second).unwrap_err();
+    assert!(error.to_string().contains("query memory ledger"), "{error}");
+    assert_eq!(seen.len(), 1);
+    assert!(seen.contains(&first));
+    assert!(!seen.contains(&second), "refusal must precede insertion");
+    assert_eq!(ledger.snapshot(), charged, "refusal must not leak a grant");
+    drop(seen);
+    drop((source, descriptor));
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+}
