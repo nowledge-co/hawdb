@@ -127,6 +127,24 @@ Frontend adoption precedes reclamation, and pinned
 readers retain their generation. Cancellation retains its lease until private
 artifact cleanup completes.
 
+The owner model now separates job-owned memory (`lease`) from execution
+admission (`execution`). A resource-denied candidate enters `pending`, retains
+its complete base/suffix prefix and memory ownership, and releases execution.
+Admission recovery resumes its recorded replay/seal phase without a frontend
+write. A selected candidate also yields execution. Adoption may come from a
+writer or a pure read; the latter requires the abstract frontend writer gate
+(`frontendBusy`) to be available. This gate represents the read path's
+`try_lock` decision, not a model of every frontend mutex interleaving.
+
+Adoption enters `retirementPending`; cleanup acquires execution only after
+admission. Further denial returns it to that state without releasing its
+job-owned memory. The additional invariants reject parked execution, loss of
+candidate ownership, active work without execution, an invalid saved resume
+phase, and a read adoption that bypasses its writer gate. Logical job ownership
+is separate from allocation leases retained by serving runtimes/readers. This
+model does not qualify actual allocation accounting, bounded drops, per-unit
+CPU/FD/disk/I/O or scheduler liveness.
+
 Power loss independently retains any subset of OS-flushed but unsynchronized
 schema/data fragments and checkpoint/catalog artifacts. This includes lost
 writes, torn transactions and reordering across files. Completed synchronization
@@ -137,18 +155,20 @@ silently truncating acknowledged data. The model assumes correctly validated
 artifact identities and completed file/directory synchronization; it does not
 establish those filesystem/platform assumptions or refinement by the Rust code.
 
-The full configured safety graph and eight controls run through:
+The full configured safety graph and fourteen controls run through:
 
 ```bash
 bazel test //docs/tla:HawDBAutomaticCheckpoint_check \
   //docs/tla:automatic_checkpoint_controls --jobs=1 --test_output=errors
 ```
 
-Six controls omit a suffix transaction, select before synchronization, select
+Nine controls omit a suffix transaction, select before synchronization, select
 a synchronized but stale prefix, split a transaction, reclaim a pinned
-generation, or leak a cancelled job's lease.
-Two witness controls demonstrate permitted loss of relaxed acknowledged writes
-and recovery of synchronous commits whose response was lost. Each must produce
+generation, leak a cancelled job's lease, drop candidate memory on pause, keep
+execution while parked, or adopt from a read while its writer gate is busy.
+Five witness controls demonstrate permitted loss of relaxed acknowledged writes,
+recovery of synchronous commits whose response was lost, candidate resume,
+retirement resume after denial, and pure-read adoption. Each must produce
 its named invariant counterexample. These controls are also registered in the
 standalone mutant manifest. This bounded safety model does not prove scheduler
 liveness, build/publication time bounds, allocation accounting or p99 behavior.

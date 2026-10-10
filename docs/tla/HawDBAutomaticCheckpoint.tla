@@ -11,6 +11,10 @@ EXTENDS Integers, Naturals, FiniteSets
 (* An uncertain selector fails closed without deleting either generation.  *)
 (* This abstracts checksums/atomic rename and does not prove Rust refinement*)
 (* or scheduler liveness, resource bounds, or a particular storage platform. *)
+(* Job-owned memory and execution admission are separate logical leases.    *)
+(* Pending candidates keep the complete prefix and yield execution.         *)
+(* Retirement may defer and read adoption requires an available writer gate.*)
+(* Serving allocation leases and physical resource accounting are separate. *)
 (* A sealed prefix remains private while foreground writes advance.        *)
 (* Rechecking the complete writer identity either retries on the same base *)
 (* or enters the bounded selection gate; sealing itself does not freeze it.*)
@@ -18,13 +22,15 @@ EXTENDS Integers, Naturals, FiniteSets
 
 CONSTANTS MaxCommit, DurabilityModes,
           SelectBeforeSync, DropSuffix, SplitTransaction, ReclaimPinned,
-          LeakLease, SelectStalePrefix
+          LeakLease, SelectStalePrefix, LoseMemoryOnPause, KeepExecutionOnPause,
+          ReadAdoptWhileBusy
 
 ASSUME /\ MaxCommit \in Nat \ {0}
        /\ DurabilityModes \subseteq {"SyncOnEveryWrite", "SyncOnCheckpoint"}
        /\ DurabilityModes # {}
        /\ {SelectBeforeSync, DropSuffix, SplitTransaction,
-             ReclaimPinned, LeakLease, SelectStalePrefix} \subseteq BOOLEAN
+             ReclaimPinned, LeakLease, SelectStalePrefix, LoseMemoryOnPause, KeepExecutionOnPause,
+          ReadAdoptWhileBusy} \subseteq BOOLEAN
 
 Generations == {0, 1}
 Epochs == 0..MaxCommit
@@ -35,8 +41,8 @@ Transaction(epoch) == {<<"schema", epoch>>, <<"data", epoch>>}
 Prefix(epoch) == {fragment \in Fragments : fragment[2] <= epoch}
 Suffix(base, last) == Prefix(last) \ Prefix(base)
 
-VARIABLES live, disk, os, job, observed, pin, lease
-vars == <<live, disk, os, job, observed, pin, lease>>
+VARIABLES live, disk, os, job, observed, pin, lease, execution, admitted, frontendBusy
+vars == <<live, disk, os, job, observed, pin, lease, execution, admitted, frontendBusy>>
 
 Init ==
     /\ live \in [mode : {"running"}, durability : DurabilityModes,
@@ -49,10 +55,14 @@ Init ==
                                     IF g = 0 THEN Artifacts ELSE {}],
                 present |-> {0}]
     /\ os = [wals |-> disk.wals, artifacts |-> disk.artifacts]
-    /\ job = [phase |-> "idle", base |-> 0, end |-> 0, selection |-> 0]
+    /\ job = [phase |-> "idle", base |-> 0, end |-> 0, selection |-> 0,
+                resume |-> "replaying", adoption |-> "none", readBusy |-> FALSE]
     /\ observed = [ack |-> 0, barrier |-> 0, checkpoint |-> 0]
     /\ pin = [generation |-> 0, epoch |-> -1]
     /\ lease = FALSE
+    /\ execution = FALSE
+    /\ admitted = TRUE
+    /\ frontendBusy = FALSE
 
 FullPrefix(generation, wals) ==
     CHOOSE last \in disk.base[generation]..MaxCommit :
@@ -78,7 +88,7 @@ BeginWrite ==
     /\ live' = [live EXCEPT !.pending = live.epoch + 1]
     /\ os' = [os EXCEPT !.wals[live.active] =
                           @ \cup {<<"schema", live.epoch + 1>>}]
-    /\ UNCHANGED <<disk, job, observed, pin, lease>>
+    /\ UNCHANGED <<disk, job, observed, pin, lease, execution, admitted, frontendBusy>>
 
 FinishWrite(reply) ==
     /\ live.mode = "running"
@@ -96,18 +106,21 @@ FinishWrite(reply) ==
                              !.ack = IF reply THEN live.pending ELSE @,
                              !.barrier = IF synchronous THEN live.pending
                                          ELSE @]
-    /\ UNCHANGED <<job, pin, lease>>
+    /\ UNCHANGED <<job, pin, lease, execution, admitted, frontendBusy>>
 
 Capture ==
     /\ live.mode = "running"
     /\ live.pending = 0
+    /\ admitted
     /\ ~live.used
     /\ live.active = 0
     /\ live' = [live EXCEPT !.used = TRUE]
     /\ job' = [job EXCEPT !.phase = "building", !.base = live.epoch,
                           !.end = live.epoch]
     /\ lease' = TRUE
-    /\ UNCHANGED <<disk, os, observed, pin>>
+    /\ UNCHANGED <<disk, os, observed, pin, admitted, frontendBusy>>
+
+    /\ execution' = TRUE
 
 BuildBase ==
     /\ live.mode = "running"
@@ -116,7 +129,7 @@ BuildBase ==
                             !.present = @ \cup {1}]
     /\ os' = [os EXCEPT !.artifacts[1] = Artifacts]
     /\ job' = [job EXCEPT !.phase = "replaying"]
-    /\ UNCHANGED <<live, observed, pin, lease>>
+    /\ UNCHANGED <<live, observed, pin, lease, execution, admitted, frontendBusy>>
 
 ReplayOne ==
     /\ live.mode = "running"
@@ -127,7 +140,7 @@ ReplayOne ==
                           @ \cup (IF DropSuffix THEN {}
                                   ELSE Transaction(job.end + 1))]
     /\ job' = [job EXCEPT !.end = @ + 1]
-    /\ UNCHANGED <<live, disk, observed, pin, lease>>
+    /\ UNCHANGED <<live, disk, observed, pin, lease, execution, admitted, frontendBusy>>
 
 SyncCandidate ==
     /\ live.mode = "running"
@@ -136,7 +149,7 @@ SyncCandidate ==
     /\ disk' = [disk EXCEPT !.artifacts[1] = os.artifacts[1],
                             !.wals[1] = os.wals[1]]
     /\ job' = [job EXCEPT !.phase = "sealed"]
-    /\ UNCHANGED <<live, os, observed, pin, lease>>
+    /\ UNCHANGED <<live, os, observed, pin, lease, execution, admitted, frontendBusy>>
 
 ResumeReplay ==
     /\ live.mode = "running"
@@ -144,7 +157,7 @@ ResumeReplay ==
     /\ live.pending = 0
     /\ job.end < live.epoch
     /\ job' = [job EXCEPT !.phase = "replaying"]
-    /\ UNCHANGED <<live, disk, os, observed, pin, lease>>
+    /\ UNCHANGED <<live, disk, os, observed, pin, lease, execution, admitted, frontendBusy>>
 
 FreezeCompleteIdentity ==
     /\ live.mode = "running"
@@ -152,7 +165,7 @@ FreezeCompleteIdentity ==
     /\ live.pending = 0
     /\ (SelectStalePrefix \/ job.end = live.epoch)
     /\ job' = [job EXCEPT !.phase = "ready"]
-    /\ UNCHANGED <<live, disk, os, observed, pin, lease>>
+    /\ UNCHANGED <<live, disk, os, observed, pin, lease, execution, admitted, frontendBusy>>
 
 BeginSelection ==
     /\ live.mode = "running"
@@ -161,7 +174,7 @@ BeginSelection ==
     /\ (job.phase = "ready"
           \/ (SelectBeforeSync /\ job.phase = "replaying"))
     /\ job' = [job EXCEPT !.phase = "selecting", !.selection = live.epoch]
-    /\ UNCHANGED <<live, disk, os, observed, pin, lease>>
+    /\ UNCHANGED <<live, disk, os, observed, pin, lease, execution, admitted, frontendBusy>>
 
 PersistSelector(reply) ==
     /\ live.mode = "running"
@@ -171,33 +184,82 @@ PersistSelector(reply) ==
     /\ observed' = [observed EXCEPT
                        !.barrier = job.selection,
                        !.checkpoint = IF reply THEN job.selection ELSE @]
-    /\ UNCHANGED <<live, os, pin, lease>>
+    /\ UNCHANGED <<live, os, pin, lease, admitted, frontendBusy>>
 
-Adopt ==
+    /\ execution' = FALSE
+
+Adopt(frontend) ==
     /\ live.mode = "running"
     /\ job.phase = "selected"
+    /\ (frontend = "write" \/ ~frontendBusy \/ ReadAdoptWhileBusy)
     /\ live' = [live EXCEPT !.active = 1]
+    /\ job' = [job EXCEPT !.phase = "retirementPending", !.adoption = frontend,
+                          !.readBusy = frontend = "read" /\ frontendBusy]
+    /\ UNCHANGED <<disk, os, observed, pin, lease, execution, admitted, frontendBusy>>
+
+AdmitRetirement ==
+    /\ live.mode = "running"
+    /\ job.phase = "retirementPending"
+    /\ admitted
     /\ job' = [job EXCEPT !.phase = "retiring"]
-    /\ UNCHANGED <<disk, os, observed, pin, lease>>
+    /\ execution' = TRUE
+    /\ UNCHANGED <<live, disk, os, observed, pin, lease, admitted, frontendBusy>>
+
+DeferRetirement ==
+    /\ live.mode = "running"
+    /\ job.phase = "retiring"
+    /\ ~admitted
+    /\ job' = [job EXCEPT !.phase = "retirementPending", !.resume = "retiring"]
+    /\ execution' = KeepExecutionOnPause
+    /\ lease' = ~LoseMemoryOnPause
+    /\ UNCHANGED <<live, disk, os, observed, pin, admitted, frontendBusy>>
 
 Retire ==
     /\ live.mode = "running"
     /\ job.phase = "retiring"
     /\ job' = [job EXCEPT !.phase = "done"]
     /\ lease' = FALSE
-    /\ UNCHANGED <<live, disk, os, observed, pin>>
+    /\ execution' = FALSE
+    /\ UNCHANGED <<live, disk, os, observed, pin, admitted, frontendBusy>>
+
+PauseCandidate ==
+    /\ live.mode = "running"
+    /\ job.phase \in {"replaying", "sealed"}
+    /\ ~admitted
+    /\ job' = [job EXCEPT !.phase = "pending", !.resume = job.phase]
+    /\ execution' = KeepExecutionOnPause
+    /\ lease' = ~LoseMemoryOnPause
+    /\ UNCHANGED <<live, disk, os, observed, pin, admitted, frontendBusy>>
+
+ResumeCandidate ==
+    /\ live.mode = "running"
+    /\ job.phase = "pending"
+    /\ admitted
+    /\ job' = [job EXCEPT !.phase = job.resume]
+    /\ execution' = TRUE
+    /\ UNCHANGED <<live, disk, os, observed, pin, lease, admitted, frontendBusy>>
+
+ChangeAdmission ==
+    /\ live.mode = "running"
+    /\ admitted' = ~admitted
+    /\ UNCHANGED <<live, disk, os, job, observed, pin, lease, execution, frontendBusy>>
+
+ChangeFrontendAvailability ==
+    /\ live.mode = "running"
+    /\ frontendBusy' = ~frontendBusy
+    /\ UNCHANGED <<live, disk, os, job, observed, pin, lease, execution, admitted>>
 
 PinReader ==
     /\ live.mode = "running"
     /\ live.pending = 0
     /\ pin.epoch = -1
     /\ pin' = [generation |-> live.active, epoch |-> live.epoch]
-    /\ UNCHANGED <<live, disk, os, job, observed, lease>>
+    /\ UNCHANGED <<live, disk, os, job, observed, lease, execution, admitted, frontendBusy>>
 
 ReleaseReader ==
     /\ pin.epoch # -1
     /\ pin' = [pin EXCEPT !.epoch = -1]
-    /\ UNCHANGED <<live, disk, os, job, observed, lease>>
+    /\ UNCHANGED <<live, disk, os, job, observed, lease, execution, admitted, frontendBusy>>
 
 ReclaimOld ==
     /\ live.mode = "running"
@@ -208,13 +270,13 @@ ReclaimOld ==
     /\ disk' = [disk EXCEPT !.present = @ \ {0}, !.wals[0] = {},
                             !.artifacts[0] = {}]
     /\ os' = [os EXCEPT !.wals[0] = {}, !.artifacts[0] = {}]
-    /\ UNCHANGED <<live, job, observed, pin, lease>>
+    /\ UNCHANGED <<live, job, observed, pin, lease, execution, admitted, frontendBusy>>
 
 Cancel ==
     /\ live.mode = "running"
-    /\ job.phase \in {"building", "replaying", "sealed", "ready"}
+    /\ job.phase \in {"building", "replaying", "sealed", "ready", "pending"}
     /\ job' = [job EXCEPT !.phase = "cancelling"]
-    /\ UNCHANGED <<live, disk, os, observed, pin, lease>>
+    /\ UNCHANGED <<live, disk, os, observed, pin, lease, execution, admitted, frontendBusy>>
 
 CleanupPrivate ==
     /\ live.mode = "running"
@@ -224,7 +286,9 @@ CleanupPrivate ==
     /\ os' = [os EXCEPT !.wals[1] = {}, !.artifacts[1] = {}]
     /\ job' = [job EXCEPT !.phase = "cancelled"]
     /\ lease' = LeakLease
-    /\ UNCHANGED <<live, observed, pin>>
+    /\ UNCHANGED <<live, observed, pin, admitted, frontendBusy>>
+
+    /\ execution' = FALSE
 
 PowerLoss ==
     /\ live.mode = "running"
@@ -246,7 +310,9 @@ PowerLoss ==
     /\ job' = [job EXCEPT !.phase = "crashed"]
     /\ pin' = [pin EXCEPT !.epoch = -1]
     /\ lease' = FALSE
-    /\ UNCHANGED observed
+    /\ UNCHANGED <<observed, admitted, frontendBusy>>
+
+    /\ execution' = FALSE
 
 Reopen ==
     /\ live.mode = "crashed"
@@ -255,13 +321,16 @@ Reopen ==
                                  !.epoch = FullPrefix(disk.head, disk.wals)]
                ELSE [live EXCEPT !.mode = "failed"]
     /\ job' = [job EXCEPT !.phase = "done"]
-    /\ UNCHANGED <<disk, os, observed, pin, lease>>
+    /\ UNCHANGED <<disk, os, observed, pin, lease, execution, admitted, frontendBusy>>
 
 Next == BeginWrite \/ (\E reply \in BOOLEAN : FinishWrite(reply))
         \/ Capture \/ BuildBase \/ ReplayOne \/ SyncCandidate
         \/ ResumeReplay \/ FreezeCompleteIdentity
         \/ BeginSelection \/ (\E reply \in BOOLEAN : PersistSelector(reply))
-        \/ Adopt \/ Retire \/ PinReader \/ ReleaseReader \/ ReclaimOld
+        \/ (\E frontend \in {"write", "read"} : Adopt(frontend))
+        \/ AdmitRetirement \/ DeferRetirement \/ Retire
+        \/ PauseCandidate \/ ResumeCandidate \/ ChangeAdmission
+        \/ ChangeFrontendAvailability \/ PinReader \/ ReleaseReader \/ ReclaimOld
         \/ Cancel \/ CleanupPrivate \/ PowerLoss \/ Reopen
 
 TypeOK ==
@@ -277,12 +346,17 @@ TypeOK ==
     /\ os \in [wals : [Generations -> SUBSET Fragments],
                 artifacts : [Generations -> SUBSET Artifacts]]
     /\ job \in [phase : {"idle", "building", "replaying", "sealed", "ready",
-                         "selecting", "selected", "retiring", "done",
+                         "selecting", "selected", "pending", "retirementPending", "retiring", "done",
                          "cancelling", "cancelled", "crashed"},
-                 base : Epochs, end : Epochs, selection : Epochs]
+                 base : Epochs, end : Epochs, selection : Epochs,
+                 resume : {"replaying", "sealed", "retiring"}, adoption : {"none", "write", "read"},
+                 readBusy : BOOLEAN]
     /\ observed \in [ack : Epochs, barrier : Epochs, checkpoint : Epochs]
     /\ pin \in [generation : Generations, epoch : (-1)..MaxCommit]
     /\ lease \in BOOLEAN
+    /\ execution \in BOOLEAN
+    /\ admitted \in BOOLEAN
+    /\ frontendBusy \in BOOLEAN
 
 SelectorReferencesSynchronizedClosure ==
     disk.status = "complete" => HasClosure(disk.head)
@@ -316,11 +390,30 @@ CancelledReleasesLease == job.phase = "cancelled" => ~lease
 CandidateOwnsLease ==
     live.mode = "running" /\
         job.phase \in {"building", "replaying", "sealed", "ready", "selecting",
-                       "selected", "retiring", "cancelling"} => lease
+                       "selected", "pending", "retirementPending", "retiring", "cancelling"} => lease
 CancelledPreservesSelector ==
     job.phase \in {"cancelling", "cancelled"} => disk.head = 0
 UncertainSelectionFailsClosed ==
     disk.status = "uncertain" /\ live.mode # "crashed" => live.mode = "failed"
+
+ParkedYieldsExecution ==
+    job.phase \in {"pending", "selected", "retirementPending"} => ~execution
+ExecutionOwnsMemory == execution => lease
+ActiveStagesOwnExecution ==
+    live.mode = "running" /\
+        job.phase \in {"building", "replaying", "sealed", "ready", "selecting", "retiring"}
+        => execution
+ReadAdoptRequiresWriterGate == ~job.readBusy
+
+PendingResumesPreparation ==
+    job.phase = "pending" => job.resume \in {"replaying", "sealed"}
+
+(* Reachability controls deliberately violate these witness-only assertions. *)
+PausedPrefixWasNeverResumed ==
+    ~(job.phase = "sealed" /\ job.resume = "sealed" /\ execution)
+DeferredRetirementWasNeverResumed ==
+    ~(job.phase = "retiring" /\ job.resume = "retiring")
+NoReadTriggeredAdoption == job.adoption # "read"
 
 (* Witness-only controls distinguish permitted loss from strong durability. *)
 AllAcknowledgementsRecover ==

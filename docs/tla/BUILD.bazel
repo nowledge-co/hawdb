@@ -99,10 +99,16 @@ tla_test_suite(
 
 _AUTOMATIC_CHECKPOINT_CONTROLS = [
     "DropSuffix",
+    "KeepExecutionOnPause",
     "LeakLease",
+    "LoseMemoryOnPause",
     "LostReplyWitness",
+    "ReadAdoptWhileBusy",
+    "ReadAdoptionWitness",
     "ReclaimPinned",
     "RelaxedLossWitness",
+    "ResumedCandidateWitness",
+    "ResumedRetirementWitness",
     "SelectBeforeSync",
     "SelectStalePrefix",
     "SplitTransaction",
