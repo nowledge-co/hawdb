@@ -99,7 +99,10 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
         HawDBError::Storage(_) => StorageError::new_err(message),
         HawDBError::FileDescriptors(_) => DescriptorError::new_err(message),
         HawDBError::StorageIntegrity(_) => IntegrityError::new_err(message),
-        HawDBError::Execution(_) => ExecutionError::new_err(message),
+        HawDBError::Execution(_)
+        | HawDBError::ReadBudgetExceeded(_)
+        | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
+        | HawDBError::GraphExpansionPayloadLimitExceeded { .. } => ExecutionError::new_err(message),
         HawDBError::TransactionConflict { .. } | HawDBError::AppendSequenceExhausted { .. } => {
             ConflictError::new_err(message)
         }
