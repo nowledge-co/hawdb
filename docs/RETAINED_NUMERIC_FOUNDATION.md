@@ -3,7 +3,7 @@
 This implements ownership building blocks and an experimental native cursor for
 [issue #987](https://github.com/nowledge-co/hawdb/issues/987), under the
 [columnar interchange proposal](specs/ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md).
-Source snapshot/planning workspace qualification, language views and Arrow
+Source snapshot/planning workspace qualification, Go/Python views and Arrow
 export remain incomplete. The complete proposal and #987 remain unfinished.
 Production hosts continue
 to use the root `hawdb` facade; this internal executor module is not a new
@@ -144,6 +144,35 @@ pinned rows/pages without scanning records; completion, failure and close drop
 the current source counts to zero. Directory capacity counts only the shared
 directory allocation, excluding node-page and record payload capacities.
 
+Adapters can set additional cursor metadata and a minimum usable shared-handle
+count through RetainedQueryOptions. next_batch_with_metadata includes foreign
+owner/descriptor capacity in row sizing and reserves it before source work.
+The ordinary Rust next_batch path passes zero additional metadata. Overflow or
+an impossible working unit fails without inspecting source records.
+
+## Experimental C views
+
+The C ABI now exposes checked version-1 numeric cursor, batch, schema, column
+and buffer descriptors. Result buffers move from the root producer without
+JSON encoding or payload gathering. Independent column/batch retains share
+native allocation identities and ranges and admit their wrapper/descriptor
+capacity before allocation. Handle lookup validates module namespace and a
+never-recycled ID, rather than dereferencing opaque caller addresses.
+
+The registry allocates one prepaid node per live handle, with no unused
+container capacity. Payload destruction occurs outside its lookup lock. A
+cursor has its own pull mutex; unrelated cursors do not share that execution
+lock. Outputs initialize before fallible calls, and panics are contained at
+the ABI. A producer failure remains visible through previous readable views.
+
+Borrowed column descriptors need no new owner and remain tied to the parent
+batch. Their descriptor set is prepaid in the demanded batch. Independently
+owned columns remain readable after parent/database closure. C creation needs
+three shared handles for a minimally readable owned column protocol; a lower
+limit refuses before binding. Go/Python wrappers and Arrow still need their
+own lifecycle and resource qualification. See the
+[C contract](../bindings/ffi/README.md#experimental-retained-numeric-abi).
+
 This is not yet a qualified whole-operation memory bound. Parsing and optimizer
 workspace still need a complete admission/capacity audit. The cursor pins all
 materialized node pages, including unrelated labels; their complete retained
@@ -151,7 +180,7 @@ capacity is not yet admitted. Avoiding a full read-snapshot clone and reporting
 source counts does not resolve these remaining gates. Current counters cover
 numeric source construction, selection
 and native payload handoff; they do not establish a complete allocator/RSS or
-foreign-adapter copy profile. Use the ordinary APIs for unsupported workloads;
+complete foreign-adapter copy profile. Use the ordinary APIs for unsupported workloads;
 the experimental retained API never silently materializes those workloads.
 
 ## Evidence and remaining work

@@ -627,3 +627,78 @@ fn snapshot_created_before_runtime_configuration_uses_the_shared_host_owner() {
     drop(cursor);
     assert_eq!(governor.retained_result_snapshot().retained_bytes, 0);
 }
+
+#[test]
+fn adapter_capacity_is_admitted_before_source_work_and_stays_with_the_view() {
+    let db = fixture();
+    let mut plain = db
+        .query_with_params_retained(QUERY, &params(), options())
+        .unwrap();
+    let mut adapter = db
+        .query_with_params_retained(QUERY, &params(), options())
+        .unwrap();
+    let before = db.retained_result_snapshot().unwrap().retained_bytes;
+    let first = adapter.next_batch_with_metadata(4096).unwrap().unwrap();
+    let with_adapter = db.retained_result_snapshot().unwrap().retained_bytes - before;
+    let before = db.retained_result_snapshot().unwrap().retained_bytes;
+    let baseline = plain.next_batch().unwrap().unwrap();
+    let without_adapter = db.retained_result_snapshot().unwrap().retained_bytes - before;
+    assert_eq!(with_adapter - without_adapter, 4096);
+    assert_eq!(scores(&first), scores(&baseline));
+    adapter.close();
+    plain.close();
+    drop((adapter, plain, baseline));
+    assert!(db.retained_result_snapshot().unwrap().retained_bytes >= 4096);
+    drop(first);
+    assert_eq!(db.retained_result_snapshot().unwrap().retained_bytes, 0);
+
+    let mut cursor = db
+        .query_with_params_retained(QUERY, &params(), options())
+        .unwrap();
+    assert_eq!(
+        cursor.next_batch_with_metadata(usize::MAX).unwrap_err(),
+        RetainedQueryError::SizeOverflow
+    );
+    assert_eq!(cursor.profile().visited_rows, 0);
+    assert_eq!(cursor.profile().source_pinned_rows, 0);
+    assert_eq!(cursor.status(), RetainedQueryStatus::Failed);
+}
+
+#[test]
+fn oversized_adapter_cursor_capacity_fails_without_retaining_control_or_source() {
+    let db = fixture();
+    assert_eq!(
+        db.query_with_params_retained(
+            QUERY,
+            &params(),
+            RetainedQueryOptions {
+                adapter_metadata_bytes: usize::MAX,
+                ..options()
+            },
+        )
+        .unwrap_err(),
+        RetainedQueryError::SizeOverflow
+    );
+    assert_eq!(db.retained_result_snapshot().unwrap().retained_bytes, 0);
+}
+
+#[test]
+fn adapter_minimum_handles_refuse_before_binding_and_allow_host_correction() {
+    let mut db = fixture();
+    db.set_runtime_governor(governor_with_handles(2));
+    let options = RetainedQueryOptions {
+        minimum_shared_handles: nz(3),
+        ..options()
+    };
+    assert_eq!(
+        db.query_with_params_retained(QUERY, &params(), options)
+            .unwrap_err(),
+        RetainedQueryError::WorkingUnitTooLarge
+    );
+    assert!(db.retained_result_snapshot().is_none());
+    db.set_runtime_governor(governor_with_handles(3));
+    let cursor = db
+        .query_with_params_retained(QUERY, &params(), options)
+        .unwrap();
+    assert_eq!(cursor.profile().visited_rows, 0);
+}

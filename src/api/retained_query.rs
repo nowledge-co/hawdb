@@ -137,8 +137,12 @@ impl RetainedRuntime {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(governor);
     }
-    fn governor(&self) -> Result<&RuntimeGovernor> {
+    fn governor(&self, minimum_handles: usize) -> Result<&RuntimeGovernor> {
+        let minimum_handles = minimum_handles.max(2);
         if let Some(governor) = self.bound.get() {
+            if governor.retained_result_snapshot().handle_limit < minimum_handles {
+                return Err(RetainedQueryError::WorkingUnitTooLarge);
+            }
             return Ok(governor);
         }
         let configured = self
@@ -154,7 +158,7 @@ impl RetainedRuntime {
         });
         // The control owner and first batch each require a handle. Reject an
         // unusable configuration before binding so the host can correct it.
-        if candidate.retained_result_snapshot().handle_limit < 2 {
+        if candidate.retained_result_snapshot().handle_limit < minimum_handles {
             return Err(RetainedQueryError::WorkingUnitTooLarge);
         }
         Ok(self.bound.get_or_init(|| candidate))
@@ -208,6 +212,11 @@ pub struct RetainedQueryOptions {
     /// Conservative selected fixed-width payload bytes, including null slots.
     pub max_result_payload_bytes: Option<usize>,
     pub require_source_reuse: bool,
+    /// Additional cursor/adapter owner capacity, admitted before ownership transfer.
+    pub adapter_metadata_bytes: usize,
+    /// Minimum shared handles needed by the adapter's smallest usable delivery.
+    /// The root control and first batch always require at least two.
+    pub minimum_shared_handles: NonZeroUsize,
 }
 impl Default for RetainedQueryOptions {
     fn default() -> Self {
@@ -218,6 +227,8 @@ impl Default for RetainedQueryOptions {
             max_result_rows: None,
             max_result_payload_bytes: None,
             require_source_reuse: false,
+            adapter_metadata_bytes: 0,
+            minimum_shared_handles: NonZeroUsize::new(2).unwrap(),
         }
     }
 }
@@ -537,7 +548,9 @@ impl RetainedQueryCursor {
         task_context: Option<RuntimeTaskContext>,
         mut options: RetainedQueryOptions,
     ) -> Result<Self> {
-        let governor = runtime.governor()?.clone();
+        let governor = runtime
+            .governor(options.minimum_shared_handles.get())?
+            .clone();
         let result_allowance = governor.snapshot().limits.result_budget_bytes;
         let permit = governor.try_admit(
             RuntimeWorkRequest::foreground_query(0, result_allowance).with_blocking(false),
@@ -563,6 +576,7 @@ impl RetainedQueryCursor {
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<RetainedQueryCursor>()))
             .and_then(|bytes| bytes.checked_add(plan.fragment.label.len()))
             .and_then(|bytes| bytes.checked_add(plan.fragment.property.len()))
+            .and_then(|bytes| bytes.checked_add(options.adapter_metadata_bytes))
             .and_then(|bytes| bytes.checked_add(128))
             .ok_or(RetainedQueryError::SizeOverflow)?;
         let runtime = permit.reserve_retained_result(metadata as u64, 0)?;
@@ -705,6 +719,14 @@ impl RetainedQueryCursor {
         self.source.take();
     }
     pub fn next_batch(&mut self) -> Result<Option<RetainedQueryBatch>> {
+        self.next_batch_with_metadata(0)
+    }
+    /// Admit adapter owner/descriptor capacity before producing the next batch.
+    /// Failure never advances the source. The charge follows the immutable owner.
+    pub fn next_batch_with_metadata(
+        &mut self,
+        adapter_metadata_bytes: usize,
+    ) -> Result<Option<RetainedQueryBatch>> {
         match self.status() {
             RetainedQueryStatus::Completed => return Ok(None),
             RetainedQueryStatus::Closed => return Err(RetainedQueryError::Closed),
@@ -714,7 +736,7 @@ impl RetainedQueryCursor {
             RetainedQueryStatus::Open => {}
         }
         self.profile.pulls += 1;
-        let result = self.pull();
+        let result = self.pull(adapter_metadata_bytes);
         if let Err(error) = &result {
             if error.is_retryable() {
                 self.profile.backpressure_events += 1;
@@ -728,7 +750,7 @@ impl RetainedQueryCursor {
         }
         result
     }
-    fn admitted_rows(&self) -> Result<NonZeroUsize> {
+    fn admitted_rows(&self, adapter_metadata_bytes: usize) -> Result<NonZeroUsize> {
         let snapshot = self.governor.retained_result_snapshot();
         let available = self
             .options
@@ -743,12 +765,14 @@ impl RetainedQueryCursor {
                 )
                 .unwrap_or(usize::MAX),
             );
-        let fixed = std::mem::size_of::<SlotGuard>()
+        let fixed = (std::mem::size_of::<SlotGuard>()
             + 2 * std::mem::size_of::<usize>()
             + std::mem::size_of::<RetainedQueryBatch>()
             + std::mem::size_of::<RetainedNumericBatch>()
             + RuntimeRetainedResult::owner_overhead_bytes() as usize
-            + RuntimeRetainedResult::handle_overhead_bytes() as usize;
+            + RuntimeRetainedResult::handle_overhead_bytes() as usize)
+            .checked_add(adapter_metadata_bytes)
+            .ok_or(RetainedQueryError::SizeOverflow)?;
         let required_one =
             RetainedNumericBuilder::required_capacity_bytes(NonZeroUsize::MIN, self.needs_ids)
                 .and_then(|bytes| bytes.checked_add(fixed))
@@ -791,7 +815,7 @@ impl RetainedQueryCursor {
             batch_limit: self.shared.limit,
         })
     }
-    fn pull(&mut self) -> Result<Option<RetainedQueryBatch>> {
+    fn pull(&mut self, adapter_metadata_bytes: usize) -> Result<Option<RetainedQueryBatch>> {
         let source = self.source.as_ref().expect("open source");
         if let Some(context) = &source.task_context {
             context.checkpoint().map_err(RetainedQueryError::Stopped)?;
@@ -807,7 +831,7 @@ impl RetainedQueryCursor {
                 batch_limit: self.shared.limit,
             });
         }
-        let rows = self.admitted_rows()?;
+        let rows = self.admitted_rows(adapter_metadata_bytes)?;
         let permit = self.governor.try_admit(
             RuntimeWorkRequest::foreground_query(0, self.result_allowance).with_blocking(false),
         )?;
@@ -819,7 +843,9 @@ impl RetainedQueryCursor {
             self.account.clone(),
             &permit,
             owner_metadata,
-            std::mem::size_of::<RetainedQueryBatch>(),
+            std::mem::size_of::<RetainedQueryBatch>()
+                .checked_add(adapter_metadata_bytes)
+                .ok_or(RetainedQueryError::SizeOverflow)?,
         )?;
         self.shared.outstanding.fetch_add(1, Ordering::AcqRel);
         self.profile.peak_outstanding_batches = self

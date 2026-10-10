@@ -18,6 +18,7 @@ engine target and consumes the checked-in header without rewriting sources:
 ```sh
 bazel build //bindings/ffi:hawdb_ffi //bindings/ffi:hawdb_ffi_static
 bazel test //bindings/go:hawdb_go_tests
+bazel test //bindings/ffi:hawdb_ffi_tests
 ```
 
 `hawdb_ffi` produces the platform's shared library; `hawdb_ffi_static` produces
@@ -27,7 +28,7 @@ the ABI. The Go test target runs with cgo disabled and loads the Bazel-built
 shared library from its declared runfiles, so no `HAWDB_LIBRARY` setup or
 prebuilt Cargo artifact is required.
 
-## Boundary conventions
+## Owned-result boundary conventions
 
 - **Strings are UTF-8 pointer-plus-length pairs**, never NUL-dependent.
   A NULL pointer is meaningful only where the function documents it as
@@ -83,3 +84,60 @@ parameters; any other object shape stays a `Map`.
 
 - `bindings/go` — purego client (no cgo): `LoadLibrary` registers the
   exports into a `Library`, `lib.Open` returns a `DB`.
+
+## Experimental retained numeric ABI
+
+The additive `hawdb_retained_*` exports use ABI version 1, checked descriptor
+sizes, fixed-width discriminants and opaque namespace/ID handles. This is an
+experimental adapter for the root numeric cursor described in
+[the retained delivery notes](../../docs/RETAINED_NUMERIC_FOUNDATION.md).
+Complete source/planning admission, allocation/RSS qualification, Go/Python
+views and Arrow export remain unfinished. It does not qualify general queries,
+source reuse or a whole-operation memory bound.
+
+`hawdb_retained_query` takes UTF-8 Cypher and ordinary parameter JSON through
+`HawdbRetainedQueryV1`. It fixes the schema before pulling and refuses other
+plans, source-reuse and writable requests explicitly. Root support is one-label
+integer/float filtering with projections of the same property or unsigned
+`id(n)`, optionally SKIP/LIMIT. The public property type must already be declared.
+Results use native read-only buffers, with no JSON result serialization.
+
+Check the returned status code on every call. `hawdb_retained_next` returns
+`HAWDB_RETAINED_OK`, `HAWDB_RETAINED_EOF`, recoverable
+`HAWDB_RETAINED_BACKPRESSURE`, or a distinct failure. Outputs are emptied before
+fallible work; EOF never carries a batch owner. Release held views and retry
+backpressure on the same cursor. Terminal failures repeat rather than become
+EOF. Default pulls remain serial with two distinct payload slots and no prefetch.
+
+Each batch describes physical rows and ordered u32 selection indices. Numeric
+column data has one element per physical row; use selection indices to obtain
+the result rows. Repeated property projections share their value allocation.
+Buffer provenance includes namespace/allocation/generation, retained capacity
+and visible byte range. The data pointer already addresses that visible range;
+do not add byte_offset a second time.
+
+`hawdb_retained_column_borrow` exposes an immutable range tied to an existing
+batch, without another allocation or handle. Its BORROWED flag means it must not
+be released independently. `hawdb_retained_column`, column retain and batch
+retain create separately admitted owners. Their pointers survive parent batch,
+cursor and database closure until their own final release. All-valid columns
+have no validity buffer; other columns expose native u64 bitmap words with
+least-significant-bit row order. Schemas distinguish nullable Int64/Float64
+properties from non-null UInt64 node identities.
+
+Call `hawdb_retained_state` to observe late status changes; earlier batches are
+provisional until Completed. Cursor close stops pulls and releases the source
+without revoking produced data. Release each independent owner exactly once
+with `hawdb_retained_release`. Unknown, wrong-module and released handles refuse
+without dereferencing them. Namespace/ID values are lifetime identifiers, not an
+authorization boundary. Borrowed pointer reads require a live owner; do not race
+those reads with release. Keep the library mapped until all owners are released.
+
+Adapter object/descriptor capacities are prepaid by the root cursor before
+allocation or source advancement. A pull also prepays the borrowed column
+descriptor set, so reading a held batch needs no extra admission. Metadata is
+charged through the original shared runtime and query ledger; keeping more
+cursors or views cannot create a new allowance. C creation requires at least
+three shared handles for control, first batch and one independent column. A
+smaller configuration refuses before binding, allowing correction. No default
+result byte limit, durability mode or persistent format changes.

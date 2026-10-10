@@ -46,6 +46,9 @@ use hawdb::{
 };
 use serde_json::json;
 
+mod retained;
+pub use retained::*;
+
 #[cfg(feature = "boundary-profiling")]
 #[path = "../../benchmarks/native_profile.rs"]
 mod boundary_profile;

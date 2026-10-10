@@ -51,3 +51,6 @@ jobs:
 
       - name: Test Go against the Bazel-built C ABI
         run: bazel test --test_output=errors --test_arg=-test.v //bindings/go:hawdb_go_tests
+
+      - name: Test the retained C ABI contract
+        run: bazel test --test_output=errors //bindings/ffi:hawdb_ffi_tests

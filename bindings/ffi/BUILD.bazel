@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_shared_library", "rust_static_library")
+load("@rules_rust//rust:defs.bzl", "rust_shared_library", "rust_static_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -10,9 +10,18 @@ _FFI_DEPS = [
     "@ffi_crates//:base64",
 ]
 
+rust_test(
+    name = "hawdb_ffi_tests",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "hawdb_ffi",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = _FFI_DEPS,
+)
+
 rust_shared_library(
     name = "hawdb_ffi",
-    srcs = ["src/lib.rs"],
+    srcs = glob(["src/**/*.rs"]),
     crate_name = "hawdb_ffi",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -28,7 +37,7 @@ rust_shared_library(
 
 rust_static_library(
     name = "hawdb_ffi_static",
-    srcs = ["src/lib.rs"],
+    srcs = glob(["src/**/*.rs"]),
     crate_name = "hawdb_ffi",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -39,7 +48,7 @@ rust_static_library(
 # Local profiling only; not a replacement library or a default/CI dependency.
 rust_shared_library(
     name = "hawdb_ffi_boundary_profile",
-    srcs = ["src/lib.rs", "//bindings/benchmarks:native_alloc.rs", "//bindings/benchmarks:native_profile.rs"],
+    srcs = glob(["src/**/*.rs"]) + ["//bindings/benchmarks:native_alloc.rs", "//bindings/benchmarks:native_profile.rs"],
     crate_name = "hawdb_ffi_boundary_profile",
     crate_root = "src/lib.rs",
     crate_features = ["boundary-profiling"],
