@@ -152,6 +152,7 @@ pub(super) fn stream_filter_batches(
                     budget_bytes: context.memory.blocking_operator_bytes.get(),
                     account: Some(&predicate_account),
                 },
+                context.task_context,
             )
         },
         emit,

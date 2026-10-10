@@ -47,6 +47,7 @@ pub(super) fn stream_node_scan_batches(
                 budget_bytes: context.memory.blocking_operator_bytes.get(),
                 account: Some(&memory_account),
             },
+            context.task_context,
         ),
         None => Ok(true),
     };
@@ -500,6 +501,7 @@ pub(super) fn stream_filtered_adjacency_expand_batches(
                         budget_bytes: context.memory.blocking_operator_bytes.get(),
                         account: Some(&predicate_account),
                     },
+                    context.task_context,
                 )? {
                     filtered.push(binding);
                     if filtered.len() == remaining {
@@ -541,6 +543,11 @@ pub(super) fn stream_adjacency_exists_batches(
         ));
     };
     let rel_type_id = context.catalog.rel_type_id(rel_type);
+    let adjacency_account = context.memory_ledger.account(
+        QueryMemoryClass::BlockingState,
+        "AdjacencyExistsExec adjacency",
+        context.memory.blocking_operator_bytes,
+    );
     let emitted = Cell::new(0usize);
     execute_binding_batches(input, context, ExecutionLimit::unlimited(), &mut |batch| {
         let remaining = execution_limit
@@ -567,14 +574,20 @@ pub(super) fn stream_adjacency_exists_batches(
                 binding.nodes.get(source_variable),
                 binding.nodes.get(target_variable),
             ) {
-                (Some(rel_type_id), Some(source), Some(target)) => crate::scan::adjacency_exists(
-                    context.store,
-                    source.id,
-                    target.id,
-                    rel_type_id,
-                    *direction,
-                    context.task_context,
-                )?,
+                (Some(rel_type_id), Some(source), Some(target)) => {
+                    crate::scan::adjacency_exists_with_memory(
+                        context.store,
+                        source.id,
+                        target.id,
+                        rel_type_id,
+                        *direction,
+                        crate::store::AdjacencyReadMemory {
+                            budget_bytes: context.memory.blocking_operator_bytes.get(),
+                            account: Some(&adjacency_account),
+                        },
+                        context.task_context,
+                    )?
+                }
                 _ => false,
             };
             if exists {

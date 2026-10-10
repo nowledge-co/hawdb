@@ -592,7 +592,8 @@ fn visit_bounded_expand_targets_inner(
         let Some(rel_type_id) = spec.rel_type_id else {
             return Ok(ScanControl::Continue);
         };
-        let mut visit = |relationship: RelRecord| {
+        let mut visit = |input: hawdb_storage::read_view::AdmittedRelationshipRecord| {
+            let (relationship, _allocation) = input.into_parts();
             visit_depth(
                 store,
                 spec,
@@ -603,11 +604,12 @@ fn visit_bounded_expand_targets_inner(
                 consumer,
             )
         };
-        store.visit_ordered_adjacent_relationships_owned(
+        store.visit_ordered_adjacent_relationships_with_allocation(
             current,
             Some(rel_type_id),
             AdjacencyDirection::Outgoing,
             memory,
+            &mut |bytes| memory.admit_node(bytes, 0, task_context).map(Some),
             &mut visit,
         )
     }

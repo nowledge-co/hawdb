@@ -1,7 +1,7 @@
 //! Correlated MATCH execution with one optional boundary around the complete clause.
 
 use crate::binding::{binding_memory_bytes, node_memory_bytes, relationship_memory_bytes, Binding};
-use crate::expression::evaluate_predicate_with_memory;
+use crate::expression::evaluate_predicate_with_context;
 use crate::pipeline::{
     runtime_checkpoint, AccountedBindingBatch, BatchControl, BatchExecutionContext, BindingBatch,
     BindingBatchSource,
@@ -279,13 +279,14 @@ impl MatchRuntime<'_> {
         runtime_checkpoint(self.context.task_context)?;
         let Some(step) = self.program.steps.get(index) else {
             if let Some(predicate) = &self.program.predicate
-                && !evaluate_predicate_with_memory(
+                && !evaluate_predicate_with_context(
                     predicate,
                     self.context.catalog,
                     self.store,
                     row,
                     self.context.observer,
                     self.adjacency_memory(),
+                    self.context.task_context,
                 )?
             {
                 return Ok(ScanControl::Continue);

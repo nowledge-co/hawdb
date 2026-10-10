@@ -18,7 +18,7 @@ pub(crate) mod owned;
 
 use crate::binding::{binding_memory_bytes, projected_node_binding_memory_bytes, Binding};
 use crate::expression::{
-    evaluate_predicate_with_memory, evaluate_projection_borrowed, prepare_borrowed_projection,
+    evaluate_predicate_with_context, evaluate_projection_borrowed, prepare_borrowed_projection,
     property_filter_from_predicate, push_borrowed_projection,
 };
 use crate::kernel::{push_bounded_operator_binding, OperatorMemoryTracker};
@@ -29,7 +29,7 @@ use crate::predicate::{
 };
 use crate::store::{AdjacencyReadMemory, GraphExecutionRead, ScanControl};
 use crate::traversal::{
-    visit_bounded_expand_targets, visit_one_hop_relationships_with_budget,
+    visit_bounded_expand_targets, visit_one_hop_relationships_with_context,
     visit_zero_hop_expand_target, BoundedExpandSpec, OneHopRelationshipSpec,
 };
 use crate::{ExecutionLimit, QueryMemoryAccount};
@@ -166,7 +166,7 @@ pub fn stream_expand_binding(
         || filters.relationship_scan_filter.is_some()
         || spec.direction != RelationshipDirection::Outgoing
     {
-        visit_one_hop_relationships_with_budget(
+        visit_one_hop_relationships_with_context(
             store,
             OneHopRelationshipSpec {
                 source: source.id,
@@ -178,6 +178,7 @@ pub fn stream_expand_binding(
             },
             memory,
             observer,
+            task_context,
             &mut |relationship, target| {
                 runtime_checkpoint(task_context)?;
                 if bound_relationship_id.is_some_and(|id| id != relationship.id)
@@ -394,10 +395,34 @@ pub fn adjacency_exists(
     direction: RelationshipDirection,
     task_context: Option<&RuntimeTaskContext>,
 ) -> Result<bool> {
+    adjacency_exists_with_memory(
+        store,
+        source,
+        target,
+        rel_type_id,
+        direction,
+        AdjacencyReadMemory {
+            budget_bytes: crate::memory::DEFAULT_BLOCKING_OPERATOR_MEMORY_BYTES,
+            account: None,
+        },
+        task_context,
+    )
+}
+
+pub(crate) fn adjacency_exists_with_memory(
+    store: &dyn GraphExecutionRead,
+    source: NodeId,
+    target: NodeId,
+    rel_type_id: RelTypeId,
+    direction: RelationshipDirection,
+    memory: AdjacencyReadMemory<'_>,
+    task_context: Option<&RuntimeTaskContext>,
+) -> Result<bool> {
     runtime_checkpoint(task_context)?;
     let mut found = false;
     let mut visit_direction = |adjacency_direction: AdjacencyDirection| {
-        let mut visit = |relationship: hawdb_storage::RelRecord| {
+        let mut visit = |input: hawdb_storage::read_view::AdmittedRelationshipRecord| {
+            let (relationship, _allocation) = input.into_parts();
             runtime_checkpoint(task_context)?;
             let matches = match adjacency_direction {
                 AdjacencyDirection::Outgoing => {
@@ -414,10 +439,12 @@ pub fn adjacency_exists(
                 Ok(ScanControl::Continue)
             }
         };
-        store.visit_adjacent_relationships_owned(
+        store.visit_ordered_adjacent_relationships_with_allocation(
             source,
             Some(rel_type_id),
             adjacency_direction,
+            memory,
+            &mut |bytes| memory.admit_node(bytes, 0, task_context).map(Some),
             &mut visit,
         )
     };
@@ -490,7 +517,7 @@ pub fn stream_node_projection_scan_batches(
         }
         let binding = node_binding(spec.variable, node);
         if let Some(predicate) = spec.predicate
-            && !evaluate_predicate_with_memory(
+            && !evaluate_predicate_with_context(
                 predicate,
                 context.catalog,
                 context.store,
@@ -500,6 +527,7 @@ pub fn stream_node_projection_scan_batches(
                     budget_bytes: context.memory_budget.get(),
                     account: Some(context.memory_account),
                 },
+                context.task_context,
             )?
         {
             return Ok(ScanControl::Continue);
@@ -947,7 +975,7 @@ pub fn execute_node_column_lookup(
             let mut next = binding.clone();
             next.nodes.insert(spec.variable.to_owned(), node);
             if let Some(predicate) = spec.node_visibility_predicate
-                && !evaluate_predicate_with_memory(
+                && !evaluate_predicate_with_context(
                     predicate,
                     context.catalog,
                     context.store,
@@ -957,6 +985,7 @@ pub fn execute_node_column_lookup(
                         budget_bytes: context.memory_budget.get(),
                         account: Some(context.memory_account),
                     },
+                    context.task_context,
                 )?
             {
                 return Ok(ScanControl::Continue);

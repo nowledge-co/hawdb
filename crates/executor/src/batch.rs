@@ -20,7 +20,7 @@
 use crate::analytics::{GraphAlgorithmContext, GraphAlgorithmSpec};
 use crate::binding::{binding_memory_bytes, Binding};
 use crate::expression::{
-    evaluate_predicate_with_memory as evaluate_predicate_observed,
+    evaluate_predicate_with_context as evaluate_predicate_observed,
     exact_relationship_scan_filter_from_predicate, predicate_references_only_variable,
     property_filter_from_predicate,
 };
@@ -239,7 +239,7 @@ impl OptionalDegreeSpec<'_> {
                             ))
                         })?;
                         let mut degree = 0usize;
-                        crate::traversal::visit_one_hop_relationships_with_budget(
+                        crate::traversal::visit_one_hop_relationships_with_context(
                             context.store,
                             crate::traversal::OneHopRelationshipSpec {
                                 source: source.id,
@@ -254,6 +254,7 @@ impl OptionalDegreeSpec<'_> {
                                 account: Some(&adjacency_account),
                             },
                             context.observer,
+                            context.task_context,
                             &mut |_, target| {
                                 if node_properties_match(&target, target_properties) {
                                     degree = degree.saturating_add(1);

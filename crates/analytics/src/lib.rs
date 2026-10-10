@@ -361,7 +361,7 @@ impl ProjectedGraph {
         S: ProjectionSource + ?Sized,
     {
         let nodes = collect_projected_node_ids(store, layout, budget, include_node)?;
-        Self::try_from_nodes_without_edges(nodes, layout, budget)
+        Self::try_from_admitted_nodes_without_edges(store, nodes, layout, budget)
     }
 
     pub fn from_store_labels_without_edges<S>(store: &S, labels: &[LabelId]) -> Self
@@ -403,6 +403,25 @@ impl ProjectedGraph {
         let nodes = collect_projected_node_ids(store, layout, budget, |node| {
             node.labels.iter().any(|label| labels.contains(label)) && include_node(node)
         })?;
+        Self::try_from_admitted_nodes_without_edges(store, nodes, layout, budget)
+    }
+
+    fn try_from_admitted_nodes_without_edges<S>(
+        store: &S,
+        nodes: Vec<NodeId>,
+        layout: ProjectionLayout,
+        budget: ProjectionMemoryBudget,
+    ) -> std::result::Result<Self, ProjectionMemoryAdmissionError>
+    where
+        S: ProjectionSource + ?Sized,
+    {
+        let estimate = projection_memory_estimate(layout, nodes.len(), 0);
+        admit_projection(estimate, budget)?;
+        // Empty projections still own the offsets sentinel. Reserve it before
+        // allocation even when no node callback ran during collection.
+        store
+            .admit_projection_memory(estimate.estimated_bytes)
+            .map_err(ProjectionMemoryAdmissionError::storage)?;
         Self::try_from_nodes_without_edges(nodes, layout, budget)
     }
 

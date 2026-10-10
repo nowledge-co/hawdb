@@ -99,6 +99,7 @@ impl GraphSeedScanSpec<'_> {
                             budget_bytes: context.memory.blocking_operator_bytes.get(),
                             account: Some(&account),
                         },
+                        context.task_context,
                     )?
                 {
                     return Ok(ScanControl::Continue);

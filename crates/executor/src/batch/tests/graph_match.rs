@@ -648,3 +648,183 @@ fn native_expand_preserves_bound_relationship_identity() {
         }
     });
 }
+
+// These exercise the actual query owners. The fixture cancels at the source
+// allocation boundary, after each caller's entry checkpoint but before copying.
+fn live_adjacency_guard_plan(owner: usize) -> PhysicalPlan {
+    let input = || PhysicalPlan::SeqNodeScan {
+        variable: "n".into(),
+        label: "Memory".into(),
+    };
+    let bound_input = || {
+        lower(
+            hawdb_plan_cypher::plan_pipeline_query(
+                "MATCH (n:Memory), (m:Memory) RETURN n, m",
+                &BTreeMap::new(),
+            )
+            .unwrap(),
+        )
+    };
+    match owner {
+        0 => PhysicalPlan::OptionalDegreeExec {
+            source_variable: "n".into(),
+            rel_type: "MENTIONS".into(),
+            rel_properties: BTreeMap::new(),
+            direction: RelationshipDirection::Outgoing,
+            target_label: "Memory".into(),
+            target_properties: BTreeMap::new(),
+            alias: "degree".into(),
+            input: Box::new(input()),
+        },
+        1 | 2 => PhysicalPlan::AdjacencyExpandExec {
+            source_variable: "n".into(),
+            source_label: "Memory".into(),
+            rel_variable: (owner == 1).then(|| "r".into()),
+            rel_type: "MENTIONS".into(),
+            rel_properties: BTreeMap::new(),
+            direction: RelationshipDirection::Outgoing,
+            target_variable: "m".into(),
+            target_label: "Memory".into(),
+            min_hops: 1,
+            max_hops: if owner == 2 { 2 } else { 1 },
+            optional: false,
+            graph_budget: None,
+            input: Box::new(input()),
+        },
+        3 => PhysicalPlan::FilterExec {
+            predicate: Predicate::RelationshipExists {
+                variable: "n".into(),
+                rel_type: "MENTIONS".into(),
+                direction: RelationshipDirection::Outgoing,
+                target_label: "Memory".into(),
+            },
+            input: Box::new(input()),
+        },
+        4 => PhysicalPlan::FilterExec {
+            predicate: Predicate::BoundRelationshipExists {
+                source_variable: "n".into(),
+                rel_type: "MENTIONS".into(),
+                direction: RelationshipDirection::Outgoing,
+                target_variable: "m".into(),
+            },
+            input: Box::new(bound_input()),
+        },
+        5 => PhysicalPlan::AdjacencyExistsExec {
+            source_variable: "n".into(),
+            rel_type: "MENTIONS".into(),
+            direction: RelationshipDirection::Outgoing,
+            target_variable: "m".into(),
+            input: Box::new(bound_input()),
+        },
+        _ => unreachable!(),
+    }
+}
+
+fn assert_live_adjacency_cancel_before_copy(owner: usize) {
+    with_context(None, |context| {
+        let token = hawdb_core::RuntimeCancellationToken::new();
+        let task = RuntimeTaskContext::without_deadline(token.clone());
+        let store = store::ReadFixture {
+            nodes: (0..2)
+                .map(|id| context.store.node_owned(NodeId(id)).unwrap().unwrap())
+                .collect(),
+            relationships: vec![hawdb_storage::RelRecord {
+                id: hawdb_storage::RelId(0),
+                source: NodeId(0),
+                target: NodeId(1),
+                rel_type: context.catalog.rel_type_id("MENTIONS").unwrap(),
+                properties: BTreeMap::from([("body".into(), Value::String("payload".repeat(256)))]),
+            }],
+            adjacency_cancellation: Some(token),
+            ..store::ReadFixture::default()
+        };
+        let context = BatchReadContext {
+            store: &store,
+            task_context: Some(&task),
+            ..context
+        };
+        let result = execute_binding_batches(
+            &live_adjacency_guard_plan(owner),
+            context,
+            ExecutionLimit::unlimited(),
+            &mut |_| panic!("cancelled adjacency emitted a row"),
+        );
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+        assert_eq!(
+            store.relationship_copies.get(),
+            0,
+            "query owner {owner} copied after cancellation"
+        );
+    });
+}
+
+#[test]
+fn optional_degree_live_adjacency_cancels_before_copy() {
+    assert_live_adjacency_cancel_before_copy(0);
+}
+#[test]
+fn one_hop_expand_live_adjacency_cancels_before_copy() {
+    assert_live_adjacency_cancel_before_copy(1);
+}
+#[test]
+fn bounded_expand_live_adjacency_cancels_before_copy() {
+    assert_live_adjacency_cancel_before_copy(2);
+}
+#[test]
+fn relationship_predicate_live_adjacency_cancels_before_copy() {
+    assert_live_adjacency_cancel_before_copy(3);
+}
+#[test]
+fn bound_predicate_live_adjacency_cancels_before_copy() {
+    assert_live_adjacency_cancel_before_copy(4);
+}
+#[test]
+fn adjacency_exists_live_adjacency_cancels_before_copy() {
+    assert_live_adjacency_cancel_before_copy(5);
+}
+
+fn assert_exists_source_budget_before_copy(owner: usize) {
+    with_context(None, |context| {
+        let store = store::ReadFixture {
+            nodes: (0..2)
+                .map(|id| context.store.node_owned(NodeId(id)).unwrap().unwrap())
+                .collect(),
+            relationships: vec![hawdb_storage::RelRecord {
+                id: hawdb_storage::RelId(0),
+                source: NodeId(0),
+                target: NodeId(1),
+                rel_type: context.catalog.rel_type_id("MENTIONS").unwrap(),
+                properties: BTreeMap::from([("body".into(), Value::String("x".repeat(65536)))]),
+            }],
+            ..store::ReadFixture::default()
+        };
+        let mut memory = context.memory.clone();
+        memory.blocking_operator_bytes = std::num::NonZeroUsize::new(32768).unwrap();
+        let context = BatchReadContext {
+            store: &store,
+            memory: &memory,
+            ..context
+        };
+        let emitted = Cell::new(0);
+        let result = execute_binding_batches(
+            &live_adjacency_guard_plan(owner),
+            context,
+            ExecutionLimit::unlimited(),
+            &mut |batch| {
+                emitted.set(emitted.get() + batch.len());
+                Ok(BatchControl::Continue)
+            },
+        );
+        assert!(result.unwrap_err().to_string().contains("exceeding"));
+        assert_eq!(emitted.get(), 0);
+        assert_eq!(store.relationship_copies.get(), 0);
+    });
+}
+#[test]
+fn bound_predicate_exists_source_budget_before_copy() {
+    assert_exists_source_budget_before_copy(4);
+}
+#[test]
+fn adjacency_exists_source_budget_before_copy() {
+    assert_exists_source_budget_before_copy(5);
+}

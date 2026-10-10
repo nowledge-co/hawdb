@@ -43,11 +43,33 @@ pub fn evaluate_predicate_with_memory(
     observer: &dyn ExecutionObserver,
     adjacency_memory: AdjacencyReadMemory<'_>,
 ) -> Result<bool> {
+    evaluate_predicate_with_context(
+        predicate,
+        catalog,
+        store,
+        binding,
+        observer,
+        adjacency_memory,
+        None,
+    )
+}
+
+pub(crate) fn evaluate_predicate_with_context(
+    predicate: &Predicate,
+    catalog: &Catalog,
+    store: &dyn GraphExecutionRead,
+    binding: &Binding,
+    observer: &dyn ExecutionObserver,
+    adjacency_memory: AdjacencyReadMemory<'_>,
+    task_context: Option<&RuntimeTaskContext>,
+) -> Result<bool> {
+    crate::pipeline::runtime_checkpoint(task_context)?;
     let context = PredicateEvaluationContext {
         catalog,
         store,
         observer,
         adjacency_memory,
+        task_context,
     };
     Ok(evaluate_predicate_truth(predicate, binding, &context)?.is_true())
 }
@@ -57,6 +79,7 @@ struct PredicateEvaluationContext<'a> {
     store: &'a dyn GraphExecutionRead,
     observer: &'a dyn ExecutionObserver,
     adjacency_memory: AdjacencyReadMemory<'a>,
+    task_context: Option<&'a RuntimeTaskContext>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -381,7 +404,7 @@ fn relationship_exists(
     };
     let target_label_ids = label_ids_for_pattern(catalog, target_label);
     let mut found = false;
-    visit_one_hop_relationships_with_budget(
+    visit_one_hop_relationships_with_context(
         store,
         OneHopRelationshipSpec {
             source: source.id,
@@ -393,6 +416,7 @@ fn relationship_exists(
         },
         context.adjacency_memory,
         context.observer,
+        context.task_context,
         &mut |_, _| {
             found = true;
             Ok(ScanControl::Stop)
@@ -420,7 +444,15 @@ fn bound_relationship_exists(
     let Some(rel_type_id) = catalog.rel_type_id(rel_type) else {
         return Ok(false);
     };
-    crate::scan::adjacency_exists(store, source.id, target.id, rel_type_id, direction, None)
+    crate::scan::adjacency_exists_with_memory(
+        store,
+        source.id,
+        target.id,
+        rel_type_id,
+        direction,
+        context.adjacency_memory,
+        context.task_context,
+    )
 }
 
 pub fn compare_bindings(

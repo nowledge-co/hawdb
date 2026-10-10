@@ -781,3 +781,105 @@ fn resident_projection_admits_root_before_allocating_adjacency_buffers() {
     assert!(output.batches.is_empty());
     assert!(output.peak_bytes <= 4096);
 }
+
+fn assert_empty_projection_offsets_root(unknown_label: bool, algorithm: GraphAlgorithmKind) {
+    let mut fixture = Fixture::new();
+    fixture.nodes.clear();
+    fixture.relationships.clear();
+    fixture.definition = Some(ProjectedGraphDefinition {
+        node_labels: if unknown_label {
+            vec!["Unknown".into()]
+        } else {
+            vec![]
+        },
+        rel_types: if unknown_label {
+            vec![]
+        } else {
+            vec!["Unknown".into()]
+        },
+        relationship_predicates: BTreeMap::new(),
+    });
+    let footprint = std::mem::size_of::<usize>();
+    let mut options = RunOptions {
+        algorithm,
+        ..RunOptions::default()
+    };
+    options.memory.blocking_operator_bytes = nz(1024 * 1024);
+    options.memory.query_memory_bytes = nz(footprint - 1);
+    let output = run(&fixture, &options, None);
+    assert!(output.batches.is_empty());
+    assert!(
+        output.result.is_err(),
+        "empty offsets escaped the query root"
+    );
+    assert!(output.reports.blocking_memory.is_empty());
+    assert!(output.peak_bytes < footprint);
+
+    // Isolate the projection owner's exact inclusive footprint from Louvain's
+    // separate nonzero empty-graph algorithm scratch reservation.
+    let ledger = QueryMemoryLedger::new(nz(footprint));
+    let account = ledger.account(
+        QueryMemoryClass::BlockingState,
+        "GraphAlgorithm",
+        nz(1024 * 1024),
+    );
+    let no_properties = BTreeSet::new();
+    let source = GraphExecutionProjectionSource(
+        &fixture,
+        None,
+        Some(&no_properties),
+        account.clone(),
+        Some(std::cell::RefCell::new(
+            OperatorMemoryTracker::with_account(nz(1024 * 1024), account),
+        )),
+    );
+    let definition = fixture.definition.as_ref().unwrap();
+    let layout = match algorithm {
+        GraphAlgorithmKind::PageRank => ProjectionLayout::Outgoing,
+        GraphAlgorithmKind::Louvain => ProjectionLayout::Undirected,
+    };
+    let graph = try_projected_graph_with_filters_admitted(
+        &fixture.catalog,
+        &source,
+        ProjectedGraphFilters {
+            node_labels: &definition.node_labels,
+            rel_types: &definition.rel_types,
+            relationship_predicates: &definition.relationship_predicates,
+        },
+        |_| true,
+        layout,
+        ProjectionMemoryBudget::new(nz(1024 * 1024)),
+    )
+    .unwrap();
+    assert_eq!(graph.csr_offsets(), &[0]);
+    assert_eq!(graph.memory_estimate().estimated_bytes, footprint);
+    assert_eq!(source.4.as_ref().unwrap().borrow().used_bytes, footprint);
+    assert_eq!(ledger.snapshot().used_bytes, footprint);
+    drop(graph);
+    drop(source);
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+
+    options.memory.query_memory_bytes = nz(64);
+    let output = run(&fixture, &options, None);
+    assert_eq!(output.result.unwrap(), BatchControl::Continue);
+    assert!(output.batches.is_empty());
+    assert_eq!(output.reports.blocking_memory.len(), 1);
+    assert!(output.peak_bytes >= footprint && output.peak_bytes <= 64);
+}
+
+#[test]
+fn empty_unknown_label_pagerank_offsets_obey_root() {
+    assert_empty_projection_offsets_root(true, GraphAlgorithmKind::PageRank);
+}
+#[test]
+fn empty_unknown_type_pagerank_offsets_obey_root() {
+    assert_empty_projection_offsets_root(false, GraphAlgorithmKind::PageRank);
+}
+#[test]
+fn empty_unknown_label_louvain_offsets_obey_root() {
+    assert_empty_projection_offsets_root(true, GraphAlgorithmKind::Louvain);
+}
+#[test]
+fn empty_unknown_type_louvain_offsets_obey_root() {
+    assert_empty_projection_offsets_root(false, GraphAlgorithmKind::Louvain);
+}

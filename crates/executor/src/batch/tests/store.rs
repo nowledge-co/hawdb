@@ -40,6 +40,7 @@ pub(super) struct ReadFixture {
     pub(super) node_cancellation: Option<hawdb_core::RuntimeCancellationToken>,
     pub(super) node_admissions: Cell<usize>,
     pub(super) node_copies: Cell<usize>,
+    pub(super) relationship_copies: Cell<usize>,
 }
 
 impl ReadFixture {
@@ -123,11 +124,12 @@ impl GraphExecutionRead for ReadFixture {
                 AdjacencyDirection::Outgoing => relationship.source == node_id,
                 AdjacencyDirection::Incoming => relationship.target == node_id,
             };
-            if adjacent
-                && rel_type.is_none_or(|id| relationship.rel_type == id)
-                && consumer(relationship.clone())? == ScanControl::Stop
-            {
-                return Ok(ScanControl::Stop);
+            if adjacent && rel_type.is_none_or(|id| relationship.rel_type == id) {
+                self.relationship_copies
+                    .set(self.relationship_copies.get() + 1);
+                if consumer(relationship.clone())? == ScanControl::Stop {
+                    return Ok(ScanControl::Stop);
+                }
             }
         }
         Ok(ScanControl::Continue)
@@ -159,13 +161,13 @@ impl GraphExecutionRead for ReadFixture {
             else {
                 return Ok(ScanControl::Stop);
             };
-            if consumer(
-                hawdb_storage::read_view::AdmittedRelationshipRecord::clone_admitted(
-                    relationship,
-                    allocation,
-                )?,
-            )? == ScanControl::Stop
-            {
+            let input = hawdb_storage::read_view::AdmittedRelationshipRecord::clone_admitted(
+                relationship,
+                allocation,
+            )?;
+            self.relationship_copies
+                .set(self.relationship_copies.get() + 1);
+            if consumer(input)? == ScanControl::Stop {
                 return Ok(ScanControl::Stop);
             }
         }
