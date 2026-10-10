@@ -125,3 +125,33 @@ OS failures, or a whole compaction level. The proof premises for those paths
 are checked against the above implementation and real-file tests. Updating
 row codecs, fan-in, live-row retention, or account lifetime requires revisiting
 these premises as well as the tests and model.
+
+
+## Native source-to-state ownership mapping
+
+The source/state policy in https://github.com/nowledge-co/hawdb/issues/293
+uses the existing direct-account and same-ledger transfer actions above.
+`BatchExecutionContext::source_account` admits native reads as ExternalRead
+under Q; its attached retained account has the configured blocking budget B[a].
+`QueryGraphReadAllocation::retain_state` transfers the complete source grant
+through `QueryMemoryLease::transfer_to` before retaining selected GraphSeed
+payloads or growing read-side key containers. Successful equal-size transfer
+changes the account/class owner but leaves R unchanged; failed transfer changes
+neither owner nor counters. Repeated retention is idempotent. Final grant drop
+releases the charge of its current owner.
+
+`AdmittedKeySet::try_insert` and relationship key-vector growth retain their
+permit before capacity allocation. Native lookup carries row permits and their
+container permit with unconsumed results; it admits the output owner before
+dropping each source permit. This handoff can temporarily overlap conservative
+charges, and both remain subject to R <= Q. Native rejected full-node rows drop
+before the next source read; still-live batches, worker/spill allowances and
+unconsumed lookup/GraphSeed rows retain their original charges. Result
+materialization uses a separate root account, preserving the blocking bound on
+algorithm/traversal state.
+
+The policy does not alter the ledger transition algorithm or strengthen this
+proof into a statement about exact heap/RSS or arbitrary decoder allocation.
+Source-wave and complete-batch reservations are allowances, as in the original
+proof. Tests separately exercise atomic refusal, unchanged root charge during
+transfer, release/reuse and source-versus-retained admission boundaries.

@@ -544,3 +544,50 @@ Contiguous evidence bands use the caller-declared public score and reason
 columns in stream order. They do not validate how the caller ordered or
 constructed those columns. Private producer provenance still protects
 SearchScore, GraphSeedScore, hop distance and canonical candidate properties.
+
+
+## Query memory and retained operator state
+
+The policy adopted for https://github.com/nowledge-co/hawdb/issues/293 uses
+`query_memory_bytes` as the shared allowance for concurrently owned, accounted
+memory. Native node/index/projection reads, graph hydration, numeric input and
+predicate/expression temporaries use this allowance. Reading a large payload
+does not consume `blocking_operator_bytes`. That independent allowance limits
+state kept for sorting, aggregation, deduplication, traversal and selected
+GraphSeed top-K candidates. Blocking reports describe that retained state;
+source and result materialization remain visible in the query ledger.
+
+A GraphSeed read holds a source grant through visibility and relevance checks.
+Rejecting it releases that grant. Accepting it transfers the same charge to the
+retained account atomically, without increasing the query total. A rejected
+transfer preserves the original grant and ledger counters. Replacing the worst
+retained candidate releases the displaced candidate before admitting its
+replacement. Ordered relationship keys and cold equality/union/lookup dedup
+keys also take the retained allowance before their containers grow. Direct
+public scan contexts attach their supplied retained limit at this read boundary;
+standalone allocators retain their explicit numeric policy.
+
+Native full-node Filter pushes its complete predicate into the scan; optional
+property pruning does not replace predicate evaluation. Its other store-backed
+input paths return after each produced binding, so dropped rows can release
+source grants before the next source admission. The caller's output batch
+limits remain in force. External text/vector result cohorts retain their existing
+batching and ownership. Lookup can materialize multiple matches for one input:
+unconsumed matches are actually live and keep their grants through downstream
+callbacks, including Stop and errors. Public arbitrary multirow sources do not
+provide per-row release notifications; no equivalent per-row promise is made
+for their callback sidecars.
+
+Source-wave scratch is a bounded conservative reservation while the storage
+visit runs. It is released before fallback and final output callbacks. As with
+other codec and I/O allowances, this is not a proof of all decoder heap usage.
+Transfer batches may reserve their whole configured payload allowance before
+allocation; spill children and workers retain their admitted allowances. These
+charges describe live reservations and estimated ownership, not exact allocator
+bytes or process RSS. Releasing an owner returns its allowance. Reading many
+batches does not cumulatively consume query memory. The separate cumulative
+seeded-expansion payload limit still bounds traversal work after filtering.
+
+Every failed admission remains a query error rather than a successful truncated
+result. No default query or blocking memory size is changed by this policy; the
+expanded candidate and logical-payload defaults described above remain in force.

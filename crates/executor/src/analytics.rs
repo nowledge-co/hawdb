@@ -138,11 +138,19 @@ impl GraphAlgorithmSpec<'_> {
         };
         let budget = ProjectionMemoryBudget::new(context.memory.blocking_operator_bytes);
         let no_properties = BTreeSet::new();
-        let source_account = context.memory_ledger.account(
+        let retained_account = context.memory_ledger.account(
             QueryMemoryClass::BlockingState,
             "GraphAlgorithm",
             context.memory.blocking_operator_bytes,
         );
+        let source_account = context
+            .memory_ledger
+            .source_account(
+                "GraphAlgorithm source",
+                context.memory.query_memory_bytes,
+                context.memory.blocking_operator_bytes,
+            )
+            .with_retained_state(retained_account.clone());
         let mut source = GraphExecutionProjectionSource(
             context.store,
             context.task_context,
@@ -151,7 +159,7 @@ impl GraphAlgorithmSpec<'_> {
             Some(std::cell::RefCell::new(
                 OperatorMemoryTracker::with_account(
                     context.memory.blocking_operator_bytes,
-                    source_account.clone(),
+                    retained_account.clone(),
                 ),
             )),
         );
@@ -215,9 +223,16 @@ impl GraphAlgorithmSpec<'_> {
             .take()
             .expect("query projection owns its retained reservation")
             .into_inner();
-        tracker.peak_bytes = tracker.peak_bytes.max(source_account.peak_bytes());
         let input_rows = graph.node_count();
         let output_limit = execution_limit.output_rows.unwrap_or(usize::MAX);
+        let mut output_tracker = OperatorMemoryTracker::with_account(
+            context.memory.query_memory_bytes,
+            context.memory_ledger.account(
+                QueryMemoryClass::ResultMaterialization,
+                "GraphAlgorithm results",
+                context.memory.query_memory_bytes,
+            ),
+        );
         let execution_result: Result<Vec<Binding>> = (|| {
             let mut bindings = Vec::new();
             match algorithm {
@@ -246,18 +261,16 @@ impl GraphAlgorithmSpec<'_> {
                             ("node".to_string(), Value::Int(score.node.0 as i64)),
                             (score_column.to_owned(), Value::Float(score.score)),
                         ]);
-                        let hydration_bytes = if return_node_identity {
-                            append_node_identity(
+                        let hydration = if return_node_identity {
+                            Some(append_node_identity(
                                 &mut values,
-                                context.catalog,
-                                context.store,
+                                context,
                                 score.node,
                                 &definition.node_labels,
-                                "PageRank",
-                                &mut tracker,
-                            )?
+                                &source_account,
+                            )?)
                         } else {
-                            0
+                            None
                         };
                         let push_result = push_bounded_operator_binding(
                             "GraphAlgorithm",
@@ -267,9 +280,9 @@ impl GraphAlgorithmSpec<'_> {
                                 nodes: BTreeMap::new(),
                                 relationships: BTreeMap::new(),
                             },
-                            &mut tracker,
+                            &mut output_tracker,
                         );
-                        tracker.release(hydration_bytes);
+                        drop(hydration);
                         push_result?;
                     }
                     tracker.release(result_bytes);
@@ -304,18 +317,16 @@ impl GraphAlgorithmSpec<'_> {
                                 Value::Int(assignment.community.0 as i64),
                             ),
                         ]);
-                        let hydration_bytes = if return_node_identity {
-                            append_node_identity(
+                        let hydration = if return_node_identity {
+                            Some(append_node_identity(
                                 &mut values,
-                                context.catalog,
-                                context.store,
+                                context,
                                 assignment.node,
                                 &definition.node_labels,
-                                "Louvain",
-                                &mut tracker,
-                            )?
+                                &source_account,
+                            )?)
                         } else {
-                            0
+                            None
                         };
                         let push_result = push_bounded_operator_binding(
                             "GraphAlgorithm",
@@ -325,9 +336,9 @@ impl GraphAlgorithmSpec<'_> {
                                 nodes: BTreeMap::new(),
                                 relationships: BTreeMap::new(),
                             },
-                            &mut tracker,
+                            &mut output_tracker,
                         );
-                        tracker.release(hydration_bytes);
+                        drop(hydration);
                         push_result?;
                     }
                     tracker.release(result_bytes);
@@ -349,26 +360,20 @@ impl GraphAlgorithmSpec<'_> {
 
 fn append_node_identity(
     values: &mut BTreeMap<String, Value>,
-    catalog: &Catalog,
-    store: &dyn GraphExecutionRead,
+    context: GraphAlgorithmContext<'_>,
     node_id: NodeId,
     preferred_labels: &[String],
-    algorithm: &'static str,
-    tracker: &mut OperatorMemoryTracker,
-) -> Result<usize> {
-    let mut hydration_bytes = 0usize;
-    let mut node = store
+    source_account: &crate::QueryMemoryAccount,
+) -> Result<crate::QueryMemoryLease> {
+    let mut hydration = source_account.reserve(0)?;
+    let mut node = context
+        .store
         .projected_node_owned_admitted(
             node_id,
             &BTreeSet::from(["id".to_string()]),
             &mut |bytes| {
-                charge_graph_algorithm_memory(
-                    algorithm,
-                    "node identity hydration",
-                    tracker,
-                    bytes,
-                )?;
-                hydration_bytes = bytes;
+                runtime_checkpoint(context.task_context)?;
+                hydration.grow(bytes)?;
                 Ok(())
             },
         )?
@@ -382,7 +387,8 @@ fn append_node_identity(
     let label = preferred_labels
         .iter()
         .find(|label| {
-            catalog
+            context
+                .catalog
                 .label_id(label)
                 .is_some_and(|label_id| node.labels.contains(&label_id))
         })
@@ -390,19 +396,18 @@ fn append_node_identity(
         .or_else(|| {
             node.labels
                 .iter()
-                .find_map(|label_id| catalog.label_name(*label_id))
+                .find_map(|label_id| context.catalog.label_name(*label_id))
         });
     let label_bytes = label
         .map_or(0, str::len)
         .saturating_add(std::mem::size_of::<Value>());
-    charge_graph_algorithm_memory(algorithm, "node label hydration", tracker, label_bytes)?;
-    hydration_bytes = hydration_bytes.saturating_add(label_bytes);
+    hydration.grow(label_bytes)?;
     let label = label
         .map(|label| Value::String(label.to_string()))
         .unwrap_or(Value::Null);
     values.insert("node_id".to_string(), external_id);
     values.insert("node_label".to_string(), label);
-    Ok(hydration_bytes)
+    Ok(hydration)
 }
 
 fn charge_graph_algorithm_memory(

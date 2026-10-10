@@ -8,6 +8,126 @@ use hawdb::store::GraphStore;
 use hawdb::value::Value;
 use std::collections::BTreeMap;
 
+struct IdentityDirectory(std::path::PathBuf);
+
+impl IdentityDirectory {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "hawdb-public-identity-output-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for IdentityDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn public_analytics_identity_output_uses_query_budget_above_retained_state_cap() {
+    use hawdb::{Database, DatabaseConfig, QueryStreamOptions, StorageResidencyMode};
+    use std::num::NonZeroUsize;
+
+    let directory = IdentityDirectory::new();
+    let path = directory.0.join("identity-output");
+    {
+        let mut database = Database::open(&path).unwrap();
+        database
+            .query_with_params(
+                "CREATE (:Oversized {id: $id})",
+                &BTreeMap::from([("id".into(), Value::String("large-id".repeat(128 * 1024)))]),
+            )
+            .unwrap();
+        database
+            .query("MATCH (a:Oversized), (b:Oversized) CREATE (a)-[:LINK]->(b)")
+            .unwrap();
+        database
+            .query("CALL project_graph('identity', ['Oversized'], ['LINK'])")
+            .unwrap();
+        database.checkpoint().unwrap();
+    }
+    for residency in [
+        StorageResidencyMode::Materialized,
+        StorageResidencyMode::OutOfCore,
+    ] {
+        let database = Database::open_with_config(
+            &path,
+            DatabaseConfig {
+                read_only: true,
+                storage_residency_mode: residency,
+                execution_memory: ExecutionMemoryConfig {
+                    query_memory_bytes: NonZeroUsize::new(16 * 1024 * 1024).unwrap(),
+                    blocking_operator_bytes: NonZeroUsize::new(4096).unwrap(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let epoch = database.commit_epoch().unwrap();
+        let mut snapshot = database.begin_read_transaction().unwrap();
+        let query = "CALL page_rank('identity', maxIterations := 1) RETURN node, node_id, node_label, pagerank_score";
+        let mut rows = Vec::new();
+        let report = snapshot
+            .query_streaming(
+                query,
+                QueryStreamOptions {
+                    max_rows: Some(1),
+                    max_payload_bytes: Some(2 * 1024 * 1024),
+                },
+                |row| {
+                    rows.push(row);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        let Value::String(identity) = &rows[0]["node_id"] else {
+            panic!("missing materialized identity")
+        };
+        assert_eq!(identity.len(), 1024 * 1024);
+        assert!(identity
+            .as_bytes()
+            .chunks_exact(8)
+            .all(|part| part == b"large-id"));
+        assert_eq!(rows[0]["node_label"], Value::String("Oversized".into()));
+        assert!(
+            report.execution_profile.blocking_operator_memory_reports[0].peak_tracked_bytes <= 4096
+        );
+        let mut emitted = 0;
+        let error = snapshot
+            .query_streaming(
+                query,
+                QueryStreamOptions {
+                    max_rows: Some(1),
+                    max_payload_bytes: Some(64 * 1024),
+                },
+                |_| {
+                    emitted += 1;
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("max_read_result_payload_bytes 65536"),
+            "{error}"
+        );
+        assert_eq!(emitted, 0);
+        assert_eq!(snapshot.commit_epoch(), epoch);
+        assert_eq!(database.commit_epoch().unwrap(), epoch);
+    }
+}
+
 #[test]
 fn public_execution_request_materializes_a_profiled_result() {
     let plan = PhysicalPlan::EmptyExec;

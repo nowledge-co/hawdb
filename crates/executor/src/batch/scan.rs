@@ -21,16 +21,12 @@ use std::cell::Cell;
 pub(super) fn stream_node_scan_batches(
     variable: &str,
     label: &str,
-    filter: Option<(&Predicate, &PropertyFilter)>,
+    filter: Option<(&Predicate, Option<&PropertyFilter>)>,
     context: BatchReadContext<'_>,
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    let memory_account = context.memory_ledger.account(
-        QueryMemoryClass::BlockingState,
-        "NodeScanExec",
-        context.memory.blocking_operator_bytes,
-    );
+    let memory_account = context.kernel_context().source_account("NodeScanExec");
     let batch_memory_account = context.memory_ledger.account(
         QueryMemoryClass::PipelineBatch,
         "NodeScanExec output",
@@ -44,7 +40,7 @@ pub(super) fn stream_node_scan_batches(
             binding,
             context.observer,
             crate::store::AdjacencyReadMemory {
-                budget_bytes: context.memory.blocking_operator_bytes.get(),
+                budget_bytes: context.memory.query_memory_bytes.get(),
                 account: Some(&memory_account),
             },
             context.task_context,
@@ -55,7 +51,7 @@ pub(super) fn stream_node_scan_batches(
         NodeScanSpec {
             variable,
             label,
-            property_filter: filter.map(|(_, filter)| filter),
+            property_filter: filter.and_then(|(_, filter)| filter),
         },
         NodeScanContext {
             catalog: context.catalog,
@@ -80,11 +76,9 @@ pub(super) fn stream_node_projection_scan_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    let memory_account = context.memory_ledger.account(
-        QueryMemoryClass::BlockingState,
-        "NodeProjectionScanExec",
-        context.memory.blocking_operator_bytes,
-    );
+    let memory_account = context
+        .kernel_context()
+        .source_account("NodeProjectionScanExec");
     let batch_memory_account = context.memory_ledger.account(
         QueryMemoryClass::PipelineBatch,
         "NodeProjectionScanExec output",
@@ -117,11 +111,7 @@ pub(super) fn stream_index_node_seek_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    let memory_account = context.memory_ledger.account(
-        QueryMemoryClass::BlockingState,
-        "IndexNodeSeekExec",
-        context.memory.blocking_operator_bytes,
-    );
+    let memory_account = context.kernel_context().source_account("IndexNodeSeekExec");
     let batch_memory_account = context.memory_ledger.account(
         QueryMemoryClass::PipelineBatch,
         "IndexNodeSeekExec output",
@@ -156,11 +146,9 @@ pub(super) fn stream_index_node_union_seek_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    let memory_account = context.memory_ledger.account(
-        QueryMemoryClass::BlockingState,
-        "IndexNodeUnionSeekExec",
-        context.memory.blocking_operator_bytes,
-    );
+    let memory_account = context
+        .kernel_context()
+        .source_account("IndexNodeUnionSeekExec");
     let batch_memory_account = context.memory_ledger.account(
         QueryMemoryClass::PipelineBatch,
         "IndexNodeUnionSeekExec output",
@@ -194,11 +182,7 @@ pub(super) fn stream_node_access_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    let memory_account = context.memory_ledger.account(
-        QueryMemoryClass::BlockingState,
-        "IndexNodeScanExec",
-        context.memory.blocking_operator_bytes,
-    );
+    let memory_account = context.kernel_context().source_account("IndexNodeScanExec");
     let batch_account = context.memory_ledger.account(
         QueryMemoryClass::PipelineBatch,
         "IndexNodeScanExec output",
@@ -288,15 +272,20 @@ pub(super) fn stream_source_segment_scan_batches(
         .expect("source segment scan coalesced range limit is non-zero");
     let max_wave_bytes = NonZeroU64::new(SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES)
         .expect("source segment scan wave byte limit is non-zero");
-    // The sidecar decoder owns a bounded candidate wave. Reserve its complete
-    // local limit before issuing I/O so admission and the live ledger describe
-    // the same peak even though decoding is storage-owned.
+    // Reserve the declared candidate-wave allowance before issuing I/O. This
+    // conservative scratch grant is separate from canonical node/output grants;
+    // decoder heap ownership still follows the storage codec's size contract.
+    let candidate_budget = NonZeroUsize::new(
+        (SOURCE_SEGMENT_SCAN_MAX_WAVE_BYTES as usize)
+            .min(memory.query_memory_bytes.get().saturating_div(2).max(1)),
+    )
+    .unwrap();
     let scratch_account = context.memory_ledger.account(
-        QueryMemoryClass::BlockingState,
-        "SourceSegmentScan candidates",
-        memory.blocking_operator_bytes,
+        QueryMemoryClass::ExternalRead,
+        "SourceSegmentScan candidate wave reservation",
+        candidate_budget,
     );
-    let _scratch = scratch_account.reserve(memory.blocking_operator_bytes.get())?;
+    let _scratch = scratch_account.reserve(candidate_budget.get())?;
     let source_label_id = catalog.label_id("Source");
     let source_count = source_label_id
         .map(|label_id| store.node_count_for_label(Some(label_id)))
@@ -307,11 +296,9 @@ pub(super) fn stream_source_segment_scan_batches(
         memory.batch_payload_bytes,
         context.memory_ledger,
     );
-    let node_account = context.memory_ledger.account(
-        QueryMemoryClass::BlockingState,
-        "SourceSegmentScan node ownership",
-        memory.blocking_operator_bytes,
-    );
+    let node_account = context
+        .kernel_context()
+        .source_account("SourceSegmentScan node ownership");
     let mut allocate_slots =
         |bytes| crate::store::admit_graph_read(&node_account, task_context, bytes);
     let mut allocations = hawdb_storage::read_view::AdmittedVec::new(
@@ -328,7 +315,7 @@ pub(super) fn stream_source_segment_scan_batches(
             io_depth,
             max_coalesced_bytes,
             max_wave_bytes,
-            max_live_candidate_bytes: memory.blocking_operator_bytes,
+            max_live_candidate_bytes: candidate_budget,
         },
         task_context,
         &mut |row| {
@@ -392,6 +379,7 @@ pub(super) fn stream_source_segment_scan_batches(
             )
         },
     );
+    drop(_scratch);
     runtime_checkpoint(task_context)?;
     let SourceScanCandidateVisit::Rows {
         skipped_segment_count,
@@ -429,19 +417,17 @@ pub(super) fn execute_node_column_lookup(
     input: Vec<Binding>,
     context: BatchReadContext<'_>,
     execution_limit: ExecutionLimit,
-) -> Result<Vec<Binding>> {
+) -> Result<crate::scan::OwnedLookupBindings> {
     let memory_budget = context.memory.blocking_operator_bytes;
-    let memory_account = context.memory_ledger.account(
-        QueryMemoryClass::BlockingState,
-        "NodeColumnLookupExec",
-        memory_budget,
-    );
+    let memory_account = context
+        .kernel_context()
+        .source_account("NodeColumnLookupExec");
     let batch_memory_account = context.memory_ledger.account(
         QueryMemoryClass::PipelineBatch,
         "NodeColumnLookupExec output",
         context.memory.batch_payload_bytes,
     );
-    crate::scan::execute_node_column_lookup(
+    crate::scan::execute_node_column_lookup_owned(
         spec,
         input,
         NodeScanContext {
@@ -469,11 +455,9 @@ pub(super) fn stream_filtered_adjacency_expand_batches(
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
     let BatchReadContext { catalog, store, .. } = context;
-    let predicate_account = context.memory_ledger.account(
-        QueryMemoryClass::BlockingState,
-        "AdjacencyExpandExec residual predicate",
-        context.memory.blocking_operator_bytes,
-    );
+    let predicate_account = context
+        .kernel_context()
+        .source_account("AdjacencyExpandExec residual predicate");
     let mut emitted = 0usize;
     stream_adjacency_expand_batches(
         plan,
@@ -498,7 +482,7 @@ pub(super) fn stream_filtered_adjacency_expand_batches(
                     &binding,
                     context.observer,
                     crate::store::AdjacencyReadMemory {
-                        budget_bytes: context.memory.blocking_operator_bytes.get(),
+                        budget_bytes: context.memory.query_memory_bytes.get(),
                         account: Some(&predicate_account),
                     },
                     context.task_context,
@@ -543,11 +527,9 @@ pub(super) fn stream_adjacency_exists_batches(
         ));
     };
     let rel_type_id = context.catalog.rel_type_id(rel_type);
-    let adjacency_account = context.memory_ledger.account(
-        QueryMemoryClass::BlockingState,
-        "AdjacencyExistsExec adjacency",
-        context.memory.blocking_operator_bytes,
-    );
+    let adjacency_account = context
+        .kernel_context()
+        .source_account("AdjacencyExistsExec adjacency");
     let emitted = Cell::new(0usize);
     execute_binding_batches(input, context, ExecutionLimit::unlimited(), &mut |batch| {
         let remaining = execution_limit
@@ -582,7 +564,7 @@ pub(super) fn stream_adjacency_exists_batches(
                         rel_type_id,
                         *direction,
                         crate::store::AdjacencyReadMemory {
-                            budget_bytes: context.memory.blocking_operator_bytes.get(),
+                            budget_bytes: context.memory.query_memory_bytes.get(),
                             account: Some(&adjacency_account),
                         },
                         context.task_context,
@@ -652,6 +634,10 @@ pub(super) fn stream_adjacency_expand_batches(
         "AdjacencyExpandExec",
         memory.blocking_operator_bytes,
     );
+    let source_account = context
+        .kernel_context()
+        .source_account("AdjacencyExpandExec source reads")
+        .with_retained_state(adjacency_account.clone());
     let mut graph_expansion = GraphExpansionExecutionState::with_memory_account(
         graph_budget.map(|budget| memory.graph_expansion_budget.unwrap_or(budget)),
         0,
@@ -729,8 +715,8 @@ pub(super) fn stream_adjacency_expand_batches(
                             target_label_ids: target_label_ids.as_deref(),
                             filters: &filters,
                             memory: crate::store::AdjacencyReadMemory {
-                                budget_bytes: memory.blocking_operator_bytes.get(),
-                                account: Some(&adjacency_account),
+                                budget_bytes: memory.query_memory_bytes.get(),
+                                account: Some(&source_account),
                             },
                             task_context: context.task_context,
                         },
@@ -746,8 +732,8 @@ pub(super) fn stream_adjacency_expand_batches(
                             filters: &filters,
                             store,
                             memory: crate::store::AdjacencyReadMemory {
-                                budget_bytes: memory.blocking_operator_bytes.get(),
-                                account: Some(&adjacency_account),
+                                budget_bytes: memory.query_memory_bytes.get(),
+                                account: Some(&source_account),
                             },
                             task_context: context.task_context,
                             observer: context.observer,
@@ -816,10 +802,6 @@ impl crate::scan::ExpandedBindingConsumer for ExpandBatchConsumer<'_, '_> {
         };
         let candidate_bytes = preview.memory_bytes.saturating_sub(reduction);
         let payload_bytes = preview.payload_bytes.saturating_sub(reduction);
-        crate::scan::ensure_expanded_binding_fits(
-            candidate_bytes,
-            self.context.memory.blocking_operator_bytes.get(),
-        )?;
         let batch_payload_bytes = self.context.memory.batch_payload_bytes.get();
         if candidate_bytes > batch_payload_bytes {
             return Err(HawDBError::Execution(format!(

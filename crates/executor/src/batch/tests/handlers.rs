@@ -260,9 +260,11 @@ fn graph_handler_errors_release_memory_without_emitting_partial_results() {
         });
         assert!(result.unwrap_err().to_string().contains(expected));
         if budget == 150 {
-            // A source lease exceeds this cap before the graph can be built;
-            // no completed algorithm report or partial output may be published.
-            assert!(reports.blocking_memory.is_empty());
+            // Source reads fit the root; retained algorithm state still refuses
+            // this cap. Its completed report must describe retained bytes.
+            assert_eq!(reports.blocking_memory.len(), 1);
+            assert_eq!(reports.blocking_memory[0].budget_bytes, budget);
+            assert!(reports.blocking_memory[0].peak_tracked_bytes <= budget);
         }
     }
 }

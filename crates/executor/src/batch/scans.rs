@@ -23,11 +23,9 @@ fn admit_access_copy<'a>(
     properties: impl Iterator<Item = &'a str>,
     values: impl Iterator<Item = &'a Value>,
 ) -> Result<Box<dyn hawdb_storage::read_view::GraphReadAllocation>> {
-    let account = context.memory_ledger.account(
-        QueryMemoryClass::BlockingState,
-        "IndexNodeAccess keys",
-        context.memory.blocking_operator_bytes,
-    );
+    let account = context
+        .kernel_context()
+        .source_account("IndexNodeAccess keys");
     crate::scan::owned::admit_access_copy(&account, context.task_context, properties, values)
 }
 
@@ -166,11 +164,9 @@ pub(super) fn stream_optional_relationship_count_sum_batches(
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
     let label_ids = label_ids_for_pattern(context.catalog, label);
-    let count_account = context.memory_ledger.account(
-        QueryMemoryClass::BlockingState,
-        "OptionalRelationshipCountSumExec",
-        context.memory.blocking_operator_bytes,
-    );
+    let count_account = context
+        .kernel_context()
+        .source_account("OptionalRelationshipCountSumExec");
     let mut total = 0usize;
     let mut nodes_since_checkpoint = 0usize;
     let mut admit = |bytes| {
@@ -197,7 +193,7 @@ pub(super) fn stream_optional_relationship_count_sum_batches(
                     node.id,
                     leg,
                     crate::store::AdjacencyReadMemory {
-                        budget_bytes: context.memory.blocking_operator_bytes.get(),
+                        budget_bytes: context.memory.query_memory_bytes.get(),
                         account: Some(&count_account),
                     },
                     context.observer,

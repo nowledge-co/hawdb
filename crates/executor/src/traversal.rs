@@ -91,12 +91,19 @@ pub fn execute_shortest_path(
         "ShortestPathExec",
         memory.blocking_operator_bytes,
     );
+    let source_account = memory_ledger
+        .source_account(
+            "ShortestPathExec source",
+            memory.query_memory_bytes,
+            memory.blocking_operator_bytes,
+        )
+        .with_retained_state(blocking_account.clone());
     let Some(source) = find_node_by_id_property(
         catalog,
         store,
         input.source_label,
         input.source_id,
-        &blocking_account,
+        &source_account,
         task_context,
     )?
     else {
@@ -108,7 +115,7 @@ pub fn execute_shortest_path(
         store,
         input.target_label,
         input.target_id,
-        &blocking_account,
+        &source_account,
         task_context,
     )?
     else {
@@ -159,16 +166,15 @@ pub fn execute_shortest_path(
         observer,
     )?;
     let mut output_tracker = OperatorMemoryTracker::with_account(
-        memory.blocking_operator_bytes,
-        blocking_account.clone(),
+        memory.query_memory_bytes,
+        memory_ledger.account(
+            QueryMemoryClass::ResultMaterialization,
+            "ShortestPathExec results",
+            memory.query_memory_bytes,
+        ),
     );
     output_tracker.try_charge(paths.len().saturating_mul(std::mem::size_of::<Binding>()))?;
     let mut output = Vec::with_capacity(paths.len());
-    let mut peak_bytes = search_tracker.peak_bytes.max(
-        search_tracker
-            .used_bytes
-            .saturating_add(output_tracker.used_bytes),
-    );
     for path in paths {
         runtime_checkpoint(task_context)?;
         let binding = shortest_path_binding(
@@ -176,14 +182,9 @@ pub fn execute_shortest_path(
             &path,
             input.returns,
             &mut output_tracker,
-            &blocking_account,
+            &source_account,
             task_context,
         )?;
-        peak_bytes = peak_bytes.max(
-            search_tracker
-                .used_bytes
-                .saturating_add(output_tracker.used_bytes),
-        );
         let path_bytes = path
             .capacity()
             .saturating_mul(std::mem::size_of::<NodeId>());
@@ -195,8 +196,8 @@ pub fn execute_shortest_path(
     search_tracker.reset();
     observer.record_blocking_memory_report(in_memory_report(
         "ShortestPathExec",
-        &output_tracker,
-        peak_bytes.max(blocking_account.peak_bytes()),
+        &search_tracker,
+        blocking_account.peak_bytes(),
         visited_paths,
         memory,
     ));
@@ -946,11 +947,13 @@ pub fn thread_repair_stats_rows(
         memory_budget,
     );
     let mut tracker = OperatorMemoryTracker::with_account(memory_budget, blocking_account.clone());
-    let property_account = memory_ledger.account(
-        QueryMemoryClass::ExternalRead,
-        "ThreadRepairStatsExec properties",
-        memory_budget,
-    );
+    let property_account = memory_ledger
+        .source_account(
+            "ThreadRepairStatsExec properties",
+            memory_ledger.budget_bytes(),
+            memory_budget,
+        )
+        .with_retained_state(blocking_account.clone());
     let mut identity_bytes = 0usize;
     // Identity counts and thread state have different property requirements.
     // Select labels before ownership, then project only each phase's fields.
@@ -960,7 +963,7 @@ pub fn thread_repair_stats_rows(
         store,
         identity_label_ids.as_deref(),
         &identity_properties,
-        &blocking_account,
+        &property_account,
         task_context,
         &mut |node| {
             if let Some(identity_ref) = node.properties.get(identity_ref_property) {
@@ -999,7 +1002,7 @@ pub fn thread_repair_stats_rows(
         store,
         thread_label_ids.as_deref(),
         &thread_properties,
-        &blocking_account,
+        &property_account,
         task_context,
         &mut |node| {
             let bytes = ThreadRepairThread::borrowed_memory_bytes(&node, thread_id_property);
@@ -1040,8 +1043,8 @@ pub fn thread_repair_stats_rows(
                     direction: RelationshipDirection::Outgoing,
                 },
                 AdjacencyReadMemory {
-                    budget_bytes: memory_budget.get(),
-                    account: Some(&blocking_account),
+                    budget_bytes: property_account.budget_bytes().get(),
+                    account: Some(&property_account),
                 },
                 observer,
                 None,
@@ -1061,8 +1064,8 @@ pub fn thread_repair_stats_rows(
                     direction: RelationshipDirection::Outgoing,
                 },
                 AdjacencyReadMemory {
-                    budget_bytes: memory_budget.get(),
-                    account: Some(&blocking_account),
+                    budget_bytes: property_account.budget_bytes().get(),
+                    account: Some(&property_account),
                 },
                 observer,
                 None,

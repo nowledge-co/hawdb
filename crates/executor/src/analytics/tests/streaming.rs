@@ -319,11 +319,20 @@ fn node_state_and_oversized_records_remain_fail_closed() {
         .properties
         .insert("large".into(), Value::String("x".repeat(8192)));
     let output = run_external(&fixture, &options, None);
+    assert!(
+        output.result.is_ok(),
+        "source record fits shared root: {:?}",
+        output.result
+    );
+    assert!(!output.batches.is_empty());
     assert!(output
-        .result
-        .unwrap_err()
-        .to_string()
-        .contains("adjacency record"));
+        .reports
+        .blocking_memory
+        .iter()
+        .all(|report| report.peak_tracked_bytes <= 4096));
+    options.memory.query_memory_bytes = nz(8192);
+    let output = run_external(&fixture, &options, None);
+    assert!(output.result.unwrap_err().to_string().contains("exceeding"));
     assert!(output.batches.is_empty());
 }
 

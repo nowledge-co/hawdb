@@ -41,9 +41,7 @@ use crate::observer::QueryExecutionObserver;
 use crate::pipeline::{runtime_checkpoint, AccountedBindingBatch, BatchControl, BindingBatch};
 use crate::store::GraphExecutionRead;
 use crate::SharedExecutorPool;
-use crate::{
-    ExecutionLimit, ExecutionMemoryConfig, QueryMemoryAccount, QueryMemoryClass, QueryMemoryLedger,
-};
+use crate::{ExecutionLimit, ExecutionMemoryConfig, QueryMemoryAccount, QueryMemoryLedger};
 use hawdb_core::{Catalog, HawDBError, Result, RuntimeTaskContext, Value};
 use hawdb_plan_cypher::{PhysicalPlan, PlanChildren, Predicate, Projection, ProjectionExpression};
 use hawdb_storage::{scan::ScanPruningReport, NodeRecord};
@@ -867,9 +865,9 @@ impl<'plan, 'context, 'emit> NumericBatchEmitter<'plan, 'context, 'emit> {
             observer,
             emit,
             selected_rows: Vec::new(),
-            working: resources.1.account(
-                QueryMemoryClass::BlockingState,
+            working: resources.1.source_account(
                 "numeric projection expressions",
+                resources.0.query_memory_bytes,
                 resources.0.blocking_operator_bytes,
             ),
             output: AccountedBindingBatch::with_ledger(

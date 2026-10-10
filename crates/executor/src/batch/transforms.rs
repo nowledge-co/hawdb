@@ -77,13 +77,12 @@ pub(super) fn stream_filter_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    if let PhysicalPlan::SeqNodeScan { variable, label } = input
-        && let Ok(filter) = property_filter_from_predicate(predicate)
-    {
+    if let PhysicalPlan::SeqNodeScan { variable, label } = input {
+        let filter = property_filter_from_predicate(predicate).ok();
         return stream_node_scan_batches(
             variable,
             label,
-            Some((predicate, &filter)),
+            Some((predicate, filter.as_ref())),
             context,
             execution_limit,
             emit,
@@ -130,12 +129,29 @@ pub(super) fn stream_filter_batches(
             emit,
         );
     }
-    let predicate_account = context.memory_ledger.account(
-        QueryMemoryClass::BlockingState,
-        "FilterExec relationship predicate",
-        context.memory.blocking_operator_bytes,
-    );
-    let mut source = PreparedTransformSource { context };
+    let predicate_account = context
+        .kernel_context()
+        .source_account("FilterExec relationship predicate");
+    let source_memory = ExecutionMemoryConfig {
+        // External seed rows already belong to a retained result cohort. Keep
+        // its batching; a store-owned source must return after each row so
+        // rejected payload grants drop before the next source admission.
+        batch_rows: if matches!(
+            input,
+            PhysicalPlan::TextSeedScan { .. } | PhysicalPlan::VectorSeedScan { .. }
+        ) {
+            context.memory.batch_rows
+        } else {
+            NonZeroUsize::new(1).unwrap()
+        },
+        ..context.memory.clone()
+    };
+    let mut source = PreparedTransformSource {
+        context: BatchReadContext {
+            memory: &source_memory,
+            ..context
+        },
+    };
     executor_transform::stream_filter_batches(
         input,
         &mut source,
@@ -149,7 +165,7 @@ pub(super) fn stream_filter_batches(
                 binding,
                 context.observer,
                 crate::store::AdjacencyReadMemory {
-                    budget_bytes: context.memory.blocking_operator_bytes.get(),
+                    budget_bytes: context.memory.query_memory_bytes.get(),
                     account: Some(&predicate_account),
                 },
                 context.task_context,

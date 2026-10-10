@@ -63,6 +63,9 @@ pub(crate) fn stream_graph_match(
         return Ok(BatchControl::Stop);
     }
     let account = context.operator_account("GraphMatchExec state");
+    let source_account = context
+        .source_account("GraphMatchExec source")
+        .with_retained_state(account.clone());
     let output_account = context.memory_ledger.account(
         QueryMemoryClass::PipelineBatch,
         "GraphMatchExec output",
@@ -79,6 +82,7 @@ pub(crate) fn stream_graph_match(
         store,
         context,
         account: &account,
+        source_account: &source_account,
     };
     let mut emitted = 0;
     let mut append = |binding: &Binding| {
@@ -154,13 +158,14 @@ struct MatchRuntime<'a> {
     store: &'a dyn GraphExecutionRead,
     context: BatchExecutionContext<'a>,
     account: &'a QueryMemoryAccount,
+    source_account: &'a QueryMemoryAccount,
 }
 
 impl MatchRuntime<'_> {
     fn adjacency_memory(&self) -> AdjacencyReadMemory<'_> {
         AdjacencyReadMemory {
-            budget_bytes: self.context.memory.blocking_operator_bytes.get(),
-            account: Some(self.account),
+            budget_bytes: self.context.memory.query_memory_bytes.get(),
+            account: Some(self.source_account),
         }
     }
 
@@ -168,11 +173,12 @@ impl MatchRuntime<'_> {
         &self,
         input: &Binding,
     ) -> Result<(Binding, AdmittedVec<Box<dyn GraphReadAllocation>>)> {
-        let mut admit = |bytes| admit_graph_read(self.account, self.context.task_context, bytes);
+        let mut admit =
+            |bytes| admit_graph_read(self.source_account, self.context.task_context, bytes);
         let admission = GraphReadAdmission::new(&mut admit);
         let mut leases = AdmittedVec::new(&admission)?;
         leases.try_push(admit_graph_read(
-            self.account,
+            self.source_account,
             self.context.task_context,
             binding_memory_bytes(input),
         )?)?;
@@ -205,7 +211,7 @@ impl MatchRuntime<'_> {
                 GraphEntityKind::Node => {
                     let mut admit_node = |bytes: usize| {
                         admit_graph_read(
-                            self.account,
+                            self.source_account,
                             self.context.task_context,
                             bytes
                                 .saturating_add(import.variable.len())
@@ -236,7 +242,7 @@ impl MatchRuntime<'_> {
                             self.adjacency_memory(),
                             &mut |bytes| {
                                 admit_graph_read(
-                                    self.account,
+                                    self.source_account,
                                     self.context.task_context,
                                     bytes
                                         .saturating_add(import.variable.len())
@@ -317,7 +323,7 @@ impl MatchRuntime<'_> {
                     label,
                     &mut |bytes| {
                         crate::store::admit_graph_read(
-                            self.account,
+                            self.source_account,
                             self.context.task_context,
                             bytes
                                 .saturating_add(binding_memory_bytes(row))
@@ -426,10 +432,12 @@ impl MatchRuntime<'_> {
                         {
                             return Ok(ScanControl::Continue);
                         }
-                        let _lease = self.account.reserve(
+                        let _used = self
+                            .account
+                            .reserve(used.len().saturating_add(1).saturating_mul(48))?;
+                        let _lease = self.source_account.reserve(
                             binding_memory_bytes(row)
-                                .saturating_add(relationship_memory_bytes(&edge))
-                                .saturating_add(used.len().saturating_add(1).saturating_mul(48)),
+                                .saturating_add(relationship_memory_bytes(&edge)),
                         )?;
                         let mut next = row.clone();
                         let mut used = used.clone();
@@ -463,7 +471,7 @@ impl MatchRuntime<'_> {
         {
             return Ok(ScanControl::Continue);
         }
-        let _lease = self.account.reserve(
+        let _lease = self.source_account.reserve(
             binding_memory_bytes(row)
                 .saturating_add(node_memory_bytes(&node))
                 .saturating_add(pattern.variable.len()),

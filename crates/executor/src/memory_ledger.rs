@@ -95,6 +95,24 @@ struct QueryMemoryClassState {
 }
 
 impl QueryMemoryLedger {
+    pub(crate) fn budget_bytes(&self) -> NonZeroUsize {
+        NonZeroUsize::new(self.inner.budget_bytes).unwrap()
+    }
+
+    pub(crate) fn source_account(
+        &self,
+        owner: &'static str,
+        source_budget: NonZeroUsize,
+        retained_budget: NonZeroUsize,
+    ) -> QueryMemoryAccount {
+        self.account(QueryMemoryClass::ExternalRead, owner, source_budget)
+            .with_retained_state(self.account(
+                QueryMemoryClass::BlockingState,
+                owner,
+                retained_budget,
+            ))
+    }
+
     pub fn new(budget_bytes: NonZeroUsize) -> Self {
         Self {
             inner: Arc::new(QueryMemoryLedgerInner {
@@ -146,6 +164,7 @@ impl QueryMemoryLedger {
             ledger: self.clone(),
             account_id,
             backing: None,
+            retained_state: None,
         }
     }
 
@@ -380,9 +399,23 @@ pub struct QueryMemoryAccount {
     // A child ledger owns an up-front reservation in its parent. Every account
     // and outstanding lease keeps that reservation alive.
     backing: Option<Arc<QueryMemoryLease>>,
+    retained_state: Option<Arc<QueryMemoryAccount>>,
 }
 
 impl QueryMemoryAccount {
+    pub(crate) fn query_budget_bytes(&self) -> NonZeroUsize {
+        self.ledger.budget_bytes()
+    }
+
+    pub(crate) fn with_retained_state(mut self, account: Self) -> Self {
+        self.retained_state = Some(Arc::new(account));
+        self
+    }
+
+    pub(crate) fn retained_state(&self) -> Option<&Self> {
+        self.retained_state.as_deref()
+    }
+
     /// Reserve the entire child allowance before dispatch, without charging
     /// individual child allocations to the query root a second time.
     pub(crate) fn sub_account(&self, budget: NonZeroUsize) -> Result<Self> {

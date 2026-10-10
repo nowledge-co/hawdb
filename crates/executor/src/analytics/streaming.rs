@@ -16,8 +16,6 @@ use super::*;
 use crate::binding::value_memory_bytes;
 use hawdb_analytics::{AnalyticsEdgeSource, StreamingGraph};
 use hawdb_storage::{adjacency::AdjacencyDirection, NodeId};
-use std::cell::Cell;
-use std::num::NonZeroUsize;
 
 // Includes original IDs, member vectors, overlapping contraction state, dense
 // neighbor membership, algorithm scratch, and Vec capacity growth. Results are
@@ -31,7 +29,6 @@ struct EdgeSource<'a> {
     relationship_predicates:
         &'a BTreeMap<String, hawdb_storage::projection::ProjectedRelationshipPredicate>,
     record_budget: usize,
-    record_peak: Cell<usize>,
     record_account: crate::QueryMemoryAccount,
 }
 
@@ -47,9 +44,8 @@ impl AnalyticsEdgeSource for EdgeSource<'_> {
         let mut scan = |direction, rel_type| {
             let mut admit = |bytes| {
                 if bytes > self.record_budget {
-                    return Err(HawDBError::Execution(format!("GraphAlgorithm streaming adjacency record requires {bytes} bytes, exceeding remaining blocking_operator_bytes {}", self.record_budget)));
+                    return Err(HawDBError::Execution(format!("GraphAlgorithm streaming adjacency record requires {bytes} bytes, exceeding query_memory_bytes {}", self.record_budget)));
                 }
-                self.record_peak.set(self.record_peak.get().max(bytes));
                 crate::store::admit_graph_read(
                     &self.record_account,
                     self.context.task_context,
@@ -133,15 +129,23 @@ impl GraphAlgorithmSpec<'_> {
             .as_ref()
             .map(property_filter_from_predicate)
             .transpose()?;
-        let source_account = context.memory_ledger.account(
+        let state_account = context.memory_ledger.account(
             QueryMemoryClass::BlockingState,
             "GraphAlgorithm",
             context.memory.blocking_operator_bytes,
         );
         let mut tracker = OperatorMemoryTracker::with_account(
             context.memory.blocking_operator_bytes,
-            source_account.clone(),
+            state_account.clone(),
         );
+        let source_account = context
+            .memory_ledger
+            .source_account(
+                "GraphAlgorithm streaming source",
+                context.memory.query_memory_bytes,
+                context.memory.blocking_operator_bytes,
+            )
+            .with_retained_state(state_account);
         let mut node_count = 0;
         let result = (|| {
             runtime_checkpoint(context.task_context)?;
@@ -233,14 +237,8 @@ impl GraphAlgorithmSpec<'_> {
                 context,
                 rel_types: &definition.rel_types,
                 relationship_predicates: &definition.relationship_predicates,
-                record_budget: tracker.budget_bytes.saturating_sub(tracker.used_bytes),
-                record_peak: Cell::new(0),
-                record_account: context.memory_ledger.account(
-                    QueryMemoryClass::BlockingState,
-                    "GraphAlgorithm adjacency record",
-                    NonZeroUsize::new(tracker.budget_bytes.saturating_sub(tracker.used_bytes))
-                        .unwrap_or(NonZeroUsize::MIN),
-                ),
+                record_budget: context.memory.query_memory_bytes.get(),
+                record_account: source_account.clone(),
             };
             let graph = StreamingGraph::new(
                 &source,
@@ -259,9 +257,6 @@ impl GraphAlgorithmSpec<'_> {
                     .louvain_procedure(self.louvain_options()?, context.task_context)
                     .map(AlgorithmRows::Louvain),
             };
-            tracker.peak_bytes = tracker
-                .peak_bytes
-                .max(tracker.used_bytes.saturating_add(source.record_peak.get()));
             let rows = result_rows?;
             // All graph computation has completed before any result is emitted.
             // Drop graph state, retaining only the admitted scalar result vector.
@@ -290,14 +285,12 @@ impl GraphAlgorithmSpec<'_> {
                         continue;
                     }
                     let mut values = BTreeMap::new();
-                    let transient = append_node_identity(
+                    let hydration = append_node_identity(
                         &mut values,
-                        context.catalog,
-                        context.store,
+                        context,
                         node,
                         &definition.node_labels,
-                        "streaming",
-                        &mut tracker,
+                        &source_account,
                     )?;
                     let id = values
                         .remove("node_id")
@@ -316,11 +309,19 @@ impl GraphAlgorithmSpec<'_> {
                         bytes,
                     )?;
                     identities.insert(node, (id, label));
-                    tracker.release(transient);
+                    drop(hydration);
                 }
             }
             let mut batch = Vec::new();
             let mut batch_bytes = 0usize;
+            let mut output_tracker = OperatorMemoryTracker::with_account(
+                context.memory.query_memory_bytes,
+                context.memory_ledger.account(
+                    QueryMemoryClass::ResultMaterialization,
+                    "GraphAlgorithm streaming output",
+                    context.memory.query_memory_bytes,
+                ),
+            );
             for (ordinal, mut row) in rows
                 .bindings(self.score_column)
                 .take(execution_limit.output_rows.unwrap_or(usize::MAX))
@@ -329,17 +330,27 @@ impl GraphAlgorithmSpec<'_> {
                 if ordinal.is_multiple_of(1024) {
                     runtime_checkpoint(context.task_context)?;
                 }
-                if self.return_node_identity {
+                let identity = if self.return_node_identity {
                     let Some(Value::Int(node)) = row.values.get("node") else {
                         return Err(HawDBError::StorageIntegrity(
                             "graph algorithm returned an invalid node identity".into(),
                         ));
                     };
-                    let (id, label) = &identities[&NodeId(*node as u64)];
-                    row.values.insert("node_id".into(), id.clone());
-                    row.values.insert("node_label".into(), label.clone());
-                }
-                let bytes = crate::binding::binding_memory_bytes(&row);
+                    Some(&identities[&NodeId(*node as u64)])
+                } else {
+                    None
+                };
+                let bytes = crate::binding::binding_memory_bytes_with_values(
+                    &row,
+                    row.values
+                        .iter()
+                        .map(|(name, value)| (name.as_str(), value))
+                        .chain(
+                            identity
+                                .into_iter()
+                                .flat_map(|(id, label)| [("node_id", id), ("node_label", label)]),
+                        ),
+                );
                 if bytes > context.memory.batch_payload_bytes.get() {
                     return Err(HawDBError::Execution(
                         "GraphAlgorithm result row exceeds batch_payload_bytes".into(),
@@ -349,21 +360,29 @@ impl GraphAlgorithmSpec<'_> {
                     && (batch.len() == context.memory.batch_rows.get()
                         || batch_bytes.saturating_add(bytes)
                             > context.memory.batch_payload_bytes.get()
-                        || tracker.would_exceed(bytes))
+                        || output_tracker.would_exceed(bytes))
                 {
-                    tracker.release(batch_bytes);
+                    let control = emit(std::mem::take(&mut batch))?;
+                    output_tracker.reset();
                     batch_bytes = 0;
-                    if emit(std::mem::take(&mut batch))? == BatchControl::Stop {
+                    if control == BatchControl::Stop {
                         return Ok(BatchControl::Stop);
                     }
+                    runtime_checkpoint(context.task_context)?;
                 }
-                charge_graph_algorithm_memory("streaming", "output batch", &mut tracker, bytes)?;
+                output_tracker.try_charge(bytes)?;
+                if let Some((id, label)) = identity {
+                    row.values.insert("node_id".into(), id.clone());
+                    row.values.insert("node_label".into(), label.clone());
+                }
                 batch_bytes = batch_bytes.saturating_add(bytes);
+                crate::pipeline::reserve_binding_slot(&mut batch);
                 batch.push(row);
             }
             if !batch.is_empty() {
-                tracker.release(batch_bytes);
-                return emit(batch);
+                let control = emit(batch)?;
+                runtime_checkpoint(context.task_context)?;
+                return Ok(control);
             }
             Ok(BatchControl::Continue)
         })();

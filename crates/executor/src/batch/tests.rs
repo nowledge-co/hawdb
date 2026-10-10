@@ -23,6 +23,7 @@ mod dispatch;
 mod fixtures;
 mod graph_match;
 mod handlers;
+mod source_memory;
 mod store;
 
 fn with_context<T>(

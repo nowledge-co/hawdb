@@ -44,7 +44,7 @@ impl<'a> Terms<'a> {
         let bytes = count
             .checked_mul(std::mem::size_of::<&str>())
             .ok_or_else(|| HawDBError::Execution("graph term size overflow".into()))?;
-        let allocation = account.reserve(bytes)?;
+        let allocation = account.retained_state().unwrap_or(account).reserve(bytes)?;
         let mut values = Vec::with_capacity(count);
         for token in tokens(text) {
             runtime_checkpoint(task)?;

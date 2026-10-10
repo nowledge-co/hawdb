@@ -68,6 +68,14 @@ pub struct BatchExecutionContext<'a> {
 }
 
 impl BatchExecutionContext<'_> {
+    pub(crate) fn source_account(&self, operator: &'static str) -> QueryMemoryAccount {
+        self.memory_ledger.source_account(
+            operator,
+            self.memory.query_memory_bytes,
+            self.memory.blocking_operator_bytes,
+        )
+    }
+
     pub fn operator_account(&self, operator: &'static str) -> QueryMemoryAccount {
         self.memory_ledger.account(
             QueryMemoryClass::BlockingState,

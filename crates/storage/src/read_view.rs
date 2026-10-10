@@ -22,6 +22,13 @@ pub trait GraphReadAllocation {
     /// Reserve additional bytes atomically before allocation. Refusal leaves
     /// the existing reservation intact.
     fn grow(&mut self, bytes: usize) -> hawdb_core::Result<()>;
+
+    /// Move an admitted read into retained operator state before insertion.
+    /// Query allocators may atomically transfer to a separately bounded state
+    /// account. Standalone allocators retain their existing explicit policy.
+    fn retain_state(&mut self) -> hawdb_core::Result<()> {
+        Ok(())
+    }
 }
 
 pub type GraphReadAllocator<'a> =
@@ -219,6 +226,7 @@ impl<T: Ord> AdmittedKeySet<T> {
         if self.keys.contains(&key) {
             return Ok(false);
         }
+        self.allocation.retain_state()?;
         // Pinned std B-trees keep up to eleven keys plus node links. Cover
         // the first sparse node and conservative per-key tree overhead. These
         // read sets contain NodeId or borrowed Value keys, never owned Values.
@@ -302,6 +310,11 @@ impl<T> AdmittedVec<T> {
     pub fn clear(&mut self) {
         // The vector still owns its capacity; retain that allocation permit.
         self.values.clear();
+    }
+
+    /// Remove a consumed or displaced element, retaining admitted capacity.
+    pub fn swap_remove(&mut self, index: usize) -> T {
+        self.values.swap_remove(index)
     }
 }
 

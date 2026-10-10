@@ -359,14 +359,14 @@ fn match_propagates_errors_cancellation_and_downstream_stop() {
 }
 
 #[test]
-fn match_respects_state_memory_admission() {
+fn match_respects_query_memory_admission() {
     let plan = lower(
         hawdb_plan_cypher::plan_pipeline_query("MATCH (n:Memory) RETURN n", &BTreeMap::new())
             .unwrap(),
     );
     with_context(None, |context| {
         let memory = ExecutionMemoryConfig {
-            blocking_operator_bytes: std::num::NonZeroUsize::new(1).unwrap(),
+            query_memory_bytes: std::num::NonZeroUsize::new(1).unwrap(),
             ..context.memory.clone()
         };
         let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
@@ -799,10 +799,12 @@ fn assert_exists_source_budget_before_copy(owner: usize) {
             ..store::ReadFixture::default()
         };
         let mut memory = context.memory.clone();
-        memory.blocking_operator_bytes = std::num::NonZeroUsize::new(32768).unwrap();
+        memory.query_memory_bytes = std::num::NonZeroUsize::new(32768).unwrap();
+        let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
         let context = BatchReadContext {
             store: &store,
             memory: &memory,
+            memory_ledger: &ledger,
             ..context
         };
         let emitted = Cell::new(0);
@@ -830,7 +832,7 @@ fn adjacency_exists_source_budget_before_copy() {
 }
 
 #[test]
-fn optional_seed_null_hop_uses_final_blocking_row_size() {
+fn optional_seed_null_hop_uses_final_batch_row_size() {
     use hawdb_core::graph_rag::{
         MissingScoringFeature, ScoreFeature, ScoringCombination, ScoringProgram, ScoringSpec,
         ScoringTerm,
@@ -916,7 +918,7 @@ fn optional_seed_null_hop_uses_final_blocking_row_size() {
         let bytes = crate::binding::binding_memory_bytes(&expected);
         for cap in [bytes, bytes - 1] {
             let memory = ExecutionMemoryConfig {
-                blocking_operator_bytes: NonZeroUsize::new(cap).unwrap(),
+                batch_payload_bytes: NonZeroUsize::new(cap).unwrap(),
                 ..context.memory.clone()
             };
             let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
@@ -938,13 +940,16 @@ fn optional_seed_null_hop_uses_final_blocking_row_size() {
                 },
             );
             if cap == bytes {
-                result.expect("final Null-hop row must fit its exact blocking cap");
+                result.expect("final Null-hop row must fit its exact batch cap");
                 assert_eq!(actual, vec![expected.clone()]);
             } else {
                 let error = result.expect_err("one byte below final row must refuse");
-                assert!(error.to_string().contains(&format!(
-                    "AdjacencyExpandExec result uses {bytes} bytes, exceeding blocking_operator_bytes {cap}"
-                )), "source refusal must not mask the final-row boundary: {error}");
+                assert!(
+                    error.to_string().contains(&format!(
+                        "intermediate row uses {bytes} bytes, exceeding batch_payload_bytes {cap}"
+                    )),
+                    "source refusal must not mask the final-row boundary: {error}"
+                );
                 assert!(actual.is_empty());
             }
             assert_eq!(ledger.snapshot().used_bytes, 0);

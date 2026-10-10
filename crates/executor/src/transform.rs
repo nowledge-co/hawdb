@@ -127,7 +127,7 @@ pub fn stream_projection_batches(
             }
             Ok(control)
         };
-        let working = context.operator_account("ProjectExec expressions");
+        let working = context.source_account("ProjectExec expressions");
         for binding in batch {
             runtime_checkpoint(context.task_context)?;
             let (mut values, mut layout) =

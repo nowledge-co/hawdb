@@ -43,9 +43,9 @@ pub(super) fn allocation_vector(
     context: NodeScanContext<'_>,
 ) -> Result<AdmittedVec<Box<dyn GraphReadAllocation>>> {
     let account = context.memory_account.sibling(
-        QueryMemoryClass::BlockingState,
+        QueryMemoryClass::ExternalRead,
         "full node scan permit storage",
-        context.memory_budget,
+        context.memory_account.budget_bytes(),
     );
     let mut allocate = |bytes| admit_graph_read(&account, context.task_context, bytes);
     AdmittedVec::new(&GraphReadAdmission::new(&mut allocate))
@@ -70,7 +70,7 @@ fn visit_full_nodes(
             .store
             .node_count_for_label(label_id)
             .saturating_mul(std::mem::size_of::<&NodeRecord>())
-            <= context.memory_budget.get()
+            <= context.memory_account.budget_bytes().get()
     {
         let scan = context.pruned_scan(label_id, spec.property_filter)?;
         observer.record_scan_pruning_report(scan.report.clone());
@@ -162,6 +162,14 @@ impl OwnedNodeBatch<'_, '_, '_> {
 
     fn admit(&mut self, node_bytes: usize) -> Result<Option<Box<dyn GraphReadAllocation>>> {
         runtime_checkpoint(self.context.task_context)?;
+        if node_bytes == 0 {
+            return if self.stopped {
+                Ok(None)
+            } else {
+                admit_graph_read(self.context.memory_account, self.context.task_context, 0)
+                    .map(Some)
+            };
+        }
         let bytes = node_bytes.saturating_add(binding_overhead(self.spec.variable));
         if !self.stopped
             && (!self.context.memory_account.can_reserve(bytes)
@@ -219,6 +227,11 @@ pub(super) fn stream(
     observer: &dyn ExecutionObserver,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
+    let source_account = context.source_account();
+    let context = NodeScanContext {
+        memory_account: &source_account,
+        ..context
+    };
     let state = RefCell::new(OwnedNodeBatch {
         spec,
         context,
@@ -252,11 +265,16 @@ pub(super) fn materialize(
     predicate: &mut dyn FnMut(&Binding) -> Result<bool>,
     observer: &dyn ExecutionObserver,
 ) -> Result<Vec<Binding>> {
+    let source_account = context.source_account();
+    let context = NodeScanContext {
+        memory_account: &source_account,
+        ..context
+    };
     let mut output = Vec::new();
     let mut allocations = allocation_vector(context)?;
     // The source permits account for the actual retained nodes, binding maps
     // and row slots. The logical operator limit still bounds the returned set.
-    let mut tracker = OperatorMemoryTracker::new(context.memory_budget);
+    let mut tracker = OperatorMemoryTracker::new(context.memory_account.budget_bytes());
     let visit = visit_full_nodes(
         spec,
         context,
@@ -302,6 +320,11 @@ pub(super) fn stream_visited(
         &mut dyn FnMut(hawdb_storage::read_view::AdmittedNodeRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl>,
 ) -> Result<BatchControl> {
+    let source_account = context.source_account();
+    let context = NodeScanContext {
+        memory_account: &source_account,
+        ..context
+    };
     let state = RefCell::new(OwnedNodeBatch {
         spec,
         context,
