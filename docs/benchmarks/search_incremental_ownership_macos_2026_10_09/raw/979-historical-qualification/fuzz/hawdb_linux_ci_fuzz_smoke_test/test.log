@@ -1,0 +1,3 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //:hawdb_linux_ci_fuzz_smoke_test
+-----------------------------------------------------------------------------

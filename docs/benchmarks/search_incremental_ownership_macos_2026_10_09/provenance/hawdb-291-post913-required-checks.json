@@ -1,0 +1,118 @@
+{
+  "state": "passed",
+  "commit": "41e10dacf8b2589e416c01b9b047db98dfe01acd",
+  "source_receipt": "/private/tmp/hawdb-291-post913-source.json",
+  "checks": [
+    {
+      "label": "fmt",
+      "state": "passed",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "log": "/private/tmp/hawdb-291-post913-fmt.log",
+      "pid": 91169,
+      "exit_code": 0,
+      "elapsed_seconds": 3.8042982919999986,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "strict-workspace",
+      "state": "passed",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "log": "/private/tmp/hawdb-291-post913-strict-workspace.log",
+      "pid": 91194,
+      "exit_code": 0,
+      "elapsed_seconds": 27.55623783300007,
+      "log_sha256": "c4a0319da7422d2cbeb8d69c4930cfcdd58e9db4e6b6925dbfdd577fc492ee9e"
+    },
+    {
+      "label": "install-hooks",
+      "state": "passed",
+      "command": [
+        "prek",
+        "install"
+      ],
+      "log": "/private/tmp/hawdb-291-post913-install-hooks.log",
+      "pid": 91560,
+      "exit_code": 0,
+      "elapsed_seconds": 0.07127270900002713,
+      "log_sha256": "b38baa021cf6292aeb70c922ae7095bc29f8238c1aa954a2c3e6779143b33bc1"
+    },
+    {
+      "label": "explicit-hooks",
+      "state": "passed",
+      "command": [
+        "prek",
+        "run",
+        "--all-files"
+      ],
+      "log": "/private/tmp/hawdb-291-post913-explicit-hooks.log",
+      "pid": 91567,
+      "exit_code": 0,
+      "elapsed_seconds": 4.422102167000048,
+      "log_sha256": "0bdfb3db81dee654862b4a367e8cdeeb0af1c186615b2b8bbf8c4592fe1698bf"
+    },
+    {
+      "label": "linux-cross-strict",
+      "state": "passed",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--target",
+        "aarch64-unknown-linux-gnu",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "log": "/private/tmp/hawdb-291-post913-linux-cross-strict.log",
+      "pid": 91696,
+      "exit_code": 0,
+      "elapsed_seconds": 27.117543083999976,
+      "log_sha256": "9f518c513d13518ef2c0da8ef7185143294f32c3348b204143db476a1d42c6ab"
+    },
+    {
+      "label": "minimal-browser-strict",
+      "state": "passed",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "hawdb",
+        "--no-default-features",
+        "--target",
+        "wasm32-unknown-unknown",
+        "--lib",
+        "--test",
+        "in_memory_portable",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "log": "/private/tmp/hawdb-291-post913-minimal-browser-strict.log",
+      "pid": 92023,
+      "exit_code": 0,
+      "elapsed_seconds": 17.61677966700006,
+      "log_sha256": "35fc7541d9403bcd7d8d6169b8e1eaae1b33427e79baa6a1fe6a3c522e237633"
+    }
+  ],
+  "source_unchanged": true
+}

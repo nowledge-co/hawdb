@@ -480,6 +480,53 @@ fn scoring_rejects_invalid_specs_and_arithmetic_overflow_without_output() {
     });
 }
 
+#[test]
+fn scoring_rejects_negative_fractional_products_without_partial_output() {
+    use hawdb_core::graph_rag::{MissingScoringFeature, ScoringCombination, ScoringProgram};
+
+    with_context(4, 32_768, |context| {
+        let program = ScoringProgram::new(
+            ScoringCombination::WeightedProduct,
+            MissingScoringFeature::Reject,
+            ScoringSpec {
+                terms: vec![ScoringTerm {
+                    weight: 0.5,
+                    feature: ScoreFeature::SearchScore,
+                }],
+                decay: Vec::new(),
+            },
+        )
+        .unwrap();
+        let mut source = Source::new(
+            vec![
+                Binding::scalar("score", Value::Float(1.0)),
+                Binding::scalar("score", Value::Float(-0.25)),
+            ],
+            1,
+        );
+        let mut output_rows = 0;
+        let result = stream_scoring_program_batches(
+            &PhysicalPlan::EmptyExec,
+            "score",
+            &program,
+            1_000,
+            2,
+            &mut source,
+            context,
+            ExecutionLimit::unlimited(),
+            &mut |batch| {
+                output_rows += batch.len();
+                Ok(BatchControl::Continue)
+            },
+        );
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("not finite"), "{error}");
+        assert_eq!(source.calls, 2);
+        assert_eq!(output_rows, 0, "a valid earlier candidate must not escape");
+        assert_eq!(context.memory_ledger.snapshot().used_bytes, 0);
+    });
+}
+
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 #[test]
 fn scoring_spills_without_changing_ranking_or_leaking_admissions() {

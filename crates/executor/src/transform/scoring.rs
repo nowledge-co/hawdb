@@ -244,7 +244,7 @@ impl BindingBatchSource for ScoringSource<'_, '_> {
                 let bytes = binding_memory_bytes_replacing_value(
                     &binding,
                     SCORING_RERANK_SCORE_COLUMN,
-                    &Value::Float(0.0),
+                    &Value::Float(score),
                 );
                 if bytes > context.memory.batch_payload_bytes.get() {
                     return Err(HawDBError::Execution(format!(

@@ -1,0 +1,142 @@
+[
+  {
+    "label": "crates/executor/hawdb_spill_compaction_fuzz_tests",
+    "tail": [
+      "Executing tests from //crates/executor:hawdb_spill_compaction_fuzz_tests",
+      "-----------------------------------------------------------------------------",
+      "",
+      "running 1 test",
+      "test spill::compaction::tests::compaction_differential_campaign has been running for over 60 seconds",
+      "-- Test timed out at 2026-10-09 06:28:31 UTC --"
+    ],
+    "summaries": [],
+    "sha256": "682a36c096758528c57448aa6e5fdf8e5eb3112a25e942561b29ce0b49bdb5e9"
+  },
+  {
+    "label": "crates/search/hawdb_search_document_frequency_fuzz_tests",
+    "tail": [
+      "Executing tests from //crates/search:hawdb_search_document_frequency_fuzz_tests",
+      "-----------------------------------------------------------------------------",
+      "",
+      "running 1 test",
+      "test lexical_projection::document_frequency::tests::document_frequency_spill_differential_campaign has been running for over 60 seconds",
+      "-- Test timed out at 2026-10-09 06:28:18 UTC --"
+    ],
+    "summaries": [],
+    "sha256": "1eb86f7b04f55bb898e09687d2e19471bc392a9565735413e44526929a768a6e"
+  },
+  {
+    "label": "crates/search/hawdb_search_lexical_spill_fuzz_tests",
+    "tail": [
+      "Executing tests from //crates/search:hawdb_search_lexical_spill_fuzz_tests",
+      "-----------------------------------------------------------------------------",
+      "",
+      "running 1 test",
+      "test lexical_projection::spill_tests::fuzz::lexical_spill_admission_differential_campaign has been running for over 60 seconds",
+      "-- Test timed out at 2026-10-09 06:34:22 UTC --"
+    ],
+    "summaries": [],
+    "sha256": "3a483b77058e0bb18de18efad9656f3eaa3140b59c4917968638a7b4f17f8018"
+  },
+  {
+    "label": "crates/search/hawdb_search_manifest_budget_fuzz_tests",
+    "tail": [
+      "Executing tests from //crates/search:hawdb_search_manifest_budget_fuzz_tests",
+      "-----------------------------------------------------------------------------",
+      "",
+      "running 1 test",
+      "test out_of_core::generation_writer::tests::manifest_budget::manifest_budget_lifecycle_campaign has been running for over 60 seconds",
+      "-- Test timed out at 2026-10-09 06:23:30 UTC --"
+    ],
+    "summaries": [],
+    "sha256": "92193bf5b38916aaadba17b1e8bdb48d6db6aa57c55489f733ee8d31014db909"
+  },
+  {
+    "label": "crates/search/hawdb_search_projection_evidence_fuzz_tests",
+    "tail": [
+      "Executing tests from //crates/search:hawdb_search_projection_evidence_fuzz_tests",
+      "-----------------------------------------------------------------------------",
+      "",
+      "running 1 test",
+      "test projection_evidence::differential::search_projection_evidence_differential_campaign has been running for over 60 seconds",
+      "-- Test timed out at 2026-10-09 06:20:51 UTC --"
+    ],
+    "summaries": [],
+    "sha256": "0d11153ac2410962ca921a0becbfc3ae0fe5b32e8cba5bbe3eb5a48dddb563a8"
+  },
+  {
+    "label": "crates/search/hawdb_search_tests",
+    "tail": [
+      "test out_of_core::generation_writer::tests::fused_generation_is_byte_identical_to_three_pass_builds ... ok",
+      "test out_of_core::generation_writer::tests::initial::initial_prefixes_never_replace_the_active_selector_on_injected_publication_failure ... ok",
+      "test out_of_core::generation_writer::tests::incremental_ownership::incremental_ownership_prefix_failures_never_select_partial_replacements ... ok",
+      "",
+      "test result: ok. 799 passed; 0 failed; 20 ignored; 0 measured; 0 filtered out; finished in 777.92s",
+      ""
+    ],
+    "summaries": [
+      "test result: ok. 799 passed; 0 failed; 20 ignored; 0 measured; 0 filtered out; finished in 777.92s"
+    ],
+    "sha256": "9f8f7afe99662de685b56ebb6b6ce153fd1860267a894883ad591e3ae7e9aafd"
+  },
+  {
+    "label": "crates/search/hawdb_search_acl_tests",
+    "tail": [
+      "test out_of_core::generation_writer::tests::fused_generation_is_byte_identical_to_three_pass_builds ... ok",
+      "test out_of_core::generation_writer::tests::incremental_ownership::incremental_ownership_prefix_failures_never_select_partial_replacements ... ok",
+      "test lexical_projection::document_frequency::tests::public_generation_writer_reopens_and_updates_spilled_documents ... ok",
+      "",
+      "test result: ok. 801 passed; 0 failed; 20 ignored; 0 measured; 0 filtered out; finished in 792.40s",
+      ""
+    ],
+    "summaries": [
+      "test result: ok. 801 passed; 0 failed; 20 ignored; 0 measured; 0 filtered out; finished in 792.40s"
+    ],
+    "sha256": "d7a05a58698918ed9f9a3e00ed52b215667cef313726d3d514a852e70966525c"
+  },
+  {
+    "label": "crates/search/hawdb_search_text_background_tests",
+    "tail": [
+      "test out_of_core::generation_writer::tests::fused_generation_is_byte_identical_to_three_pass_builds ... ok",
+      "test out_of_core::generation_writer::tests::incremental_ownership::incremental_ownership_prefix_failures_never_select_partial_replacements ... ok",
+      "test lexical_projection::document_frequency::tests::public_generation_writer_reopens_and_updates_spilled_documents ... ok",
+      "",
+      "test result: ok. 745 passed; 0 failed; 20 ignored; 0 measured; 0 filtered out; finished in 647.17s",
+      ""
+    ],
+    "summaries": [
+      "test result: ok. 745 passed; 0 failed; 20 ignored; 0 measured; 0 filtered out; finished in 647.17s"
+    ],
+    "sha256": "7316f37a6c9552ee81b2f584ea5768ca5b69ca1356d298d56e0934bf2c983ea6"
+  },
+  {
+    "label": "crates/search/hawdb_search_text_only_tests",
+    "tail": [
+      "test lexical_projection::document_frequency::tests::public_generation_writer_reopens_and_updates_spilled_documents ... ok",
+      "test out_of_core::generation_writer::tests::fused_generation_is_byte_identical_to_three_pass_builds ... ok",
+      "test out_of_core::generation_writer::tests::incremental_ownership::incremental_ownership_prefix_failures_never_select_partial_replacements ... ok",
+      "",
+      "test result: ok. 729 passed; 0 failed; 20 ignored; 0 measured; 0 filtered out; finished in 299.48s",
+      ""
+    ],
+    "summaries": [
+      "test result: ok. 729 passed; 0 failed; 20 ignored; 0 measured; 0 filtered out; finished in 299.48s"
+    ],
+    "sha256": "8a408b8b188d47f5a5c021062d6309fe7831779e12f338fa6bb4bcbb8496eeda"
+  },
+  {
+    "label": "crates/search/hawdb_search_text_vector_tests",
+    "tail": [
+      "test out_of_core::generation_writer::tests::initial::initial_prefixes_never_replace_the_active_selector_on_injected_publication_failure ... ok",
+      "test out_of_core::generation_writer::tests::incremental_ownership::incremental_ownership_prefix_failures_never_select_partial_replacements ... ok",
+      "test lexical_projection::document_frequency::tests::public_generation_writer_reopens_and_updates_spilled_documents ... ok",
+      "",
+      "test result: ok. 783 passed; 0 failed; 20 ignored; 0 measured; 0 filtered out; finished in 810.16s",
+      ""
+    ],
+    "summaries": [
+      "test result: ok. 783 passed; 0 failed; 20 ignored; 0 measured; 0 filtered out; finished in 810.16s"
+    ],
+    "sha256": "cee7dfa50f577f58d451eab753a43caefdcf290c83f03799c5694ac05a954d0a"
+  }
+]

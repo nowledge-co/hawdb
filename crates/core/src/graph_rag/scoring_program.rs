@@ -21,14 +21,17 @@ pub enum ScoringCombination {
     /// `sum(weight * value)`, preserving the existing ScoringSpec arithmetic.
     WeightedSum,
     /// `product(value.powf(weight))`. A zero weight contributes one.
+    /// Negative bases with fractional exponents fail with `NonFiniteScore`.
     WeightedProduct,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MissingScoringFeature {
     /// Fail rather than silently ranking an incomplete set of declared signals.
+    /// One missing signal fails the entire scored request, including OPTIONAL NULLs.
     Reject,
     /// Missing sum terms contribute zero; product terms and decays contribute one.
+    /// A missing timestamp therefore receives no age penalty, like a future timestamp.
     Neutral,
 }
 
@@ -308,6 +311,36 @@ mod tests {
             .unwrap()
             .shape()
         );
+    }
+
+    #[test]
+    fn negative_product_bases_preserve_integer_powers_and_reject_fractional_powers() {
+        for (weight, expected) in [
+            (0.0, Ok(1.0)),
+            (0.5, Err(ScoringProgramError::NonFiniteScore)),
+            (1.0, Ok(-0.25)),
+            (2.0, Ok(0.0625)),
+        ] {
+            let program = ScoringProgram::new(
+                ScoringCombination::WeightedProduct,
+                MissingScoringFeature::Reject,
+                ScoringSpec {
+                    terms: vec![ScoringTerm {
+                        feature: ScoreFeature::SearchScore,
+                        weight,
+                    }],
+                    decay: Vec::new(),
+                },
+            )
+            .unwrap();
+            assert_eq!(program.evaluate_score(&Features(-0.25), 1_000), expected);
+            assert_eq!(
+                program
+                    .evaluate(&Features(-0.25), 1_000)
+                    .map(|evaluation| evaluation.combined_score),
+                expected
+            );
+        }
     }
 
     #[test]

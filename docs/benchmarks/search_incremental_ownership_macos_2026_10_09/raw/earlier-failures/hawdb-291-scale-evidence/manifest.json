@@ -1,0 +1,95 @@
+{
+  "commit": "1892c245bc1acd70b1c6d45dccac35e68509d530",
+  "working_tree_status_before": "",
+  "platform": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0.1\nBuildVersion:\t\t26A434\n",
+  "host_ram_bytes": 137438953472,
+  "host_model": "Mac15,8",
+  "scratch": "/private/tmp/hawdb-291-scale-scratch",
+  "filesystem": "APFS; internal Apple Fabric SSD; 4096-byte allocation blocks",
+  "writer_budget_bytes": 268435456,
+  "fixture": "Repeated bounded-search-mutation text, 65536 bytes per body, no embeddings; streaming full build and 32 seed segments, then deletes and 128 replacement/insert/compaction rounds. Logical body size is corpus-shaped; emitted artifact bytes are compressed files, not device-level writes.",
+  "cells": [
+    {
+      "label": "d81920-k10",
+      "command": [
+        "cargo",
+        "bench",
+        "--locked",
+        "--bench",
+        "search_mutation"
+      ],
+      "environment": {
+        "TMPDIR": "/private/tmp/hawdb-291-scale-scratch",
+        "HAWDB_SEARCH_MUTATION_BENCH_DOCUMENTS": "81920",
+        "HAWDB_SEARCH_MUTATION_BENCH_CONTENT_BYTES": "65536",
+        "HAWDB_SEARCH_MUTATION_BENCH_TOUCHES": "10",
+        "HAWDB_SEARCH_MUTATION_BENCH_ROUNDS": "128",
+        "HAWDB_SEARCH_MUTATION_BENCH_MEMORY_BYTES": "268435456"
+      },
+      "started_unix_seconds": 1791391496.862974,
+      "state": "finished",
+      "cargo_pid": 46055,
+      "elapsed_seconds": 2867.817659139633,
+      "scratch_logical_highwater_bytes": 10791891476,
+      "scratch_allocated_highwater_bytes": 10799144960,
+      "exit_code": 101,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "6049a5a785f9450c9ff910cbb47a56a0a7c8f88a073064416e002dbd7e8cd788"
+    },
+    {
+      "label": "d327680-k10",
+      "command": [
+        "cargo",
+        "bench",
+        "--locked",
+        "--bench",
+        "search_mutation"
+      ],
+      "environment": {
+        "TMPDIR": "/private/tmp/hawdb-291-scale-scratch",
+        "HAWDB_SEARCH_MUTATION_BENCH_DOCUMENTS": "327680",
+        "HAWDB_SEARCH_MUTATION_BENCH_CONTENT_BYTES": "65536",
+        "HAWDB_SEARCH_MUTATION_BENCH_TOUCHES": "10",
+        "HAWDB_SEARCH_MUTATION_BENCH_ROUNDS": "128",
+        "HAWDB_SEARCH_MUTATION_BENCH_MEMORY_BYTES": "268435456"
+      },
+      "started_unix_seconds": 1791394364.6940842,
+      "state": "finished",
+      "cargo_pid": 92032,
+      "elapsed_seconds": 1133.597450017929,
+      "scratch_logical_highwater_bytes": 43060682964,
+      "scratch_allocated_highwater_bytes": 43071381504,
+      "exit_code": 101,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "1d0f02a62371a1a7685a4c63b1e1caaac84d0e40fa72d065198ab7f22f316eea"
+    },
+    {
+      "label": "d327680-k100",
+      "command": [
+        "cargo",
+        "bench",
+        "--locked",
+        "--bench",
+        "search_mutation"
+      ],
+      "environment": {
+        "TMPDIR": "/private/tmp/hawdb-291-scale-scratch",
+        "HAWDB_SEARCH_MUTATION_BENCH_DOCUMENTS": "327680",
+        "HAWDB_SEARCH_MUTATION_BENCH_CONTENT_BYTES": "65536",
+        "HAWDB_SEARCH_MUTATION_BENCH_TOUCHES": "100",
+        "HAWDB_SEARCH_MUTATION_BENCH_ROUNDS": "128",
+        "HAWDB_SEARCH_MUTATION_BENCH_MEMORY_BYTES": "268435456"
+      },
+      "started_unix_seconds": 1791395498.292653,
+      "state": "finished",
+      "cargo_pid": 97651,
+      "elapsed_seconds": 1589.4767649173737,
+      "scratch_logical_highwater_bytes": 43060679202,
+      "scratch_allocated_highwater_bytes": 43071754240,
+      "exit_code": 101,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "c7dba0212936253060f7c72c7462227b4b05044edbc578d6e23fcde072f376cd"
+    }
+  ],
+  "working_tree_status_after": ""
+}

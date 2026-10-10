@@ -1,0 +1,9 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/sql:hawdb_sql_frontend_corpus_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+test tests::frontend_corpus::frontend_corpus_differential_campaign ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.18s
+

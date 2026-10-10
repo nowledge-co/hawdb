@@ -1,0 +1,92 @@
+    Finished `test` profile [unoptimized] target(s) in 0.07s
+     Running unittests src/lib.rs (/private/tmp/hawdb-291-incremental-repair-native-target/debug/deps/hawdb-b395bd9a19a25d8e)
+
+running 11 tests
+test api::tests::power_loss::search_projection::acknowledged_generation_survives_loss_of_uncovered_operations ... ok
+test api::tests::power_loss::search_projection::append_publication_cuts_select_a_complete_generation ... branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.tmp.62730.41") uncovered=20 plans=23
+search-power-publication-v1 operation=Append event=Write boundary=After plans=27
+search-power-publication-v1 distinct_images=9
+branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.hawdb") uncovered=18 plans=21
+search-power-publication-v1 operation=Append event=Rename boundary=Before plans=21
+search-power-publication-v1 distinct_images=6
+branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.hawdb") uncovered=19 plans=22
+search-power-publication-v1 operation=Append event=Rename boundary=After plans=22
+search-power-publication-v1 distinct_images=8
+ok
+test api::tests::power_loss::search_projection::compaction_publication_cuts_preserve_the_complete_selected_closure ... branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.tmp.62730.309") uncovered=214 plans=217
+search-power-publication-v1 operation=Compaction event=Write boundary=After plans=221
+search-power-publication-v1 distinct_images=10
+branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.hawdb") uncovered=212 plans=215
+search-power-publication-v1 operation=Compaction event=Rename boundary=Before plans=215
+search-power-publication-v1 distinct_images=8
+branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.hawdb") uncovered=213 plans=216
+search-power-publication-v1 operation=Compaction event=Rename boundary=After plans=216
+search-power-publication-v1 distinct_images=9
+ok
+test api::tests::power_loss::search_projection::external_symlink_root_preserves_writer_and_reader_behavior ... ok
+test api::tests::power_loss::search_projection::incremental_publication_survives_lost_torn_and_reordered_writes ... branch-power-publication-v1 path=Some("search/.search-generation.62730.52.stage/mutation-source.body") uncovered=19 plans=22
+search-power-publication-v1 compaction=false event=Write boundary=After plans=24 torn=2
+branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.hawdb") uncovered=53 plans=56
+search-power-publication-v1 compaction=false event=Rename boundary=Before plans=56 torn=0
+branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.hawdb") uncovered=54 plans=57
+search-power-publication-v1 compaction=false event=Rename boundary=After plans=57 torn=0
+ok
+test api::tests::power_loss::search_projection::mutation_publication_cuts_preserve_complete_replacements_and_deletes ... branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.hawdb") uncovered=182 plans=185
+search-power-publication-v1 operation=Mutation event=Rename boundary=Before plans=185
+search-power-publication-v1 distinct_images=155
+branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.hawdb") uncovered=183 plans=186
+search-power-publication-v1 operation=Mutation event=Rename boundary=After plans=186
+search-power-publication-v1 distinct_images=156
+ok
+test api::tests::power_loss::search_projection::overlapping_compaction_survives_lost_torn_and_reordered_writes ... branch-power-publication-v1 path=Some("search/.search-generation.62730.88.stage/compaction-source-0.spool") uncovered=80 plans=83
+search-power-publication-v1 compaction=true event=Write boundary=After plans=85 torn=2
+branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.hawdb") uncovered=137 plans=140
+search-power-publication-v1 compaction=true event=Rename boundary=Before plans=140 torn=0
+branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.hawdb") uncovered=138 plans=141
+search-power-publication-v1 compaction=true event=Rename boundary=After plans=141 torn=0
+ok
+test api::tests::power_loss::search_projection::partitioned_append_publication_cuts_select_the_complete_batch ... branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.tmp.62730.2887") uncovered=68 plans=71
+search-power-publication-v1 operation=PartitionedAppend event=Write boundary=After plans=75
+search-power-publication-v1 distinct_images=5
+branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.hawdb") uncovered=66 plans=69
+search-power-publication-v1 operation=PartitionedAppend event=Rename boundary=Before plans=69
+search-power-publication-v1 distinct_images=2
+branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.hawdb") uncovered=67 plans=70
+search-power-publication-v1 operation=PartitionedAppend event=Rename boundary=After plans=70
+search-power-publication-v1 distinct_images=4
+ok
+test api::tests::power_loss::search_projection::partitioned_initial_publication_survives_lost_torn_and_reordered_writes ... branch-power-publication-v1 path=Some("search/.search-generation.62730.480.stage/documents.spool.hawdb") uncovered=3 plans=6
+search-power-initial-v1 replaces_existing=false cut=0 plans=8 torn=2
+branch-power-publication-v1 path=Some("search/.search-generation.62730.485.stage/search_projection.out_of_core.manifest.hawdb") uncovered=6 plans=9
+search-power-initial-v1 replaces_existing=false cut=1 plans=9 torn=0
+branch-power-publication-v1 path=Some("search/.search-generation.62730.490.stage/search_projection.out_of_core.manifest.hawdb") uncovered=7 plans=10
+search-power-initial-v1 replaces_existing=false cut=2 plans=10 torn=0
+branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.hawdb") uncovered=53 plans=56
+search-power-initial-v1 replaces_existing=false cut=3 plans=56 torn=0
+branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.hawdb") uncovered=54 plans=57
+search-power-initial-v1 replaces_existing=false cut=4 plans=57 torn=0
+branch-power-publication-v1 path=Some("search/.search-generation.62730.506.stage/documents.spool.hawdb") uncovered=16 plans=19
+search-power-initial-v1 replaces_existing=true cut=0 plans=21 torn=2
+branch-power-publication-v1 path=Some("search/.search-generation.62730.512.stage/search_projection.out_of_core.manifest.hawdb") uncovered=19 plans=22
+search-power-initial-v1 replaces_existing=true cut=1 plans=22 torn=0
+branch-power-publication-v1 path=Some("search/.search-generation.62730.518.stage/search_projection.out_of_core.manifest.hawdb") uncovered=20 plans=23
+search-power-initial-v1 replaces_existing=true cut=2 plans=23 torn=0
+branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.hawdb") uncovered=66 plans=69
+search-power-initial-v1 replaces_existing=true cut=3 plans=69 torn=0
+branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.hawdb") uncovered=67 plans=70
+search-power-initial-v1 replaces_existing=true cut=4 plans=70 torn=0
+ok
+test api::tests::power_loss::search_projection::partitioned_mutation_publication_cuts_preserve_prior_runs_and_the_complete_batch ... branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.tmp.62730.3982") uncovered=365 plans=368
+search-power-publication-v1 operation=PartitionedMutation event=Write boundary=After plans=372
+search-power-publication-v1 distinct_images=122
+branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.hawdb") uncovered=363 plans=366
+search-power-publication-v1 operation=PartitionedMutation event=Rename boundary=Before plans=366
+search-power-publication-v1 distinct_images=120
+branch-power-publication-v1 path=Some("search/search_projection.out_of_core.manifest.hawdb") uncovered=364 plans=367
+search-power-publication-v1 operation=PartitionedMutation event=Rename boundary=After plans=367
+search-power-publication-v1 distinct_images=121
+ok
+test api::tests::power_loss::search_projection::retry_covers_existing_unsynchronized_component_ancestry ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 1820 filtered out; finished in 1553.41s
+

@@ -1,0 +1,51 @@
+   Compiling hawdb-plan-core v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/plan-core)
+   Compiling hawdb-cgroup v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/cgroup)
+   Compiling hawdb-core v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/core)
+   Compiling hawdb-cascades v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/cascades)
+   Compiling hawdb-integrity v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/integrity)
+   Compiling hawdb-sql-syntax v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/sql-syntax)
+   Compiling hawdb-query v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/query)
+   Compiling hawdb-route-ownership v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/route-ownership)
+   Compiling hawdb-optimizer-vector v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/optimizer-vector)
+   Compiling hawdb-optimizer-predicate v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/optimizer-predicate)
+   Compiling hawdb-ddl v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/ddl)
+   Compiling hawdb-expression v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/expression)
+   Compiling hawdb-qos v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/qos)
+   Compiling hawdb-analytics v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/analytics)
+   Compiling hawdb-evidence v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/evidence)
+   Compiling hawdb-fuzz-contracts v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/fuzz-contracts)
+   Compiling hawdb-cypher v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/cypher)
+   Compiling hawdb-optimizer-relational v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/optimizer-relational)
+   Compiling hawdb-telemetry v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/telemetry)
+   Compiling hawdb-plan-cypher v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/plan-cypher)
+   Compiling hawdb-storage v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/storage)
+   Compiling hawdb-plan-cache v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/plan-cache)
+   Compiling hawdb-optimizer-graph v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/optimizer-graph)
+   Compiling hawdb-sql v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/sql)
+   Compiling hawdb-optimizer v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/optimizer)
+   Compiling hawdb-query-policy v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/query-policy)
+   Compiling hawdb-executor v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/executor)
+   Compiling hawdb-vector-projection v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/vector-projection)
+   Compiling hawdb-runtime-tokio v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/runtime-tokio)
+   Compiling hawdb-search v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/search)
+   Compiling hawdb-system-sql v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/system-sql)
+   Compiling hawdb-explain v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/explain)
+   Compiling hawdb-compat v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/compat)
+   Compiling hawdb-relational v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/relational)
+   Compiling hawdb-resource-profile v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/resource-profile)
+   Compiling hawdb-artifact v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/artifact)
+   Compiling hawdb-nowledge-contracts v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/nowledge-contracts)
+   Compiling hawdb-bootstrap v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/bootstrap)
+   Compiling hawdb-readiness v0.5.0 (/private/tmp/hawdb-291-current-main-qualification/crates/readiness)
+   Compiling hawdb v0.5.0 (/private/tmp/hawdb-291-current-main-qualification)
+    Finished `test` profile [unoptimized] target(s) in 36.16s
+     Running unittests src/lib.rs (/private/tmp/hawdb-291-incremental-repair-native-target/debug/deps/hawdb-b395bd9a19a25d8e)
+
+running 4 tests
+test nowledge_mem::tests::incremental_maintenance_budget_failure_does_not_advance_the_watermark ... ok
+test nowledge_mem::tests::incremental_maintenance_compaction_honors_qos_and_cancellation_before_retry ... ok
+test nowledge_mem::tests::incremental_maintenance_preserves_bootstrap_artifacts_and_reopens_deltas ... ok
+test nowledge_mem::tests::incremental_maintenance_rejects_missing_bootstrap_without_recreating_it ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1827 filtered out; finished in 4.17s
+

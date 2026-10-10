@@ -1,0 +1,10 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/executor:hawdb_transform_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+streaming transform campaign: 256 seeds, 20736 operator/batch/exit cases
+test transform::tests::transform_differential_campaign ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 2.94s
+

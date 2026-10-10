@@ -108,13 +108,18 @@ db.close()
 ```
 
 Parameters accept `None`, `bool`, `int`, `float`, `str`, `bytes`,
-`uuid.UUID`, lists or tuples, and string-keyed dicts, nested freely. They are
-stored exactly or rejected before the statement runs. Integers, including
-NumPy integer scalars, must fit the signed 64-bit range or raise
+`uuid.UUID`, lists or tuples, and string-keyed dicts, nested up to 64 levels.
+They are stored exactly or rejected before the statement runs. Integers,
+including NumPy integer scalars, must fit the signed 64-bit range or raise
 `OverflowError`. NumPy `float16`/`float32` scalars widen to `float` exactly
 and are accepted. Any other type, including `Decimal`, `Fraction`, or NumPy
 `longdouble`, raises `TypeError`; convert such values explicitly, for example
-with `float(x)`.
+with `float(x)`. Deeper nesting, including a list or dict that contains
+itself, raises `ValueError`. These errors name where the value sits in the
+parameters: `$price`, `$2` for an `execute_sql` parameter, `$rows[3].price`
+inside a list of dicts, or `$m["first name"]` for a key that is not an
+identifier. A `str` that is not valid UTF-8, such as one with a lone
+surrogate, raises `UnicodeEncodeError`.
 
 Errors raise `hawdb.exceptions` subclasses (`ParseError`, `SemanticError`,
 `StorageError`, `ExecutionError`, `ConflictError`, ...), mapped from
@@ -168,12 +173,12 @@ missing fields follow the model's config. Invalid rows raise one
 Rows hold the binding's values: a UUID comes back as `str` and a tuple as a
 list, so a strict model needs `Field(strict=False)` on those fields.
 
-`params` uses the keys of `model_dump()` as parameter names and accepts only
-values the binding stores as-is (`None`, `bool`, 64-bit `int`, `float`, `str`,
-`bytes`, `uuid.UUID`, lists, and string-keyed dicts). A `datetime`, `Decimal`,
-or plain `Enum` field raises `TypeError`, and an `int` outside 64 bits raises
-`OverflowError`, before the statement runs. Engine errors stay
-`hawdb.exceptions`.
+`params` returns `model_dump()`, whose keys become parameter names. Its
+values follow the parameter rules above and are checked when the statement
+runs, not by `params`: a `datetime`, `Decimal`, or plain `Enum` field raises
+`TypeError` there, named by its path, such as `$price` or `$rows[3].price` in
+a batch. Run statements that must all apply or none in `db.transaction()`.
+Engine errors stay `hawdb.exceptions`.
 
 ## Test
 

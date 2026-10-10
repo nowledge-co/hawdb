@@ -374,4 +374,30 @@ mod tests {
         assert!(binding_payload_bytes(&binding) > "nested".len() + "two".len());
         assert!(binding_memory_bytes(&binding) > binding_payload_bytes(&binding));
     }
+
+    #[test]
+    fn replacement_admission_matches_final_rows_without_mutating_input() {
+        let column = hawdb_plan_cypher::SCORING_RERANK_SCORE_COLUMN;
+        for previous in [
+            None,
+            Some(Value::Null),
+            Some(Value::Float(-1.0)),
+            Some(Value::List(vec![Value::Map(BTreeMap::from([(
+                "nested".into(),
+                Value::String("x".repeat(1_024)),
+            )]))])),
+        ] {
+            let mut input = Binding::scalar("score", Value::Float(0.5));
+            if let Some(previous) = previous {
+                input.values.insert(column.into(), previous);
+            }
+            let original = input.clone();
+            let estimate =
+                binding_memory_bytes_replacing_value(&input, column, &Value::Float(0.25));
+            assert_eq!(input, original, "admission must not alter the candidate");
+            let mut output = input;
+            output.values.insert(column.into(), Value::Float(0.25));
+            assert_eq!(estimate, binding_memory_bytes(&output));
+        }
+    }
 }

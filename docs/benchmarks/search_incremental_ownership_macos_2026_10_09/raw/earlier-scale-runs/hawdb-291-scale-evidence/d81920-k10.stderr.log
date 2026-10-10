@@ -1,0 +1,24 @@
+    Blocking waiting for file lock on build directory
+    Finished `bench` profile [optimized] target(s) in 2m 02s
+     Running benches/search_mutation.rs (target/release/deps/search_mutation-aeb2717e65ef569b)
+
+thread 'main' (31185379) panicked at benches/search_mutation.rs:186:14:
+sustained compaction must run: FileDescriptors(OsLimit { requested: 1, os_code: Some(24) })
+stack backtrace:
+   0:        0x10118a244 - <<std[7648081134ee26d8]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[318a34b566a36fe]::fmt::Display>::fmt
+   1:        0x10100def0 - core[318a34b566a36fe]::fmt::write
+   2:        0x10118ede0 - <std[7648081134ee26d8]::sys::stdio::unix::Stderr as std[7648081134ee26d8]::io::Write>::write_fmt
+   3:        0x101174740 - std[7648081134ee26d8]::panicking::default_hook::{closure#0}
+   4:        0x101183130 - std[7648081134ee26d8]::panicking::default_hook
+   5:        0x101183490 - std[7648081134ee26d8]::panicking::panic_with_hook
+   6:        0x1011747cc - std[7648081134ee26d8]::panicking::panic_handler::{closure#0}
+   7:        0x101169eec - std[7648081134ee26d8]::sys::backtrace::__rust_end_short_backtrace::<std[7648081134ee26d8]::panicking::panic_handler::{closure#0}, !>
+   8:        0x10117505c - __rustc[6ef78fba13ac776c]::rust_begin_unwind
+   9:        0x101223a10 - core[318a34b566a36fe]::panicking::panic_fmt
+  10:        0x101223840 - core[318a34b566a36fe]::result::unwrap_failed
+  11:        0x101159ebc - search_mutation[a027377821dc863d]::main
+  12:        0x101153fdc - std[7648081134ee26d8]::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13:        0x101155138 - std[7648081134ee26d8]::rt::lang_start::<()>::{closure#0}
+  14:        0x101182204 - std[7648081134ee26d8]::rt::lang_start_internal
+  15:        0x10115f0e0 - _main
+error: bench failed, to rerun pass `--bench search_mutation`

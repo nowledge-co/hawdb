@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="crates/fuzz/hawdb_append_fuzz_cli_tests" tests="1" failures="0" errors="0">
+    <testcase name="crates/fuzz/hawdb_append_fuzz_cli_tests" classname="" status="run" duration="12" time="12"></testcase>
+      <system-out>
+Generated test.log (if the file is not UTF-8, then this may be unreadable):
+<![CDATA[exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/fuzz:hawdb_append_fuzz_cli_tests
+-----------------------------------------------------------------------------
+
+running 5 tests
+test tests::parses_sharding_progress_and_resume_options ... ok
+test tests::exact_replay_rejects_sharding_and_resume ... ok
+test tests::resume_requires_a_strict_shard_prefix ... ok
+test tests::sharded_campaign_is_quiet_and_writes_complete_report ... ok
+test tests::campaign_resumes_without_reexecuting_completed_cases ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.41s]]>
+      </system-out>
+    </testsuite>
+</testsuites>

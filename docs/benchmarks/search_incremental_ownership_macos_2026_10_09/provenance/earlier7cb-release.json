@@ -1,0 +1,54 @@
+{
+  "state": "passed",
+  "worktree": "/private/tmp/hawdb-291-current-main-qualification",
+  "integrated_tree": "519940449779bd5eafab0a6d90a0672a0e38ba53",
+  "source_receipt": "/private/tmp/hawdb-291-current-main-source.json",
+  "source_receipt_sha256": "c2c3d07496bfc0625e67d7029ebd83936d6fd57007f536bd6473149958089449",
+  "target_directory": "/private/tmp/hawdb-291-current-main-release-target",
+  "checks": [
+    {
+      "label": "library",
+      "state": "finished",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--release",
+        "--lib"
+      ],
+      "log": "/private/tmp/hawdb-291-current-main-release-library.log",
+      "pid": 53917,
+      "exit_code": 0,
+      "elapsed_seconds": 90.01965029200001,
+      "log_sha256": "0f4074e1b5a077b292186dc7fab4bcbc7589e1d37f832efea135226e16b4d258"
+    },
+    {
+      "label": "bench",
+      "state": "finished",
+      "command": [
+        "cargo",
+        "bench",
+        "--locked",
+        "--bench",
+        "search_mutation",
+        "--no-run"
+      ],
+      "log": "/private/tmp/hawdb-291-current-main-release-bench.log",
+      "pid": 56295,
+      "exit_code": 0,
+      "elapsed_seconds": 120.619454,
+      "log_sha256": "569493a2d7dfcbcfc08610ffb087f316c8e377197d14f1c252c38e36d823ce46"
+    }
+  ],
+  "source_unchanged": true,
+  "library": {
+    "path": "/private/tmp/hawdb-291-current-main-release-target/release/libhawdb.rlib",
+    "sha256": "12f670c1a6cbffe083e921027b087a529f0d8755b1eb1feb935aefe85cdeb41b"
+  },
+  "bench_binaries": [
+    {
+      "path": "/private/tmp/hawdb-291-current-main-release-target/release/deps/search_mutation-51b6df72c602b639",
+      "sha256": "e9231bf2d4a3c5859a26624d871217adabea148a938bae8932df522424d514d2"
+    }
+  ]
+}

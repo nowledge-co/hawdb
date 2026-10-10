@@ -1,0 +1,10 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/fuzz:hawdb_parser_fuzz_cli_tests
+-----------------------------------------------------------------------------
+
+running 2 tests
+test tests::parses_campaign_and_exact_replay_options ... ok
+test tests::rejects_empty_or_excessive_campaigns ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+

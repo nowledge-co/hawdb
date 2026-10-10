@@ -1,0 +1,17 @@
+Computing main repo mapping: 
+Loading: 
+Loading: 0 packages loaded
+Analyzing: target //crates/storage:hawdb_storage_tests (0 packages loaded, 0 targets configured)
+Analyzing: target //crates/storage:hawdb_storage_tests (0 packages loaded, 0 targets configured)
+
+INFO: Analyzed target //crates/storage:hawdb_storage_tests (0 packages loaded, 4 targets configured).
+INFO: Found 1 test target...
+Target //crates/storage:hawdb_storage_tests up-to-date:
+  bazel-bin/crates/storage/hawdb_storage_tests
+INFO: Elapsed time: 0.304s, Critical Path: 0.00s
+INFO: 1 process: 6 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+//crates/storage:hawdb_storage_tests                            (cached) PASSED in 1.1s
+
+Executed 0 out of 1 test: 1 test passes.
+There were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.

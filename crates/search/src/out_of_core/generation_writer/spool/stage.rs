@@ -135,6 +135,44 @@ impl From<HawDBError> for CleanupFailure {
     }
 }
 
+// An interrupted attempt still owns a private stage. Return its ticket to the
+// pre-admitted registry before its registration can release retained memory.
+struct CleanupAttempt {
+    registration: Option<Registration>,
+    ticket: Option<Ticket>,
+}
+
+impl CleanupAttempt {
+    fn new(registration: Registration, ticket: Ticket) -> Self {
+        Self {
+            registration: Some(registration),
+            ticket: Some(ticket),
+        }
+    }
+
+    fn ticket(&mut self) -> &mut Ticket {
+        self.ticket.as_mut().expect("live cleanup attempt")
+    }
+
+    fn complete(mut self) {
+        // Native removal has completed. Free ticket allocations before their
+        // registration and its retained admission disappear.
+        drop(self.ticket.take());
+        drop(self.registration.take());
+    }
+}
+
+impl Drop for CleanupAttempt {
+    fn drop(&mut self) {
+        if let Some(ticket) = self.ticket.take() {
+            self.registration
+                .take()
+                .expect("registered cleanup attempt")
+                .retain(ticket);
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct SearchStagingCleanupReport {
     pub attempted_stages: usize,
@@ -240,40 +278,43 @@ fn retry_registered(
             }
         };
         if let Some(ticket) = ticket {
-            let registration = Registration { index };
-            // Unwind must release the ticket before its owner admission.
-            let mut ticket = ticket;
+            let mut attempt = CleanupAttempt::new(Registration { index }, ticket);
             let workspace = (|| {
                 checkpoint(task)?;
                 memory
                     .spool
-                    .reserve(directory::stage_removal_bytes(&ticket.path)?)
+                    .reserve(directory::stage_removal_bytes(&attempt.ticket().path)?)
             })();
             let _workspace = match workspace {
                 Ok(workspace) => workspace,
                 Err(error) => {
                     // Caller admission failed before touching the stage. Keep
                     // its previous cleanup disposition and ownership intact.
-                    registration.retain(ticket);
                     return Err(error);
                 }
             };
             report.attempted_stages += 1;
+            // A panic after this point is an unknown cleanup failure. Normal
+            // errors below replace it with their concrete disposition.
+            attempt.ticket().error = Some(CleanupFailure::Other);
             let result = (|| {
                 let _project = ProjectFileDescriptors::acquire_component(
-                    ticket.path.parent().expect("registered stage parent"),
+                    attempt
+                        .ticket()
+                        .path
+                        .parent()
+                        .expect("registered stage parent"),
                     false,
                 )?;
-                ticket.remove_batches(max_batches)
+                attempt.ticket().remove_batches(max_batches)
             })();
             match result {
                 Ok(true) => {
                     report.removed_stages += 1;
-                    drop(ticket);
+                    attempt.complete();
                 }
                 result => {
-                    ticket.error = result.err().map(CleanupFailure::from);
-                    registration.retain(ticket);
+                    attempt.ticket().error = result.err().map(CleanupFailure::from);
                 }
             }
         }
@@ -309,10 +350,6 @@ fn retry_registered(
 impl Ticket {
     fn matches_root(&self, root: &Path) -> bool {
         self.path.parent() == Some(root) || &*self.source_root == root
-    }
-
-    fn remove(&self) -> Result<()> {
-        self.remove_batches(usize::MAX).map(|_| ())
     }
 
     fn remove_batches(&self, max_batches: usize) -> Result<bool> {
@@ -494,19 +531,17 @@ impl StageDirectory {
             return false;
         };
         let registration = self.registration.take().expect("registered private stage");
-        // Keep owner admission alive while ticket allocations unwind.
-        let mut ticket = ticket;
-        let pending = match ticket.remove() {
-            Err(error) => {
-                ticket.error = Some(error.into());
-                registration.retain(ticket);
-                true
-            }
-            Ok(()) => {
-                // Owner admission must outlive its ticket's allocations.
-                drop(ticket);
-                drop(registration);
+        let mut attempt = CleanupAttempt::new(registration, ticket);
+        attempt.ticket().error = Some(CleanupFailure::Other);
+        let pending = match attempt.ticket().remove_batches(usize::MAX) {
+            Ok(true) => {
+                attempt.complete();
                 false
+            }
+            result => {
+                attempt.ticket().error = result.err().map(CleanupFailure::from);
+                drop(attempt);
+                true
             }
         };
         // Idle debt owns only its accounted metadata and disk reservation.

@@ -75,6 +75,19 @@ Programs validate the legacy specification and explicitly declare composition:
   `Neutral` uses zero for missing sum terms and one for missing product terms
   or decay factors. These are explicit request choices, with distinct shapes.
 
+Timestamp properties accept only a nonnegative `Value::Int` representing epoch
+milliseconds. Floats, strings, negative integers and NULL count as missing.
+Future timestamps have age zero. Under `Neutral`, a missing or invalid timestamp
+has decay factor one and may outrank a valid recent timestamp; hosts must choose
+this policy deliberately. `Reject` fails the entire scored request when any
+candidate lacks a declared signal, including an OPTIONAL NULL candidate. It
+does not discard that row, rank it last, or publish a partial ranking.
+
+Equal combined scores retain candidate arrival order in resident and spilled
+execution. Reproducibility across executions requires a total upstream
+`ORDER BY` with an explicit tie key; a graph scan's incidental order is not a
+stable ranking contract.
+
 Property names refer to returned value aliases in this ordinary attachment.
 The declared score column supplies `SearchScore`; this does not by itself prove
 that an arbitrary host expression came from a vector or text retriever.

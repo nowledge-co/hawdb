@@ -1,0 +1,23 @@
+Computing main repo mapping: 
+Loading: 
+Loading: 0 packages loaded
+Analyzing: target //crates/storage:hawdb_storage_tests (0 packages loaded)
+Analyzing: target //crates/storage:hawdb_storage_tests (0 packages loaded, 0 targets configured)
+Analyzing: target //crates/storage:hawdb_storage_tests (0 packages loaded, 0 targets configured)
+
+INFO: Analyzed target //crates/storage:hawdb_storage_tests (0 packages loaded, 4 targets configured).
+[558 / 560] Compiling Rust bin hawdb_storage_tests (231 files); 1s darwin-sandbox
+[558 / 560] Compiling Rust bin hawdb_storage_tests (231 files); 11s darwin-sandbox
+[559 / 560] [Prepa] runfiles for //crates/storage:hawdb_storage_tests
+[560 / 561] Testing //crates/storage:hawdb_storage_tests; 1s darwin-sandbox
+[560 / 561] Testing //crates/storage:hawdb_storage_tests; 4s darwin-sandbox
+INFO: Found 1 test target...
+Target //crates/storage:hawdb_storage_tests up-to-date:
+  bazel-bin/crates/storage/hawdb_storage_tests
+INFO: Elapsed time: 28.160s, Critical Path: 24.28s
+INFO: 7 processes: 5 internal, 3 darwin-sandbox.
+INFO: Build completed successfully, 7 total actions
+//crates/storage:hawdb_storage_tests                                     PASSED in 4.5s
+
+Executed 1 out of 1 test: 1 test passes.
+There were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.

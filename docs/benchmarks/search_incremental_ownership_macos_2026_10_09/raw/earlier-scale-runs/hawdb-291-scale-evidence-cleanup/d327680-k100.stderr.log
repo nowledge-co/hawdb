@@ -1,0 +1,6 @@
+    Finished `bench` profile [optimized] target(s) in 0.39s
+     Running benches/search_mutation.rs (target/release/deps/search_mutation-aeb2717e65ef569b)
+error: bench failed, to rerun pass `--bench search_mutation`
+
+Caused by:
+  process didn't exit successfully: `/private/tmp/hawdb-291-cleanup-review/target/release/deps/search_mutation-aeb2717e65ef569b --bench` (signal: 2, SIGINT: terminal interrupt signal)
