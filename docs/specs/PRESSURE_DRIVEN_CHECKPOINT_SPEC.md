@@ -2359,9 +2359,24 @@ array capacities and decoded composite-name bytes before allocating them. Its
 plan retains the inventory until those buffers are destroyed, including failed
 preparation and paused execution. Sorting equivalent definitions in place avoids
 stable-sort scratch; completeness and definition-key deduplication are preserved.
-The genuine published-writer baseline and four removed-admission controls fail
+The genuine published-writer baseline and four removal controls fail
 at runtime while the fixed regressions pass. Whole-sort comparisons, UTF-8
 validation and broader preparation resumption remain outside this bound.
+
+Controlled node/relationship property-update replay, including nested WAL
+batches, now admits copies of pinned record pages and their directory before
+allocating them. The borrowed bound covers the pinned std B-tree/Arc layouts
+and nested record payloads. A denied single-page build installs no copied
+pointer; its buffers are destroyed before admission is refunded. Copied page
+and directory objects retain allocation ownership through snapshot sharing,
+paused execution and frontend detachment. The published production baseline
+shows three large allocations under a 4 KiB work ceiling; the fixed replay
+regression denies before those allocations. Three genuine controls catch
+missing page admission, directory admission and retained data ownership.
+Directory pointers copy in 64 KiB groups and record copies use separate units.
+Wide-record traversal/copy time, growth/split admission, other index/schema and
+relational structures, decoded-record lifetime and complete serving-reader
+ownership remain open; this does not qualify the automatic fixed-owner switch.
 
 ### Publication lock scope and duplicated descriptors
 

@@ -931,6 +931,9 @@ impl GraphStore {
         if let Some(work) = work {
             work.checkpoint().map_err(HawDBError::from_storage_error)?;
         }
+        if let Some(work) = work {
+            self.prepare_replayed_checkpoint_record_copies(operations, work)?;
+        }
         if let Some(memory) = replay_memory {
             self.retain_decoded_checkpoint_memory(
                 memory,
@@ -973,6 +976,31 @@ impl GraphStore {
         self.commit_epoch = epoch;
         self.advance_relational_row_recovery_epoch(epoch);
         Ok(())
+    }
+
+    fn prepare_replayed_checkpoint_record_copies(
+        &mut self,
+        operations: &[WalOp],
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<()> {
+        for operation in operations {
+            work.checkpoint().map_err(HawDBError::from_storage_error)?;
+            match operation {
+                WalOp::Batch(operations) => {
+                    self.prepare_replayed_checkpoint_record_copies(operations, work)?;
+                }
+                WalOp::SetNodeProperty { id, .. } => self
+                    .nodes
+                    .prepare_checkpoint_copy_for_key(id, work)
+                    .map_err(HawDBError::from_storage_error)?,
+                WalOp::SetRelationshipProperty { id, .. } => self
+                    .relationships
+                    .prepare_checkpoint_copy_for_key(id, work)
+                    .map_err(HawDBError::from_storage_error)?,
+                _ => {}
+            }
+        }
+        work.checkpoint().map_err(HawDBError::from_storage_error)
     }
 
     fn apply_replayed_checkpoint_operations(

@@ -151,3 +151,179 @@ fn allocation_admitted_candidate_finishes_beyond_whole_estimate_with_a_fixed_sma
     drop(recovered);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn controlled_replay_denies_before_detaching_a_wide_pinned_graph_page() {
+    const OWNER: u64 = 4096;
+    let mut catalog = Catalog::default();
+    let mut store = GraphStore::default();
+    let body = "索引".repeat(64 * 1024);
+    let id = store
+        .create_node(
+            &mut catalog,
+            "Memory",
+            BTreeMap::from([
+                ("body".into(), Value::String(body.clone())),
+                ("rank".into(), Value::Int(0)),
+            ]),
+        )
+        .unwrap();
+    let pinned = store.snapshot();
+    let epoch = store.commit_epoch();
+    assert!(store.nodes.shares_storage_with(&pinned.nodes));
+    let governor = RuntimeGovernor::new(
+        RuntimeGovernorConfig {
+            memory_budget_bytes: Some(4 * 1024 * 1024),
+            background_task_limit: Some(NonZeroUsize::MIN),
+            ..RuntimeGovernorConfig::shared_host()
+        },
+        RuntimeResourceSnapshot::from_parts(
+            RuntimeResourceBudget::from_limits(NonZeroUsize::MIN, None, None),
+            RuntimeMemorySnapshot::from_limits(Some(1 << 30), Some(1 << 30), None, None, None),
+        ),
+        IoConcurrencyBudget::new(2, 1),
+    );
+    let admission = governor
+        .try_admit_incremental_maintenance(OWNER, OWNER, 1, RuntimeTaskContext::default())
+        .unwrap();
+    let work =
+        crate::background::CheckpointWorkContext::new(admission.task_context().unwrap().clone());
+    let operation = WalOp::SetNodeProperty {
+        id,
+        property: "rank".into(),
+        value: Value::Int(1),
+    };
+    let mut mutation_started = false;
+    let observer = crate::test_allocator::AllocationObservation::start();
+    let result = work.classify(|work| {
+        store.apply_replayed_checkpoint_wal_transaction_with_boundary(
+            &mut catalog,
+            operation,
+            work,
+            &mut mutation_started,
+            None,
+        )
+    });
+    let large_allocations = observer.finish();
+    assert_eq!(
+        large_allocations, 0,
+        "controlled WAL replay must admit pinned page copies before large allocation"
+    );
+    assert!(matches!(
+        result,
+        Err(crate::background::CheckpointOperationError::Work(
+            crate::background::CheckpointWorkError::Memory(_)
+        ))
+    ));
+    assert!(
+        !mutation_started,
+        "memory denial must precede transaction mutation"
+    );
+    assert_eq!(store.commit_epoch(), epoch);
+    assert!(store.nodes.shares_storage_with(&pinned.nodes));
+    for handle in [&store, &pinned] {
+        let node = handle.node_owned(id).unwrap().unwrap();
+        assert_eq!(node.properties["body"], Value::String(body.clone()));
+        assert_eq!(node.properties["rank"], Value::Int(0));
+    }
+    assert_eq!(admission.memory_report().live_accounted_bytes, 0);
+    drop(work);
+    drop(admission);
+    drop(store);
+    drop(pinned);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}
+
+#[test]
+fn controlled_nested_relationship_replay_denies_before_wide_pinned_page_copy() {
+    const OWNER: u64 = 4096;
+    let mut catalog = Catalog::default();
+    let mut store = GraphStore::default();
+    let body = "索引".repeat(64 * 1024);
+    let a = store
+        .create_node(&mut catalog, "Memory", BTreeMap::new())
+        .unwrap();
+    let b = store
+        .create_node(&mut catalog, "Memory", BTreeMap::new())
+        .unwrap();
+    let id = store
+        .create_relationship(
+            &mut catalog,
+            a,
+            b,
+            "Memory",
+            BTreeMap::from([
+                ("body".into(), Value::String(body.clone())),
+                ("rank".into(), Value::Int(0)),
+            ]),
+        )
+        .unwrap();
+    let pinned = store.snapshot();
+    let epoch = store.commit_epoch();
+    assert!(store
+        .relationships
+        .shares_storage_with(&pinned.relationships));
+    let governor = RuntimeGovernor::new(
+        RuntimeGovernorConfig {
+            memory_budget_bytes: Some(4 * 1024 * 1024),
+            background_task_limit: Some(NonZeroUsize::MIN),
+            ..RuntimeGovernorConfig::shared_host()
+        },
+        RuntimeResourceSnapshot::from_parts(
+            RuntimeResourceBudget::from_limits(NonZeroUsize::MIN, None, None),
+            RuntimeMemorySnapshot::from_limits(Some(1 << 30), Some(1 << 30), None, None, None),
+        ),
+        IoConcurrencyBudget::new(2, 1),
+    );
+    let admission = governor
+        .try_admit_incremental_maintenance(OWNER, OWNER, 1, RuntimeTaskContext::default())
+        .unwrap();
+    let work =
+        crate::background::CheckpointWorkContext::new(admission.task_context().unwrap().clone());
+    let operation = WalOp::Batch(vec![WalOp::Batch(vec![WalOp::SetRelationshipProperty {
+        id,
+        property: "rank".into(),
+        value: Value::Int(1),
+    }])]);
+    let mut mutation_started = false;
+    let observer = crate::test_allocator::AllocationObservation::start();
+    let result = work.classify(|work| {
+        store.apply_replayed_checkpoint_wal_transaction_with_boundary(
+            &mut catalog,
+            operation,
+            work,
+            &mut mutation_started,
+            None,
+        )
+    });
+    let large_allocations = observer.finish();
+    assert_eq!(
+        large_allocations, 0,
+        "controlled WAL replay must admit pinned page copies before large allocation"
+    );
+    assert!(matches!(
+        result,
+        Err(crate::background::CheckpointOperationError::Work(
+            crate::background::CheckpointWorkError::Memory(_)
+        ))
+    ));
+    assert!(
+        !mutation_started,
+        "memory denial must precede transaction mutation"
+    );
+    assert_eq!(store.commit_epoch(), epoch);
+    assert!(store
+        .relationships
+        .shares_storage_with(&pinned.relationships));
+    for handle in [&store, &pinned] {
+        let node = handle.relationship_owned(id).unwrap().unwrap();
+        assert_eq!(node.properties["body"], Value::String(body.clone()));
+        assert_eq!(node.properties["rank"], Value::Int(0));
+    }
+    assert_eq!(admission.memory_report().live_accounted_bytes, 0);
+    drop(work);
+    drop(admission);
+    drop(store);
+    drop(pinned);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}
