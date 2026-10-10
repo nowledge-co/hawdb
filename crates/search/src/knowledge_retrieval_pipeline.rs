@@ -147,7 +147,7 @@ impl KnowledgeRetrievalPipelineBudget {
                 )
             })?;
         if next_payload > self.result_payload_budget {
-            return Err(HawDBError::Execution(format!(
+            return Err(HawDBError::read_budget_exceeded(hawdb_core::ReadBudgetResource::PayloadBytes, self.result_payload_budget, format!(
                 "knowledge retrieval result uses {next_payload} payload bytes, exceeding max_read_result_payload_bytes {}",
                 self.result_payload_budget
             )));
@@ -231,5 +231,9 @@ mod tests {
         assert!(error
             .to_string()
             .contains("exceeding max_read_result_payload_bytes 128"));
+        assert!(
+            matches!(error, hawdb_core::HawDBError::ReadBudgetExceeded(cause)
+            if cause.resource == hawdb_core::ReadBudgetResource::PayloadBytes && cause.limit == 128)
+        );
     }
 }

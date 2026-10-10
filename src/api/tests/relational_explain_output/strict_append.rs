@@ -84,7 +84,14 @@ fn rejects_payload(door: FrontDoor, analyze: bool) {
         },
     )
     .unwrap_err();
-    assert!(matches!(error, crate::HawDBError::Execution(_)), "{error}");
+    assert!(
+        matches!(
+            &error,
+            crate::HawDBError::ReadBudgetExceeded(cause)
+                if cause.resource == crate::ReadBudgetResource::PayloadBytes && cause.limit == 1
+        ),
+        "{error}"
+    );
     assert!(error.to_string().contains("payload"), "{error}");
 }
 

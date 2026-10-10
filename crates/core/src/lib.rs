@@ -34,7 +34,7 @@ pub use cancellation::{
     RuntimeMemoryReservation, RuntimeTaskContext,
 };
 pub use capability::{RuntimeCapabilities, RuntimeCapability};
-pub use error::{HawDBError, Result};
+pub use error::{HawDBError, ReadBudgetError, ReadBudgetResource, Result};
 pub use graph::RelationshipDirection;
 pub use graph_rag::{
     build_graph_rag_schema_context, GraphRagCommonPathSummary, GraphRagGeneratedQuery,

@@ -39,9 +39,9 @@ use crate::{
     HawDBLightningInitialImportCutoverCatchUpReport, HawDBLightningInitialImportDocumentIdentity,
     HawDBLightningInitialImportRecoveryReadinessReport, KnowledgeRetrievalOutput,
     KnowledgeRetrievalRequest, LocalQosPolicy, LocalQosState, NowledgeGraphStatement,
-    PlanCacheLookup, QueryOutput, QueryStreamOptions, QueryStreamReport, ReadExecutionProfile,
-    Result, ScheduledSearchProjectionCatchUpReport, SearchDocument, SearchIndex,
-    SearchProjectionCatchUpReport, SearchProjectionChangeBatch,
+    PlanCacheLookup, QueryOutput, QueryStreamOptions, QueryStreamReport, ReadBudgetResource,
+    ReadExecutionProfile, Result, ScheduledSearchProjectionCatchUpReport, SearchDocument,
+    SearchIndex, SearchProjectionCatchUpReport, SearchProjectionChangeBatch,
     SearchProjectionChangefeedReadiness, SearchProjectionDelta, SearchProjectionDeltaReport,
     SearchProjectionFreshness, SearchProjectionGraphDeltaRequest, SearchProjectionProbeOptions,
     SearchProjectionRelationalDelta, SearchResultSet, StorageResourceProfileLimits,
@@ -2515,8 +2515,10 @@ impl<'a> NowledgeMemReadSnapshot<'a> {
         }
         let remaining = self.budget.max_rows.saturating_sub(self.output_rows);
         if remaining == 0 {
-            return Err(HawDBError::Execution(
-                "bounded read snapshot exhausted max_rows".to_string(),
+            return Err(HawDBError::read_budget_exceeded(
+                ReadBudgetResource::Rows,
+                self.budget.max_rows,
+                "bounded read snapshot exhausted max_rows",
             ));
         }
         Ok(requested.min(remaining))
@@ -2528,8 +2530,10 @@ impl<'a> NowledgeMemReadSnapshot<'a> {
             .max_payload_bytes
             .saturating_sub(self.output_payload_bytes);
         if remaining == 0 {
-            return Err(HawDBError::Execution(
-                "bounded read snapshot exhausted max_payload_bytes".to_string(),
+            return Err(HawDBError::read_budget_exceeded(
+                ReadBudgetResource::PayloadBytes,
+                self.budget.max_payload_bytes,
+                "bounded read snapshot exhausted max_payload_bytes",
             ));
         }
         Ok(remaining)
@@ -2539,13 +2543,17 @@ impl<'a> NowledgeMemReadSnapshot<'a> {
         let output_rows = self.output_rows.saturating_add(rows);
         let output_payload_bytes = self.output_payload_bytes.saturating_add(payload_bytes);
         if output_rows > self.budget.max_rows {
-            return Err(HawDBError::Execution(format!(
-                "bounded read snapshot produced {output_rows} rows, exceeding max_rows {}",
-                self.budget.max_rows
-            )));
+            return Err(HawDBError::read_budget_exceeded(
+                ReadBudgetResource::Rows,
+                self.budget.max_rows,
+                format!(
+                    "bounded read snapshot produced {output_rows} rows, exceeding max_rows {}",
+                    self.budget.max_rows
+                ),
+            ));
         }
         if output_payload_bytes > self.budget.max_payload_bytes {
-            return Err(HawDBError::Execution(format!(
+            return Err(HawDBError::read_budget_exceeded(ReadBudgetResource::PayloadBytes, self.budget.max_payload_bytes, format!(
                 "bounded read snapshot produced {output_payload_bytes} payload bytes, exceeding max_payload_bytes {}",
                 self.budget.max_payload_bytes
             )));
@@ -2723,9 +2731,13 @@ impl NowledgeMemEmbeddedStoreHandle {
                     payload_bytes =
                         payload_bytes.saturating_add(search_document_payload_bytes(document));
                     if payload_bytes > max_payload_bytes {
-                        return Err(HawDBError::Execution(format!(
-                            "search projection document hydration produced {payload_bytes} payload bytes, limit is {max_payload_bytes}"
-                        )));
+                        return Err(HawDBError::read_budget_exceeded(
+                            ReadBudgetResource::PayloadBytes,
+                            max_payload_bytes,
+                            format!(
+                                "search projection document hydration produced {payload_bytes} payload bytes, limit is {max_payload_bytes}"
+                            ),
+                        ));
                     }
                     documents.push(document.clone());
                 }
@@ -2739,10 +2751,14 @@ impl NowledgeMemEmbeddedStoreHandle {
                 if output.metrics.hydrated_bytes
                     > u64::try_from(max_payload_bytes).unwrap_or(u64::MAX)
                 {
-                    return Err(HawDBError::Execution(format!(
-                        "search projection document hydration produced {} payload bytes, limit is {max_payload_bytes}",
-                        output.metrics.hydrated_bytes
-                    )));
+                    return Err(HawDBError::read_budget_exceeded(
+                        ReadBudgetResource::PayloadBytes,
+                        max_payload_bytes,
+                        format!(
+                            "search projection document hydration produced {} payload bytes, limit is {max_payload_bytes}",
+                            output.metrics.hydrated_bytes
+                        ),
+                    ));
                 }
                 Ok(NowledgeMemSearchHydrationOutput {
                     documents: output.documents,
@@ -5659,14 +5675,18 @@ fn bounded_nowledge_mem_read_output(
     let report =
         nowledge_mem_read_report(mode, &bounded.output, options, &bounded.execution_profile);
     if report.row_budget_exceeded {
-        return Err(HawDBError::Execution(format!(
-            "nowledge mem read query returned {} rows, exceeding max_rows {}",
-            report.row_count,
-            report.max_rows.unwrap_or_default()
-        )));
+        return Err(HawDBError::read_budget_exceeded(
+            ReadBudgetResource::Rows,
+            report.max_rows.unwrap_or_default(),
+            format!(
+                "nowledge mem read query returned {} rows, exceeding max_rows {}",
+                report.row_count,
+                report.max_rows.unwrap_or_default()
+            ),
+        ));
     }
     if report.payload_budget_exceeded {
-        return Err(HawDBError::Execution(format!(
+        return Err(HawDBError::read_budget_exceeded(ReadBudgetResource::PayloadBytes, report.max_estimated_payload_bytes.unwrap_or_default(), format!(
             "nowledge mem read query estimated {} payload bytes, exceeding max_estimated_payload_bytes {}",
             report.estimated_payload_bytes,
             report.max_estimated_payload_bytes.unwrap_or_default()
@@ -5704,10 +5724,10 @@ fn legacy_nowledge_mem_read_error(
     };
     if matches!(
         &error,
-        HawDBError::Execution(message)
-            if message.contains(&format!("max_payload_bytes {max_payload_bytes}"))
+        HawDBError::ReadBudgetExceeded(cause)
+            if cause.resource == ReadBudgetResource::PayloadBytes && cause.limit == max_payload_bytes
     ) {
-        return HawDBError::Execution(format!(
+        return HawDBError::read_budget_exceeded(ReadBudgetResource::PayloadBytes, max_payload_bytes, format!(
             "nowledge mem read query payload exceeding max_estimated_payload_bytes {max_payload_bytes}"
         ));
     }
@@ -5744,6 +5764,7 @@ fn estimate_value_payload_bytes(value: &Value) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use super::legacy_nowledge_mem_read_error;
     use super::{
         nowledge_mem_bounded_read_evidence_json_with_route_readiness,
         nowledge_mem_fast_path_classification, nowledge_mem_graph_config,
@@ -5801,6 +5822,7 @@ mod tests {
         nowledge_graph_route_workload_fixture_report, NowledgeGraphRouteWorkloadFixtureOptions,
     };
     use crate::AdaptiveVectorBackendPolicy;
+    use crate::ReadBudgetResource;
     use crate::Value;
     use crate::{
         BackgroundMaintenanceKind, BackgroundMaintenanceOptions, BackgroundWorkHint, Database,
@@ -7323,6 +7345,34 @@ mod tests {
         assert!(error
             .to_string()
             .contains("exceeding max_estimated_payload_bytes 4"));
+        assert!(matches!(error, HawDBError::ReadBudgetExceeded(cause)
+            if cause.resource == ReadBudgetResource::PayloadBytes && cause.limit == 4));
+    }
+
+    #[test]
+    fn legacy_read_error_context_preserves_typed_budget_and_unknown_errors() {
+        let options = NowledgeMemReadOptions {
+            max_rows: Some(1),
+            max_estimated_payload_bytes: Some(4),
+        };
+        let typed = legacy_nowledge_mem_read_error(
+            HawDBError::read_budget_exceeded(
+                ReadBudgetResource::PayloadBytes,
+                4,
+                "diagnostic without budget keywords",
+            ),
+            &options,
+        );
+        assert!(matches!(&typed, HawDBError::ReadBudgetExceeded(cause)
+            if cause.resource == ReadBudgetResource::PayloadBytes && cause.limit == 4));
+        assert!(typed.to_string().contains("max_estimated_payload_bytes 4"));
+        let unknown = HawDBError::Execution("unrelated max_payload_bytes 4 diagnostic".into());
+        assert_eq!(
+            legacy_nowledge_mem_read_error(unknown.clone(), &options),
+            unknown
+        );
+        let rows = HawDBError::read_budget_exceeded(ReadBudgetResource::Rows, 1, "rows");
+        assert_eq!(legacy_nowledge_mem_read_error(rows.clone(), &options), rows);
     }
 
     #[test]
@@ -10712,37 +10762,63 @@ mod tests {
 
     #[test]
     fn embedded_handle_search_hydration_rejects_payload_over_budget() {
-        let graph = NowledgeMemGraph::from_database(
-            Database::new_with_config(DatabaseConfig {
-                max_read_result_payload_bytes: Some(64),
-                ..DatabaseConfig::default()
-            }),
-            NowledgeMemGraphMode::ShadowReadOnly,
-        );
-        let mut index = SearchIndex::in_memory();
-        index
-            .upsert(crate::SearchDocument {
-                id: "source_chunk:large".to_string(),
-                title: "Large".to_string(),
-                content: "x".repeat(256),
-                embedding: None,
-                metadata: BTreeMap::new(),
-            })
-            .unwrap();
-        let handle = NowledgeMemEmbeddedStoreHandle::new(NowledgeMemEmbeddedStore::new(
-            graph,
-            Some(NowledgeMemSearchProjection::from_index(index)),
-        ))
-        .unwrap();
+        for out_of_core in [false, true] {
+            let root = unique_nowledge_mem_test_dir("search_hydration_budget");
+            let graph = NowledgeMemGraph::from_database(
+                Database::new_with_config(DatabaseConfig {
+                    max_read_result_payload_bytes: Some(64),
+                    ..DatabaseConfig::default()
+                }),
+                NowledgeMemGraphMode::ShadowReadOnly,
+            );
+            let mut index = if out_of_core {
+                SearchIndex::open(&root).unwrap()
+            } else {
+                SearchIndex::in_memory()
+            };
+            index
+                .upsert(crate::SearchDocument {
+                    id: "source_chunk:large".to_string(),
+                    title: "Large".to_string(),
+                    content: "x".repeat(256),
+                    embedding: None,
+                    metadata: BTreeMap::new(),
+                })
+                .unwrap();
+            let store = if out_of_core {
+                index.checkpoint().unwrap();
+                drop(index);
+                NowledgeMemEmbeddedStore::new_with_out_of_core_search(
+                    graph,
+                    NowledgeMemOutOfCoreSearchProjection::open(&root).unwrap(),
+                    NowledgeMemRetrievalProjectionAdvisor::default(),
+                )
+            } else {
+                NowledgeMemEmbeddedStore::new(
+                    graph,
+                    Some(NowledgeMemSearchProjection::from_index(index)),
+                )
+            };
+            let handle = NowledgeMemEmbeddedStoreHandle::new(store).unwrap();
+            let ids = ["source_chunk:large".to_string()];
+            let error = handle.search_projection_documents(&ids, 1).unwrap_err();
 
-        let error = handle
-            .search_projection_documents(&["source_chunk:large".to_string()], 1)
-            .unwrap_err();
-
-        assert!(error.to_string().contains("payload bytes"));
-        let snapshot = handle.runtime_governor_snapshot().unwrap();
-        assert_eq!(snapshot.admissions, 1);
-        assert_eq!(snapshot.completions, 1);
+            assert!(error.to_string().contains("payload bytes"));
+            assert!(
+                matches!(&error, HawDBError::ReadBudgetExceeded(cause)
+                    if cause.resource == ReadBudgetResource::PayloadBytes && cause.limit == 64),
+                "hydration lost its result budget cause (out_of_core={out_of_core}): {error}"
+            );
+            let request_error = handle.search_projection_documents(&ids, 0).unwrap_err();
+            assert!(matches!(request_error, HawDBError::Execution(_)));
+            let snapshot = handle.runtime_governor_snapshot().unwrap();
+            assert_eq!(snapshot.admissions, 1);
+            assert_eq!(snapshot.completions, 1);
+            drop(handle);
+            if out_of_core {
+                std::fs::remove_dir_all(root).unwrap();
+            }
+        }
     }
 
     #[test]

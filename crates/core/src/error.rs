@@ -56,6 +56,29 @@ impl Display for FileDescriptorError {
 
 impl std::error::Error for FileDescriptorError {}
 
+/// The result resource whose selected read limit rejected delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadBudgetResource {
+    Rows,
+    PayloadBytes,
+}
+
+/// Retains budget identity independently of the execution diagnostic text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadBudgetError {
+    pub resource: ReadBudgetResource,
+    pub limit: usize,
+    pub message: String,
+}
+
+impl Display for ReadBudgetError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ReadBudgetError {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HawDBError {
     Parse(String),
@@ -64,6 +87,7 @@ pub enum HawDBError {
     FileDescriptors(FileDescriptorError),
     StorageIntegrity(String),
     Execution(String),
+    ReadBudgetExceeded(ReadBudgetError),
     GraphExpansionCandidateLimitExceeded {
         requested: usize,
         limit: usize,
@@ -105,6 +129,7 @@ impl Display for HawDBError {
                 write!(f, "storage integrity error: {message}")
             }
             HawDBError::Execution(message) => write!(f, "execution error: {message}"),
+            HawDBError::ReadBudgetExceeded(error) => write!(f, "execution error: {error}"),
             HawDBError::GraphExpansionCandidateLimitExceeded { requested, limit } => write!(
                 f,
                 "graph expansion candidate_limit exceeded: requested {requested} rows, limit {limit} rows; configure ExecutionMemoryConfig.graph_expansion_budget.candidate_limit"
@@ -144,12 +169,25 @@ impl std::error::Error for HawDBError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::FileDescriptors(error) => Some(error),
+            Self::ReadBudgetExceeded(error) => Some(error),
             _ => None,
         }
     }
 }
 
 impl HawDBError {
+    pub fn read_budget_exceeded(
+        resource: ReadBudgetResource,
+        limit: usize,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::ReadBudgetExceeded(ReadBudgetError {
+            resource,
+            limit,
+            message: message.into(),
+        })
+    }
+
     /// Preserve a descriptor rejection through nested storage error wrappers.
     pub fn from_storage_error(error: impl std::error::Error + 'static) -> Self {
         if let Some(error) = (&error as &dyn std::error::Error).downcast_ref::<Self>() {

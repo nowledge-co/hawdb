@@ -376,7 +376,14 @@ fn projection_relational_reads_pin_one_published_generation_for_postgres_sql() {
             },
         )
         .expect_err("projection payload exhaustion must fail the whole statement");
-    assert!(matches!(budget_error, HawDBError::Execution(_)));
+    assert!(matches!(
+        budget_error,
+        HawDBError::ReadBudgetExceeded(crate::ReadBudgetError {
+            resource: crate::ReadBudgetResource::PayloadBytes,
+            limit: 1,
+            ..
+        })
+    ));
 
     let profiled = pinned_generation_two
         .query_sql_with_params_options_profiled(QUERY, &parameters, QueryStreamOptions::default())

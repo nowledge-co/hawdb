@@ -160,6 +160,23 @@ Two deployment profiles select defaults: `SharedHost` for a desktop or server pr
 
 Optional OpenTelemetry metrics are host-injected. HawDB records low-cardinality counters through a supplied meter. It does not install a global provider, open an OTLP endpoint, or export query text, parameters, document identifiers, or database paths.
 
+### Result budget errors
+
+When selected read results exceed a row or payload limit, HawDB returns
+`HawDBError::ReadBudgetExceeded(ReadBudgetError)`. The cause retains
+`ReadBudgetResource::Rows` or `ReadBudgetResource::PayloadBytes`, the selected
+`limit`, and the existing diagnostic `message`. Hosts can classify the resource
+without parsing diagnostic text. Bounded snapshots preserve this cause for
+cumulative result limits, and branch SQL rejects budget failures before
+publishing a create or delete operation.
+
+The error's display text and execution-category reports remain compatible.
+Rust consumers with exhaustive `HawDBError` matches must handle the additional
+variant. Execution-memory admission, invalid configuration, cancellation,
+deadline, append-storage, and `MutationLimits`/DML `RETURNING` admission failures
+retain their separate error contracts.
+Limits, read authority, and persistent formats are unchanged.
+
 ## Build
 
 ```console
