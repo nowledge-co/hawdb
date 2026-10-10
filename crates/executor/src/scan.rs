@@ -166,6 +166,7 @@ impl ExpandedBindingConsumer for StandaloneExpandConsumer<'_> {
         preview: ExpandedBindingPreview<'_>,
         create: impl FnOnce() -> ExpandedBinding,
     ) -> Result<ScanControl> {
+        ensure_expanded_binding_fits(preview.memory_bytes, self.memory.budget_bytes)?;
         let _output = self
             .memory
             .admit_node(preview.memory_bytes, 0, self.task_context)?;
@@ -219,7 +220,7 @@ pub(crate) fn stream_expand_binding_admitted(
 ) -> Result<ScanControl> {
     runtime_checkpoint(task_context)?;
     if has_null_expand_constraint(binding, &spec) {
-        return stream_unmatched_expand_binding(binding, &spec, memory.budget_bytes, consumer);
+        return stream_unmatched_expand_binding(binding, &spec, consumer);
     }
     let source = binding.nodes.get(spec.source_variable).ok_or_else(|| {
         HawDBError::Execution(format!(
@@ -272,7 +273,6 @@ pub(crate) fn stream_expand_binding_admitted(
                     Some(target_id),
                     1,
                 );
-                ensure_expanded_binding_fits(preview.memory_bytes, memory.budget_bytes)?;
                 matched = true;
                 consumer.push(preview, || ExpandedBinding {
                     binding: owned_expanded_binding(
@@ -303,15 +303,8 @@ pub(crate) fn stream_expand_binding_admitted(
             memory,
             task_context,
             &mut |target, hop| {
-                let (control, target_matched) = stream_expanded_node_binding(
-                    binding,
-                    &spec,
-                    filters,
-                    target,
-                    hop,
-                    memory.budget_bytes,
-                    consumer,
-                )?;
+                let (control, target_matched) =
+                    stream_expanded_node_binding(binding, &spec, filters, target, hop, consumer)?;
                 matched |= target_matched;
                 Ok(control)
             },
@@ -321,7 +314,7 @@ pub(crate) fn stream_expand_binding_admitted(
         return Ok(ScanControl::Stop);
     }
     if !matched {
-        return stream_unmatched_expand_binding(binding, &spec, memory.budget_bytes, consumer);
+        return stream_unmatched_expand_binding(binding, &spec, consumer);
     }
     Ok(ScanControl::Continue)
 }
@@ -428,7 +421,6 @@ fn stream_expanded_node_binding(
     filters: &AdjacencyExpandFilters<'_>,
     target: NodeRecord,
     hop: usize,
-    budget_bytes: usize,
     consumer: &mut impl ExpandedBindingConsumer,
 ) -> Result<(ScanControl, bool)> {
     if binding
@@ -450,7 +442,6 @@ fn stream_expanded_node_binding(
         Some(target_id),
         hop,
     );
-    ensure_expanded_binding_fits(preview.memory_bytes, budget_bytes)?;
     consumer
         .push(preview, || ExpandedBinding {
             binding: owned_expanded_binding(binding, Some((spec.target_variable, target)), None),
@@ -476,12 +467,7 @@ pub(crate) fn stream_zero_hop_expand_binding(
 ) -> Result<ScanControl> {
     runtime_checkpoint(context.task_context)?;
     if spec.min_hops != 0 || has_null_expand_constraint(binding, spec) {
-        return stream_unmatched_expand_binding(
-            binding,
-            spec,
-            context.memory.budget_bytes,
-            consumer,
-        );
+        return stream_unmatched_expand_binding(binding, spec, consumer);
     }
     let source = binding.nodes.get(spec.source_variable).ok_or_else(|| {
         HawDBError::Execution(format!(
@@ -504,7 +490,6 @@ pub(crate) fn stream_zero_hop_expand_binding(
                 context.filters,
                 target,
                 hop,
-                context.memory.budget_bytes,
                 consumer,
             )?;
             matched |= target_matched;
@@ -514,7 +499,7 @@ pub(crate) fn stream_zero_hop_expand_binding(
     if control == ScanControl::Stop || matched {
         return Ok(control);
     }
-    stream_unmatched_expand_binding(binding, spec, context.memory.budget_bytes, consumer)
+    stream_unmatched_expand_binding(binding, spec, consumer)
 }
 
 /// OPTIONAL extends only new variables; existing node/relationship bindings
@@ -522,7 +507,6 @@ pub(crate) fn stream_zero_hop_expand_binding(
 pub(crate) fn stream_unmatched_expand_binding(
     binding: &Binding,
     spec: &AdjacencyExpandSpec<'_>,
-    budget_bytes: usize,
     consumer: &mut impl ExpandedBindingConsumer,
 ) -> Result<ScanControl> {
     if !spec.optional {
@@ -539,7 +523,6 @@ pub(crate) fn stream_unmatched_expand_binding(
             .filter(|name| *name != spec.target_variable && is_new(name)),
     ];
     let preview = expanded_binding_preview(binding, None, None, null_variables, None, 0);
-    ensure_expanded_binding_fits(preview.memory_bytes, budget_bytes)?;
     consumer.push(preview, || {
         let mut next = binding.clone();
         for name in null_variables.into_iter().flatten() {
@@ -636,7 +619,7 @@ pub(crate) fn adjacency_exists_with_memory(
     Ok(found)
 }
 
-fn ensure_expanded_binding_fits(bytes: usize, memory_budget_bytes: usize) -> Result<()> {
+pub(crate) fn ensure_expanded_binding_fits(bytes: usize, memory_budget_bytes: usize) -> Result<()> {
     if bytes > memory_budget_bytes {
         return Err(HawDBError::Execution(format!(
             "AdjacencyExpandExec result uses {bytes} bytes, exceeding blocking_operator_bytes {memory_budget_bytes}"

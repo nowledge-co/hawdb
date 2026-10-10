@@ -718,7 +718,6 @@ pub(super) fn stream_adjacency_expand_batches(
                     crate::scan::stream_unmatched_expand_binding(
                         &binding,
                         &spec,
-                        memory.blocking_operator_bytes.get(),
                         &mut visit_candidate,
                     )?
                 } else if unknown_relationship_type {
@@ -815,6 +814,10 @@ impl crate::scan::ExpandedBindingConsumer for ExpandBatchConsumer<'_, '_> {
         };
         let candidate_bytes = preview.memory_bytes.saturating_sub(reduction);
         let payload_bytes = preview.payload_bytes.saturating_sub(reduction);
+        crate::scan::ensure_expanded_binding_fits(
+            candidate_bytes,
+            self.context.memory.blocking_operator_bytes.get(),
+        )?;
         let batch_payload_bytes = self.context.memory.batch_payload_bytes.get();
         if candidate_bytes > batch_payload_bytes {
             return Err(HawDBError::Execution(format!(
@@ -832,6 +835,9 @@ impl crate::scan::ExpandedBindingConsumer for ExpandBatchConsumer<'_, '_> {
                 return Ok(ScanControl::Stop);
             }
         }
+        // A downstream callback may cancel while accepting the previous batch.
+        // Check again before admitting or constructing the next output row.
+        runtime_checkpoint(self.context.task_context)?;
         if !self
             .graph_expansion
             .try_admit_payload(payload_bytes, preview.target_id, preview.hop)?
@@ -891,7 +897,7 @@ mod expand_output_tests {
 
     #[test]
     fn expand_output_exact_root_flushes_before_copy_and_respects_stop() {
-        for stop in [false, true] {
+        for (stop, cancel) in [(false, false), (true, false), (false, true)] {
             let row = Binding::scalar("v", Value::String("x".repeat(4097)));
             let bytes = binding_memory_bytes(&row);
             let limit = NonZeroUsize::new(bytes).unwrap();
@@ -914,6 +920,8 @@ mod expand_output_tests {
             let observer = QueryExecutionObserver::default();
             let mut external = crate::external::NoExternalReadOperator;
             let external = BatchExternalReadAdapter::new(&mut external);
+            let token = hawdb_core::RuntimeCancellationToken::new();
+            let task = RuntimeTaskContext::new(token.clone(), None);
             let context = BatchReadContext {
                 catalog: &catalog,
                 store: &store,
@@ -921,7 +929,7 @@ mod expand_output_tests {
                 external: &external,
                 memory: &memory,
                 memory_ledger: &ledger,
-                task_context: None,
+                task_context: Some(&task),
                 observer: &observer,
                 host_scorer: None,
             };
@@ -931,6 +939,9 @@ mod expand_output_tests {
                 assert_eq!(rows, vec![row.clone()]);
                 assert_eq!(ledger.snapshot().used_bytes, 0);
                 flushes.set(flushes.get() + 1);
+                if cancel {
+                    token.cancel();
+                }
                 Ok(if stop {
                     BatchControl::Stop
                 } else {
@@ -971,23 +982,31 @@ mod expand_output_tests {
                             }
                         },
                     )
-                    .unwrap()
                 };
-                assert_eq!(push(), ScanControl::Continue);
-                assert_eq!(
-                    push(),
-                    if stop {
-                        ScanControl::Stop
-                    } else {
-                        ScanControl::Continue
-                    }
-                );
+                assert_eq!(push().unwrap(), ScanControl::Continue);
+                if cancel {
+                    let error =
+                        push().expect_err("flush cancellation must precede the next constructor");
+                    assert!(error.to_string().contains("cancelled"), "{error}");
+                } else {
+                    assert_eq!(
+                        push().unwrap(),
+                        if stop {
+                            ScanControl::Stop
+                        } else {
+                            ScanControl::Continue
+                        }
+                    );
+                }
             }
             assert_eq!(flushes.get(), 1);
-            assert_eq!(copies.get(), if stop { 1 } else { 2 });
-            assert_eq!(output.len(), usize::from(!stop));
-            assert_eq!(output_bytes, if stop { 0 } else { bytes });
-            assert_eq!(ledger.snapshot().used_bytes, if stop { 0 } else { bytes });
+            assert_eq!(copies.get(), if stop || cancel { 1 } else { 2 });
+            assert_eq!(output.len(), usize::from(!stop && !cancel));
+            assert_eq!(output_bytes, if stop || cancel { 0 } else { bytes });
+            assert_eq!(
+                ledger.snapshot().used_bytes,
+                if stop || cancel { 0 } else { bytes }
+            );
             drop(output);
             drop(lease);
             assert_eq!(ledger.snapshot().used_bytes, 0);

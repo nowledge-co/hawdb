@@ -1,5 +1,5 @@
 use super::*;
-use hawdb_plan_cypher::{GraphMatchStep, LogicalPlan};
+use hawdb_plan_cypher::{GraphMatchStep, LogicalPlan, ProjectionExpression};
 
 // The oracle lowers the generic operators directly, independently of optimizer fast paths.
 fn lower(plan: LogicalPlan) -> PhysicalPlan {
@@ -827,4 +827,127 @@ fn bound_predicate_exists_source_budget_before_copy() {
 #[test]
 fn adjacency_exists_source_budget_before_copy() {
     assert_exists_source_budget_before_copy(5);
+}
+
+#[test]
+fn optional_seed_null_hop_uses_final_blocking_row_size() {
+    use hawdb_core::graph_rag::{
+        MissingScoringFeature, ScoreFeature, ScoringCombination, ScoringProgram, ScoringSpec,
+        ScoringTerm,
+    };
+    use hawdb_plan_cypher::ScoringSeedGraphInput;
+    use std::num::NonZeroUsize;
+    with_context(None, |context| {
+        let prefix = PhysicalPlan::AdjacencyExpandExec {
+            source_variable: "seed".into(),
+            source_label: "Memory".into(),
+            rel_variable: None,
+            rel_type: "Unknown".into(),
+            rel_properties: BTreeMap::new(),
+            direction: RelationshipDirection::Outgoing,
+            target_variable: "candidate".into(),
+            target_label: "Memory".into(),
+            min_hops: 1,
+            max_hops: 1,
+            optional: true,
+            graph_budget: None,
+            input: Box::new(PhysicalPlan::ProjectExec {
+                items: vec![Projection {
+                    name: "pad".into(),
+                    expression: ProjectionExpression::Literal(Value::String("x".repeat(16384))),
+                }],
+                input: Box::new(PhysicalPlan::GraphSeedScan {
+                    query_parameter: "text".into(),
+                    label: "Memory".into(),
+                    variable: "seed".into(),
+                    score_column: "score".into(),
+                    top_k: 1,
+                    node_visibility_predicate: None,
+                }),
+            }),
+        };
+        let seed_input = ScoringSeedGraphInput::new_graph("seed", "candidate").unwrap();
+        seed_input.validate_plan(&prefix).unwrap();
+        let declared = PhysicalPlan::ScoringProgramExec {
+            score_column: "score".into(),
+            seed_graph_input: Some(seed_input),
+            program: ScoringProgram::new(
+                ScoringCombination::WeightedSum,
+                MissingScoringFeature::Reject,
+                ScoringSpec {
+                    terms: vec![ScoringTerm {
+                        feature: ScoreFeature::GraphSeedScore,
+                        weight: 1.0,
+                    }],
+                    decay: vec![],
+                },
+            )
+            .unwrap(),
+            reference_time_millis: 0,
+            limit: 1,
+            input: Box::new(prefix),
+        };
+        let PhysicalPlan::ScoringProgramExec { input, .. } = &declared else {
+            unreachable!()
+        };
+        let parameters = BTreeMap::from([("text".into(), Value::String("1".into()))]);
+        // Execute the actual certified producer/project/OPTIONAL prefix with
+        // its declared scorer observer. Outer scoring scratch is a separate cap.
+        let observer = QueryExecutionObserver::new(&declared);
+        let mut expected = Vec::new();
+        execute_binding_batches(
+            input,
+            BatchReadContext {
+                parameters: &parameters,
+                observer: &observer,
+                ..context
+            },
+            ExecutionLimit::unlimited(),
+            &mut |rows| {
+                expected.extend(rows);
+                Ok(BatchControl::Continue)
+            },
+        )
+        .unwrap();
+        assert_eq!(expected.len(), 1);
+        let expected = expected.pop().unwrap();
+        assert_eq!(expected.values["candidate"], Value::Null);
+        assert_eq!(expected.values["\0hawdb.scoring.hops"], Value::Null);
+        let bytes = crate::binding::binding_memory_bytes(&expected);
+        for cap in [bytes, bytes - 1] {
+            let memory = ExecutionMemoryConfig {
+                blocking_operator_bytes: NonZeroUsize::new(cap).unwrap(),
+                ..context.memory.clone()
+            };
+            let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+            let observer = QueryExecutionObserver::new(&declared);
+            let mut actual = Vec::new();
+            let result = execute_binding_batches(
+                input,
+                BatchReadContext {
+                    parameters: &parameters,
+                    observer: &observer,
+                    memory: &memory,
+                    memory_ledger: &ledger,
+                    ..context
+                },
+                ExecutionLimit::unlimited(),
+                &mut |rows| {
+                    actual.extend(rows);
+                    Ok(BatchControl::Continue)
+                },
+            );
+            if cap == bytes {
+                result.expect("final Null-hop row must fit its exact blocking cap");
+                assert_eq!(actual, vec![expected.clone()]);
+            } else {
+                let error = result.expect_err("one byte below final row must refuse");
+                assert!(error.to_string().contains(&format!(
+                    "AdjacencyExpandExec result uses {bytes} bytes, exceeding blocking_operator_bytes {cap}"
+                )), "source refusal must not mask the final-row boundary: {error}");
+                assert!(actual.is_empty());
+            }
+            assert_eq!(ledger.snapshot().used_bytes, 0);
+        }
+    });
 }
