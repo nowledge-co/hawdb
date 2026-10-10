@@ -35,6 +35,7 @@ pub struct QueryExecutionReports {
 /// operator events are recorded. Final host/process metrics are added outside.
 pub struct QueryExecutionObserver {
     reports: RefCell<QueryExecutionReports>,
+    vector_graph_input: Option<hawdb_plan_cypher::ScoringVectorGraphInput>,
     operator_ids: BTreeMap<usize, PhysicalOperatorId>,
 }
 
@@ -42,6 +43,7 @@ impl Default for QueryExecutionObserver {
     fn default() -> Self {
         Self {
             reports: RefCell::new(QueryExecutionReports::default()),
+            vector_graph_input: None,
             operator_ids: BTreeMap::new(),
         }
     }
@@ -64,6 +66,12 @@ impl QueryExecutionObserver {
         });
         Self {
             reports: RefCell::new(reports),
+            vector_graph_input: match plan {
+                PhysicalPlan::ScoringProgramExec {
+                    vector_graph_input, ..
+                } => vector_graph_input.clone(),
+                _ => None,
+            },
             operator_ids,
         }
     }
@@ -181,6 +189,10 @@ fn plan_address(plan: &PhysicalPlan) -> usize {
 }
 
 impl ExecutionObserver for QueryExecutionObserver {
+    fn vector_graph_scoring_input(&self) -> Option<&hawdb_plan_cypher::ScoringVectorGraphInput> {
+        self.vector_graph_input.as_ref()
+    }
+
     fn record_scan_pruning_report(&self, report: ScanPruningReport) {
         self.reports.borrow_mut().scan_pruning.push(report);
     }
@@ -197,46 +209,24 @@ pub fn blocking_operator_kinds(plan: &PhysicalPlan) -> Vec<String> {
 }
 
 fn collect_blocking_operator_kinds(plan: &PhysicalPlan, output: &mut BTreeSet<String>) {
-    match plan {
-        PhysicalPlan::GraphAlgorithm { .. } | PhysicalPlan::VectorSeedScan { .. } => {
-            output.insert(plan.kind().as_str().to_string());
+    visit_plan_with_ids(plan, &mut |_, operator| {
+        if matches!(
+            operator,
+            PhysicalPlan::GraphAlgorithm { .. }
+                | PhysicalPlan::VectorSeedScan { .. }
+                | PhysicalPlan::ShortestPathExec { .. }
+                | PhysicalPlan::AggregateExec { .. }
+                | PhysicalPlan::DistinctExec { .. }
+                | PhysicalPlan::SortExec { .. }
+                | PhysicalPlan::TopNExec { .. }
+                | PhysicalPlan::ScoringRerankExec { .. }
+                | PhysicalPlan::ScoringProgramExec { .. }
+                | PhysicalPlan::NodeCartesianProductExec { .. }
+                | PhysicalPlan::HashJoinExec { .. }
+        ) {
+            output.insert(operator.kind().as_str().to_string());
         }
-        PhysicalPlan::ShortestPathExec { .. } => {
-            output.insert("ShortestPathExec".to_string());
-        }
-        PhysicalPlan::AggregateExec { input, .. } => {
-            output.insert("AggregateExec".to_string());
-            collect_blocking_operator_kinds(input, output);
-        }
-        PhysicalPlan::DistinctExec { input } => {
-            output.insert("DistinctExec".to_string());
-            collect_blocking_operator_kinds(input, output);
-        }
-        PhysicalPlan::SortExec { input, .. } => {
-            output.insert("SortExec".to_string());
-            collect_blocking_operator_kinds(input, output);
-        }
-        PhysicalPlan::TopNExec { input, .. } => {
-            output.insert("TopNExec".to_string());
-            collect_blocking_operator_kinds(input, output);
-        }
-        PhysicalPlan::NodeCartesianProductExec { left, right }
-        | PhysicalPlan::HashJoinExec { left, right, .. } => {
-            output.insert(plan.kind().as_str().to_string());
-            collect_blocking_operator_kinds(left, output);
-            collect_blocking_operator_kinds(right, output);
-        }
-        PhysicalPlan::NodeColumnLookupExec { input, .. }
-        | PhysicalPlan::AdjacencyExpandExec { input, .. }
-        | PhysicalPlan::AdjacencyExistsExec { input, .. }
-        | PhysicalPlan::OptionalDegreeExec { input, .. }
-        | PhysicalPlan::FilterExec { input, .. }
-        | PhysicalPlan::ProjectExec { input, .. }
-        | PhysicalPlan::LimitExec { input, .. } => {
-            collect_blocking_operator_kinds(input, output);
-        }
-        _ => {}
-    }
+    });
 }
 
 #[cfg(test)]

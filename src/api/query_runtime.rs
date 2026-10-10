@@ -100,10 +100,45 @@ pub(super) struct PreparedRuntimeExecution {
     pub(super) statement_started: Option<hawdb_core::time::Instant>,
 }
 
-struct QueryExecutionOptions<'a> {
+#[derive(Clone, Copy)]
+pub(super) struct QueryExecutionOptions<'a> {
     capture_trace: bool,
-    access_control: Option<QueryAccessControlContext>,
-    task_context: Option<&'a hawdb_core::RuntimeTaskContext>,
+    pub(super) access_control: Option<&'a QueryAccessControlContext>,
+    pub(super) task_context: Option<&'a hawdb_core::RuntimeTaskContext>,
+    pub(super) scoring: Option<BoundScoringRequest<'a>>,
+    pub(super) output_limits: QueryStreamOptions,
+}
+
+impl<'a> QueryExecutionOptions<'a> {
+    pub(super) fn for_request(
+        request: QueryRequest<'a>,
+        fallback_context: Option<&'a hawdb_core::RuntimeTaskContext>,
+    ) -> Self {
+        Self {
+            capture_trace: false,
+            access_control: request.access_control,
+            task_context: request.task_context.or(fallback_context),
+            scoring: request.scoring.map(ScoringRequest::bind),
+            output_limits: request.output_limits,
+        }
+    }
+
+    pub(super) fn for_bounded_read(
+        max_rows: Option<usize>,
+        access_control: Option<&'a QueryAccessControlContext>,
+        task_context: Option<&'a hawdb_core::RuntimeTaskContext>,
+    ) -> Self {
+        Self {
+            capture_trace: false,
+            access_control,
+            task_context,
+            scoring: None,
+            output_limits: QueryStreamOptions {
+                max_rows,
+                max_payload_bytes: None,
+            },
+        }
+    }
 }
 
 pub(super) fn parse_runtime_execution(cypher_text: &str) -> Result<PreparedRuntimeExecution> {
@@ -437,12 +472,27 @@ impl RuntimePlanningContext<'_> {
                 planning_cache,
                 access_control: None,
                 optimizer_search,
+                scoring: None,
             },
         )
     }
 }
 
 impl Database {
+    /// Executes an ordinary Cypher request with optional typed engine scoring.
+    pub fn query_request(&mut self, request: QueryRequest<'_>) -> Result<QueryOutput> {
+        let options = QueryExecutionOptions::for_request(request, None);
+        let empty = BTreeMap::new();
+        self.query_with_params_trace_and_external_prepared(
+            request.cypher,
+            parse_runtime_execution(request.cypher)?,
+            request.parameters.unwrap_or(&empty),
+            &mut executor::NoExternalReadOperator,
+            options,
+        )
+        .map(|(output, _)| output)
+    }
+
     pub fn query(&mut self, cypher_text: &str) -> Result<QueryOutput> {
         self.query_with_params(cypher_text, &BTreeMap::new())
     }
@@ -474,6 +524,8 @@ impl Database {
                 capture_trace: false,
                 access_control: None,
                 task_context: None,
+                scoring: None,
+                output_limits: QueryStreamOptions::default(),
             },
         )
         .map(|(output, _)| output)
@@ -523,6 +575,8 @@ impl Database {
                 capture_trace: false,
                 access_control: None,
                 task_context: Some(task_context),
+                scoring: None,
+                output_limits: QueryStreamOptions::default(),
             },
         )
         .map(|(output, _)| output)
@@ -580,8 +634,10 @@ impl Database {
             external,
             QueryExecutionOptions {
                 capture_trace,
-                access_control,
+                access_control: access_control.as_ref(),
                 task_context,
+                scoring: None,
+                output_limits: QueryStreamOptions::default(),
             },
         )
     }
@@ -598,6 +654,8 @@ impl Database {
             capture_trace,
             access_control,
             task_context,
+            scoring,
+            output_limits,
         } = options;
         let execution_started = hawdb_core::time::Instant::now();
         self.runtime.get()?.store.ensure_usable()?;
@@ -613,14 +671,7 @@ impl Database {
         let statement_kind_name = statement_kind(&statement);
         if let cypher::Statement::Explain(explain) = &statement {
             let query_result = self
-                .execute_explain_statement(
-                    cypher_text,
-                    explain,
-                    parameters,
-                    external,
-                    access_control.as_ref(),
-                    task_context,
-                )
+                .execute_explain_statement(cypher_text, explain, parameters, external, options)
                 .map(|output| (output, QueryExecutionTrace::uncached(statement)));
             self.runtime
                 .get()?
@@ -637,12 +688,20 @@ impl Database {
                 started,
                 statement_result,
                 StatementExecutionContext {
-                    access_control: access_control.as_ref(),
+                    access_control,
                     parse_nanos: parse_metrics.elapsed_nanos,
                     ..StatementExecutionContext::default()
                 },
             );
             return query_result;
+        }
+        if scoring.is_some()
+            && matches!(
+                body,
+                cypher::Statement::SetSystemVariable(_) | cypher::Statement::Checkpoint
+            )
+        {
+            return Err(HawDBError::Semantic("scoring requires a read query".into()));
         }
         if let cypher::Statement::SetSystemVariable(set) = body {
             reject_system_variable_parameters(parameters)?;
@@ -667,12 +726,14 @@ impl Database {
             query_runtime_checkpoint(task_context)?;
             query_work_request_for_statement(&self.system_variables, &statement)?;
             let optimized = match prepared_optimized {
-                Some(optimized) if access_control.is_none() => optimized,
-                _ => self.optimized_query_plan_with_access_control(
+                Some(optimized) if access_control.is_none() && scoring.is_none() => optimized,
+                _ => self.optimized_query_plan_for_request(
                     cypher_text,
                     &statement,
                     parameters,
-                    access_control.as_ref(),
+                    access_control,
+                    PlanTraceMode::Template,
+                    scoring,
                 )?,
             };
             let is_mutation = executor::is_mutation_plan(&optimized.physical_plan)?;
@@ -703,8 +764,14 @@ impl Database {
                         &self.config.execution_memory,
                     )
                     .with_output_limits(
-                        self.config.max_read_result_rows,
-                        self.config.max_read_result_payload_bytes,
+                        restrictive_query_limit(
+                            self.config.max_read_result_rows,
+                            output_limits.max_rows,
+                        ),
+                        restrictive_query_limit(
+                            self.config.max_read_result_payload_bytes,
+                            output_limits.max_payload_bytes,
+                        ),
                     )
                     .with_optional_task_context(task_context),
                     {
@@ -751,7 +818,7 @@ impl Database {
             statement_result,
             StatementExecutionContext {
                 execution_profile,
-                access_control: access_control.as_ref(),
+                access_control,
                 parse_nanos: parse_metrics.elapsed_nanos,
             },
         );
@@ -764,17 +831,19 @@ impl Database {
         explain: &cypher::Explain,
         parameters: &BTreeMap<String, Value>,
         external: &mut dyn executor::ExternalReadOperator,
-        access_control: Option<&QueryAccessControlContext>,
-        task_context: Option<&hawdb_core::RuntimeTaskContext>,
+        options: QueryExecutionOptions<'_>,
     ) -> Result<QueryOutput> {
+        let task_context = options.task_context;
         query_runtime_checkpoint(task_context)?;
         let work_request =
             query_work_request_for_statement(&self.system_variables, &explain.statement)?;
-        let optimized = self.optimized_explain_query_plan_with_access_control(
+        let optimized = self.optimized_query_plan_for_request(
             cypher_text,
             &explain.statement,
             parameters,
-            access_control,
+            options.access_control,
+            PlanTraceMode::Bound,
+            options.scoring,
         )?;
         let inner_statement_kind = statement_kind(statement_body(&explain.statement));
         if explain.analyze {
@@ -790,8 +859,14 @@ impl Database {
                     &self.config.execution_memory,
                 )
                 .with_output_limits(
-                    self.config.max_read_result_rows,
-                    self.config.max_read_result_payload_bytes,
+                    restrictive_query_limit(
+                        self.config.max_read_result_rows,
+                        options.output_limits.max_rows,
+                    ),
+                    restrictive_query_limit(
+                        self.config.max_read_result_payload_bytes,
+                        options.output_limits.max_payload_bytes,
+                    ),
                 )
                 .with_optional_task_context(task_context),
                 {
@@ -803,25 +878,21 @@ impl Database {
                     )
                 },
             )?;
-            return Ok(QueryOutput {
-                rows: vec![explain_analyze_output_row(
-                    &optimized,
-                    work_request,
-                    inner_statement_kind,
-                    profiled.rows.len(),
-                    &profiled.profile,
-                )]
-                .into(),
-            });
-        }
-        Ok(QueryOutput {
-            rows: vec![explain_output_row(
+            let row = explain_analyze_output_row(
                 &optimized,
                 work_request,
                 inner_statement_kind,
-            )]
-            .into(),
-        })
+                profiled.rows.len(),
+                &profiled.profile,
+            );
+            drop(profiled.rows);
+            return super::explain::admit_explain_output(row, &self.config, options);
+        }
+        super::explain::admit_explain_output(
+            explain_output_row(&optimized, work_request, inner_statement_kind),
+            &self.config,
+            options,
+        )
     }
 }
 

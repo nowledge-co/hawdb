@@ -35,6 +35,11 @@ pub use profile::{read_execution_profile, ExecutionProfileBuilder};
 pub use query::{blocking_operator_kinds, QueryExecutionObserver, QueryExecutionReports};
 
 pub trait ExecutionObserver {
+    #[doc(hidden)]
+    fn vector_graph_scoring_input(&self) -> Option<&hawdb_plan_cypher::ScoringVectorGraphInput> {
+        None
+    }
+
     fn record_scan_pruning_report(&self, _report: ScanPruningReport) {}
 
     fn record_blocking_memory_report(&self, _report: BlockingOperatorMemoryReport) {}

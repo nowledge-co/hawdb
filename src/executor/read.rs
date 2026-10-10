@@ -99,6 +99,7 @@ pub(super) fn execute_bindings_with_limit(
         | PhysicalPlan::SortExec { .. }
         | PhysicalPlan::TopNExec { .. }
         | PhysicalPlan::ScoringRerankExec { .. }
+        | PhysicalPlan::ScoringProgramExec { .. }
         | PhysicalPlan::LimitExec { .. }
         | PhysicalPlan::GraphAlgorithm { .. }
         | PhysicalPlan::VectorSeedScan { .. }

@@ -98,6 +98,7 @@ pub use graph_analytics::{
 mod explain_format_tests;
 mod observability;
 mod plan_cache;
+mod query_request;
 mod query_runtime;
 mod resource_profile;
 mod runtime_cell;
@@ -118,6 +119,10 @@ pub use branch_lifecycle::{
     BranchCreateRequest, BranchInfo, BranchLifecycleError, BranchLifecycleState,
     BranchReclamationLimits, BranchReclamationReport, BranchSelector,
 };
+pub use hawdb_core::graph_rag::{
+    MissingScoringFeature, ScoringCombination, ScoringProgram, ScoringProgramError,
+    ScoringProgramShape,
+};
 pub(crate) use hawdb_executor::runtime_admission::runtime_planning_request;
 #[cfg(feature = "tokio-runtime")]
 pub(crate) use hawdb_executor::runtime_admission::RuntimeAdmissionPlan;
@@ -125,6 +130,8 @@ pub use hawdb_storage::branch_create_recovery::{
     BranchCreateRecoveryEntry, BranchCreateRecoveryLimits, BranchCreateRecoveryReport,
     BranchCreateRecoveryStatus,
 };
+use query_request::BoundScoringRequest;
+pub use query_request::{QueryRequest, ScoringRequest};
 pub(crate) use query_runtime::PreparedRuntimeQuery;
 #[cfg(feature = "tokio-runtime")]
 pub(crate) use query_runtime::RuntimePlanningSnapshot;
@@ -888,6 +895,8 @@ struct ReadStreamingExecutionContext<'a> {
     task_context: Option<&'a hawdb_core::RuntimeTaskContext>,
     external: Option<&'a mut dyn executor::ExternalReadOperator>,
     delivery: executor::StreamDelivery,
+    scoring: Option<BoundScoringRequest<'a>>,
+    access_control: Option<&'a QueryAccessControlContext>,
 }
 
 #[derive(Debug)]
@@ -1464,10 +1473,12 @@ impl Database {
                 ));
             }
             query_work_request_for_statement(&QuerySystemVariables::default(), &statement)?;
-            let optimized = self.optimized_query_plan_with_access_control(
+            let optimized = self.optimized_query_plan_for_request(
                 cypher_text,
                 &statement,
                 parameters,
+                None,
+                PlanTraceMode::Template,
                 None,
             )?;
             if executor::is_mutation_plan(&optimized.physical_plan)? {
@@ -1827,22 +1838,6 @@ impl Database {
         Ok(self.runtime.get()?.relational_plan_template_cache.stats())
     }
 
-    fn optimized_query_plan_with_access_control(
-        &self,
-        cypher_text: &str,
-        statement: &cypher::Statement,
-        parameters: &BTreeMap<String, Value>,
-        access_control: Option<&QueryAccessControlContext>,
-    ) -> Result<OptimizedQueryPlan> {
-        self.optimized_query_plan_with_access_control_and_trace_mode(
-            cypher_text,
-            statement,
-            parameters,
-            access_control,
-            PlanTraceMode::Template,
-        )
-    }
-
     fn optimized_explain_query_plan(
         &self,
         cypher_text: &str,
@@ -1881,6 +1876,25 @@ impl Database {
         access_control: Option<&QueryAccessControlContext>,
         trace_mode: PlanTraceMode,
     ) -> Result<OptimizedQueryPlan> {
+        self.optimized_query_plan_for_request(
+            cypher_text,
+            statement,
+            parameters,
+            access_control,
+            trace_mode,
+            None,
+        )
+    }
+
+    fn optimized_query_plan_for_request(
+        &self,
+        cypher_text: &str,
+        statement: &cypher::Statement,
+        parameters: &BTreeMap<String, Value>,
+        access_control: Option<&QueryAccessControlContext>,
+        trace_mode: PlanTraceMode,
+        scoring: Option<BoundScoringRequest<'_>>,
+    ) -> Result<OptimizedQueryPlan> {
         let optimizer_search =
             query_statement_variables_for_statement(&self.system_variables, statement)?
                 .optimizer_search;
@@ -1906,6 +1920,7 @@ impl Database {
                 planning_cache: &self.runtime.get()?.optimizer_planning_cache,
                 access_control,
                 optimizer_search,
+                scoring,
             },
         )
     }
@@ -20308,6 +20323,7 @@ fn execute_graph_transaction_statement(
             planning_cache: &runtime.optimizer_planning_cache,
             access_control: None,
             optimizer_search,
+            scoring: None,
         },
     )?;
 
@@ -21453,6 +21469,7 @@ impl DatabaseSession<'_> {
         let optimized =
             self.db
                 .optimized_explain_query_plan(cypher_text, &explain.statement, parameters)?;
+        let options = query_runtime::QueryExecutionOptions::for_bounded_read(None, None, None);
         let inner_statement_kind = statement_kind(statement_body(&explain.statement));
         if explain.analyze {
             if executor::is_mutation_plan(&optimized.physical_plan)? {
@@ -21482,25 +21499,21 @@ impl DatabaseSession<'_> {
             );
             self.db.poison_on_storage_error(&profiled);
             let profiled = profiled?;
-            return Ok(QueryOutput {
-                rows: vec![explain_analyze_output_row(
-                    &optimized,
-                    work_request,
-                    inner_statement_kind,
-                    profiled.rows.len(),
-                    &profiled.profile,
-                )]
-                .into(),
-            });
-        }
-        Ok(QueryOutput {
-            rows: vec![explain_output_row(
+            let row = explain_analyze_output_row(
                 &optimized,
                 work_request,
                 inner_statement_kind,
-            )]
-            .into(),
-        })
+                profiled.rows.len(),
+                &profiled.profile,
+            );
+            drop(profiled.rows);
+            return explain::admit_explain_output(row, &self.db.config, options);
+        }
+        explain::admit_explain_output(
+            explain_output_row(&optimized, work_request, inner_statement_kind),
+            &self.db.config,
+            options,
+        )
     }
 }
 
@@ -21750,6 +21763,8 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
                 task_context: task_context.as_ref(),
                 external: None,
                 delivery: executor::StreamDelivery::Validated,
+                scoring: None,
+                access_control: None,
             },
             &mut consumer,
         )
@@ -21793,6 +21808,8 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
                 task_context: Some(task_context),
                 external: None,
                 delivery: executor::StreamDelivery::Validated,
+                scoring: None,
+                access_control: None,
             },
             &mut consumer,
         )
@@ -21817,6 +21834,8 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
                 task_context: task_context.as_ref(),
                 external: Some(external),
                 delivery: executor::StreamDelivery::Validated,
+                scoring: None,
+                access_control: None,
             },
             &mut consumer,
         )
@@ -21842,6 +21861,8 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
                 task_context: Some(task_context),
                 external: None,
                 delivery,
+                scoring: None,
+                access_control: None,
             },
             &mut consumer,
         )
@@ -21885,12 +21906,16 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
         }
         query_work_request_for_statement(&QuerySystemVariables::default(), &statement)?;
         let optimized = match prepared_optimized {
-            Some(optimized) => optimized,
-            None => self.optimized_query_plan_with_access_control(
+            Some(optimized) if context.scoring.is_none() && context.access_control.is_none() => {
+                optimized
+            }
+            _ => self.optimized_query_plan_for_request(
                 cypher_text,
                 &statement,
                 parameters,
-                None,
+                context.access_control,
+                PlanTraceMode::Template,
+                context.scoring,
             )?,
         };
         if executor::is_mutation_plan(&optimized.physical_plan)? {
@@ -22047,14 +22072,36 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
         access_control: Option<QueryAccessControlContext>,
         task_context: Option<&hawdb_core::RuntimeTaskContext>,
     ) -> Result<BoundedReadQueryOutput> {
+        self.execute_explain_request(
+            cypher_text,
+            explain,
+            parameters,
+            query_runtime::QueryExecutionOptions::for_bounded_read(
+                max_rows,
+                access_control.as_ref(),
+                task_context,
+            ),
+        )
+    }
+
+    fn execute_explain_request(
+        &mut self,
+        cypher_text: &str,
+        explain: &cypher::Explain,
+        parameters: &BTreeMap<String, Value>,
+        options: query_runtime::QueryExecutionOptions<'_>,
+    ) -> Result<BoundedReadQueryOutput> {
+        let task_context = options.task_context;
         query_runtime::query_runtime_checkpoint(task_context)?;
         let work_request =
             query_work_request_for_statement(&QuerySystemVariables::default(), &explain.statement)?;
-        let optimized = self.optimized_explain_query_plan_with_access_control(
+        let optimized = self.optimized_query_plan_for_request(
             cypher_text,
             &explain.statement,
             parameters,
-            access_control.as_ref(),
+            options.access_control,
+            PlanTraceMode::Bound,
+            options.scoring,
         )?;
         let inner_statement_kind = statement_kind(statement_body(&explain.statement));
         if executor::is_mutation_plan(&optimized.physical_plan)? {
@@ -22075,7 +22122,16 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
                     parameters,
                     &self.config.execution_memory,
                 )
-                .with_output_limits(max_rows, self.config.max_read_result_payload_bytes)
+                .with_output_limits(
+                    restrictive_query_limit(
+                        self.config.max_read_result_rows,
+                        options.output_limits.max_rows,
+                    ),
+                    restrictive_query_limit(
+                        self.config.max_read_result_payload_bytes,
+                        options.output_limits.max_payload_bytes,
+                    ),
+                )
                 .with_optional_task_context(task_context),
                 executor::ExecutionResources::new(
                     &mut self.catalog,
@@ -22087,29 +22143,25 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
             let profiled = profiled?;
             query_runtime::query_runtime_checkpoint(task_context)?;
             let row_count = profiled.rows.len();
+            let row = explain_analyze_output_row(
+                &optimized,
+                work_request,
+                inner_statement_kind,
+                row_count,
+                &profiled.profile,
+            );
+            drop(profiled.rows);
             return Ok(BoundedReadQueryOutput {
-                output: QueryOutput {
-                    rows: vec![explain_analyze_output_row(
-                        &optimized,
-                        work_request,
-                        inner_statement_kind,
-                        row_count,
-                        &profiled.profile,
-                    )]
-                    .into(),
-                },
+                output: explain::admit_explain_output(row, &self.config, options)?,
                 execution_profile: profiled.profile,
             });
         }
         Ok(BoundedReadQueryOutput {
-            output: QueryOutput {
-                rows: vec![explain_output_row(
-                    &optimized,
-                    work_request,
-                    inner_statement_kind,
-                )]
-                .into(),
-            },
+            output: explain::admit_explain_output(
+                explain_output_row(&optimized, work_request, inner_statement_kind),
+                &self.config,
+                options,
+            )?,
             execution_profile: empty_read_execution_profile(),
         })
     }
@@ -22604,6 +22656,25 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
         access_control: Option<&QueryAccessControlContext>,
         trace_mode: PlanTraceMode,
     ) -> Result<OptimizedQueryPlan> {
+        self.optimized_query_plan_for_request(
+            cypher_text,
+            statement,
+            parameters,
+            access_control,
+            trace_mode,
+            None,
+        )
+    }
+
+    fn optimized_query_plan_for_request(
+        &self,
+        cypher_text: &str,
+        statement: &cypher::Statement,
+        parameters: &BTreeMap<String, Value>,
+        access_control: Option<&QueryAccessControlContext>,
+        trace_mode: PlanTraceMode,
+        scoring: Option<BoundScoringRequest<'_>>,
+    ) -> Result<OptimizedQueryPlan> {
         let optimizer_search =
             query_statement_variables_for_statement(&QuerySystemVariables::default(), statement)?
                 .optimizer_search;
@@ -22629,6 +22700,7 @@ impl<S: crate::executor::ExecutionStore> DatabaseReadTransaction<S> {
                 planning_cache: &self.optimizer_planning_cache,
                 access_control,
                 optimizer_search,
+                scoring,
             },
         )
     }

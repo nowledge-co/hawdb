@@ -624,8 +624,15 @@ pub(super) fn stream_adjacency_expand_batches(
                     max_hops: *max_hops,
                     optional: *optional,
                 };
-                let mut visit_candidate = |candidate: crate::scan::ExpandedBinding| {
+                let mut visit_candidate = |mut candidate: crate::scan::ExpandedBinding| {
                     runtime_checkpoint(context.task_context)?;
+                    if context.observer.vector_graph_scoring_input().is_some() {
+                        crate::scoring::advance_vector_hop(
+                            &mut candidate.binding,
+                            candidate.hop,
+                            candidate.target_id.is_some(),
+                        )?;
+                    }
                     let candidate_bytes = binding_memory_bytes(&candidate.binding);
                     if candidate_bytes > batch_payload_bytes {
                         return Err(HawDBError::Execution(format!(

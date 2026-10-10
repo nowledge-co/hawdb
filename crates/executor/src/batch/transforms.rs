@@ -133,8 +133,9 @@ pub(super) fn stream_projection_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    if let Some(result) =
-        try_stream_columnar_projection_batches(items, input, context, execution_limit, emit)
+    if context.observer.vector_graph_scoring_input().is_none()
+        && let Some(result) =
+            try_stream_columnar_projection_batches(items, input, context, execution_limit, emit)
     {
         return result;
     }
@@ -183,6 +184,31 @@ pub(super) fn stream_scoring_rerank_batches(
         input,
         score_column,
         spec,
+        limit,
+        &mut source,
+        context.kernel_context(),
+        execution_limit,
+        emit,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn stream_scoring_program_batches(
+    input: &PhysicalPlan,
+    score_column: &str,
+    program: &hawdb_core::graph_rag::ScoringProgram,
+    reference_time_millis: u64,
+    limit: usize,
+    context: BatchReadContext<'_>,
+    execution_limit: ExecutionLimit,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
+    let mut source = PreparedTransformSource { context };
+    executor_transform::stream_scoring_program_batches(
+        input,
+        score_column,
+        program,
+        reference_time_millis,
         limit,
         &mut source,
         context.kernel_context(),

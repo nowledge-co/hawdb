@@ -19,6 +19,7 @@ use std::fmt::Write;
 mod fingerprint;
 mod query_generation;
 mod scoring;
+mod scoring_program;
 mod topology;
 
 use fingerprint::schema_context_fingerprint;
@@ -31,6 +32,10 @@ pub use query_generation::{
 pub use scoring::{
     DecayTerm, ScoreFeature, ScoringEvaluation, ScoringFeatureSource, ScoringSpec,
     ScoringSpecError, ScoringTerm,
+};
+pub use scoring_program::{
+    MissingScoringFeature, ScoringCombination, ScoringProgram, ScoringProgramError,
+    ScoringProgramShape,
 };
 use topology::{common_path_summaries, route_summaries};
 
