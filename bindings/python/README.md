@@ -11,6 +11,77 @@ Development phase. The API surface is intentionally small (`open`, `execute`,
 `execute_sql`, `QueryResult`) while it proves out against real host
 workloads. It is not yet published to PyPI.
 
+## Experimental retained numeric buffers
+
+`execute_retained` is an opt-in numeric query surface over the embedded Rust
+cursor. It supports catalog-declared integer/float comparisons, projections of
+the same property or unsigned `id(n)`, and optional SKIP/LIMIT. Declare the node
+table and property type before creating a cursor. Other plans/types, source
+reuse and copying requests refuse explicitly.
+
+```python
+options = hawdb.RetainedOptions(batch_rows=1024)
+query = db.execute_retained(
+    "MATCH (n:Item) WHERE n.score >= $min RETURN n.score AS score",
+    {"min": 0}, options=options,
+)
+try:
+    while (batch := query.next_batch()) is not None:
+        column = batch.column(0)
+        selection = batch.selection()
+        try:
+            with memoryview(column) as values, memoryview(selection) as indices:
+                for physical in indices:
+                    consume(values[physical])
+        finally:
+            selection.close()
+            column.close()
+            batch.close()
+finally:
+    query.close()
+```
+
+Numeric data has one element per physical row; ordered selection identifies the
+result rows without gathering. `column.validity()` returns None for all-valid
+data, otherwise a separate read-only native u64 bitmap with least-significant
+bit order. Schema formats q/d/Q distinguish Int64/Float64/UInt64 identity values;
+selection uses I and validity uses Q. Nullable raw values do not imply an ordinary
+non-null NumPy array. `schema_copy` preserves schema even for empty completion.
+
+Defaults remain two payload slots, no prefetch, 1,024 inspected records and 1 MiB
+per batch, under the existing database/shared byte and handle limits. Positive
+batch/slot options cannot bypass those limits; `max_result_rows` can impose a
+lower cumulative budget. Python requires at least four shared handles for the
+control, batch, exporter and native buffer lease.
+
+`BackpressureError` is retryable: release held views and retry the same cursor.
+It never means successful EOF, never waits for the caller, and does not advance
+the source. Other `RetainedError` outcomes expose `kind` and `retryable` and remain
+terminal. Every batch is provisional until successful completion; live exporter
+status observes late failures. `profile_copy` distinguishes native emissions
+from successfully delivered Python batches. `retained_snapshot_copy` observes
+the shared resource owner.
+
+Close batches/exporters explicitly and release each memoryview when finished.
+Each native buffer acquisition has a separately admitted lease; existing views
+remain readable after parent or database closure. A derived view shares the
+managed lease and a small slice retains the full native capacity. Closed
+high-level owners reject new access/export. `retain` creates an independent
+admitted owner. GC prevents abandoned-owner leaks, while explicit release is the
+way to unblock a stopped same-thread consumer. Owners keep the code module,
+not the database or source iterator.
+
+The strict payload path builds no Python row list, result JSON or IPC envelope.
+`value_copy` and metadata/diagnostic copy methods are explicit object
+materialization. Writable buffer requests and dtype changes refuse before
+ownership transfer. The extension imports without NumPy or PyArrow; Arrow
+protocols remain unimplemented.
+
+This is experimental. Complete source/planning admission, opaque derived-view
+and allocator/RSS accounting, platform and performance qualification remain
+open. Current native result-buffer evidence does not bound whole-operation or
+interpreter RSS. See [the full scope and remaining gates](../../docs/RETAINED_NUMERIC_FOUNDATION.md).
+
 ## Build from source
 
 From the repository root, Bazel builds the native extension and runs the same

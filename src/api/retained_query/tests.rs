@@ -56,6 +56,29 @@ fn scores(batch: &RetainedQueryBatch) -> Vec<i64> {
 }
 
 #[test]
+fn adapter_delivery_failure_is_sticky_and_drops_source_without_revoking_views() {
+    let db = fixture();
+    let mut cursor = db
+        .query_with_params_retained(QUERY, &params(), options())
+        .unwrap();
+    let batch = cursor.next_batch().unwrap().unwrap();
+    cursor.abort_delivery();
+    assert_eq!(cursor.status(), RetainedQueryStatus::Failed);
+    assert_eq!(batch.status(), RetainedQueryStatus::Failed);
+    assert_eq!(scores(&batch), vec![2]);
+    assert_eq!(cursor.profile().source_pinned_rows, 0);
+    for _ in 0..2 {
+        assert!(matches!(
+            cursor.next_batch(),
+            Err(RetainedQueryError::AdapterDelivery)
+        ));
+    }
+    cursor.close();
+    cursor.abort_delivery();
+    assert_eq!(batch.status(), RetainedQueryStatus::Failed);
+}
+
+#[test]
 fn two_slots_apply_before_source_work_and_last_view_release_allows_retry() {
     let db = fixture();
     let mut cursor = db

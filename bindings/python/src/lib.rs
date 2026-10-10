@@ -14,6 +14,7 @@
 
 mod database;
 mod errors;
+mod retained;
 mod value;
 
 #[cfg(feature = "boundary-profiling")]
@@ -83,6 +84,10 @@ fn _hawdb(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<QueryResult>()?;
     module.add_class::<Transaction>()?;
     module.add_class::<ReadTransaction>()?;
+    module.add_class::<retained::RetainedCursor>()?;
+    module.add_class::<retained::RetainedOptions>()?;
+    module.add_class::<retained::RetainedBatch>()?;
+    module.add_class::<retained::RetainedBuffer>()?;
     module.add_function(wrap_pyfunction!(open, module)?)?;
     module.add_function(wrap_pyfunction!(capabilities, module)?)?;
     #[cfg(feature = "boundary-profiling")]

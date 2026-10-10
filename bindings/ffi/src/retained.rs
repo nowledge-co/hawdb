@@ -563,7 +563,7 @@ pub unsafe extern "C" fn hawdb_retained_next(
                 }
                 Err(_) => {
                     state.terminal_code = HAWDB_RETAINED_PANIC;
-                    state.cursor.close();
+                    state.cursor.abort_delivery();
                     return Err(HAWDB_RETAINED_PANIC);
                 }
             };

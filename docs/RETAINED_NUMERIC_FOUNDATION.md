@@ -4,7 +4,8 @@ This implements ownership building blocks and an experimental native cursor for
 [issue #987](https://github.com/nowledge-co/hawdb/issues/987), under the
 [columnar interchange proposal](specs/ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md).
 Source snapshot/planning workspace qualification, complete C/Go resource
-qualification, Python views and Arrow export remain incomplete. The complete
+qualification, Python buffer resource/platform qualification and Arrow export
+remain incomplete. The complete
 proposal and #987 remain unfinished.
 Production hosts continue
 to use the root `hawdb` facade; this internal executor module is not a new
@@ -170,8 +171,8 @@ Borrowed column descriptors need no new owner and remain tied to the parent
 batch. Their descriptor set is prepaid in the demanded batch. Independently
 owned columns remain readable after parent/database closure. C creation needs
 three shared handles for a minimally readable owned column protocol; a lower
-limit refuses before binding. Foreign resource qualification, Python wrappers
-and Arrow still need their own evidence. See the
+limit refuses before binding. Foreign resource qualification and Arrow still
+need their own evidence. See the
 [C contract](../bindings/ffi/README.md#experimental-retained-numeric-abi).
 
 ## Experimental pure-Go views
@@ -191,6 +192,42 @@ base64, IPC or owned Go rows. Finalizers provide a leak safety net, while
 explicit Close releases capacity for retry. The adapter keeps provisional
 state and Backpressure distinct from successful EOF. See the
 [Go interface and example](../bindings/go/README.md).
+
+## Experimental Python buffers
+
+`Database.execute_retained` calls the same embedded root API using immutable
+`RetainedOptions`. Its cursor pulls serially without prefetch; batches and
+numeric/selection/validity exporters have explicit Close and independently
+admitted retains. Native `bf_getbuffer` reserves a fresh root lease before
+allocating its descriptor/shape owner. `bf_releasebuffer` drops that lease
+without depending on the original exporter's current open state. A memoryview
+therefore stays readable after exporter, batch, cursor and database closure.
+
+Physical values, ordered u32 selection and optional native u64 validity words
+are separate read-only buffers. Selection is never gathered. Formats are q/d/Q
+for values, I for selection and Q for validity words; bit r uses word r/64,
+least-significant-bit r%64. Exporting writable data or requesting a dtype change
+refuses before transferring ownership. Source/plans/types outside the recorded
+numeric capability refuse without an owned-result fallback. PyArrow is not an
+import dependency; Arrow protocols are still absent.
+
+Each owner retains the native Python module and participates in GC traversal.
+Python objects use their actual type basicsize plus conservative padding;
+native buffer leases additionally reserve descriptor/shape and opaque consumer
+overhead. Repeated native buffer acquisition consumes shared handles. Derived
+memoryviews share CPython's existing managed lease; their opaque host allocations
+still need complete accounting/RSS qualification. A tiny slice keeps the full
+native payload charged. This is not a bound on arbitrary interpreter objects.
+
+Closed high-level owners refuse access, while existing memoryviews keep their
+independent leases. Backpressure is a typed retryable exception before source
+advancement, not None/StopIteration. Lower cumulative row limits produce sticky
+terminal errors, visible through earlier live exporters. Native producer or
+foreign batch-allocation failure aborts delivery and releases the source;
+native root emission and successful Python delivery are reported separately.
+`value_copy`, schema/profile/resource/provenance copy methods explicitly build
+small Python objects outside the strict payload view. See the
+[Python interface](../bindings/python/README.md#experimental-retained-numeric-buffers).
 
 This is not yet a qualified whole-operation memory bound. Parsing and optimizer
 workspace still need a complete admission/capacity audit. The cursor pins all
@@ -223,7 +260,8 @@ larger cursor row/payload options cannot bypass database limits.
 
 Remaining #987 work includes source/planning workspace admission, complete
 copy/resource/performance profiles, complete C/Go resource and platform
-qualification, Python read-only owners, and compatible Arrow export/refusal.
+qualification, Python buffer/opaque-consumer resource and platform
+qualification, and compatible Arrow export/refusal.
 The representative large-size
 baseline and measured bulk boundary in #976 also remain incomplete. UTF-8,
 binary, packed boolean, UUID, recursive layouts, SIMD, graph and FTS extensions

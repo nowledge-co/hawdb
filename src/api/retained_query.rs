@@ -60,6 +60,7 @@ pub enum RetainedQueryError {
     Closed,
     InvalidColumn,
     SizeOverflow,
+    AdapterDelivery,
 }
 
 impl RetainedQueryError {
@@ -711,6 +712,19 @@ impl RetainedQueryCursor {
                 .store(RetainedQueryStatus::Closed as u8, Ordering::Release);
         }
         self.source.take();
+    }
+    /// Fail a foreign delivery after a native batch was produced. Earlier
+    /// leases remain readable but provisional; further pulls repeat the error.
+    /// Native emitted counters describe the root handoff, so adapters must
+    /// report successful foreign deliveries separately.
+    pub fn abort_delivery(&mut self) {
+        if self.status() == RetainedQueryStatus::Open {
+            self.terminal_error = Some(RetainedQueryError::AdapterDelivery);
+            self.shared
+                .status
+                .store(RetainedQueryStatus::Failed as u8, Ordering::Release);
+            self.source.take();
+        }
     }
     fn complete(&mut self) {
         self.shared

@@ -89,6 +89,18 @@ create_exception!(
     Error,
     "The runtime task was stopped before producing a result."
 );
+create_exception!(
+    hawdb.exceptions,
+    RetainedError,
+    Error,
+    "Experimental retained-interface failure; kind and retryable preserve the outcome."
+);
+create_exception!(
+    hawdb.exceptions,
+    BackpressureError,
+    RetainedError,
+    "Release held views and retry; the source has not advanced."
+);
 
 /// Maps a [`HawDBError`] onto the matching Python exception.
 pub fn format_hawdb_error(error: &HawDBError) -> PyErr {
@@ -133,5 +145,7 @@ pub fn register_exceptions(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyRe
     module.add("BranchError", py.get_type::<BranchError>())?;
     module.add("AdmissionError", py.get_type::<AdmissionError>())?;
     module.add("TaskStoppedError", py.get_type::<TaskStoppedError>())?;
+    module.add("RetainedError", py.get_type::<RetainedError>())?;
+    module.add("BackpressureError", py.get_type::<BackpressureError>())?;
     Ok(())
 }
