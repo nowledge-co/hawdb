@@ -4,6 +4,9 @@
 use super::*;
 use crate::{RuntimeMemorySnapshot, RuntimeResourceBudget};
 
+#[path = "arrow/tests.rs"]
+mod arrow;
+
 fn nz(n: usize) -> NonZeroUsize {
     NonZeroUsize::new(n).unwrap()
 }

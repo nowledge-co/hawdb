@@ -4,7 +4,8 @@ This implements ownership building blocks and an experimental native cursor for
 [issue #987](https://github.com/nowledge-co/hawdb/issues/987), under the
 [columnar interchange proposal](specs/ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md).
 Source snapshot/planning workspace qualification, complete C/Go resource
-qualification, Python buffer resource/platform qualification and Arrow export
+qualification, Python buffer resource/platform qualification and Arrow
+C Stream/PyCapsule/consumer qualification
 remain incomplete. The complete
 proposal and #987 remain unfinished.
 Production hosts continue
@@ -151,6 +152,45 @@ count through RetainedQueryOptions. next_batch_with_metadata includes foreign
 owner/descriptor capacity in row sizing and reserves it before source work.
 The ordinary Rust next_batch path passes zero additional metadata. Overflow or
 an impossible working unit fails without inspecting source records.
+
+## Experimental native Arrow C Data export
+
+`RetainedQueryBatch::export_arrow` exports an independently owned numeric record
+batch through the standard `ArrowSchema` and `ArrowArray` layouts. The Rust
+`RetainedArrowExport` releases both descriptors on drop. `into_raw` transfers
+their release obligations to a C Data consumer, which must follow the standard
+move/release rules and keep producer code loaded. This is a root library API;
+it does not yet add a C ABI entrypoint or a Python/Go Arrow consumer interface.
+The Rust export also exposes shared completion/error status and the original
+allocation identity/generation/capacity with its selected value byte range.
+
+Only an empty or order-preserving contiguous selected range is eligible.
+Sparse/reordered selections return `SelectionRequiresMaterialization` before
+constructing descriptors. Each child uses its original values/validity pointers
+and a checked physical-row offset; repeated projections share values. No
+selected values are gathered. Schema keeps nullable Int64/Float64 and non-null
+UInt64 identity roles, with `hawdb:role=node_identity` field metadata. All-valid
+columns have no validity buffer. Empty/all-null selection keeps declared types.
+
+Schema, names, metadata, child descriptors, pointer directories and array
+owners are admitted before allocation. Each descriptor has its own shared
+handle/metadata charge. Result payload is retained once through a shared batch
+owner, at its full capacity. Impossible handle configurations fail explicitly;
+temporary exhaustion rolls back partial schema/array construction and permits
+retry. Schema-only exports retain schema/control metadata without retaining a
+result slot or numeric payload.
+
+Release callbacks locate ownership through `private_data`, never the original
+descriptor address. Moving a child and marking its source released keeps that
+child valid after immediate parent release. Parent release walks live children,
+then destroys its own directories. Cursor/database close does not revoke the
+independent arrays; final schema/array release returns all native charges.
+
+Native regression tests cover pointer/range identity, nonzero offsets, child
+movement, schema-only slot release, partial admission rollback, nullable IEEE
+bits, empty/all-null schema, sparse refusal and exact final native release.
+This is Rust-to-C-descriptor evidence, not third-party Arrow consumer, C Stream,
+PyCapsule, platform, allocator/RSS or complete source/planning qualification.
 
 ## Experimental C views
 
