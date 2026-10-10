@@ -6,7 +6,42 @@ and references [#976](https://github.com/nowledge-co/hawdb/issues/976) and
 The complete samples, failures, source identity and artifact hashes are in
 [retained-observations.json](retained-observations.json).
 
-## Completion criterion and scope
+## Current producer repeat after main integration
+
+Producer head `94bace8ae7a28087d81c3eac8edafe92eb9ac4f4`, tree
+`6233f370ba4c107c0180693a3e0722e8abf7f0e5`, was built with default Bazel
+configuration and `-c opt`. Native artifacts, Python package/extension and the
+unchanged numeric consumer were copied to an independent directory. Source
+identity and the selected native producer/consumer-script SHA-256 values are
+checked before/after every group; any mismatch refuses qualification.
+[Current raw observations](current-numeric-observations.json) retain all samples,
+commands, artifact hashes and filtered compiler-load snapshots.
+
+CPython 3.14.6/PyArrow 26.0.0 ran the identical fixture, warmups, seven rotated
+paired rounds and complete query/checksum/release timing described below.
+All 84 measured operations pass parity and release their retained capacities.
+Both retained and Arrow improve by at least 10% in every pair in this repeat.
+Arrow paired medians improve 2.71-2.88x; the worst pair is 2.49x. Complete-operation
+medians in milliseconds:
+
+| Rows / backend | Owned | Retained | Arrow | Median Arrow pair | Worst Arrow pair |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1,000 / memory | 0.774 | 0.292 | 0.287 | 2.71x | 2.53x |
+| 1,000 / file | 1.216 | 0.420 | 0.440 | 2.72x | 2.49x |
+| 10,000 / memory | 7.248 | 2.635 | 2.671 | 2.74x | 2.64x |
+| 10,000 / file | 7.367 | 2.528 | 2.565 | 2.88x | 2.66x |
+
+Peak native retained charges are 20,111 bytes per process; bytes, owners and
+handles return to zero after every operation. Source pages/planning workspace
+and arbitrary foreign allocations remain outside this ledger. Compiler work
+was present in the before/after process snapshots, so these are shared-host
+relative observations, not idle-host latency or whole-operation memory
+qualification. This repeat satisfies the measured numeric relative criterion;
+it does not clear the complete PR, large-result, point/wide, SIMD, graph/FTS,
+source-memory or other-platform gates. The older Arrow outlier below remains
+recorded with its original producer scope and is not removed by this repeat.
+
+## Earlier review follow-up: criterion and scope
 
 The follow-up requires a reproducible performance improvement, matching ordered
 results and unchanged default resource/durability limits. For the supported
@@ -17,7 +52,7 @@ scalar-read microbenchmark cannot satisfy this criterion.
 
 The Go cache optimization and Python retained buffers meet this relative
 improvement criterion for the measured 1,000/10,000-row fixtures across the
-recorded repeats. Arrow does not meet the complete criterion: the final
+recorded repeats. The earlier Arrow producer does not meet the complete criterion: the final
 1,000/memory group includes a 0.632x paired wall-time regression. The overall
 Arrow performance gate remains open; do not mark the whole PR complete.
 These are

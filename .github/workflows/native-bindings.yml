@@ -72,4 +72,5 @@ jobs:
           HAWDB_LIBRARY: ${{ github.workspace }}/bazel-bin/bindings/ffi/${{ matrix.library }}
           # The race runtime needs cgo; the production package stays purego.
           CGO_ENABLED: "1"
-        run: go test -race -run '^TestRetained' ./...
+        # The Go test cache does not qualify the newly built dynamic library.
+        run: go test -race -count=1 -run '^TestRetained' ./...
