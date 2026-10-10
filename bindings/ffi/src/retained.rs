@@ -213,6 +213,11 @@ impl Registry {
 // is prepaid by its originating root owner before allocation.
 static REGISTRY: Mutex<Registry> = Mutex::new(Registry { head: None });
 
+#[cfg(test)]
+std::thread_local! {
+    static PANIC_ON_BATCH_REGISTRATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn namespace() -> u64 {
     &HANDLE_NAMESPACE as *const u8 as usize as u64
 }
@@ -228,6 +233,15 @@ fn metadata_bytes(descriptor_bytes: usize) -> usize {
         + descriptor_bytes
         + 128
 }
+fn batch_metadata(columns: usize) -> Result<usize> {
+    metadata_bytes(std::mem::size_of::<HawdbRetainedBatchV1>())
+        .checked_add(
+            columns
+                .checked_mul(std::mem::size_of::<HawdbRetainedColumnV1>())
+                .ok_or(HAWDB_RETAINED_SIZE_OVERFLOW)?,
+        )
+        .ok_or(HAWDB_RETAINED_SIZE_OVERFLOW)
+}
 fn lookup(owner_namespace: u64, id: u64) -> Result<Arc<Object>> {
     if owner_namespace != namespace() || id == 0 {
         return Err(HAWDB_RETAINED_INVALID_HANDLE);
@@ -238,6 +252,12 @@ fn lookup(owner_namespace: u64, id: u64) -> Result<Arc<Object>> {
         .get(id)
 }
 fn register(id: u64, object: Object) {
+    #[cfg(test)]
+    if matches!(&object, Object::Batch(_)) {
+        PANIC_ON_BATCH_REGISTRATION.with(|flag| {
+            assert!(!flag.replace(false), "injected batch registration panic");
+        });
+    }
     let mut record = Box::new(HandleRecord {
         id,
         object: Arc::new(object),
@@ -538,38 +558,35 @@ pub unsafe extern "C" fn hawdb_retained_next(
             if state.terminal_code != 0 {
                 return Err(state.terminal_code);
             }
-            let metadata = metadata_bytes(std::mem::size_of::<HawdbRetainedBatchV1>())
-                .checked_add(
-                    state
-                        .cursor
-                        .schema()
-                        .len()
-                        .checked_mul(std::mem::size_of::<HawdbRetainedColumnV1>())
-                        .ok_or(HAWDB_RETAINED_SIZE_OVERFLOW)?,
-                )
-                .ok_or(HAWDB_RETAINED_SIZE_OVERFLOW)?;
+            let metadata = batch_metadata(state.cursor.schema().len())?;
             let result = catch_unwind(AssertUnwindSafe(|| {
-                state.cursor.next_batch_with_metadata(metadata)
+                state
+                    .cursor
+                    .next_batch_with_metadata(metadata)
+                    .map(|batch| {
+                        batch.map(|batch| {
+                            let descriptor = batch_descriptor(&batch, id);
+                            register(id, Object::Batch(batch));
+                            descriptor
+                        })
+                    })
             }));
-            let batch = match result {
-                Ok(Ok(Some(batch))) => batch,
-                Ok(Ok(None)) => return Err(HAWDB_RETAINED_EOF),
+            match result {
+                Ok(Ok(Some(descriptor))) => Ok(descriptor),
+                Ok(Ok(None)) => Err(HAWDB_RETAINED_EOF),
                 Ok(Err(error)) => {
                     let code = error_code(&error);
-                    if !error.is_retryable() {
+                    if !error.is_retryable() && !matches!(error, RetainedQueryError::Closed) {
                         state.terminal_code = code;
                     }
-                    return Err(code);
+                    Err(code)
                 }
                 Err(_) => {
                     state.terminal_code = HAWDB_RETAINED_PANIC;
                     state.cursor.abort_delivery();
-                    return Err(HAWDB_RETAINED_PANIC);
+                    Err(HAWDB_RETAINED_PANIC)
                 }
-            };
-            let descriptor = batch_descriptor(&batch, id);
-            register(id, Object::Batch(batch));
-            Ok(descriptor)
+            }
         })
     }
 }
@@ -705,7 +722,7 @@ pub unsafe extern "C" fn hawdb_retained_batch_retain(
             };
             let id = next_id()?;
             let batch = batch
-                .try_retain(metadata_bytes(std::mem::size_of::<HawdbRetainedBatchV1>()))
+                .try_retain(batch_metadata(batch.schema().len())?)
                 .map_err(|error| error_code(&error))?;
             let descriptor = batch_descriptor(&batch, id);
             register(id, Object::Batch(batch));

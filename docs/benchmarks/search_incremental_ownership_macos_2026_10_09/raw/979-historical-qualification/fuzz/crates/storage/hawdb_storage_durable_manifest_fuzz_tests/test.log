@@ -1,0 +1,10 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/storage:hawdb_storage_durable_manifest_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+durable-manifest-mutation-v1 seeds=128 cases=32896
+test durable_manifest::tests::durable_manifest_differential_campaign ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1074 filtered out; finished in 2.03s
+

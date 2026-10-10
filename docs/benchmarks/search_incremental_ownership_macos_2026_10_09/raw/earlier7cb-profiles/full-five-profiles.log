@@ -1,0 +1,94 @@
+Starting local Bazel server (9.3.0) and connecting to it...
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Computing main repo mapping: 
+Loading: 
+Loading: 1 packages loaded
+Loading: 1 packages loaded
+    currently loading: crates/search
+Loading: 1 packages loaded
+    currently loading: crates/search
+Loading: 1 packages loaded
+    currently loading: crates/search
+Loading: 1 packages loaded
+    currently loading: crates/search
+Loading: 1 packages loaded
+    currently loading: crates/search
+Loading: 1 packages loaded
+    currently loading: crates/search
+Analyzing: 5 targets (2 packages loaded)
+Analyzing: 5 targets (6 packages loaded, 6 targets configured)
+Analyzing: 5 targets (6 packages loaded, 6 targets configured)
+
+Analyzing: 5 targets (63 packages loaded, 9 targets configured)
+
+INFO: Analyzed 5 targets (289 packages loaded, 9320 targets configured).
+[681 / 696] checking cached actions
+[686 / 696] Compiling Rust bin hawdb_search_text_only_tests (202 files); 0s darwin-sandbox ... (5 actions running)
+[686 / 696] Compiling Rust bin hawdb_search_text_only_tests (202 files); 11s darwin-sandbox ... (5 actions running)
+[691 / 698] Compiling Rust bin hawdb_search_acl_tests (202 files); 12s darwin-sandbox ... (5 actions, 3 running)
+[696 / 701] Testing //crates/search:hawdb_search_text_background_tests; 2s darwin-sandbox ... (5 actions, 1 running)
+[696 / 701] Testing //crates/search:hawdb_search_text_background_tests; 11s darwin-sandbox ... (5 actions, 1 running)
+[696 / 701] Testing //crates/search:hawdb_search_text_background_tests; 41s darwin-sandbox ... (5 actions, 1 running)
+[696 / 701] Testing //crates/search:hawdb_search_text_background_tests; 101s darwin-sandbox ... (5 actions, 1 running)
+[696 / 701] Testing //crates/search:hawdb_search_text_background_tests; 162s darwin-sandbox ... (5 actions, 1 running)
+[696 / 701] Testing //crates/search:hawdb_search_text_background_tests; 183s darwin-sandbox ... (5 actions, 2 running)
+[697 / 701] 1 / 5 tests; Testing //crates/search:hawdb_search_text_only_tests; 1s darwin-sandbox ... (4 actions, 1 running)
+[697 / 701] 1 / 5 tests; Testing //crates/search:hawdb_search_text_only_tests; 11s darwin-sandbox ... (4 actions, 1 running)
+[697 / 701] 1 / 5 tests; Testing //crates/search:hawdb_search_text_only_tests; 41s darwin-sandbox ... (4 actions, 1 running)
+[697 / 701] 1 / 5 tests; Testing //crates/search:hawdb_search_text_only_tests; 102s darwin-sandbox ... (4 actions, 1 running)
+[697 / 701] 1 / 5 tests; Testing //crates/search:hawdb_search_text_only_tests; 162s darwin-sandbox ... (4 actions, 1 running)
+[697 / 701] 1 / 5 tests; Testing //crates/search:hawdb_search_text_only_tests; 222s darwin-sandbox ... (4 actions, 2 running)
+[697 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_text_only_tests; 223s darwin-sandbox ... (4 actions, 2 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 2s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 12s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 42s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 103s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 163s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 223s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 283s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 344s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 404s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 464s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 525s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 585s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 646s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 706s darwin-sandbox ... (3 actions, 1 running)
+[698 / 701] 2 / 5 tests; Testing //crates/search:hawdb_search_text_vector_tests; 713s darwin-sandbox ... (3 actions, 2 running)
+[699 / 701] 3 / 5 tests; Testing //crates/search:hawdb_search_acl_tests; 1s darwin-sandbox ... (2 actions, 1 running)
+[699 / 701] 3 / 5 tests; Testing //crates/search:hawdb_search_acl_tests; 12s darwin-sandbox ... (2 actions, 1 running)
+[699 / 701] 3 / 5 tests; Testing //crates/search:hawdb_search_acl_tests; 42s darwin-sandbox ... (2 actions, 1 running)
+[699 / 701] 3 / 5 tests; Testing //crates/search:hawdb_search_acl_tests; 102s darwin-sandbox ... (2 actions, 1 running)
+[699 / 701] 3 / 5 tests; Testing //crates/search:hawdb_search_acl_tests; 163s darwin-sandbox ... (2 actions, 1 running)
+[699 / 701] 3 / 5 tests; Testing //crates/search:hawdb_search_acl_tests; 192s darwin-sandbox ... (2 actions running)
+[700 / 701] 4 / 5 tests; Testing //crates/search:hawdb_search_tests; 1s darwin-sandbox
+[700 / 701] 4 / 5 tests; Testing //crates/search:hawdb_search_tests; 11s darwin-sandbox
+[700 / 701] 4 / 5 tests; Testing //crates/search:hawdb_search_tests; 41s darwin-sandbox
+[700 / 701] 4 / 5 tests; Testing //crates/search:hawdb_search_tests; 102s darwin-sandbox
+[700 / 701] 4 / 5 tests; Testing //crates/search:hawdb_search_tests; 162s darwin-sandbox
+[700 / 701] 4 / 5 tests; Testing //crates/search:hawdb_search_tests; 223s darwin-sandbox
+[700 / 701] 4 / 5 tests; Testing //crates/search:hawdb_search_tests; 283s darwin-sandbox
+[700 / 701] 4 / 5 tests; Testing //crates/search:hawdb_search_tests; 343s darwin-sandbox
+[700 / 701] 4 / 5 tests; Testing //crates/search:hawdb_search_tests; 404s darwin-sandbox
+[700 / 701] 4 / 5 tests; Testing //crates/search:hawdb_search_tests; 422s darwin-sandbox
+INFO: Found 5 test targets...
+[701 / 701] 5 / 5 tests; no actions running
+INFO: Elapsed time: 1804.809s, Critical Path: 1747.75s
+INFO: 31 processes: 670 action cache hit, 21 internal, 15 darwin-sandbox.
+INFO: Build completed successfully, 31 total actions
+//crates/search:hawdb_search_acl_tests                                   PASSED in 192.8s
+//crates/search:hawdb_search_tests                                       PASSED in 423.0s
+//crates/search:hawdb_search_text_background_tests                       PASSED in 183.9s
+//crates/search:hawdb_search_text_only_tests                             PASSED in 221.3s
+//crates/search:hawdb_search_text_vector_tests                           PASSED in 713.0s
+
+Executed 5 out of 5 tests: 5 tests pass.

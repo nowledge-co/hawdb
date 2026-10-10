@@ -8,6 +8,8 @@ import gc
 import math
 import struct
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 
@@ -142,6 +144,50 @@ def test_memoryview_survives_every_parent_close_and_final_release(db):
         retained_values[0]
 
 
+def test_cursor_close_serializes_with_detached_pull(db):
+    fixture(db)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        for _ in range(80):
+            query = cursor(db, rows=1024)
+            ready = Barrier(2)
+
+            def pull():
+                ready.wait(timeout=10)
+                try:
+                    return query.next_batch()
+                except hawdb.exceptions.RetainedError as error:
+                    assert error.kind == "closed"
+                    return None
+
+            pending = pool.submit(pull)
+            ready.wait(timeout=10)
+            query.close()
+            batch = pending.result(timeout=10)
+            assert query.status == "closed"
+            query.close()
+            if batch is not None:
+                assert batch.value_copy(0, 0) == 0
+                batch.close()
+    assert_empty(db)
+
+
+def test_last_derived_view_releases_capacity_after_all_native_parents(db):
+    fixture(db)
+    query = cursor(db)
+    batch = query.next_batch()
+    column = batch.column(0)
+    parent = memoryview(column)
+    derived = parent[1:2]
+    for owner in (column, batch, query):
+        owner.close()
+    parent.release()
+    assert list(derived) == [1]
+    assert db.retained_snapshot_copy()["retained_bytes"] > 0
+    derived.release()
+    gc.collect()
+    assert_empty(db)
+
+
 def test_slots_pressure_precedes_source_and_last_memoryview_release_resumes(db):
     fixture(db)
     query = cursor(db)
@@ -207,7 +253,9 @@ def test_native_buffer_requests_refuse_without_partial_owner(db):
     batch = query.next_batch()
     column = batch.column(0)
     before = db.retained_snapshot_copy()
-    for flags in (1, 4, 0x10, 0x20, 0x200, -1):
+    # PyBUF_WRITE (0x200) is not a GetBuffer request flag; newer CPython
+    # rejects it before invoking the exporter. Test actual exporter requests.
+    for flags in (1, 4, 0x10, 0x20):
         output = NativeBuffer()
         with pytest.raises(BufferError):
             get_buffer(column, ctypes.byref(output), flags)

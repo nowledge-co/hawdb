@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="crates/optimizer-graph/hawdb_optimizer_cardinality_defaults_fuzz_tests" tests="1" failures="0" errors="0">
+    <testcase name="crates/optimizer-graph/hawdb_optimizer_cardinality_defaults_fuzz_tests" classname="" status="run" duration="1" time="1"></testcase>
+      <system-out>
+Generated test.log (if the file is not UTF-8, then this may be unreadable):
+<![CDATA[exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/optimizer-graph:hawdb_optimizer_cardinality_defaults_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+Cardinality defaults differential: 3072 cases, node/relationship predicates, ranges, aggregates and joins
+test graph::tests::cardinality_defaults::cardinality_defaults_differential_campaign ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in 0.44s]]>
+      </system-out>
+    </testsuite>
+</testsuites>

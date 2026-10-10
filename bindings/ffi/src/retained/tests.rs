@@ -7,6 +7,75 @@ use std::collections::BTreeMap;
 
 const QUERY: &str = "MATCH (n:Item) WHERE n.score >= $min RETURN n.score AS score, id(n) AS identity, n.score AS again";
 
+#[test]
+fn closed_cursor_refuses_pull_without_recording_a_terminal_failure() {
+    let db = fixture(DatabaseConfig::default());
+    let cursor = cursor(db, QUERY, r#"{"min":2}"#);
+    assert_eq!(
+        hawdb_retained_cursor_close(cursor.owner_namespace, cursor.owner_id),
+        HAWDB_RETAINED_OK
+    );
+    for _ in 0..2 {
+        let mut out = HawdbRetainedBatchV1::default();
+        assert_eq!(
+            unsafe {
+                hawdb_retained_next(
+                    cursor.owner_namespace,
+                    cursor.owner_id,
+                    &mut out,
+                    size::<HawdbRetainedBatchV1>(),
+                )
+            },
+            HAWDB_RETAINED_CLOSED
+        );
+        assert_eq!(out.owner_id, 0);
+        let observation = state(cursor.owner_namespace, cursor.owner_id);
+        assert_eq!(
+            observation.status,
+            hawdb::RetainedQueryStatus::Closed as u32
+        );
+        assert_eq!(observation.terminal_code, HAWDB_RETAINED_OK);
+    }
+    release(cursor.owner_namespace, cursor.owner_id);
+    unsafe { super::super::hawdb_close(db) };
+}
+
+#[test]
+fn registration_panic_after_pull_is_terminal_and_preserves_previous_batch() {
+    let db = fixture(DatabaseConfig::default());
+    let cursor = cursor(db, QUERY, r#"{"min":2}"#);
+    let first = batch(cursor);
+    let previous = column(first, 0);
+    PANIC_ON_BATCH_REGISTRATION.with(|flag| flag.set(true));
+    for _ in 0..2 {
+        let mut out = HawdbRetainedBatchV1::default();
+        assert_eq!(
+            unsafe {
+                hawdb_retained_next(
+                    cursor.owner_namespace,
+                    cursor.owner_id,
+                    &mut out,
+                    size::<HawdbRetainedBatchV1>(),
+                )
+            },
+            HAWDB_RETAINED_PANIC
+        );
+        assert_eq!(out.owner_id, 0);
+        let observation = state(cursor.owner_namespace, cursor.owner_id);
+        assert_eq!(
+            observation.status,
+            hawdb::RetainedQueryStatus::Failed as u32
+        );
+        assert_eq!(observation.terminal_code, HAWDB_RETAINED_PANIC);
+        assert_eq!(observation.source_pinned_rows, 0);
+        assert_eq!(selected_scores(previous), vec![2]);
+    }
+    release(previous.owner_namespace, previous.owner_id);
+    release(first.owner_namespace, first.owner_id);
+    release(cursor.owner_namespace, cursor.owner_id);
+    unsafe { super::super::hawdb_close(db) };
+}
+
 fn size<T>() -> u32 {
     std::mem::size_of::<T>() as u32
 }

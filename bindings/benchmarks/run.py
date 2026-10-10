@@ -73,6 +73,8 @@ def source_identity():
     # rather than silently giving evidence to whatever is compiled later.
     if subprocess.run(["git", "diff", "--quiet"], cwd=ROOT).returncode:
         raise RuntimeError("stage the final source before running the matrix")
+    if command_text("git", "ls-files", "--others", "--exclude-standard"):
+        raise RuntimeError("stage or remove untracked files before running the matrix")
     return {"head": command_text("git", "rev-parse", "HEAD"),
             "tree": command_text("git", "write-tree")}
 

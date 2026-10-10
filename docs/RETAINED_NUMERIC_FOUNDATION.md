@@ -12,6 +12,79 @@ Production hosts continue
 to use the root `hawdb` facade; this internal executor module is not a new
 integration surface.
 
+## Point lookups, row reads, and columnar delivery
+
+Storage layout, execution layout, and host delivery are separate choices.
+This capability does not replace canonical rows with Arrow columns. It builds
+numeric execution buffers from materialized node properties and preserves those
+buffers through delivery. That first representation is construction work, not
+storage-to-host zero-copy. The current retained producer accepts the restricted
+scan/filter/project fragment; it does not qualify indexed point lookup or
+persistent row-page reuse. A one-row result or `LIMIT 1` does not prove a seek.
+
+For an indexed point lookup returning many fields, keep the query runtime's
+index-to-required-row-property path. Reading one row across many separately
+stored columns can touch more pages/cache lines, while constructing a one-row
+record batch adds schema, column, validity and owner overhead. Columnar random
+access itself is valid; the concern is locality and fixed cost, not inability to
+address a row. A covering access path that already owns the requested immutable
+column buffers may still make a column view efficient.
+
+| Workload | Delivery direction to measure | Important cost |
+| --- | --- | --- |
+| Indexed point lookup, many fields or recursive values | Owned row today; a separately qualified leased row/span view when justified | Seek and required-property decoding, per-call overhead, row-owner lifetime |
+| A few scalar fields already in compatible column buffers | Native scalar or column views; Arrow only when the consumer needs it | Descriptor/handle cost and whether the consumer converts back to rows |
+| Many rows, narrow numeric projection, vectorized host work | Bounded retained column batches and compatible Arrow export | Batch admission, selection compatibility, amortized crossing cost |
+| Graph expansion or FTS top-k followed by hydration | Bound candidate identities first, then hydrate requested fields | Candidate/page budget, adjacency/posting access, large-document pins |
+
+A future strict row view would need owner-bearing references into already
+validated immutable row/decoded buffers, with independently releasable leases.
+It must not transpose owned rows into Arrow to claim zero-copy. Compressed or
+encoded row pages still need decoding unless their original representation is
+directly consumable. Referenced pages, strings and large-document content must
+remain charged at their full retained capacity, even for a tiny visible span;
+source/planning workspace cannot be omitted from a whole-operation bound.
+This is a direction for separate qualification, not an API implemented here.
+
+Choose the requested representation explicitly. Strict column requests retain
+their refusal semantics; they do not silently switch to a copying row path.
+Do not introduce a second canonical column store or change durable layout just
+to support Arrow interchange. Graph and FTS continue to use bounded query-runtime
+access paths rather than host-side scans or eager whole-document hydration.
+
+Qualification must compare actual indexed hit/miss reads against scans, varying
+row count, projected width, scalar/UTF-8/recursive types, backend/residency and
+warm/cold cache. Report the physical access path, pages/bytes decoded, call and
+conversion time, p50/p95 latency, allocations, pinned capacities and peak RSS.
+Measure row, retained-column and Arrow consumers independently, including the
+case that converts Arrow back into language row objects. Existing ordinary
+boundary measurements do not supply this comparison or a crossover threshold.
+
+### Review invariants
+
+The follow-up preserves these local ownership/state obligations:
+
+- A cached borrowed descriptor is read only while its batch owner lock is held
+  and the owner is open. Close needs the exclusive lock; therefore payload
+  release cannot overlap a scalar read. Copied Go batch values share both the
+  owner and cache synchronization. Independent retains reserve their own cache
+  capacity before publishing a new owner.
+- Python cursor source advancement, Python batch delivery, close and Arrow
+  adoption are mutually exclusive. A waiter detaches from the interpreter;
+  an executing pull can reattach without that waiter holding the GIL. A failed
+  batch allocation is marked terminal before another operation can take the
+  cursor. Independently delivered payload owners survive cursor closure.
+- After native source advancement, caught registration/delivery failure implies
+  a terminal cursor state. Subsequent pulls return that failure, not another
+  successful batch or EOF. A simple Closed refusal is not a failure transition.
+- A sparse Arrow batch is never gathered. Late refusal preserves earlier
+  immutable arrays and prevents successful terminal confirmation. Arrow export
+  publishes no native-word validity bitmap on an incompatible-endian host.
+
+These are source-level arguments backed by regressions, not a machine-checked
+proof of Rust/Python/Go execution. They assume consumers obey lease/release
+contracts and exclude process abort, allocator abort and foreign-memory misuse.
+
 ## Shared admission
 
 `RuntimePermit::reserve_retained_result` reserves a buffer-owner group and its
@@ -165,6 +238,9 @@ The Rust export also exposes shared completion/error status and the original
 allocation identity/generation/capacity with its selected value byte range.
 
 Only an empty or order-preserving contiguous selected range is eligible.
+The native validity words require a little-endian host for Arrow's byte-wise
+LSB bitmap order. Array and stream export reject other endianness with
+`UnsupportedLayout`, without swapping payload or adopting/advancing a cursor.
 Sparse/reordered selections return `SelectionRequiresMaterialization` before
 constructing descriptors. Each child uses its original values/validity pointers
 and a checked physical-row offset; repeated projections share values. No
@@ -205,6 +281,20 @@ handles before native source work; a mutex serializes concurrent pulls.
 Retryable pressure returns a nonzero stream error with an initialized released
 output, never successful EOF. Releasing arrays permits retry at the same source
 position. Terminal failures repeat and remain visible after schema requests.
+Arrow errno 12 covers both retryable pressure and terminal capacity/budget
+failures; the diagnostic distinguishes them. An errno alone is not a retry
+classification, and a generic consumer need not support retry after an error.
+Use the native typed cursor when a consumer needs reliable pressure handling.
+
+Contiguity is data-dependent within each demanded batch. A stream can deliver
+earlier contiguous arrays and then fail with errno 22 and
+`SelectionRequiresMaterialization` on an interleaved selection. Earlier arrays
+remain readable but do not constitute a complete result. The failure remains
+terminal across repeated pulls and schema requests; it is never EOF. Creation
+checks known plan/schema/platform incompatibility, but does not pre-scan the
+source to predict future selection. Native selection-aware batches remain
+available for such queries. There is no gather, hidden copy, prefetch or
+whole-result preflight added to make the stream appear universally eligible.
 The prepaid stream diagnostic workspace avoids allocating at a full allowance;
 oversized diagnostics produce an explicit error. A demand that confirms the
 immutable source is exhausted needs no additional descriptor, byte or payload
@@ -268,6 +358,12 @@ The 64-bit purego adapter calls the versioned C descriptors with cgo disabled.
 batches/columns and explicit typed outcomes. Batch scalar getters use the
 prepaid borrowed descriptor and require no new handle. Column getters read the
 selected native positions directly, with no gathering or mutable slice export.
+Borrowed descriptors are cached once per accessed column and batch owner,
+including copies of that Go batch value. Independent batch retains prepay their
+own descriptor capacity. Repeated scalar reads take owner/cache locks but do
+not repeat the foreign call or global registry lookup. This is not a general
+bulk-performance claim. A failed native release preserves explicit Close retry
+and its finalizer; an already absent handle cannot be retried as a live owner.
 An owner lock covers scalar reads and Close; released access refuses. Independent
 retains share allocation identity/ranges and root admission. Owners keep only
 their native handle and Library mapping, not a Go DB or mutable transaction.
@@ -288,6 +384,11 @@ admitted retains. Native `bf_getbuffer` reserves a fresh root lease before
 allocating its descriptor/shape owner. `bf_releasebuffer` drops that lease
 without depending on the original exporter's current open state. A memoryview
 therefore stays readable after exporter, batch, cursor and database closure.
+Cursor pull, close, observation and stream adoption share one native mutex.
+Waiting for it releases the GIL, while a pull keeps the mutex through Python
+batch allocation and delivery. Concurrent close waits for an in-flight pull;
+it does not raise PyO3's mutable-borrow error. A delivered batch keeps its own
+lease after close. Terminal failures do not turn into skipped rows on retry.
 
 Physical values, ordered u32 selection and optional native u64 validity words
 are separate read-only buffers. Selection is never gathered. Formats are q/d/Q

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="hawdb_graph_projection_residency_fuzz_first_half_tests" tests="1" failures="0" errors="0">
+    <testcase name="hawdb_graph_projection_residency_fuzz_first_half_tests" classname="" status="run" duration="292" time="292"></testcase>
+      <system-out>
+Generated test.log (if the file is not UTF-8, then this may be unreadable):
+<![CDATA[exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //:hawdb_graph_projection_residency_fuzz_first_half_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+test api::tests::projected_graph_execution::differential::projected_graph_residency_differential_campaign_first_half has been running for over 60 seconds
+graph-projection-residency-v1 first_seed=0 seeds=16 state_checks=992
+test api::tests::projected_graph_execution::differential::projected_graph_residency_differential_campaign_first_half ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1786 filtered out; finished in 290.93s]]>
+      </system-out>
+    </testsuite>
+</testsuites>

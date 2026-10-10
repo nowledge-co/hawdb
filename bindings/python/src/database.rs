@@ -23,7 +23,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use crate::errors::{format_embedded_error, format_hawdb_error, Error};
-use crate::value::{py_dict_to_params, py_to_value, value_to_py};
+use crate::value::{py_dict_to_params, py_list_to_params, value_to_py};
 
 /// An open HawDB database.
 ///
@@ -201,11 +201,8 @@ impl Database {
         #[cfg(feature = "boundary-profiling")]
         let conversion =
             crate::boundary_profile::PhaseTimer::start(crate::boundary_profile::Phase::Parameters);
-        let values: Vec<Value> = match params {
-            Some(list) => list
-                .iter()
-                .map(|item| py_to_value(&item))
-                .collect::<PyResult<_>>()?,
+        let values = match params {
+            Some(list) => py_list_to_params(list)?,
             None => Vec::new(),
         };
         #[cfg(feature = "boundary-profiling")]
@@ -466,11 +463,8 @@ impl Transaction {
         sql: &str,
         params: Option<&Bound<'_, PyList>>,
     ) -> PyResult<QueryResult> {
-        let values: Vec<Value> = match params {
-            Some(list) => list
-                .iter()
-                .map(|item| py_to_value(&item))
-                .collect::<PyResult<_>>()?,
+        let values = match params {
+            Some(list) => py_list_to_params(list)?,
             None => Vec::new(),
         };
         self.required()?;
@@ -599,11 +593,8 @@ impl ReadTransaction {
         sql: &str,
         params: Option<&Bound<'_, PyList>>,
     ) -> PyResult<QueryResult> {
-        let values: Vec<Value> = match params {
-            Some(list) => list
-                .iter()
-                .map(|item| py_to_value(&item))
-                .collect::<PyResult<_>>()?,
+        let values = match params {
+            Some(list) => py_list_to_params(list)?,
             None => Vec::new(),
         };
         let transaction = self.required()?;

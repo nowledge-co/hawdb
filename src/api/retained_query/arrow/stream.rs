@@ -32,6 +32,7 @@ impl RetainedArrowStream {
         code: Option<Arc<dyn RetainedArrowCodeOwner>>,
     ) -> Result<Self> {
         let native = cursor.as_ref().ok_or(RetainedQueryError::Closed)?;
+        require_supported_endian()?;
         let count = native.schema().len();
         handles(
             &native.shared,

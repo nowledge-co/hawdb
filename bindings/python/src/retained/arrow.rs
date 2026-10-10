@@ -98,7 +98,11 @@ pub(super) fn cursor_schema<'py>(
     py: Python<'py>,
     cursor: &RetainedCursor,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let cursor_native = cursor.inner.as_ref().ok_or_else(|| closed(py))?;
+    let state = cursor
+        .state
+        .lock_py_attached(py)
+        .unwrap_or_else(|p| p.into_inner());
+    let cursor_native = state.inner.as_ref().ok_or_else(|| closed(py))?;
     let schema = cursor_native
         .export_arrow_schema_with_code_owner(wrapper::<ArrowSchema>(py)?, code(&cursor.module))
         .map_err(|source| error(py, &source))?;
@@ -106,12 +110,16 @@ pub(super) fn cursor_schema<'py>(
 }
 pub(super) fn cursor_stream<'py>(
     py: Python<'py>,
-    cursor: &mut RetainedCursor,
+    cursor: &RetainedCursor,
     requested: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Bound<'py, PyAny>> {
     request(py, requested)?;
+    let mut state = cursor
+        .state
+        .lock_py_attached(py)
+        .unwrap_or_else(|p| p.into_inner());
     let stream = RetainedArrowStream::try_take_cursor(
-        &mut cursor.inner,
+        &mut state.inner,
         wrapper::<ArrowArrayStream>(py)?,
         code(&cursor.module),
     )
@@ -130,7 +138,7 @@ pub(super) fn cursor_stream<'py>(
     };
     if object.is_null() {
         let error = PyErr::fetch(py);
-        cursor.inner = Some(stream.into_cursor());
+        state.inner = Some(stream.into_cursor());
         return Err(error);
     }
     let _ = Box::into_raw(stream);

@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="hawdb_unit_recovery_tests" tests="1" failures="0" errors="0">
+    <testcase name="hawdb_unit_recovery_tests" classname="" status="run" duration="791" time="791"></testcase>
+      <system-out>
+Generated test.log (if the file is not UTF-8, then this may be unreadable):
+<![CDATA[exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //:hawdb_unit_recovery_tests
+-----------------------------------------------------------------------------
+
+running 140 tests
+test api::branch_lifecycle::tests::admits_a_facade_created_child_from_its_private_wal ... ok
+test api::branch_lifecycle::tests::bound_main_missing_head_preserves_legacy_recovery_evidence ... ok
+test api::branch_lifecycle::tests::concurrent_branch_inspection_observes_publications_after_its_data_snapshot ... ok
+test api::branch_lifecycle::tests::create_preview_matches_completion_and_rejects_conflicting_receipts ... ok
+test api::branch_lifecycle::tests::create_rejects_changed_owner_with_the_same_key ... ok
+test api::branch_lifecycle::tests::create_retry_completes_a_pending_durable_child ... ok
+test api::branch_lifecycle::tests::create_retry_rejects_a_pending_child_with_corrupt_wal ... ok
+test api::branch_lifecycle::tests::creates_custom_and_generated_branches_and_replays_without_parent_files ... ok
+test api::branch_lifecycle::tests::delete_rejects_a_branch_with_a_live_writer_lease ... ok
+test api::branch_lifecycle::tests::delete_resumes_a_durable_deleting_transition_after_restart_boundary ... ok
+test api::branch_lifecycle::tests::delete_retry_reports_pending_while_deleting_branch_is_leased ... ok
+test api::branch_lifecycle::tests::durable_read_snapshot_query_spill_retains_project_descriptor_context ... ok
+test api::branch_lifecycle::tests::initial_head_retry_reuses_only_an_empty_private_wal ... ok
+test api::branch_lifecycle::tests::initializes_and_lists_a_typed_root_branch ... ok
+test api::branch_lifecycle::tests::inspects_the_durable_branch_catalog_through_sql ... ok
+test api::branch_lifecycle::tests::interrupted_main_bootstrap_retains_identity_and_legacy_data ... ok
+test api::branch_lifecycle::tests::main_initialization_preserves_writes_across_reopen ... ok
+test api::branch_lifecycle::tests::main_initialization_repairs_interrupted_catalog_binding ... ok
+test api::branch_lifecycle::tests::pending_create_recovery_respects_child_lease_and_aborts_only_known_missing_pairs ... ok
+test api::branch_lifecycle::tests::persistent_lineage_and_receipts_survive_reopen_without_handles ... ok
+test api::branch_lifecycle::tests::prepared_branch_handoff_pins_candidates_during_live_maintenance ... ok
+test api::branch_lifecycle::tests::private_wal_repair_binds_exact_head_uuid_and_preserves_other_histories ... ok
+test api::branch_lifecycle::tests::read_transaction_branch_inspection_observes_each_catalog_publication ... ok
+test api::branch_lifecycle::tests::readonly_branch_mutations_leave_catalog_unchanged ... ok
+test api::branch_lifecycle::tests::reselect_refreshes_ready_metadata_without_losing_private_wal_writes ... ok
+test api::branch_lifecycle::tests::seals_and_publishes_the_initial_main_head_explicitly ... ok
+test api::branch_lifecycle::tests::selected_branch_query_spill_uses_project_descriptor_budget ... ok
+test api::branch_lifecycle::tests::selector_publication_checks_the_complete_private_wal_identity ... ok
+test api::branch_lifecycle::tests::sql_branch_budget_rejection_and_exact_delete_survive_name_reuse ... ok
+test api::branch_lifecycle::tests::sql_branch_contexts_and_unselected_sources_keep_independent_ownership ... ok
+test api::branch_lifecycle::tests::sql_branch_descriptor_rejection_preserves_source_and_releases_admission_quota ... ok
+test api::branch_lifecycle::tests::sql_branch_failed_selection_and_transaction_rejection_preserve_source ... ok
+test api::branch_lifecycle::tests::sql_branch_readonly_selection_reconstructs_private_wal_without_logical_writes ... ok
+test api::branch_lifecycle::tests::sql_branch_selection_isolates_ddl_and_data_bearing_nested_forks ... ok
+test api::branch_lifecycle::tests::sql_pending_create_recovers_original_child_after_parent_advance_delete_and_name_reuse ... ok
+test api::branch_lifecycle::tests::unfinished_jobs_block_branch_switch_and_reclamation_until_success ... ok
+test api::search_projection_consumer::tests::acknowledgement_is_idempotent_monotonic_and_bound_to_the_complete_receipt ... ok
+test api::search_projection_consumer::tests::active_wal_sync_group_rejects_consumer_writes_before_callbacks ... ok
+test api::search_projection_consumer::tests::backup_restores_identity_and_rejects_a_cursor_ahead_of_the_restored_source ... ok
+test api::search_projection_consumer::tests::byte_retention_limit_does_not_wait_for_registry_io ... ok
+test api::search_projection_consumer::tests::consumer_crash_child ... ok
+test api::search_projection_consumer::tests::consumer_registry_capacity_is_reclaimed_only_by_unregister ... ok
+test api::search_projection_consumer::tests::creation_checkpoint_catch_up_and_reopen_use_real_receipts ... ok
+test api::search_projection_consumer::tests::empty_source_epoch_zero_and_repeated_catch_up_are_valid ... ok
+test api::search_projection_consumer::tests::expiry_is_inclusive_renewal_is_explicit_and_stale_handles_stay_revoked ... ok
+test api::search_projection_consumer::tests::failed_registration_retry_preserves_other_durable_consumers ... ok
+test api::search_projection_consumer::tests::foreign_registry_reinitializes_only_after_the_new_projection_is_complete ... ok
+test api::search_projection_consumer::tests::hard_retention_floor_invalidates_only_the_lagging_consumer ... ok
+test api::search_projection_consumer::tests::identity_survives_database_rename_and_rejects_copied_registry ... ok
+test api::search_projection_consumer::tests::initialization_failure_cleans_stage_and_preserves_existing_destination ... ok
+test api::search_projection_consumer::tests::initializer_descriptor_rejection_preserves_typed_cause_and_source ... ok
+test api::search_projection_consumer::tests::missing_and_corrupt_registry_leave_ordinary_database_writes_available ... ok
+test api::search_projection_consumer::tests::missing_mandatory_projection_artifact_requires_rebuild_without_repair ... ok
+test api::search_projection_consumer::tests::overflow_and_hydration_errors_do_not_publish_progress ... ok
+test api::search_projection_consumer::tests::owned_projection_excludes_other_publishers_and_releases_lease_on_drop ... ok
+test api::search_projection_consumer::tests::process_crashes_observe_checkpoint_before_registry_ordering ... 
+running 1 test
+
+running 1 test
+
+running 1 test
+ok
+test api::search_projection_consumer::tests::registry_publication_error_never_adopts_the_unacknowledged_checkpoint ... ok
+test api::search_projection_consumer::tests::search_projection_consumer_facade_preserves_owner_type_identity ... ok
+test api::search_projection_consumer::tests::stage_cleanup_preserves_unpublished_files_until_descriptor_capacity_returns ... ok
+test api::tests::mutation_persistence::delete_persists_and_replays_from_wal ... ok
+test api::tests::mutation_persistence::relationship_delete_persists_and_replays_from_wal ... ok
+test api::tests::mutation_persistence::relationship_set_persists_and_replays_from_wal ... ok
+test api::tests::mutation_persistence::transaction_delete_commits_and_rolls_back ... ok
+test api::tests::mutation_persistence::transaction_detach_delete_after_relationship_match_commits_and_rolls_back ... ok
+test api::tests::mutation_persistence::transaction_relationship_delete_commits_and_rolls_back ... ok
+test api::tests::mutation_persistence::transaction_relationship_set_commits_and_rolls_back ... ok
+test api::tests::storage_recovery::canonical_row_overflow_backup_reopen_and_reclaim_follow_physical_closure ... ok
+test api::tests::storage_recovery::checkpoint_query_invokes_storage_checkpoint ... ok
+test api::tests::storage_recovery::checkpoints_nodes_and_truncates_wal ... ok
+test api::tests::storage_recovery::default_recovery_rejects_torn_wal_tail_until_explicit_doctor_repair ... ok
+test api::tests::storage_recovery::durable_database_data_admission_is_exclusive_until_owner_drops ... ok
+test api::tests::storage_recovery::durable_database_path_alias_shares_data_admission_until_owner_drops ... ok
+test api::tests::storage_recovery::external_optimizer_statistics_refresh_fails_before_publication_on_work_budget ... ok
+test api::tests::storage_recovery::external_optimizer_statistics_refresh_preserves_spill_limits_and_snapshot ... ok
+test api::tests::storage_recovery::external_optimizer_statistics_refresh_rejects_oversized_index_key_before_publication ... ok
+test api::tests::storage_recovery::external_optimizer_statistics_refresh_resamples_live_out_of_core_indexes ... ok
+test api::tests::storage_recovery::external_optimizer_statistics_refresh_spills_and_persists_exact_stats ... ok
+test api::tests::storage_recovery::forced_out_of_core_checkpoint_reopen_and_mutation_are_equivalent ... ok
+test api::tests::storage_recovery::generated_append_watermark_survives_checkpoint_and_wal_replay ... ok
+test api::tests::storage_recovery::in_memory_storage_recovery_report_is_non_durable ... ok
+test api::tests::storage_recovery::legacy_text_wal_is_rejected_by_the_single_v1_reader ... ok
+test api::tests::storage_recovery::mem_shaped_graph_mutations_recover_across_checkpoint_and_wal ... ok
+test api::tests::storage_recovery::mem_shaped_post_checkpoint_batch_replays_before_torn_tail ... ok
+test api::tests::storage_recovery::out_of_core_deferred_mutation_is_not_queued_and_can_retry_after_checkpoint ... ok
+test api::tests::storage_recovery::out_of_core_delta_budget_also_bounds_wal_replay ... ok
+test api::tests::storage_recovery::out_of_core_delta_budget_rejects_before_wal_append ... ok
+test api::tests::storage_recovery::out_of_core_replay_does_not_defer_already_committed_mutations ... ok
+test api::tests::storage_recovery::persists_nodes_across_reopen_with_wal_replay ... ok
+test api::tests::storage_recovery::platform_storage_resource_profile_emits_bound_evidence ... ok
+test api::tests::storage_recovery::production_sized_resource_profile_stays_within_admission_budgets ... ignored, production profile; allocates a 256 MiB canonical dataset
+test api::tests::storage_recovery::public_query_fails_closed_when_an_out_of_core_segment_is_corrupted ... ok
+test api::tests::storage_recovery::read_only_open_does_not_create_missing_database_path ... ok
+test api::tests::storage_recovery::read_only_open_loads_existing_database_without_allowing_writes ... ok
+test api::tests::storage_recovery::relational_storage_residency_tracks_checkpoint_live_and_recovery_views ... ok
+test api::tests::storage_recovery::stale_generation_wal_fragment_reads_as_clean_end_of_log ... ok
+test api::tests::storage_recovery::storage_crash_recovery_child ... ok
+test api::tests::storage_recovery::storage_recovery_report_tracks_wal_replay_boundary ... ok
+test api::tests::storage_recovery::storage_scrub_streams_strong_artifact_verification_and_poisons_on_corruption ... ok
+test api::tests::storage_recovery::strict_append_sql_replays_from_wal_after_reopen ... ok
+test api::tests::storage_recovery::typed_read_fails_closed_when_an_out_of_core_segment_is_corrupted ... ok
+test api::tests::storage_recovery::typed_reads_and_mutations_include_checkpointed_canonical_rows ... ok
+test api::tests::storage_recovery::typed_storage_resource_profile_gates_larger_than_cache_reads ... ok
+test api::tests::storage_recovery::user_invalidates_old_snapshots_when_checkpoint_or_projection_reads_corrupt_canonical_data ... ok
+test api::tests::storage_recovery::user_rejects_existing_snapshots_after_post_wal_failure_until_reopen ... ok
+test api::tests::storage_recovery::wal_pressure_rejects_before_append_and_leaves_no_partial_mutation ... ok
+test api::tests::storage_recovery::wal_pressure_schedules_and_completes_a_bounded_background_checkpoint ... ok
+test api::tests::storage_recovery::wal_replay_entry_limit_rejects_long_recovery ... ok
+test api::tests::storage_recovery::wal_tail::automatic_repair_budget_preserves_prior_audit_evidence ... ok
+test api::tests::storage_recovery::wal_tail::automatic_repair_preserves_quarantine_and_acknowledged_commits ... ok
+test api::tests::storage_recovery::wal_tail::automatic_repair_rejects_complete_corruption ... ok
+test api::tests::storage_recovery::wal_tail::automatic_repair_rejects_nonzero_block_trailers ... ok
+test api::tests::storage_recovery::wal_tail::automatic_repair_rejects_read_only_and_insufficient_evidence_budget ... ok
+test api::tests::storage_recovery::wal_tail::branch_wal_repair_preserves_published_prefix_and_complete_schema_data_transactions ... ok
+test api::tests::storage_recovery::wal_tail::branch_wal_repair_rejects_a_missing_selector_without_modifying_evidence ... ok
+test api::tests::storage_recovery::wal_tail::branch_wal_repair_rejects_a_torn_record_inside_the_published_prefix ... ok
+test api::tests::storage_recovery::wal_tail::crash_child ... ok
+test api::tests::storage_recovery::wal_tail::subprocess_partial_append_and_interrupted_automatic_repair_recover ... 
+running 1 test
+
+running 1 test
+
+running 1 test
+
+running 1 test
+
+running 1 test
+ok
+test api::tests::transaction_compaction::mixed_transaction_compaction_preserves_one_batch_or_rollback_across_reopen ... ok
+test store_facade_tests::checkpoint_parse_order_tests::inline_checkpoint_statistics_after_records_are_not_counted_twice ... ok
+test store_facade_tests::checkpoint_parse_order_tests::inline_checkpoint_without_statistics_rebuilds_basic_counts ... ok
+test store_facade_tests::derived_repair_tests::branch_repair_does_not_open_closed_siblings_under_the_project_descriptor_limit ... ok
+test store_facade_tests::derived_repair_tests::branch_repair_keeps_a_live_sibling_snapshot_and_its_immutable_history ... ok
+test store_facade_tests::derived_repair_tests::branch_repair_plan_rejects_an_incomplete_private_transaction_without_audit ... ok
+test store_facade_tests::derived_repair_tests::branch_repair_recovers_mixed_schema_and_data_wal_under_the_host_descriptor_limit ... ok
+test store_facade_tests::derived_repair_tests::branch_repair_rejects_a_plan_after_the_private_wal_changes_without_audit ... ok
+test store_facade_tests::derived_repair_tests::canonical_corruption_fails_closed_before_repair_is_planned ... ok
+test store_facade_tests::derived_repair_tests::rebuilds_corrupt_adjacency_from_verified_canonical_source ... ok
+test store_facade_tests::derived_repair_tests::rebuilds_corrupt_property_projection_with_bounded_options ... ok
+test store_facade_tests::derived_repair_tests::root_facade_preserves_storage_repair_contract_type_identity ... ok
+test store_facade_tests::derived_repair_tests::source_budget_rejects_before_repair_audit_or_publication ... ok
+test store_facade_tests::doctor_tests::apply_rejects_toctou_change_without_preparing_repair ... ok
+test store_facade_tests::doctor_tests::apply_requires_acknowledgement_for_the_exact_plan ... ok
+test store_facade_tests::doctor_tests::branch_headed_wal_doctor_repairs_a_torn_tail_past_the_published_prefix ... ok
+test store_facade_tests::doctor_tests::doctor_rejects_complete_checksum_corruption_without_modifying_wal ... ok
+test store_facade_tests::doctor_tests::doctor_rejects_invalid_checkpoint_boundary_without_modifying_wal ... ok
+test store_facade_tests::doctor_tests::prepared_repair_blocks_open_and_can_continue ... ok
+test store_facade_tests::doctor_tests::truncated_pending_repair_is_resumable_and_blocks_open_until_finalized ... ok
+test store_facade_tests::envelope_recovery_tests::storage_owned_envelope_preserves_checkpoint_reopen_and_caller_limits ... ok
+test store_facade_tests::hex_recovery_tests::public_checkpoint_histogram_rejects_bad_value_tags_without_writes ... ok
+test store_facade_tests::hex_recovery_tests::public_checkpoint_reopen_rejects_bad_hex_without_writes ... ok
+
+test result: ok. 139 passed; 0 failed; 1 ignored; 0 measured; 1647 filtered out; finished in 788.16s]]>
+      </system-out>
+    </testsuite>
+</testsuites>

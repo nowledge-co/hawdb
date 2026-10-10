@@ -15,7 +15,7 @@ import (
 
 const retainedQuery = "MATCH (n:Item) WHERE n.score >= $min RETURN n.score AS score, id(n) AS identity, n.score AS again"
 
-func retainedFixture(t *testing.T) *DB {
+func retainedFixture(t testing.TB) *DB {
 	t.Helper()
 	db, err := OpenInMemory()
 	if err != nil {
@@ -38,7 +38,7 @@ func retainedFixture(t *testing.T) *DB {
 	return db
 }
 
-func retainedCursor(t *testing.T, db *DB, query string, rows uint32) *RetainedCursor {
+func retainedCursor(t testing.TB, db *DB, query string, rows uint32) *RetainedCursor {
 	t.Helper()
 	cursor, err := db.QueryRetained(query, map[string]any{"min": int64(0)}, RetainedOptions{BatchRows: rows})
 	if err != nil {
@@ -48,7 +48,7 @@ func retainedCursor(t *testing.T, db *DB, query string, rows uint32) *RetainedCu
 	return cursor
 }
 
-func retainedBatch(t *testing.T, cursor *RetainedCursor) *RetainedBatch {
+func retainedBatch(t testing.TB, cursor *RetainedCursor) *RetainedBatch {
 	t.Helper()
 	batch, err := cursor.Next()
 	if err != nil {
@@ -284,6 +284,91 @@ func TestRetainedReadAndCloseAreSerialized(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-done
+	_, _, err := column.Int64At(8)
+	assertRetainedCode(t, err, RetainedClosed)
+}
+
+func TestRetainedBatchBorrowsOncePerColumnAcrossCopiedOwners(t *testing.T) {
+	values := []int64{7, 11}
+	selection := []uint32{0, 1}
+	borrowCalls := 0
+	lib := &Library{retained: &retainedFunctions{
+		columnBorrow: func(namespace, id, index uint64, out *retainedColumnDescriptor, size uint32) uint32 {
+			borrowCalls++
+			*out = retainedColumnDescriptor{
+				version: 1, physical: 2, selected: 2,
+				schema:       retainedSchemaDescriptor{dataType: uint32(RetainedInt64)},
+				values:       retainedBuffer{data: unsafe.Pointer(&values[0]), length: 16},
+				selection:    retainedBuffer{data: unsafe.Pointer(&selection[0]), length: 8},
+				validityKind: 1,
+			}
+			return uint32(RetainedOK)
+		},
+		release: func(uint64, uint64) uint32 { return uint32(RetainedOK) },
+	}}
+	batch := &RetainedBatch{owner: newRetainedOwner(lib, 1, 1), descriptor: retainedBatchDescriptor{columns: 1}, columns: &retainedBatchColumns{}}
+	copy := *batch
+	for i := 0; i < 100; i++ {
+		for _, view := range []*RetainedBatch{batch, &copy} {
+			value, valid, err := view.Int64At(0, 1)
+			if err != nil || !valid || value != 11 {
+				t.Fatalf("cached read: %d %v %v", value, valid, err)
+			}
+		}
+	}
+	if borrowCalls != 1 {
+		t.Fatalf("borrow calls=%d, want 1", borrowCalls)
+	}
+	if err := copy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := batch.Int64At(0, 0)
+	assertRetainedCode(t, err, RetainedClosed)
+	runtime.KeepAlive(values)
+	runtime.KeepAlive(selection)
+}
+
+func TestRetainedCloseFailureAllowsExplicitRetry(t *testing.T) {
+	calls := 0
+	lib := &Library{retained: &retainedFunctions{release: func(uint64, uint64) uint32 {
+		calls++
+		if calls == 1 {
+			return uint32(RetainedPanic)
+		}
+		return uint32(RetainedOK)
+	}}}
+	owner := newRetainedOwner(lib, 1, 1)
+	assertRetainedCode(t, owner.close(), RetainedPanic)
+	if owner.closed {
+		t.Fatal("failed release discarded the owner")
+	}
+	if err := owner.close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.close(); err != nil {
+		t.Fatal(err)
+	}
+	if !owner.closed || calls != 2 {
+		t.Fatalf("closed=%v calls=%d", owner.closed, calls)
+	}
+}
+
+func BenchmarkRetainedBatchScalarReads(b *testing.B) {
+	db := retainedFixture(b)
+	cursor := retainedCursor(b, db, retainedQuery, 9)
+	batch := retainedBatch(b, cursor)
+	if _, _, err := batch.Int64At(0, 0); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		position := uint64(i % 9)
+		value, valid, err := batch.Int64At(0, position)
+		if err != nil || !valid || value != int64(position) {
+			b.Fatalf("read: %d %v %v", value, valid, err)
+		}
+	}
 }
 
 func TestRetainedSharedHandlePressureStillAllowsBorrowedBatchReads(t *testing.T) {

@@ -1,0 +1,9 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //:hawdb_branch_project_open_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+test live_writer_reclamation_retains_readers_descendants_and_budget_retries ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 7.56s
+

@@ -1,0 +1,203 @@
+{
+  "state": "passed",
+  "commit": "41e10dacf8b2589e416c01b9b047db98dfe01acd",
+  "source_receipt": "/private/tmp/hawdb-291-post913-source.json",
+  "command": [
+    "bazel",
+    "--output_base=/private/tmp/hawdb-291-post913-bazel",
+    "test",
+    "//crates/search:hawdb_search_tests",
+    "//crates/search:hawdb_search_acl_tests",
+    "//crates/search:hawdb_search_text_background_tests",
+    "//crates/search:hawdb_search_text_only_tests",
+    "//crates/search:hawdb_search_text_vector_tests",
+    "--local_test_jobs=1",
+    "--test_output=errors"
+  ],
+  "started_unix_seconds": 1791557003.140401,
+  "targets": [
+    {
+      "target": "//crates/search:hawdb_search_tests",
+      "artifacts": {
+        "test.log": {
+          "path": "/private/tmp/hawdb-291-post913-bazel-evidence/testlogs/crates/search/hawdb_search_tests/test.log",
+          "sha256": "6cb1305a63388adb26d2f0f9ea4cd414161aceee6b2b0362632db9b4c947e6e5"
+        },
+        "test.xml": {
+          "path": "/private/tmp/hawdb-291-post913-bazel-evidence/testlogs/crates/search/hawdb_search_tests/test.xml",
+          "sha256": "8af6e72efde877f3f3bce9a7c469c68676f43684f86c34b9ad1000a0e9b67e0f"
+        }
+      },
+      "test_summaries": [
+        [
+          "ok",
+          "802",
+          "0",
+          "20"
+        ]
+      ],
+      "xml_cases": 1,
+      "xml_failures": 0,
+      "state": "passed",
+      "witnesses": {
+        "initial": 6,
+        "incremental_ownership": 6,
+        "compaction": 27,
+        "tier_configuration_bounds_normal_merges_without_starting_background_work": true,
+        "crisis_merge_uses_a_bounded_pair_and_does_not_exceed_the_top_level": true,
+        "crisis_merge_reduces_mixed_levels_and_preserves_mutations_and_pins": true,
+        "crisis_merge_chooses_the_smallest_pair_before_a_mixed_level_pair": true,
+        "cancelled_compaction_preserves_the_active_manifest": true,
+        "staged_compaction_rejects_a_newer_active_generation": true
+      }
+    },
+    {
+      "target": "//crates/search:hawdb_search_acl_tests",
+      "artifacts": {
+        "test.log": {
+          "path": "/private/tmp/hawdb-291-post913-bazel-evidence/testlogs/crates/search/hawdb_search_acl_tests/test.log",
+          "sha256": "378a47c872b79e2ae667f7f83c06482f91dcf816c903c5c926f737999f699097"
+        },
+        "test.xml": {
+          "path": "/private/tmp/hawdb-291-post913-bazel-evidence/testlogs/crates/search/hawdb_search_acl_tests/test.xml",
+          "sha256": "e05f1ab4b52efeaf787b54ce605e37a9548181ca9c250b1821e7875628826145"
+        }
+      },
+      "test_summaries": [
+        [
+          "ok",
+          "804",
+          "0",
+          "20"
+        ]
+      ],
+      "xml_cases": 1,
+      "xml_failures": 0,
+      "state": "passed",
+      "witnesses": {
+        "initial": 6,
+        "incremental_ownership": 6,
+        "compaction": 27,
+        "tier_configuration_bounds_normal_merges_without_starting_background_work": true,
+        "crisis_merge_uses_a_bounded_pair_and_does_not_exceed_the_top_level": true,
+        "crisis_merge_reduces_mixed_levels_and_preserves_mutations_and_pins": true,
+        "crisis_merge_chooses_the_smallest_pair_before_a_mixed_level_pair": true,
+        "cancelled_compaction_preserves_the_active_manifest": true,
+        "staged_compaction_rejects_a_newer_active_generation": true
+      }
+    },
+    {
+      "target": "//crates/search:hawdb_search_text_background_tests",
+      "artifacts": {
+        "test.log": {
+          "path": "/private/tmp/hawdb-291-post913-bazel-evidence/testlogs/crates/search/hawdb_search_text_background_tests/test.log",
+          "sha256": "bc5b5b0e564fca36206af1ea2d7fa8c4080ff74f657a38b81bc3a35ab8d8918e"
+        },
+        "test.xml": {
+          "path": "/private/tmp/hawdb-291-post913-bazel-evidence/testlogs/crates/search/hawdb_search_text_background_tests/test.xml",
+          "sha256": "867b29f54b2d9555c3bdf1ba7e51fd2f6f50af0f81e0158e1e645aa9e6f5d1a4"
+        }
+      },
+      "test_summaries": [
+        [
+          "ok",
+          "748",
+          "0",
+          "20"
+        ]
+      ],
+      "xml_cases": 1,
+      "xml_failures": 0,
+      "state": "passed",
+      "witnesses": {
+        "initial": 6,
+        "incremental_ownership": 6,
+        "compaction": 27,
+        "tier_configuration_bounds_normal_merges_without_starting_background_work": true,
+        "crisis_merge_uses_a_bounded_pair_and_does_not_exceed_the_top_level": true,
+        "crisis_merge_reduces_mixed_levels_and_preserves_mutations_and_pins": true,
+        "crisis_merge_chooses_the_smallest_pair_before_a_mixed_level_pair": true,
+        "cancelled_compaction_preserves_the_active_manifest": true,
+        "staged_compaction_rejects_a_newer_active_generation": true
+      }
+    },
+    {
+      "target": "//crates/search:hawdb_search_text_only_tests",
+      "artifacts": {
+        "test.log": {
+          "path": "/private/tmp/hawdb-291-post913-bazel-evidence/testlogs/crates/search/hawdb_search_text_only_tests/test.log",
+          "sha256": "cd79fefa6c29d3033374d5fb4b82175348a5c9198758240c9a8755cc5190b656"
+        },
+        "test.xml": {
+          "path": "/private/tmp/hawdb-291-post913-bazel-evidence/testlogs/crates/search/hawdb_search_text_only_tests/test.xml",
+          "sha256": "b17b228e7451dc20457813d7c82d9d13d82d65782cdfd1bbd41ea3cbc76e3c7a"
+        }
+      },
+      "test_summaries": [
+        [
+          "ok",
+          "731",
+          "0",
+          "20"
+        ]
+      ],
+      "xml_cases": 1,
+      "xml_failures": 0,
+      "state": "passed",
+      "witnesses": {
+        "initial": 6,
+        "incremental_ownership": 6,
+        "compaction": 21,
+        "tier_configuration_bounds_normal_merges_without_starting_background_work": true,
+        "crisis_merge_uses_a_bounded_pair_and_does_not_exceed_the_top_level": true,
+        "crisis_merge_reduces_mixed_levels_and_preserves_mutations_and_pins": true,
+        "crisis_merge_chooses_the_smallest_pair_before_a_mixed_level_pair": true,
+        "cancelled_compaction_preserves_the_active_manifest": true,
+        "staged_compaction_rejects_a_newer_active_generation": true
+      }
+    },
+    {
+      "target": "//crates/search:hawdb_search_text_vector_tests",
+      "artifacts": {
+        "test.log": {
+          "path": "/private/tmp/hawdb-291-post913-bazel-evidence/testlogs/crates/search/hawdb_search_text_vector_tests/test.log",
+          "sha256": "ea2f987a0db1ef9642298e9fa0d2005a9ca79ce18ff9eff64a88dce56c49979b"
+        },
+        "test.xml": {
+          "path": "/private/tmp/hawdb-291-post913-bazel-evidence/testlogs/crates/search/hawdb_search_text_vector_tests/test.xml",
+          "sha256": "52c36680c393773f2be7903fa9c078eb7397d4df134612483b747c3b40c751cf"
+        }
+      },
+      "test_summaries": [
+        [
+          "ok",
+          "785",
+          "0",
+          "20"
+        ]
+      ],
+      "xml_cases": 1,
+      "xml_failures": 0,
+      "state": "passed",
+      "witnesses": {
+        "initial": 6,
+        "incremental_ownership": 6,
+        "compaction": 21,
+        "tier_configuration_bounds_normal_merges_without_starting_background_work": true,
+        "crisis_merge_uses_a_bounded_pair_and_does_not_exceed_the_top_level": true,
+        "crisis_merge_reduces_mixed_levels_and_preserves_mutations_and_pins": true,
+        "crisis_merge_chooses_the_smallest_pair_before_a_mixed_level_pair": true,
+        "cancelled_compaction_preserves_the_active_manifest": true,
+        "staged_compaction_rejects_a_newer_active_generation": true
+      }
+    }
+  ],
+  "pid": 91312,
+  "exit_code": 0,
+  "log": "/private/tmp/hawdb-291-post913-bazel-evidence/full-five-profiles.log",
+  "log_sha256": "de7ebdbf271acebfe3f243194e9f3dc19e9309df003d43c00dde4801626f935f",
+  "elapsed_seconds": 1676.9409351348877,
+  "info_exit_code": 0,
+  "bazel_testlogs_directory": "/private/tmp/hawdb-291-post913-bazel/execroot/_main/bazel-out/darwin_arm64-fastbuild/testlogs",
+  "source_unchanged": true
+}

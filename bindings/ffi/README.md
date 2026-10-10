@@ -143,3 +143,17 @@ cursors or views cannot create a new allowance. C creation requires at least
 three shared handles for control, first batch and one independent column. A
 smaller configuration refuses before binding, allowing correction. No default
 result byte limit, durability mode or persistent format changes.
+
+Independent batch retains also prepay the borrowed column descriptor set;
+admission may refuse before constructing a new owner. Closed cursor pulls
+return Closed without manufacturing a terminal failure. A caught panic after
+source advancement, including descriptor registration, fails the cursor
+terminally; retry cannot silently skip the undelivered batch.
+
+The root Rust Arrow interface is separate from this native retained C ABI.
+Its array/stream data exports currently require little-endian validity words.
+Empty/contiguous selections share payload; an Arrow stream can deliver earlier
+arrays and then fail with errno 22 on a later sparse selection. Those arrays
+remain readable but are an incomplete result. No pre-scan or gather occurs.
+Errno 12 covers retryable pressure and terminal capacity/budget errors; use the
+diagnostic or the native typed retained statuses to classify the failure.

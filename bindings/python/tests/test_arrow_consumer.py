@@ -5,7 +5,8 @@
 
 HawDB and the default binding tests do not depend on PyArrow. Run this file in
 an explicitly provisioned consumer environment to qualify that installed
-version, instead of adding an Arrow SDK to the producer or default CI.
+version. A separate wheel-CI step installs the consumer after ordinary tests;
+the producer and default Bazel tests remain independent of an Arrow SDK.
 """
 
 import gc

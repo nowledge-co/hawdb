@@ -21,6 +21,7 @@ go_test(
     srcs = [
         "bazel_test.go",
         "hawdb_test.go",
+        "retained_bench_test.go",
         "retained_test.go",
     ],
     data = ["//bindings/ffi:hawdb_ffi"],

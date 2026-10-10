@@ -44,8 +44,23 @@ store. Each iteration creates a fresh database. Persistent commits keep
 `SyncOnEveryWrite`; no environment variable or benchmark override relaxes it.
 The query-boundary timer includes parameter/result conversion and execution.
 All clients then perform the same typed checksum work, timed separately.
+Use `median_query_boundary_ns` for cross-language boundary comparisons.
+`median_elapsed_ns` also includes the language-specific checksum implementation
+and must not be treated as isolated crossing overhead. These five-case tools
+exercise ordinary owned results; they do not qualify retained or Arrow latency.
+The Go `BenchmarkRetainedBatchScalarReads` separately measures locked scalar
+reads of one held native batch, with setup and the first descriptor lookup
+outside its timer. It does not measure cursor creation, bulk export or RSS.
+The separate `retained_boundary` Python tool and `BenchmarkNumericResultDelivery`
+Go benchmark compare complete numeric query consumption. Their scope, raw
+samples, default-budget refusals and review follow-up performance criterion are
+in [RETAINED_RESULTS.md](RETAINED_RESULTS.md).
 Process wall time and peak RSS also include fixture parsing, setup, warmup and
 the host runtime; they are not query-only resource charges.
+
+Source identity rejects unstaged changes and non-ignored untracked files.
+Stage the intended final source and keep experiment artifacts outside the
+checkout so their provenance binds to the recorded index tree.
 
 The output directory retains `report.json` and every job's stdout/stderr.
 Repeated input files and the driver's own database directories are deleted

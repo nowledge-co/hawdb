@@ -1,0 +1,7 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/search:hawdb_search_projection_evidence_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+test projection_evidence::differential::search_projection_evidence_differential_campaign has been running for over 60 seconds
+-- Test timed out at 2026-10-09 06:20:51 UTC --

@@ -1,0 +1,22 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/fuzz:hawdb_storage_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 13 tests
+test tests::case_seed_is_stable_and_indexed ... ok
+test tests::parser_rejects_excessive_campaigns ... ok
+test tests::row_page_compaction_oracle_is_replayable_and_exclusive ... ok
+test tests::workspace_is_reserved_before_it_is_returned ... ok
+test tests::workspace_invalid_parent_errors_are_not_retried ... ok
+test tests::workspace_sequence_exhaustion_does_not_wrap_or_create_a_directory ... ok
+test tests::workspace_same_timestamp_reserves_distinct_directories ... ok
+test tests::workspace_collision_preserves_existing_directories_and_files ... ok
+test tests::workspace_collision_retries_are_bounded ... ok
+test tests::workspace_concurrent_fixed_timestamp_allocations_are_exclusive ... ok
+test tests::clean_fixture_passes_targeted_hydration ... ok
+test tests::targeted_hydration_detects_wrong_fixture_content ... ok
+test tests::search_record_admission_seeded_campaign_preserves_published_generation has been running for over 60 seconds
+test tests::search_record_admission_seeded_campaign_preserves_published_generation ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 62.23s
+

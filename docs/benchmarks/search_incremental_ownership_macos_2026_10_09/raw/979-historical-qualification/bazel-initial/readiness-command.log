@@ -1,0 +1,24 @@
+Computing main repo mapping: 
+Loading: 
+Loading: 0 packages loaded
+Analyzing: target //crates/readiness:hawdb_readiness_tests (1 packages loaded, 0 targets configured)
+Analyzing: target //crates/readiness:hawdb_readiness_tests (1 packages loaded, 0 targets configured)
+
+INFO: Analyzed target //crates/readiness:hawdb_readiness_tests (55 packages loaded, 1543 targets configured).
+[723 / 731] Compiling Rust rlib hawdb_storage (222 files); 1s darwin-sandbox
+[724 / 731] [Prepa] Compiling Rust rlib hawdb_vector_projection (14 files)
+[725 / 731] Compiling Rust rlib hawdb_executor (94 files); 1s darwin-sandbox
+[727 / 731] Compiling Rust rlib hawdb_search (202 files); 0s darwin-sandbox
+[728 / 731] [Prepa] Compiling Rust rlib hawdb_nowledge_contracts (12 files)
+[729 / 731] Compiling Rust bin hawdb_readiness_tests (35 files); 0s darwin-sandbox
+[730 / 731] [Prepa] runfiles for //crates/readiness:hawdb_readiness_tests
+INFO: Found 1 test target...
+Target //crates/readiness:hawdb_readiness_tests up-to-date:
+  bazel-bin/crates/readiness/hawdb_readiness_tests
+INFO: Elapsed time: 20.212s, Critical Path: 19.54s
+INFO: 13 processes: 165 action cache hit, 5 internal, 9 darwin-sandbox.
+INFO: Build completed successfully, 13 total actions
+//crates/readiness:hawdb_readiness_tests                                 PASSED in 0.4s
+
+Executed 1 out of 1 test: 1 test passes.
+There were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.

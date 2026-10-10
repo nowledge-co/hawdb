@@ -1,0 +1,9 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //:hawdb_concurrent_key_range_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+test api::concurrent::key_range_tests::key_range_differential_campaign ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1786 filtered out; finished in 0.12s
+

@@ -1,0 +1,16 @@
+{
+  "state": "passed",
+  "qualified_commit": "41e10dacf8b2589e416c01b9b047db98dfe01acd",
+  "raw_fuzz_receipt_sha256": "03078067a9cfd2126059a0ecda45c879e861b9fc63d8888bce0f31005753e887",
+  "actual_fresh_targets": 96,
+  "cached_targets": 0,
+  "isolated_retries": 0,
+  "positive_XML_archives": 96,
+  "positive_Rust_log_archives": 95,
+  "Rust_summaries_total_passed": 161,
+  "Rust_summary_failures": 0,
+  "Rust_summary_ignored": 0,
+  "shared_IO_and_recovery_phase_passed": true,
+  "source_hash_count": 1993,
+  "source_unchanged": true
+}

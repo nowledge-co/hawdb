@@ -248,6 +248,56 @@ fn unusable_stream_protocol_preserves_cursor_and_concurrent_pulls_serialize() {
 }
 
 #[test]
+fn later_sparse_selection_keeps_earlier_arrays_provisional_and_readable() {
+    let mut db = fixture();
+    let governor = governor_with_handles(1024);
+    db.set_runtime_governor(governor.clone());
+    db.query("MATCH (n:Item) WHERE n.score = 4 SET n.score = 0")
+        .unwrap();
+    let stream = db
+        .query_with_params_retained(QUERY, &params(), options())
+        .unwrap()
+        .into_arrow_stream(0)
+        .unwrap();
+    let (code, mut first) = pull(&stream);
+    assert_eq!(code, 0);
+    assert_eq!(values(&first), vec![2]);
+    assert_eq!(stream.profile().visited_rows, 3);
+    let (code, refused) = pull(&stream);
+    assert_eq!(code, 22);
+    assert!(refused.release.is_none());
+    assert_eq!(stream.profile().visited_rows, 6);
+    assert_eq!(stream.status(), RetainedQueryStatus::Failed);
+    assert_eq!(stream.profile().source_pinned_rows, 0);
+    let before = stream.profile();
+    let mut schema = ArrowSchema::default();
+    assert_eq!(
+        unsafe { stream.descriptor().get_schema.unwrap()(pointer(&stream), &mut schema) },
+        0
+    );
+    unsafe { schema.release.unwrap()(&mut schema) };
+    let (code, refused) = pull(&stream);
+    assert_eq!(code, 22);
+    assert!(refused.release.is_none());
+    assert_eq!(stream.profile(), before);
+    let text = unsafe {
+        CStr::from_ptr(stream.descriptor().get_last_error.unwrap()(pointer(
+            &stream,
+        )))
+    };
+    assert!(text
+        .to_string_lossy()
+        .contains("SelectionRequiresMaterialization"));
+    drop(stream);
+    drop(db);
+    assert_eq!(values(&first), vec![2]);
+    assert!(governor.retained_result_snapshot().retained_bytes > 0);
+    release_array(&mut first);
+    assert_eq!(governor.retained_result_snapshot().retained_bytes, 0);
+    assert_eq!(governor.retained_result_snapshot().view_handles, 0);
+}
+
+#[test]
 fn sparse_selection_and_late_budget_remain_terminal_after_schema_requests() {
     let mut db = fixture();
     db.query("MATCH (n:Item) WHERE n.score = 4 SET n.score = 0")

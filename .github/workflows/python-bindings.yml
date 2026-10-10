@@ -87,3 +87,11 @@ jobs:
 
       - name: Run tests with the pydantic extra
         run: pytest tests/test_pydantic*.py
+
+      - name: Provision the optional public Arrow consumer
+        run: pip install "pyarrow==26.0.0"
+
+      - name: Test public Arrow protocols against the installed wheel
+        run: |
+          python -c 'import pyarrow; print(pyarrow.__version__)'
+          pytest tests/test_arrow_consumer.py

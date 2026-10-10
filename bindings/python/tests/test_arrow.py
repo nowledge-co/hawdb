@@ -167,6 +167,28 @@ def test_empty_batch_is_not_eof(db):
     assert_empty(db)
 
 
+def test_stream_sparse_failure_after_delivery_retains_earlier_array(db):
+    fixture(db, values=(0, 1, 2, 3, 0, 5, 6, 7, 8))
+    query = cursor(db, rows=3, minimum=2)
+    stream_cap = query.__arrow_c_stream__()
+    stream = pointer(stream_cap, Stream, b"arrow_array_stream")
+    first = Array()
+    assert stream.contents.get_next(stream, c.byref(first)) == 0
+    assert scores(first) == [2]
+    for _ in range(2):
+        refused = Array()
+        assert stream.contents.get_next(stream, c.byref(refused)) == 22
+        assert not refused.release
+        message = c.string_at(stream.contents.get_last_error(stream))
+        assert b"SelectionRequiresMaterialization" in message
+    stream.contents.release(stream)
+    del stream_cap
+    assert scores(first) == [2]
+    assert db.retained_snapshot_copy()["retained_bytes"] > 0
+    first.release(c.byref(first))
+    assert_empty(db)
+
+
 def test_sparse_array_and_stream_failure_is_explicit_and_sticky(db):
     fixture(db, [0, 2, 0, 3])
     query = cursor(db, rows=4, minimum=1)

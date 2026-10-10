@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="crates/search/hawdb_search_projection_evidence_fuzz_tests" tests="1" failures="0" errors="0">
+    <testcase name="crates/search/hawdb_search_projection_evidence_fuzz_tests" classname="" status="run" duration="70" time="70"></testcase>
+      <system-out>
+Generated test.log (if the file is not UTF-8, then this may be unreadable):
+<![CDATA[exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/search:hawdb_search_projection_evidence_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+test projection_evidence::differential::search_projection_evidence_differential_campaign has been running for over 60 seconds
+search-projection-evidence-v1 seeds=128 cases=10880 sha256=1ef7fde9e212b76a43f4ec097558befceb78d648bb9e422589dcb8265fbf4aa8
+test projection_evidence::differential::search_projection_evidence_differential_campaign ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 821 filtered out; finished in 69.37s]]>
+      </system-out>
+    </testsuite>
+</testsuites>

@@ -1,0 +1,77 @@
+{
+  "production_commit": "594d8a00de444f0696c1bd2ee80a3a72d202543f",
+  "main_complete_tree_identical": "20023771aa8f10a71ca004414a468aa7202699b5",
+  "isolated_actual_targets": 5,
+  "targets": [
+    {
+      "label": "//crates/executor:hawdb_spill_compaction_fuzz_tests",
+      "elapsed_seconds": 10.7,
+      "log_sha256": "b24be9249b1964a045a0c69838083caf081bc5f6b0afb1976317b53d7b2b9118",
+      "actual_cases": 1,
+      "failed": 0,
+      "ignored": 0,
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 10.57s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_document_frequency_fuzz_tests",
+      "elapsed_seconds": 4.1,
+      "log_sha256": "7f13efc4113700bdc0b94491063ef2d0f3d221406fa8d607e409d101fd3cdc5d",
+      "actual_cases": 1,
+      "failed": 0,
+      "ignored": 0,
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 4.02s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_lexical_spill_fuzz_tests",
+      "elapsed_seconds": 1.6,
+      "log_sha256": "6ca09a93610b372ac0ef9f5c220ad0cdf313e01d41e3de08358f8ca2971a7102",
+      "actual_cases": 1,
+      "failed": 0,
+      "ignored": 0,
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 1.55s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_manifest_budget_fuzz_tests",
+      "elapsed_seconds": 38.9,
+      "log_sha256": "f2acbd52074ef45046cd532215573f19821b7b14c1b267a796f4cf78ec1e2562",
+      "actual_cases": 1,
+      "failed": 0,
+      "ignored": 0,
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 38.77s"
+      ]
+    },
+    {
+      "label": "//crates/search:hawdb_search_projection_evidence_fuzz_tests",
+      "elapsed_seconds": 73.2,
+      "log_sha256": "6e8da2ae188aa714f6517e3ee2b78dc41b6d9e04e83b6d2ee908fb7ccac857b8",
+      "actual_cases": 1,
+      "failed": 0,
+      "ignored": 0,
+      "harness_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 818 filtered out; finished in 73.10s"
+      ]
+    }
+  ],
+  "unchanged_deadlines_seconds": [
+    900,
+    300,
+    900,
+    300,
+    300
+  ],
+  "complete_required_command_exit": 0,
+  "complete_required_targets": 96,
+  "complete_required_freshly_executed_targets": 0,
+  "complete_required_cached_targets": 96,
+  "combined_actual_current_source_evidence": "91 actual passing fuzz targets in preceding full101 campaign plus these5 actual reruns; all product/build/campaign source files unchanged. Cache receipt alone is not claimed as fresh execution.",
+  "original_failure_receipt": "/private/tmp/hawdb-291-incremental-repair-bazel-terminal-evidence/all-targets.json",
+  "pipeline_receipt": "/private/tmp/hawdb-291-post-merge-verification.json",
+  "cause": "Not established; serialized original-deadline passes provide disposition without claiming host attribution or changing campaigns."
+}

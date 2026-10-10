@@ -13,13 +13,14 @@ use hawdb::{
 use pyo3::class::gc::{PyTraverseError, PyVisit};
 use pyo3::exceptions::{PyBufferError, PyIndexError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::sync::MutexExt;
 use pyo3::types::{PyDict, PyMemoryView};
 use pyo3::{ffi, PyTypeInfo};
 use std::ffi::{c_int, c_void, CStr};
 use std::num::NonZeroUsize;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 mod arrow;
 
@@ -151,8 +152,11 @@ impl RetainedOptions {
 
 #[pyclass(module = "hawdb")]
 pub struct RetainedCursor {
-    inner: Option<RetainedQueryCursor>,
+    state: Mutex<CursorState>,
     module: Option<Arc<Py<PyAny>>>,
+}
+struct CursorState {
+    inner: Option<RetainedQueryCursor>,
     delivered_rows: usize,
     delivered_batches: usize,
 }
@@ -176,10 +180,12 @@ fn visit_module(
 impl RetainedCursor {
     pub(crate) fn new(inner: RetainedQueryCursor, module: Py<PyAny>) -> Self {
         Self {
-            inner: Some(inner),
+            state: Mutex::new(CursorState {
+                inner: Some(inner),
+                delivered_rows: 0,
+                delivered_batches: 0,
+            }),
             module: Some(Arc::new(module)),
-            delivered_rows: 0,
-            delivered_batches: 0,
         }
     }
 }
@@ -190,15 +196,21 @@ impl RetainedCursor {
     }
     #[pyo3(signature = (requested_schema = None))]
     fn __arrow_c_stream__<'py>(
-        &mut self,
+        &self,
         py: Python<'py>,
         requested_schema: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         arrow::cursor_stream(py, self, requested_schema)
     }
-    fn next_batch(&mut self, py: Python<'_>) -> PyResult<Option<Py<RetainedBatch>>> {
+    fn next_batch(&self, py: Python<'_>) -> PyResult<Option<Py<RetainedBatch>>> {
         let metadata = metadata::<RetainedBatch>(py)?;
-        let cursor = self.inner.as_mut().ok_or_else(|| closed(py))?;
+        // Detach while waiting for the lock, then keep it through Python
+        // delivery so close/adoption cannot hide a failed batch allocation.
+        let mut state = self
+            .state
+            .lock_py_attached(py)
+            .unwrap_or_else(|p| p.into_inner());
+        let cursor = state.inner.as_mut().ok_or_else(|| closed(py))?;
         let native = match catch_unwind(AssertUnwindSafe(|| {
             py.detach(|| cursor.next_batch_with_metadata(metadata))
         })) {
@@ -220,8 +232,8 @@ impl RetainedCursor {
             },
         ) {
             Ok(batch) => {
-                self.delivered_rows += rows;
-                self.delivered_batches += 1;
+                state.delivered_rows += rows;
+                state.delivered_batches += 1;
                 Ok(Some(batch))
             }
             Err(error) => {
@@ -233,28 +245,42 @@ impl RetainedCursor {
     fn __iter__(slf: Py<Self>) -> Py<Self> {
         slf
     }
-    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<Py<RetainedBatch>>> {
+    fn __next__(&self, py: Python<'_>) -> PyResult<Option<Py<RetainedBatch>>> {
         self.next_batch(py)
     }
-    fn close(&mut self) {
-        self.inner.take();
+    fn close(&self, py: Python<'_>) {
+        self.state
+            .lock_py_attached(py)
+            .unwrap_or_else(|p| p.into_inner())
+            .inner
+            .take();
     }
     fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
         visit_module(&self.module, visit)
     }
     fn __clear__(&mut self) {
-        self.close();
+        self.state
+            .get_mut()
+            .unwrap_or_else(|p| p.into_inner())
+            .inner
+            .take();
         self.module = None;
     }
     #[getter]
-    fn status(&self) -> &'static str {
-        self.inner
+    fn status(&self, py: Python<'_>) -> &'static str {
+        self.state
+            .lock_py_attached(py)
+            .unwrap_or_else(|p| p.into_inner())
+            .inner
             .as_ref()
             .map_or("closed", |cursor| status(cursor.status()))
     }
     #[getter]
     fn column_count(&self, py: Python<'_>) -> PyResult<usize> {
         Ok(self
+            .state
+            .lock_py_attached(py)
+            .unwrap_or_else(|p| p.into_inner())
             .inner
             .as_ref()
             .ok_or_else(|| closed(py))?
@@ -262,7 +288,11 @@ impl RetainedCursor {
             .len())
     }
     fn schema_copy<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyList>> {
-        let cursor = self.inner.as_ref().ok_or_else(|| closed(py))?;
+        let state = self
+            .state
+            .lock_py_attached(py)
+            .unwrap_or_else(|p| p.into_inner());
+        let cursor = state.inner.as_ref().ok_or_else(|| closed(py))?;
         let result = pyo3::types::PyList::empty(py);
         for column in cursor.schema() {
             let item = PyDict::new(py);
@@ -281,7 +311,11 @@ impl RetainedCursor {
         Ok(result)
     }
     fn profile_copy<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let cursor = self.inner.as_ref().ok_or_else(|| closed(py))?;
+        let state = self
+            .state
+            .lock_py_attached(py)
+            .unwrap_or_else(|p| p.into_inner());
+        let cursor = state.inner.as_ref().ok_or_else(|| closed(py))?;
         let profile = cursor.profile();
         let result = PyDict::new(py);
         result.set_item("status", status(cursor.status()))?;
@@ -292,8 +326,8 @@ impl RetainedCursor {
             ("source_pinned_rows", profile.source_pinned_rows),
             ("source_pinned_pages", profile.source_pinned_pages),
             ("outstanding_batches", cursor.outstanding_batches()),
-            ("delivered_rows", self.delivered_rows),
-            ("delivered_batches", self.delivered_batches),
+            ("delivered_rows", state.delivered_rows),
+            ("delivered_batches", state.delivered_batches),
         ] {
             result.set_item(name, value)?;
         }

@@ -1,0 +1,23 @@
+    Finished `bench` profile [optimized] target(s) in 0.27s
+     Running benches/search_mutation.rs (target/release/deps/search_mutation-aeb2717e65ef569b)
+
+thread 'main' (31394097) panicked at benches/search_mutation.rs:84:43:
+initial generation must publish: Execution("query memory ledger would use 268444013 bytes while charging search build spool (spill_staging), exceeding query_memory_bytes 268435456")
+stack backtrace:
+   0:        0x104bd2244 - <<std[7648081134ee26d8]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[318a34b566a36fe]::fmt::Display>::fmt
+   1:        0x104a55ef0 - core[318a34b566a36fe]::fmt::write
+   2:        0x104bd6de0 - <std[7648081134ee26d8]::sys::stdio::unix::Stderr as std[7648081134ee26d8]::io::Write>::write_fmt
+   3:        0x104bbc740 - std[7648081134ee26d8]::panicking::default_hook::{closure#0}
+   4:        0x104bcb130 - std[7648081134ee26d8]::panicking::default_hook
+   5:        0x104bcb490 - std[7648081134ee26d8]::panicking::panic_with_hook
+   6:        0x104bbc7cc - std[7648081134ee26d8]::panicking::panic_handler::{closure#0}
+   7:        0x104bb1eec - std[7648081134ee26d8]::sys::backtrace::__rust_end_short_backtrace::<std[7648081134ee26d8]::panicking::panic_handler::{closure#0}, !>
+   8:        0x104bbd05c - __rustc[6ef78fba13ac776c]::rust_begin_unwind
+   9:        0x104c6ba10 - core[318a34b566a36fe]::panicking::panic_fmt
+  10:        0x104c6b840 - core[318a34b566a36fe]::result::unwrap_failed
+  11:        0x104ba2398 - search_mutation[a027377821dc863d]::main
+  12:        0x104b9bfdc - std[7648081134ee26d8]::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  13:        0x104b9d138 - std[7648081134ee26d8]::rt::lang_start::<()>::{closure#0}
+  14:        0x104bca204 - std[7648081134ee26d8]::rt::lang_start_internal
+  15:        0x104ba70e0 - _main
+error: bench failed, to rerun pass `--bench search_mutation`

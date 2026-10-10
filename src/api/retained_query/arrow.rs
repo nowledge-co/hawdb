@@ -340,7 +340,18 @@ unsafe extern "C" fn release_array(array: *mut ArrowArray) {
     }));
 }
 
+fn require_supported_endian() -> Result<()> {
+    // Native u64 validity words match Arrow's byte-wise LSB order only here.
+    // Swapping them in the adapter would violate strict payload identity.
+    if cfg!(target_endian = "little") {
+        Ok(())
+    } else {
+        Err(RetainedQueryError::UnsupportedLayout)
+    }
+}
+
 fn range(batch: &RetainedQueryBatch) -> Result<(i64, i64)> {
+    require_supported_endian()?;
     let selected = batch.selected_rows();
     let first = selected.first().copied().unwrap_or(0);
     for (position, row) in selected.iter().enumerate() {

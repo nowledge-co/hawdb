@@ -34,6 +34,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-latest]
+        include:
+          - os: ubuntu-24.04
+            library: libhawdb_ffi.so
+          - os: macos-latest
+            library: libhawdb_ffi.dylib
     env:
       USE_BAZEL_VERSION: "9.3.0"
     steps:
@@ -54,3 +59,17 @@ jobs:
 
       - name: Test the retained C ABI contract
         run: bazel test --test_output=errors //bindings/ffi:hawdb_ffi_tests
+
+      - name: Install Go for the race detector
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: bindings/go/go.mod
+          cache-dependency-path: bindings/go/go.sum
+
+      - name: Check retained read and close concurrency with the race detector
+        working-directory: bindings/go
+        env:
+          HAWDB_LIBRARY: ${{ github.workspace }}/bazel-bin/bindings/ffi/${{ matrix.library }}
+          # The race runtime needs cgo; the production package stays purego.
+          CGO_ENABLED: "1"
+        run: go test -race -run '^TestRetained' ./...

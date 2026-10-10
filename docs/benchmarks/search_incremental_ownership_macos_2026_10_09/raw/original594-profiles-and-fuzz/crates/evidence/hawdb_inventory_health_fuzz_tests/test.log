@@ -1,0 +1,10 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/evidence:hawdb_inventory_health_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+inventory-health-differential-v1 seeds=128 recovery_cases=50432 family_cases=4736 background_cases=26880
+test inventory::differential::inventory_health_differential_campaign ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 3.02s
+

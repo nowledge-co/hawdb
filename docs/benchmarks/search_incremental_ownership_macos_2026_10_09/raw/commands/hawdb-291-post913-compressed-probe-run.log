@@ -1,0 +1,4 @@
+compressed_compaction_stage stage=0 generation=6 comparisons=126
+compressed_compaction_stage stage=1 generation=7 comparisons=210
+compressed_compaction_stage stage=2 generation=8 comparisons=294
+compressed_compaction passed comparisons=294 distinct_vectors=true changed_embedding=true merges=3 initial_owners=2 pinned_reader=true rabitq_required=true

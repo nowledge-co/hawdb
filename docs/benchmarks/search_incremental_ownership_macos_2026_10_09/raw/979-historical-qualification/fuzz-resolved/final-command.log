@@ -1,0 +1,110 @@
+Computing main repo mapping: 
+Loading: 
+Loading: 0 packages loaded
+Analyzing: 96 targets (0 packages loaded, 0 targets configured)
+Analyzing: 96 targets (0 packages loaded, 0 targets configured)
+
+INFO: Analyzed 96 targets (0 packages loaded, 211 targets configured).
+INFO: Found 96 test targets...
+INFO: Elapsed time: 0.578s, Critical Path: 0.02s
+INFO: 1 process: 676 action cache hit, 1 internal.
+INFO: Build completed successfully, 1 total action
+//:hawdb_concurrent_key_range_fuzz_tests                        (cached) PASSED in 2.0s
+//:hawdb_graph_projection_residency_fuzz_first_half_tests       (cached) PASSED in 315.9s
+//:hawdb_graph_projection_residency_fuzz_second_half_tests      (cached) PASSED in 652.5s
+//:hawdb_linux_ci_fuzz_smoke_test                               (cached) PASSED in 253.4s
+//:hawdb_scan_callback_fuzz_tests                               (cached) PASSED in 5.8s
+//crates/compat:hawdb_compat_contract_fuzz_tests                (cached) PASSED in 0.7s
+//crates/cypher:hawdb_cypher_backtracking_fuzz_tests            (cached) PASSED in 0.9s
+//crates/evidence:hawdb_inventory_health_fuzz_tests             (cached) PASSED in 2.3s
+//crates/evidence:hawdb_resource_profile_fuzz_tests             (cached) PASSED in 0.9s
+//crates/evidence:hawdb_source_inventory_fuzz_tests             (cached) PASSED in 1.0s
+//crates/executor:hawdb_batch_dispatch_fuzz_tests               (cached) PASSED in 0.8s
+//crates/executor:hawdb_execution_lifecycle_fuzz_tests          (cached) PASSED in 1.5s
+//crates/executor:hawdb_execution_report_value_fuzz_tests       (cached) PASSED in 1.4s
+//crates/executor:hawdb_graph_algorithm_fuzz_tests              (cached) PASSED in 2.9s
+//crates/executor:hawdb_graph_hash_join_fuzz_tests              (cached) PASSED in 11.8s
+//crates/executor:hawdb_morsel_oracle_fuzz_tests                (cached) PASSED in 0.6s
+//crates/executor:hawdb_mutation_lowering_fuzz_tests            (cached) PASSED in 1.0s
+//crates/executor:hawdb_mutation_preflight_fuzz_tests           (cached) PASSED in 1.0s
+//crates/executor:hawdb_numeric_execution_fuzz_tests            (cached) PASSED in 0.8s
+//crates/executor:hawdb_query_observer_fuzz_tests               (cached) PASSED in 0.6s
+//crates/executor:hawdb_result_delivery_fuzz_tests              (cached) PASSED in 0.8s
+//crates/executor:hawdb_sort_merge_account_fuzz_tests           (cached) PASSED in 2.7s
+//crates/executor:hawdb_spill_compaction_fuzz_tests             (cached) PASSED in 9.8s
+//crates/executor:hawdb_transform_fuzz_tests                    (cached) PASSED in 1.2s
+//crates/executor:hawdb_vector_seed_fuzz_tests                  (cached) PASSED in 1.2s
+//crates/fuzz:hawdb_append_fuzz_cli_tests                       (cached) PASSED in 22.0s
+//crates/fuzz:hawdb_fuzz_append_replay_tests                    (cached) PASSED in 9.4s
+//crates/fuzz:hawdb_fuzz_append_seed_7_tests                    (cached) PASSED in 10.6s
+//crates/fuzz:hawdb_fuzz_cli_tests                              (cached) PASSED in 0.6s
+//crates/fuzz:hawdb_fuzz_fast_tests                             (cached) PASSED in 99.7s
+//crates/fuzz:hawdb_fuzz_relational_join_rewrite_tests          (cached) PASSED in 3.8s
+//crates/fuzz:hawdb_parser_fuzz_cli_tests                       (cached) PASSED in 0.5s
+//crates/fuzz:hawdb_storage_fuzz_tests                          (cached) PASSED in 66.2s
+//crates/optimizer-graph:hawdb_optimizer_candidate_fingerprint_fuzz_tests (cached) PASSED in 0.9s
+//crates/optimizer-graph:hawdb_optimizer_cardinality_defaults_fuzz_tests (cached) PASSED in 0.6s
+//crates/optimizer-graph:hawdb_optimizer_cardinality_metadata_fuzz_tests (cached) PASSED in 1.4s
+//crates/optimizer-graph:hawdb_optimizer_ddl_command_fuzz_tests (cached) PASSED in 3.5s
+//crates/optimizer-graph:hawdb_optimizer_full_text_cost_fuzz_tests (cached) PASSED in 0.8s
+//crates/optimizer-graph:hawdb_optimizer_trace_cost_fuzz_tests  (cached) PASSED in 0.7s
+//crates/optimizer-relational:hawdb_optimizer_access_cost_fuzz_tests (cached) PASSED in 3.7s
+//crates/plan-cypher:hawdb_plan_cypher_explain_fuzz_tests       (cached) PASSED in 0.6s
+//crates/readiness:hawdb_graph_route_readiness_fuzz_tests       (cached) PASSED in 41.3s
+//crates/readiness:hawdb_integration_bundle_fuzz_tests          (cached) PASSED in 68.8s
+//crates/readiness:hawdb_replacement_summary_fuzz_tests         (cached) PASSED in 60.5s
+//crates/readiness:hawdb_source_mutation_readiness_fuzz_tests   (cached) PASSED in 6.2s
+//crates/relational:hawdb_relational_aggregate_state_fuzz_tests (cached) PASSED in 8.9s
+//crates/relational:hawdb_relational_columnar_aggregate_fuzz_tests (cached) PASSED in 4.6s
+//crates/relational:hawdb_relational_explain_report_fuzz_tests  (cached) PASSED in 6.5s
+//crates/relational:hawdb_relational_field_plan_fuzz_tests      (cached) PASSED in 1.3s
+//crates/relational:hawdb_relational_index_runtime_fuzz_tests   (cached) PASSED in 27.9s
+//crates/relational:hawdb_relational_physical_plan_fuzz_tests   (cached) PASSED in 2.7s
+//crates/relational:hawdb_relational_qualification_fuzz_tests   (cached) PASSED in 1.2s
+//crates/relational:hawdb_relational_row_runtime_fuzz_tests     (cached) PASSED in 16.5s
+//crates/relational:hawdb_relational_statement_fuzz_tests       (cached) PASSED in 0.9s
+//crates/route-ownership:hawdb_graph_route_ownership_fuzz_tests (cached) PASSED in 5.0s
+//crates/search:hawdb_search_block_encoding_fuzz_tests          (cached) PASSED in 2.4s
+//crates/search:hawdb_search_bounded_file_fuzz_tests            (cached) PASSED in 1.3s
+//crates/search:hawdb_search_candidate_evidence_fuzz_tests      (cached) PASSED in 1.1s
+//crates/search:hawdb_search_compression_fuzz_tests             (cached) PASSED in 2.2s
+//crates/search:hawdb_search_concurrent_read_fuzz_tests         (cached) PASSED in 1.3s
+//crates/search:hawdb_search_document_analysis_fuzz_tests       (cached) PASSED in 8.0s
+//crates/search:hawdb_search_document_frequency_fuzz_tests      (cached) PASSED in 9.1s
+//crates/search:hawdb_search_hex_decoding_fuzz_tests            (cached) PASSED in 1.5s
+//crates/search:hawdb_search_hydration_fuzz_tests               (cached) PASSED in 1.2s
+//crates/search:hawdb_search_lexical_spill_fuzz_tests           (cached) PASSED in 2.3s
+//crates/search:hawdb_search_manifest_budget_fuzz_tests         (cached) PASSED in 62.0s
+//crates/search:hawdb_search_manifest_encoding_fuzz_tests       (cached) PASSED in 1.1s
+//crates/search:hawdb_search_mini_delta_snapshot_fuzz_tests     (cached) PASSED in 1.5s
+//crates/search:hawdb_search_projection_evidence_fuzz_tests     (cached) PASSED in 74.8s
+//crates/search:hawdb_search_spool_decoding_fuzz_tests          (cached) PASSED in 5.4s
+//crates/search:hawdb_search_spool_encoding_fuzz_tests          (cached) PASSED in 1.4s
+//crates/search:hawdb_search_term_policy_fuzz_tests             (cached) PASSED in 15.1s
+//crates/sql:hawdb_sql_clause_diagnostics_fuzz_tests            (cached) PASSED in 1.2s
+//crates/sql:hawdb_sql_create_binding_fuzz_tests                (cached) PASSED in 0.9s
+//crates/sql:hawdb_sql_frontend_corpus_fuzz_tests               (cached) PASSED in 0.7s
+//crates/sql-syntax:hawdb_sql_alias_boundary_fuzz_tests         (cached) PASSED in 0.6s
+//crates/storage:hawdb_storage_artifact_binding_fuzz_tests      (cached) PASSED in 1.1s
+//crates/storage:hawdb_storage_backup_hex_fuzz_tests            (cached) PASSED in 1.1s
+//crates/storage:hawdb_storage_durable_envelope_fuzz_tests      (cached) PASSED in 2.1s
+//crates/storage:hawdb_storage_durable_manifest_fuzz_tests      (cached) PASSED in 3.7s
+//crates/storage:hawdb_storage_file_lock_fuzz_tests             (cached) PASSED in 3.3s
+//crates/storage:hawdb_storage_graph_constraints_fuzz_tests     (cached) PASSED in 1.1s
+//crates/storage:hawdb_storage_graph_overlay_fuzz_tests         (cached) PASSED in 4.8s
+//crates/storage:hawdb_storage_positioned_read_fuzz_tests       (cached) PASSED in 1.0s
+//crates/storage:hawdb_storage_projected_artifact_fuzz_tests    (cached) PASSED in 2.6s
+//crates/storage:hawdb_storage_property_projection_hex_fuzz_tests (cached) PASSED in 1.3s
+//crates/storage:hawdb_storage_relational_index_view_fuzz_tests (cached) PASSED in 90.5s
+//crates/storage:hawdb_storage_relational_row_workspace_fuzz_tests (cached) PASSED in 31.1s
+//crates/storage:hawdb_storage_set_value_fuzz_tests             (cached) PASSED in 1.3s
+//crates/storage:hawdb_storage_shadow_metadata_fuzz_tests       (cached) PASSED in 2.0s
+//crates/storage:hawdb_storage_sharded_cache_fuzz_tests         (cached) PASSED in 2.0s
+//crates/storage:hawdb_storage_source_scan_fuzz_tests           (cached) PASSED in 12.5s
+//crates/storage:hawdb_storage_statistics_refresh_fuzz_tests    (cached) PASSED in 28.1s
+//crates/storage:hawdb_storage_text_fuzz_tests                  (cached) PASSED in 1.1s
+//crates/storage:hawdb_storage_transaction_compaction_fuzz_tests (cached) PASSED in 3.7s
+//crates/storage:hawdb_storage_transaction_locks_fuzz_tests     (cached) PASSED in 1.3s
+
+Executed 0 out of 96 tests: 96 tests pass.
+There were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.

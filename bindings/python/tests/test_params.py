@@ -12,16 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Parameter conversion stores numbers exactly or rejects them."""
+"""Parameter conversion stores values exactly or rejects them by path."""
 
 import decimal
 import enum
 import fractions
+import re
 
 import pytest
 
 INT64_MAX = 2**63 - 1
 INT64_MIN = -(2**63)
+
+# A statement that reads no parameters, for tests that only convert them.
+COUNT = "MATCH (n:N) RETURN count(n) AS n"
 
 
 class Index:
@@ -60,14 +64,19 @@ def table(db):
     return db
 
 
-def _rejects(db, error, value, match):
-    """Both entry points reject `value`, also nested, and nothing is written."""
-    for params in ({"v": value}, {"v": [1, {"nested": value}]}):
-        with pytest.raises(error, match=match):
+def _at(path, message):
+    """Match exactly the error `message` for the value at `path`."""
+    return f"^{re.escape(f'{path}: {message}')}$"
+
+
+def _rejects(db, error, value, message):
+    """Both entry points reject `value`, also nested, by path and write nothing."""
+    for params, path in (({"v": value}, "$v"), ({"v": [1, {"nested": value}]}, "$v[1].nested")):
+        with pytest.raises(error, match=_at(path, message)):
             db.execute("CREATE (:N {v: $v})", params)
-    with pytest.raises(error, match=match):
+    with pytest.raises(error, match=_at("$2", message)):
         db.execute_sql("INSERT INTO t (id, v) VALUES ($1, $2)", [1, value])
-    assert db.execute("MATCH (n:N) RETURN count(n) AS n").fetchall() == [{"n": 0}]
+    assert db.execute(COUNT).fetchall() == [{"n": 0}]
     assert db.execute_sql("SELECT id FROM t").fetchall() == []
 
 
@@ -77,7 +86,7 @@ def _rejects(db, error, value, match):
     ids=["max+1", "min-1", "2**70", "__index__"],
 )
 def test_out_of_range_integers_raise_overflow(table, value):
-    _rejects(table, OverflowError, value, "outside the signed 64-bit range")
+    _rejects(table, OverflowError, value, "integer parameter is outside the signed 64-bit range")
 
 
 @pytest.mark.parametrize(
@@ -147,3 +156,65 @@ def test_numpy_scalars(db):
     }
     with pytest.raises(TypeError, match="unsupported parameter type: longdouble"):
         db.execute("CREATE (:N {v: $v})", {"v": np.longdouble(0.5)})
+
+
+def test_errors_name_the_path(table):
+    # Conversion fails before the statement runs, so one handle serves every case.
+    unsupported = "unsupported parameter type: Decimal"
+    bad = decimal.Decimal("1")
+    fake_uuid = type("UUID", (), {"__str__": lambda self: "not-a-uuid"})()
+    odd_module = type("Odd", (), {"__module__": None})()
+    cases = [
+        ({"rows": [{"v": 1}, {"v": bad}]}, "$rows[1].v", unsupported),
+        ({"t": (1, (2, bad))}, "$t[1][1]", unsupported),
+        ({"m": {"first name": bad}}, '$m["first name"]', unsupported),
+        ({"m": {'say "hi"': bad}}, '$m["say \\"hi\\""]', unsupported),
+        ({"m": {"价格": bad}}, '$m["价格"]', unsupported),
+        ({"first name": bad}, '$["first name"]', unsupported),
+        ({"a.b": bad}, '$["a.b"]', unsupported),
+        ({"v": [fake_uuid]}, "$v[0]", "invalid uuid.UUID value: not-a-uuid"),
+        ({"v": [odd_module]}, "$v[0]", "unsupported parameter type: Odd"),
+        ({"m": [{1: "x"}]}, "$m[0]", "parameter maps require string keys, got int"),
+    ]
+    for params, path, message in cases:
+        with pytest.raises(TypeError, match=_at(path, message)):
+            table.execute(COUNT, params)
+    with pytest.raises(TypeError, match="^query parameter names must be strings, got int$"):
+        table.execute(COUNT, {1: "x"})
+    with pytest.raises(TypeError, match=_at("$2[0]", unsupported)):
+        table.execute_sql("INSERT INTO t (id, v) VALUES ($1, $2)", [1, [bad]])
+
+
+def test_strings_must_be_valid_utf8(db):
+    for params in ({"\ud800": 1}, {"m": {"\ud800": 1}}, {"v": ["\ud800"]}):
+        with pytest.raises(UnicodeEncodeError):
+            db.execute(COUNT, params)
+
+
+def _nested(levels, leaf):
+    for _ in range(levels):
+        leaf = [leaf]
+    return leaf
+
+
+def test_nesting_is_bounded(db):
+    assert db.execute(COUNT, {"v": _nested(64, 1)}).fetchall() == [{"n": 0}]
+    message = "parameter nests deeper than 64 levels"
+    with pytest.raises(ValueError, match=_at("$v" + "[0]" * 64, message)):
+        db.execute(COUNT, {"v": _nested(65, 1)})
+    # A value that contains itself stops at the same limit instead of
+    # recursing until the stack overflows.
+    looped = []
+    looped.append(looped)
+    with pytest.raises(ValueError, match=_at("$v" + "[0]" * 64, message)):
+        db.execute(COUNT, {"v": looped})
+    cycle = {}
+    cycle["next"] = cycle
+    with pytest.raises(ValueError, match=_at("$v" + ".next" * 64, message)):
+        db.execute(COUNT, {"v": cycle})
+
+
+def test_transactions_name_the_path(table):
+    for begin in (table.transaction, table.read_transaction):
+        with begin() as tx:
+            _rejects(tx, TypeError, decimal.Decimal("1"), "unsupported parameter type: Decimal")

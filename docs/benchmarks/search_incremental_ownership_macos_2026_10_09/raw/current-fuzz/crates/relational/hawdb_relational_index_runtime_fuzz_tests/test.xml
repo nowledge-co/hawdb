@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="crates/relational/hawdb_relational_index_runtime_fuzz_tests" tests="1" failures="0" errors="0">
+    <testcase name="crates/relational/hawdb_relational_index_runtime_fuzz_tests" classname="" status="run" duration="18" time="18"></testcase>
+      <system-out>
+Generated test.log (if the file is not UTF-8, then this may be unreadable):
+<![CDATA[exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/relational:hawdb_relational_index_runtime_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+test index_runtime::tests::index_runtime_differential_campaign ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 224 filtered out; finished in 16.71s]]>
+      </system-out>
+    </testsuite>
+</testsuites>

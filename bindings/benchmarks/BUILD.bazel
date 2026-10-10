@@ -16,3 +16,10 @@ py_binary(
     deps = [":checksum", "//bindings/python:hawdb"],
     tags = ["manual"],
 )
+
+py_binary(
+    name = "retained_boundary",
+    srcs = ["retained_boundary.py"],
+    deps = ["//bindings/python:hawdb"],
+    tags = ["manual"],
+)

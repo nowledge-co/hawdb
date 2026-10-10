@@ -187,9 +187,12 @@ func (owner *retainedOwner) close() error {
 	if owner.closed {
 		return nil
 	}
-	owner.closed = true
-	runtime.SetFinalizer(owner, nil)
-	return retainedError(owner.lib.retained.release(owner.namespace, owner.id))
+	code := owner.lib.retained.release(owner.namespace, owner.id)
+	if RetainedCode(code) == RetainedOK || RetainedCode(code) == RetainedInvalidHandle {
+		owner.closed = true
+		runtime.SetFinalizer(owner, nil)
+	}
+	return retainedError(code)
 }
 func (owner *retainedOwner) check() error {
 	if owner.closed {
@@ -265,7 +268,7 @@ func (cursor *RetainedCursor) Next() (*RetainedBatch, error) {
 	if err := retainedError(code); err != nil {
 		return nil, err
 	}
-	return &RetainedBatch{owner: newRetainedOwner(owner.lib, descriptor.namespace, descriptor.id), descriptor: descriptor}, nil
+	return &RetainedBatch{owner: newRetainedOwner(owner.lib, descriptor.namespace, descriptor.id), descriptor: descriptor, columns: &retainedBatchColumns{}}, nil
 }
 
 func (cursor *RetainedCursor) Close() error { return cursor.owner.close() }
@@ -348,6 +351,11 @@ func (cursor *RetainedCursor) State() (RetainedState, error) { return cursor.own
 type RetainedBatch struct {
 	owner      *retainedOwner
 	descriptor retainedBatchDescriptor
+	columns    *retainedBatchColumns
+}
+type retainedBatchColumns struct {
+	mu          sync.Mutex
+	descriptors []retainedColumnDescriptor
 }
 
 func (batch *RetainedBatch) Close() error                  { return batch.owner.close() }
@@ -374,7 +382,7 @@ func (batch *RetainedBatch) Retain() (*RetainedBatch, error) {
 	if err := retainedError(code); err != nil {
 		return nil, err
 	}
-	return &RetainedBatch{owner: newRetainedOwner(owner.lib, descriptor.namespace, descriptor.id), descriptor: descriptor}, nil
+	return &RetainedBatch{owner: newRetainedOwner(owner.lib, descriptor.namespace, descriptor.id), descriptor: descriptor, columns: &retainedBatchColumns{}}, nil
 }
 
 // Column creates an independent column owner. It survives batch, cursor and
@@ -401,12 +409,27 @@ func (batch *RetainedBatch) borrowedColumn(index uint64) (RetainedColumn, error)
 	if err := owner.check(); err != nil {
 		return RetainedColumn{}, err
 	}
-	var descriptor retainedColumnDescriptor
-	code := owner.lib.retained.columnBorrow(owner.namespace, owner.id, index, &descriptor, uint32(unsafe.Sizeof(descriptor)))
-	if err := retainedError(code); err != nil {
-		return RetainedColumn{}, err
+	if index >= batch.descriptor.columns {
+		return RetainedColumn{}, &RetainedError{Code: RetainedInvalidColumn}
 	}
-	return RetainedColumn{owner: owner, descriptor: descriptor}, nil
+	cache := batch.columns
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.descriptors == nil {
+		// The native batch prepays one descriptor per column and wrapper padding.
+		// Immutable pointers remain valid under the enclosing owner read lock.
+		cache.descriptors = make([]retainedColumnDescriptor, batch.descriptor.columns)
+	}
+	descriptor := &cache.descriptors[index]
+	if descriptor.version == 0 {
+		var borrowed retainedColumnDescriptor
+		code := owner.lib.retained.columnBorrow(owner.namespace, owner.id, index, &borrowed, uint32(unsafe.Sizeof(borrowed)))
+		if err := retainedError(code); err != nil {
+			return RetainedColumn{}, err
+		}
+		*descriptor = borrowed
+	}
+	return RetainedColumn{owner: owner, descriptor: *descriptor}, nil
 }
 
 // Int64At reads a selected scalar through the existing batch lease, requiring

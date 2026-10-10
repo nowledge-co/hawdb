@@ -1,0 +1,10 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/storage:hawdb_storage_artifact_binding_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+artifact-binding-state-machine-v1 seeds=128 steps=128 cases=17024
+test artifact_binding::tests::artifact_binding_state_machine_campaign ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1134 filtered out; finished in 0.07s
+

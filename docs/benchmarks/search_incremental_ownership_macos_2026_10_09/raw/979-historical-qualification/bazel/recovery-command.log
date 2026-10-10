@@ -1,0 +1,29 @@
+Computing main repo mapping: 
+Loading: 
+Loading: 0 packages loaded
+Analyzing: target //:hawdb_unit_recovery_tests (0 packages loaded, 0 targets configured)
+Analyzing: target //:hawdb_unit_recovery_tests (0 packages loaded, 0 targets configured)
+
+INFO: Analyzed target //:hawdb_unit_recovery_tests (0 packages loaded, 14 targets configured).
+[749 / 751] Compiling Rust bin hawdb_unit_test_binary (220 files); 1s darwin-sandbox
+[749 / 751] Compiling Rust bin hawdb_unit_test_binary (220 files); 11s darwin-sandbox
+[750 / 751] [Prepa] runfiles for //:hawdb_unit_recovery_tests
+[751 / 752] Testing //:hawdb_unit_recovery_tests; 1s darwin-sandbox
+[751 / 752] Testing //:hawdb_unit_recovery_tests; 11s darwin-sandbox
+[751 / 752] Testing //:hawdb_unit_recovery_tests; 42s darwin-sandbox
+[751 / 752] Testing //:hawdb_unit_recovery_tests; 102s darwin-sandbox
+[751 / 752] Testing //:hawdb_unit_recovery_tests; 162s darwin-sandbox
+[751 / 752] Testing //:hawdb_unit_recovery_tests; 222s darwin-sandbox
+[751 / 752] Testing //:hawdb_unit_recovery_tests; 283s darwin-sandbox
+[751 / 752] Testing //:hawdb_unit_recovery_tests; 343s darwin-sandbox
+[751 / 752] Testing //:hawdb_unit_recovery_tests; 403s darwin-sandbox
+[751 / 752] Testing //:hawdb_unit_recovery_tests; 434s darwin-sandbox
+INFO: Found 1 test target...
+Target //:hawdb_unit_recovery_tests up-to-date:
+  bazel-bin/hawdb_unit_recovery_tests
+INFO: Elapsed time: 450.854s, Critical Path: 450.54s
+INFO: 6 processes: 2 action cache hit, 4 internal, 3 darwin-sandbox.
+INFO: Build completed successfully, 6 total actions
+//:hawdb_unit_recovery_tests                                             PASSED in 434.4s
+
+Executed 1 out of 1 test: 1 test passes.
