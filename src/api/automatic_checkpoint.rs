@@ -562,33 +562,88 @@ fn run(
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             loop {
-                if let Some(retired) = state.retired.take() {
-                    #[cfg(all(
-                        test,
-                        feature = "background-maintenance",
-                        not(target_arch = "wasm32")
-                    ))]
-                    let probe = state.retirement_probe.take();
+                if state.stopping {
+                    return;
+                }
+                if let Some(mut retired) = state.retired.take() {
+                    let task = RuntimeTaskContext::default();
+                    state.task = Some(task.clone());
+                    let scope = if state.suspensions == 0 {
+                        RetirementScope::Background
+                    } else {
+                        RetirementScope::CallerRequested
+                    };
                     drop(state);
-                    #[cfg(all(
-                        test,
-                        feature = "background-maintenance",
-                        not(target_arch = "wasm32")
-                    ))]
-                    if let Some(probe) = probe {
-                        probe.observe();
+                    let admission = admit_retirement(&mut retired, &task, scope);
+                    match admission {
+                        Ok(RetirementAdmission::Deferred) => {
+                            state = control
+                                .state
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner());
+                            state.retired = Some(retired);
+                            state.task = None;
+                            state.report.deferred_attempts += 1;
+                            control.changed.notify_all();
+                            if state.stopping || state.suspensions != 0 {
+                                continue;
+                            }
+                            state = control
+                                .changed
+                                .wait_timeout(state, RETRY_DELAY)
+                                .unwrap_or_else(|error| error.into_inner())
+                                .0;
+                            continue;
+                        }
+                        Ok(RetirementAdmission::Granted(wave)) => {
+                            #[cfg(all(
+                                test,
+                                feature = "background-maintenance",
+                                not(target_arch = "wasm32")
+                            ))]
+                            let probe = control
+                                .state
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner())
+                                .retirement_probe
+                                .take();
+                            #[cfg(all(
+                                test,
+                                feature = "background-maintenance",
+                                not(target_arch = "wasm32")
+                            ))]
+                            if let Some(probe) = probe {
+                                probe.observe();
+                            }
+                            let result = retire(retired, &pins);
+                            drop(wave);
+                            state = control
+                                .state
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner());
+                            if result.is_err() {
+                                control.failed.store(true, Ordering::Release);
+                                state.stopping = true;
+                                state.report.failed_attempts += 1;
+                            }
+                        }
+                        Err(_) => {
+                            // Invalid publication/reclamation ownership is
+                            // terminal. Published evidence remains on disk.
+                            drop(retired);
+                            state = control
+                                .state
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner());
+                            control.failed.store(true, Ordering::Release);
+                            state.stopping = true;
+                            state.report.failed_attempts += 1;
+                        }
                     }
-                    retire(retired, &pins);
-                    state = control
-                        .state
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner());
                     state.phase = Phase::Idle;
                     state.task = None;
                     control.changed.notify_all();
-                }
-                if state.stopping {
-                    return;
+                    continue;
                 }
                 let due = state
                     .latest
@@ -807,6 +862,10 @@ fn run(
             }
         })();
         if result.is_ok() {
+            // The complete prefix is durable and no builder or publication
+            // wave remains active. Frontend adoption needs retained memory,
+            // not a CPU or background task slot while the App is idle.
+            admission.runtime.pause();
             let mut state = control
                 .state
                 .lock()
@@ -1001,7 +1060,47 @@ fn prepare(
     Ok(candidate.map(|candidate| (candidate, Admission { runtime })))
 }
 
-fn retire(retired: Retired, pins: &Mutex<ReaderPins>) {
+#[derive(Clone, Copy)]
+enum RetirementScope {
+    Background,
+    // Explicit synchronous maintenance already has a host-owned admission
+    // boundary and must remain usable when background work is unavailable.
+    CallerRequested,
+}
+
+enum RetirementAdmission {
+    Granted(Option<Box<dyn hawdb_core::RuntimeIoWavePermit>>),
+    Deferred,
+}
+
+fn admit_retirement(
+    retired: &mut Retired,
+    task: &RuntimeTaskContext,
+    scope: RetirementScope,
+) -> Result<RetirementAdmission> {
+    if matches!(scope, RetirementScope::CallerRequested) {
+        return Ok(RetirementAdmission::Granted(None));
+    }
+    if retired.admission.runtime.try_resume(task.clone()).is_ok() {
+        let context = retired
+            .admission
+            .runtime
+            .task_context()
+            .expect("retirement execution is admitted");
+        if let Ok(hawdb_core::RuntimeIoWaveTryAcquire::Acquired(wave)) =
+            context.try_acquire_io_wave(std::num::NonZeroUsize::MIN)
+        {
+            return Ok(RetirementAdmission::Granted(wave));
+        }
+    }
+    retired.admission.runtime.pause();
+    retired
+        .candidate
+        .defer_published_generation_reclamation(&mut retired.selected.store)?;
+    Ok(RetirementAdmission::Deferred)
+}
+
+fn retire(retired: Retired, pins: &Mutex<ReaderPins>) -> Result<()> {
     let Retired {
         old,
         mut selected,
@@ -1013,21 +1112,23 @@ fn retire(retired: Retired, pins: &Mutex<ReaderPins>) {
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .pinned_physical_generations();
-    let _ = candidate.reclaim_published_generations(&mut selected.store, &pinned);
+    let result = candidate.reclaim_published_generations(&mut selected.store, &pinned);
     drop(candidate);
     drop(selected);
-    let Admission { runtime } = admission;
-    drop(runtime);
+    drop(admission);
+    result
 }
 
 #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
 mod tests {
     mod execution_progress;
+    mod handoff_execution;
     mod memory_progress;
     mod progress;
     mod qos_units;
     mod read_gate;
     mod read_handoff;
+    mod retirement_io;
 
     use super::*;
     use crate::Database;
@@ -1069,6 +1170,34 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    fn retirement_governor() -> RuntimeGovernor {
+        let governor = RuntimeGovernor::new(
+            hawdb_qos::RuntimeGovernorConfig {
+                cpu_slot_limit: Some(std::num::NonZeroUsize::MIN),
+                background_task_limit: Some(std::num::NonZeroUsize::MIN),
+                memory_budget_bytes: Some(200 * 1024 * 1024),
+                ..hawdb_qos::RuntimeGovernorConfig::shared_host()
+            },
+            hawdb_qos::RuntimeResourceSnapshot::from_parts(
+                hawdb_qos::RuntimeResourceBudget::from_limits(
+                    std::num::NonZeroUsize::MIN,
+                    None,
+                    None,
+                ),
+                hawdb_qos::RuntimeMemorySnapshot::from_limits(
+                    Some(1 << 30),
+                    Some(1 << 30),
+                    None,
+                    None,
+                    None,
+                ),
+            ),
+            hawdb_qos::IoConcurrencyBudget::new(2, 1),
+        );
+        governor.pin_resources();
+        governor
     }
 
     fn governor(bytes: u64) -> RuntimeGovernor {

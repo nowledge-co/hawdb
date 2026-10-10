@@ -433,3 +433,102 @@ fn ordinary_manual_completes_while_automatic_memory_admission_is_denied() {
 fn concurrent_manual_completes_while_automatic_memory_admission_is_denied() {
     pending_manual(true);
 }
+
+fn finish_manual_retirement<T: ManualHost>(
+    fixture: &Fixture,
+    mut host: T,
+    mut old: DatabaseReadTransaction,
+    control: &Control,
+    governor: &RuntimeGovernor,
+) {
+    // Background memory pressure remains critical for the entire manual call.
+    assert_eq!(
+        governor.snapshot().resources.memory.pressure,
+        hawdb_qos::RuntimeMemoryPressure::Critical
+    );
+    assert_eq!(governor.snapshot().active_background_tasks, 0);
+    host.checkpoint().unwrap();
+    let state = control.lock().unwrap();
+    assert_eq!(state.phase, Phase::Idle);
+    assert!(state.retired.is_none());
+    drop(state);
+    let watermark = host.watermark();
+    assert_eq!(watermark.0, watermark.1);
+    assert!(watermark.0 >= 1);
+    assert_eq!(governor.snapshot().active_background_tasks, 0);
+    assert_eq!(governor.snapshot().active_background_io_slots, 0);
+    assert_eq!(governor.snapshot().active_cpu_slots, 0);
+    assert_eq!(host.values().rows, expected(&[1]));
+    assert_eq!(old.query(VALUES).unwrap().rows, expected(&[1]));
+    let copied = Fixture::new();
+    copy_project(&fixture.0, &copied.0);
+    let mut recovered = Database::open_with_config(
+        &copied.0,
+        DatabaseConfig {
+            read_only: true,
+            ..DatabaseConfig::default()
+        },
+    )
+    .unwrap();
+    let report = recovered.storage_recovery_report().unwrap();
+    assert_eq!(report.checkpoint_commit_epoch, Some(watermark.0));
+    assert_eq!(report.replayed_wal_entries, 0);
+    assert_eq!(recovered.query(VALUES).unwrap().rows, expected(&[1]));
+    drop(recovered);
+    drop(old);
+    drop(host);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}
+
+fn denied_retirement_manual(concurrent: bool) {
+    let fixture = Fixture::new();
+    let mut db = Database::open_with_config(
+        &fixture.0,
+        DatabaseConfig {
+            automatic_checkpoint_max_age: Duration::from_millis(20),
+            ..DatabaseConfig::default()
+        },
+    )
+    .unwrap();
+    let suspension = db.runtime.suspend_automatic_checkpoint().unwrap().unwrap();
+    let control = db.runtime.checkpoint_control_for_test();
+    let governor = retirement_governor();
+    db.set_runtime_governor(governor.clone());
+    db.query("CREATE (:Memory {id: 1})").unwrap();
+    let old = db.begin_read_transaction().unwrap();
+    drop(suspension);
+    wait_for(&db, |report| report.completed_checkpoints == 1);
+    let mut resources = governor.snapshot().resources;
+    resources.memory.pressure = hawdb_qos::RuntimeMemoryPressure::Critical;
+    governor.update_resources(resources);
+    drop(db.runtime.get_mut().unwrap());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let state = control.lock().unwrap();
+        if state.retired.is_some() && state.report.deferred_attempts > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "retirement did not defer: {:?}",
+            state.report
+        );
+        drop(state);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    if concurrent {
+        finish_manual_retirement(&fixture, db.into_concurrent(), old, &control, &governor);
+    } else {
+        finish_manual_retirement(&fixture, db, old, &control, &governor);
+    }
+}
+
+#[test]
+fn ordinary_manual_completes_while_adopted_retirement_admission_is_denied() {
+    denied_retirement_manual(false);
+}
+
+#[test]
+fn concurrent_manual_completes_while_adopted_retirement_admission_is_denied() {
+    denied_retirement_manual(true);
+}

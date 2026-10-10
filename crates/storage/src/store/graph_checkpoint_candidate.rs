@@ -689,6 +689,23 @@ impl CheckpointCandidate {
         selected: &mut GraphStore,
         pinned_reader_generations: &BTreeSet<u64>,
     ) -> Result<()> {
+        let (durable, generation, previous) = self.reclamation_runtime(selected)?;
+        durable.reclaim_old_generations(generation, previous, Some(pinned_reader_generations));
+        Ok(())
+    }
+
+    /// Records postponed cleanup on the live runtime without scanning files.
+    /// Existing measured debt is preserved until the next admitted scan.
+    pub fn defer_published_generation_reclamation(&self, selected: &mut GraphStore) -> Result<()> {
+        let (durable, _, _) = self.reclamation_runtime(selected)?;
+        durable.defer_generation_reclamation();
+        Ok(())
+    }
+
+    fn reclamation_runtime<'a>(
+        &self,
+        selected: &'a mut GraphStore,
+    ) -> Result<(&'a mut DurableStore, u64, u64)> {
         let prepared = self.prepared.as_ref().ok_or_else(|| {
             HawDBError::Storage("checkpoint candidate has no publication identity".into())
         })?;
@@ -703,12 +720,11 @@ impl CheckpointCandidate {
                 "checkpoint reclamation must use the selected generation".into(),
             ));
         }
-        durable.reclaim_old_generations(
+        Ok((
+            durable,
             prepared.generation,
             prepared.source_checkpoint_epoch,
-            Some(pinned_reader_generations),
-        );
-        Ok(())
+        ))
     }
 
     fn validate_source(&self, source: &GraphStore) -> Result<()> {

@@ -11571,6 +11571,103 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_deferred_reclamation_preserves_debt_and_rejects_other_runtime() {
+        let path = unique_test_dir("checkpoint_deferred_debt");
+        let other_path = unique_test_dir("checkpoint_deferred_other_runtime");
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::open(&path, &mut catalog).unwrap();
+        for id in 1..=2 {
+            store
+                .create_node(&mut catalog, "Memory", properties([("id", Value::Int(id))]))
+                .unwrap();
+            store.checkpoint(&catalog).unwrap();
+        }
+        store
+            .create_node(&mut catalog, "Memory", properties([("id", Value::Int(3))]))
+            .unwrap();
+        let mut selected = store.checkpoint_source();
+        let expected = selected.checkpoint_source_identity().unwrap();
+        let mut candidate = selected
+            .prepare_checkpoint_candidate(&catalog)
+            .unwrap()
+            .unwrap();
+        candidate.finish_catch_up().unwrap();
+        selected
+            .publish_checkpoint_candidate_deferred_reclamation(&mut candidate, None)
+            .unwrap();
+        drop(store.adopt_selected_checkpoint(selected, expected).unwrap());
+        let mut selected = store.checkpoint_source();
+
+        let stale_file = path.join("checkpoint.1.hawdb");
+        let stale_bytes = std::fs::read(&stale_file).unwrap();
+        candidate
+            .defer_published_generation_reclamation(&mut selected)
+            .unwrap();
+        let unknown = store.storage_pressure_snapshot(None);
+        assert!(unknown.generation_reclamation_retry_required);
+        assert_eq!(unknown.generation_reclamation_pending_files, 0);
+        assert_eq!(unknown.generation_reclamation_pending_bytes, 0);
+        assert_eq!(std::fs::read(&stale_file).unwrap(), stale_bytes);
+
+        set_generation_reclamation_remove_failpoint(Some("checkpoint.1.hawdb".to_string()));
+        let result = candidate.reclaim_published_generations(&mut selected, &BTreeSet::new());
+        set_generation_reclamation_remove_failpoint(None);
+        result.unwrap();
+        let known = store.storage_pressure_snapshot(None);
+        assert!(known.generation_reclamation_retry_required);
+        assert_eq!(known.generation_reclamation_pending_files, 1);
+        assert_eq!(
+            known.generation_reclamation_pending_bytes,
+            stale_bytes.len() as u64
+        );
+        candidate
+            .defer_published_generation_reclamation(&mut selected)
+            .unwrap();
+        let deferred = store.storage_pressure_snapshot(None);
+        assert!(deferred.generation_reclamation_retry_required);
+        assert_eq!(deferred.generation_reclamation_pending_files, 1);
+        assert_eq!(
+            deferred.generation_reclamation_pending_bytes,
+            known.generation_reclamation_pending_bytes
+        );
+        assert_eq!(std::fs::read(&stale_file).unwrap(), stale_bytes);
+
+        let mut other_catalog = Catalog::default();
+        let mut other = GraphStore::open(&other_path, &mut other_catalog).unwrap();
+        assert!(candidate
+            .defer_published_generation_reclamation(&mut other)
+            .is_err());
+        assert!(
+            !other
+                .storage_pressure_snapshot(None)
+                .generation_reclamation_retry_required
+        );
+        assert!(candidate
+            .reclaim_published_generations(&mut other, &BTreeSet::new())
+            .is_err());
+        assert_eq!(std::fs::read(&stale_file).unwrap(), stale_bytes);
+
+        candidate
+            .reclaim_published_generations(&mut selected, &BTreeSet::new())
+            .unwrap();
+        let cleared = store.storage_pressure_snapshot(None);
+        assert!(!cleared.generation_reclamation_retry_required);
+        assert_eq!(cleared.generation_reclamation_pending_files, 0);
+        assert_eq!(cleared.generation_reclamation_pending_bytes, 0);
+        assert!(!stale_file.exists());
+        drop(candidate);
+        drop(selected);
+        drop(store);
+        drop(other);
+        let reopened = GraphStore::open(&path, &mut catalog).unwrap();
+        assert_eq!(reopened.commit_epoch(), 3);
+        assert_eq!(reopened.scan_nodes(None).count(), 3);
+        drop(reopened);
+        std::fs::remove_dir_all(path).unwrap();
+        std::fs::remove_dir_all(other_path).unwrap();
+    }
+
+    #[test]
     fn checkpoint_reclamation_failure_is_reported_and_retried_after_publication() {
         let path = unique_test_dir("checkpoint_reclamation_retry");
         let mut catalog = Catalog::default();

@@ -669,6 +669,15 @@ impl DurableStore {
         ))
     }
 
+    pub(super) fn defer_generation_reclamation(&self) {
+        // Preserve already measured file/byte debt when execution admission
+        // postpones the next scan. Unknown work is explicitly retry-required.
+        self.generation_reclamation_debt
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .retry_required = true;
+    }
+
     pub(super) fn generation_reclamation_debt(&self) -> GenerationReclamationDebt {
         *self
             .generation_reclamation_debt

@@ -2182,11 +2182,42 @@ automatic thresholds, with automatic/background work disabled and in the
 native minimal feature profile. Their durability and successful-return contract
 are unchanged.
 
-This is a partial resource-lifetime correction. Selected candidates waiting for
-frontend adoption still hold execution admission, preparation is not resumable,
+This is a partial resource-lifetime correction. Preparation is not resumable,
 and resource retry uses the existing 100 ms bound. Whole-candidate admission
 still estimates 16 times logical bytes plus 128 MiB. Complete memory/disk/FD/cache
 and cleanup-debt ownership, bounded out-of-core scaling, shorter publication
 gates, idle adoption without another frontend call, complete shared-codec parity,
 physical power-loss qualification and paired release-profile measurements remain
 required before issue #207 and the full replacement contract can be accepted.
+
+### Selected handoff and admitted retirement
+
+After durable selection, the owner parks execution before exposing handoff.
+Waiting for a frontend call retains the original candidate memory reservation,
+but occupies no CPU, background task or physical I/O slot. Actual adoption is
+still required before retirement, so selection does not prove frontend adoption
+or completed reclamation.
+
+Background retirement resumes on the original governor and acquires one actual
+I/O wave before running the existing generation scan and destruction off the
+control gate. Denied execution or I/O admission parks the retirement object,
+releases execution capacity, and records retry-required reclamation debt on the
+shared durable runtime without scanning files. Known pending file/byte counts
+are preserved. Admission recovery retries without requiring another write or
+frontend call. This is one admitted legacy cleanup unit; per-file bounded
+cleanup and the full resource ledger remain required.
+
+Explicit synchronous checkpoint, backup and compaction scopes retain their
+caller-owned admission boundary and can finish retirement even when background
+policy or pressure denies it. Shutdown drops retained work without waiting for
+unrelated background admissions. Neither path weakens checkpoint publication,
+durability or old-reader retention. Publication identity errors in retirement
+now fail the owner closed instead of being ignored; published recovery evidence
+is retained. Physical deletion failures keep the existing observable debt and
+retry contract.
+
+Regression coverage includes the byte-identical before/after handoff fixture,
+an occupied physical I/O wave, invalid retirement ownership, debt preservation
+and both manual facades under critical background pressure. Manual return still
+proves a complete checkpoint: independent read-only reopen needs no WAL replay,
+and snapshots captured before the call keep their original values.
