@@ -115,6 +115,8 @@ fn denied_suffix_resumes(durability: DurabilityPolicy) {
         bytes
     );
     assert_eq!(control.report().unwrap().unwrap().completed_checkpoints, 0);
+    assert_eq!(control.report().unwrap().unwrap().operation_failures, 0);
+    assert!(!control.report().unwrap().unwrap().operation_retry_exhausted);
     assert_eq!(governor.snapshot().active_background_io_slots, 0);
     resources.memory.pressure = hawdb_qos::RuntimeMemoryPressure::Normal;
     governor.update_resources(resources);

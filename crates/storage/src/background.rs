@@ -19,14 +19,14 @@ use std::fmt::Debug;
 mod checkpoint;
 #[cfg(test)]
 pub(crate) use checkpoint::tests::CheckpointWorkProbe;
-pub(crate) use checkpoint::CheckpointOperationError;
 pub(crate) use checkpoint::{
     checkpoint_decode_allocation, CheckpointBytes, CheckpointDecodeContext, CheckpointWorkUnit,
 };
 pub(crate) use checkpoint::{CheckpointAllocationOwner, CheckpointAllocationToken};
 #[doc(hidden)]
 pub use checkpoint::{
-    CheckpointSharedBytes, CheckpointText, CheckpointWorkContext, CheckpointWorkError,
+    CheckpointOperationError, CheckpointSharedBytes, CheckpointText, CheckpointWorkContext,
+    CheckpointWorkError,
 };
 pub(crate) use checkpoint::{CheckpointSharedValues, CheckpointValues};
 

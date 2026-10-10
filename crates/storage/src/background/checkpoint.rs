@@ -73,7 +73,8 @@ impl CheckpointWorkContext {
 
     /// Preserve typed work failures through an existing codec's string errors.
     /// Ordinary operation errors retain their original diagnostic and class.
-    pub(crate) fn classify<T, E>(
+    #[doc(hidden)]
+    pub fn classify<T, E>(
         &self,
         operation: impl FnOnce(&Self) -> Result<T, E>,
     ) -> Result<T, CheckpointOperationError<E>> {
@@ -230,9 +231,17 @@ pub enum CheckpointWorkError {
     Allocation { bytes: u64, reason: String },
 }
 
-pub(crate) enum CheckpointOperationError<E> {
+#[doc(hidden)]
+#[derive(Debug)]
+pub enum CheckpointOperationError<E> {
     Work(CheckpointWorkError),
     Operation(E),
+}
+
+impl<E> From<E> for CheckpointOperationError<E> {
+    fn from(error: E) -> Self {
+        Self::Operation(error)
+    }
 }
 
 impl Display for CheckpointWorkError {

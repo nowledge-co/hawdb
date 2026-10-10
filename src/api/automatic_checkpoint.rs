@@ -20,6 +20,9 @@ use hawdb_core::RuntimeTaskContext;
 use hawdb_qos::{
     RuntimeAdmissionError, RuntimeGovernor, RuntimeMaintenanceWork, RuntimeWorkRequest,
 };
+use hawdb_storage::background::{
+    CheckpointOperationError, CheckpointWorkContext, CheckpointWorkError,
+};
 use hawdb_storage::store::{CheckpointCandidate, CheckpointDebtSnapshot, CheckpointSourceIdentity};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError};
@@ -28,6 +31,7 @@ use std::time::Duration;
 
 const RETRY_DELAY: Duration = Duration::from_millis(100);
 const PLANNING_MEMORY_BYTES: u64 = 64 * 1024;
+const MAX_OPERATION_FAILURES: u8 = 3;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AutomaticCheckpointReport {
@@ -36,6 +40,12 @@ pub struct AutomaticCheckpointReport {
     pub completed_checkpoints: u64,
     pub deferred_attempts: u64,
     pub failed_attempts: u64,
+    /// Non-admission preparation, replay or publication failures.
+    pub operation_failures: u64,
+    /// The owner released its private candidate after three operation failures
+    /// in one durable WAL generation. A successful manual checkpoint resets
+    /// this circuit. Foreground integrity checks continue to apply.
+    pub operation_retry_exhausted: bool,
     /// Source-size traversals started, excluding scalar-only admission retries.
     pub planning_scans: u64,
     pub planning_cache_hits: u64,
@@ -50,6 +60,7 @@ struct PreparationReport {
     planning_scans: u64,
     planning_cache_hits: u64,
     admission_denial: Option<RuntimeAdmissionError>,
+    operation_failed: bool,
 }
 
 #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
@@ -183,6 +194,8 @@ pub(super) struct State {
     last_identity: Option<CheckpointSourceIdentity>,
     sync_group_active: bool,
     attempts_started: u64,
+    operation_failures_in_generation: u8,
+    operation_generation: Option<u64>,
     retirement_deferrals: u64,
     debt: Option<CheckpointDebtSnapshot>,
     selected: Option<Selected>,
@@ -248,6 +261,7 @@ impl Control {
                 && !state.stopping
                 && state.suspensions == 0
                 && !state.sync_group_active
+                && !state.report.operation_retry_exhausted
                 && state.attempts_started == observed_attempts
                 && pressure_pending(&state)
                 && needs_headroom(&state))
@@ -295,6 +309,12 @@ impl Control {
         let finished_group = state.sync_group_active && !store.wal_sync_group_active();
         state.sync_group_active = store.wal_sync_group_active();
         state.debt = store.checkpoint_debt_snapshot();
+        let generation = state.debt.map(|debt| debt.wal_generation);
+        if generation != state.operation_generation {
+            state.operation_generation = generation;
+            state.operation_failures_in_generation = 0;
+            state.report.operation_retry_exhausted = false;
+        }
         let identity = store.checkpoint_source_identity();
         let retired = if identity != state.last_identity || finished_group {
             let retired = state.latest.replace(Source::capture(store, catalog));
@@ -688,6 +708,7 @@ fn run(
                 if state.phase == Phase::Idle
                     && state.suspensions == 0
                     && !state.sync_group_active
+                    && !state.report.operation_retry_exhausted
                     && (due || state.pending.is_some())
                 {
                     #[cfg(all(
@@ -783,7 +804,12 @@ fn run(
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
                 if result.is_err() {
-                    state.report.deferred_attempts += 1;
+                    if preparation_report.operation_failed {
+                        record_operation_failure(&mut state);
+                        state.report.failed_attempts += 1;
+                    } else {
+                        state.report.deferred_attempts += 1;
+                    }
                     #[cfg(all(
                         test,
                         feature = "background-maintenance",
@@ -823,12 +849,14 @@ fn run(
         // A writer that advances during sealing supplies another suffix for
         // this same candidate; it never causes a database-sized base restart.
         let mut expected = None;
-        let result = (|| -> Result<()> {
+        let result = (|| -> std::result::Result<(), CheckpointOperationError<HawDBError>> {
             admission
                 .runtime
                 .try_resume(task.clone())
-                .map_err(|reason| {
-                    HawDBError::Storage(format!("automatic checkpoint resume deferred: {reason}"))
+                .map_err(|_reason| {
+                    CheckpointOperationError::Work(CheckpointWorkError::Contended(
+                        "checkpoint execution admission",
+                    ))
                 })?;
             let admitted_task = admission
                 .runtime
@@ -839,8 +867,8 @@ fn run(
                 let latest = {
                     let mut state = control.lock()?;
                     if state.stopping || state.suspensions != 0 {
-                        return Err(HawDBError::Storage(
-                            "checkpoint candidate cancelled before selection".into(),
+                        return Err(CheckpointOperationError::Work(
+                            CheckpointWorkError::Contended("checkpoint owner suspended"),
                         ));
                     }
                     if state.sync_group_active {
@@ -852,7 +880,9 @@ fn run(
                 if let Some(latest) = latest {
                     source = latest;
                 }
-                candidate.catch_up_with_task_context(&source.store, &admitted_task)?;
+                let work = CheckpointWorkContext::new(admitted_task.clone())
+                    .with_scheduler(scheduler.clone());
+                candidate.catch_up_with_work_context(&source.store, &work)?;
                 candidate.finish_catch_up()?;
                 #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
                 {
@@ -862,14 +892,14 @@ fn run(
                     }
                 }
                 task.checkpoint().map_err(|reason| {
-                    HawDBError::Execution(format!("checkpoint prefix sealing stopped: {reason}"))
+                    CheckpointOperationError::Work(CheckpointWorkError::Stopped(reason))
                 })?;
                 // Admission waits occur before the writer barrier. The final
                 // barrier only compares a sealed identity and publishes it.
                 let _publication_wave = admitted_task
                     .acquire_io_wave(std::num::NonZeroUsize::MIN)
                     .map_err(|reason| {
-                        HawDBError::Execution(format!("checkpoint selector I/O stopped: {reason}"))
+                        CheckpointOperationError::Work(CheckpointWorkError::Io(reason))
                     })?;
                 let mut state = control.lock()?;
                 state.phase = Phase::Draining;
@@ -893,8 +923,8 @@ fn run(
                     continue;
                 }
                 if state.stopping || state.suspensions != 0 || task.checkpoint().is_err() {
-                    return Err(HawDBError::Storage(
-                        "checkpoint cancelled before selector publication".into(),
+                    return Err(CheckpointOperationError::Work(
+                        CheckpointWorkError::Contended("checkpoint owner suspended"),
                     ));
                 }
                 if state.latest.as_ref().is_some_and(|latest| {
@@ -916,7 +946,9 @@ fn run(
                     .store
                     .publish_checkpoint_candidate_deferred_reclamation(&mut candidate, oldest);
                 drop(state);
-                return result.map(|_| ());
+                return result
+                    .map(|_| ())
+                    .map_err(CheckpointOperationError::Operation);
             }
         })();
         if result.is_ok() {
@@ -941,7 +973,17 @@ fn run(
             control.handoff_ready.store(true, Ordering::Release);
             control.changed.notify_all();
         } else {
-            if candidate.can_continue_from(&source.store) {
+            let exhausted = {
+                let mut state = control
+                    .state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if matches!(result, Err(CheckpointOperationError::Operation(_))) {
+                    record_operation_failure(&mut state);
+                }
+                state.report.operation_retry_exhausted
+            };
+            if !exhausted && candidate.can_continue_from(&source.store) {
                 // All builders and physical publication waves have returned.
                 // Retain the private candidate's memory while yielding CPU
                 // and the background task slot before waiting for recovery.
@@ -1053,7 +1095,11 @@ fn due(source: &Source, max_age: Duration) -> bool {
 }
 
 fn next_work_delay(state: &State, max_age: Duration) -> Option<Duration> {
-    if state.phase != Phase::Idle || state.suspensions != 0 || state.sync_group_active {
+    if state.phase != Phase::Idle
+        || state.suspensions != 0
+        || state.sync_group_active
+        || state.report.operation_retry_exhausted
+    {
         return None;
     }
     let debt = state.latest.as_ref()?.store.checkpoint_debt_snapshot()?;
@@ -1071,6 +1117,7 @@ fn prepare(
     report: &mut PreparationReport,
 ) -> Result<Option<(CheckpointCandidate, Admission)>> {
     report.admission_denial = None;
+    report.operation_failed = false;
     task.checkpoint()
         .map_err(|reason| HawDBError::Storage(reason.to_string()))?;
     if !scheduler.policy().background_enabled {
@@ -1104,9 +1151,14 @@ fn prepare(
         )
         .with_scheduler(scheduler.clone());
         report.planning_scans += 1;
-        let bytes = source
-            .store
-            .checkpoint_candidate_admission_bytes_with_work_context(&work)?;
+        let bytes = preparation_result(
+            work.classify(|work| {
+                source
+                    .store
+                    .checkpoint_candidate_admission_bytes_with_work_context(work)
+            }),
+            report,
+        )?;
         source.planned_memory = identity.map(|identity| (identity, bytes));
         bytes
     };
@@ -1126,12 +1178,38 @@ fn prepare(
             .clone(),
     )
     .with_scheduler(scheduler.clone());
-    let candidate = source
-        .store
-        .prepare_checkpoint_candidate_with_work_context(&source.catalog, &work)?;
+    let candidate = preparation_result(
+        work.classify(|work| {
+            source
+                .store
+                .prepare_checkpoint_candidate_with_work_context(&source.catalog, work)
+        }),
+        report,
+    )?;
     task.checkpoint()
         .map_err(|reason| HawDBError::Storage(reason.to_string()))?;
     Ok(candidate.map(|candidate| (candidate, Admission { runtime })))
+}
+
+fn preparation_result<T>(
+    result: std::result::Result<T, CheckpointOperationError<HawDBError>>,
+    report: &mut PreparationReport,
+) -> Result<T> {
+    result.map_err(|error| match error {
+        CheckpointOperationError::Work(error) => HawDBError::from_storage_error(error),
+        CheckpointOperationError::Operation(error) => {
+            report.operation_failed = true;
+            error
+        }
+    })
+}
+
+fn record_operation_failure(state: &mut State) {
+    state.report.operation_failures += 1;
+    state.operation_failures_in_generation =
+        state.operation_failures_in_generation.saturating_add(1);
+    state.report.operation_retry_exhausted =
+        state.operation_failures_in_generation >= MAX_OPERATION_FAILURES;
 }
 
 #[derive(Clone, Copy)]
@@ -1198,6 +1276,7 @@ mod tests {
     mod execution_progress;
     mod handoff_execution;
     mod memory_progress;
+    mod operation_retry;
     mod planning_recovery;
     mod planning_retry;
     mod progress;

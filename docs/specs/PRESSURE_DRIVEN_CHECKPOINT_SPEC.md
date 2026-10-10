@@ -121,6 +121,18 @@ also releases a parked candidate even when report observers retain the owner
 control. Ordinary and concurrent manual checkpoint calls remain available while
 background memory admission is denied.
 
+The owner preserves typed resource/cancellation failures through preparation
+and suffix replay. These deferrals do not consume its operation retry budget.
+Non-admission preparation, replay or publication failures consume a budget of
+three attempts per durable WAL generation. Exhaustion releases the unselected
+candidate and its admission, parks automatic scheduling, and sets
+`AutomaticCheckpointReport::operation_retry_exhausted`; the cumulative
+`operation_failures` counter remains observable. Additional foreground commits
+do not reset this circuit. A successful caller-triggered `checkpoint()` advances
+the durable generation and permits automatic work again. The synchronous manual
+APIs remain available while automatic scheduling is parked. Publication
+uncertainty still retains recovery evidence and fails closed.
+
 This retry path still retains the existing whole-candidate reservation. It does
 not make preparation resumable, establish bounded per-unit owner admission, or
 qualify the default sustained-load envelope; those remain completion gates.

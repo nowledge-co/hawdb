@@ -779,8 +779,36 @@ impl CheckpointCandidate {
         source: &GraphStore,
         task: &RuntimeTaskContext,
     ) -> Result<CheckpointWalTail> {
+        let mut work = crate::background::CheckpointWorkContext::new(task.clone());
+        if let Some(scheduler) = &self.scheduler {
+            work = work.with_scheduler(scheduler.clone());
+        }
+        // Existing callers retain their original operation diagnostics. The
+        // automatic owner uses the classified entry below to choose retries.
+        self.catch_up_checked(source, &work)
+    }
+
+    /// Preserve resource/cancellation denials separately from storage failures
+    /// for an owner deciding whether to retain or retire a private candidate.
+    #[doc(hidden)]
+    pub fn catch_up_with_work_context(
+        &mut self,
+        source: &GraphStore,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> std::result::Result<
+        CheckpointWalTail,
+        crate::background::CheckpointOperationError<HawDBError>,
+    > {
+        work.classify(|work| self.catch_up_checked(source, work))
+    }
+
+    fn catch_up_checked(
+        &mut self,
+        source: &GraphStore,
+        work: &crate::background::CheckpointWorkContext,
+    ) -> Result<CheckpointWalTail> {
         source.ensure_usable()?;
-        replay_checkpoint(task)?;
+        replay_checkpoint(work)?;
         self.validate_source(source)?;
         let durable = source.durable.as_ref().expect("validated durable source");
         if durable.next_lsn == self.captured_next_lsn
@@ -805,7 +833,7 @@ impl CheckpointCandidate {
         self.replay_finalized = false;
         self.recovery_selectors = [None, None];
         self.replay_interrupted = true;
-        let result = self.catch_up_inner(source, task);
+        let result = self.catch_up_inner(source, work);
         // Resource/cancellation/I/O errors before mutation retain the last
         // complete prefix. The apply path marks failures after mutation starts;
         // integrity faults are terminal even when no mutation has occurred.
@@ -821,12 +849,8 @@ impl CheckpointCandidate {
     fn catch_up_inner(
         &mut self,
         source: &GraphStore,
-        task: &RuntimeTaskContext,
+        work: &crate::background::CheckpointWorkContext,
     ) -> Result<CheckpointWalTail> {
-        let mut work = crate::background::CheckpointWorkContext::new(task.clone());
-        if let Some(scheduler) = &self.scheduler {
-            work = work.with_scheduler(scheduler.clone());
-        }
         let original = source.durable.as_ref().expect("validated durable source");
         let prepared = self
             .prepared
@@ -842,7 +866,7 @@ impl CheckpointCandidate {
             .expect("validated candidate owns its catalog");
         let durable = store.durable.as_ref().expect("candidate is durable");
         let path = durable.wal_path.clone();
-        let open_wave = replay_io_wave(task)?;
+        let open_wave = replay_io_wave(work)?;
         let mut output = fs::OpenOptions::new().append(true).open(&path)?;
         let actual_bytes = output.metadata()?.len();
         match self.wal_write_attempt_end {
@@ -850,7 +874,7 @@ impl CheckpointCandidate {
                 if actual_bytes >= self.candidate_wal_bytes && actual_bytes <= attempted_end =>
             {
                 if actual_bytes != self.candidate_wal_bytes {
-                    replay_checkpoint(task)?;
+                    replay_checkpoint(work)?;
                     self.wal_sync_pending = true;
                     output.set_len(self.candidate_wal_bytes)?;
                 }
@@ -875,12 +899,12 @@ impl CheckpointCandidate {
                 self.captured_wal_bytes
                     .max(WAL_BINARY_FILE_HEADER_BYTES as u64),
                 original.wal_bytes,
-                &work,
+                work,
             );
             source.poison_on_storage_error(&cursor);
             let mut cursor = cursor?;
             loop {
-                replay_checkpoint(task)?;
+                replay_checkpoint(work)?;
                 let event = cursor.next();
                 source.poison_on_storage_error(&event);
                 let (
@@ -973,9 +997,9 @@ impl CheckpointCandidate {
                         "checkpoint suffix commit epoch is not contiguous".into(),
                     ));
                 }
-                replay_checkpoint(task)?;
+                replay_checkpoint(work)?;
                 let relational_replay_required = self.relational_replay_required
-                    || wal_op_changes_relational_state(&entry.op, &work)?;
+                    || wal_op_changes_relational_state(&entry.op, work)?;
                 let unchanged_views = if relational_replay_required {
                     None
                 } else {
@@ -997,7 +1021,7 @@ impl CheckpointCandidate {
                     prepared.generation,
                     &payload,
                     bytes - WAL_BINARY_FILE_HEADER_BYTES as u64,
-                    &work,
+                    work,
                 )
                 .map_err(HawDBError::from_storage_error)?;
                 let record_end =
@@ -1015,8 +1039,8 @@ impl CheckpointCandidate {
                     ));
                 }
                 while let Some(fragment) = framed.next().map_err(HawDBError::from_storage_error)? {
-                    replay_checkpoint(task)?;
-                    let write_wave = replay_io_wave(task)?;
+                    replay_checkpoint(work)?;
+                    let write_wave = replay_io_wave(work)?;
                     let end = bytes
                         .checked_add(fragment.encoded_len() as u64)
                         .ok_or_else(|| {
@@ -1033,14 +1057,14 @@ impl CheckpointCandidate {
                     drop(write_wave);
                     // Preserve replay cancellation diagnostics after actual I/O,
                     // before the stream checks for another physical fragment.
-                    replay_checkpoint(task)?;
+                    replay_checkpoint(work)?;
                 }
-                replay_checkpoint(task)?;
+                replay_checkpoint(work)?;
                 drop(payload);
                 // The rolling digest and all three replay counters move only
                 // with a whole schema/data transaction. No database-sized
                 // rollback snapshot is taken for a partially applied record.
-                entry.replay_into_with_boundary(store, catalog, &work, &mut self.failed)?;
+                entry.replay_into_with_boundary(store, catalog, work, &mut self.failed)?;
                 if let Some((rows, indexes)) = unchanged_views {
                     store.publish_relational_row_live_view(rows);
                     store.publish_relational_index_live_view(indexes);
@@ -1071,7 +1095,7 @@ impl CheckpointCandidate {
                 "checkpoint suffix lost a captured commit".into(),
             ));
         }
-        let sync_wave = replay_io_wave(task)?;
+        let sync_wave = replay_io_wave(work)?;
         if output.metadata()?.len() != bytes {
             return Err(HawDBError::StorageIntegrity(
                 "checkpoint WAL writes did not retain every reframed record".into(),
@@ -1080,7 +1104,7 @@ impl CheckpointCandidate {
         output.sync_all()?;
         self.wal_sync_pending = false;
         drop(sync_wave);
-        replay_checkpoint(task)?;
+        replay_checkpoint(work)?;
         let durable = store.durable.as_mut().expect("candidate is durable");
         durable.next_lsn = expected_lsn;
         durable.wal_commit_epoch = store.commit_epoch;
@@ -1146,16 +1170,23 @@ fn wal_op_changes_relational_state(
     Ok(changes)
 }
 
-fn replay_checkpoint(task: &RuntimeTaskContext) -> Result<()> {
-    task.checkpoint()
-        .map_err(|reason| HawDBError::Execution(format!("checkpoint WAL replay stopped: {reason}")))
+fn replay_checkpoint(work: &crate::background::CheckpointWorkContext) -> Result<()> {
+    work.checkpoint().map_err(|error| match error {
+        crate::background::CheckpointWorkError::Stopped(reason) => {
+            HawDBError::Execution(format!("checkpoint WAL replay stopped: {reason}"))
+        }
+        error => HawDBError::from_storage_error(error),
+    })
 }
 
 fn replay_io_wave(
-    task: &RuntimeTaskContext,
+    work: &crate::background::CheckpointWorkContext,
 ) -> Result<Option<Box<dyn hawdb_core::RuntimeIoWavePermit>>> {
-    task.acquire_io_wave(NonZeroUsize::MIN).map_err(|reason| {
-        HawDBError::Execution(format!("checkpoint WAL replay I/O stopped: {reason}"))
+    work.io_wave().map_err(|error| match error {
+        crate::background::CheckpointWorkError::Io(reason) => {
+            HawDBError::Execution(format!("checkpoint WAL replay I/O stopped: {reason}"))
+        }
+        error => HawDBError::from_storage_error(error),
     })
 }
 
