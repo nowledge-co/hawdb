@@ -147,8 +147,9 @@ file, default allowance or durability override was changed.
 
 Frozen production and benchmark tree:
 `738557a05038b258ccf8dbb33ea62d2fe89af0da`, formed by merging current main into
-the PR head and applying review fixes. Evidence, documentation and CI wiring
-added afterward do not change the measured producer or harness. Binary and harness SHA-256 values are
+the PR head and applying review fixes. Evidence, documentation, CI wiring and
+stronger regression assertions added afterward do not change the measured
+producer or harness. Binary and harness SHA-256 values are
 in the observations file. Keep measurement output outside the checkout.
 
 ```console

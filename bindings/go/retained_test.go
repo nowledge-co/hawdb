@@ -257,6 +257,8 @@ func TestRetainedReadAndCloseAreSerialized(t *testing.T) {
 	column := retainedColumn(t, retainedBatch(t, cursor), 0)
 	done := make(chan struct{})
 	ready := make(chan struct{})
+	closed := make(chan struct{})
+	closedRead := make(chan error, 1)
 	go func() {
 		defer close(done)
 		value, valid, err := column.Int64At(8)
@@ -271,20 +273,26 @@ func TestRetainedReadAndCloseAreSerialized(t *testing.T) {
 				if !errors.As(err, &typed) || typed.Code != RetainedClosed {
 					t.Errorf("concurrent close returned %v", err)
 				}
-				return
+				break
 			}
 			if !valid || value != 8 {
 				t.Errorf("concurrent read: %d %v", value, valid)
-				return
+				break
 			}
 		}
+		<-closed
+		_, _, err = column.Int64At(8)
+		closedRead <- err
 	}()
 	<-ready
-	if err := column.Close(); err != nil {
+	err := column.Close()
+	close(closed)
+	if err != nil {
 		t.Fatal(err)
 	}
 	<-done
-	_, _, err := column.Int64At(8)
+	assertRetainedCode(t, <-closedRead, RetainedClosed)
+	_, _, err = column.Int64At(8)
 	assertRetainedCode(t, err, RetainedClosed)
 }
 
