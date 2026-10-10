@@ -46,6 +46,7 @@ type Library struct {
 	bufferFree func(buffer *ffiBuffer)
 	version    func(out *ffiBuffer)
 	openMemory func(errOut *ffiBuffer) unsafe.Pointer
+	retained   *retainedFunctions
 }
 
 // LoadLibrary loads libhawdb_ffi from path. Missing libraries and
@@ -67,6 +68,7 @@ func LoadLibrary(path string) (*Library, error) {
 	if symbol, err := lookupSharedSymbol(handle, "hawdb_open_in_memory"); err == nil {
 		purego.RegisterFunc(&lib.openMemory, symbol)
 	}
+	lib.retained = loadRetainedFunctions(handle)
 	return lib, nil
 }
 

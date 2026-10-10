@@ -3,8 +3,9 @@
 This implements ownership building blocks and an experimental native cursor for
 [issue #987](https://github.com/nowledge-co/hawdb/issues/987), under the
 [columnar interchange proposal](specs/ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md).
-Source snapshot/planning workspace qualification, Go/Python views and Arrow
-export remain incomplete. The complete proposal and #987 remain unfinished.
+Source snapshot/planning workspace qualification, complete C/Go resource
+qualification, Python views and Arrow export remain incomplete. The complete
+proposal and #987 remain unfinished.
 Production hosts continue
 to use the root `hawdb` facade; this internal executor module is not a new
 integration surface.
@@ -169,9 +170,27 @@ Borrowed column descriptors need no new owner and remain tied to the parent
 batch. Their descriptor set is prepaid in the demanded batch. Independently
 owned columns remain readable after parent/database closure. C creation needs
 three shared handles for a minimally readable owned column protocol; a lower
-limit refuses before binding. Go/Python wrappers and Arrow still need their
-own lifecycle and resource qualification. See the
+limit refuses before binding. Foreign resource qualification, Python wrappers
+and Arrow still need their own evidence. See the
 [C contract](../bindings/ffi/README.md#experimental-retained-numeric-abi).
+
+## Experimental pure-Go views
+
+The 64-bit purego adapter calls the versioned C descriptors with cgo disabled.
+`DB.QueryRetained` returns a serialized pull cursor, independently releasable
+batches/columns and explicit typed outcomes. Batch scalar getters use the
+prepaid borrowed descriptor and require no new handle. Column getters read the
+selected native positions directly, with no gathering or mutable slice export.
+An owner lock covers scalar reads and Close; released access refuses. Independent
+retains share allocation identity/ranges and root admission. Owners keep only
+their native handle and Library mapping, not a Go DB or mutable transaction.
+The library already stays mapped for the process lifetime.
+
+SchemaCopy explicitly copies schema metadata; result payload is not JSON,
+base64, IPC or owned Go rows. Finalizers provide a leak safety net, while
+explicit Close releases capacity for retry. The adapter keeps provisional
+state and Backpressure distinct from successful EOF. See the
+[Go interface and example](../bindings/go/README.md).
 
 This is not yet a qualified whole-operation memory bound. Parsing and optimizer
 workspace still need a complete admission/capacity audit. The cursor pins all
@@ -203,8 +222,9 @@ Explicitly increasing slots from two to four cannot bypass shared handles;
 larger cursor row/payload options cannot bypass database limits.
 
 Remaining #987 work includes source/planning workspace admission, complete
-copy/resource/performance profiles, C/purego/Python read-only owners, module
-lifetime, and compatible Arrow export/refusal. The representative large-size
+copy/resource/performance profiles, complete C/Go resource and platform
+qualification, Python read-only owners, and compatible Arrow export/refusal.
+The representative large-size
 baseline and measured bulk boundary in #976 also remain incomplete. UTF-8,
 binary, packed boolean, UUID, recursive layouts, SIMD, graph and FTS extensions
 require their own implementation and evidence; this foundation qualifies none

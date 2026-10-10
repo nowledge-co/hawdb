@@ -91,8 +91,10 @@ The additive `hawdb_retained_*` exports use ABI version 1, checked descriptor
 sizes, fixed-width discriminants and opaque namespace/ID handles. This is an
 experimental adapter for the root numeric cursor described in
 [the retained delivery notes](../../docs/RETAINED_NUMERIC_FOUNDATION.md).
-Complete source/planning admission, allocation/RSS qualification, Go/Python
-views and Arrow export remain unfinished. It does not qualify general queries,
+Complete source/planning admission, allocation/RSS qualification, Python
+views and Arrow export remain unfinished. An experimental purego numeric
+adapter is described in [the Go notes](../go/README.md); its complete resource
+and platform qualification remains open. This does not qualify general queries,
 source reuse or a whole-operation memory bound.
 
 `hawdb_retained_query` takes UTF-8 Cypher and ordinary parameter JSON through
