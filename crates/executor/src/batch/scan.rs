@@ -185,6 +185,43 @@ pub(super) fn stream_index_node_union_seek_batches(
     )
 }
 
+pub(super) fn stream_node_access_batches(
+    variable: &str,
+    label: &str,
+    access: &hawdb_plan_cypher::NodeProjectionAccess,
+    context: BatchReadContext<'_>,
+    execution_limit: ExecutionLimit,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
+    let memory_account = context.memory_ledger.account(
+        QueryMemoryClass::BlockingState,
+        "IndexNodeScanExec",
+        context.memory.blocking_operator_bytes,
+    );
+    let batch_account = context.memory_ledger.account(
+        QueryMemoryClass::PipelineBatch,
+        "IndexNodeScanExec output",
+        context.memory.batch_payload_bytes,
+    );
+    crate::scan::stream_node_access_batches(
+        variable,
+        label,
+        access,
+        NodeScanContext {
+            catalog: context.catalog,
+            store: context.store,
+            execution_limit,
+            memory_budget: context.memory.blocking_operator_bytes,
+            memory_account: &memory_account,
+            batch_memory_budget: context.memory.batch_payload_bytes,
+            batch_memory_account: &batch_account,
+            batch_rows: context.memory.batch_rows.get(),
+            task_context: context.task_context,
+        },
+        emit,
+    )
+}
+
 pub fn stream_visited_node_batches(
     variable: &str,
     context: BatchReadContext<'_>,
@@ -269,6 +306,16 @@ pub(super) fn stream_source_segment_scan_batches(
         memory.batch_payload_bytes,
         context.memory_ledger,
     );
+    let node_account = context.memory_ledger.account(
+        QueryMemoryClass::BlockingState,
+        "SourceSegmentScan node ownership",
+        memory.blocking_operator_bytes,
+    );
+    let mut allocate_slots =
+        |bytes| crate::store::admit_graph_read(&node_account, task_context, bytes);
+    let mut allocations = hawdb_storage::read_view::AdmittedVec::new(
+        &hawdb_storage::read_view::GraphReadAdmission::new(&mut allocate_slots),
+    )?;
     let emitted = Cell::new(0usize);
     let mut emit_output = |batch: BindingBatch| {
         emitted.set(emitted.get().saturating_add(batch.len()));
@@ -288,12 +335,29 @@ pub(super) fn stream_source_segment_scan_batches(
             if execution_limit.is_reached(emitted.get().saturating_add(output.len())) {
                 return Ok(ScanControl::Stop);
             }
-            let Some(node) = store.node_owned(NodeId(row.node_id))? else {
+            let input = store.node_with_allocation(NodeId(row.node_id), None, &mut |bytes| {
+                let bytes = bytes.saturating_add(1024 + variable.len());
+                if !output.is_empty()
+                    && (!node_account.can_reserve(bytes) || output.would_exceed_payload(bytes))
+                {
+                    let control = output.emit(&mut emit_output)?;
+                    allocations.clear();
+                    if control == BatchControl::Stop {
+                        return Ok(None);
+                    }
+                }
+                crate::store::admit_graph_read(&node_account, task_context, bytes).map(Some)
+            })?;
+            if matches!(input, hawdb_storage::read_view::AdmittedNodeRead::Stopped) {
+                return Ok(ScanControl::Stop);
+            }
+            let hawdb_storage::read_view::AdmittedNodeRead::Node(node) = input else {
                 return Err(HawDBError::StorageIntegrity(
                     "SourceSegmentScan sidecar candidate is absent from the canonical graph"
                         .to_string(),
                 ));
             };
+            let (node, allocation) = node.into_parts();
             if source_label_id.is_none_or(|label_id| !node.labels.contains(&label_id))
                 || node.properties != row.properties
             {
@@ -307,11 +371,16 @@ pub(super) fn stream_source_segment_scan_batches(
                 nodes: BTreeMap::from([(variable.to_string(), node)]),
                 relationships: BTreeMap::new(),
             };
+            allocations.try_push(allocation)?;
             if output.push(binding, &mut emit_output)? == BatchControl::Stop {
                 return Ok(ScanControl::Stop);
             }
-            if output.is_full() && output.emit(&mut emit_output)? == BatchControl::Stop {
-                return Ok(ScanControl::Stop);
+            if output.is_full() {
+                let control = output.emit(&mut emit_output)?;
+                allocations.clear();
+                if control == BatchControl::Stop {
+                    return Ok(ScanControl::Stop);
+                }
             }
             Ok(
                 if execution_limit.is_reached(emitted.get().saturating_add(output.len())) {

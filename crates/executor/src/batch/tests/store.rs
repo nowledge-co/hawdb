@@ -97,6 +97,46 @@ impl GraphExecutionRead for ReadFixture {
         }
         Ok(ScanControl::Continue)
     }
+    fn visit_ordered_adjacent_relationships_with_allocation(
+        &self,
+        node_id: NodeId,
+        rel_type: Option<RelTypeId>,
+        direction: AdjacencyDirection,
+        _: crate::store::AdjacencyReadMemory<'_>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedRelationshipRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        for relationship in &self.relationships {
+            if let Some(token) = &self.adjacency_cancellation {
+                token.cancel();
+            }
+            let adjacent = match direction {
+                AdjacencyDirection::Outgoing => relationship.source == node_id,
+                AdjacencyDirection::Incoming => relationship.target == node_id,
+            };
+            if !adjacent || rel_type.is_some_and(|id| relationship.rel_type != id) {
+                continue;
+            }
+            let Some(allocation) =
+                admit(hawdb_core::ids::relationship_allocation_bytes(relationship))?
+            else {
+                return Ok(ScanControl::Stop);
+            };
+            if consumer(
+                hawdb_storage::read_view::AdmittedRelationshipRecord::clone_admitted(
+                    relationship,
+                    allocation,
+                )?,
+            )? == ScanControl::Stop
+            {
+                return Ok(ScanControl::Stop);
+            }
+        }
+        Ok(ScanControl::Continue)
+    }
+
     fn scan_nodes_borrowed<'a>(
         &'a self,
         _: Option<LabelId>,

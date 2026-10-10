@@ -429,3 +429,72 @@ fn host_cohort_consumer_stop_and_error_release_the_full_candidate_window() {
         assert_eq!(source.calls, 8);
     }
 }
+
+#[test]
+fn scoring_overwrite_uses_final_resident_values_at_the_candidate_cap() {
+    for previous in [
+        Value::List(vec![Value::Null; 64]),
+        Value::Map(BTreeMap::from([(
+            "nested".into(),
+            Value::List(vec![Value::Null; 64]),
+        )])),
+        Value::String("existing result text".into()),
+        Value::Float(3.0),
+    ] {
+        let candidate = Binding::values(BTreeMap::from([
+            ("score".into(), Value::Float(0.25)),
+            ("authority".into(), Value::Float(1.0)),
+            (SCORING_RERANK_SCORE_COLUMN.into(), previous),
+        ]));
+        let bytes = crate::binding::binding_memory_bytes(&candidate);
+        let memory = ExecutionMemoryConfig {
+            query_memory_bytes: NonZeroUsize::new(2 * 1024 * 1024).unwrap(),
+            blocking_operator_bytes: NonZeroUsize::new(1024 * 1024).unwrap(),
+            batch_payload_bytes: NonZeroUsize::new(bytes).unwrap(),
+            batch_rows: NonZeroUsize::MIN,
+            ..Default::default()
+        };
+        let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+        let catalog = Catalog::default();
+        let context = BatchExecutionContext {
+            catalog: &catalog,
+            memory: &memory,
+            memory_ledger: &ledger,
+            task_context: None,
+            observer: &crate::observer::NoopExecutionObserver,
+        };
+        let mut source = Source::new(vec![candidate], 1);
+        let mut output = Vec::new();
+        let mut scorer = CohortScorer {
+            expected_rows: 1,
+            ..Default::default()
+        };
+        stream_host_scoring_batches(
+            &PhysicalPlan::EmptyExec,
+            options(1, 1),
+            &mut scorer,
+            &mut source,
+            context,
+            ExecutionLimit::unlimited(),
+            &mut |batch| {
+                assert!(
+                    batch
+                        .iter()
+                        .map(crate::binding::binding_memory_bytes)
+                        .sum::<usize>()
+                        <= bytes
+                );
+                output.extend(batch);
+                Ok(BatchControl::Continue)
+            },
+        )
+        .unwrap();
+        assert_eq!(output.len(), 1);
+        assert_eq!(
+            output[0].values[SCORING_RERANK_SCORE_COLUMN],
+            Value::Float(0.25)
+        );
+        assert_eq!(scorer.calls, 1);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
+    }
+}

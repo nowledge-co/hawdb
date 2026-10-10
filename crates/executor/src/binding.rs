@@ -197,6 +197,24 @@ pub fn binding_memory_bytes(binding: &Binding) -> usize {
     )
 }
 
+/// Estimate an overwritten column from the final borrowed map. Resident
+/// container storage differs from transport payload and must be removed in full.
+pub(crate) fn binding_memory_bytes_replacing_value(
+    binding: &Binding,
+    name: &str,
+    value: &Value,
+) -> usize {
+    binding_memory_bytes_with_values(
+        binding,
+        binding
+            .values
+            .iter()
+            .filter(|(key, _)| key.as_str() != name)
+            .map(|(key, value)| (key.as_str(), value))
+            .chain(std::iter::once((name, value))),
+    )
+}
+
 /// Account a projection's borrowed values with the same retained graph and
 /// entry rules as its final owned Binding, before copying any of those values.
 pub(crate) fn binding_memory_bytes_with_values<'a>(

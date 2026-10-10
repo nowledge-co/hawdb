@@ -228,34 +228,39 @@ impl MatchRuntime<'_> {
                 GraphEntityKind::Relationship => {
                     let source = NodeId(entity_id(values, "source_id")?);
                     let mut found = None;
-                    self.store.visit_ordered_adjacent_relationships_owned(
-                        source,
-                        None,
-                        AdjacencyDirection::Outgoing,
-                        self.adjacency_memory(),
-                        &mut |relationship| {
-                            runtime_checkpoint(self.context.task_context)?;
-                            if relationship.id == RelId(id) {
-                                found = Some(relationship);
-                                Ok(ScanControl::Stop)
-                            } else {
-                                Ok(ScanControl::Continue)
-                            }
-                        },
-                    )?;
-                    let relationship = found.ok_or_else(|| {
+                    self.store
+                        .visit_ordered_adjacent_relationships_with_allocation(
+                            source,
+                            None,
+                            AdjacencyDirection::Outgoing,
+                            self.adjacency_memory(),
+                            &mut |bytes| {
+                                admit_graph_read(
+                                    self.account,
+                                    self.context.task_context,
+                                    bytes
+                                        .saturating_add(import.variable.len())
+                                        .saturating_add(1024),
+                                )
+                                .map(Some)
+                            },
+                            &mut |input| {
+                                let (relationship, allocation) = input.into_parts();
+                                runtime_checkpoint(self.context.task_context)?;
+                                if relationship.id == RelId(id) {
+                                    found = Some((relationship, allocation));
+                                    Ok(ScanControl::Stop)
+                                } else {
+                                    Ok(ScanControl::Continue)
+                                }
+                            },
+                        )?;
+                    let (relationship, allocation) = found.ok_or_else(|| {
                         HawDBError::Execution(
                             "bound relationship disappeared during MATCH".to_string(),
                         )
                     })?;
-                    leases.try_push(admit_graph_read(
-                        self.account,
-                        self.context.task_context,
-                        import
-                            .variable
-                            .len()
-                            .saturating_add(relationship_memory_bytes(&relationship)),
-                    )?)?;
+                    leases.try_push(allocation)?;
                     row.relationships
                         .insert(import.variable.clone(), relationship);
                 }
@@ -307,20 +312,29 @@ impl MatchRuntime<'_> {
                         None
                     }
                 });
-                self.store.visit_nodes_owned(label, &mut |node| {
-                    runtime_checkpoint(self.context.task_context)?;
-                    if !self.node_matches(pattern, &node) {
-                        return Ok(ScanControl::Continue);
-                    }
-                    let _lease = self.account.reserve(
-                        binding_memory_bytes(row)
-                            .saturating_add(node_memory_bytes(&node))
-                            .saturating_add(pattern.variable.len()),
-                    )?;
-                    let mut next = row.clone();
-                    next.nodes.insert(pattern.variable.clone(), node);
-                    self.visit(index + 1, &next, used, emit)
-                })
+                self.store.visit_nodes_with_allocation(
+                    label,
+                    &mut |bytes| {
+                        crate::store::admit_graph_read(
+                            self.account,
+                            self.context.task_context,
+                            bytes
+                                .saturating_add(binding_memory_bytes(row))
+                                .saturating_add(1024 + pattern.variable.len()),
+                        )
+                        .map(Some)
+                    },
+                    &mut |input| {
+                        let (node, _allocation) = input.into_parts();
+                        runtime_checkpoint(self.context.task_context)?;
+                        if !self.node_matches(pattern, &node) {
+                            return Ok(ScanControl::Continue);
+                        }
+                        let mut next = row.clone();
+                        next.nodes.insert(pattern.variable.clone(), node);
+                        self.visit(index + 1, &next, used, emit)
+                    },
+                )
             }
             GraphMatchStep::Expand {
                 source,

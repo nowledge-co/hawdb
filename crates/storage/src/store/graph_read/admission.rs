@@ -118,15 +118,7 @@ impl<'a> ProjectionAdmission<'a> {
         keys.try_insert(key).map_err(|error| self.refusal(error))
     }
 
-    pub(super) fn live(
-        &self,
-        node: &NodeRecord,
-        properties: &BTreeSet<String>,
-    ) -> std::result::Result<AdmittedProjection, CanonicalSegmentError> {
-        self.live_selection(node, Some(properties))
-    }
-
-    fn live_selection(
+    pub(super) fn live_selection(
         &self,
         node: &NodeRecord,
         properties: Option<&BTreeSet<String>>,
@@ -167,6 +159,29 @@ impl<'a> ProjectionAdmission<'a> {
             }))
     }
 
+    pub(super) fn canonical_selection(
+        &self,
+        reader: &CanonicalSegmentReader,
+        id: NodeId,
+        properties: Option<&BTreeSet<String>>,
+    ) -> std::result::Result<Option<AdmittedProjection>, CanonicalSegmentError> {
+        if let Some(properties) = properties {
+            return self.canonical(reader, id, properties);
+        }
+        let Some(bytes) = reader.node_allocation_bytes(id, None)? else {
+            return Ok(None);
+        };
+        let allocation = self.reserve(bytes)?;
+        Ok(reader.get_node(id)?.map(|node| AdmittedProjection {
+            node: ProjectedNodeRecord {
+                id: node.id,
+                labels: node.labels,
+                properties: node.properties,
+            },
+            _allocation: allocation,
+        }))
+    }
+
     pub(super) fn input(
         &self,
         input: crate::canonical::CanonicalNodeInput<'_>,
@@ -175,7 +190,7 @@ impl<'a> ProjectionAdmission<'a> {
         self.input_selection(input, Some(properties))
     }
 
-    fn input_selection(
+    pub(super) fn input_selection(
         &self,
         input: crate::canonical::CanonicalNodeInput<'_>,
         properties: Option<&BTreeSet<String>>,
@@ -187,16 +202,7 @@ impl<'a> ProjectionAdmission<'a> {
         })
     }
 
-    pub(super) fn visit_live(
-        &self,
-        node: &NodeRecord,
-        properties: &BTreeSet<String>,
-        consumer: &mut impl FnMut(AdmittedProjection) -> GraphScanControl,
-    ) -> GraphScanControl {
-        self.visit_live_selection(node, Some(properties), consumer)
-    }
-
-    fn visit_live_selection(
+    pub(super) fn visit_live_selection(
         &self,
         node: &NodeRecord,
         properties: Option<&BTreeSet<String>>,
@@ -268,6 +274,30 @@ impl GraphStore {
         admission.finish(result)
     }
 
+    /// Indexed full records share selected-read admission without copying an
+    /// intermediate full node or discarding the source's allocation lease.
+    pub fn visit_nodes_by_access_with_allocation(
+        &self,
+        label_id: LabelId,
+        access: &hawdb_plan_cypher::NodeProjectionAccess,
+        admit: &mut ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(AdmittedNodeRecord) -> Result<GraphScanControl>,
+    ) -> Result<GraphScanControl> {
+        let admission = ProjectionAdmission::new_controlled(admit);
+        let result = self.visit_projected_nodes_by_access_with_admission(
+            label_id,
+            access,
+            None,
+            &admission,
+            |node| {
+                admission.consume_allocated(node, &mut |input| {
+                    consumer(AdmittedNodeRecord::from_full_projection(input))
+                })
+            },
+        );
+        admission.finish(result)
+    }
+
     /// Transfer each selected record's admitted allocation to its consumer.
     /// Returning None from admission stops before value cloning/decoding.
     pub fn visit_projected_nodes_with_allocation(
@@ -312,7 +342,7 @@ impl GraphStore {
         let result = self.visit_projected_nodes_by_access_with_admission(
             label_id,
             access,
-            properties,
+            Some(properties),
             &admission,
             |node| admission.consume(node, consumer),
         );
@@ -333,7 +363,7 @@ impl GraphStore {
             label_id,
             property,
             values,
-            properties,
+            Some(properties),
             &admission,
             |node| admission.consume(node, consumer),
         );
@@ -350,7 +380,7 @@ impl GraphStore {
         self.visit_selected_nodes_with_admission(label_id, Some(properties), admission, consumer)
     }
 
-    fn visit_selected_nodes_with_admission(
+    pub(super) fn visit_selected_nodes_with_admission(
         &self,
         label_id: Option<LabelId>,
         properties: Option<&BTreeSet<String>>,
@@ -422,7 +452,7 @@ impl GraphStore {
         label: LabelId,
         property: &str,
         values: &[Value],
-        properties: &BTreeSet<String>,
+        properties: Option<&BTreeSet<String>>,
         admission: &ProjectionAdmission<'_>,
         mut consumer: impl FnMut(AdmittedProjection) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
@@ -447,7 +477,7 @@ impl GraphStore {
                             return Ok(CanonicalScanControl::Continue);
                         }
                         admission.insert_key(&mut seen, input.id())?;
-                        let node = admission.input(input, properties)?;
+                        let node = admission.input_selection(input, properties)?;
                         if consumer(node) == GraphScanControl::Stop {
                             graph_control = GraphScanControl::Stop;
                             return Ok(CanonicalScanControl::Stop);
@@ -466,7 +496,8 @@ impl GraphStore {
                     .properties
                     .get(property)
                     .is_some_and(|candidate| values.iter().any(|value| candidate == value))
-                && admission.visit_live(node, properties, &mut consumer) == GraphScanControl::Stop
+                && admission.visit_live_selection(node, properties, &mut consumer)
+                    == GraphScanControl::Stop
             {
                 return Ok(GraphScanControl::Stop);
             }
@@ -477,7 +508,7 @@ impl GraphStore {
     pub(super) fn visit_projected_nodes_filtered_with_admission(
         &self,
         label_id: LabelId,
-        properties: &BTreeSet<String>,
+        properties: Option<&BTreeSet<String>>,
         admission: &ProjectionAdmission<'_>,
         mut matches: impl FnMut(&BTreeMap<String, Value>) -> bool,
         mut consumer: impl FnMut(AdmittedProjection) -> GraphScanControl,
@@ -487,7 +518,7 @@ impl GraphStore {
             for node in self.nodes.values() {
                 if node.labels.contains(&label_id)
                     && matches(&node.properties)
-                    && admission.visit_live(node, properties, &mut consumer)
+                    && admission.visit_live_selection(node, properties, &mut consumer)
                         == GraphScanControl::Stop
                 {
                     return Ok(GraphScanControl::Stop);
@@ -495,7 +526,7 @@ impl GraphStore {
             }
             return Ok(GraphScanControl::Continue);
         }
-        self.visit_projected_nodes_with_admission(Some(label_id), properties, admission, |node| {
+        self.visit_selected_nodes_with_admission(Some(label_id), properties, admission, |node| {
             if matches(&node.properties) {
                 consumer(node)
             } else {

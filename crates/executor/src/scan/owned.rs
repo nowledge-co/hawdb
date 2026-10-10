@@ -12,6 +12,25 @@ use hawdb_storage::read_view::{
 };
 use std::cell::RefCell;
 
+/// Reserve access-key clones before constructing an owned index descriptor.
+pub(crate) fn admit_access_copy<'a>(
+    account: &QueryMemoryAccount,
+    task_context: Option<&RuntimeTaskContext>,
+    properties: impl Iterator<Item = &'a str>,
+    values: impl Iterator<Item = &'a Value>,
+) -> Result<Box<dyn GraphReadAllocation>> {
+    let bytes = properties
+        .fold(3 * std::mem::size_of::<usize>(), |total, key| {
+            total
+                .saturating_add(key.len())
+                .saturating_add(std::mem::size_of::<String>())
+        })
+        .saturating_add(values.fold(0usize, |total, value| {
+            total.saturating_add(crate::binding::value_memory_bytes(value))
+        }));
+    admit_graph_read(account, task_context, bytes)
+}
+
 // Cover the outer binding map and row slot in addition to storage's node
 // allocation. The source reservation survives the output batch's callback.
 fn binding_overhead(variable: &str) -> usize {
@@ -20,7 +39,7 @@ fn binding_overhead(variable: &str) -> usize {
         .saturating_add(variable.len())
 }
 
-fn allocation_vector(
+pub(super) fn allocation_vector(
     context: NodeScanContext<'_>,
 ) -> Result<AdmittedVec<Box<dyn GraphReadAllocation>>> {
     let account = context.memory_account.sibling(
@@ -270,4 +289,38 @@ pub(super) fn materialize(
     )?;
     record_fallback(&visit, context, observer, output.len());
     Ok(output)
+}
+
+/// Use the same before-ownership batch boundary for every full-node access path.
+pub(super) fn stream_visited(
+    spec: NodeScanSpec<'_>,
+    context: NodeScanContext<'_>,
+    predicate: &mut dyn FnMut(&Binding) -> Result<bool>,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+    visit: impl FnOnce(
+        &mut ControlledGraphReadAllocator<'_>,
+        &mut dyn FnMut(hawdb_storage::read_view::AdmittedNodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl>,
+) -> Result<BatchControl> {
+    let state = RefCell::new(OwnedNodeBatch {
+        spec,
+        context,
+        predicate,
+        emit,
+        batch: context.output_batch("IndexNodeScanExec"),
+        allocations: allocation_vector(context)?,
+        emitted: 0,
+        stopped: false,
+    });
+    let control = visit(&mut |bytes| state.borrow_mut().admit(bytes), &mut |input| {
+        let (node, allocation) = input.into_parts();
+        state.borrow_mut().push(node, allocation)
+    })?;
+    let mut state = state.into_inner();
+    state.flush()?;
+    Ok(if state.stopped || control == ScanControl::Stop {
+        BatchControl::Stop
+    } else {
+        BatchControl::Continue
+    })
 }

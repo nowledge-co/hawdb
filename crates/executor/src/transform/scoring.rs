@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::binding::{binding_memory_bytes, value_payload_bytes};
+use crate::binding::{binding_memory_bytes, binding_memory_bytes_replacing_value};
 use crate::blocking::stream_top_n_batches;
 use crate::observer::ExecutionObserver;
 use crate::pipeline::{
@@ -241,16 +241,11 @@ impl BindingBatchSource for ScoringSource<'_, '_> {
                 if context.observer.seed_graph_scoring_input().is_some() {
                     crate::scoring::strip_seed_annotations(&mut binding);
                 }
-                let public_bytes = binding_memory_bytes(&binding);
-                let bytes = match binding.values.get(SCORING_RERANK_SCORE_COLUMN) {
-                    Some(previous) => public_bytes
-                        .saturating_sub(value_payload_bytes(previous))
-                        .saturating_add(std::mem::size_of::<f64>()),
-                    None => public_bytes
-                        .saturating_add(SCORING_RERANK_SCORE_COLUMN.len())
-                        .saturating_add(std::mem::size_of::<f64>())
-                        .saturating_add(std::mem::size_of::<usize>() * 6),
-                };
+                let bytes = binding_memory_bytes_replacing_value(
+                    &binding,
+                    SCORING_RERANK_SCORE_COLUMN,
+                    &Value::Float(0.0),
+                );
                 if bytes > context.memory.batch_payload_bytes.get() {
                     return Err(HawDBError::Execution(format!(
                         "scored row uses {bytes} bytes, exceeding batch_payload_bytes {}",

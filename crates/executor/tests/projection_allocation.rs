@@ -1526,8 +1526,26 @@ fn owned_numeric_buffer_refuses_small_validity_capacity_before_allocation() {
     assert_eq!(ledger.snapshot().used_bytes, 0);
 }
 
+#[derive(Clone, Copy)]
+enum FullNodeSource {
+    Scan,
+    Index,
+    Lookup(bool),
+    IndexKey,
+    LookupKey,
+}
+
 fn run_full_node_scan_admission(persisted: bool, materialized: bool) {
+    run_full_node_source_admission(persisted, materialized, FullNodeSource::Scan)
+}
+
+fn run_full_node_source_admission(persisted: bool, materialized: bool, source: FullNodeSource) {
     let size = 1024 * 1024 + 137;
+    let key = if matches!(source, FullNodeSource::IndexKey | FullNodeSource::LookupKey) {
+        "K".repeat(size)
+    } else {
+        "target".into()
+    };
     let directory = persisted.then(StoredPropertyDirectory::new);
     let replay = hawdb_storage::store::WalReplayConfig {
         residency_mode: hawdb_storage::store::StorageResidencyMode::OutOfCore,
@@ -1556,11 +1574,27 @@ fn run_full_node_scan_admission(persisted: bool, materialized: bool) {
             false,
         )
         .unwrap();
+    store
+        .create_property_descriptor(
+            &mut catalog,
+            TableKind::Node,
+            "Memory",
+            "id",
+            PropertyType::String,
+            false,
+        )
+        .unwrap();
+    store
+        .create_property_index(&mut catalog, "Memory", "id")
+        .unwrap();
     let id = store
         .create_node(
             &mut catalog,
             "Memory",
-            BTreeMap::from([("body".into(), Value::String("X".repeat(size)))]),
+            BTreeMap::from([
+                ("body".into(), Value::String("X".repeat(size))),
+                ("id".into(), Value::String(key.clone())),
+            ]),
         )
         .unwrap();
     if let Some(directory) = &directory {
@@ -1576,9 +1610,18 @@ fn run_full_node_scan_admission(persisted: bool, materialized: bool) {
         .unwrap();
     }
     assert_eq!(store.is_out_of_core(), persisted);
-    let plan = PhysicalPlan::SeqNodeScan {
-        variable: "n".into(),
-        label: "Memory".into(),
+    let plan = if matches!(source, FullNodeSource::Index | FullNodeSource::IndexKey) {
+        PhysicalPlan::IndexNodeSeek {
+            variable: "n".into(),
+            label: "Memory".into(),
+            property: "id".into(),
+            value: Value::String(key.clone()),
+        }
+    } else {
+        PhysicalPlan::SeqNodeScan {
+            variable: "n".into(),
+            label: "Memory".into(),
+        }
     };
     let memory = ExecutionMemoryConfig {
         query_memory_bytes: nz(16 * 1024 * 1024),
@@ -1606,8 +1649,43 @@ fn run_full_node_scan_admission(persisted: bool, materialized: bool) {
         "full node batch guard",
         memory.batch_payload_bytes,
     );
+    let lookup_input = vec![hawdb_executor::binding::Binding::values(BTreeMap::from([
+        ("seed".into(), Value::String(key.clone())),
+    ]))];
     let window = AllocationWindow::start(size);
-    let result = if materialized {
+    let result = if matches!(
+        source,
+        FullNodeSource::Lookup(_) | FullNodeSource::LookupKey
+    ) {
+        let indexed = !matches!(source, FullNodeSource::Lookup(false));
+        hawdb_executor::scan::execute_node_column_lookup(
+            hawdb_executor::scan::NodeColumnLookupSpec {
+                variable: "n",
+                label: if indexed { "Memory" } else { "" },
+                property: "id",
+                column: "seed",
+                optional: false,
+                node_visibility_predicate: None,
+            },
+            lookup_input,
+            hawdb_executor::scan::NodeScanContext {
+                catalog: &catalog,
+                store: &store,
+                execution_limit: ExecutionLimit::unlimited(),
+                memory_budget: memory.blocking_operator_bytes,
+                memory_account: &input_account,
+                batch_memory_budget: memory.batch_payload_bytes,
+                batch_memory_account: &batch_account,
+                batch_rows: memory.batch_rows.get(),
+                task_context: None,
+            },
+            &observer,
+        )
+        .map(|output| {
+            rows.set(output.len());
+            BatchControl::Continue
+        })
+    } else if materialized {
         hawdb_executor::scan::execute_node_scan(
             hawdb_executor::scan::NodeScanSpec {
                 variable: "n",
@@ -2651,5 +2729,34 @@ fn relationship_owned_read_filtered_ordering_admits_before_native_or_indexed_cop
             assert!(report.is_some_and(|report| report.pruned));
         }
         assert_eq!(generous.snapshot().used_bytes, 0);
+    }
+}
+
+#[test]
+fn full_node_index_source_admits_native_and_cold_payload_before_clone() {
+    for persisted in [false, true] {
+        run_full_node_source_admission(persisted, false, FullNodeSource::Index);
+    }
+}
+
+#[test]
+fn full_node_lookup_sources_admit_native_and_cold_payload_before_clone() {
+    for persisted in [false, true] {
+        for indexed in [false, true] {
+            run_full_node_source_admission(persisted, true, FullNodeSource::Lookup(indexed));
+        }
+    }
+}
+
+#[test]
+fn full_node_index_key_copy_admitted_before_parameter_clone() {
+    for persisted in [false, true] {
+        run_full_node_source_admission(persisted, false, FullNodeSource::IndexKey);
+    }
+}
+#[test]
+fn full_node_lookup_key_copy_admitted_before_parameter_clone() {
+    for persisted in [false, true] {
+        run_full_node_source_admission(persisted, true, FullNodeSource::LookupKey);
     }
 }

@@ -14,7 +14,7 @@
 
 //! Storage-implementation-neutral node scan and lookup operators.
 
-mod owned;
+pub(crate) mod owned;
 
 use crate::binding::{binding_memory_bytes, projected_node_binding_memory_bytes, Binding};
 use crate::expression::{
@@ -95,9 +95,6 @@ impl<'a> NodeScanContext<'a> {
                 crate::store::admit_graph_read(self.memory_account, self.task_context, bytes)
             },
         )
-    }
-    fn memory_tracker(self) -> OperatorMemoryTracker {
-        OperatorMemoryTracker::with_account(self.memory_budget, self.memory_account.clone())
     }
 
     fn output_batch(self, operator: &'static str) -> AccountedBindingBatch {
@@ -717,6 +714,34 @@ pub fn execute_node_scan(
     owned::materialize(spec, context, predicate, observer)
 }
 
+/// Budgeted full-node index operators share the ordinary scan batch owner.
+pub fn stream_node_access_batches(
+    variable: &str,
+    label: &str,
+    access: &NodeProjectionAccess,
+    context: NodeScanContext<'_>,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
+    let Some(label_id) = context.catalog.label_id(label) else {
+        return Ok(BatchControl::Continue);
+    };
+    owned::stream_visited(
+        NodeScanSpec {
+            variable,
+            label,
+            property_filter: None,
+        },
+        context,
+        &mut |_| Ok(true),
+        emit,
+        |admit, consumer| {
+            context
+                .store
+                .visit_nodes_by_access_with_allocation(label_id, access, admit, consumer)
+        },
+    )
+}
+
 pub fn stream_index_node_seek_batches(
     variable: &str,
     label: &str,
@@ -729,28 +754,35 @@ pub fn stream_index_node_seek_batches(
     let Some(label_id) = context.catalog.label_id(label) else {
         return Ok(BatchControl::Continue);
     };
-    let mut batch = context.output_batch("IndexNodeSeekExec");
-    let mut emitted = 0usize;
     let mut matched = 0usize;
-    let mut visit = |node| {
-        matched = matched.saturating_add(1);
-        if batch.push(node_binding(variable, node), emit)? == BatchControl::Stop {
-            return Ok(ScanControl::Stop);
-        }
-        emitted = emitted.saturating_add(1);
-        if batch.is_full() && batch.emit(emit)? == BatchControl::Stop {
-            return Ok(ScanControl::Stop);
-        }
-        Ok(if context.execution_limit.is_reached(emitted) {
-            ScanControl::Stop
-        } else {
-            ScanControl::Continue
-        })
+    let _access_copy = owned::admit_access_copy(
+        context.memory_account,
+        context.task_context,
+        std::iter::once(property),
+        values.iter(),
+    )?;
+    let access = NodeProjectionAccess::PropertyValues {
+        property: property.to_owned(),
+        values: values.to_vec(),
     };
-    let control = context
-        .store
-        .visit_nodes_by_property_owned(label_id, property, values, &mut visit)?;
-    let final_emit_control = batch.emit(emit)?;
+    let control = owned::stream_visited(
+        NodeScanSpec {
+            variable,
+            label,
+            property_filter: None,
+        },
+        context,
+        &mut |_| {
+            matched = matched.saturating_add(1);
+            Ok(true)
+        },
+        emit,
+        |admit, consumer| {
+            context
+                .store
+                .visit_nodes_by_access_with_allocation(label_id, &access, admit, consumer)
+        },
+    )?;
     let candidate_count_before_pruning = context.store.node_count_for_label(Some(label_id));
     observer.record_scan_pruning_report(ScanPruningReport {
         target_kind: ScanPruningTargetKind::Node,
@@ -773,14 +805,7 @@ pub fn stream_index_node_seek_batches(
         output_count: matched.min(context.execution_limit.output_rows.unwrap_or(usize::MAX)),
         filtered_out_count: 0,
     });
-    if final_emit_control == BatchControl::Stop {
-        return Ok(BatchControl::Stop);
-    }
-    Ok(if control == ScanControl::Stop {
-        BatchControl::Stop
-    } else {
-        BatchControl::Continue
-    })
+    Ok(control)
 }
 
 pub fn stream_index_node_union_seek_batches(
@@ -794,41 +819,49 @@ pub fn stream_index_node_union_seek_batches(
     let Some(label_id) = context.catalog.label_id(label) else {
         return Ok(BatchControl::Continue);
     };
-    let mut batch = context.output_batch("IndexNodeUnionSeekExec");
     let mut allocate_keys =
         |bytes| crate::store::admit_graph_read(context.memory_account, context.task_context, bytes);
     let key_admission = hawdb_storage::read_view::GraphReadAdmission::new(&mut allocate_keys);
     let mut seen = hawdb_storage::read_view::AdmittedKeySet::new(&key_admission)?;
     let mut emitted = 0usize;
-    let mut control = ScanControl::Continue;
-    for branch in branches {
-        control = context.store.visit_nodes_by_property_owned(
-            label_id,
-            &branch.property,
-            &branch.values,
-            &mut |node| {
-                if !seen.try_insert(node.id)? {
-                    return Ok(ScanControl::Continue);
+    let control = owned::stream_visited(
+        NodeScanSpec {
+            variable,
+            label,
+            property_filter: None,
+        },
+        context,
+        &mut |binding| {
+            let id = binding.nodes[variable].id;
+            if !seen.try_insert(id)? {
+                return Ok(false);
+            }
+            emitted = emitted.saturating_add(1);
+            Ok(true)
+        },
+        emit,
+        |admit, consumer| {
+            for branch in branches {
+                let _access_copy = owned::admit_access_copy(
+                    context.memory_account,
+                    context.task_context,
+                    std::iter::once(branch.property.as_str()),
+                    branch.values.iter(),
+                )?;
+                let access = NodeProjectionAccess::PropertyValues {
+                    property: branch.property.clone(),
+                    values: branch.values.clone(),
+                };
+                let control = context
+                    .store
+                    .visit_nodes_by_access_with_allocation(label_id, &access, admit, consumer)?;
+                if control == ScanControl::Stop {
+                    return Ok(control);
                 }
-                if batch.push(node_binding(variable, node), emit)? == BatchControl::Stop {
-                    return Ok(ScanControl::Stop);
-                }
-                emitted = emitted.saturating_add(1);
-                if batch.is_full() && batch.emit(emit)? == BatchControl::Stop {
-                    return Ok(ScanControl::Stop);
-                }
-                Ok(if context.execution_limit.is_reached(emitted) {
-                    ScanControl::Stop
-                } else {
-                    ScanControl::Continue
-                })
-            },
-        )?;
-        if control == ScanControl::Stop {
-            break;
-        }
-    }
-    let final_emit_control = batch.emit(emit)?;
+            }
+            Ok(ScanControl::Continue)
+        },
+    )?;
     let candidate_count_before_pruning = context.store.node_count_for_label(Some(label_id));
     observer.record_scan_pruning_report(ScanPruningReport {
         target_kind: ScanPruningTargetKind::Node,
@@ -843,13 +876,7 @@ pub fn stream_index_node_union_seek_batches(
         output_count: emitted,
         filtered_out_count: 0,
     });
-    if final_emit_control == BatchControl::Stop {
-        return Ok(BatchControl::Stop);
-    }
-    Ok(match control {
-        ScanControl::Continue => BatchControl::Continue,
-        ScanControl::Stop => BatchControl::Stop,
-    })
+    Ok(control)
 }
 
 #[derive(Clone, Copy)]
@@ -868,107 +895,57 @@ pub fn execute_node_column_lookup(
     context: NodeScanContext<'_>,
     observer: &dyn ExecutionObserver,
 ) -> Result<Vec<Binding>> {
-    if let Some(Some(label_id)) = exact_scan_label_id(context.catalog, spec.label) {
-        return execute_indexed_node_column_lookup(spec, input, label_id, context, observer);
-    }
-
+    let exact_label = exact_scan_label_id(context.catalog, spec.label).flatten();
     let label_ids = label_ids_for_pattern(context.catalog, spec.label);
-    let mut output = Vec::new();
-    let mut tracker = context.memory_tracker();
-    for binding in input {
-        let expected = binding.values.get(spec.column).ok_or_else(|| {
-            HawDBError::Execution(format!(
-                "missing column '{}' during node column lookup",
-                spec.column
-            ))
-        })?;
-        let mut matched = false;
-        let mut visit = |node: NodeRecord| {
-            if node_matches_label_pattern(&node, label_ids.as_deref())
-                && node.properties.get(spec.property) == Some(expected)
-            {
-                let mut next = binding.clone();
-                next.nodes.insert(spec.variable.to_string(), node);
-                if let Some(predicate) = spec.node_visibility_predicate
-                    && !evaluate_predicate_with_memory(
-                        predicate,
-                        context.catalog,
-                        context.store,
-                        &next,
-                        observer,
-                        AdjacencyReadMemory {
-                            budget_bytes: context.memory_budget.get(),
-                            account: Some(context.memory_account),
-                        },
-                    )?
-                {
-                    return Ok(ScanControl::Continue);
-                }
-                push_bounded_operator_binding(
-                    "NodeColumnLookupExec",
-                    &mut output,
-                    next,
-                    &mut tracker,
-                )?;
-                matched = true;
-                if context.execution_limit.is_reached(output.len()) {
-                    return Ok(ScanControl::Stop);
-                }
-            }
-            Ok(ScanControl::Continue)
-        };
-        if expected != &Value::Null {
-            context.store.visit_nodes_owned(None, &mut visit)?;
-        }
-        if context.execution_limit.is_reached(output.len()) {
-            return Ok(output);
-        }
-        if spec.optional && !matched {
-            let mut next = binding;
-            set_null_node_binding(&mut next, spec.variable);
-            push_bounded_operator_binding("NodeColumnLookupExec", &mut output, next, &mut tracker)?;
-            if context.execution_limit.is_reached(output.len()) {
-                return Ok(output);
+    let mut allocate_keys =
+        |bytes| crate::store::admit_graph_read(context.memory_account, context.task_context, bytes);
+    let admission = hawdb_storage::read_view::GraphReadAdmission::new(&mut allocate_keys);
+    let lookup_value_count = {
+        let mut values = hawdb_storage::read_view::AdmittedKeySet::new(&admission)?;
+        for binding in &input {
+            let value = binding.values.get(spec.column).ok_or_else(|| {
+                HawDBError::Execution(format!(
+                    "missing column '{}' during node column lookup",
+                    spec.column
+                ))
+            })?;
+            if value != &Value::Null {
+                values.try_insert(value)?;
             }
         }
-    }
-    Ok(output)
-}
-
-fn execute_indexed_node_column_lookup(
-    spec: NodeColumnLookupSpec<'_>,
-    input: Vec<Binding>,
-    label_id: LabelId,
-    context: NodeScanContext<'_>,
-    observer: &dyn ExecutionObserver,
-) -> Result<Vec<Binding>> {
-    let mut lookup_values = BTreeSet::new();
-    for binding in &input {
-        let expected = binding.values.get(spec.column).ok_or_else(|| {
-            HawDBError::Execution(format!(
-                "missing column '{}' during node column lookup",
-                spec.column
-            ))
-        })?;
-        if expected != &Value::Null {
-            lookup_values.insert(expected.clone());
-        }
-    }
-
-    let mut unique_candidate_ids = BTreeSet::new();
+        values.len()
+    };
+    let mut unique_ids = hawdb_storage::read_view::AdmittedKeySet::new(&admission)?;
     let mut output = Vec::new();
-    let mut tracker = context.memory_tracker();
+    let mut allocations = owned::allocation_vector(context)?;
+    let mut tracker = OperatorMemoryTracker::new(context.memory_budget);
     for binding in input {
         let expected = binding
             .values
             .get(spec.column)
-            .expect("lookup column was validated before index lookup")
-            .clone();
+            .expect("lookup column was validated");
         let mut matched = false;
-        let mut visit = |node: NodeRecord| {
-            unique_candidate_ids.insert(node.id);
+        let mut admit = |bytes: usize| {
+            crate::store::admit_graph_read(
+                context.memory_account,
+                context.task_context,
+                bytes
+                    .saturating_add(binding_memory_bytes(&binding))
+                    .saturating_add(1024 + spec.variable.len()),
+            )
+            .map(Some)
+        };
+        let mut visit = |input: hawdb_storage::read_view::AdmittedNodeRecord| {
+            runtime_checkpoint(context.task_context)?;
+            let (node, allocation) = input.into_parts();
+            if !node_matches_label_pattern(&node, label_ids.as_deref())
+                || node.properties.get(spec.property) != Some(expected)
+            {
+                return Ok(ScanControl::Continue);
+            }
+            unique_ids.try_insert(node.id)?;
             let mut next = binding.clone();
-            next.nodes.insert(spec.variable.to_string(), node);
+            next.nodes.insert(spec.variable.to_owned(), node);
             if let Some(predicate) = spec.node_visibility_predicate
                 && !evaluate_predicate_with_memory(
                     predicate,
@@ -984,6 +961,7 @@ fn execute_indexed_node_column_lookup(
             {
                 return Ok(ScanControl::Continue);
             }
+            allocations.try_push(allocation)?;
             push_bounded_operator_binding("NodeColumnLookupExec", &mut output, next, &mut tracker)?;
             matched = true;
             Ok(if context.execution_limit.is_reached(output.len()) {
@@ -992,54 +970,53 @@ fn execute_indexed_node_column_lookup(
                 ScanControl::Continue
             })
         };
-        if expected != Value::Null {
-            context.store.visit_nodes_by_property_owned(
-                label_id,
-                spec.property,
-                std::slice::from_ref(&expected),
-                &mut visit,
-            )?;
-        }
-        if context.execution_limit.is_reached(output.len()) {
-            record_node_column_lookup_report(
-                label_id,
-                spec.property,
-                lookup_values.len(),
-                unique_candidate_ids.len(),
-                output.len(),
-                context.store,
-                observer,
-            );
-            return Ok(output);
-        }
-        if spec.optional && !matched {
-            let mut next = binding;
-            set_null_node_binding(&mut next, spec.variable);
-            push_bounded_operator_binding("NodeColumnLookupExec", &mut output, next, &mut tracker)?;
-            if context.execution_limit.is_reached(output.len()) {
-                record_node_column_lookup_report(
-                    label_id,
-                    spec.property,
-                    lookup_values.len(),
-                    unique_candidate_ids.len(),
-                    output.len(),
-                    context.store,
-                    observer,
-                );
-                return Ok(output);
+        if expected != &Value::Null {
+            if let Some(label_id) = exact_label {
+                let _access_copy = owned::admit_access_copy(
+                    context.memory_account,
+                    context.task_context,
+                    std::iter::once(spec.property),
+                    std::iter::once(expected),
+                )?;
+                let access = NodeProjectionAccess::PropertyValues {
+                    property: spec.property.to_owned(),
+                    values: vec![expected.clone()],
+                };
+                context.store.visit_nodes_by_access_with_allocation(
+                    label_id, &access, &mut admit, &mut visit,
+                )?;
+            } else {
+                context
+                    .store
+                    .visit_nodes_with_allocation(None, &mut admit, &mut visit)?;
             }
         }
+        if spec.optional && !matched && !context.execution_limit.is_reached(output.len()) {
+            let allocation = crate::store::admit_graph_read(
+                context.memory_account,
+                context.task_context,
+                binding_memory_bytes(&binding).saturating_add(1024 + spec.variable.len()),
+            )?;
+            let mut next = binding;
+            set_null_node_binding(&mut next, spec.variable);
+            allocations.try_push(allocation)?;
+            push_bounded_operator_binding("NodeColumnLookupExec", &mut output, next, &mut tracker)?;
+        }
+        if context.execution_limit.is_reached(output.len()) {
+            break;
+        }
     }
-
-    record_node_column_lookup_report(
-        label_id,
-        spec.property,
-        lookup_values.len(),
-        unique_candidate_ids.len(),
-        output.len(),
-        context.store,
-        observer,
-    );
+    if let Some(label_id) = exact_label {
+        record_node_column_lookup_report(
+            label_id,
+            spec.property,
+            lookup_value_count,
+            unique_ids.len(),
+            output.len(),
+            context.store,
+            observer,
+        );
+    }
     Ok(output)
 }
 
@@ -1389,6 +1366,42 @@ mod tests {
             Ok(ScanControl::Continue)
         }
 
+        fn visit_ordered_adjacent_relationships_with_allocation(
+            &self,
+            node_id: NodeId,
+            rel_type: Option<RelTypeId>,
+            direction: AdjacencyDirection,
+            memory: AdjacencyReadMemory<'_>,
+            admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+            consumer: &mut dyn FnMut(
+                hawdb_storage::read_view::AdmittedRelationshipRecord,
+            ) -> Result<ScanControl>,
+        ) -> Result<ScanControl> {
+            let _ = memory;
+            let Some(_source) = admit(2048)? else {
+                return Ok(ScanControl::Stop);
+            };
+            self.visit_adjacent_relationships_owned(
+                node_id,
+                rel_type,
+                direction,
+                &mut |relationship| {
+                    let Some(allocation) = admit(hawdb_core::ids::relationship_allocation_bytes(
+                        &relationship,
+                    ))?
+                    else {
+                        return Ok(ScanControl::Stop);
+                    };
+                    consumer(
+                        hawdb_storage::read_view::AdmittedRelationshipRecord::clone_admitted(
+                            &relationship,
+                            allocation,
+                        )?,
+                    )
+                },
+            )
+        }
+
         fn visit_adjacent_relationships_with_filter_owned(
             &self,
             node_id: NodeId,
@@ -1482,6 +1495,60 @@ mod tests {
         .unwrap();
         assert_eq!(control, ScanControl::Stop);
         (emitted, store.relationship_visits.get())
+    }
+
+    fn run_ordered_budget_default_guard(filtered: bool) {
+        {
+            let store = HighDegreeStore {
+                degree: 1,
+                relationship_visits: Cell::new(0),
+            };
+            let memory = AdjacencyReadMemory {
+                budget_bytes: 8,
+                account: None,
+            };
+            let calls = Cell::new(0);
+            let mut consumer = |_| {
+                calls.set(calls.get() + 1);
+                Ok(ScanControl::Continue)
+            };
+            let result = if filtered {
+                store
+                    .visit_ordered_adjacent_relationships_with_filter_owned(
+                        NodeId(0),
+                        Some(RelTypeId(0)),
+                        AdjacencyDirection::Outgoing,
+                        &PropertyFilter::And(Vec::new()),
+                        memory,
+                        &mut consumer,
+                    )
+                    .map(|(control, _)| control)
+            } else {
+                store.visit_ordered_adjacent_relationships_owned(
+                    NodeId(0),
+                    Some(RelTypeId(0)),
+                    AdjacencyDirection::Outgoing,
+                    memory,
+                    &mut consumer,
+                )
+            };
+            assert!(matches!(result, Err(HawDBError::Execution(_))));
+            assert_eq!(
+                store.relationship_visits.get(),
+                0,
+                "legacy source touched before admission"
+            );
+            assert_eq!(calls.get(), 0);
+        }
+    }
+
+    #[test]
+    fn ordered_budget_default_refuses_legacy_unfiltered_owned_reads() {
+        run_ordered_budget_default_guard(false);
+    }
+    #[test]
+    fn ordered_budget_default_refuses_legacy_filtered_owned_reads() {
+        run_ordered_budget_default_guard(true);
     }
 
     #[test]

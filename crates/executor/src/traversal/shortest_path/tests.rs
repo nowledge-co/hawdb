@@ -101,6 +101,37 @@ impl GraphExecutionRead for ChainStore {
         }
         Ok(control)
     }
+    fn visit_ordered_adjacent_relationships_with_allocation(
+        &self,
+        node_id: NodeId,
+        rel_type: Option<RelTypeId>,
+        direction: AdjacencyDirection,
+        memory: AdjacencyReadMemory<'_>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedRelationshipRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        let _ = memory;
+        let Some(_source) = admit(2048)? else {
+            return Ok(ScanControl::Stop);
+        };
+        self.visit_adjacent_relationships_owned(node_id, rel_type, direction, &mut |relationship| {
+            let Some(allocation) = admit(hawdb_core::ids::relationship_allocation_bytes(
+                &relationship,
+            ))?
+            else {
+                return Ok(ScanControl::Stop);
+            };
+            consumer(
+                hawdb_storage::read_view::AdmittedRelationshipRecord::clone_admitted(
+                    &relationship,
+                    allocation,
+                )?,
+            )
+        })
+    }
+
     fn scan_nodes_borrowed<'a>(
         &'a self,
         _: Option<LabelId>,

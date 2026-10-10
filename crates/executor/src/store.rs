@@ -265,6 +265,21 @@ pub trait GraphExecutionRead {
         ))
     }
 
+    /// Indexed full-record ownership must be admitted before payload copying.
+    fn visit_nodes_by_access_with_allocation(
+        &self,
+        _label_id: LabelId,
+        _access: &NodeProjectionAccess,
+        _admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        _consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedNodeRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        Err(hawdb_core::HawDBError::Execution(
+            "storage reader does not support admitted full node index reads".into(),
+        ))
+    }
+
     /// Visits every live relationship, including persisted base records and
     /// uncheckpointed changes, in either residency mode. Stop and callback
     /// errors terminate the scan without further consumer calls.
@@ -457,10 +472,22 @@ pub trait GraphExecutionRead {
         node_id: NodeId,
         rel_type: Option<RelTypeId>,
         direction: AdjacencyDirection,
-        _memory: AdjacencyReadMemory<'_>,
+        memory: AdjacencyReadMemory<'_>,
         consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
-        self.visit_adjacent_relationships_owned(node_id, rel_type, direction, consumer)
+        // The transferable source fails closed for unsupported readers. Never
+        // delegate a budgeted read to a legacy visitor that owns values first.
+        self.visit_ordered_adjacent_relationships_with_allocation(
+            node_id,
+            rel_type,
+            direction,
+            memory,
+            &mut |bytes| memory.admit_node(bytes, 0, None).map(Some),
+            &mut |input| {
+                let (relationship, _allocation) = input.into_parts();
+                consumer(relationship)
+            },
+        )
     }
 
     /// Ordered full relationship sources retain the permit with buffered rows.
@@ -496,12 +523,27 @@ pub trait GraphExecutionRead {
         rel_type: Option<RelTypeId>,
         direction: AdjacencyDirection,
         filter: &PropertyFilter,
-        _memory: AdjacencyReadMemory<'_>,
+        memory: AdjacencyReadMemory<'_>,
         consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
     ) -> Result<(ScanControl, Option<ScanPruningReport>)> {
-        self.visit_adjacent_relationships_with_filter_owned(
-            node_id, rel_type, direction, filter, consumer,
+        self.visit_ordered_adjacent_relationships_owned(
+            node_id,
+            rel_type,
+            direction,
+            memory,
+            &mut |relationship| {
+                if crate::predicate::property_filter_matches_values(
+                    filter,
+                    relationship.id.0,
+                    &relationship.properties,
+                ) {
+                    consumer(relationship)
+                } else {
+                    Ok(ScanControl::Continue)
+                }
+            },
         )
+        .map(|control| (control, None))
     }
 
     fn scan_relationships_with_filter_pruning<'a>(

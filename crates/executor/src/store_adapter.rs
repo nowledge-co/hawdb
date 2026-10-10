@@ -152,6 +152,25 @@ impl GraphExecutionRead for GraphStore {
         .map(to_execution_control)
     }
 
+    fn visit_nodes_by_access_with_allocation(
+        &self,
+        label_id: LabelId,
+        access: &NodeProjectionAccess,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedNodeRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        GraphStore::visit_nodes_by_access_with_allocation(
+            self,
+            label_id,
+            access,
+            admit,
+            &mut |node| consumer(node).map(to_store_control),
+        )
+        .map(to_execution_control)
+    }
+
     fn visit_projected_nodes_admitted(
         &self,
         label_id: Option<LabelId>,

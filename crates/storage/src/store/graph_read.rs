@@ -283,13 +283,13 @@ impl GraphStore {
         &self,
         label_id: LabelId,
         access: &hawdb_plan_cypher::NodeProjectionAccess,
-        required_properties: &BTreeSet<String>,
+        required_properties: Option<&BTreeSet<String>>,
         admission: &ProjectionAdmission<'_>,
         consumer: impl FnMut(AdmittedProjection) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
         match access {
             hawdb_plan_cypher::NodeProjectionAccess::LabelScan => {
-                self.visit_projected_nodes_with_admission(Some(label_id), required_properties, admission, consumer)
+                self.visit_selected_nodes_with_admission(Some(label_id), required_properties, admission, consumer)
             }
             hawdb_plan_cypher::NodeProjectionAccess::PropertyValues { property, values } => self
                 .visit_projected_nodes_by_property_with_admission(
@@ -1252,18 +1252,20 @@ impl GraphStore {
         label_id: LabelId,
         property: &str,
         values: &[Value],
-        required_properties: &BTreeSet<String>,
+        required_properties: Option<&BTreeSet<String>>,
         admission: &ProjectionAdmission<'_>,
         mut consumer: impl FnMut(AdmittedProjection) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
         let Some(reader) = &self.canonical_base else {
-            let mut decode_properties = required_properties.clone();
-            decode_properties.insert(property.to_string());
+            let mut decode_properties = required_properties.cloned();
+            if let Some(properties) = &mut decode_properties {
+                properties.insert(property.to_string());
+            }
             return self.visit_projected_property_fallback_with_admission(
                 label_id,
                 property,
                 values,
-                &decode_properties,
+                decode_properties.as_ref(),
                 admission,
                 consumer,
             );
@@ -1279,20 +1281,24 @@ impl GraphStore {
                 )
             })
         else {
-            let mut decode_properties = required_properties.clone();
-            decode_properties.insert(property.to_string());
+            let mut decode_properties = required_properties.cloned();
+            if let Some(properties) = &mut decode_properties {
+                properties.insert(property.to_string());
+            }
             return self.visit_projected_property_fallback_with_admission(
                 label_id,
                 property,
                 values,
-                &decode_properties,
+                decode_properties.as_ref(),
                 admission,
                 consumer,
             );
         };
 
-        let mut decode_properties = required_properties.clone();
-        decode_properties.insert(property.to_string());
+        let mut decode_properties = required_properties.cloned();
+        if let Some(properties) = &mut decode_properties {
+            properties.insert(property.to_string());
+        }
         let mut seen = admission.key_set()?;
         for value in values {
             let mut graph_control = GraphScanControl::Continue;
@@ -1304,7 +1310,7 @@ impl GraphStore {
                     {
                         return Ok(CanonicalScanControl::Continue);
                     }
-                    let node = admission.canonical(reader, node_id, &decode_properties)?
+                    let node = admission.canonical_selection(reader, node_id, decode_properties.as_ref())?
                         .ok_or_else(|| {
                             PersistentPropertyProjectionError::Corrupt(format!(
                                 "property projection references missing canonical node {}",
@@ -1338,7 +1344,7 @@ impl GraphStore {
                     .properties
                     .get(property)
                     .is_some_and(|candidate| values.iter().any(|value| candidate == value))
-                && admission.visit_live(node, &decode_properties, &mut consumer)
+                && admission.visit_live_selection(node, decode_properties.as_ref(), &mut consumer)
                     == GraphScanControl::Stop
             {
                 return Ok(GraphScanControl::Stop);
@@ -1460,7 +1466,7 @@ impl GraphStore {
         &self,
         label_id: LabelId,
         predicates: &[(String, Value)],
-        required_properties: &BTreeSet<String>,
+        required_properties: Option<&BTreeSet<String>>,
         admission: &ProjectionAdmission<'_>,
         mut consumer: impl FnMut(AdmittedProjection) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
@@ -1478,8 +1484,10 @@ impl GraphStore {
                     .supports_composite_equality(label_id, &properties)
             })
         else {
-            let mut decode_properties = required_properties.clone();
-            decode_properties.extend(properties.iter().cloned());
+            let mut decode_properties = required_properties.cloned();
+            if let Some(selected) = &mut decode_properties {
+                selected.extend(properties.iter().cloned());
+            }
             let mut consume = |node: AdmittedProjection| {
                 if predicates
                     .iter()
@@ -1495,22 +1503,24 @@ impl GraphStore {
                     label_id,
                     property,
                     std::slice::from_ref(value),
-                    &decode_properties,
+                    decode_properties.as_ref(),
                     admission,
                     consume,
                 )
             } else {
-                self.visit_projected_nodes_with_admission(
+                self.visit_selected_nodes_with_admission(
                     Some(label_id),
-                    &decode_properties,
+                    decode_properties.as_ref(),
                     admission,
                     &mut consume,
                 )
             };
         };
 
-        let mut decode_properties = required_properties.clone();
-        decode_properties.extend(properties.iter().cloned());
+        let mut decode_properties = required_properties.cloned();
+        if let Some(selected) = &mut decode_properties {
+            selected.extend(properties.iter().cloned());
+        }
         let values = predicates
             .iter()
             .map(|(_, value)| value)
@@ -1522,7 +1532,7 @@ impl GraphStore {
                     return Ok(CanonicalScanControl::Continue);
                 }
                 let node = admission
-                    .canonical(reader, node_id, &decode_properties)?
+                    .canonical_selection(reader, node_id, decode_properties.as_ref())?
                     .ok_or_else(|| {
                         PersistentPropertyProjectionError::Corrupt(format!(
                             "composite property projection references missing canonical node {}",
@@ -1556,7 +1566,7 @@ impl GraphStore {
                 && predicates
                     .iter()
                     .all(|(property, value)| node.properties.get(property) == Some(value))
-                && admission.visit_live(node, &decode_properties, &mut consumer)
+                && admission.visit_live_selection(node, decode_properties.as_ref(), &mut consumer)
                     == GraphScanControl::Stop
             {
                 return Ok(GraphScanControl::Stop);
@@ -1658,7 +1668,7 @@ impl GraphStore {
         &self,
         label_id: LabelId,
         seek: &hawdb_plan_cypher::CompositeRangeSeek,
-        required_properties: &BTreeSet<String>,
+        required_properties: Option<&BTreeSet<String>>,
         admission: &ProjectionAdmission<'_>,
         mut consumer: impl FnMut(AdmittedProjection) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
@@ -1673,13 +1683,15 @@ impl GraphStore {
                     .supports_composite_equality(label_id, &seek.index_properties)
             })
         else {
-            let mut decode_properties = required_properties.clone();
-            decode_properties.extend(
-                seek.equality_prefix
-                    .iter()
-                    .map(|(property, _)| property.clone()),
-            );
-            decode_properties.insert(seek.range_property.clone());
+            let mut decode_properties = required_properties.cloned();
+            if let Some(properties) = &mut decode_properties {
+                properties.extend(
+                    seek.equality_prefix
+                        .iter()
+                        .map(|(property, _)| property.clone()),
+                );
+                properties.insert(seek.range_property.clone());
+            }
             let (property, value) = seek
                 .equality_prefix
                 .first()
@@ -1688,7 +1700,7 @@ impl GraphStore {
                 label_id,
                 property,
                 std::slice::from_ref(value),
-                &decode_properties,
+                decode_properties.as_ref(),
                 admission,
                 |node| {
                     if projected_node_matches_composite_range(&node, seek) {
@@ -1700,13 +1712,15 @@ impl GraphStore {
             );
         };
 
-        let mut decode_properties = required_properties.clone();
-        decode_properties.extend(
-            seek.equality_prefix
-                .iter()
-                .map(|(property, _)| property.clone()),
-        );
-        decode_properties.insert(seek.range_property.clone());
+        let mut decode_properties = required_properties.cloned();
+        if let Some(properties) = &mut decode_properties {
+            properties.extend(
+                seek.equality_prefix
+                    .iter()
+                    .map(|(property, _)| property.clone()),
+            );
+            properties.insert(seek.range_property.clone());
+        }
         let equality_values = seek
             .equality_prefix
             .iter()
@@ -1726,7 +1740,7 @@ impl GraphStore {
                         return Ok(CanonicalScanControl::Continue);
                     }
                     let node = admission
-                        .canonical(reader, node_id, &decode_properties)?
+                        .canonical_selection(reader, node_id, decode_properties.as_ref())?
                         .ok_or_else(|| {
                             PersistentPropertyProjectionError::Corrupt(format!(
                                 "composite range projection references missing canonical node {}",
@@ -1757,7 +1771,7 @@ impl GraphStore {
         for node in self.nodes.values() {
             if node.labels.contains(&label_id) && node_matches_composite_range(node, seek) {
                 let node = admission
-                    .live(node, &decode_properties)
+                    .live_selection(node, decode_properties.as_ref())
                     .map_err(canonical_segment_error)?;
                 if consumer(node) == GraphScanControl::Stop {
                     return Ok(GraphScanControl::Stop);
@@ -1846,19 +1860,23 @@ impl GraphStore {
         label_id: LabelId,
         property: &str,
         bounds: PropertyRangeBounds<'_>,
-        required_properties: &BTreeSet<String>,
+        required_properties: Option<&BTreeSet<String>>,
         admission: &ProjectionAdmission<'_>,
         mut consumer: impl FnMut(AdmittedProjection) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
         let PropertyRangeBounds { lower, upper } = bounds;
-        let mut decode_properties = required_properties.clone();
-        decode_properties.insert(property.to_string());
+        let mut decode_properties = required_properties.cloned();
+        if let Some(properties) = &mut decode_properties {
+            properties.insert(property.to_string());
+        }
         if let Some(control) =
             self.try_visit_ordered_range(label_id, property, lower, upper, |value, source| {
                 let node = match source {
-                    RangeRecord::Live(node) => admission.live(node, &decode_properties)?,
+                    RangeRecord::Live(node) => {
+                        admission.live_selection(node, decode_properties.as_ref())?
+                    }
                     RangeRecord::Canonical(reader, id) => admission
-                        .canonical(reader, id, &decode_properties)?
+                        .canonical_selection(reader, id, decode_properties.as_ref())?
                         .ok_or_else(|| {
                             PersistentPropertyProjectionError::Corrupt(format!(
                                 "range projection references missing canonical node {}",
@@ -1880,7 +1898,7 @@ impl GraphStore {
         }
         self.visit_projected_nodes_filtered_with_admission(
             label_id,
-            &decode_properties,
+            decode_properties.as_ref(),
             admission,
             |properties| {
                 properties
@@ -2130,7 +2148,7 @@ impl GraphStore {
         label_id: LabelId,
         property: &str,
         query: &str,
-        required_properties: &BTreeSet<String>,
+        required_properties: Option<&BTreeSet<String>>,
         admission: &ProjectionAdmission<'_>,
         mut consumer: impl FnMut(AdmittedProjection) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
@@ -2150,11 +2168,13 @@ impl GraphStore {
                 )
             })
         else {
-            let mut decode_properties = required_properties.clone();
-            decode_properties.insert(property.to_string());
+            let mut decode_properties = required_properties.cloned();
+            if let Some(properties) = &mut decode_properties {
+                properties.insert(property.to_string());
+            }
             return self.visit_projected_nodes_filtered_with_admission(
                 label_id,
-                &decode_properties,
+                decode_properties.as_ref(),
                 admission,
                 |properties| match properties.get(property) {
                     Some(Value::String(value)) => {
@@ -2167,8 +2187,10 @@ impl GraphStore {
             );
         };
 
-        let mut decode_properties = required_properties.clone();
-        decode_properties.insert(property.to_string());
+        let mut decode_properties = required_properties.cloned();
+        if let Some(properties) = &mut decode_properties {
+            properties.insert(property.to_string());
+        }
         let matches_query = |properties: &BTreeMap<String, Value>| match properties.get(property) {
             Some(Value::String(value)) => {
                 let tokens = full_text_index_tokens(value);
@@ -2201,7 +2223,7 @@ impl GraphStore {
                     return Ok(CanonicalScanControl::Continue);
                 }
                 let node = admission
-                    .canonical(reader, node_id, &decode_properties)?
+                    .canonical_selection(reader, node_id, decode_properties.as_ref())?
                     .ok_or_else(|| {
                         PersistentPropertyProjectionError::Corrupt(format!(
                             "property projection references missing canonical node {}",
@@ -2230,7 +2252,7 @@ impl GraphStore {
             }
             if node.labels.contains(&label_id)
                 && matches_query(&node.properties)
-                && admission.visit_live(node, &decode_properties, &mut consumer)
+                && admission.visit_live_selection(node, decode_properties.as_ref(), &mut consumer)
                     == GraphScanControl::Stop
             {
                 return Ok(GraphScanControl::Stop);
