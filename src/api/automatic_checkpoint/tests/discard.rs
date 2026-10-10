@@ -50,6 +50,8 @@ fn cancelled_publication_cleanup_admits_writes_but_fences_manual_generation_reus
     let old = store.snapshot_for_read();
     let governor = retirement_governor();
     let control = Arc::new(Control::default());
+    let (io_paused, io_observed) = std::sync::mpsc::channel();
+    let (io_resume, io_continuation) = std::sync::mpsc::channel();
     let (publication_paused, publication_observed) = std::sync::mpsc::channel();
     let (publication_resume, publication_continuation) = std::sync::mpsc::channel();
     let (discard_paused, discard_observed) = std::sync::mpsc::channel();
@@ -57,6 +59,10 @@ fn cancelled_publication_cleanup_admits_writes_but_fences_manual_generation_reus
     let (manual_wait, manual_waiting) = std::sync::mpsc::channel();
     {
         let mut state = control.lock().unwrap();
+        state.publication_io_probe = Some(Arc::new(OwnerPauseProbe {
+            paused: io_paused,
+            resume: Mutex::new(io_continuation),
+        }));
         state.publication_probe = Some(Arc::new(OwnerPauseProbe {
             paused: publication_paused,
             resume: Mutex::new(publication_continuation),
@@ -81,10 +87,28 @@ fn cancelled_publication_cleanup_admits_writes_but_fences_manual_generation_reus
     )
     .unwrap()
     .unwrap();
+    io_observed.recv_timeout(Duration::from_secs(15)).unwrap();
+    {
+        let state = control.lock_frontend().unwrap();
+        assert_eq!(state.phase, Phase::Preparing);
+        io_resume.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !control.publication_requested.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < deadline,
+                "publication did not park at the writer gate"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(governor.snapshot().active_background_io_slots, 0);
+        assert_eq!(governor.snapshot().active_cpu_slots, 0);
+        drop(state);
+    }
     publication_observed
         .recv_timeout(Duration::from_secs(15))
         .unwrap();
     assert_eq!(control.lock().unwrap().phase, Phase::Draining);
+    assert!(control.publication_requested.load(Ordering::Acquire));
     let suspension = control.suspend().unwrap();
     let (manual_ready, manual_readiness) = std::sync::mpsc::channel();
     let (manual_release, manual_continuation) = std::sync::mpsc::channel();
@@ -107,6 +131,7 @@ fn cancelled_publication_cleanup_admits_writes_but_fences_manual_generation_reus
         discard_observed
             .recv_timeout(Duration::from_secs(15))
             .unwrap();
+        assert!(!control.publication_requested.load(Ordering::Acquire));
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             let phase = manual_waiting

@@ -35,6 +35,47 @@ struct Fixture {
     private_wal_end: u64,
 }
 
+#[test]
+fn suffix_byte_bound_tracks_replay_and_rejects_other_or_regressed_sources() {
+    let mut fixture = Fixture::new();
+    assert_eq!(
+        fixture
+            .candidate
+            .remaining_catch_up_bytes(&fixture.pinned)
+            .unwrap(),
+        0
+    );
+    let expected =
+        fixture.store.durable.as_ref().unwrap().wal_bytes - fixture.candidate.captured_wal_bytes;
+    assert!(expected > 32 * 1024);
+    assert_eq!(
+        fixture
+            .candidate
+            .remaining_catch_up_bytes(&fixture.store)
+            .unwrap(),
+        expected
+    );
+    let foreign = Fixture::new();
+    assert!(fixture
+        .candidate
+        .remaining_catch_up_bytes(&foreign.store)
+        .is_err());
+    fixture.candidate.catch_up(&fixture.store).unwrap();
+    assert_eq!(
+        fixture
+            .candidate
+            .remaining_catch_up_bytes(&fixture.store)
+            .unwrap(),
+        0
+    );
+    assert!(fixture
+        .candidate
+        .remaining_catch_up_bytes(&fixture.pinned)
+        .is_err());
+    fixture.candidate.finish_catch_up().unwrap();
+    fixture.publish_and_reopen();
+}
+
 impl Fixture {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(

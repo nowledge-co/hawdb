@@ -625,6 +625,23 @@ impl CheckpointCandidate {
         self.store.as_ref().map_or(0, GraphStore::commit_epoch)
     }
 
+    /// Bytes in the validated captured suffix still missing from this candidate.
+    /// This does not read the WAL or bound the cost of applying its operations.
+    #[doc(hidden)]
+    pub fn remaining_catch_up_bytes(&self, source: &GraphStore) -> Result<u64> {
+        self.validate_source(source)?;
+        let durable = source
+            .durable
+            .as_ref()
+            .expect("validated source is durable");
+        durable
+            .wal_bytes
+            .checked_sub(self.captured_wal_bytes)
+            .ok_or_else(|| {
+                HawDBError::StorageIntegrity("checkpoint suffix byte bound regressed".into())
+            })
+    }
+
     /// Seals this complete prefix and pins its serving readers outside the
     /// writer gate. Later catch-up extends the same pinned checkpoint base;
     /// its builders and source digest remain available for another seal.

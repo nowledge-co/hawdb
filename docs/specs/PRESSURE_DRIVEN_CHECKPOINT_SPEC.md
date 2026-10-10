@@ -229,8 +229,16 @@ writer identity with the sealed prefix. If that identity advanced, it resumes
 background catch-up on the same pinned base rather than replaying or mounting
 under the final gate. A publication I/O wave is acquired outside the gate. The
 owner only tries the publication mutex while holding that wave; contention
-releases the wave and parks the complete private candidate through the existing
-bounded retry path. It also releases the wave before waiting for an existing
+releases both the wave and execution before waiting for the current writer.
+A scoped publication request makes new writers yield while that sealed candidate
+acquires the mutex. The request is cleared and waiters are notified on every
+exit, including cancellation. A validated suffix of at most 32 KiB can replay
+and seal off the mutex while new writers yield; a larger suffix drops the request
+and returns to ordinary off-gate catch-up. The byte cap does not bound schema
+application, allocation, synchronization latency or total preparation time.
+Publication reacquires execution and I/O without waiting under the mutex;
+denial parks the complete candidate through the existing bounded retry path.
+It also releases the wave before waiting for an existing
 foreground sync group. After that group finishes, the same candidate seals its
 new complete prefix and retries.
 Cancelled unselected work leaves `Draining`/`Finalizing` before destroying
@@ -709,8 +717,11 @@ table/occupancy accounting, key-bound comparisons, field copies and complete
 root/manifest integrity to the admitted task. The existing index-shadow schema
 identity is hashed directly from borrowed fields without a complete schema
 identity buffer; zero-escaped text/binary defaults use a reused 64 KiB scratch
-buffer, including all-zero inputs. Ordinary schema/manifest encoders remain the
-complete byte, digest, decoded-value and diagnostic references. The canonical
+buffer, including all-zero inputs. Ordinary and controlled row-root manifest
+encoding share the header, occupancy, table and field grammar; optional work
+hooks preserve the controlled units and chunked copying/hashing. The existing
+full-byte, digest, decoded-value and diagnostic regressions exercise both APIs.
+Encoded-buffer admission and the remaining codec/range paths are still open. The canonical
 manifest binding is computed before immutable publication. Focused regressions
 cover all 1025 tables, columns, unique/foreign/index entries and scalar/default
 forms, wide Unicode/zero fields, all actual encoding/escape/hash cancellation

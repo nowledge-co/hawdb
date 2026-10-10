@@ -79,13 +79,19 @@ fn contended_publication_releases_io_before_waiting_for_the_writer_gate() {
     assert_eq!(governor.snapshot().active_background_io_slots, 1);
     resume.send(()).unwrap();
     let deadline = Instant::now() + Duration::from_secs(15);
-    while governor.snapshot().active_background_io_slots != 0 {
+    while governor.snapshot().active_background_io_slots != 0
+        || governor.snapshot().active_cpu_slots != 0
+        || !control.publication_requested.load(Ordering::Acquire)
+    {
         assert!(
             Instant::now() < deadline,
             "publication retained I/O while waiting for Control"
         );
         std::thread::sleep(Duration::from_millis(5));
     }
+    assert_eq!(governor.snapshot().active_cpu_slots, 0);
+    assert_eq!(governor.snapshot().active_background_tasks, 0);
+    assert!(control.publication_requested.load(Ordering::Acquire));
     // Keep the writer mutex held: the same single-slot physical pool must
     // already be reusable, without waiting for frontend mutation to finish.
     let wave = io_context
@@ -111,6 +117,10 @@ fn contended_publication_releases_io_before_waiting_for_the_writer_gate() {
         let state = control.lock().unwrap();
         if state.selected.is_some() {
             assert_eq!(state.report.completed_checkpoints, 1);
+            assert_eq!(
+                state.attempts_started, 1,
+                "a sealed publication must resume its parked execution within the same attempt"
+            );
             assert!(state.report.deferred_attempts >= 1);
             assert_eq!(state.report.operation_failures, 0);
             assert_eq!(state.report.failed_attempts, 0);

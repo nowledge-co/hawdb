@@ -23,14 +23,14 @@ EXTENDS Integers, Naturals, FiniteSets
 CONSTANTS MaxCommit, DurabilityModes,
           SelectBeforeSync, DropSuffix, SplitTransaction, ReclaimPinned,
           LeakLease, SelectStalePrefix, LoseMemoryOnPause, KeepExecutionOnPause,
-          ReadAdoptWhileBusy
+          ReadAdoptWhileBusy, ReleaseLeaseBeforeCleanup, ManualBeforeCleanup
 
 ASSUME /\ MaxCommit \in Nat \ {0}
        /\ DurabilityModes \subseteq {"SyncOnEveryWrite", "SyncOnCheckpoint"}
        /\ DurabilityModes # {}
        /\ {SelectBeforeSync, DropSuffix, SplitTransaction,
              ReclaimPinned, LeakLease, SelectStalePrefix, LoseMemoryOnPause, KeepExecutionOnPause,
-          ReadAdoptWhileBusy} \subseteq BOOLEAN
+          ReadAdoptWhileBusy, ReleaseLeaseBeforeCleanup, ManualBeforeCleanup} \subseteq BOOLEAN
 
 Generations == {0, 1}
 Epochs == 0..MaxCommit
@@ -56,7 +56,8 @@ Init ==
                 present |-> {0}]
     /\ os = [wals |-> disk.wals, artifacts |-> disk.artifacts]
     /\ job = [phase |-> "idle", base |-> 0, end |-> 0, selection |-> 0,
-                resume |-> "replaying", adoption |-> "none", readBusy |-> FALSE]
+                resume |-> "replaying", adoption |-> "none", readBusy |-> FALSE,
+                manualBarrier |-> "none", manualUnsafe |-> FALSE]
     /\ observed = [ack |-> 0, barrier |-> 0, checkpoint |-> 0]
     /\ pin = [generation |-> 0, epoch |-> -1]
     /\ lease = FALSE
@@ -113,6 +114,7 @@ Capture ==
     /\ live.pending = 0
     /\ admitted
     /\ ~live.used
+    /\ job.manualBarrier # "waiting"
     /\ live.active = 0
     /\ live' = [live EXCEPT !.used = TRUE]
     /\ job' = [job EXCEPT !.phase = "building", !.base = live.epoch,
@@ -217,6 +219,14 @@ DeferRetirement ==
 Retire ==
     /\ live.mode = "running"
     /\ job.phase = "retiring"
+    /\ job' = [job EXCEPT !.phase = "releasing"]
+    /\ lease' = IF ReleaseLeaseBeforeCleanup THEN FALSE ELSE lease
+    /\ execution' = IF ReleaseLeaseBeforeCleanup THEN FALSE ELSE execution
+    /\ UNCHANGED <<live, disk, os, observed, pin, admitted, frontendBusy>>
+
+FinishRelease ==
+    /\ live.mode = "running"
+    /\ job.phase = "releasing"
     /\ job' = [job EXCEPT !.phase = "done"]
     /\ lease' = FALSE
     /\ execution' = FALSE
@@ -275,12 +285,14 @@ ReclaimOld ==
 Cancel ==
     /\ live.mode = "running"
     /\ job.phase \in {"building", "replaying", "sealed", "ready", "pending"}
-    /\ job' = [job EXCEPT !.phase = "cancelling"]
-    /\ UNCHANGED <<live, disk, os, observed, pin, lease, execution, admitted, frontendBusy>>
+    /\ job' = [job EXCEPT !.phase = "discarding"]
+    /\ lease' = IF ReleaseLeaseBeforeCleanup THEN FALSE ELSE lease
+    /\ execution' = IF ReleaseLeaseBeforeCleanup THEN FALSE ELSE execution
+    /\ UNCHANGED <<live, disk, os, observed, pin, admitted, frontendBusy>>
 
 CleanupPrivate ==
     /\ live.mode = "running"
-    /\ job.phase = "cancelling"
+    /\ job.phase = "discarding"
     /\ disk' = [disk EXCEPT !.present = @ \ {1}, !.wals[1] = {},
                             !.artifacts[1] = {}]
     /\ os' = [os EXCEPT !.wals[1] = {}, !.artifacts[1] = {}]
@@ -323,15 +335,30 @@ Reopen ==
     /\ job' = [job EXCEPT !.phase = "done"]
     /\ UNCHANGED <<disk, os, observed, pin, lease, execution, admitted, frontendBusy>>
 
+RequestManualBarrier ==
+    /\ live.mode = "running"
+    /\ job.manualBarrier # "waiting"
+    /\ job' = [job EXCEPT !.manualBarrier = "waiting"]
+    /\ UNCHANGED <<live, disk, os, observed, pin, lease, execution, admitted, frontendBusy>>
+
+CompleteManualBarrier ==
+    /\ live.mode = "running"
+    /\ job.manualBarrier = "waiting"
+    /\ (ManualBeforeCleanup \/ (job.phase \in {"idle", "done", "cancelled"} /\ ~lease))
+    /\ job' = [job EXCEPT !.manualBarrier = "complete",
+                          !.manualUnsafe = job.phase \notin {"idle", "done", "cancelled"} \/ lease]
+    /\ UNCHANGED <<live, disk, os, observed, pin, lease, execution, admitted, frontendBusy>>
+
 Next == BeginWrite \/ (\E reply \in BOOLEAN : FinishWrite(reply))
         \/ Capture \/ BuildBase \/ ReplayOne \/ SyncCandidate
         \/ ResumeReplay \/ FreezeCompleteIdentity
         \/ BeginSelection \/ (\E reply \in BOOLEAN : PersistSelector(reply))
         \/ (\E frontend \in {"write", "read"} : Adopt(frontend))
-        \/ AdmitRetirement \/ DeferRetirement \/ Retire
+        \/ AdmitRetirement \/ DeferRetirement \/ Retire \/ FinishRelease
         \/ PauseCandidate \/ ResumeCandidate \/ ChangeAdmission
         \/ ChangeFrontendAvailability \/ PinReader \/ ReleaseReader \/ ReclaimOld
-        \/ Cancel \/ CleanupPrivate \/ PowerLoss \/ Reopen
+        \/ Cancel \/ CleanupPrivate \/ RequestManualBarrier \/ CompleteManualBarrier
+        \/ PowerLoss \/ Reopen
 
 TypeOK ==
     /\ live \in [mode : {"running", "crashed", "failed"},
@@ -346,11 +373,12 @@ TypeOK ==
     /\ os \in [wals : [Generations -> SUBSET Fragments],
                 artifacts : [Generations -> SUBSET Artifacts]]
     /\ job \in [phase : {"idle", "building", "replaying", "sealed", "ready",
-                         "selecting", "selected", "pending", "retirementPending", "retiring", "done",
-                         "cancelling", "cancelled", "crashed"},
+                         "selecting", "selected", "pending", "retirementPending", "retiring", "releasing", "done",
+                         "discarding", "cancelled", "crashed"},
                  base : Epochs, end : Epochs, selection : Epochs,
                  resume : {"replaying", "sealed", "retiring"}, adoption : {"none", "write", "read"},
-                 readBusy : BOOLEAN]
+                 readBusy : BOOLEAN, manualBarrier : {"none", "waiting", "complete"},
+                 manualUnsafe : BOOLEAN]
     /\ observed \in [ack : Epochs, barrier : Epochs, checkpoint : Epochs]
     /\ pin \in [generation : Generations, epoch : (-1)..MaxCommit]
     /\ lease \in BOOLEAN
@@ -390,9 +418,9 @@ CancelledReleasesLease == job.phase = "cancelled" => ~lease
 CandidateOwnsLease ==
     live.mode = "running" /\
         job.phase \in {"building", "replaying", "sealed", "ready", "selecting",
-                       "selected", "pending", "retirementPending", "retiring", "cancelling"} => lease
+                       "selected", "pending", "retirementPending", "retiring", "releasing", "discarding"} => lease
 CancelledPreservesSelector ==
-    job.phase \in {"cancelling", "cancelled"} => disk.head = 0
+    job.phase \in {"discarding", "cancelled"} => disk.head = 0
 UncertainSelectionFailsClosed ==
     disk.status = "uncertain" /\ live.mode # "crashed" => live.mode = "failed"
 
@@ -401,9 +429,14 @@ ParkedYieldsExecution ==
 ExecutionOwnsMemory == execution => lease
 ActiveStagesOwnExecution ==
     live.mode = "running" /\
-        job.phase \in {"building", "replaying", "sealed", "ready", "selecting", "retiring"}
+        job.phase \in {"building", "replaying", "sealed", "ready", "selecting", "retiring", "releasing"}
         => execution
 ReadAdoptRequiresWriterGate == ~job.readBusy
+ManualBarrierWaitsForCleanup == ~job.manualUnsafe
+
+(* Witness controls prove ordinary writes can overlap off-gate destruction. *)
+NoWriterDuringDiscard == ~(live.pending # 0 /\ job.phase = "discarding")
+NoWriterDuringRelease == ~(live.pending # 0 /\ job.phase = "releasing")
 
 PendingResumesPreparation ==
     job.phase = "pending" => job.resume \in {"replaying", "sealed"}

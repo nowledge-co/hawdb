@@ -164,7 +164,16 @@ silently truncating acknowledged data. The model assumes correctly validated
 artifact identities and completed file/directory synchronization; it does not
 establish those filesystem/platform assumptions or refinement by the Rust code.
 
-The full configured safety graph and fourteen controls run through:
+Cancellation enters `discarding` while private data and its job-owned lease
+still exist. Physical retirement enters `releasing` before old COW destruction;
+ordinary writes may start in either phase. `FinishRelease` and `CleanupPrivate`
+refund job admission only after destruction. An explicit manual cleanup barrier
+can complete only in a terminal phase with no job lease. This barrier models
+namespace/resource reuse, not the manual checkpoint's separate durability
+implementation. Controls reject early lease release and premature manual
+completion; witness controls demonstrate writes during both cleanup phases.
+
+The full configured safety graph and eighteen controls run through:
 
 ```bash
 bazel test //docs/tla:HawDBAutomaticCheckpoint_check \

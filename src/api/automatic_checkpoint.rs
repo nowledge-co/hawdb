@@ -32,6 +32,9 @@ use std::time::Duration;
 const RETRY_DELAY: Duration = Duration::from_millis(100);
 const PLANNING_MEMORY_BYTES: u64 = 64 * 1024;
 const MAX_OPERATION_FAILURES: u8 = 3;
+// Cap the serialized suffix admitted while new writers yield to publication.
+// This is not a bound on schema replay, allocation or physical synchronization.
+const MAX_FINAL_DRAIN_BYTES: u64 = 32 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AutomaticCheckpointReport {
@@ -241,6 +244,23 @@ pub(super) struct Control {
     changed: Condvar,
     failed: AtomicBool,
     handoff_ready: AtomicBool,
+    publication_requested: AtomicBool,
+}
+
+struct PublicationRequest<'a>(&'a Control);
+
+impl Drop for PublicationRequest<'_> {
+    fn drop(&mut self) {
+        // Predicate changes and notification share the frontend's mutex.
+        // No publication I/O guard or State borrow may outlive this request.
+        let _state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.0.publication_requested.store(false, Ordering::Release);
+        self.0.changed.notify_all();
+    }
 }
 
 impl Control {
@@ -260,6 +280,7 @@ impl Control {
         let observed_retirement_deferrals = state.retirement_deferrals;
         let mut notified_owner = false;
         while state.phase == Phase::Finalizing
+            || (self.publication_requested.load(Ordering::Acquire) && !state.sync_group_active)
             || (state.phase == Phase::Draining && !state.sync_group_active)
             || (state.phase == Phase::Preparing
                 && !state.sync_group_active
@@ -305,6 +326,11 @@ impl Control {
 
     fn lock(&self) -> Result<MutexGuard<'_, State>> {
         self.state.lock().map_err(|_| Self::poisoned())
+    }
+
+    fn request_publication(&self) -> PublicationRequest<'_> {
+        self.publication_requested.store(true, Ordering::Release);
+        PublicationRequest(self)
     }
 
     fn poisoned() -> HawDBError {
@@ -893,20 +919,21 @@ fn run(
         // this same candidate; it never causes a database-sized base restart.
         let mut expected = None;
         let result = (|| -> std::result::Result<(), CheckpointOperationError<HawDBError>> {
-            admission
-                .runtime
-                .try_resume(task.clone())
-                .map_err(|_reason| {
-                    CheckpointOperationError::Work(CheckpointWorkError::Contended(
-                        "checkpoint execution admission",
-                    ))
-                })?;
-            let admitted_task = admission
-                .runtime
-                .task_context()
-                .expect("checkpoint execution is admitted")
-                .clone();
+            let mut publication_request = None;
             loop {
+                admission
+                    .runtime
+                    .try_resume(task.clone())
+                    .map_err(|_reason| {
+                        CheckpointOperationError::Work(CheckpointWorkError::Contended(
+                            "checkpoint execution admission",
+                        ))
+                    })?;
+                let mut admitted_task = admission
+                    .runtime
+                    .task_context()
+                    .expect("checkpoint execution is admitted")
+                    .clone();
                 let latest = {
                     let mut state = control.lock()?;
                     if state.stopping || state.suspensions != 0 {
@@ -941,7 +968,7 @@ fn run(
                 // barrier only compares a sealed identity and publishes it.
                 #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
                 let publication_io_probe = control.lock()?.publication_io_probe.take();
-                let _publication_wave = admitted_task
+                let mut publication_wave = admitted_task
                     .acquire_io_wave(std::num::NonZeroUsize::MIN)
                     .map_err(|reason| {
                         CheckpointOperationError::Work(CheckpointWorkError::Io(reason))
@@ -950,15 +977,18 @@ fn run(
                 if let Some(probe) = publication_io_probe {
                     probe.observe();
                 }
-                // A writer can need physical I/O while owning Control. Never
-                // wait for that mutex while retaining the publication wave;
-                // park the sealed candidate through the existing retry path.
+                // A writer can need execution/I/O while owning Control. Park
+                // both before waiting, and stop fresh writers from repeatedly
+                // taking the gate ahead of this already sealed candidate.
                 let mut state = match control.state.try_lock() {
                     Ok(state) => state,
                     Err(TryLockError::WouldBlock) => {
-                        return Err(CheckpointOperationError::Work(
-                            CheckpointWorkError::Contended("checkpoint publication gate"),
-                        ));
+                        drop(publication_wave.take());
+                        admission.runtime.pause();
+                        publication_request.get_or_insert_with(|| control.request_publication());
+                        let mut state = control.lock()?;
+                        state.report.deferred_attempts += 1;
+                        state
                     }
                     Err(TryLockError::Poisoned(_)) => return Err(Control::poisoned().into()),
                 };
@@ -972,7 +1002,8 @@ fn run(
                 if state.sync_group_active {
                     // A foreground flush may need the same I/O pool. Never
                     // retain its capacity while waiting for that flush.
-                    drop(_publication_wave);
+                    drop(publication_wave.take());
+                    admission.runtime.pause();
                     while state.sync_group_active
                         && !state.stopping
                         && state.suspensions == 0
@@ -983,7 +1014,11 @@ fn run(
                             .wait(state)
                             .unwrap_or_else(|error| error.into_inner());
                     }
-                    state.phase = Phase::Preparing;
+                    state.phase = if publication_request.is_some() {
+                        Phase::Draining
+                    } else {
+                        Phase::Preparing
+                    };
                     control.changed.notify_all();
                     drop(state);
                     continue;
@@ -997,13 +1032,55 @@ fn run(
                     latest.store.checkpoint_source_identity()
                         != source.store.checkpoint_source_identity()
                 }) {
-                    let latest = state.latest.take().expect("advanced source exists");
-                    state.phase = Phase::Preparing;
+                    let bounded_drain = publication_request.is_some()
+                        && candidate.remaining_catch_up_bytes(
+                            &state.latest.as_ref().expect("advanced source exists").store,
+                        )? <= MAX_FINAL_DRAIN_BYTES;
+                    let latest = state
+                        .latest
+                        .take()
+                        .expect("validated advanced source exists");
+                    state.phase = if bounded_drain {
+                        Phase::Draining
+                    } else {
+                        Phase::Preparing
+                    };
                     control.changed.notify_all();
                     drop(state);
-                    drop(_publication_wave);
+                    drop(publication_wave.take());
+                    if !bounded_drain {
+                        drop(publication_request.take());
+                    }
                     source = latest;
                     continue;
+                }
+                if publication_wave.is_none() {
+                    // Control is held now: denial must release the gate, not
+                    // wait for a foreground or unrelated physical wave.
+                    admission.runtime.try_resume(task.clone()).map_err(|_| {
+                        CheckpointOperationError::Work(CheckpointWorkError::Contended(
+                            "checkpoint publication execution admission",
+                        ))
+                    })?;
+                    admitted_task = admission
+                        .runtime
+                        .task_context()
+                        .expect("publication execution is admitted")
+                        .clone();
+                    publication_wave = match admitted_task
+                        .try_acquire_io_wave(std::num::NonZeroUsize::MIN)
+                        .map_err(|reason| {
+                            CheckpointOperationError::Work(CheckpointWorkError::Io(reason))
+                        })? {
+                        hawdb_core::RuntimeIoWaveTryAcquire::Acquired(wave) => wave,
+                        hawdb_core::RuntimeIoWaveTryAcquire::Pending => {
+                            return Err(CheckpointOperationError::Work(
+                                CheckpointWorkError::Contended(
+                                    "checkpoint publication I/O admission",
+                                ),
+                            ));
+                        }
+                    };
                 }
                 state.phase = Phase::Finalizing;
                 let oldest = pins.lock().map_err(|_| Control::poisoned())?.oldest_epoch();
@@ -1012,6 +1089,7 @@ fn run(
                     .store
                     .publish_checkpoint_candidate_deferred_reclamation(&mut candidate, oldest);
                 drop(state);
+                drop(publication_wave);
                 return result
                     .map(|_| ())
                     .map_err(CheckpointOperationError::Operation);

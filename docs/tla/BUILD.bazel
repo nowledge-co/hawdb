@@ -111,6 +111,10 @@ tla_test_suite(
 )
 
 _AUTOMATIC_CHECKPOINT_CONTROLS = [
+    "DiscardWriterWitness",
+    "ManualBeforeCleanup",
+    "ReleaseLeaseBeforeCleanup",
+    "ReleaseWriterWitness",
     "DropSuffix",
     "KeepExecutionOnPause",
     "LeakLease",
