@@ -17,7 +17,9 @@
 use super::{Catalog, DatabaseConfig, GraphStore, LocalQosScheduler, ReaderPins};
 use crate::error::{HawDBError, Result};
 use hawdb_core::RuntimeTaskContext;
-use hawdb_qos::{RuntimeGovernor, RuntimeMaintenanceWork, RuntimeWorkRequest};
+use hawdb_qos::{
+    RuntimeAdmissionError, RuntimeGovernor, RuntimeMaintenanceWork, RuntimeWorkRequest,
+};
 use hawdb_storage::store::{CheckpointCandidate, CheckpointDebtSnapshot, CheckpointSourceIdentity};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError};
@@ -34,6 +36,20 @@ pub struct AutomaticCheckpointReport {
     pub completed_checkpoints: u64,
     pub deferred_attempts: u64,
     pub failed_attempts: u64,
+    /// Source-size traversals started, excluding scalar-only admission retries.
+    pub planning_scans: u64,
+    pub planning_cache_hits: u64,
+    /// Admission denial in the latest preparation attempt. Non-retryable
+    /// requests exceed current capacity; replacing or refreshing the governor
+    /// can change that capacity. A new attempt clears this value.
+    pub preparation_admission_denial: Option<RuntimeAdmissionError>,
+}
+
+#[derive(Default)]
+struct PreparationReport {
+    planning_scans: u64,
+    planning_cache_hits: u64,
+    admission_denial: Option<RuntimeAdmissionError>,
 }
 
 #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
@@ -89,6 +105,7 @@ impl OwnerPauseProbe {
 pub(super) struct Source {
     store: GraphStore,
     catalog: Catalog,
+    planned_memory: Option<(CheckpointSourceIdentity, u64)>,
     #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
     retirement_probe: Option<SourceRetirementProbe>,
 }
@@ -109,6 +126,7 @@ impl Source {
         Self {
             store: store.checkpoint_source(),
             catalog: catalog.clone(),
+            planned_memory: None,
             #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
             retirement_probe: None,
         }
@@ -723,6 +741,7 @@ fn run(
                 };
             }
         };
+        let mut preparation_report = PreparationReport::default();
         let attempt = match pending {
             Some(pending) if pending.candidate.can_continue_from(&source.store) => {
                 Ok(Some((pending.candidate, pending.admission)))
@@ -731,10 +750,31 @@ fn run(
                 // A manual source/generation change invalidates the private
                 // prefix. Release its state off-gate before a new preparation.
                 drop(pending);
-                prepare(&source, &scheduler, &governor, &task)
+                prepare(
+                    &mut source,
+                    &scheduler,
+                    &governor,
+                    &task,
+                    &mut preparation_report,
+                )
             }
-            None => prepare(&source, &scheduler, &governor, &task),
+            None => prepare(
+                &mut source,
+                &scheduler,
+                &governor,
+                &task,
+                &mut preparation_report,
+            ),
         };
+        {
+            let mut state = control
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            state.report.planning_scans += preparation_report.planning_scans;
+            state.report.planning_cache_hits += preparation_report.planning_cache_hits;
+            state.report.preparation_admission_denial = preparation_report.admission_denial;
+        }
         let (mut candidate, mut admission) = match attempt {
             Ok(Some(work)) => work,
             result => {
@@ -1024,11 +1064,13 @@ fn next_work_delay(state: &State, max_age: Duration) -> Option<Duration> {
 }
 
 fn prepare(
-    source: &Source,
+    source: &mut Source,
     scheduler: &LocalQosScheduler,
     governor: &RuntimeGovernor,
     task: &RuntimeTaskContext,
+    report: &mut PreparationReport,
 ) -> Result<Option<(CheckpointCandidate, Admission)>> {
+    report.admission_denial = None;
     task.checkpoint()
         .map_err(|reason| HawDBError::Storage(reason.to_string()))?;
     if !scheduler.policy().background_enabled {
@@ -1036,7 +1078,16 @@ fn prepare(
             "automatic checkpoint QoS deferred: background disabled".into(),
         ));
     }
-    let memory = {
+    let identity = source.store.checkpoint_source_identity();
+    let cached = source
+        .planned_memory
+        .filter(|(planned_identity, _)| identity == Some(*planned_identity));
+    let memory = if let Some((_, bytes)) = cached {
+        // Only the completed scalar estimate survives denial. Admission must
+        // still use current capacity, pressure and competing resource owners.
+        report.planning_cache_hits += 1;
+        bytes
+    } else {
         // Planning borrows the captured source and keeps only scalar totals.
         // Its traversal is admitted in bounded units before the current
         // conservative whole-candidate memory reservation is calculated.
@@ -1045,19 +1096,24 @@ fn prepare(
                 PLANNING_MEMORY_BYTES,
             ))
             .map_err(|reason| {
+                report.admission_denial = Some(reason);
                 HawDBError::Storage(format!("automatic checkpoint planning deferred: {reason}"))
             })?;
         let work = hawdb_storage::background::CheckpointWorkContext::new(
             planning.bind_task_context(task.clone()),
         )
         .with_scheduler(scheduler.clone());
-        source
+        report.planning_scans += 1;
+        let bytes = source
             .store
-            .checkpoint_candidate_admission_bytes_with_work_context(&work)?
+            .checkpoint_candidate_admission_bytes_with_work_context(&work)?;
+        source.planned_memory = identity.map(|identity| (identity, bytes));
+        bytes
     };
     let runtime = governor
         .try_admit_resumable_maintenance(memory, 1, task.clone())
         .map_err(|reason| {
+            report.admission_denial = Some(reason);
             HawDBError::Storage(format!("automatic checkpoint admission deferred: {reason}"))
         })?;
     // Actual builder units consume LocalQoS, rather than reserving one
@@ -1142,6 +1198,8 @@ mod tests {
     mod execution_progress;
     mod handoff_execution;
     mod memory_progress;
+    mod planning_recovery;
+    mod planning_retry;
     mod progress;
     mod qos_units;
     mod read_gate;

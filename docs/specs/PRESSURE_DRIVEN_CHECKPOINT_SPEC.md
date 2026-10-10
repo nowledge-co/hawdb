@@ -2287,9 +2287,10 @@ remaining allocations and retain resumable builder state at bounded resource
 denials. Known paths requiring inspection include property-projection
 definition vectors/strings and relationship-definition deduplication, relational
 checkpoint planning and final serving-reader construction. Complete CPU,
-descriptor, I/O, temporary-disk, cache and cleanup ledgers, out-of-core delta
-scaling and typed owner-level permanent-denial reporting remain required. The
-same synchronous manual API contract remains in force.
+descriptor, I/O, temporary-disk, cache and cleanup ledgers and out-of-core delta
+scaling remain required. Typed preparation-denial reporting is described below;
+other owner stages still require typed denial reporting. The same synchronous
+manual API contract remains in force.
 
 ### Publication lock scope and duplicated descriptors
 
@@ -2320,3 +2321,32 @@ byte. Their baseline uses the uncommitted incremental-ledger foundation over
 `b25a086f`, with the original lock implementation. The helper releases every
 descriptor before asserting its recorded failure, without subprocess timing,
 extra retries, relaxed limits or changed cancellation assertions.
+
+### Bounded planning retry cost
+
+An automatic source retains only the completed memory-estimate scalar and the
+full source identity used to compute it. Repeated preparation admission denials
+on that unchanged snapshot reuse the scalar instead of traversing the database
+again every 100 ms. A changed source identity invalidates the estimate. Partial
+or cancelled traversal never creates a cached estimate. Every retry still
+checks its fresh cancellation context and attempts admission against current
+governor capacity, process-memory policy, pressure and competing ownership.
+The scalar cache neither admits a previously denied request nor changes the
+whole-candidate reservation or resource ceilings.
+
+`AutomaticCheckpointReport` exposes `planning_scans`, `planning_cache_hits` and
+the latest typed `preparation_admission_denial`. Its requested/available values
+and retryable classification let App distinguish temporary competition from a
+request that cannot fit current capacity. Replacing or refreshing the governor
+can change capacity; releasing competing memory can let a cached estimate be
+admitted without another source traversal or frontend write. This does not yet
+replace polling with governor events or classify private-WAL I/O retry errors.
+
+A byte-identical regression over 1025 nodes with 512-byte values and a 16 MiB
+governor starts eight full traversals before the cache fix and exactly one after
+it. All eight admission decisions preserve the same permanent denial, source
+identity and zero final resource charges. Separate tests exercise a stale
+identity, fresh cancellation, temporary competing memory and a real owner's
+recovery without frontend work; every persisted value is checked after reopen.
+These are operation-count/correctness assertions, not release latency or RSS
+measurements. Both synchronous manual checkpoint APIs retain their contracts.
