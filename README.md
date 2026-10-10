@@ -162,7 +162,7 @@ Optional OpenTelemetry metrics are host-injected. HawDB records low-cardinality 
 
 ### Result budget errors
 
-When query results exceed a selected row or payload limit, HawDB returns
+When selected read results exceed a row or payload limit, HawDB returns
 `HawDBError::ReadBudgetExceeded(ReadBudgetError)`. The cause retains
 `ReadBudgetResource::Rows` or `ReadBudgetResource::PayloadBytes`, the selected
 `limit`, and the existing diagnostic `message`. Hosts can classify the resource
@@ -173,7 +173,8 @@ publishing a create or delete operation.
 The error's display text and execution-category reports remain compatible.
 Rust consumers with exhaustive `HawDBError` matches must handle the additional
 variant. Execution-memory admission, invalid configuration, cancellation,
-deadline, and append-storage failures retain their separate error contracts.
+deadline, append-storage, and `MutationLimits`/DML `RETURNING` admission failures
+retain their separate error contracts.
 Limits, read authority, and persistent formats are unchanged.
 
 ## Build
