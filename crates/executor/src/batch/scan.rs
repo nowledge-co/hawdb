@@ -452,7 +452,7 @@ pub(super) fn execute_node_column_lookup(
             batch_memory_budget: context.memory.batch_payload_bytes,
             batch_memory_account: &batch_memory_account,
             batch_rows: 1,
-            task_context: None,
+            task_context: context.task_context,
         },
         context.observer,
     )

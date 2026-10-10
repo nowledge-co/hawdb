@@ -2760,3 +2760,125 @@ fn full_node_lookup_key_copy_admitted_before_parameter_clone() {
         run_full_node_source_admission(persisted, true, FullNodeSource::LookupKey);
     }
 }
+
+fn run_count_sum_source_admission(persisted: bool) {
+    let size = 1024 * 1024 + 137;
+    let directory = persisted.then(StoredPropertyDirectory::new);
+    let replay = hawdb_storage::store::WalReplayConfig {
+        residency_mode: hawdb_storage::store::StorageResidencyMode::OutOfCore,
+        ..Default::default()
+    };
+    let mut catalog = Catalog::default();
+    let mut store = if let Some(directory) = &directory {
+        GraphStore::open_with_durability_and_replay_config(
+            &directory.0,
+            &mut catalog,
+            Default::default(),
+            replay,
+        )
+        .unwrap()
+    } else {
+        GraphStore::default()
+    };
+    for label in ["Memory", "Other"] {
+        store.create_node_table(&mut catalog, label).unwrap();
+        store
+            .create_property_descriptor(
+                &mut catalog,
+                TableKind::Node,
+                label,
+                "body",
+                PropertyType::String,
+                false,
+            )
+            .unwrap();
+    }
+    let id = store
+        .create_node(
+            &mut catalog,
+            "Other",
+            BTreeMap::from([("body".into(), Value::String("X".repeat(size)))]),
+        )
+        .unwrap();
+    if let Some(directory) = &directory {
+        store.checkpoint(&catalog).unwrap();
+        drop(store);
+        catalog = Catalog::default();
+        store = GraphStore::open_with_durability_and_replay_config(
+            &directory.0,
+            &mut catalog,
+            Default::default(),
+            replay,
+        )
+        .unwrap();
+    }
+    assert_eq!(store.is_out_of_core(), persisted);
+    let plan = PhysicalPlan::OptionalRelationshipCountSumExec {
+        variable: "n".into(),
+        label: "Memory".into(),
+        properties: BTreeMap::new(),
+        legs: vec![hawdb_plan_cypher::RelationshipCountLeg {
+            rel_type: "RELATES_TO".into(),
+            direction: hawdb_core::RelationshipDirection::Outgoing,
+            distinct: true,
+            filter: None,
+        }],
+        output: "count".into(),
+    };
+    let memory = ExecutionMemoryConfig {
+        query_memory_bytes: nz(16 * 1024 * 1024),
+        blocking_operator_bytes: nz(4096),
+        batch_payload_bytes: nz(4096),
+        batch_rows: nz(8192),
+        ..Default::default()
+    };
+    let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+    let observer = QueryExecutionObserver::new(&plan);
+    let parameters = BTreeMap::new();
+    let external = TextSource {
+        external_id: String::new(),
+        calls: Cell::new(0),
+    };
+    let rows = Cell::new(0);
+    let window = AllocationWindow::start(size);
+    let result = execute_binding_batches(
+        &plan,
+        BatchReadContext {
+            catalog: &catalog,
+            store: &store,
+            parameters: &parameters,
+            external: &external,
+            memory: &memory,
+            memory_ledger: &ledger,
+            task_context: None,
+            observer: &observer,
+            host_scorer: None,
+        },
+        ExecutionLimit::unlimited(),
+        &mut |batch| {
+            rows.set(rows.get() + batch.len());
+            Ok(BatchControl::Continue)
+        },
+    );
+    assert_eq!(
+        window.allocations(),
+        0,
+        "count sum copied an unused node payload before source admission"
+    );
+    drop(window);
+    assert!(matches!(result, Err(HawDBError::Execution(_))));
+    assert_eq!(rows.get(), 0);
+    assert_eq!(external.calls.get(), 0);
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+    assert_eq!(store.node_owned(id).unwrap().unwrap().id, id);
+}
+
+#[test]
+fn count_sum_admits_native_unused_payload_before_copy() {
+    run_count_sum_source_admission(false);
+}
+
+#[test]
+fn count_sum_admits_cold_unused_payload_before_decode() {
+    run_count_sum_source_admission(true);
+}

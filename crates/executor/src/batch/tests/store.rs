@@ -37,6 +37,41 @@ pub(super) struct ReadFixture {
     pub(super) source_candidates: Option<Vec<SourceScanCandidateRow>>,
     pub(super) source_reads: Cell<usize>,
     pub(super) adjacency_cancellation: Option<hawdb_core::RuntimeCancellationToken>,
+    pub(super) node_cancellation: Option<hawdb_core::RuntimeCancellationToken>,
+    pub(super) node_admissions: Cell<usize>,
+    pub(super) node_copies: Cell<usize>,
+}
+
+impl ReadFixture {
+    fn visit_admitted_nodes(
+        &self,
+        label: Option<LabelId>,
+        matches: &dyn Fn(&NodeRecord) -> bool,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedNodeRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        for node in &self.nodes {
+            if !label.is_none_or(|label| node.labels.contains(&label)) || !matches(node) {
+                continue;
+            }
+            let Some(allocation) = admit(hawdb_core::ids::node_allocation_bytes(node))? else {
+                return Ok(ScanControl::Stop);
+            };
+            self.node_admissions.set(self.node_admissions.get() + 1);
+            let input =
+                hawdb_storage::read_view::AdmittedNodeRecord::clone_admitted(node, allocation)?;
+            self.node_copies.set(self.node_copies.get() + 1);
+            if consumer(input)? == ScanControl::Stop {
+                return Ok(ScanControl::Stop);
+            }
+            if let Some(token) = &self.node_cancellation {
+                token.cancel();
+            }
+        }
+        Ok(ScanControl::Continue)
+    }
 }
 
 impl GraphExecutionRead for ReadFixture {
@@ -166,20 +201,32 @@ impl GraphExecutionRead for ReadFixture {
             hawdb_storage::read_view::AdmittedNodeRecord,
         ) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
-        for node in &self.nodes {
-            if label.is_none_or(|label| node.labels.contains(&label)) {
-                let Some(allocation) = admit(hawdb_core::ids::node_allocation_bytes(node))? else {
-                    return Ok(ScanControl::Stop);
-                };
-                let input =
-                    hawdb_storage::read_view::AdmittedNodeRecord::clone_admitted(node, allocation)?;
-                if consumer(input)? == ScanControl::Stop {
-                    return Ok(ScanControl::Stop);
-                }
-            }
-        }
-        Ok(ScanControl::Continue)
+        self.visit_admitted_nodes(label, &|_| true, admit, consumer)
     }
+    fn visit_nodes_by_access_with_allocation(
+        &self,
+        label: LabelId,
+        access: &NodeProjectionAccess,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedNodeRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        let NodeProjectionAccess::PropertyValues { property, values } = access else {
+            panic!("unexpected batch test store access")
+        };
+        self.visit_admitted_nodes(
+            Some(label),
+            &|node| {
+                node.properties
+                    .get(property)
+                    .is_some_and(|value| values.contains(value))
+            },
+            admit,
+            consumer,
+        )
+    }
+
     fn visit_relationships_owned(
         &self,
         rel_type: Option<RelTypeId>,

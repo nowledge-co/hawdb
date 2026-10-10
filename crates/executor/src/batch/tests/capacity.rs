@@ -319,3 +319,92 @@ fn text_generic_match_output_capacity_fits_the_query_budget() {
 fn text_cartesian_output_capacity_fits_the_query_budget() {
     check(Parent::Cartesian);
 }
+
+fn run_batch_lookup_source_cancellation(indexed: bool) {
+    let mut catalog = Catalog::default();
+    let label = catalog.get_or_create_label("Memory");
+    let token = hawdb_core::RuntimeCancellationToken::new();
+    let task = RuntimeTaskContext::without_deadline(token.clone());
+    let store = store::ReadFixture {
+        nodes: (0..4)
+            .map(|id| NodeRecord {
+                id: NodeId(id),
+                labels: [label].into_iter().collect(),
+                properties: BTreeMap::from([("id".into(), Value::String("a".into()))]),
+            })
+            .collect(),
+        node_cancellation: Some(token.clone()),
+        ..Default::default()
+    };
+    let memory = ExecutionMemoryConfig {
+        query_memory_bytes: NonZeroUsize::new(64 * 1024).unwrap(),
+        blocking_operator_bytes: NonZeroUsize::new(16 * 1024).unwrap(),
+        batch_payload_bytes: NonZeroUsize::new(16 * 1024).unwrap(),
+        batch_rows: NonZeroUsize::new(8192).unwrap(),
+        ..Default::default()
+    };
+    let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+    let parameters = BTreeMap::from([("text".into(), Value::String("graph".into()))]);
+    let external = TextSource {
+        calls: Cell::new(0),
+    };
+    let plan = PhysicalPlan::NodeColumnLookupExec {
+        variable: "seed".into(),
+        label: if indexed {
+            "Memory".into()
+        } else {
+            String::new()
+        },
+        property: "id".into(),
+        column: "external_id".into(),
+        optional: false,
+        node_visibility_predicate: None,
+        input: Box::new(seed(1)),
+    };
+    let observer = QueryExecutionObserver::new(&plan);
+    let emitted = Cell::new(0);
+    let result = execute_binding_batches(
+        &plan,
+        BatchReadContext {
+            catalog: &catalog,
+            store: &store,
+            parameters: &parameters,
+            external: &external,
+            memory: &memory,
+            memory_ledger: &ledger,
+            task_context: Some(&task),
+            observer: &observer,
+            host_scorer: None,
+        },
+        ExecutionLimit::unlimited(),
+        &mut |batch| {
+            emitted.set(emitted.get() + batch.len());
+            Ok(BatchControl::Continue)
+        },
+    );
+    assert_eq!(
+        store.node_copies.get(),
+        1,
+        "lookup copied a node after source cancellation"
+    );
+    assert_eq!(
+        store.node_admissions.get(),
+        1,
+        "lookup admitted a node after source cancellation"
+    );
+    assert!(token.is_cancelled());
+    assert!(result.unwrap_err().to_string().contains("cancelled"));
+    assert_eq!(external.calls.get(), 1);
+    assert_eq!(emitted.get(), 0);
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn indexed_batch_lookup_keeps_cancellation_before_the_next_owned_source_copy() {
+    run_batch_lookup_source_cancellation(true);
+}
+
+#[test]
+fn unindexed_batch_lookup_keeps_cancellation_before_the_next_owned_source_copy() {
+    run_batch_lookup_source_cancellation(false);
+}
