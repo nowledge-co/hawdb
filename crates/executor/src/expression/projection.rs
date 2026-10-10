@@ -64,8 +64,10 @@ pub(crate) fn own_projection_values(
 pub(crate) fn push_borrowed_projection<'a>(
     output: &mut AccountedBindingBatch,
     mut prepare: impl FnMut() -> Result<(BTreeMap<String, ProjectedValue<'a>>, QueryMemoryLease)>,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
+    crate::pipeline::runtime_checkpoint(task_context)?;
     let empty = Binding::values(BTreeMap::new());
     let (mut values, mut layout) = prepare()?;
     let estimate = |values: &BTreeMap<String, ProjectedValue<'_>>| {
@@ -84,12 +86,18 @@ pub(crate) fn push_borrowed_projection<'a>(
         if output.emit(emit)? == BatchControl::Stop {
             return Ok(BatchControl::Stop);
         }
+        crate::pipeline::runtime_checkpoint(task_context)?;
         (values, layout) = prepare()?;
         bytes = estimate(&values);
     }
-    output.push_generated(
+    crate::pipeline::runtime_checkpoint(task_context)?;
+    let control = output.push_generated(
         bytes,
         || Binding::values(own_projection_values(values, layout)),
         emit,
-    )
+    )?;
+    if control == BatchControl::Continue {
+        crate::pipeline::runtime_checkpoint(task_context)?;
+    }
+    Ok(control)
 }

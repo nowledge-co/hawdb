@@ -326,6 +326,7 @@ fn spill_test_config(name: &str) -> ExecutionMemoryConfig {
         batch_rows: NonZeroUsize::new(2).unwrap(),
         batch_payload_bytes: NonZeroUsize::new(1024 * 1024).unwrap(),
         blocking_operator_bytes: NonZeroUsize::new(4 * 1024).unwrap(),
+        graph_expansion_budget: None,
         max_spill_bytes: NonZeroU64::new(64 * 1024 * 1024).unwrap(),
         max_spill_runs: NonZeroUsize::new(64).unwrap(),
         max_total_spill_bytes: NonZeroU64::new(256 * 1024 * 1024).unwrap(),

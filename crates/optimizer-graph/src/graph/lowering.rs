@@ -53,9 +53,9 @@ mod tests;
 
 type GraphMemo = Memo<GroupExpr>;
 
-const GRAPH_EXPANSION_FANOUT_PER_SEED_HOP: usize = 32;
-const GRAPH_EXPANSION_MAX_CANDIDATES: usize = 4_096;
-const GRAPH_EXPANSION_PAYLOAD_BYTE_LIMIT: usize = 4 * 1024 * 1024;
+const GRAPH_EXPANSION_FANOUT_PER_SEED_HOP: usize = 64;
+const GRAPH_EXPANSION_MAX_CANDIDATES: usize = 8_192;
+const GRAPH_EXPANSION_PAYLOAD_BYTE_LIMIT: usize = 8 * 1024 * 1024;
 
 #[derive(Debug)]
 struct GroupExpr {

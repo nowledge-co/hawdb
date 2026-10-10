@@ -1025,6 +1025,7 @@ impl<'plan, 'context, 'emit> NumericBatchEmitter<'plan, 'context, 'emit> {
         if push_borrowed_projection(
             &mut self.output,
             || prepare_borrowed_projection(items, working, None, &mut evaluate),
+            self.task_context,
             self.emit,
         )? == BatchControl::Stop
         {

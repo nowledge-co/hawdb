@@ -11147,7 +11147,7 @@ mod tests {
         let mut graph =
             NowledgeMemGraph::from_database(Database::new(), NowledgeMemGraphMode::WritableCutover);
         graph.query("CREATE (:Memory {id: 'fanout-seed'})").unwrap();
-        for index in 0..40 {
+        for index in 0..65 {
             graph
                 .query(&format!("CREATE (:Entity {{id: 'entity-{index}'}})"))
                 .unwrap();
@@ -11165,24 +11165,20 @@ mod tests {
             Value::List(vec![Value::Float(1.0), Value::Float(0.0)]),
         )]);
 
-        let output = store
+        let error = store
             .query_with_params_with_report(
                 "CALL vector_search($embedding, topK := 1) YIELD id, score \
                  MATCH (m:Memory)-[:MENTIONS]->(e:Entity) \
                  RETURN e.id AS entity_id",
                 &parameters,
             )
-            .unwrap();
-
-        assert_eq!(output.output.rows.len(), 32);
-        let graph_report = &output.report.graph_expansion_reports[0];
-        assert_eq!(graph_report.candidate_limit, 32);
-        assert_eq!(graph_report.returned_count, 32);
-        assert_eq!(graph_report.expanded_node_count, 32);
-        assert_eq!(graph_report.expanded_edge_count, 32);
+            .unwrap_err();
         assert_eq!(
-            graph_report.truncation_reason,
-            Some(hawdb_executor::GraphExpansionTruncationReason::CandidateLimit)
+            error,
+            HawDBError::GraphExpansionCandidateLimitExceeded {
+                requested: 65,
+                limit: 64
+            }
         );
     }
 

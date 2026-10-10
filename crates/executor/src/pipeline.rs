@@ -193,7 +193,7 @@ impl TransformBatchBuilder {
     }
 
     pub fn is_full(&self) -> bool {
-        self.bindings.len() == self.batch_rows || self.used_payload_bytes == self.payload_bytes
+        self.bindings.len() >= self.batch_rows || self.used_payload_bytes >= self.payload_bytes
     }
 
     pub fn emit(

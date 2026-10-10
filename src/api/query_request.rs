@@ -1000,3 +1000,7 @@ mod text_provenance_tests;
 #[cfg(test)]
 #[path = "query_request/graph_seed_tests.rs"]
 mod graph_seed_tests;
+
+#[cfg(test)]
+#[path = "query_request/expansion_budget_tests.rs"]
+mod expansion_budget_tests;

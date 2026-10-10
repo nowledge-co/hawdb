@@ -498,3 +498,49 @@ Candidate K and final ranking K remain independent. Plan kinds, costed full-labe
 scan work, fingerprints, parameter/visibility traversal and EXPLAIN identify the
 producer and its typed scoring kind. Procedure plans retain the explicit cache
 bypass used by text/vector procedures; no cached procedure execution is claimed.
+
+
+## Seeded expansion resource limits
+
+Every budgeted graph, text or vector expansion refuses the query on resource
+exhaustion, including ordinary materialized reads, scalar ranking, and inputs
+to host scoring through Sort or TopN. Candidate exhaustion returns
+`HawDBError::GraphExpansionCandidateLimitExceeded { requested, limit }` in rows;
+payload exhaustion returns `GraphExpansionPayloadLimitExceeded` in bytes.
+These errors propagate from the expansion admission owner before accepting the
+next row. A scorer is never invoked with a resource-truncated cohort. An explicit
+Cypher LIMIT or declared retrieval result window retains its query semantics.
+
+The default expansion allowance is
+`max(topK, min(max(topK, 1) * max(hops, 1) * 64, 8192))` rows and 8 MiB of
+cumulative logical payload. These values double the previous allowances. A
+host can set `DatabaseConfig.execution_memory.graph_expansion_budget` to
+`Some(GraphExpansionBudget { candidate_limit, payload_byte_limit })`; `None`
+uses the optimizer-derived allowance. This override applies to the actual
+execution of each budgeted expansion, including reused plans. The error names
+the matching configuration field and its unit. Raising either expansion limit
+does not raise `query_memory_bytes`, `blocking_operator_bytes` or
+`batch_payload_bytes`; live allocations must still fit those memory budgets.
+The cumulative expansion payload limit bounds traversal work, rather than
+measuring current resident memory after filtering.
+
+Shared `binding_memory_bytes` now estimates retained resident ownership,
+including property-map container storage and nested List/Map values. Sort,
+TopN, joins, aggregation and owned batches all use that estimate. The same
+numeric cap can therefore refuse a row accepted by the former logical-payload
+estimate. Standalone expansion also checks this estimate and, with a query
+account, admits simultaneous source and output ownership before copying. Its
+supplied numeric cap and existing execution-error family remain, while its
+accepted-input set may be narrower.
+
+Public Filter and Limit kernels admit a complete owned row and flush on byte
+boundaries before pushing it. Public projection and optimized projection
+producers recheck the supplied task after a flush callback returns Continue,
+before recreating expressions or owning the next payload. Native dispatcher
+checks remain additional protection; custom public sources need not implement
+the dispatcher's task or byte validation.
+
+Contiguous evidence bands use the caller-declared public score and reason
+columns in stream order. They do not validate how the caller ordered or
+constructed those columns. Private producer provenance still protects
+SearchScore, GraphSeedScore, hop distance and canonical candidate properties.

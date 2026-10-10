@@ -192,8 +192,8 @@ fn vector_seeded_expand_receives_bounded_graph_budget() {
     else {
         panic!("expected bounded adjacency expansion");
     };
-    assert_eq!(graph_budget.candidate_limit, 512);
-    assert_eq!(graph_budget.payload_byte_limit, 4 * 1024 * 1024);
+    assert_eq!(graph_budget.candidate_limit, 1024);
+    assert_eq!(graph_budget.payload_byte_limit, 8 * 1024 * 1024);
     assert!(trace
         .decisions
         .iter()

@@ -55,7 +55,10 @@ pub use plan_node::PhysicalPlanChildren;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphExpansionBudget {
+    /// Maximum output rows visited by one seeded adjacency expansion.
     pub candidate_limit: usize,
+    /// Maximum cumulative logical payload bytes of those rows, distinct from
+    /// the live resident-memory limits in ExecutionMemoryConfig.
     pub payload_byte_limit: usize,
 }
 

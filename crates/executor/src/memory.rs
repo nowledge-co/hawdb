@@ -15,7 +15,9 @@
 //! Execution memory defaults and admission estimates.
 
 use hawdb_core::{HawDBError, Result, RuntimeTaskContext};
-use hawdb_plan_cypher::{PhysicalPlan, PlanChildren, VectorExecutionResourceProfile};
+use hawdb_plan_cypher::{
+    GraphExpansionBudget, PhysicalPlan, PlanChildren, VectorExecutionResourceProfile,
+};
 use hawdb_storage::mutation::MutationLimits;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
@@ -89,6 +91,10 @@ pub struct ExecutionMemoryConfig {
     pub batch_payload_bytes: NonZeroUsize,
     /// Maximum estimated resident bytes retained by one blocking operator.
     pub blocking_operator_bytes: NonZeroUsize,
+    /// Override the row and cumulative payload limits of each seeded expansion.
+    /// Live allocations still obey the operator, batch and shared query budgets.
+    /// `None` uses the optimizer's seed-window-derived limits.
+    pub graph_expansion_budget: Option<GraphExpansionBudget>,
     /// Maximum cumulative serialized spill bytes, including merge passes.
     pub max_spill_bytes: NonZeroU64,
     /// Maximum cumulative spill runs created, including merge passes.
@@ -118,6 +124,7 @@ impl Default for ExecutionMemoryConfig {
                 .expect("default execution batch byte size is non-zero"),
             blocking_operator_bytes: NonZeroUsize::new(DEFAULT_BLOCKING_OPERATOR_MEMORY_BYTES)
                 .expect("default blocking operator memory budget is non-zero"),
+            graph_expansion_budget: None,
             max_spill_bytes: NonZeroU64::new(DEFAULT_EXECUTION_MAX_SPILL_BYTES)
                 .expect("default spill byte budget is non-zero"),
             max_spill_runs: NonZeroUsize::new(DEFAULT_EXECUTION_MAX_SPILL_RUNS)
@@ -374,6 +381,7 @@ mod tests {
             batch_rows: NonZeroUsize::new(8).unwrap(),
             batch_payload_bytes: NonZeroUsize::new(1024).unwrap(),
             blocking_operator_bytes: NonZeroUsize::new(4096).unwrap(),
+            graph_expansion_budget: None,
             max_spill_bytes: NonZeroU64::new(1024 * 1024).unwrap(),
             max_spill_runs: NonZeroUsize::new(8).unwrap(),
             max_total_spill_bytes: NonZeroU64::new(4 * 1024 * 1024).unwrap(),

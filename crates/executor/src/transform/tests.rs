@@ -25,6 +25,7 @@ use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
 mod host_scoring;
+mod owned_budget;
 mod scoring;
 
 struct Source<'a> {

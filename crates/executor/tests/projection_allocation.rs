@@ -5,7 +5,10 @@
 //! Allocation observations cover execution on this test thread, after fixtures
 //! and prebuilt plans have been constructed.
 
-use hawdb_core::{Catalog, HawDBError, PropertyType, Result, TableKind, Value};
+use hawdb_core::{
+    Catalog, HawDBError, PropertyType, Result, RuntimeCancellationToken, RuntimeTaskContext,
+    TableKind, Value,
+};
 use hawdb_executor::batch::{execute_binding_batches, BatchReadContext};
 use hawdb_executor::binding::{binding_memory_bytes, Binding};
 use hawdb_executor::external::seed::BatchExternalRead;
@@ -1106,6 +1109,179 @@ fn text_projection_batches_actual_payload_with_exact_rows_and_stop() {
         assert_eq!(rows.get(), if stop { 1 } else { 3 });
         assert_eq!(ledger.snapshot().used_bytes, 0);
     }
+}
+
+struct DirectProjectionSource(Option<BindingBatch>);
+
+impl BindingBatchSource for DirectProjectionSource {
+    fn execute(
+        &mut self,
+        _input: &PhysicalPlan,
+        limit: ExecutionLimit,
+        emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+    ) -> Result<BatchControl> {
+        let rows: Vec<_> = self
+            .0
+            .take()
+            .unwrap()
+            .into_iter()
+            .take(limit.output_rows.unwrap_or(usize::MAX))
+            .collect();
+        if rows.is_empty() {
+            Ok(BatchControl::Continue)
+        } else {
+            emit(rows)
+        }
+    }
+}
+
+fn projection_cancel_guard(optimized: bool) {
+    let mut catalog = Catalog::default();
+    let mut store = GraphStore::default();
+    let memory = ExecutionMemoryConfig {
+        query_memory_bytes: nz(128 * 1024),
+        blocking_operator_bytes: nz(32 * 1024),
+        batch_payload_bytes: nz(16 * 1024),
+        batch_rows: nz(128),
+        ..Default::default()
+    };
+    let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+    let token = RuntimeCancellationToken::new();
+    let task = RuntimeTaskContext::without_deadline(token.clone());
+    let items: Vec<_> = (0..8)
+        .map(|index| Projection {
+            name: format!("blob{index}"),
+            expression: if optimized {
+                ProjectionExpression::Property {
+                    variable: "n".into(),
+                    property: "blob".into(),
+                }
+            } else {
+                ProjectionExpression::Column("blob".into())
+            },
+        })
+        .collect();
+    let input = PhysicalPlan::EmptyExec;
+    let observer = QueryExecutionObserver::new(&input);
+    let mut calls = 0;
+    let mut after_cancel = None;
+    let mut emit = |batch: BindingBatch| {
+        calls += 1;
+        assert_eq!(batch.len(), 1);
+        assert!(
+            batch.iter().map(binding_memory_bytes).sum::<usize>()
+                <= memory.batch_payload_bytes.get()
+        );
+        if calls == 1 {
+            assert!(token.cancel());
+            after_cancel = Some(AllocationWindow::start(1024));
+        }
+        Ok(BatchControl::Continue)
+    };
+    let result = if optimized {
+        store.create_node_table(&mut catalog, "Memory").unwrap();
+        store
+            .create_property_descriptor(
+                &mut catalog,
+                TableKind::Node,
+                "Memory",
+                "blob",
+                PropertyType::String,
+                false,
+            )
+            .unwrap();
+        for _ in 0..3 {
+            store
+                .create_node(
+                    &mut catalog,
+                    "Memory",
+                    BTreeMap::from([("blob".into(), Value::String("x".repeat(1024)))]),
+                )
+                .unwrap();
+        }
+        let source = ledger.account(
+            hawdb_executor::QueryMemoryClass::ExternalRead,
+            "test projection source",
+            memory.blocking_operator_bytes,
+        );
+        let output = ledger.account(
+            hawdb_executor::QueryMemoryClass::PipelineBatch,
+            "test projection output",
+            memory.batch_payload_bytes,
+        );
+        hawdb_executor::scan::stream_node_projection_scan_batches(
+            hawdb_executor::scan::NodeProjectionScanSpec {
+                variable: "n",
+                label: "Memory",
+                access: &NodeProjectionAccess::LabelScan,
+                required_properties: &["blob".into()],
+                predicate: None,
+                items: &items,
+            },
+            hawdb_executor::scan::NodeScanContext {
+                catalog: &catalog,
+                store: &store,
+                execution_limit: ExecutionLimit::unlimited(),
+                memory_budget: memory.blocking_operator_bytes,
+                memory_account: &source,
+                batch_memory_budget: memory.batch_payload_bytes,
+                batch_memory_account: &output,
+                batch_rows: memory.batch_rows.get(),
+                task_context: Some(&task),
+            },
+            &observer,
+            &mut emit,
+        )
+    } else {
+        let mut source = DirectProjectionSource(Some(
+            (0..3)
+                .map(|_| {
+                    Binding::values(BTreeMap::from([(
+                        "blob".into(),
+                        Value::String("x".repeat(1024)),
+                    )]))
+                })
+                .collect(),
+        ));
+        stream_projection_batches(
+            &items,
+            &input,
+            &mut source,
+            BatchExecutionContext {
+                catalog: &catalog,
+                memory: &memory,
+                memory_ledger: &ledger,
+                task_context: Some(&task),
+                observer: &observer,
+            },
+            ExecutionLimit::unlimited(),
+            &mut emit,
+        )
+    };
+    assert_eq!(
+        after_cancel
+            .as_ref()
+            .expect("the first byte-boundary callback must run")
+            .allocations(),
+        0,
+        "cancellation after Continue must precede any next-row payload ownership"
+    );
+    assert_eq!(calls, 1);
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("runtime task stopped: cancelled"));
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn public_projection_cancel_after_continue_prevents_next_payload_copy() {
+    projection_cancel_guard(false);
+}
+
+#[test]
+fn optimized_projection_cancel_after_continue_prevents_next_payload_copy() {
+    projection_cancel_guard(true);
 }
 
 #[derive(Clone, Copy)]

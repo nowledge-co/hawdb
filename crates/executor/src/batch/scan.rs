@@ -653,7 +653,7 @@ pub(super) fn stream_adjacency_expand_batches(
         memory.blocking_operator_bytes,
     );
     let mut graph_expansion = GraphExpansionExecutionState::with_memory_account(
-        *graph_budget,
+        graph_budget.map(|budget| memory.graph_expansion_budget.unwrap_or(budget)),
         0,
         context.observer.current_vector_rerank_count(),
         &adjacency_account,
@@ -740,16 +740,18 @@ pub(super) fn stream_adjacency_expand_batches(
                     stream_expand_binding_admitted(
                         &binding,
                         spec,
-                        rel_type_id,
-                        target_label_ids.as_deref(),
-                        &filters,
-                        store,
-                        crate::store::AdjacencyReadMemory {
-                            budget_bytes: memory.blocking_operator_bytes.get(),
-                            account: Some(&adjacency_account),
+                        crate::scan::ExpandReadContext {
+                            rel_type_id,
+                            target_label_ids: target_label_ids.as_deref(),
+                            filters: &filters,
+                            store,
+                            memory: crate::store::AdjacencyReadMemory {
+                                budget_bytes: memory.blocking_operator_bytes.get(),
+                                account: Some(&adjacency_account),
+                            },
+                            task_context: context.task_context,
+                            observer: context.observer,
                         },
-                        context.task_context,
-                        context.observer,
                         &mut visit_candidate,
                     )?
                 };

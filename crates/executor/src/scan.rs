@@ -116,6 +116,16 @@ pub struct AdjacencyExpandFilters<'a> {
     pub target_scan_filter: Option<&'a PropertyFilter>,
 }
 
+pub(crate) struct ExpandReadContext<'a> {
+    pub(crate) rel_type_id: Option<RelTypeId>,
+    pub(crate) target_label_ids: Option<&'a [LabelId]>,
+    pub(crate) filters: &'a AdjacencyExpandFilters<'a>,
+    pub(crate) store: &'a dyn GraphExecutionRead,
+    pub(crate) memory: AdjacencyReadMemory<'a>,
+    pub(crate) task_context: Option<&'a RuntimeTaskContext>,
+    pub(crate) observer: &'a dyn ExecutionObserver,
+}
+
 pub struct ExpandedBinding {
     pub binding: Binding,
     pub target_id: Option<NodeId>,
@@ -190,13 +200,15 @@ pub fn stream_expand_binding(
     stream_expand_binding_admitted(
         binding,
         spec,
-        rel_type_id,
-        target_label_ids,
-        filters,
-        store,
-        memory,
-        task_context,
-        observer,
+        ExpandReadContext {
+            rel_type_id,
+            target_label_ids,
+            filters,
+            store,
+            memory,
+            task_context,
+            observer,
+        },
         &mut StandaloneExpandConsumer {
             memory,
             task_context,
@@ -205,19 +217,21 @@ pub fn stream_expand_binding(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn stream_expand_binding_admitted(
     binding: &Binding,
     spec: AdjacencyExpandSpec<'_>,
-    rel_type_id: Option<RelTypeId>,
-    target_label_ids: Option<&[LabelId]>,
-    filters: &AdjacencyExpandFilters<'_>,
-    store: &dyn GraphExecutionRead,
-    memory: AdjacencyReadMemory<'_>,
-    task_context: Option<&RuntimeTaskContext>,
-    observer: &dyn ExecutionObserver,
+    context: ExpandReadContext<'_>,
     consumer: &mut impl ExpandedBindingConsumer,
 ) -> Result<ScanControl> {
+    let ExpandReadContext {
+        rel_type_id,
+        target_label_ids,
+        filters,
+        store,
+        memory,
+        task_context,
+        observer,
+    } = context;
     runtime_checkpoint(task_context)?;
     if has_null_expand_constraint(binding, &spec) {
         return stream_unmatched_expand_binding(binding, &spec, consumer);
@@ -703,6 +717,7 @@ pub fn stream_node_projection_scan_batches(
                         },
                     )
                 },
+                context.task_context,
                 emit,
             )?
         };

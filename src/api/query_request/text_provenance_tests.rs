@@ -261,6 +261,78 @@ fn run(database: &Database, scoring: &ScoringRequest, seeds: &mut TextSeeds) -> 
 }
 
 #[test]
+fn expansion_budget_text_producer_sort_scoring_refuses_and_recovers_the_complete_cohort() {
+    let query = "CALL text_search($text, topK := $window) YIELD id, score MATCH (seed:Memory)-[:LINK]->(candidate:Memory) RETURN candidate.id AS id, score, candidate.pagerank AS pagerank ORDER BY id";
+    let mut database = fixture();
+    database.config.execution_memory.graph_expansion_budget = Some(crate::GraphExpansionBudget {
+        candidate_limit: 1,
+        payload_byte_limit: 8 * 1024 * 1024,
+    });
+    let mut seeds = TextSeeds::new();
+    let parameters = params("graph", 8);
+    let scoring = program(1, 1.0);
+    let mut delivered = 0;
+    let error = database
+        .begin_read_transaction()
+        .unwrap()
+        .query_request_streaming_with_external(
+            QueryRequest::new(query)
+                .with_params(&parameters)
+                .with_scoring(&scoring),
+            &mut seeds,
+            |_| {
+                delivered += 1;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        HawDBError::GraphExpansionCandidateLimitExceeded {
+            requested: 2,
+            limit: 1
+        }
+    );
+    assert_eq!(delivered, 0);
+    database
+        .config
+        .execution_memory
+        .graph_expansion_budget
+        .as_mut()
+        .unwrap()
+        .candidate_limit = 32;
+    let mut cohorts = Vec::new();
+    for limit in [1, 8] {
+        let scoring = program(limit, 1.0);
+        let mut rows = Vec::new();
+        let report = database
+            .begin_read_transaction()
+            .unwrap()
+            .query_request_streaming_with_external(
+                QueryRequest::new(query)
+                    .with_params(&parameters)
+                    .with_scoring(&scoring),
+                &mut seeds,
+                |row| {
+                    rows.push(row);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            report
+                .execution_profile
+                .pipeline_memory_report
+                .query_memory_completion_bytes,
+            0
+        );
+        cohorts.push(rows);
+    }
+    assert_eq!(cohorts[1].len(), 2);
+    assert_eq!(cohorts[0], cohorts[1][..1]);
+}
+
+#[test]
 fn cypher_text_bm25_graph_scoring_preserves_provenance_and_the_complete_seed_window() {
     let database = fixture();
     let mut seeds = TextSeeds::new();

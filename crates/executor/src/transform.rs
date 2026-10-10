@@ -18,12 +18,13 @@
 //! validation. Kernels reserve transform memory and propagate stop/error across
 //! those boundaries without taking ownership of recursive plan dispatch.
 
-use crate::binding::{binding_memory_bytes_with_values, Binding};
+use crate::binding::{binding_memory_bytes, binding_memory_bytes_with_values, Binding};
 use crate::expression::{
     evaluate_projection_borrowed, prepare_borrowed_projection, ProjectedValue,
 };
 use crate::pipeline::{
-    BatchControl, BatchExecutionContext, BindingBatch, BindingBatchSource, TransformBatchBuilder,
+    runtime_checkpoint, BatchControl, BatchExecutionContext, BindingBatch, BindingBatchSource,
+    TransformBatchBuilder,
 };
 use crate::{ExecutionLimit, QueryMemoryAccount, QueryMemoryLease};
 use hawdb_core::Result;
@@ -65,7 +66,13 @@ pub fn stream_filter_batches(
         };
         for binding in batch {
             if predicate(&binding)? {
-                filtered.reserve_before_allocation()?;
+                if filtered.reserve_row_before_allocation(
+                    binding_memory_bytes(&binding),
+                    &mut emit_filtered,
+                )? == BatchControl::Stop
+                {
+                    return Ok(BatchControl::Stop);
+                }
                 filtered.push(binding);
                 if filtered.is_full() && filtered.emit(&mut emit_filtered)? == BatchControl::Stop {
                     return Ok(BatchControl::Stop);
@@ -94,6 +101,7 @@ pub fn stream_projection_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
+    runtime_checkpoint(context.task_context)?;
     let emitted = Cell::new(0usize);
     source.execute(input, execution_limit, &mut |batch| {
         let mut projected = TransformBatchBuilder::new(
@@ -104,10 +112,15 @@ pub fn stream_projection_batches(
         )?;
         let mut emit_projected = |output: BindingBatch| {
             emitted.set(emitted.get().saturating_add(output.len()));
-            emit(output)
+            let control = emit(output)?;
+            if control == BatchControl::Continue {
+                runtime_checkpoint(context.task_context)?;
+            }
+            Ok(control)
         };
         let working = context.operator_account("ProjectExec expressions");
         for binding in batch {
+            runtime_checkpoint(context.task_context)?;
             let (mut values, mut layout) =
                 prepare_projection_values(items, &binding, context, &working)?;
             let mut bytes = binding_memory_bytes_with_values(
@@ -141,6 +154,7 @@ pub fn stream_projection_batches(
             {
                 return Ok(BatchControl::Stop);
             }
+            runtime_checkpoint(context.task_context)?;
             let values = values
                 .into_iter()
                 .map(|(name, value)| (name, value.into_owned()))
@@ -228,7 +242,13 @@ pub fn stream_limit_batches(
                 if emitted.get() == output_cap {
                     break;
                 }
-                output.reserve_before_allocation()?;
+                if output.reserve_row_before_allocation(
+                    binding_memory_bytes(&binding),
+                    &mut emit_output,
+                )? == BatchControl::Stop
+                {
+                    return Ok(BatchControl::Stop);
+                }
                 output.push(binding);
                 if output.is_full() && output.emit(&mut emit_output)? == BatchControl::Stop {
                     return Ok(BatchControl::Stop);

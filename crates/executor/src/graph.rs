@@ -14,7 +14,7 @@
 
 use crate::binding::{binding_payload_bytes, Binding};
 use crate::{QueryMemoryAccount, QueryMemoryLease};
-use hawdb_core::Result;
+use hawdb_core::{HawDBError, Result};
 use hawdb_plan_cypher::GraphExpansionBudget;
 use hawdb_storage::NodeId;
 use std::collections::BTreeSet;
@@ -135,11 +135,17 @@ impl GraphExpansionExecutionState {
         };
         if self.returned_count >= budget.candidate_limit {
             self.truncation_reason = Some(GraphExpansionTruncationReason::CandidateLimit);
-            return Ok(false);
+            return Err(HawDBError::GraphExpansionCandidateLimitExceeded {
+                requested: self.returned_count.saturating_add(1),
+                limit: budget.candidate_limit,
+            });
         }
         if self.payload_bytes_used.saturating_add(candidate_bytes) > budget.payload_byte_limit {
             self.truncation_reason = Some(GraphExpansionTruncationReason::PayloadByteLimit);
-            return Ok(false);
+            return Err(HawDBError::GraphExpansionPayloadLimitExceeded {
+                requested: self.payload_bytes_used.saturating_add(candidate_bytes),
+                limit: budget.payload_byte_limit,
+            });
         }
         if let Some(target_id) = target_id
             && !self.expanded_nodes.contains(&target_id)
@@ -258,7 +264,19 @@ mod tests {
         assert!(state
             .try_push(&mut output, binding.clone(), None, 1)
             .unwrap());
-        assert!(!state.try_push(&mut output, binding, None, 1).unwrap());
+        let error = state.try_push(&mut output, binding, None, 1).unwrap_err();
+        assert_eq!(
+            error,
+            hawdb_core::HawDBError::GraphExpansionCandidateLimitExceeded {
+                requested: 2,
+                limit: 1,
+            }
+        );
+        assert_eq!(output.len(), 1);
+        assert!(error.to_string().contains("2 rows, limit 1 rows"));
+        assert!(error
+            .to_string()
+            .contains("graph_expansion_budget.candidate_limit"));
         assert_eq!(
             state.truncation_reason,
             Some(GraphExpansionTruncationReason::CandidateLimit)
@@ -282,7 +300,19 @@ mod tests {
         );
         let mut output = Vec::new();
 
-        assert!(!state.try_push(&mut output, binding, None, 1).unwrap());
+        let requested = binding_payload_bytes(&binding);
+        let error = state.try_push(&mut output, binding, None, 1).unwrap_err();
+        assert_eq!(
+            error,
+            hawdb_core::HawDBError::GraphExpansionPayloadLimitExceeded {
+                requested,
+                limit: requested - 1,
+            }
+        );
+        assert!(error.to_string().contains("bytes"));
+        assert!(error
+            .to_string()
+            .contains("graph_expansion_budget.payload_byte_limit"));
         assert!(output.is_empty());
         assert_eq!(
             state.truncation_reason,
