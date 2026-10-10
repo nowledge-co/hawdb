@@ -457,6 +457,30 @@ Any operation can return an error:
 Unknown classes are treated as `execution`. The message is included in the
 HawDB-side error with the shadow engine name.
 
+An `execution` error may include optional typed result-budget details:
+
+```json
+{
+  "error": {
+    "class": "execution",
+    "message": "read result exceeds the selected row limit",
+    "details": {
+      "kind": "read_budget_exceeded",
+      "resource": "rows",
+      "limit": 7
+    }
+  }
+}
+```
+
+`resource` is `rows` or `payload_bytes`; `limit` is an unsigned value that fits
+the host's `usize`, including zero. The adapter preserves this cause as
+`HawDBError::ReadBudgetExceeded`, independently of the diagnostic message.
+Missing, malformed or unknown details, and unknown original classes, retain
+the ordinary `Execution` fallback. Memory-account admission, cancellation,
+deadline and invalid-request errors remain separate. Older adapters may ignore
+the optional details and continue to recognize the `execution` class.
+
 ## Adapter Smoke Command
 
 Before running the full Nowledge migration gate, a wrapper can be checked with:

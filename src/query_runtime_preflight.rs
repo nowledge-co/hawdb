@@ -104,6 +104,7 @@ fn error_class(error: &HawDBError) -> &'static str {
         | HawDBError::AppendSequenceExhausted { .. }
         | HawDBError::BranchBusy { .. } => "storage",
         HawDBError::Execution(_)
+        | HawDBError::ReadBudgetExceeded(_)
         | HawDBError::TransactionConflict { .. }
         | HawDBError::BranchCommandUnsupported { .. } => "execution",
         HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",

@@ -920,9 +920,13 @@ fn enforce_branch_payload_budget(
     output: &QueryOutput,
     max_payload_bytes: Option<usize>,
 ) -> Result<()> {
-    if max_payload_bytes.is_some_and(|maximum| output.payload_bytes() > maximum) {
-        return Err(HawDBError::Execution(
-            "branch SQL result exceeds the configured payload budget".to_string(),
+    if let Some(maximum) = max_payload_bytes
+        && output.payload_bytes() > maximum
+    {
+        return Err(HawDBError::read_budget_exceeded(
+            crate::ReadBudgetResource::PayloadBytes,
+            maximum,
+            "branch SQL result exceeds the configured payload budget",
         ));
     }
     Ok(())

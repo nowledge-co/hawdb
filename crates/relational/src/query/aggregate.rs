@@ -152,16 +152,22 @@ pub(super) fn execute_aggregate_select<'a>(
         let mut rows = Vec::new();
         if offset == 0 && requested != 0 {
             if limits.max_output_rows == 0 {
-                return Err(HawDBError::Execution(
-                    "relational SQL output exceeds max_output_rows 0".to_string(),
+                return Err(HawDBError::read_budget_exceeded(
+                    hawdb_core::ReadBudgetResource::Rows,
+                    0,
+                    "relational SQL output exceeds max_output_rows 0",
                 ));
             }
             let row = finished.into_iter().collect::<Row>();
             if map_payload_bytes(&row) > limits.max_output_payload_bytes {
-                return Err(HawDBError::Execution(format!(
-                    "relational SQL output exceeds max_output_payload_bytes {}",
-                    limits.max_output_payload_bytes
-                )));
+                return Err(HawDBError::read_budget_exceeded(
+                    hawdb_core::ReadBudgetResource::PayloadBytes,
+                    limits.max_output_payload_bytes,
+                    format!(
+                        "relational SQL output exceeds max_output_payload_bytes {}",
+                        limits.max_output_payload_bytes
+                    ),
+                ));
             }
             rows.push(row);
         }
@@ -283,18 +289,26 @@ pub(super) fn execute_aggregate_select<'a>(
         }
         payload_bytes = payload_bytes.saturating_add(map_payload_bytes(&row));
         if payload_bytes > limits.max_output_payload_bytes {
-            return Err(HawDBError::Execution(format!(
-                "relational SQL output exceeds max_output_payload_bytes {}",
-                limits.max_output_payload_bytes
-            )));
+            return Err(HawDBError::read_budget_exceeded(
+                hawdb_core::ReadBudgetResource::PayloadBytes,
+                limits.max_output_payload_bytes,
+                format!(
+                    "relational SQL output exceeds max_output_payload_bytes {}",
+                    limits.max_output_payload_bytes
+                ),
+            ));
         }
         output.push(row);
     }
     if output.len() > limits.max_output_rows {
-        return Err(HawDBError::Execution(format!(
-            "relational SQL output exceeds max_output_rows {}",
-            limits.max_output_rows
-        )));
+        return Err(HawDBError::read_budget_exceeded(
+            hawdb_core::ReadBudgetResource::Rows,
+            limits.max_output_rows,
+            format!(
+                "relational SQL output exceeds max_output_rows {}",
+                limits.max_output_rows
+            ),
+        ));
     }
     Ok(RelationalQueryOutput {
         rows: output.into(),
@@ -388,14 +402,20 @@ pub(super) fn execute_single_count_distinct<'a>(
         Value::Int(i64::try_from(count).unwrap_or(i64::MAX)),
     )]);
     if map_payload_bytes(&row) > limits.max_output_payload_bytes {
-        return Err(HawDBError::Execution(format!(
-            "relational SQL output exceeds max_output_payload_bytes {}",
-            limits.max_output_payload_bytes
-        )));
+        return Err(HawDBError::read_budget_exceeded(
+            hawdb_core::ReadBudgetResource::PayloadBytes,
+            limits.max_output_payload_bytes,
+            format!(
+                "relational SQL output exceeds max_output_payload_bytes {}",
+                limits.max_output_payload_bytes
+            ),
+        ));
     }
     if limits.max_output_rows == 0 {
-        return Err(HawDBError::Execution(
-            "relational SQL output exceeds max_output_rows 0".to_string(),
+        return Err(HawDBError::read_budget_exceeded(
+            hawdb_core::ReadBudgetResource::Rows,
+            0,
+            "relational SQL output exceeds max_output_rows 0",
         ));
     }
     Ok(RelationalQueryOutput {

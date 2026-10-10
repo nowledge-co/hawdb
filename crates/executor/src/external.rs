@@ -90,11 +90,15 @@ impl VectorSeedExecutionOutput {
 
     pub fn validate_result_budget(&self, budget: ExternalReadResultBudget) -> Result<()> {
         if self.rows.len() > budget.max_rows {
-            return Err(HawDBError::Execution(format!(
-                "external vector read returned {} rows, exceeding result row budget {}",
-                self.rows.len(),
-                budget.max_rows
-            )));
+            return Err(HawDBError::read_budget_exceeded(
+                hawdb_core::ReadBudgetResource::Rows,
+                budget.max_rows,
+                format!(
+                    "external vector read returned {} rows, exceeding result row budget {}",
+                    self.rows.len(),
+                    budget.max_rows
+                ),
+            ));
         }
         let memory_bytes = self.estimated_memory_bytes();
         if memory_bytes > budget.max_memory_bytes.get() {
@@ -174,18 +178,21 @@ mod tests {
             report: empty_report(),
         };
 
-        assert!(output
+        let row_error = output
             .validate_result_budget(ExternalReadResultBudget {
                 max_rows: 0,
                 max_memory_bytes: NonZeroUsize::new(1024).unwrap(),
             })
-            .is_err());
-        assert!(output
+            .unwrap_err();
+        assert!(matches!(row_error, HawDBError::ReadBudgetExceeded(cause)
+            if cause.resource == hawdb_core::ReadBudgetResource::Rows && cause.limit == 0));
+        let memory_error = output
             .validate_result_budget(ExternalReadResultBudget {
                 max_rows: 1,
                 max_memory_bytes: NonZeroUsize::MIN,
             })
-            .is_err());
+            .unwrap_err();
+        assert!(matches!(memory_error, HawDBError::Execution(_)));
     }
 
     #[test]

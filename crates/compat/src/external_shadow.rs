@@ -457,6 +457,17 @@ fn json_error_from_hawdb(error: HawDBError) -> serde_json::Value {
         HawDBError::Storage(message) => json_error("storage", message),
         HawDBError::StorageIntegrity(message) => json_error("storage", message),
         HawDBError::Execution(message) => json_error("execution", message),
+        HawDBError::ReadBudgetExceeded(cause) => {
+            let mut response = json_error("execution", &cause.message);
+            let resource = match cause.resource {
+                hawdb_core::ReadBudgetResource::Rows => "rows",
+                hawdb_core::ReadBudgetResource::PayloadBytes => "payload_bytes",
+            };
+            response["error"]["details"] = serde_json::json!({
+                "kind": "read_budget_exceeded", "resource": resource, "limit": cause.limit,
+            });
+            response
+        }
         error @ HawDBError::TransactionConflict { .. } => json_error("execution", error),
         error @ HawDBError::AppendSequenceExhausted { .. } => json_error("storage", error),
         error @ HawDBError::BranchBusy { .. } => json_error("storage", error),
@@ -1546,7 +1557,24 @@ fn error_from_external_response(engine_name: &str, error: &serde_json::Value) ->
             .unwrap_or_else(|| {
                 HawDBError::Execution(format!("{message}: invalid descriptor error details"))
             }),
-        ExternalShadowErrorClass::Execution => HawDBError::Execution(message),
+        ExternalShadowErrorClass::Execution => {
+            if error["class"].as_str() == Some("execution")
+                && error["details"]["kind"].as_str() == Some("read_budget_exceeded")
+            {
+                let resource = match error["details"]["resource"].as_str() {
+                    Some("rows") => Some(hawdb_core::ReadBudgetResource::Rows),
+                    Some("payload_bytes") => Some(hawdb_core::ReadBudgetResource::PayloadBytes),
+                    _ => None,
+                };
+                let limit = error["details"]["limit"]
+                    .as_u64()
+                    .and_then(|value| usize::try_from(value).ok());
+                if let (Some(resource), Some(limit)) = (resource, limit) {
+                    return HawDBError::read_budget_exceeded(resource, limit, message);
+                }
+            }
+            HawDBError::Execution(message)
+        }
     }
 }
 
@@ -1907,6 +1935,43 @@ mod protocol_server_tests {
             error_from_external_response("test", &malformed),
             HawDBError::Execution(_)
         ));
+    }
+
+    #[test]
+    fn read_budget_errors_round_trip_without_classifying_diagnostic_text() {
+        for resource in [
+            hawdb_core::ReadBudgetResource::Rows,
+            hawdb_core::ReadBudgetResource::PayloadBytes,
+        ] {
+            let original = HawDBError::read_budget_exceeded(
+                resource,
+                7,
+                "private diagnostic without budget keywords",
+            );
+            let response = json_error_from_hawdb(original);
+            assert_eq!(response["error"]["class"], "execution");
+            let recovered = error_from_external_response("test", &response["error"]);
+            assert!(
+                matches!(&recovered, HawDBError::ReadBudgetExceeded(cause)
+                if cause.resource == resource && cause.limit == 7),
+                "typed budget lost in external envelope: {recovered}"
+            );
+            assert_eq!(
+                crate::ExpectedErrorClass::from_error(&recovered),
+                crate::ExpectedErrorClass::Execution
+            );
+        }
+        for response in [
+            serde_json::json!({"class":"execution","message":"max_payload_bytes 7"}),
+            serde_json::json!({"class":"execution","details":{"kind":"read_budget_exceeded","resource":"rows","limit":-1}}),
+            serde_json::json!({"class":"execution","details":{"kind":"read_budget_exceeded","resource":"other","limit":7}}),
+            serde_json::json!({"class":"unknown","details":{"kind":"read_budget_exceeded","resource":"rows","limit":7}}),
+        ] {
+            assert!(matches!(
+                error_from_external_response("test", &response),
+                HawDBError::Execution(_)
+            ));
+        }
     }
 
     #[derive(Default)]

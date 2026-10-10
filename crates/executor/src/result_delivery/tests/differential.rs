@@ -26,14 +26,16 @@ enum Failure {
 }
 
 fn failure(error: HawDBError) -> Failure {
+    if let HawDBError::ReadBudgetExceeded(cause) = &error {
+        return match cause.resource {
+            hawdb_core::ReadBudgetResource::Rows => Failure::Rows,
+            hawdb_core::ReadBudgetResource::PayloadBytes => Failure::Payload,
+        };
+    }
     let HawDBError::Execution(message) = error else {
         panic!("unexpected error class: {error:?}");
     };
-    if message.starts_with("read query returned more than") {
-        Failure::Rows
-    } else if message.starts_with("read query payload would exceed") {
-        Failure::Payload
-    } else if message.starts_with("query memory account query result") {
+    if message.starts_with("query memory account query result") {
         Failure::Account
     } else if message.starts_with("query memory ledger would use") {
         Failure::Root

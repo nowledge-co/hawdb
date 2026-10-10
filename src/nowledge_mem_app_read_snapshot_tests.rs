@@ -409,6 +409,8 @@ fn bounded_read_snapshot_enforces_the_cumulative_row_budget() {
         .unwrap_err();
 
     assert!(error.to_string().contains("exhausted max_rows"));
+    assert!(matches!(error, crate::HawDBError::ReadBudgetExceeded(cause)
+        if cause.resource == crate::ReadBudgetResource::Rows && cause.limit == 1));
 }
 
 #[test]
@@ -444,6 +446,8 @@ fn bounded_read_snapshot_enforces_the_cumulative_payload_budget() {
         error.to_string().contains("max_output_payload_bytes 2"),
         "unexpected error: {error}"
     );
+    assert!(matches!(error, crate::HawDBError::ReadBudgetExceeded(cause)
+        if cause.resource == crate::ReadBudgetResource::PayloadBytes && cause.limit == 2));
 }
 
 #[test]

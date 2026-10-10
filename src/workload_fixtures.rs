@@ -691,6 +691,7 @@ fn error_class(error: &crate::HawDBError) -> String {
         crate::HawDBError::Parse(_) => "parse",
         crate::HawDBError::Semantic(_) => "semantic",
         crate::HawDBError::Execution(_)
+        | crate::HawDBError::ReadBudgetExceeded(_)
         | crate::HawDBError::TransactionConflict { .. }
         | crate::HawDBError::BranchCommandUnsupported { .. } => "execution",
         crate::HawDBError::Storage(_)

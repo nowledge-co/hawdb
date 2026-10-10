@@ -577,7 +577,7 @@ pub fn query_sql_with_params<Store: SystemSqlStore>(
         total.saturating_add(map_payload_bytes(row))
     });
     if max_payload_bytes.is_some_and(|limit| payload_bytes > limit) {
-        return Err(HawDBError::Execution(format!(
+        return Err(HawDBError::read_budget_exceeded(hawdb_core::ReadBudgetResource::PayloadBytes, max_payload_bytes.unwrap_or_default(), format!(
             "SQL query payload uses {payload_bytes} bytes, exceeding max_read_result_payload_bytes {}",
             max_payload_bytes.unwrap_or_default()
         )));
@@ -770,7 +770,7 @@ fn execute_system_table_scan<Store: SystemSqlStore>(
     if let Some(max_rows) = max_rows
         && rows.len() > max_rows
     {
-        return Err(HawDBError::Execution(format!(
+        return Err(HawDBError::read_budget_exceeded(hawdb_core::ReadBudgetResource::Rows, max_rows, format!(
                 "SQL query returned more than {max_rows} rows, exceeding max_read_result_rows {max_rows}"
             )));
     }
