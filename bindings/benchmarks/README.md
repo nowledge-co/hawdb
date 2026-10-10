@@ -99,6 +99,7 @@ python3 -B bindings/benchmarks/run.py --output /tmp/hawdb-boundary-profile \
   --rust bazel-bin/hawdb_bench_host_boundary_allocations \
   --library bazel-bin/bindings/ffi/libhawdb_ffi_boundary_profile.dylib \
   --python-extension bazel-bin/bindings/python/lib_hawdb_boundary_profile.dylib \
+  --native-profiles \
   --cpu-profiles
 ```
 
@@ -121,3 +122,14 @@ Successful instrumented records must include the applicable native counters;
 missing profiles fail qualification even when value parity succeeds. Refusals
 before measurement can have no per-operation profile and still remain failures.
 No counters claim payload-copy identity or strict result admission.
+
+`--python-extension` selects a fixed artifact; it does not enable profiling.
+Ordinary runs also resolve, hash and explicitly load their extension from the
+selected Python launcher's runfiles. Use `--native-profiles` for the counting
+allocator matrix: every successful Rust/Python/Go record must contain its required
+counters. Unexpected counters in an ordinary run fail qualification. Go CPU
+profiles are selected separately by `--cpu-profiles` and mark the run instrumented.
+Artifact hashes are checked before and after each child and at completion; a
+concurrent rebuild terminates qualification instead of mixing revisions. Copy
+artifacts and required runfiles into separate before/after directories before
+rebuilding for an alternating revision comparison.

@@ -298,6 +298,25 @@ fn estimate_local_operator_cost(
             // sequential candidate scan.
             PlanCostBreakdown::new(rows, 0, NODE_FULL_SCAN_STARTUP_COST, rows, 0)
         }
+        PhysicalPlan::GraphSeedScan { label, top_k, .. } => {
+            let scanned = catalog.label_count(label);
+            let rows = scanned.min(*top_k as u64);
+            // Canonical relevance scans the label, including rejected candidates;
+            // candidate TopK is an output bound, not a work estimate.
+            PlanCostBreakdown::new(
+                rows,
+                scanned.saturating_mul(7),
+                0,
+                scanned.saturating_add(NODE_FULL_SCAN_STARTUP_COST),
+                rows,
+            )
+        }
+        PhysicalPlan::TextSeedScan { top_k, .. } => {
+            let rows = *top_k as u64;
+            // Output-transfer floor for an opaque external producer. The window
+            // bounds output, not posting/corpus work; reader work is separate.
+            PlanCostBreakdown::new(rows, rows, 0, 0, rows)
+        }
         PhysicalPlan::VectorSeedScan { vector_plan, .. } => {
             let rows = vector_top_k(vector_plan) as u64;
             let total_cost = rows.saturating_mul(VECTOR_SEED_TOTAL_COST_PER_ROW).max(1);
@@ -533,6 +552,34 @@ fn estimate_local_operator_cost(
                 .unwrap_or(remaining_rows)
                 .max(1);
             input_cost.with_cpu(rows, rows, 0)
+        }
+        PhysicalPlan::ScoringProgramExec {
+            program,
+            limit,
+            seed_graph_input,
+            ..
+        } => {
+            let input_cost = inputs[0].expect("unary input cost");
+            let retained_rows = (*limit as u64).min(input_cost.estimated_rows);
+            let heap_depth = retained_rows.max(2).ilog2().max(1) as u64;
+            let spec = program.specification();
+            let feature_work = (spec.terms.len().saturating_add(spec.decay.len()) as u64)
+                .saturating_add(if seed_graph_input.is_some() { 2 } else { 0 });
+            let evaluation_cost = input_cost
+                .estimated_rows
+                .saturating_mul(feature_work)
+                .saturating_add(retained_rows.saturating_mul(heap_depth));
+            input_cost.with_cpu(retained_rows, evaluation_cost, 0)
+        }
+        PhysicalPlan::HostScoringExec { scoring, .. } => {
+            let input_cost = inputs[0].expect("unary input cost");
+            let retained_rows = (scoring.limit() as u64).min(input_cost.estimated_rows);
+            let heap_depth = retained_rows.max(2).ilog2().max(1) as u64;
+            let evaluation_cost = input_cost
+                .estimated_rows
+                .saturating_mul(scoring.cpu_units_per_row().get())
+                .saturating_add(retained_rows.saturating_mul(heap_depth));
+            input_cost.with_cpu(retained_rows, evaluation_cost, 0)
         }
         PhysicalPlan::ScoringRerankExec { limit, .. } => {
             let input_cost = inputs[0].expect("unary input cost");

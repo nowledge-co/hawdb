@@ -1125,15 +1125,17 @@ impl SourceScanCandidateLimits {
     }
 }
 
-#[derive(Debug, Clone)]
 struct ScanPruningCandidate {
     strategy: ScanPruningStrategy,
-    node_ids: BTreeSet<NodeId>,
+    node_ids: crate::read_view::AdmittedKeySet<NodeId>,
     exact_empty: bool,
 }
 
 impl ScanPruningCandidate {
-    fn exact(strategy: ScanPruningStrategy, node_ids: BTreeSet<NodeId>) -> Self {
+    fn exact(
+        strategy: ScanPruningStrategy,
+        node_ids: crate::read_view::AdmittedKeySet<NodeId>,
+    ) -> Self {
         Self {
             strategy,
             exact_empty: node_ids.is_empty(),

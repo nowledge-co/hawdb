@@ -31,6 +31,11 @@ use crate::value::Value;
 use hawdb_core::RuntimeTaskContext;
 use hawdb_executor::ExecutionLimit;
 use std::collections::BTreeMap;
+
+pub(crate) fn unsupported_scoring_input_error() -> crate::error::HawDBError {
+    crate::error::HawDBError::Semantic("scoring requires a batch-capable candidate query".into())
+}
+
 #[cfg(test)]
 use std::num::NonZeroU64;
 #[cfg(test)]
@@ -97,9 +102,10 @@ use hawdb_executor::{pipeline::BindingBatch, QueryMemoryClass};
 pub use hawdb_executor::{ExecutionMemoryConfig, SpillPoolSnapshot};
 pub use hawdb_executor::{
     ExternalReadOperator, ExternalReadResourceContract, ExternalReadResultBudget,
-    OperatorCardinalityProfile, VectorCompressionMode, VectorExecutionBackend,
-    VectorExecutionReport, VectorScoreSource, VectorSeedExecutionOutput,
-    VectorSeedExecutionRequest, VectorSeedExecutionRow,
+    OperatorCardinalityProfile, TextSeedExecutionOutput, TextSeedExecutionRequest,
+    TextSeedExecutionRow, VectorCompressionMode, VectorExecutionBackend, VectorExecutionReport,
+    VectorScoreSource, VectorSeedExecutionOutput, VectorSeedExecutionRequest,
+    VectorSeedExecutionRow,
 };
 pub(crate) use mutation::project_staged_mutation_return_rows;
 pub use mutation::{
@@ -155,6 +161,22 @@ pub fn execute_with_request_consumer<S: ExecutionStore>(
         request,
         resources,
         ConsumerMemoryMode::DeferredUntilValidated,
+        consumer,
+    )
+}
+
+pub(crate) fn execute_with_request_consumer_with_delivery<S: ExecutionStore>(
+    request: ExecutionRequest<'_>,
+    resources: ExecutionResources<'_, S>,
+    delivery: StreamDelivery,
+    consumer: &mut dyn FnMut(Row) -> Result<()>,
+) -> Result<ProfiledQueryStream> {
+    let limits = request.output_limits();
+    let bounded = limits.max_rows.is_some() || limits.max_payload_bytes.is_some();
+    execute_profiled_consumer(
+        request,
+        resources,
+        delivery.consumer_memory_mode(bounded),
         consumer,
     )
 }

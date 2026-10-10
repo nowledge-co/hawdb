@@ -30,6 +30,12 @@ impl Parser<'_> {
         if lower == "vector_search" {
             return self.parse_vector_search(call_start, procedure_start);
         }
+        if lower == "text_search" {
+            return self.parse_text_search(call_start, procedure_start);
+        }
+        if lower == "graph_seed_search" {
+            return self.parse_graph_seed_search(call_start, procedure_start);
+        }
         let graph_name = self.parse_string()?;
         if lower == "project_graph" {
             self.expect_char(',')?;
@@ -59,6 +65,96 @@ impl Parser<'_> {
             score_column,
             return_node_identity,
         }))
+    }
+
+    pub(super) fn parse_graph_seed_search_arguments(&mut self) -> Result<GraphSeedSearch> {
+        let query = self.parse_value()?;
+        let mut label = None;
+        let mut top_k = None;
+        loop {
+            self.skip_ws();
+            if self.consume_char(')') {
+                break;
+            }
+            self.expect_char(',')?;
+            let name = self.parse_ident()?;
+            self.expect_token(":=")?;
+            let slot = match name.to_ascii_lowercase().as_str() {
+                "label" => &mut label,
+                "topk" | "limit" => &mut top_k,
+                _ => return Err(self.error("unsupported graph seed search option")),
+            };
+            if slot.is_some() {
+                return Err(self.error("duplicate graph seed search option"));
+            }
+            *slot = Some(self.parse_value()?);
+        }
+        Ok(GraphSeedSearch {
+            query,
+            label: label.ok_or_else(|| self.error("graph seed search requires label"))?,
+            top_k,
+        })
+    }
+
+    fn parse_graph_seed_search(
+        &mut self,
+        call_start: usize,
+        procedure_start: usize,
+    ) -> Result<Statement> {
+        let search = self.parse_graph_seed_search_arguments()?;
+        let procedure =
+            self.source_node(ProcedureCallKind::GraphSeedSearch(search), procedure_start);
+        let yields = self.parse_procedure_yields()?;
+        let call = self.source_node(ClauseKind::Call { procedure, yields }, call_start);
+        self.skip_ws();
+        let mut clauses = vec![call];
+        if self.peek_char().is_some_and(|ch| ch != ';') {
+            clauses.extend(self.parse_public_query_pipeline()?.kind.clauses);
+        }
+        Ok(Statement::Pipeline(Box::new(
+            self.source_node(QueryPipelineKind { clauses }, call_start),
+        )))
+    }
+
+    pub(super) fn parse_text_search_arguments(&mut self) -> Result<TextSearch> {
+        let query = self.parse_value()?;
+        let mut top_k = None;
+        loop {
+            self.skip_ws();
+            if self.consume_char(')') {
+                break;
+            }
+            self.expect_char(',')?;
+            let name = self.parse_ident()?;
+            self.expect_token(":=")?;
+            if !name.eq_ignore_ascii_case("topK") && !name.eq_ignore_ascii_case("limit") {
+                return Err(self.error("unsupported text search option"));
+            }
+            if top_k.is_some() {
+                return Err(self.error("duplicate text search topK option"));
+            }
+            top_k = Some(self.parse_value()?);
+        }
+        Ok(TextSearch { query, top_k })
+    }
+
+    fn parse_text_search(
+        &mut self,
+        call_start: usize,
+        procedure_start: usize,
+    ) -> Result<Statement> {
+        let search = self.parse_text_search_arguments()?;
+        let procedure = self.source_node(ProcedureCallKind::TextSearch(search), procedure_start);
+        let yields = self.parse_procedure_yields()?;
+        let call = self.source_node(ClauseKind::Call { procedure, yields }, call_start);
+        self.skip_ws();
+        let mut clauses = vec![call];
+        if self.peek_char().is_some_and(|ch| ch != ';') {
+            clauses.extend(self.parse_public_query_pipeline()?.kind.clauses);
+        }
+        Ok(Statement::Pipeline(Box::new(
+            self.source_node(QueryPipelineKind { clauses }, call_start),
+        )))
     }
 
     pub(super) fn parse_vector_search_arguments(&mut self) -> Result<VectorSearch> {

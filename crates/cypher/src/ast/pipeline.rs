@@ -49,6 +49,8 @@ pub enum ClauseKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcedureCallKind {
     VectorSearch(VectorSearch),
+    TextSearch(TextSearch),
+    GraphSeedSearch(GraphSeedSearch),
     GraphAlgorithm {
         algorithm: GraphAlgorithmKind,
         graph_name: String,

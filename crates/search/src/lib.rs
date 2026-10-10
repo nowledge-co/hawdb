@@ -59,6 +59,7 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 
 mod analyzer_lexicon;
+mod analyzer_memory;
 mod analyzer_stream;
 mod analyzer_workspace;
 mod bounded_file;
@@ -91,6 +92,7 @@ mod projection_delta_contracts;
 pub mod projection_evidence;
 #[doc(hidden)]
 pub mod projection_evidence_cli;
+mod query_control;
 
 #[doc(hidden)]
 pub mod projection_consumer;
@@ -210,7 +212,8 @@ pub use out_of_core::{
     SearchOutOfCoreMutationWriter, SearchOutOfCoreOutput, SearchOutOfCoreReader,
     SearchOutOfCoreRefreshReport, SearchOutOfCoreSegmentCompaction,
     SearchOutOfCoreSegmentCompactionPolicy, SearchOutOfCoreSegmentCompactionReport,
-    SearchOutOfCoreSegmentCompactionStopReason, SearchStagingCleanupReport, SearchVerifiedBody,
+    SearchOutOfCoreSegmentCompactionStopReason, SearchStagingCleanupReport, SearchTextSeedOutput,
+    SearchTextSeedReport, SearchVerifiedBody,
 };
 // These are internal ownership seams. Hosts continue to use the embedded facade.
 #[doc(hidden)]

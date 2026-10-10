@@ -1,5 +1,5 @@
 use super::*;
-use hawdb_plan_cypher::{GraphMatchStep, LogicalPlan};
+use hawdb_plan_cypher::{GraphMatchStep, LogicalPlan, ProjectionExpression};
 
 // The oracle lowers the generic operators directly, independently of optimizer fast paths.
 fn lower(plan: LogicalPlan) -> PhysicalPlan {
@@ -645,6 +645,309 @@ fn native_expand_preserves_bound_relationship_identity() {
                     assert!(!row.nodes.contains_key("candidate"));
                 }
             }
+        }
+    });
+}
+
+// These exercise the actual query owners. The fixture cancels at the source
+// allocation boundary, after each caller's entry checkpoint but before copying.
+fn live_adjacency_guard_plan(owner: usize) -> PhysicalPlan {
+    let input = || PhysicalPlan::SeqNodeScan {
+        variable: "n".into(),
+        label: "Memory".into(),
+    };
+    let bound_input = || {
+        lower(
+            hawdb_plan_cypher::plan_pipeline_query(
+                "MATCH (n:Memory), (m:Memory) RETURN n, m",
+                &BTreeMap::new(),
+            )
+            .unwrap(),
+        )
+    };
+    match owner {
+        0 => PhysicalPlan::OptionalDegreeExec {
+            source_variable: "n".into(),
+            rel_type: "MENTIONS".into(),
+            rel_properties: BTreeMap::new(),
+            direction: RelationshipDirection::Outgoing,
+            target_label: "Memory".into(),
+            target_properties: BTreeMap::new(),
+            alias: "degree".into(),
+            input: Box::new(input()),
+        },
+        1 | 2 => PhysicalPlan::AdjacencyExpandExec {
+            source_variable: "n".into(),
+            source_label: "Memory".into(),
+            rel_variable: (owner == 1).then(|| "r".into()),
+            rel_type: "MENTIONS".into(),
+            rel_properties: BTreeMap::new(),
+            direction: RelationshipDirection::Outgoing,
+            target_variable: "m".into(),
+            target_label: "Memory".into(),
+            min_hops: 1,
+            max_hops: if owner == 2 { 2 } else { 1 },
+            optional: false,
+            graph_budget: None,
+            input: Box::new(input()),
+        },
+        3 => PhysicalPlan::FilterExec {
+            predicate: Predicate::RelationshipExists {
+                variable: "n".into(),
+                rel_type: "MENTIONS".into(),
+                direction: RelationshipDirection::Outgoing,
+                target_label: "Memory".into(),
+            },
+            input: Box::new(input()),
+        },
+        4 => PhysicalPlan::FilterExec {
+            predicate: Predicate::BoundRelationshipExists {
+                source_variable: "n".into(),
+                rel_type: "MENTIONS".into(),
+                direction: RelationshipDirection::Outgoing,
+                target_variable: "m".into(),
+            },
+            input: Box::new(bound_input()),
+        },
+        5 => PhysicalPlan::AdjacencyExistsExec {
+            source_variable: "n".into(),
+            rel_type: "MENTIONS".into(),
+            direction: RelationshipDirection::Outgoing,
+            target_variable: "m".into(),
+            input: Box::new(bound_input()),
+        },
+        _ => unreachable!(),
+    }
+}
+
+fn assert_live_adjacency_cancel_before_copy(owner: usize) {
+    with_context(None, |context| {
+        let token = hawdb_core::RuntimeCancellationToken::new();
+        let task = RuntimeTaskContext::without_deadline(token.clone());
+        let store = store::ReadFixture {
+            nodes: (0..2)
+                .map(|id| context.store.node_owned(NodeId(id)).unwrap().unwrap())
+                .collect(),
+            relationships: vec![hawdb_storage::RelRecord {
+                id: hawdb_storage::RelId(0),
+                source: NodeId(0),
+                target: NodeId(1),
+                rel_type: context.catalog.rel_type_id("MENTIONS").unwrap(),
+                properties: BTreeMap::from([("body".into(), Value::String("payload".repeat(256)))]),
+            }],
+            adjacency_cancellation: Some(token),
+            ..store::ReadFixture::default()
+        };
+        let context = BatchReadContext {
+            store: &store,
+            task_context: Some(&task),
+            ..context
+        };
+        let result = execute_binding_batches(
+            &live_adjacency_guard_plan(owner),
+            context,
+            ExecutionLimit::unlimited(),
+            &mut |_| panic!("cancelled adjacency emitted a row"),
+        );
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+        assert_eq!(
+            store.relationship_copies.get(),
+            0,
+            "query owner {owner} copied after cancellation"
+        );
+    });
+}
+
+#[test]
+fn optional_degree_live_adjacency_cancels_before_copy() {
+    assert_live_adjacency_cancel_before_copy(0);
+}
+#[test]
+fn one_hop_expand_live_adjacency_cancels_before_copy() {
+    assert_live_adjacency_cancel_before_copy(1);
+}
+#[test]
+fn bounded_expand_live_adjacency_cancels_before_copy() {
+    assert_live_adjacency_cancel_before_copy(2);
+}
+#[test]
+fn relationship_predicate_live_adjacency_cancels_before_copy() {
+    assert_live_adjacency_cancel_before_copy(3);
+}
+#[test]
+fn bound_predicate_live_adjacency_cancels_before_copy() {
+    assert_live_adjacency_cancel_before_copy(4);
+}
+#[test]
+fn adjacency_exists_live_adjacency_cancels_before_copy() {
+    assert_live_adjacency_cancel_before_copy(5);
+}
+
+fn assert_exists_source_budget_before_copy(owner: usize) {
+    with_context(None, |context| {
+        let store = store::ReadFixture {
+            nodes: (0..2)
+                .map(|id| context.store.node_owned(NodeId(id)).unwrap().unwrap())
+                .collect(),
+            relationships: vec![hawdb_storage::RelRecord {
+                id: hawdb_storage::RelId(0),
+                source: NodeId(0),
+                target: NodeId(1),
+                rel_type: context.catalog.rel_type_id("MENTIONS").unwrap(),
+                properties: BTreeMap::from([("body".into(), Value::String("x".repeat(65536)))]),
+            }],
+            ..store::ReadFixture::default()
+        };
+        let mut memory = context.memory.clone();
+        memory.blocking_operator_bytes = std::num::NonZeroUsize::new(32768).unwrap();
+        let context = BatchReadContext {
+            store: &store,
+            memory: &memory,
+            ..context
+        };
+        let emitted = Cell::new(0);
+        let result = execute_binding_batches(
+            &live_adjacency_guard_plan(owner),
+            context,
+            ExecutionLimit::unlimited(),
+            &mut |batch| {
+                emitted.set(emitted.get() + batch.len());
+                Ok(BatchControl::Continue)
+            },
+        );
+        assert!(result.unwrap_err().to_string().contains("exceeding"));
+        assert_eq!(emitted.get(), 0);
+        assert_eq!(store.relationship_copies.get(), 0);
+    });
+}
+#[test]
+fn bound_predicate_exists_source_budget_before_copy() {
+    assert_exists_source_budget_before_copy(4);
+}
+#[test]
+fn adjacency_exists_source_budget_before_copy() {
+    assert_exists_source_budget_before_copy(5);
+}
+
+#[test]
+fn optional_seed_null_hop_uses_final_blocking_row_size() {
+    use hawdb_core::graph_rag::{
+        MissingScoringFeature, ScoreFeature, ScoringCombination, ScoringProgram, ScoringSpec,
+        ScoringTerm,
+    };
+    use hawdb_plan_cypher::ScoringSeedGraphInput;
+    use std::num::NonZeroUsize;
+    with_context(None, |context| {
+        let prefix = PhysicalPlan::AdjacencyExpandExec {
+            source_variable: "seed".into(),
+            source_label: "Memory".into(),
+            rel_variable: None,
+            rel_type: "Unknown".into(),
+            rel_properties: BTreeMap::new(),
+            direction: RelationshipDirection::Outgoing,
+            target_variable: "candidate".into(),
+            target_label: "Memory".into(),
+            min_hops: 1,
+            max_hops: 1,
+            optional: true,
+            graph_budget: None,
+            input: Box::new(PhysicalPlan::ProjectExec {
+                items: vec![Projection {
+                    name: "pad".into(),
+                    expression: ProjectionExpression::Literal(Value::String("x".repeat(16384))),
+                }],
+                input: Box::new(PhysicalPlan::GraphSeedScan {
+                    query_parameter: "text".into(),
+                    label: "Memory".into(),
+                    variable: "seed".into(),
+                    score_column: "score".into(),
+                    top_k: 1,
+                    node_visibility_predicate: None,
+                }),
+            }),
+        };
+        let seed_input = ScoringSeedGraphInput::new_graph("seed", "candidate").unwrap();
+        seed_input.validate_plan(&prefix).unwrap();
+        let declared = PhysicalPlan::ScoringProgramExec {
+            score_column: "score".into(),
+            seed_graph_input: Some(seed_input),
+            program: ScoringProgram::new(
+                ScoringCombination::WeightedSum,
+                MissingScoringFeature::Reject,
+                ScoringSpec {
+                    terms: vec![ScoringTerm {
+                        feature: ScoreFeature::GraphSeedScore,
+                        weight: 1.0,
+                    }],
+                    decay: vec![],
+                },
+            )
+            .unwrap(),
+            reference_time_millis: 0,
+            limit: 1,
+            input: Box::new(prefix),
+        };
+        let PhysicalPlan::ScoringProgramExec { input, .. } = &declared else {
+            unreachable!()
+        };
+        let parameters = BTreeMap::from([("text".into(), Value::String("1".into()))]);
+        // Execute the actual certified producer/project/OPTIONAL prefix with
+        // its declared scorer observer. Outer scoring scratch is a separate cap.
+        let observer = QueryExecutionObserver::new(&declared);
+        let mut expected = Vec::new();
+        execute_binding_batches(
+            input,
+            BatchReadContext {
+                parameters: &parameters,
+                observer: &observer,
+                ..context
+            },
+            ExecutionLimit::unlimited(),
+            &mut |rows| {
+                expected.extend(rows);
+                Ok(BatchControl::Continue)
+            },
+        )
+        .unwrap();
+        assert_eq!(expected.len(), 1);
+        let expected = expected.pop().unwrap();
+        assert_eq!(expected.values["candidate"], Value::Null);
+        assert_eq!(expected.values["\0hawdb.scoring.hops"], Value::Null);
+        let bytes = crate::binding::binding_memory_bytes(&expected);
+        for cap in [bytes, bytes - 1] {
+            let memory = ExecutionMemoryConfig {
+                blocking_operator_bytes: NonZeroUsize::new(cap).unwrap(),
+                ..context.memory.clone()
+            };
+            let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+            let observer = QueryExecutionObserver::new(&declared);
+            let mut actual = Vec::new();
+            let result = execute_binding_batches(
+                input,
+                BatchReadContext {
+                    parameters: &parameters,
+                    observer: &observer,
+                    memory: &memory,
+                    memory_ledger: &ledger,
+                    ..context
+                },
+                ExecutionLimit::unlimited(),
+                &mut |rows| {
+                    actual.extend(rows);
+                    Ok(BatchControl::Continue)
+                },
+            );
+            if cap == bytes {
+                result.expect("final Null-hop row must fit its exact blocking cap");
+                assert_eq!(actual, vec![expected.clone()]);
+            } else {
+                let error = result.expect_err("one byte below final row must refuse");
+                assert!(error.to_string().contains(&format!(
+                    "AdjacencyExpandExec result uses {bytes} bytes, exceeding blocking_operator_bytes {cap}"
+                )), "source refusal must not mask the final-row boundary: {error}");
+                assert!(actual.is_empty());
+            }
+            assert_eq!(ledger.snapshot().used_bytes, 0);
         }
     });
 }

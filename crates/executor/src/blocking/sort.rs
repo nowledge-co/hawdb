@@ -180,12 +180,21 @@ impl<'plan, 'runtime> SortOperator<'plan, 'runtime> {
             runtime_checkpoint(self.task_context)?;
             self.record_memory_report(0);
             self.rows.sort_by(SortRunRow::cmp_key);
-            return emit_binding_iterator(
-                self.rows
-                    .into_iter()
-                    .take(execution_limit.output_rows.unwrap_or(usize::MAX))
-                    .map(|row| row.binding),
-                self.memory.batch_rows.get(),
+            return emit_sorted_output(
+                self.rows.into_iter().map(|row| {
+                    let bytes = row.memory_bytes();
+                    (bytes, row.binding)
+                }),
+                &mut self.tracker,
+                AccountedBindingBatch::with_ledger(
+                    "SortExec",
+                    self.memory.batch_rows.get(),
+                    self.memory.batch_payload_bytes,
+                    self.memory_ledger,
+                ),
+                0,
+                execution_limit.output_rows.unwrap_or(usize::MAX),
+                self.task_context,
                 emit,
             );
         }
@@ -420,13 +429,24 @@ impl<'plan, 'runtime> TopNOperator<'plan, 'runtime> {
         self.record_memory_report();
         let mut selected = self.heap.into_vec();
         selected.sort();
-        let bindings = selected
-            .into_iter()
-            .skip(self.offset)
-            .take(self.limit)
-            .take(execution_limit.output_rows.unwrap_or(usize::MAX))
-            .map(|entry| entry.binding);
-        emit_binding_iterator(bindings, self.memory.batch_rows.get(), emit)
+        emit_sorted_output(
+            selected.into_iter().map(|entry| {
+                let bytes = entry.memory_bytes();
+                (bytes, entry.binding)
+            }),
+            &mut self.tracker,
+            AccountedBindingBatch::with_ledger(
+                "TopNExec",
+                self.memory.batch_rows.get(),
+                self.memory.batch_payload_bytes,
+                self.memory_ledger,
+            ),
+            self.offset,
+            self.limit
+                .min(execution_limit.output_rows.unwrap_or(usize::MAX)),
+            self.task_context,
+            emit,
+        )
     }
 
     fn record_memory_report(&self) {
@@ -440,6 +460,44 @@ impl<'plan, 'runtime> TopNOperator<'plan, 'runtime> {
                 self.spilled_rows,
             ));
     }
+}
+
+fn emit_sorted_output(
+    rows: impl IntoIterator<Item = (usize, Binding)>,
+    tracker: &mut OperatorMemoryTracker,
+    mut output: AccountedBindingBatch,
+    offset: usize,
+    limit: usize,
+    task_context: Option<&RuntimeTaskContext>,
+    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+) -> Result<BatchControl> {
+    let mut emitted = 0usize;
+    for (ordinal, (source_bytes, binding)) in rows.into_iter().enumerate() {
+        runtime_checkpoint(task_context)?;
+        if ordinal < offset {
+            tracker.release(source_bytes);
+            continue;
+        }
+        if emitted == limit {
+            break;
+        }
+        if output.transfer_from(tracker, source_bytes, binding, emit)? == BatchControl::Stop {
+            return Ok(BatchControl::Stop);
+        }
+        emitted += 1;
+        if emitted == limit {
+            break;
+        }
+        if output.is_full() && output.emit(emit)? == BatchControl::Stop {
+            return Ok(BatchControl::Stop);
+        }
+    }
+    // The for-loop has destroyed its iterator, including rows beyond the
+    // result cap. Release their old retention charges before the final batch
+    // asks a parent transform to admit its output.
+    tracker.reset();
+    runtime_checkpoint(task_context)?;
+    output.emit(emit)
 }
 
 fn spill_sort_run(

@@ -18,6 +18,7 @@ use hawdb_plan_cypher::GraphAlgorithmKind;
 use std::cell::Cell;
 
 mod boundaries;
+mod capacity;
 mod dispatch;
 mod fixtures;
 mod graph_match;
@@ -68,6 +69,7 @@ fn with_context<T>(
         parameters: &parameters,
         external: &external,
         observer: &observer,
+        host_scorer: None,
         task_context,
     });
     assert_eq!(ledger.snapshot().used_bytes, 0);
@@ -194,6 +196,7 @@ mod cancellation_tests {
             memory_ledger: &memory_ledger,
             task_context: Some(&task_context),
             observer: &observer,
+            host_scorer: None,
         };
 
         // Bypass both pipeline checkpoints to isolate the operator's scan loop.

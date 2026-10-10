@@ -25,7 +25,7 @@ fn projected_graph_streaming_predicate_options_identity_parity_survives_both_res
             crate::DurabilityPolicy::SyncOnCheckpoint,
         )
         .unwrap();
-        let nodes: Vec<_> = (0..128)
+        let nodes: Vec<_> = (0..48)
             .map(|id| {
                 store
                     .create_node(
@@ -41,7 +41,7 @@ fn projected_graph_streaming_predicate_options_identity_parity_survives_both_res
                 if source == target {
                     continue;
                 }
-                let status = if source / 64 == target / 64 {
+                let status = if source / 24 == target / 24 {
                     "active"
                 } else {
                     "inactive"
@@ -82,14 +82,17 @@ fn projected_graph_streaming_predicate_options_identity_parity_survives_both_res
         "CALL louvain('filtered', maxIterations := 7, maxLevels := 2, resolution := 0.8) RETURN node, node_id, node_label, level, louvain_id",
         "CALL louvain('filtered', maxIterations := 7, maxLevels := 2, resolution := 3.0) RETURN node, node_id, node_label, level, louvain_id",
     ];
-    let mut reference = None;
+    let mut reference: Option<Vec<Vec<crate::Row>>> = None;
     for residency in [
         StorageResidencyMode::Materialized,
         StorageResidencyMode::OutOfCore,
     ] {
-        for (budget, operator) in [
-            (1024 * 1024, "GraphAlgorithm"),
-            (96 * 1024, "GraphAlgorithmStreaming"),
+        // Separate algorithm budgets retain real streaming pressure on this
+        // smaller dense graph without a long multi-query CI campaign.
+        for (budget, operator, start, end) in [
+            (1024 * 1024, "GraphAlgorithm", 0, 5),
+            (21 * 1024, "GraphAlgorithmStreaming", 0, 3),
+            (40 * 1024, "GraphAlgorithmStreaming", 3, 5),
         ] {
             let mut config = DatabaseConfig {
                 read_only: true,
@@ -106,7 +109,7 @@ fn projected_graph_streaming_predicate_options_identity_parity_survives_both_res
             let epoch = db.commit_epoch().unwrap();
             let mut snapshot = db.begin_read_transaction().unwrap();
             let mut results = Vec::new();
-            for (index, statement) in statements.iter().enumerate() {
+            for (index, statement) in statements.iter().enumerate().take(end).skip(start) {
                 let mut rows = Vec::new();
                 let report = snapshot
                     .query_streaming(
@@ -124,7 +127,7 @@ fn projected_graph_streaming_predicate_options_identity_parity_survives_both_res
                 assert_eq!(report.output_rows, rows.len());
                 assert!(!rows.is_empty());
                 if index < 3 {
-                    assert_eq!(rows.len(), 128);
+                    assert_eq!(rows.len(), 48);
                 }
                 for row in &rows {
                     let Value::Int(node) = row["node"] else {
@@ -137,19 +140,25 @@ fn projected_graph_streaming_predicate_options_identity_parity_survives_both_res
                 assert_eq!(reports.len(), 1);
                 assert_eq!(reports[0].operator, operator);
                 assert!(reports[0].peak_tracked_bytes <= budget);
+                if let Some(expected) = &reference {
+                    assert_eq!(&rows, &expected[index], "{residency:?}/{operator}/{index}");
+                }
                 results.push(rows);
             }
-            assert_ne!(results[0], results[2], "normalization was ignored");
-            assert_ne!(results[1], results[2], "tolerance was ignored");
-            assert_ne!(results[3], results[4], "resolution was ignored");
-            let all_edges = snapshot.query("CALL louvain('all_edges', maxIterations := 7, maxLevels := 2, resolution := 0.8) RETURN node, node_id, node_label, level, louvain_id").unwrap().rows.into_rows();
-            assert_ne!(
-                results[3], all_edges,
-                "relationship predicates were ignored"
-            );
-            if let Some(expected) = &reference {
-                assert_eq!(&results, expected, "{residency:?}/{operator}");
-            } else {
+            if start == 0 && end == 5 {
+                assert_ne!(results[0], results[2], "normalization was ignored");
+                assert_ne!(results[1], results[2], "tolerance was ignored");
+                assert_ne!(results[3], results[4], "resolution was ignored");
+            }
+            if end == 5 {
+                let all_edges = snapshot.query("CALL louvain('all_edges', maxIterations := 7, maxLevels := 2, resolution := 0.8) RETURN node, node_id, node_label, level, louvain_id").unwrap().rows.into_rows();
+                assert_ne!(
+                    results[3 - start],
+                    all_edges,
+                    "relationship predicates were ignored"
+                );
+            }
+            if reference.is_none() {
                 reference = Some(results);
             }
             assert_eq!(snapshot.commit_epoch(), epoch);

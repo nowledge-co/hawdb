@@ -704,7 +704,7 @@ mod tests {
         let error = run.entries()[0]
             .retraction
             .unique_terms
-            .visit(|_| Ok(()))
+            .visit_with_query_context(None, |_| Ok(()))
             .unwrap_err();
         assert!(
             error.to_string().contains("range checksum mismatch"),

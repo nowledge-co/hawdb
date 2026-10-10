@@ -286,7 +286,7 @@ pub(in crate::out_of_core) fn visit(
         let body_bytes = utf8::visit(
             &mut HexBody { text, done: false },
             Control {
-                memory: Some(admission.memory),
+                memory: Some(crate::analyzer_memory::Memory::Build(admission.memory)),
                 task: Some(admission.task),
                 workspace: None,
                 checkpoint_throttle: None,

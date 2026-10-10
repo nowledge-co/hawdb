@@ -18,7 +18,7 @@ use hawdb_core::{LabelId, Value};
 use hawdb_plan_cypher::SortDirection;
 use hawdb_storage::{NodeRecord, RelRecord};
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Binding {
@@ -90,7 +90,11 @@ pub fn map_payload_bytes(values: &BTreeMap<String, Value>) -> usize {
 }
 
 pub fn map_memory_bytes(values: &BTreeMap<String, Value>) -> usize {
-    std::mem::size_of::<BTreeMap<String, Value>>().saturating_add(values.iter().fold(
+    map_memory_bytes_with_entries(values.iter().map(|(name, value)| (name.as_str(), value)))
+}
+
+fn map_memory_bytes_with_entries<'a>(values: impl Iterator<Item = (&'a str, &'a Value)>) -> usize {
+    std::mem::size_of::<BTreeMap<String, Value>>().saturating_add(values.fold(
         0usize,
         |total, (name, value)| {
             total
@@ -99,6 +103,31 @@ pub fn map_memory_bytes(values: &BTreeMap<String, Value>) -> usize {
                 .saturating_add(value_memory_bytes(value))
         },
     ))
+}
+
+/// Estimate the selected owned scan input with the same rules as its final
+/// node-only Binding, while all property payloads still belong to storage.
+pub(crate) fn projected_node_binding_memory_bytes(
+    variable: &str,
+    node: &NodeRecord,
+    required_properties: &BTreeSet<String>,
+) -> usize {
+    std::mem::size_of::<Binding>()
+        .saturating_add(variable.len())
+        .saturating_add(std::mem::size_of_val(&node.id))
+        .saturating_add(
+            node.labels
+                .len()
+                .saturating_mul(std::mem::size_of::<LabelId>()),
+        )
+        .saturating_add(map_memory_bytes_with_entries(
+            required_properties.iter().filter_map(|property| {
+                node.properties
+                    .get(property)
+                    .map(|value| (property.as_str(), value))
+            }),
+        ))
+        .saturating_add(std::mem::size_of::<usize>() * 6)
 }
 
 pub fn value_memory_bytes(value: &Value) -> usize {
@@ -117,8 +146,37 @@ pub fn value_memory_bytes(value: &Value) -> usize {
 }
 
 pub fn binding_payload_bytes(binding: &Binding) -> usize {
-    map_payload_bytes(&binding.values)
-        .saturating_add(binding.nodes.iter().fold(0usize, |total, (name, node)| {
+    map_payload_bytes(&binding.values).saturating_add(graph_binding_payload_bytes(binding))
+}
+
+fn graph_binding_payload_bytes(binding: &Binding) -> usize {
+    graph_binding_bytes(binding, map_payload_bytes)
+}
+
+fn graph_binding_bytes(
+    binding: &Binding,
+    property_bytes: fn(&BTreeMap<String, Value>) -> usize,
+) -> usize {
+    graph_binding_parts_bytes(
+        binding
+            .nodes
+            .iter()
+            .map(|(name, node)| (name.as_str(), node)),
+        binding
+            .relationships
+            .iter()
+            .map(|(name, row)| (name.as_str(), row)),
+        property_bytes,
+    )
+}
+
+fn graph_binding_parts_bytes<'a>(
+    nodes: impl Iterator<Item = (&'a str, &'a NodeRecord)>,
+    relationships: impl Iterator<Item = (&'a str, &'a RelRecord)>,
+    property_bytes: fn(&BTreeMap<String, Value>) -> usize,
+) -> usize {
+    nodes
+        .fold(0usize, |total, (name, node)| {
             total
                 .saturating_add(name.len())
                 .saturating_add(std::mem::size_of_val(&node.id))
@@ -127,35 +185,113 @@ pub fn binding_payload_bytes(binding: &Binding) -> usize {
                         .len()
                         .saturating_mul(std::mem::size_of::<LabelId>()),
                 )
-                .saturating_add(map_payload_bytes(&node.properties))
+                .saturating_add(property_bytes(&node.properties))
+        })
+        .saturating_add(relationships.fold(0usize, |total, (name, row)| {
+            total
+                .saturating_add(name.len())
+                .saturating_add(std::mem::size_of_val(&row.id))
+                .saturating_add(std::mem::size_of_val(&row.source))
+                .saturating_add(std::mem::size_of_val(&row.target))
+                .saturating_add(std::mem::size_of_val(&row.rel_type))
+                .saturating_add(property_bytes(&row.properties))
         }))
-        .saturating_add(
-            binding
-                .relationships
-                .iter()
-                .fold(0usize, |total, (name, relationship)| {
-                    total
-                        .saturating_add(name.len())
-                        .saturating_add(std::mem::size_of_val(&relationship.id))
-                        .saturating_add(std::mem::size_of_val(&relationship.source))
-                        .saturating_add(std::mem::size_of_val(&relationship.target))
-                        .saturating_add(std::mem::size_of_val(&relationship.rel_type))
-                        .saturating_add(map_payload_bytes(&relationship.properties))
-                }),
-        )
+}
+
+pub(crate) fn binding_payload_bytes_with_parts<'a>(
+    values: impl Iterator<Item = (&'a str, &'a Value)>,
+    nodes: impl Iterator<Item = (&'a str, &'a NodeRecord)>,
+    relationships: impl Iterator<Item = (&'a str, &'a RelRecord)>,
+) -> usize {
+    values
+        .fold(0usize, |total, (name, value)| {
+            total
+                .saturating_add(name.len())
+                .saturating_add(value_payload_bytes(value))
+        })
+        .saturating_add(graph_binding_parts_bytes(
+            nodes,
+            relationships,
+            map_payload_bytes,
+        ))
 }
 
 pub fn binding_memory_bytes(binding: &Binding) -> usize {
+    binding_memory_bytes_with_values(
+        binding,
+        binding
+            .values
+            .iter()
+            .map(|(name, value)| (name.as_str(), value)),
+    )
+}
+
+/// Estimate an overwritten column from the final borrowed map. Resident
+/// container storage differs from transport payload and must be removed in full.
+pub(crate) fn binding_memory_bytes_replacing_value(
+    binding: &Binding,
+    name: &str,
+    value: &Value,
+) -> usize {
+    binding_memory_bytes_with_values(
+        binding,
+        binding
+            .values
+            .iter()
+            .filter(|(key, _)| key.as_str() != name)
+            .map(|(key, value)| (key.as_str(), value))
+            .chain(std::iter::once((name, value))),
+    )
+}
+
+/// Account a projection's borrowed values with the same retained graph and
+/// entry rules as its final owned Binding, before copying any of those values.
+pub(crate) fn binding_memory_bytes_with_values<'a>(
+    binding: &'a Binding,
+    values: impl Iterator<Item = (&'a str, &'a Value)>,
+) -> usize {
+    binding_memory_bytes_with_parts(
+        values,
+        binding
+            .nodes
+            .iter()
+            .map(|(name, node)| (name.as_str(), node)),
+        binding
+            .relationships
+            .iter()
+            .map(|(name, row)| (name.as_str(), row)),
+    )
+}
+
+pub(crate) fn binding_memory_bytes_with_parts<'a>(
+    values: impl Iterator<Item = (&'a str, &'a Value)>,
+    nodes: impl Iterator<Item = (&'a str, &'a NodeRecord)>,
+    relationships: impl Iterator<Item = (&'a str, &'a RelRecord)>,
+) -> usize {
+    let entries = std::cell::Cell::new(0usize);
+    let graph_bytes = graph_binding_parts_bytes(
+        nodes.inspect(|_| entries.set(entries.get().saturating_add(1))),
+        relationships.inspect(|_| entries.set(entries.get().saturating_add(1))),
+        map_memory_bytes,
+    );
     std::mem::size_of::<Binding>()
-        .saturating_add(binding_payload_bytes(binding))
+        .saturating_add(graph_bytes)
         .saturating_add(
-            binding
-                .values
-                .len()
-                .saturating_add(binding.nodes.len())
-                .saturating_add(binding.relationships.len())
+            entries
+                .get()
                 .saturating_mul(std::mem::size_of::<usize>() * 6),
         )
+        .saturating_add(values.fold(0usize, |total, (name, value)| {
+            total
+                .saturating_add(name.len())
+                .saturating_add(match value {
+                    Value::List(_) | Value::Map(_) => {
+                        value_memory_bytes(value).saturating_sub(std::mem::size_of::<Value>())
+                    }
+                    _ => value_payload_bytes(value),
+                })
+                .saturating_add(std::mem::size_of::<usize>() * 6)
+        }))
 }
 
 pub fn node_memory_bytes(node: &NodeRecord) -> usize {
@@ -237,5 +373,31 @@ mod tests {
 
         assert!(binding_payload_bytes(&binding) > "nested".len() + "two".len());
         assert!(binding_memory_bytes(&binding) > binding_payload_bytes(&binding));
+    }
+
+    #[test]
+    fn replacement_admission_matches_final_rows_without_mutating_input() {
+        let column = hawdb_plan_cypher::SCORING_RERANK_SCORE_COLUMN;
+        for previous in [
+            None,
+            Some(Value::Null),
+            Some(Value::Float(-1.0)),
+            Some(Value::List(vec![Value::Map(BTreeMap::from([(
+                "nested".into(),
+                Value::String("x".repeat(1_024)),
+            )]))])),
+        ] {
+            let mut input = Binding::scalar("score", Value::Float(0.5));
+            if let Some(previous) = previous {
+                input.values.insert(column.into(), previous);
+            }
+            let original = input.clone();
+            let estimate =
+                binding_memory_bytes_replacing_value(&input, column, &Value::Float(0.25));
+            assert_eq!(input, original, "admission must not alter the candidate");
+            let mut output = input;
+            output.values.insert(column.into(), Value::Float(0.25));
+            assert_eq!(estimate, binding_memory_bytes(&output));
+        }
     }
 }

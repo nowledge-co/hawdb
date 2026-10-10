@@ -18,16 +18,24 @@
 //! validation. Kernels reserve transform memory and propagate stop/error across
 //! those boundaries without taking ownership of recursive plan dispatch.
 
-use crate::binding::Binding;
-use crate::expression::{insert_projected_value, project_value};
-use crate::pipeline::{
-    BatchControl, BatchExecutionContext, BindingBatch, BindingBatchSource, TransformBatchBuilder,
+use crate::binding::{binding_memory_bytes, binding_memory_bytes_with_values, Binding};
+use crate::expression::{
+    evaluate_projection_borrowed, prepare_borrowed_projection, ProjectedValue,
 };
-use crate::ExecutionLimit;
+use crate::pipeline::{
+    runtime_checkpoint, BatchControl, BatchExecutionContext, BindingBatch, BindingBatchSource,
+    TransformBatchBuilder,
+};
+use crate::{ExecutionLimit, QueryMemoryAccount, QueryMemoryLease};
 use hawdb_core::Result;
 use hawdb_plan_cypher::{PhysicalPlan, Projection};
 use std::cell::Cell;
 use std::collections::BTreeMap;
+
+mod scoring;
+pub use scoring::{stream_scoring_program_batches, stream_scoring_rerank_batches};
+mod host_scoring;
+pub use host_scoring::{stream_host_scoring_batches, HostScoringOptions};
 
 pub fn stream_filter_batches(
     input: &PhysicalPlan,
@@ -58,7 +66,13 @@ pub fn stream_filter_batches(
         };
         for binding in batch {
             if predicate(&binding)? {
-                filtered.reserve_before_allocation()?;
+                if filtered.reserve_row_before_allocation(
+                    binding_memory_bytes(&binding),
+                    &mut emit_filtered,
+                )? == BatchControl::Stop
+                {
+                    return Ok(BatchControl::Stop);
+                }
                 filtered.push(binding);
                 if filtered.is_full() && filtered.emit(&mut emit_filtered)? == BatchControl::Stop {
                     return Ok(BatchControl::Stop);
@@ -87,6 +101,7 @@ pub fn stream_projection_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
+    runtime_checkpoint(context.task_context)?;
     let emitted = Cell::new(0usize);
     source.execute(input, execution_limit, &mut |batch| {
         let mut projected = TransformBatchBuilder::new(
@@ -97,15 +112,54 @@ pub fn stream_projection_batches(
         )?;
         let mut emit_projected = |output: BindingBatch| {
             emitted.set(emitted.get().saturating_add(output.len()));
-            emit(output)
-        };
-        for binding in batch {
-            projected.reserve_before_allocation()?;
-            let mut values = BTreeMap::new();
-            for item in items {
-                let value = project_value(item, context.catalog, &binding)?;
-                insert_projected_value(&mut values, &item.name, value);
+            let control = emit(output)?;
+            if control == BatchControl::Continue {
+                runtime_checkpoint(context.task_context)?;
             }
+            Ok(control)
+        };
+        let working = context.operator_account("ProjectExec expressions");
+        for binding in batch {
+            runtime_checkpoint(context.task_context)?;
+            let (mut values, mut layout) =
+                prepare_projection_values(items, &binding, context, &working)?;
+            let mut bytes = binding_memory_bytes_with_values(
+                &binding,
+                values
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_ref())),
+            );
+            if bytes <= context.memory.batch_payload_bytes.get()
+                && projected.would_exceed_payload(bytes)
+                && !projected.is_empty()
+            {
+                // Preparation belongs to the next row, not the emitted batch.
+                // Release it before crossing the consumer boundary; these pure
+                // expressions can be prepared again only if the consumer continues.
+                drop(values);
+                drop(layout);
+                if projected.emit(&mut emit_projected)? == BatchControl::Stop {
+                    return Ok(BatchControl::Stop);
+                }
+                (values, layout) = prepare_projection_values(items, &binding, context, &working)?;
+                bytes = binding_memory_bytes_with_values(
+                    &binding,
+                    values
+                        .iter()
+                        .map(|(name, value)| (name.as_str(), value.as_ref())),
+                );
+            }
+            if projected.reserve_row_before_allocation(bytes, &mut emit_projected)?
+                == BatchControl::Stop
+            {
+                return Ok(BatchControl::Stop);
+            }
+            runtime_checkpoint(context.task_context)?;
+            let values = values
+                .into_iter()
+                .map(|(name, value)| (name, value.into_owned()))
+                .collect();
+            drop(layout);
             projected.push(Binding {
                 values,
                 nodes: binding.nodes,
@@ -126,6 +180,24 @@ pub fn stream_projection_batches(
     })
 }
 
+fn prepare_projection_values<'a>(
+    items: &'a [Projection],
+    binding: &'a Binding,
+    context: BatchExecutionContext<'a>,
+    working: &QueryMemoryAccount,
+) -> Result<(BTreeMap<String, ProjectedValue<'a>>, QueryMemoryLease)> {
+    prepare_borrowed_projection(
+        items,
+        working,
+        context.observer.seed_graph_scoring_input().map(|_| binding),
+        |expression| {
+            evaluate_projection_borrowed(expression, context.catalog, binding, Some(working))
+        },
+    )
+}
+
+/// Completing this operator's window returns `Continue`; a downstream stop
+/// or an upstream stop before the window completes remains `Stop`.
 pub fn stream_limit_batches(
     offset: usize,
     limit: Option<usize>,
@@ -137,13 +209,14 @@ pub fn stream_limit_batches(
 ) -> Result<BatchControl> {
     let skipped = Cell::new(0usize);
     let emitted = Cell::new(0usize);
+    let consumer_stopped = Cell::new(false);
     let output_cap = match (limit, execution_limit.output_rows) {
         (Some(limit), Some(parent)) => (limit).min(parent),
         (Some(limit), None) => limit,
         (None, Some(parent)) => parent,
         (None, None) => usize::MAX,
     };
-    source.execute(
+    let control = source.execute(
         input,
         ExecutionLimit {
             output_rows: Some(offset.saturating_add(output_cap)),
@@ -157,7 +230,9 @@ pub fn stream_limit_batches(
             )?;
             let mut emit_output = |batch: BindingBatch| {
                 emitted.set(emitted.get().saturating_add(batch.len()));
-                emit(batch)
+                let control = emit(batch)?;
+                consumer_stopped.set(consumer_stopped.get() || control == BatchControl::Stop);
+                Ok(control)
             };
             for binding in batch {
                 if skipped.get() < offset {
@@ -167,7 +242,13 @@ pub fn stream_limit_batches(
                 if emitted.get() == output_cap {
                     break;
                 }
-                output.reserve_before_allocation()?;
+                if output.reserve_row_before_allocation(
+                    binding_memory_bytes(&binding),
+                    &mut emit_output,
+                )? == BatchControl::Stop
+                {
+                    return Ok(BatchControl::Stop);
+                }
                 output.push(binding);
                 if output.is_full() && output.emit(&mut emit_output)? == BatchControl::Stop {
                     return Ok(BatchControl::Stop);
@@ -182,78 +263,16 @@ pub fn stream_limit_batches(
                 BatchControl::Continue
             })
         },
-    )
-}
-
-/// Ranks input rows with a typed scoring specification and keeps the best
-/// `limit` rows, so the full candidate set is never materialized: the retained
-/// buffer stays within the rank window.
-#[allow(clippy::too_many_arguments)]
-pub fn stream_scoring_rerank_batches(
-    input: &PhysicalPlan,
-    score_column: &str,
-    spec: &hawdb_core::graph_rag::ScoringSpec,
-    limit: usize,
-    source: &mut dyn BindingBatchSource,
-    context: BatchExecutionContext<'_>,
-    execution_limit: ExecutionLimit,
-    emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
-) -> Result<BatchControl> {
-    let retained_limit = match execution_limit.output_rows {
-        Some(parent) => limit.min(parent),
-        None => limit,
-    };
-    let reference_time = crate::scoring::reference_time_millis();
-    let mut retained: Vec<(f64, usize, Binding)> = Vec::new();
-    let mut order = 0usize;
-    source.execute(input, ExecutionLimit { output_rows: None }, &mut |batch| {
-        for binding in batch {
-            let features = crate::scoring::BindingScoreFeatures::new(&binding, score_column);
-            let evaluation = spec.evaluate(&features, reference_time);
-            retained.push((evaluation.combined_score, order, binding));
-            order = order.saturating_add(1);
-            // Amortized truncation keeps the buffer proportional to the rank
-            // window instead of the candidate count.
-            if retained.len() > retained_limit.saturating_mul(2).max(1) {
-                retain_best_scored(&mut retained, retained_limit);
-            }
-        }
-        Ok(BatchControl::Continue)
-    })?;
-    retain_best_scored(&mut retained, retained_limit);
-
-    let mut output = TransformBatchBuilder::new(
-        "ScoringRerankExec",
-        context.memory.batch_rows.get(),
-        context.memory.batch_payload_bytes,
-        context.memory_ledger,
     )?;
-    for (score, _, mut binding) in retained {
-        binding.values.insert(
-            hawdb_plan_cypher::SCORING_RERANK_SCORE_COLUMN.to_string(),
-            hawdb_core::Value::Float(score),
-        );
-        output.reserve_before_allocation()?;
-        output.push(binding);
-        if output.is_full() && output.emit(emit)? == BatchControl::Stop {
-            return Ok(BatchControl::Stop);
-        }
-    }
-    if !output.is_empty() && output.emit(emit)? == BatchControl::Stop {
-        return Ok(BatchControl::Stop);
-    }
-    Ok(BatchControl::Continue)
-}
-
-pub(crate) fn retain_best_scored(retained: &mut Vec<(f64, usize, Binding)>, limit: usize) {
-    retained.sort_by(|left, right| {
-        right
-            .0
-            .partial_cmp(&left.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.1.cmp(&right.1))
-    });
-    retained.truncate(limit);
+    // Reaching this operator's window completes its input contract. Preserve
+    // downstream stop and an upstream stop that did not fill the window.
+    Ok(
+        if control == BatchControl::Stop && !consumer_stopped.get() && emitted.get() == output_cap {
+            BatchControl::Continue
+        } else {
+            control
+        },
+    )
 }
 
 #[cfg(test)]

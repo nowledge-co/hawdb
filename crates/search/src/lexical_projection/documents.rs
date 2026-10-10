@@ -16,6 +16,7 @@ use super::{
     decode_block_header, BlockDescriptor, BlockKind, HawDBError, LexicalProjectionReader, Result,
     SliceCursor,
 };
+use hawdb_core::RuntimeTaskContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DocumentIdProbe {
@@ -26,6 +27,7 @@ pub(crate) struct DocumentIdProbe {
 /// One bounded mapping block serves the monotonically increasing posting merge.
 pub(super) struct DocumentLookup<'a> {
     projection: &'a LexicalProjectionReader,
+    task: Option<&'a RuntimeTaskContext>,
     bytes: Vec<u8>,
     block: Option<&'a BlockDescriptor>,
     cursor: usize,
@@ -34,9 +36,13 @@ pub(super) struct DocumentLookup<'a> {
 }
 
 impl<'a> DocumentLookup<'a> {
-    pub(super) fn new(projection: &'a LexicalProjectionReader) -> Self {
+    pub(super) fn new(
+        projection: &'a LexicalProjectionReader,
+        task: Option<&'a RuntimeTaskContext>,
+    ) -> Self {
         Self {
             projection,
+            task,
             bytes: Vec::new(),
             block: None,
             cursor: 0,
@@ -46,6 +52,9 @@ impl<'a> DocumentLookup<'a> {
     }
 
     pub(super) fn get(&mut self, ordinal: u64) -> Result<(String, u32)> {
+        if let Some(task) = self.task {
+            super::query_context::checkpoint(task)?;
+        }
         if ordinal >= self.projection.manifest.document_count || ordinal < self.next_ordinal {
             return Err(HawDBError::Storage(
                 "lexical document lookup ordinal is invalid or unordered".to_string(),
@@ -68,7 +77,7 @@ impl<'a> DocumentLookup<'a> {
                     "lexical document mapping is missing".to_string(),
                 ));
             }
-            self.bytes = self.projection.read_block(block)?;
+            self.bytes = self.projection.read_block_with_task(block, self.task)?;
             validate_document_block(&self.bytes, self.projection.manifest.generation, block)?;
             self.bytes_read = self.bytes_read.saturating_add(self.bytes.len() as u64);
             self.block = Some(block);
@@ -80,6 +89,9 @@ impl<'a> DocumentLookup<'a> {
             offset: self.cursor,
         };
         loop {
+            if let Some(task) = self.task {
+                super::query_context::checkpoint(task)?;
+            }
             let id = cursor.string(1024 * 1024)?;
             let length = cursor.u32()?;
             let current = self.next_ordinal;

@@ -155,6 +155,8 @@ pub const fn nowledge_query_fuzz_error_class(error: &HawDBError) -> &'static str
         HawDBError::Parse(_) => "parse",
         HawDBError::Semantic(_) => "semantic",
         HawDBError::Execution(_)
+        | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
+        | HawDBError::GraphExpansionPayloadLimitExceeded { .. }
         | HawDBError::TransactionConflict { .. }
         | HawDBError::BranchCommandUnsupported { .. } => "execution",
         HawDBError::Storage(_)

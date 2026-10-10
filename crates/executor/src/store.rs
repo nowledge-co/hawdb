@@ -23,6 +23,7 @@ use hawdb_storage::{
     scan::{ScanPredicate, ScanPruningReport, ScanSegmentFallback, SegmentReadExecutionReport},
     NodeId, NodeRecord, ProjectedNodeRecord, RelRecord,
 };
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::num::{NonZeroU64, NonZeroUsize};
 
@@ -40,8 +41,45 @@ pub struct PrunedRelationshipScan<'a> {
 }
 
 pub struct PrunedNodeScan<'a> {
-    pub nodes: Box<dyn Iterator<Item = NodeRecord> + 'a>,
+    /// Resident storage lends records so consumers can admit the selected
+    /// owned input before cloning. Hydrating sources retain their own read
+    /// boundary and may supply owned records.
+    pub nodes: Box<dyn Iterator<Item = Cow<'a, NodeRecord>> + 'a>,
     pub report: ScanPruningReport,
+}
+
+struct QueryGraphReadAllocation {
+    allocation: crate::QueryMemoryLease,
+    task_context: Option<hawdb_core::RuntimeTaskContext>,
+}
+
+impl hawdb_storage::read_view::GraphReadAllocation for QueryGraphReadAllocation {
+    fn bytes(&self) -> usize {
+        self.allocation.bytes()
+    }
+
+    fn grow(&mut self, bytes: usize) -> Result<()> {
+        crate::pipeline::runtime_checkpoint(self.task_context.as_ref())?;
+        if bytes == 0 {
+            Ok(())
+        } else {
+            self.allocation.grow(bytes)
+        }
+    }
+}
+
+/// Transfer a query-ledger permit with owned graph input.
+#[doc(hidden)]
+pub fn admit_graph_read(
+    account: &QueryMemoryAccount,
+    task_context: Option<&hawdb_core::RuntimeTaskContext>,
+    bytes: usize,
+) -> Result<Box<dyn hawdb_storage::read_view::GraphReadAllocation>> {
+    crate::pipeline::runtime_checkpoint(task_context)?;
+    Ok(Box::new(QueryGraphReadAllocation {
+        allocation: account.reserve(bytes)?,
+        task_context: task_context.cloned(),
+    }))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -80,6 +118,70 @@ pub struct AdjacencyReadMemory<'a> {
     pub account: Option<&'a QueryMemoryAccount>,
 }
 
+struct LocalGraphReadAllocation {
+    bytes: usize,
+    limit: usize,
+    task_context: Option<hawdb_core::RuntimeTaskContext>,
+}
+
+impl hawdb_storage::read_view::GraphReadAllocation for LocalGraphReadAllocation {
+    fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn grow(&mut self, bytes: usize) -> Result<()> {
+        crate::pipeline::runtime_checkpoint(self.task_context.as_ref())?;
+        let next = self
+            .bytes
+            .checked_add(bytes)
+            .filter(|&next| next <= self.limit)
+            .ok_or_else(|| {
+                hawdb_core::HawDBError::Execution(
+                    "graph read exceeds blocking_operator_bytes".into(),
+                )
+            })?;
+        self.bytes = next;
+        Ok(())
+    }
+}
+
+impl AdjacencyReadMemory<'_> {
+    /// Standalone traversal keeps its explicit local bound even without a
+    /// query ledger. Query callers additionally own the admitted source lease.
+    pub(crate) fn admit_node(
+        self,
+        bytes: usize,
+        related_bytes: usize,
+        task_context: Option<&hawdb_core::RuntimeTaskContext>,
+    ) -> Result<Box<dyn hawdb_storage::read_view::GraphReadAllocation>> {
+        crate::pipeline::runtime_checkpoint(task_context)?;
+        let limit = self
+            .budget_bytes
+            .checked_sub(related_bytes)
+            .ok_or_else(|| {
+                hawdb_core::HawDBError::Execution(
+                    "graph read exceeds blocking_operator_bytes".into(),
+                )
+            })?;
+        if bytes > limit {
+            return Err(hawdb_core::HawDBError::Execution(format!(
+                "graph read uses {} bytes, exceeding blocking_operator_bytes {}",
+                bytes.saturating_add(related_bytes),
+                self.budget_bytes,
+            )));
+        }
+        if let Some(account) = self.account {
+            admit_graph_read(account, task_context, bytes)
+        } else {
+            Ok(Box::new(LocalGraphReadAllocation {
+                bytes,
+                limit,
+                task_context: task_context.cloned(),
+            }))
+        }
+    }
+}
+
 /// The graph reads required by storage-independent execution operators.
 ///
 /// Implementations own storage layout, residency, and pruning details. Owned
@@ -95,6 +197,30 @@ pub trait GraphExecutionRead {
     fn is_out_of_core(&self) -> bool;
 
     fn node_owned(&self, id: NodeId) -> Result<Option<NodeRecord>>;
+
+    /// Full point ownership with optional label pruning and a transferable
+    /// before-copy permit. Unsupported readers fail closed.
+    fn node_with_allocation(
+        &self,
+        _id: NodeId,
+        _label_ids: Option<&[LabelId]>,
+        _admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+    ) -> Result<hawdb_storage::read_view::AdmittedNodeRead> {
+        Err(hawdb_core::HawDBError::Execution(
+            "storage reader does not support admitted full node point reads".into(),
+        ))
+    }
+
+    /// Full relationship point ownership with a transferable before-copy permit.
+    fn relationship_with_allocation(
+        &self,
+        _id: hawdb_storage::RelId,
+        _admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+    ) -> Result<hawdb_storage::read_view::AdmittedRelationshipRead> {
+        Err(hawdb_core::HawDBError::Execution(
+            "storage reader does not support admitted relationship point reads".into(),
+        ))
+    }
 
     /// Selected-column point read. Implementations must call admission before
     /// allocating the owned result, and propagate rejection without decoding.
@@ -136,6 +262,36 @@ pub trait GraphExecutionRead {
         consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl>;
 
+    /// Full-record admission before cloning/decoding with transferable
+    /// ownership and pre-decode normal Stop. Unsupported readers fail closed.
+    fn visit_nodes_with_allocation(
+        &self,
+        _label_id: Option<LabelId>,
+        _admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        _consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedNodeRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        Err(hawdb_core::HawDBError::Execution(
+            "storage reader does not support transferable full node scan allocations".into(),
+        ))
+    }
+
+    /// Indexed full-record ownership must be admitted before payload copying.
+    fn visit_nodes_by_access_with_allocation(
+        &self,
+        _label_id: LabelId,
+        _access: &NodeProjectionAccess,
+        _admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        _consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedNodeRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        Err(hawdb_core::HawDBError::Execution(
+            "storage reader does not support admitted full node index reads".into(),
+        ))
+    }
+
     /// Visits every live relationship, including persisted base records and
     /// uncheckpointed changes, in either residency mode. Stop and callback
     /// errors terminate the scan without further consumer calls.
@@ -144,6 +300,90 @@ pub trait GraphExecutionRead {
         rel_type: Option<RelTypeId>,
         consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl>;
+
+    /// Full relationship admission is transferable and precedes payload ownership.
+    fn visit_relationships_with_allocation(
+        &self,
+        _rel_type: Option<RelTypeId>,
+        _admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        _consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedRelationshipRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        Err(hawdb_core::HawDBError::Execution(
+            "storage reader does not support admitted relationship scans".into(),
+        ))
+    }
+
+    /// Admit owned input before cloning/decoding; retain its allocation through
+    /// the consumer call. An unsupported reader must refuse this contract.
+    fn visit_projected_nodes_admitted(
+        &self,
+        _label_id: Option<LabelId>,
+        _properties: &BTreeSet<String>,
+        _admit: &mut dyn FnMut(
+            usize,
+        )
+            -> Result<Box<dyn hawdb_storage::read_view::GraphReadAllocation>>,
+        _consumer: &mut dyn FnMut(ProjectedNodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        Err(hawdb_core::HawDBError::Execution(
+            "storage reader does not support admitted projected scans".into(),
+        ))
+    }
+
+    /// Transfer the before-ownership permit to buffered consumers. Admission
+    /// may request normal Stop before the next selected payload is owned.
+    fn visit_projected_nodes_with_allocation(
+        &self,
+        _label_id: Option<LabelId>,
+        _properties: &BTreeSet<String>,
+        _admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        _consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedProjectedNode,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        Err(hawdb_core::HawDBError::Execution(
+            "storage reader does not support transferable projected scan allocations".into(),
+        ))
+    }
+
+    /// Admit owned input before cloning/decoding; retain its allocation through
+    /// the consumer call. An unsupported reader must refuse this contract.
+    fn visit_projected_nodes_by_access_admitted(
+        &self,
+        _label_id: LabelId,
+        _access: &NodeProjectionAccess,
+        _properties: &BTreeSet<String>,
+        _admit: &mut dyn FnMut(
+            usize,
+        )
+            -> Result<Box<dyn hawdb_storage::read_view::GraphReadAllocation>>,
+        _consumer: &mut dyn FnMut(ProjectedNodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        Err(hawdb_core::HawDBError::Execution(
+            "storage reader does not support admitted projected scans".into(),
+        ))
+    }
+
+    /// Admit owned input before cloning/decoding; retain its allocation through
+    /// the consumer call. An unsupported reader must refuse this contract.
+    fn visit_projected_nodes_by_property_admitted(
+        &self,
+        _label_id: LabelId,
+        _property: &str,
+        _values: &[hawdb_core::Value],
+        _properties: &BTreeSet<String>,
+        _admit: &mut dyn FnMut(
+            usize,
+        )
+            -> Result<Box<dyn hawdb_storage::read_view::GraphReadAllocation>>,
+        _consumer: &mut dyn FnMut(ProjectedNodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        Err(hawdb_core::HawDBError::Execution(
+            "storage reader does not support admitted projected scans".into(),
+        ))
+    }
 
     fn visit_projected_nodes_owned(
         &self,
@@ -258,10 +498,74 @@ pub trait GraphExecutionRead {
         node_id: NodeId,
         rel_type: Option<RelTypeId>,
         direction: AdjacencyDirection,
-        _memory: AdjacencyReadMemory<'_>,
+        memory: AdjacencyReadMemory<'_>,
         consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
-        self.visit_adjacent_relationships_owned(node_id, rel_type, direction, consumer)
+        // The transferable source fails closed for unsupported readers. Never
+        // delegate a budgeted read to a legacy visitor that owns values first.
+        self.visit_ordered_adjacent_relationships_with_allocation(
+            node_id,
+            rel_type,
+            direction,
+            memory,
+            &mut |bytes| memory.admit_node(bytes, 0, None).map(Some),
+            &mut |input| {
+                let (relationship, _allocation) = input.into_parts();
+                consumer(relationship)
+            },
+        )
+    }
+
+    /// Ordered full relationship sources retain the permit with buffered rows.
+    /// Unsupported readers must not fall back to copying unadmitted properties.
+    fn visit_ordered_adjacent_relationships_with_allocation(
+        &self,
+        _node_id: NodeId,
+        _rel_type: Option<RelTypeId>,
+        _direction: AdjacencyDirection,
+        _memory: AdjacencyReadMemory<'_>,
+        _admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        _consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedRelationshipRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        Err(hawdb_core::HawDBError::Execution(
+            "storage reader does not support admitted ordered relationship reads".into(),
+        ))
+    }
+
+    /// Filtered ordered sources preserve the allocation and live task at the
+    /// source boundary, including records rejected by the predicate.
+    fn visit_filtered_ordered_relationships_with_allocation(
+        &self,
+        adjacency: (NodeId, Option<RelTypeId>, AdjacencyDirection),
+        filter: &PropertyFilter,
+        memory: AdjacencyReadMemory<'_>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedRelationshipRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<(ScanControl, Option<ScanPruningReport>)> {
+        self.visit_ordered_adjacent_relationships_with_allocation(
+            adjacency.0,
+            adjacency.1,
+            adjacency.2,
+            memory,
+            admit,
+            &mut |input| {
+                let relationship = input.relationship();
+                if crate::predicate::property_filter_matches_values(
+                    filter,
+                    relationship.id.0,
+                    &relationship.properties,
+                ) {
+                    consumer(input)
+                } else {
+                    Ok(ScanControl::Continue)
+                }
+            },
+        )
+        .map(|control| (control, None))
     }
 
     fn visit_adjacent_relationships_with_filter_owned(
@@ -279,12 +583,27 @@ pub trait GraphExecutionRead {
         rel_type: Option<RelTypeId>,
         direction: AdjacencyDirection,
         filter: &PropertyFilter,
-        _memory: AdjacencyReadMemory<'_>,
+        memory: AdjacencyReadMemory<'_>,
         consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
     ) -> Result<(ScanControl, Option<ScanPruningReport>)> {
-        self.visit_adjacent_relationships_with_filter_owned(
-            node_id, rel_type, direction, filter, consumer,
+        self.visit_ordered_adjacent_relationships_owned(
+            node_id,
+            rel_type,
+            direction,
+            memory,
+            &mut |relationship| {
+                if crate::predicate::property_filter_matches_values(
+                    filter,
+                    relationship.id.0,
+                    &relationship.properties,
+                ) {
+                    consumer(relationship)
+                } else {
+                    Ok(ScanControl::Continue)
+                }
+            },
         )
+        .map(|control| (control, None))
     }
 
     fn scan_relationships_with_filter_pruning<'a>(
@@ -299,6 +618,20 @@ pub trait GraphExecutionRead {
         label_id: Option<LabelId>,
         filter: Option<&PropertyFilter>,
     ) -> Result<PrunedNodeScan<'a>>;
+
+    /// Every candidate collection and the retained reference vector must be
+    /// admitted before allocation. Unsupported stores fail closed.
+    fn scan_nodes_with_filter_pruning_admitted<'a>(
+        &'a self,
+        _catalog: &Catalog,
+        _label_id: Option<LabelId>,
+        _filter: Option<&PropertyFilter>,
+        _admit: &mut hawdb_storage::read_view::GraphReadAllocator<'_>,
+    ) -> Result<PrunedNodeScan<'a>> {
+        Err(hawdb_core::HawDBError::Execution(
+            "graph store does not support admitted pruning reads".into(),
+        ))
+    }
 }
 
 /// The mutation operations required by storage-independent executor preflight.

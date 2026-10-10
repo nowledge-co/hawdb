@@ -88,13 +88,67 @@ pub fn projected_node_allocation_bytes(
 ) -> usize {
     std::mem::size_of::<ProjectedNodeRecord>()
         .saturating_add(node.labels.len().saturating_mul(128))
-        .saturating_add(required_properties.iter().fold(0usize, |total, name| {
-            total.saturating_add(node.properties.get(name).map_or(0, |value| {
-                1024usize
-                    .saturating_add(name.len())
-                    .saturating_add(projected_value_allocation_bytes(value))
-            }))
-        }))
+        .saturating_add(properties_allocation_bytes(
+            required_properties.iter().filter_map(|name| {
+                node.properties
+                    .get(name)
+                    .map(|value| (name.as_str(), value))
+            }),
+        ))
+}
+
+/// Full-record allocation bound, evaluated while all values remain borrowed.
+#[doc(hidden)]
+pub fn node_allocation_bytes(node: &NodeRecord) -> usize {
+    std::mem::size_of::<NodeRecord>()
+        .saturating_add(node.labels.len().saturating_mul(128))
+        .saturating_add(properties_allocation_bytes(
+            node.properties
+                .iter()
+                .map(|(name, value)| (name.as_str(), value)),
+        ))
+}
+
+fn properties_allocation_bytes<'a>(
+    properties: impl Iterator<Item = (&'a str, &'a Value)>,
+) -> usize {
+    let (count, payload) = properties.fold((0usize, 0usize), |(count, payload), (name, value)| {
+        (
+            count.saturating_add(1),
+            payload
+                .saturating_add(name.len())
+                .saturating_add(projected_value_allocation_bytes(value)),
+        )
+    });
+    if count == 0 {
+        return 0;
+    }
+    payload.saturating_add(property_container_allocation_bytes(count))
+}
+
+/// Container and projection-collection bound shared with encoded preflight.
+/// Values and owned key strings are charged separately, before decoding.
+#[doc(hidden)]
+pub fn property_container_allocation_bytes(count: usize) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    // The pinned std B-tree stores up to eleven pairs per node and at least
+    // five pairs per non-root node. Include internal links/header even for a
+    // leaf, plus the collecting vector used by projected FromIterator reads.
+    let pair_bytes = std::mem::size_of::<(String, Value)>();
+    let node_bytes = pair_bytes
+        .saturating_mul(11)
+        .saturating_add(std::mem::size_of::<usize>().saturating_mul(12))
+        .saturating_add(32);
+    let nodes = if count <= 11 {
+        1
+    } else {
+        1usize.saturating_add((count - 1) / 5)
+    };
+    nodes
+        .saturating_mul(node_bytes)
+        .saturating_add(count.saturating_mul(2).max(4).saturating_mul(pair_bytes))
 }
 
 fn projected_value_allocation_bytes(value: &Value) -> usize {
@@ -104,12 +158,9 @@ fn projected_value_allocation_bytes(value: &Value) -> usize {
         Value::List(values) => values.iter().fold(32usize, |total, value| {
             total.saturating_add(projected_value_allocation_bytes(value).saturating_mul(2))
         }),
-        Value::Map(values) => values.iter().fold(32usize, |total, (key, value)| {
-            total
-                .saturating_add(1024)
-                .saturating_add(key.len())
-                .saturating_add(projected_value_allocation_bytes(value))
-        }),
+        Value::Map(values) => {
+            properties_allocation_bytes(values.iter().map(|(key, value)| (key.as_str(), value)))
+        }
         _ => 0,
     })
 }
@@ -124,4 +175,15 @@ pub struct RelRecord {
     pub target: NodeId,
     pub rel_type: RelTypeId,
     pub properties: BTreeMap<String, Value>,
+}
+
+/// Full relationship ownership bound, measured without copying its properties.
+#[doc(hidden)]
+pub fn relationship_allocation_bytes(relationship: &RelRecord) -> usize {
+    std::mem::size_of::<RelRecord>().saturating_add(properties_allocation_bytes(
+        relationship
+            .properties
+            .iter()
+            .map(|(name, value)| (name.as_str(), value)),
+    ))
 }

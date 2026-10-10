@@ -59,6 +59,7 @@ pub use verified_body::{SearchBodyReadOptions, SearchVerifiedBody};
 pub(crate) mod mutation_run;
 mod publish_lease;
 mod reuse;
+mod text_seed;
 mod vector_serving;
 pub use generation_writer::{
     GovernedSearchGenerationUpdate, GovernedSearchGenerationWriter,
@@ -70,6 +71,7 @@ pub use generation_writer::{
     SearchOutOfCoreSegmentCompactionStopReason, SearchStagingCleanupReport,
 };
 pub(super) use publish_lease::SearchProjectionPublishLease;
+pub use text_seed::{SearchTextSeedOutput, SearchTextSeedReport};
 #[cfg(feature = "vector-search")]
 use vector_serving::vector_projection_error;
 use vector_serving::VectorScoreScan;
@@ -4072,6 +4074,9 @@ fn read_search_range(file: &File, offset: u64, bytes: &mut [u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "full-text-search")]
+    mod text_seed;
+
     use super::*;
     use crate::{
         SearchFusionWeights, SearchLexicalFeasibilityCoverage, SearchLexicalFeasibilityMetrics,

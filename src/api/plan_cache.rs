@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::query_request::{BoundScoringRequest, ScoringPlanCacheKey};
 use super::{
     optimizer_config_from_database_config, statement_body, DatabaseConfig,
     QueryAccessControlContext, SharedState,
@@ -60,6 +61,7 @@ pub(super) struct PlanCacheContext<'a, S = GraphStore> {
     pub(super) planning_cache: &'a SharedState<OptimizerPlanningCache>,
     pub(super) access_control: Option<&'a QueryAccessControlContext>,
     pub(super) optimizer_search: OptimizerSearchDirective,
+    pub(super) scoring: Option<BoundScoringRequest<'a>>,
 }
 
 pub(super) struct OptimizedQueryPlan {
@@ -87,6 +89,7 @@ pub(super) struct PlanCacheKey {
     environment: OptimizerEnvironmentKey,
     max_optimizer_groups: Option<usize>,
     access_control: Option<AccessControlPlanCacheKey>,
+    scoring: Option<ScoringPlanCacheKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -488,16 +491,20 @@ pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
             .expect("optimizer environment exists for a parameterized plan"),
         max_optimizer_groups: context.config.max_optimizer_groups,
         access_control: access_control_cache_key,
+        scoring: context.scoring.map(BoundScoringRequest::cache_key),
     });
     if cache_mode == PlanCacheMode::Use {
         let key = key.as_ref().expect("cache key exists in use mode");
         let cached = context.cache.borrow_mut().get(key);
         if let Some(cached) = cached {
-            let physical_plan = bind_physical_plan_parameters(
+            let mut physical_plan = bind_physical_plan_parameters(
                 &cached.physical_template,
                 execution_parameters.as_ref(),
                 cached.has_parameter_slots,
             )?;
+            if let Some(scoring) = context.scoring {
+                scoring.rebind(&mut physical_plan)?;
+            }
             let mut trace = cached.trace;
             trace.query_digest = Some(query_identity.query_digest().to_string());
             refresh_plan_trace(
@@ -547,16 +554,30 @@ pub(super) fn optimized_query_plan_for<S: crate::executor::ExecutionStore>(
             ))
         })?;
     let (physical_template, mut trace) = physical_root.into_parts();
+    let physical_template = match context.scoring {
+        Some(scoring) => scoring.attach_template(physical_template)?,
+        None => physical_template,
+    };
+    if context.scoring.is_some() {
+        query_optimizer.refresh_trace_for_physical_plan(
+            &mut trace,
+            &physical_template,
+            &catalog_access.catalog,
+        );
+    }
     trace.decisions.extend(catalog_access.decisions);
     let has_parameter_slots = parameterized
         .as_ref()
         .is_some_and(|parameterized| parameterized.slot_count() > 0)
         || (cache_mode == PlanCacheMode::Use && context.access_control.is_some());
-    let physical_plan = bind_physical_plan_parameters(
+    let mut physical_plan = bind_physical_plan_parameters(
         &physical_template,
         execution_parameters.as_ref(),
         has_parameter_slots,
     )?;
+    if let Some(scoring) = context.scoring {
+        scoring.rebind(&mut physical_plan)?;
+    }
     if let Some(parameterized) = &parameterized {
         trace.decisions.push(format!(
             "parameterized plan template: slots={} exact_variants={}",
@@ -664,8 +685,12 @@ fn required_runtime_capability(
                 return None;
             };
             Some(match &procedure.kind {
+                cypher::ProcedureCallKind::GraphSeedSearch(_) => return None,
                 cypher::ProcedureCallKind::VectorSearch(_) => {
                     hawdb_core::RuntimeCapability::VectorSearch
+                }
+                cypher::ProcedureCallKind::TextSearch(_) => {
+                    hawdb_core::RuntimeCapability::FullTextSearch
                 }
                 cypher::ProcedureCallKind::GraphAlgorithm { .. }
                 | cypher::ProcedureCallKind::ProjectGraph { .. } => {
@@ -759,6 +784,8 @@ pub(super) fn statement_uses_plan_cache(statement: &cypher::Statement) -> bool {
                     cypher::ClauseKind::Call { procedure, .. } => match &procedure.kind {
                         cypher::ProcedureCallKind::GraphAlgorithm { .. } => true,
                         cypher::ProcedureCallKind::VectorSearch(_)
+                        | cypher::ProcedureCallKind::TextSearch(_)
+                        | cypher::ProcedureCallKind::GraphSeedSearch(_)
                         | cypher::ProcedureCallKind::ProjectGraph { .. } => false,
                     },
                     cypher::ClauseKind::Unwind { .. }

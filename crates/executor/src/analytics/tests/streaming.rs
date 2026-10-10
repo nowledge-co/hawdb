@@ -312,11 +312,7 @@ fn node_state_and_oversized_records_remain_fail_closed() {
     let mut options = RunOptions::default();
     options.memory.blocking_operator_bytes = nz(512);
     let output = run_external(&fixture, &options, None);
-    assert!(output
-        .result
-        .unwrap_err()
-        .to_string()
-        .contains("streaming node scan"));
+    assert!(output.result.unwrap_err().to_string().contains("exceeding"));
     assert!(output.batches.is_empty());
     options.memory.blocking_operator_bytes = nz(4096);
     fixture.relationships[0]
@@ -328,5 +324,82 @@ fn node_state_and_oversized_records_remain_fail_closed() {
         .unwrap_err()
         .to_string()
         .contains("adjacency record"));
+    assert!(output.batches.is_empty());
+}
+
+#[test]
+fn streaming_visibility_admits_filtered_node_before_copy() {
+    let mut fixture = Fixture::new();
+    fixture.nodes[0]
+        .properties
+        .insert("body".into(), Value::String("X".repeat(1024 * 1024)));
+    fixture.nodes[0]
+        .properties
+        .insert("visible".into(), Value::Bool(false));
+    let mut options = RunOptions {
+        predicate: Some(visibility()),
+        ..RunOptions::default()
+    };
+    options.memory.blocking_operator_bytes = nz(4096);
+    let output = run_external(&fixture, &options, None);
+    assert!(output.result.is_err());
+    assert_eq!(
+        fixture.node_visits.get(),
+        0,
+        "filtered node copied before admission"
+    );
+    assert!(output.batches.is_empty());
+}
+
+#[test]
+fn streaming_adjacency_admits_rejected_record_before_copy() {
+    let mut fixture = Fixture::new();
+    fixture.relationships[0]
+        .properties
+        .insert("body".into(), Value::String("X".repeat(1024 * 1024)));
+    fixture
+        .definition
+        .as_mut()
+        .unwrap()
+        .relationship_predicates
+        .insert(
+            "LINK".into(),
+            hawdb_storage::projection::ProjectedRelationshipPredicate::Eq {
+                property: "active".into(),
+                value: Value::Bool(true),
+            },
+        );
+    let output = run_external(&fixture, &RunOptions::default(), None);
+    assert!(output.result.is_err());
+    assert_eq!(
+        fixture.adjacency_visits.get(),
+        0,
+        "relationship copied before admission"
+    );
+    assert!(output.batches.is_empty());
+}
+
+#[test]
+fn streaming_node_cancellation_stops_before_next_source_copy() {
+    let mut fixture = Fixture::new();
+    let token = RuntimeCancellationToken::new();
+    let task = RuntimeTaskContext::without_deadline(token.clone());
+    fixture.cancel_node_at = Some((1, token));
+    let output = run_external(
+        &fixture,
+        &RunOptions {
+            predicate: Some(visibility()),
+            ..RunOptions::default()
+        },
+        Some(&task),
+    );
+    assert!(
+        matches!(output.result, Err(HawDBError::Execution(ref message)) if message.contains("runtime task stopped: cancelled"))
+    );
+    assert_eq!(
+        fixture.node_visits.get(),
+        1,
+        "cancelled source copied more records"
+    );
     assert!(output.batches.is_empty());
 }

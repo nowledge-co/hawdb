@@ -474,10 +474,12 @@ impl Database {
         require_materialized_source(&runtime.store, options.require_source_reuse, None)?;
         let prepared = query_runtime::parse_runtime_execution(cypher)?;
         super::query_work_request_for_statement(&self.system_variables, &prepared.statement)?;
-        let optimized = self.optimized_query_plan_with_access_control(
+        let optimized = self.optimized_query_plan_for_request(
             cypher,
             &prepared.statement,
             parameters,
+            None,
+            super::PlanTraceMode::Template,
             None,
         )?;
         let plan = try_prepare_retained_numeric_plan(&optimized.physical_plan, &runtime.catalog)
@@ -523,10 +525,12 @@ impl DatabaseReadTransaction {
             &QuerySystemVariables::default(),
             &prepared.statement,
         )?;
-        let optimized = self.optimized_query_plan_with_access_control(
+        let optimized = self.optimized_query_plan_for_request(
             cypher,
             &prepared.statement,
             parameters,
+            None,
+            super::PlanTraceMode::Template,
             None,
         )?;
         let plan = try_prepare_retained_numeric_plan(&optimized.physical_plan, &self.catalog)

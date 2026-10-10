@@ -158,12 +158,16 @@ impl PhysicalPlan {
             | PhysicalPlan::SortExec { .. }
             | PhysicalPlan::TopNExec { .. }
             | PhysicalPlan::LimitExec { .. }
-            | PhysicalPlan::ScoringRerankExec { .. } => {
+            | PhysicalPlan::ScoringRerankExec { .. }
+            | PhysicalPlan::ScoringProgramExec { .. }
+            | PhysicalPlan::HostScoringExec { .. } => {
                 PhysicalPlanDomainRef::Relational(RelationalPhysicalPlanRef::new(self))
             }
             PhysicalPlan::ProjectGraph { .. }
             | PhysicalPlan::GraphAlgorithm { .. }
             | PhysicalPlan::VectorSeedScan { .. }
+            | PhysicalPlan::GraphSeedScan { .. }
+            | PhysicalPlan::TextSeedScan { .. }
             | PhysicalPlan::ThreadRepairStatsExec { .. } => {
                 PhysicalPlanDomainRef::Procedure(ProcedurePhysicalPlanRef::new(self))
             }

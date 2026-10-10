@@ -196,7 +196,7 @@ fn generated_body_exceeds_operation_memory_without_materialization() {
         &mut input,
         &SearchAnalyzerLexicon::default(),
         Control {
-            memory: Some(&memory),
+            memory: Some(crate::analyzer_memory::Memory::Build(&memory)),
             task: Some(&task),
             ..Control::default()
         },
@@ -228,7 +228,7 @@ fn emission_failure_and_cancellation_release_admission() {
             &mut &b"left right tail"[..],
             &SearchAnalyzerLexicon::default(),
             Control {
-                memory: Some(&memory),
+                memory: Some(crate::analyzer_memory::Memory::Build(&memory)),
                 task: Some(&task),
                 ..Control::default()
             },
@@ -271,7 +271,7 @@ fn streamed_chinese_analysis_retains_qualified_workspace_until_worker_exit() {
             &mut input,
             &SearchAnalyzerLexicon::default(),
             Control {
-                memory: Some(&memory),
+                memory: Some(crate::analyzer_memory::Memory::Build(&memory)),
                 task: Some(&task),
                 workspace: Some(workspace),
                 checkpoint_throttle: None,

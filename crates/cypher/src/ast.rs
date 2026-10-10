@@ -134,6 +134,19 @@ pub struct GraphAlgorithm {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphSeedSearch {
+    pub query: ValueExpression,
+    pub label: ValueExpression,
+    pub top_k: Option<ValueExpression>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextSearch {
+    pub query: ValueExpression,
+    pub top_k: Option<ValueExpression>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VectorSearch {
     pub embedding: ValueExpression,
     pub top_k: Option<ValueExpression>,

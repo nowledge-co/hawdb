@@ -15,7 +15,9 @@
 //! Execution memory defaults and admission estimates.
 
 use hawdb_core::{HawDBError, Result, RuntimeTaskContext};
-use hawdb_plan_cypher::{PhysicalPlan, PlanChildren, VectorExecutionResourceProfile};
+use hawdb_plan_cypher::{
+    GraphExpansionBudget, PhysicalPlan, PlanChildren, VectorExecutionResourceProfile,
+};
 use hawdb_storage::mutation::MutationLimits;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
@@ -89,6 +91,10 @@ pub struct ExecutionMemoryConfig {
     pub batch_payload_bytes: NonZeroUsize,
     /// Maximum estimated resident bytes retained by one blocking operator.
     pub blocking_operator_bytes: NonZeroUsize,
+    /// Override the row and cumulative payload limits of each seeded expansion.
+    /// Live allocations still obey the operator, batch and shared query budgets.
+    /// `None` uses the optimizer's seed-window-derived limits.
+    pub graph_expansion_budget: Option<GraphExpansionBudget>,
     /// Maximum cumulative serialized spill bytes, including merge passes.
     pub max_spill_bytes: NonZeroU64,
     /// Maximum cumulative spill runs created, including merge passes.
@@ -118,6 +124,7 @@ impl Default for ExecutionMemoryConfig {
                 .expect("default execution batch byte size is non-zero"),
             blocking_operator_bytes: NonZeroUsize::new(DEFAULT_BLOCKING_OPERATOR_MEMORY_BYTES)
                 .expect("default blocking operator memory budget is non-zero"),
+            graph_expansion_budget: None,
             max_spill_bytes: NonZeroU64::new(DEFAULT_EXECUTION_MAX_SPILL_BYTES)
                 .expect("default spill byte budget is non-zero"),
             max_spill_runs: NonZeroUsize::new(DEFAULT_EXECUTION_MAX_SPILL_RUNS)
@@ -225,6 +232,9 @@ pub fn max_external_read_parallelism(plan: &PhysicalPlan) -> usize {
     let own_parallelism = match plan {
         PhysicalPlan::VectorSeedScan {
             resource_profile, ..
+        }
+        | PhysicalPlan::TextSeedScan {
+            resource_profile, ..
         } => resource_profile.max_parallelism.max(1),
         _ => 1,
     };
@@ -294,6 +304,9 @@ fn peak_execution_memory_shape(
     }
     if let PhysicalPlan::VectorSeedScan {
         resource_profile, ..
+    }
+    | PhysicalPlan::TextSeedScan {
+        resource_profile, ..
     } = plan
     {
         shape.external_read_bytes = shape.external_read_bytes.saturating_add(usize_to_u64(
@@ -334,6 +347,8 @@ fn retains_blocking_state(plan: &PhysicalPlan) -> bool {
         plan,
         PhysicalPlan::GraphAlgorithm { .. }
             | PhysicalPlan::VectorSeedScan { .. }
+            | PhysicalPlan::GraphSeedScan { .. }
+            | PhysicalPlan::TextSeedScan { .. }
             | PhysicalPlan::SourceSegmentScan { .. }
             | PhysicalPlan::NodeCartesianProductExec { .. }
             | PhysicalPlan::HashJoinExec { .. }
@@ -346,6 +361,8 @@ fn retains_blocking_state(plan: &PhysicalPlan) -> bool {
             | PhysicalPlan::SortExec { .. }
             | PhysicalPlan::TopNExec { .. }
             | PhysicalPlan::ScoringRerankExec { .. }
+            | PhysicalPlan::ScoringProgramExec { .. }
+            | PhysicalPlan::HostScoringExec { .. }
     )
 }
 
@@ -364,6 +381,7 @@ mod tests {
             batch_rows: NonZeroUsize::new(8).unwrap(),
             batch_payload_bytes: NonZeroUsize::new(1024).unwrap(),
             blocking_operator_bytes: NonZeroUsize::new(4096).unwrap(),
+            graph_expansion_budget: None,
             max_spill_bytes: NonZeroU64::new(1024 * 1024).unwrap(),
             max_spill_runs: NonZeroUsize::new(8).unwrap(),
             max_total_spill_bytes: NonZeroU64::new(4 * 1024 * 1024).unwrap(),

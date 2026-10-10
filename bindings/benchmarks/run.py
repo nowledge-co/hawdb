@@ -79,6 +79,39 @@ def source_identity():
             "tree": command_text("git", "write-tree")}
 
 
+def artifact_identity(paths):
+    return {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
+
+
+def require_artifact_identity(paths, expected):
+    if artifact_identity(paths) != expected:
+        raise RuntimeError("benchmark artifacts changed during qualification")
+
+
+def native_profile_valid(result, layer, required):
+    if result["status"] != "ok":
+        return None
+    profile = result.get("native_profile")
+    if not required:
+        # An instrumented artifact must not be reported as ordinary latency.
+        return profile is None
+    fields = ("allocation_calls", "allocated_bytes", "deallocation_calls",
+              "deallocated_bytes", "reallocation_calls",
+              "live_requested_bytes_before", "live_requested_bytes_after",
+              "process_peak_requested_bytes")
+    if layer != "rust":
+        fields += ("parameter_conversion_ns", "engine_call_ns", "result_conversion_ns")
+    return isinstance(profile, dict) and all(
+        type(profile.get(key)) is int and profile[key] >= 0 for key in fields
+    )
+
+
+def qualified_record(result):
+    return (result["status"] == "ok" and result["parity"]
+            and result["process_exit"] == 0 and result["profile_valid"] is True
+            and result["phase_timing_valid"] is True)
+
+
 def run_child(command, artifact):
     started = time.monotonic()
     timer = ["/usr/bin/time", "-l"] if sys.platform == "darwin" else ["/usr/bin/time", "-v"]
@@ -111,6 +144,8 @@ def main():
     parser.add_argument("--go", type=pathlib.Path)
     parser.add_argument("--library", type=pathlib.Path)
     parser.add_argument("--python-extension", type=pathlib.Path)
+    parser.add_argument("--native-profiles", action="store_true",
+                        help="require native counters from all three instrumented artifacts")
     parser.add_argument("--cpu-profiles", action="store_true")
     args = parser.parse_args()
     sizes = [int(size) for size in args.sizes.split(",")]
@@ -118,6 +153,8 @@ def main():
     backends = args.backends.split(",")
     if args.samples < 1 or any(size < 1 for size in sizes) or set(cases) - set(CASES) or set(backends) - {"memory", "file"}:
         parser.error("positive sizes/samples and known cases/backends are required")
+    if args.native_profiles and args.python_extension is None:
+        parser.error("--native-profiles requires an explicit instrumented --python-extension")
     args.output.mkdir(parents=True, exist_ok=False)
     identity = source_identity()
     if args.go is None:
@@ -128,14 +165,17 @@ def main():
     args.rust, args.python, args.go, library = (path.resolve() for path in (args.rust, args.python, args.go, library))
     # Freeze the extension as well: another Bazel configuration can retarget
     # bazel-bin between jobs, but every job must load the hashed artifact.
-    if args.python_extension is not None:
-        args.python_extension = args.python_extension.resolve()
-        if not args.python_extension.is_file():
-            parser.error("build the matching Python extension first: " + str(args.python_extension))
+    if args.python_extension is None:
+        args.python_extension = pathlib.Path(str(args.python) + ".runfiles") / "_main/bindings/python/python/hawdb/_hawdb.so"
+    args.python_extension = args.python_extension.resolve()
+    if not args.python_extension.is_file():
+        parser.error("build the matching Python extension or pass --python-extension: " + str(args.python_extension))
     commands = {"rust": [str(args.rust)], "python": [str(args.python)], "go": [str(args.go)]}
     for path in (args.rust, args.python, args.go, library):
         if not path.is_file():
             parser.error("build the matching benchmark first: " + str(path))
+    artifact_paths = (args.rust, args.python, args.go, library, args.python_extension)
+    artifacts = artifact_identity(artifact_paths)
     report = {
         "source": identity, "spec": "ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md",
         "seed": SEED, "sizes": sizes, "cases": cases, "backends": backends,
@@ -145,15 +185,16 @@ def main():
         "rust": command_text("rustc", "--version"), "go": command_text("go", "version"),
         "build": "Bazel opt, all three engine dependencies compiled together",
         "defaults_changed": False, "strict_zero_copy": False, "terminal": False,
-        "instrumented": args.python_extension is not None,
-        "binaries": {layer: {"path": command[0], "sha256": hashlib.sha256(pathlib.Path(command[0]).read_bytes()).hexdigest()} for layer, command in commands.items()},
-        "library_sha256": hashlib.sha256(library.read_bytes()).hexdigest(),
-        "python_extension_path": str(args.python_extension) if args.python_extension else None,
-        "python_extension_sha256": hashlib.sha256(args.python_extension.read_bytes()).hexdigest() if args.python_extension else None,
+        "instrumented": args.native_profiles or args.cpu_profiles,
+        "native_profiles": args.native_profiles, "go_cpu_profiles": args.cpu_profiles,
+        "binaries": {layer: {"path": command[0], "sha256": artifacts[command[0]]} for layer, command in commands.items()},
+        "library_sha256": artifacts[str(library)],
+        "python_extension_path": str(args.python_extension),
+        "python_extension_sha256": artifacts[str(args.python_extension)],
         "records": [], "summaries": [],
         "measurement_limits": [
             "Process peak RSS includes runtime, fixture, setup and query; it is not a query-only allocation ledger.",
-            "Allocator observations count Rust requests; Go/Python heaps and non-Rust workspace are separate." if args.python_extension else "Go allocation counts exclude the native engine; run the separately instrumented matrix for native/Python profiles.",
+            "Allocator observations count Rust requests; Go/Python heaps and non-Rust workspace are separate." if args.native_profiles else "Go allocation counts exclude the native engine; run the separately instrumented matrix for native/Python profiles.",
             "Each iteration opens its own store; seeded read runs measure a warm store, not cold artifact reads.",
             "Write cases include a final verification query in query_boundary_ns; write_boundary_ns and read_boundary_ns separate the phases without removing calls.",
             "The query timer excludes the identical checksum algorithm; consumer time is reported separately.",
@@ -162,6 +203,13 @@ def main():
     destination = args.output / "report.json"
     def save():
         destination.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+    def check_artifacts():
+        try:
+            require_artifact_identity(artifact_paths, artifacts)
+        except (OSError, RuntimeError) as error:
+            report["qualification_error"] = str(error)
+            save()
+            raise
     save()
     parity_failures = 0
     for count in sizes:
@@ -176,6 +224,7 @@ def main():
                     for layer in layers[offset:] + layers[:offset]:
                         if source_identity() != identity:
                             raise RuntimeError("source changed during qualification")
+                        check_artifacts()
                         stem = "%s-%s-%d-%s-%d" % (layer, case, count, backend, iteration)
                         job_path = args.output / (stem + ".job.json")
                         job = dict(data, backend=backend, path=str(args.output / (stem + ".db")))
@@ -183,8 +232,8 @@ def main():
                             job["cpu_profile_path"] = str(args.output / (stem + ".cpu.pprof"))
                         job_path.write_text(json.dumps(job, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
                         command = commands[layer] + [str(job_path)] + ([str(library)] if layer == "go" else [])
-                        if layer == "python" and args.python_extension is not None:
-                            command.append(str(args.python_extension.resolve()))
+                        if layer == "python":
+                            command.append(str(args.python_extension))
                         result = run_child(command, args.output / stem)
                         result.update({"layer": layer, "case": case, "size": count, "backend": backend, "iteration": iteration,
                                        "discarded": iteration == 0, "fixture_sha256": hashlib.sha256(job_path.read_bytes()).hexdigest(),
@@ -200,19 +249,12 @@ def main():
                             and result["query_boundary_ns"] == result["write_boundary_ns"] + result["read_boundary_ns"]
                             and (case in ("fill", "fill_bulk") or result["write_boundary_ns"] == 0)
                         ) if result["status"] == "ok" else None
-                        profile = result.get("native_profile")
-                        required = ("allocation_calls", "allocated_bytes", "deallocation_calls",
-                                    "deallocated_bytes", "reallocation_calls",
-                                    "live_requested_bytes_before", "live_requested_bytes_after",
-                                    "process_peak_requested_bytes")
-                        if layer != "rust":
-                            required += ("parameter_conversion_ns", "engine_call_ns", "result_conversion_ns")
-                        result["profile_valid"] = (
-                            isinstance(profile, dict)
-                            and all(type(profile.get(key)) is int and profile[key] >= 0 for key in required)
-                        ) if args.python_extension and result["status"] == "ok" else None
+                        result["profile_valid"] = native_profile_valid(result, layer, args.native_profiles)
                         report["records"].append(result)
                         save()
+                        # Preserve the child's raw outcome even if a rebuild
+                        # happened during it. Such a report remains nonterminal.
+                        check_artifacts()
                         print(stem, result["status"], result["parity"], flush=True)
                         job_path.unlink()  # retain hashes/inputs recipe, not many identical giant fixtures
                         if backend == "file":
@@ -220,7 +262,7 @@ def main():
                             shutil.rmtree(job["path"], ignore_errors=False) if pathlib.Path(job["path"]).exists() else None
                 for layer in commands:
                     records = [r for r in report["records"] if r["case"] == case and r["size"] == count and r["backend"] == backend and r["layer"] == layer and not r["discarded"]]
-                    valid = [r for r in records if r["status"] == "ok" and r["parity"] and r["phase_timing_valid"]]
+                    valid = [r for r in records if qualified_record(r)]
                     report["summaries"].append({"layer": layer, "case": case, "size": count, "backend": backend,
                         "successful_samples": len(valid), "failed_samples": len(records) - len(valid),
                         "median_query_boundary_ns": statistics.median(r["query_boundary_ns"] for r in valid) if valid else None,
@@ -231,19 +273,17 @@ def main():
             del data
     if source_identity() != identity:
         raise RuntimeError("source changed before completion")
+    check_artifacts()
     report.update(terminal=True, parity_failures=parity_failures,
-                  successful_records=sum(r["status"] == "ok" and r["parity"] for r in report["records"]),
+                  value_parity_records=sum(r["status"] == "ok" and r["parity"] for r in report["records"]),
+                  successful_records=sum(qualified_record(r) for r in report["records"]),
                   refused_or_failed_records=sum(r["status"] != "ok" for r in report["records"]))
     save()
     # A completed experiment may contain useful budget-refusal evidence, but
     # cannot be represented as a successful parity/performance qualification.
     report["profile_failures"] = sum(r["profile_valid"] is False for r in report["records"])
     report["phase_timing_failures"] = sum(r["phase_timing_valid"] is False for r in report["records"])
-    report["all_paths_succeeded"] = all(
-        r["status"] == "ok" and r["parity"] and r["process_exit"] == 0
-        and r["profile_valid"] is not False and r["phase_timing_valid"] is True
-        for r in report["records"]
-    )
+    report["all_paths_succeeded"] = all(qualified_record(r) for r in report["records"])
     save()
     return int(not report["all_paths_succeeded"])
 

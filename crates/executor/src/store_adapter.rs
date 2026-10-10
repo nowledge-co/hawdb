@@ -64,6 +64,15 @@ fn adapt_node_consumer(
     }
 }
 
+impl hawdb_storage::read_view::GraphReadAllocation for QueryMemoryLease {
+    fn bytes(&self) -> usize {
+        self.bytes()
+    }
+    fn grow(&mut self, bytes: usize) -> hawdb_core::Result<()> {
+        QueryMemoryLease::grow(self, bytes)
+    }
+}
+
 impl GraphExecutionRead for GraphStore {
     fn file_descriptor_context(&self) -> Option<hawdb_storage::file_descriptors::FileOpenContext> {
         GraphStore::file_descriptor_context(self)
@@ -84,6 +93,23 @@ impl GraphExecutionRead for GraphStore {
 
     fn node_owned(&self, id: NodeId) -> Result<Option<NodeRecord>> {
         GraphStore::node_owned(self, id)
+    }
+
+    fn node_with_allocation(
+        &self,
+        id: NodeId,
+        label_ids: Option<&[LabelId]>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+    ) -> Result<hawdb_storage::read_view::AdmittedNodeRead> {
+        GraphStore::node_with_allocation(self, id, label_ids, admit)
+    }
+
+    fn relationship_with_allocation(
+        &self,
+        id: RelId,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+    ) -> Result<hawdb_storage::read_view::AdmittedRelationshipRead> {
+        GraphStore::relationship_with_allocation(self, id, admit)
     }
 
     fn scan_nodes_borrowed<'a>(
@@ -120,6 +146,134 @@ impl GraphExecutionRead for GraphStore {
         GraphStore::try_visit_nodes_owned(self, label_id, |node| {
             consumer(node).map(to_store_control)
         })
+        .map(to_execution_control)
+    }
+
+    fn visit_relationships_with_allocation(
+        &self,
+        rel_type: Option<RelTypeId>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedRelationshipRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        GraphStore::visit_relationships_with_allocation(self, rel_type, admit, &mut |record| {
+            consumer(record).map(to_store_control)
+        })
+        .map(to_execution_control)
+    }
+
+    fn visit_nodes_with_allocation(
+        &self,
+        label_id: Option<LabelId>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedNodeRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        GraphStore::visit_nodes_with_allocation(self, label_id, admit, &mut |node| {
+            consumer(node).map(to_store_control)
+        })
+        .map(to_execution_control)
+    }
+
+    fn visit_nodes_by_access_with_allocation(
+        &self,
+        label_id: LabelId,
+        access: &NodeProjectionAccess,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedNodeRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        GraphStore::visit_nodes_by_access_with_allocation(
+            self,
+            label_id,
+            access,
+            admit,
+            &mut |node| consumer(node).map(to_store_control),
+        )
+        .map(to_execution_control)
+    }
+
+    fn visit_projected_nodes_admitted(
+        &self,
+        label_id: Option<LabelId>,
+        properties: &BTreeSet<String>,
+        admit: &mut dyn FnMut(
+            usize,
+        )
+            -> Result<Box<dyn hawdb_storage::read_view::GraphReadAllocation>>,
+        consumer: &mut dyn FnMut(ProjectedNodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        GraphStore::visit_projected_nodes_admitted(self, label_id, properties, admit, &mut |node| {
+            consumer(node).map(to_store_control)
+        })
+        .map(to_execution_control)
+    }
+
+    fn visit_projected_nodes_with_allocation(
+        &self,
+        label_id: Option<LabelId>,
+        properties: &BTreeSet<String>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedProjectedNode,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        GraphStore::visit_projected_nodes_with_allocation(
+            self,
+            label_id,
+            properties,
+            admit,
+            &mut |node| consumer(node).map(to_store_control),
+        )
+        .map(to_execution_control)
+    }
+
+    fn visit_projected_nodes_by_access_admitted(
+        &self,
+        label_id: LabelId,
+        access: &NodeProjectionAccess,
+        properties: &BTreeSet<String>,
+        admit: &mut dyn FnMut(
+            usize,
+        )
+            -> Result<Box<dyn hawdb_storage::read_view::GraphReadAllocation>>,
+        consumer: &mut dyn FnMut(ProjectedNodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        GraphStore::visit_projected_nodes_by_access_admitted(
+            self,
+            label_id,
+            access,
+            properties,
+            admit,
+            &mut |node| consumer(node).map(to_store_control),
+        )
+        .map(to_execution_control)
+    }
+
+    fn visit_projected_nodes_by_property_admitted(
+        &self,
+        label_id: LabelId,
+        property: &str,
+        values: &[hawdb_core::Value],
+        properties: &BTreeSet<String>,
+        admit: &mut dyn FnMut(
+            usize,
+        )
+            -> Result<Box<dyn hawdb_storage::read_view::GraphReadAllocation>>,
+        consumer: &mut dyn FnMut(ProjectedNodeRecord) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        GraphStore::visit_projected_nodes_by_property_admitted(
+            self,
+            label_id,
+            property,
+            values,
+            properties,
+            admit,
+            &mut |node| consumer(node).map(to_store_control),
+        )
         .map(to_execution_control)
     }
 
@@ -361,20 +515,62 @@ impl GraphExecutionRead for GraphStore {
         memory: AdjacencyReadMemory<'_>,
         consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
     ) -> Result<ScanControl> {
-        let mut key_lease = memory
-            .account
-            .map(|account| account.reserve(0))
-            .transpose()?;
-        GraphStore::try_visit_ordered_adjacent_relationships_accounted(
+        GraphExecutionRead::visit_ordered_adjacent_relationships_with_allocation(
+            self,
+            node_id,
+            rel_type,
+            direction,
+            memory,
+            &mut |bytes| memory.admit_node(bytes, 0, None).map(Some),
+            &mut |relationship| {
+                let (relationship, _allocation) = relationship.into_parts();
+                consumer(relationship)
+            },
+        )
+    }
+
+    fn visit_ordered_adjacent_relationships_with_allocation(
+        &self,
+        node_id: NodeId,
+        rel_type: Option<RelTypeId>,
+        direction: AdjacencyDirection,
+        memory: AdjacencyReadMemory<'_>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedRelationshipRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        GraphStore::visit_ordered_adjacent_relationships_with_allocation(
             self,
             node_id,
             rel_type,
             direction,
             memory.budget_bytes,
-            |bytes| grow_optional_lease(&mut key_lease, bytes),
+            admit,
             |relationship| consumer(relationship).map(to_store_control),
         )
         .map(to_execution_control)
+    }
+
+    fn visit_filtered_ordered_relationships_with_allocation(
+        &self,
+        adjacency: (NodeId, Option<RelTypeId>, AdjacencyDirection),
+        filter: &PropertyFilter,
+        memory: AdjacencyReadMemory<'_>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedRelationshipRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<(ScanControl, Option<hawdb_storage::scan::ScanPruningReport>)> {
+        GraphStore::visit_filtered_ordered_relationships_with_allocation(
+            self,
+            adjacency,
+            filter,
+            memory.budget_bytes,
+            admit,
+            |row| consumer(row).map(to_store_control),
+        )
+        .map(|(control, report)| (to_execution_control(control), report))
     }
 
     fn visit_adjacent_relationships_with_filter_owned(
@@ -415,38 +611,18 @@ impl GraphExecutionRead for GraphStore {
         memory: AdjacencyReadMemory<'_>,
         consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
     ) -> Result<(ScanControl, Option<hawdb_storage::scan::ScanPruningReport>)> {
-        let mut entries = Vec::new();
-        let mut key_lease = memory
-            .account
-            .map(|account| account.reserve(0))
-            .transpose()?;
-        let mut collection_error = None;
-        let (control, report) = GraphStore::visit_adjacent_relationships_with_filter_owned(
+        GraphStore::visit_filtered_ordered_relationships_with_allocation(
             self,
-            node_id,
-            rel_type,
-            direction,
+            (node_id, rel_type, direction),
             filter,
-            |relationship| match push_ordered_adjacency_entry(
-                &mut entries,
-                ordered_adjacency_key(&relationship, direction),
-                memory.budget_bytes,
-                &mut key_lease,
-            ) {
-                Ok(()) => GraphScanControl::Continue,
-                Err(error) => {
-                    collection_error = Some(error);
-                    GraphScanControl::Stop
-                }
+            memory.budget_bytes,
+            &mut |bytes| memory.admit_node(bytes, 0, None).map(Some),
+            |row| {
+                let (relationship, _allocation) = row.into_parts();
+                consumer(relationship).map(to_store_control)
             },
-        )?;
-        if let Some(error) = collection_error {
-            return Err(error);
-        }
-        if control == GraphScanControl::Stop {
-            return Ok((ScanControl::Stop, report));
-        }
-        emit_ordered_adjacency_entries(self, entries, consumer).map(|control| (control, report))
+        )
+        .map(|(control, report)| (to_execution_control(control), report))
     }
 
     fn visit_relationships_owned(
@@ -480,7 +656,26 @@ impl GraphExecutionRead for GraphStore {
     ) -> Result<PrunedNodeScan<'a>> {
         let scan = GraphStore::scan_nodes_with_filter_pruning(self, catalog, label_id, filter);
         Ok(PrunedNodeScan {
-            nodes: Box::new(scan.nodes.into_iter().cloned()),
+            nodes: Box::new(scan.nodes.into_iter().map(std::borrow::Cow::Borrowed)),
+            report: scan.report,
+        })
+    }
+
+    fn scan_nodes_with_filter_pruning_admitted<'a>(
+        &'a self,
+        catalog: &Catalog,
+        label_id: Option<LabelId>,
+        filter: Option<&PropertyFilter>,
+        admit: &mut hawdb_storage::read_view::GraphReadAllocator<'_>,
+    ) -> Result<PrunedNodeScan<'a>> {
+        let (scan, allocation) = GraphStore::scan_nodes_with_filter_pruning_admitted(
+            self, catalog, label_id, filter, admit,
+        )?;
+        Ok(PrunedNodeScan {
+            nodes: Box::new(scan.nodes.into_iter().map(move |node| {
+                let _retained_allocation = &allocation;
+                std::borrow::Cow::Borrowed(node)
+            })),
             report: scan.report,
         })
     }
@@ -524,60 +719,4 @@ impl GraphExecutionWrite for GraphStore {
     ) -> Result<Vec<NodeId>> {
         GraphStore::delete_node_ids_with_limits(self, catalog, ids, detach, limits)
     }
-}
-
-fn ordered_adjacency_key(
-    relationship: &RelRecord,
-    direction: AdjacencyDirection,
-) -> (NodeId, RelId) {
-    let neighbor = match direction {
-        AdjacencyDirection::Outgoing => relationship.target,
-        AdjacencyDirection::Incoming => relationship.source,
-    };
-    (neighbor, relationship.id)
-}
-
-fn push_ordered_adjacency_entry(
-    entries: &mut Vec<(NodeId, RelId)>,
-    entry: (NodeId, RelId),
-    memory_budget_bytes: usize,
-    key_lease: &mut Option<QueryMemoryLease>,
-) -> Result<()> {
-    let entry_bytes = std::mem::size_of::<(NodeId, RelId)>();
-    let required_bytes = entries.len().saturating_add(1).saturating_mul(entry_bytes);
-    if required_bytes > memory_budget_bytes {
-        return Err(hawdb_core::error::HawDBError::Execution(format!(
-            "ordered adjacency keys use {required_bytes} bytes, exceeding blocking_operator_bytes {memory_budget_bytes}"
-        )));
-    }
-    grow_optional_lease(key_lease, entry_bytes)?;
-    entries.push(entry);
-    Ok(())
-}
-
-fn grow_optional_lease(lease: &mut Option<QueryMemoryLease>, bytes: usize) -> Result<()> {
-    if let Some(lease) = lease {
-        lease.grow(bytes)?;
-    }
-    Ok(())
-}
-
-fn emit_ordered_adjacency_entries(
-    store: &GraphStore,
-    mut entries: Vec<(NodeId, RelId)>,
-    consumer: &mut dyn FnMut(RelRecord) -> Result<ScanControl>,
-) -> Result<ScanControl> {
-    entries.sort_unstable();
-    for (_, relationship_id) in entries {
-        let Some(relationship) = store.relationship_owned(relationship_id)? else {
-            return Err(hawdb_core::error::HawDBError::StorageIntegrity(format!(
-                "ordered adjacency references missing relationship {}",
-                relationship_id.0
-            )));
-        };
-        if consumer(relationship)? == ScanControl::Stop {
-            return Ok(ScanControl::Stop);
-        }
-    }
-    Ok(ScanControl::Continue)
 }

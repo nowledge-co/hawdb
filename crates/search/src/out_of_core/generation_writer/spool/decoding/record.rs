@@ -83,7 +83,7 @@ fn read_header<R: Read>(
     let body_bytes = utf8::visit(
         &mut body,
         Control {
-            memory: Some(memory),
+            memory: Some(crate::analyzer_memory::Memory::Build(memory)),
             task: Some(task),
             ..Control::default()
         },

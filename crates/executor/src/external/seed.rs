@@ -16,12 +16,13 @@
 
 use super::{
     ExternalReadOperator, ExternalReadResourceContract, ExternalReadResultBudget,
-    VectorSeedExecutionOutput, VectorSeedExecutionRequest,
+    TextSeedExecutionOutput, TextSeedExecutionRequest, VectorSeedExecutionOutput,
+    VectorSeedExecutionRequest,
 };
 use crate::binding::Binding;
 use crate::kernel::collect_bounded_operator_bindings_with_account;
 use crate::memory::external_read_memory_budget;
-use crate::observer::QueryExecutionObserver;
+use crate::observer::{ExecutionObserver, QueryExecutionObserver};
 use crate::pipeline::{emit_owned_binding_batches, BatchControl, BindingBatch};
 use crate::{ExecutionLimit, ExecutionMemoryConfig, QueryMemoryClass, QueryMemoryLedger};
 use hawdb_core::{HawDBError, Result, RuntimeTaskContext, Value};
@@ -31,7 +32,7 @@ use std::num::NonZeroUsize;
 
 /// Borrows query-owned resources; admission and concrete host execution stay outside this module.
 #[derive(Clone, Copy)]
-pub struct VectorSeedContext<'a> {
+pub struct SeedReadContext<'a> {
     pub parameters: &'a BTreeMap<String, Value>,
     pub external: &'a dyn BatchExternalRead,
     pub memory: &'a ExecutionMemoryConfig,
@@ -40,7 +41,19 @@ pub struct VectorSeedContext<'a> {
     pub observer: &'a QueryExecutionObserver,
 }
 
+pub type VectorSeedContext<'a> = SeedReadContext<'a>;
+
 pub trait BatchExternalRead {
+    fn execute_text_seed(
+        &self,
+        request: TextSeedExecutionRequest<'_>,
+    ) -> Result<TextSeedExecutionOutput> {
+        request.resources.checkpoint()?;
+        Err(HawDBError::Execution(
+            "text search capability is unavailable without a text projection".into(),
+        ))
+    }
+
     fn execute_vector_seed(
         &self,
         request: VectorSeedExecutionRequest<'_>,
@@ -60,6 +73,13 @@ impl<'a> BatchExternalReadAdapter<'a> {
 }
 
 impl BatchExternalRead for BatchExternalReadAdapter<'_> {
+    fn execute_text_seed(
+        &self,
+        request: TextSeedExecutionRequest<'_>,
+    ) -> Result<TextSeedExecutionOutput> {
+        self.external.borrow_mut().execute_text_seed(request)
+    }
+
     fn execute_vector_seed(
         &self,
         request: VectorSeedExecutionRequest<'_>,
@@ -217,6 +237,9 @@ impl VectorSeedScanSpec<'_> {
                         Value::Float(row.score),
                     ),
                 ]);
+                if context.observer.seed_graph_scoring_input().is_some() {
+                    crate::scoring::annotate_seed(&mut values, row.score);
+                }
                 if *output_external_id && let Some(external_id) = row.external_id {
                     values.insert("external_id".to_string(), Value::String(external_id));
                 }
@@ -237,6 +260,9 @@ impl VectorSeedScanSpec<'_> {
         emit_owned_binding_batches(bindings, context.memory.batch_rows.get(), emit)
     }
 }
+
+mod text;
+pub use text::TextSeedScanSpec;
 
 #[cfg(test)]
 mod tests;

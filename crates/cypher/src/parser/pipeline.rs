@@ -119,6 +119,10 @@ impl Parser<'_> {
             "vector_search" => {
                 ProcedureCallKind::VectorSearch(self.parse_vector_search_arguments()?)
             }
+            "text_search" => ProcedureCallKind::TextSearch(self.parse_text_search_arguments()?),
+            "graph_seed_search" => {
+                ProcedureCallKind::GraphSeedSearch(self.parse_graph_seed_search_arguments()?)
+            }
             "project_graph" => {
                 let name = self.parse_string()?;
                 self.expect_char(',')?;
@@ -150,6 +154,11 @@ impl Parser<'_> {
             _ => return Err(self.error("unsupported procedure")),
         };
         let procedure = self.source_node(kind, start);
+        let yields = self.parse_procedure_yields()?;
+        Ok(ClauseKind::Call { procedure, yields })
+    }
+
+    pub(super) fn parse_procedure_yields(&mut self) -> Result<Vec<YieldItem>> {
         let mut yields = Vec::new();
         if self.consume_keyword("YIELD") {
             loop {
@@ -167,7 +176,7 @@ impl Parser<'_> {
                 }
             }
         }
-        Ok(ClauseKind::Call { procedure, yields })
+        Ok(yields)
     }
 
     fn parse_pipeline_match(&mut self, optional: bool) -> Result<ClauseKind> {

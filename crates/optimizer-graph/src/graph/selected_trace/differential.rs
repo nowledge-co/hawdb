@@ -85,6 +85,7 @@ fn wrap(kind: usize, input: PhysicalPlan) -> PhysicalPlan {
             property: "score".into(),
             column: "score".into(),
             optional: true,
+            node_visibility_predicate: None,
             input,
         },
         8 => PhysicalPlan::AdjacencyExistsExec {

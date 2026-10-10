@@ -24,6 +24,10 @@ use hawdb_storage::{NodeId, NodeRecord, RelId, RelRecord};
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
+mod host_scoring;
+mod owned_budget;
+mod scoring;
+
 struct Source<'a> {
     rows: Vec<Binding>,
     batch_rows: usize,
@@ -184,6 +188,62 @@ enum Exit {
     Complete,
     Stop,
     Error,
+}
+
+#[test]
+fn limit_window_completion_preserves_consumer_stop_and_incomplete_source() {
+    struct Incomplete(Source<'static>);
+    impl BindingBatchSource for Incomplete {
+        fn execute(
+            &mut self,
+            input: &PhysicalPlan,
+            limit: ExecutionLimit,
+            emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
+        ) -> Result<BatchControl> {
+            self.0.execute(input, limit, emit)?;
+            Ok(BatchControl::Stop)
+        }
+    }
+    for consumer in [BatchControl::Continue, BatchControl::Stop] {
+        let mut source = Source::new(rows(3, 0), 2);
+        let mut delivered = 0;
+        let control = with_context(2, 8192, |context| {
+            stream_limit_batches(
+                0,
+                Some(1),
+                &PhysicalPlan::EmptyExec,
+                &mut source,
+                context,
+                ExecutionLimit::unlimited(),
+                &mut |batch| {
+                    delivered += batch.len();
+                    Ok(consumer)
+                },
+            )
+            .unwrap()
+        });
+        assert_eq!(delivered, 1);
+        assert_eq!(control, consumer);
+    }
+    let mut source = Incomplete(Source::new(rows(1, 0), 1));
+    let mut delivered = 0;
+    let control = with_context(2, 8192, |context| {
+        stream_limit_batches(
+            0,
+            Some(2),
+            &PhysicalPlan::EmptyExec,
+            &mut source,
+            context,
+            ExecutionLimit::unlimited(),
+            &mut |batch| {
+                delivered += batch.len();
+                Ok(BatchControl::Continue)
+            },
+        )
+        .unwrap()
+    });
+    assert_eq!(delivered, 1);
+    assert_eq!(control, BatchControl::Stop);
 }
 
 fn check_case(seed: usize, input_batch: usize, output_batch: usize, kernel: Kernel, exit: Exit) {

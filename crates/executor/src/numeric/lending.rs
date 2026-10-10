@@ -18,27 +18,35 @@ use hawdb_core::Result;
 use hawdb_core::Value;
 use hawdb_storage::NodeRecord;
 
+pub(super) fn numeric_batch_scratch_bytes(
+    rows: usize,
+    needs_node_ids: bool,
+    needs_validity: bool,
+) -> usize {
+    rows.saturating_mul(
+        std::mem::size_of::<f64>()
+            .saturating_add(usize::from(needs_node_ids) * std::mem::size_of::<u64>()),
+    )
+    .saturating_add(rows.max(4).saturating_mul(std::mem::size_of::<u32>()))
+    .saturating_add(
+        usize::from(needs_validity)
+            // The first Vec::reserve bitmap allocation has at least four words.
+            .saturating_mul(rows.div_ceil(u64::BITS as usize).max(4))
+            .saturating_mul(std::mem::size_of::<u64>()),
+    )
+}
+
 pub(super) fn admitted_numeric_batch_rows(
     configured_rows: usize,
     memory_budget_bytes: usize,
     needs_node_ids: bool,
     needs_validity: bool,
 ) -> Option<usize> {
-    let value_bytes = std::mem::size_of::<f64>();
-    let node_id_bytes = usize::from(needs_node_ids) * std::mem::size_of::<u64>();
-    let selection_bytes = std::mem::size_of::<u32>();
-    let bytes_per_row = value_bytes
-        .saturating_add(node_id_bytes)
-        .saturating_add(selection_bytes);
     let mut lower = 0usize;
     let mut upper = configured_rows;
     while lower < upper {
         let rows = lower + (upper - lower).div_ceil(2);
-        let required_bytes = rows.saturating_mul(bytes_per_row).saturating_add(
-            usize::from(needs_validity)
-                .saturating_mul(rows.div_ceil(u64::BITS as usize))
-                .saturating_mul(std::mem::size_of::<u64>()),
-        );
+        let required_bytes = numeric_batch_scratch_bytes(rows, needs_node_ids, needs_validity);
         if required_bytes <= memory_budget_bytes {
             lower = rows;
         } else {
@@ -300,7 +308,7 @@ mod tests {
         );
         assert_eq!(admitted_numeric_batch_rows(128, 120, true, false), Some(6));
         assert_eq!(admitted_numeric_batch_rows(128, 11, false, false), None);
-        assert_eq!(admitted_numeric_batch_rows(128, 120, false, true), Some(9));
+        assert_eq!(admitted_numeric_batch_rows(128, 120, false, true), Some(7));
     }
 
     #[test]

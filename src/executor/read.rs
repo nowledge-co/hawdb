@@ -27,6 +27,18 @@ pub(super) fn execute_bindings_with_limit(
     if let Some(plan) = PreparedPhysicalPlan::prepare(plan, store, context.memory).batch() {
         return collect_batch_pipeline(plan, catalog, store, context, execution_limit);
     }
+    let mut contains_scoring = false;
+    hawdb_plan_cypher::visit_plan(plan, &mut |node| {
+        contains_scoring |= matches!(
+            node,
+            PhysicalPlan::ScoringRerankExec { .. }
+                | PhysicalPlan::ScoringProgramExec { .. }
+                | PhysicalPlan::HostScoringExec { .. }
+        );
+    });
+    if contains_scoring {
+        return Err(unsupported_scoring_input_error());
+    }
     match plan {
         PhysicalPlan::ProjectGraph {
             name,
@@ -98,10 +110,14 @@ pub(super) fn execute_bindings_with_limit(
         | PhysicalPlan::DistinctExec { .. }
         | PhysicalPlan::SortExec { .. }
         | PhysicalPlan::TopNExec { .. }
-        | PhysicalPlan::ScoringRerankExec { .. }
         | PhysicalPlan::LimitExec { .. }
+        | PhysicalPlan::ScoringRerankExec { .. }
+        | PhysicalPlan::ScoringProgramExec { .. }
+        | PhysicalPlan::HostScoringExec { .. }
         | PhysicalPlan::GraphAlgorithm { .. }
         | PhysicalPlan::VectorSeedScan { .. }
+        | PhysicalPlan::GraphSeedScan { .. }
+        | PhysicalPlan::TextSeedScan { .. }
         | PhysicalPlan::ThreadRepairStatsExec { .. } => {
             unreachable!("batch-capable plan bypassed pipeline dispatch")
         }

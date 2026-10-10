@@ -108,6 +108,7 @@ fn main() {
         batch_rows: NonZeroUsize::new(1_024).unwrap(),
         batch_payload_bytes: NonZeroUsize::new(8 * 1024 * 1024).unwrap(),
         blocking_operator_bytes: NonZeroUsize::new(16 * 1024).unwrap(),
+        graph_expansion_budget: None,
         max_spill_bytes: NonZeroU64::new(64 * 1024 * 1024).unwrap(),
         max_spill_runs: NonZeroUsize::new(128).unwrap(),
         max_total_spill_bytes: NonZeroU64::new(128 * 1024 * 1024).unwrap(),

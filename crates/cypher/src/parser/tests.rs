@@ -61,3 +61,13 @@ fn nested_checkpoints_preserve_the_active_recursion_budget() {
     assert_eq!(parser.recursion_depth, MAX_CYPHER_PARSER_DEPTH);
     assert!(parser.with_recursion(|_| Ok(())).is_err());
 }
+
+#[test]
+fn graph_seed_procedure_accepts_a_parameterized_canonical_node_pipeline() {
+    for query in [
+        "CALL graph_seed_search($query, label := 'Memory', topK := $window) YIELD node AS seed, score AS original MATCH (seed)-[:LINK*0..2]->(candidate:Memory) RETURN id(seed), candidate.id, original",
+        "CALL graph_seed_search($query, label := $label, limit := 4) YIELD node, score RETURN node.id, score",
+    ] {
+        assert!(crate::parse(query).is_ok(), "graph seed pipeline must parse: {query}");
+    }
+}

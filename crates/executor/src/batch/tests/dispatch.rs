@@ -48,7 +48,7 @@ fn admission_covers_every_physical_operator_and_descendant_position() {
     assert_eq!(kinds, PhysicalPlanKind::all().iter().copied().collect());
     assert_eq!(
         fixtures.iter().filter(|(_, supported)| *supported).count(),
-        33
+        37
     );
     for (plan, expected) in fixtures {
         for shape in 0..4 {
@@ -104,6 +104,7 @@ fn with_context<T>(
         memory_ledger: &memory_ledger,
         task_context,
         observer: &observer,
+        host_scorer: None,
     });
     assert_eq!(memory_ledger.snapshot().used_bytes, 0);
     assert!(memory_ledger.snapshot().peak_bytes <= memory.query_memory_bytes.get());

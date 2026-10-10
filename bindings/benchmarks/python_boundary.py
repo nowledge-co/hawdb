@@ -10,8 +10,8 @@ import time
 import importlib.util
 from importlib.machinery import ExtensionFileLoader
 
-# An explicitly passed profiling extension replaces the module only in this
-# local benchmark process. Ordinary package imports/builds keep their own path.
+# The driver passes the hashed ordinary or instrumented extension explicitly.
+# This replacement is local to the benchmark process.
 if len(sys.argv) == 3:
     loader = ExtensionFileLoader("hawdb._hawdb", sys.argv[2])
     spec = importlib.util.spec_from_file_location("hawdb._hawdb", sys.argv[2], loader=loader)

@@ -79,8 +79,25 @@ test_suite(
     tests = [
         ":hawdb_executor_unit_tests",
         ":hawdb_morsel_oracle_tests",
+        ":hawdb_projection_allocation_tests",
         ":hawdb_query_observer_release_tests",
     ],
+)
+
+rust_test(
+    name = "hawdb_projection_allocation_tests",
+    srcs = ["tests/projection_allocation.rs"],
+    crate_root = "tests/projection_allocation.rs",
+    size = "small",
+    edition = "2024",
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True) + [
+        ":hawdb_executor",
+        "//crates/core:hawdb_core",
+        "//crates/plan-cypher:hawdb_plan_cypher",
+        "//crates/storage:hawdb_storage",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
 )
 
 rust_test(

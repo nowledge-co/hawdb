@@ -3,9 +3,9 @@
 Issue Number: ref [#992](https://github.com/nowledge-co/hawdb/issues/992)
 
 The boundary benchmark's point case executes N distinct parameterized Cypher
-queries against N nodes. Its plan already selects `IndexNodeSeek`, but the
-materialized storage callback clones all labeled nodes before checking the
-property. Improving host serialization cannot remove that engine cost.
+queries against N nodes. Before the point fix, its plan selected `IndexNodeSeek`,
+but the materialized storage callback cloned all labeled nodes before checking
+the property. Improving host serialization cannot remove that engine cost.
 
 ## Selected path
 
@@ -21,13 +21,18 @@ For each indexed candidate, execution checks cancellation, admits the selected
 node's estimated temporary allocation, and then reads only required properties.
 The temporary reservation remains alive through residual evaluation and output
 batch insertion. An error, cancellation or stop drops the reservation and ends
-the iterator. The existing output/batch accounting remains in force.
+the iterator. After integrating main's admitted graph reads, the reservation also
+covers the temporary binding and variable/key overhead using the same admission
+function as the other projected scan paths. Output/batch accounting remains in
+force independently; both reservations overlap while projection owns its result.
 
 No index is added, result allowance raised, durability changed, or persistent
 representation replaced. Multi-value, union, undeclared-index and out-of-core
-accesses retain their existing read paths. Readers without the optional borrowed
-index/admitted-projection capability also retain their original path; GraphStore
-supplies the actual indexed iterator.
+accesses retain main's admitted read paths, including before-copy source permits
+and admitted union deduplication. Readers without the optional borrowed index
+capability use those paths and must refuse if they cannot support admission;
+GraphStore supplies the actual indexed iterator. No unadmitted legacy fallback
+is introduced by the merge.
 
 ## Correctness argument
 
