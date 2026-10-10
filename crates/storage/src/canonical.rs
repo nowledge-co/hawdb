@@ -3302,6 +3302,7 @@ fn record_properties_allocation_bytes(
     required_properties: Option<&BTreeSet<String>>,
 ) -> Result<usize, CanonicalSegmentError> {
     let mut bytes = 0usize;
+    let mut selected = 0usize;
     for _ in 0..cursor.read_u32()? {
         let key = if let Some(keys) = property_keys {
             keys.get(cursor.read_u32()? as usize)
@@ -3320,8 +3321,8 @@ fn record_properties_allocation_bytes(
             })?
         };
         if required_properties.is_none_or(|required| required.contains(key)) {
+            selected = selected.saturating_add(1);
             bytes = bytes
-                .saturating_add(1024)
                 .saturating_add(key.len())
                 .saturating_add(encoded_value_allocation_bytes(cursor, 1, property_spills)?);
         } else {
@@ -3337,7 +3338,11 @@ fn record_properties_allocation_bytes(
             "record allocation preflight has trailing bytes".into(),
         ));
     }
-    Ok(bytes)
+    Ok(
+        bytes.saturating_add(hawdb_core::ids::property_container_allocation_bytes(
+            selected,
+        )),
+    )
 }
 
 fn decode_projected_node_with_property_spills(
@@ -3948,96 +3953,95 @@ fn encoded_value_allocation_bytes(
 ) -> Result<usize, CanonicalSegmentError> {
     ensure_depth(depth)?;
     let base = std::mem::size_of::<Value>();
-    let payload = match cursor.read_u8()? {
-        0 => 0,
-        1 => {
-            match cursor.read_u8()? {
-                0 | 1 => {}
-                _ => {
-                    return Err(CanonicalSegmentError::Corrupt(
-                        "invalid canonical boolean".into(),
-                    ))
-                }
-            };
-            0
-        }
-        2 | 3 => {
-            cursor.read_u64()?;
-            0
-        }
-        4 => {
-            let length = cursor.read_u32()? as usize;
-            std::str::from_utf8(cursor.read_exact(length)?).map_err(|_| {
-                CanonicalSegmentError::Corrupt("invalid UTF-8 value in allocation preflight".into())
-            })?;
-            length
-        }
-        8 => {
-            let length = cursor.read_u32()? as usize;
-            cursor.read_exact(length)?;
-            length
-        }
-        5 => {
-            let count = cursor.read_u32()?;
-            let mut bytes = 32usize;
-            for _ in 0..count {
-                bytes = bytes.saturating_add(
-                    encoded_value_allocation_bytes(cursor, depth.saturating_add(1), spills)?
-                        .saturating_mul(2),
-                );
+    let payload =
+        match cursor.read_u8()? {
+            0 => 0,
+            1 => {
+                match cursor.read_u8()? {
+                    0 | 1 => {}
+                    _ => {
+                        return Err(CanonicalSegmentError::Corrupt(
+                            "invalid canonical boolean".into(),
+                        ))
+                    }
+                };
+                0
             }
-            bytes
-        }
-        6 => {
-            let count = cursor.read_u32()?;
-            let mut bytes = 32usize;
-            for _ in 0..count {
+            2 | 3 => {
+                cursor.read_u64()?;
+                0
+            }
+            4 => {
                 let length = cursor.read_u32()? as usize;
                 std::str::from_utf8(cursor.read_exact(length)?).map_err(|_| {
                     CanonicalSegmentError::Corrupt(
-                        "invalid UTF-8 map key in allocation preflight".into(),
+                        "invalid UTF-8 value in allocation preflight".into(),
                     )
                 })?;
-                bytes = bytes
-                    .saturating_add(1024)
-                    .saturating_add(length)
-                    .saturating_add(encoded_value_allocation_bytes(
-                        cursor,
-                        depth.saturating_add(2),
-                        spills,
-                    )?);
+                length
             }
-            bytes
-        }
-        7 => {
-            let id = cursor.read_u64()?;
-            let encoded = spills
-                .ok_or_else(|| {
-                    CanonicalSegmentError::Corrupt("missing property spill artifact".into())
-                })?
-                .get(id)?
-                .ok_or_else(|| {
-                    CanonicalSegmentError::Corrupt("missing selected property spill".into())
-                })?;
-            let mut spilled = SliceCursor::new(&encoded);
-            let bytes = encoded_value_allocation_bytes(&mut spilled, depth, None)?;
-            if !spilled.is_empty() {
-                return Err(CanonicalSegmentError::Corrupt(
-                    "property spill allocation preflight has trailing bytes".into(),
-                ));
+            8 => {
+                let length = cursor.read_u32()? as usize;
+                cursor.read_exact(length)?;
+                length
             }
-            return Ok(bytes);
-        }
-        9 => {
-            cursor.read_exact(16)?;
-            16
-        }
-        tag => {
-            return Err(CanonicalSegmentError::Corrupt(format!(
-                "unknown canonical value tag {tag}"
-            )))
-        }
-    };
+            5 => {
+                let count = cursor.read_u32()?;
+                let mut bytes = 32usize;
+                for _ in 0..count {
+                    bytes = bytes.saturating_add(
+                        encoded_value_allocation_bytes(cursor, depth.saturating_add(1), spills)?
+                            .saturating_mul(2),
+                    );
+                }
+                bytes
+            }
+            6 => {
+                let count = cursor.read_u32()?;
+                let mut bytes =
+                    hawdb_core::ids::property_container_allocation_bytes(count as usize);
+                for _ in 0..count {
+                    let length = cursor.read_u32()? as usize;
+                    std::str::from_utf8(cursor.read_exact(length)?).map_err(|_| {
+                        CanonicalSegmentError::Corrupt(
+                            "invalid UTF-8 map key in allocation preflight".into(),
+                        )
+                    })?;
+                    bytes = bytes.saturating_add(length).saturating_add(
+                        encoded_value_allocation_bytes(cursor, depth.saturating_add(2), spills)?,
+                    );
+                }
+                bytes
+            }
+            7 => {
+                let id = cursor.read_u64()?;
+                let encoded = spills
+                    .ok_or_else(|| {
+                        CanonicalSegmentError::Corrupt("missing property spill artifact".into())
+                    })?
+                    .get(id)?
+                    .ok_or_else(|| {
+                        CanonicalSegmentError::Corrupt("missing selected property spill".into())
+                    })?;
+                let mut spilled = SliceCursor::new(&encoded);
+                let bytes = encoded_value_allocation_bytes(&mut spilled, depth, None)?;
+                if !spilled.is_empty() {
+                    return Err(CanonicalSegmentError::Corrupt(
+                        "property spill allocation preflight has trailing bytes".into(),
+                    ));
+                }
+                return Ok(bytes);
+            }
+            9 => {
+                cursor.read_exact(16)?;
+                16
+            }
+            tag => {
+                return Err(CanonicalSegmentError::Corrupt(format!(
+                    "unknown canonical value tag {tag}"
+                )))
+            }
+        };
     Ok(base.saturating_add(payload))
 }
 

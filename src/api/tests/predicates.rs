@@ -344,7 +344,7 @@ fn relationship_existence_predicates_cover_nowledge_orphan_entities() {
 #[test]
 fn relationship_existence_stops_before_hydrating_later_large_targets() {
     let execution_memory = crate::executor::ExecutionMemoryConfig {
-        blocking_operator_bytes: NonZeroUsize::new(1024).unwrap(),
+        blocking_operator_bytes: NonZeroUsize::new(4 * 1024).unwrap(),
         ..crate::executor::ExecutionMemoryConfig::default()
     };
     let mut db = Database::new_with_config(DatabaseConfig {

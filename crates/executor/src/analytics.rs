@@ -418,7 +418,12 @@ fn charge_graph_algorithm_memory(
             tracker.budget_bytes,
         )));
     }
-    tracker.try_charge(bytes)?;
+    tracker.try_charge(bytes).map_err(|error| match error {
+        HawDBError::Execution(message) => HawDBError::Execution(format!(
+            "GraphAlgorithm {algorithm} {phase} memory admission failed: {message}"
+        )),
+        error => error,
+    })?;
     Ok(())
 }
 

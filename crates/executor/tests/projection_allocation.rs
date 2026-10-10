@@ -26,7 +26,7 @@ use hawdb_plan_cypher::{
 use hawdb_storage::store::GraphStore;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 
 thread_local! {
@@ -37,6 +37,11 @@ thread_local! {
 struct ProjectionAllocator;
 
 fn observe(layout: Layout) {
+    let _ = WATCH_BYTES.try_with(|total| {
+        if WATCH_SIZE.try_with(|size| size.get() != 0).unwrap_or(false) {
+            total.set(total.get().saturating_add(layout.size()));
+        }
+    });
     let _ = WATCH_SIZE.try_with(|size| {
         if size.get() != 0 && (size.get() == usize::MAX || size.get() == layout.size()) {
             let _ = WATCH_COUNT.try_with(|count| count.set(count.get().saturating_add(1)));
@@ -67,11 +72,14 @@ unsafe impl GlobalAlloc for ProjectionAllocator {
 #[global_allocator]
 static ALLOCATOR: ProjectionAllocator = ProjectionAllocator;
 
+thread_local! { static WATCH_BYTES: Cell<usize> = const { Cell::new(0) }; }
+
 struct AllocationWindow;
 
 impl AllocationWindow {
     fn start(size: usize) -> Self {
         WATCH_COUNT.with(|count| count.set(0));
+        WATCH_BYTES.with(|total| total.set(0));
         WATCH_SIZE.with(|watch| {
             assert_eq!(watch.get(), 0, "nested allocation observation");
             watch.set(size);
@@ -2769,6 +2777,7 @@ fn run_count_sum_source_admission(persisted: bool) {
 enum BlockingSource {
     CountSum,
     ThreadRepair,
+    ThreadCountTarget,
     ShortestPath,
     GraphAlgorithm,
     ThreadKey,
@@ -2796,7 +2805,7 @@ fn run_blocking_source_admission(persisted: bool, source: BlockingSource) {
     } else {
         GraphStore::default()
     };
-    for label in ["Memory", "Other", "Identity"] {
+    for label in ["Memory", "Other", "Identity", "Message"] {
         store.create_node_table(&mut catalog, label).unwrap();
         store
             .create_property_descriptor(
@@ -2810,6 +2819,7 @@ fn run_blocking_source_admission(persisted: bool, source: BlockingSource) {
             .unwrap();
     }
     let (label, property) = match source {
+        BlockingSource::ThreadCountTarget => ("Message", "body"),
         BlockingSource::ThreadKey => ("Identity", "ref"),
         BlockingSource::ThreadState => ("Memory", "thread_id"),
         _ => ("Other", "body"),
@@ -2843,6 +2853,34 @@ fn run_blocking_source_admission(persisted: bool, source: BlockingSource) {
             ]),
         )
         .unwrap();
+    if matches!(source, BlockingSource::ThreadCountTarget) {
+        for property in ["id", "thread_id"] {
+            store
+                .create_property_descriptor(
+                    &mut catalog,
+                    TableKind::Node,
+                    "Memory",
+                    property,
+                    PropertyType::Int,
+                    false,
+                )
+                .unwrap();
+        }
+        let thread = store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                BTreeMap::from([
+                    ("body".into(), Value::String(String::new())),
+                    ("id".into(), Value::Int(7)),
+                    ("thread_id".into(), Value::Int(42)),
+                ]),
+            )
+            .unwrap();
+        store
+            .create_relationship(&mut catalog, thread, id, "MESSAGE", BTreeMap::new())
+            .unwrap();
+    }
     if matches!(
         source,
         BlockingSource::ShortestOutput | BlockingSource::GraphRelationship
@@ -2935,18 +2973,19 @@ fn run_blocking_source_admission(persisted: bool, source: BlockingSource) {
             }],
             output: "count".into(),
         },
-        BlockingSource::ThreadRepair | BlockingSource::ThreadKey | BlockingSource::ThreadState => {
-            PhysicalPlan::ThreadRepairStatsExec {
-                label: "Memory".into(),
-                identity_label: "Identity".into(),
-                identity_ref_property: "ref".into(),
-                thread_id_property: "thread_id".into(),
-                message_rel_type: "MESSAGE".into(),
-                message_label: "Message".into(),
-                memory_rel_type: "MEMORY".into(),
-                memory_label: "Memory".into(),
-            }
-        }
+        BlockingSource::ThreadRepair
+        | BlockingSource::ThreadCountTarget
+        | BlockingSource::ThreadKey
+        | BlockingSource::ThreadState => PhysicalPlan::ThreadRepairStatsExec {
+            label: "Memory".into(),
+            identity_label: "Identity".into(),
+            identity_ref_property: "ref".into(),
+            thread_id_property: "thread_id".into(),
+            message_rel_type: "MESSAGE".into(),
+            message_label: "Message".into(),
+            memory_rel_type: "MEMORY".into(),
+            memory_label: "Memory".into(),
+        },
         BlockingSource::ShortestPath | BlockingSource::ShortestOutput => {
             PhysicalPlan::ShortestPathExec {
                 source_variable: "s".into(),
@@ -3047,6 +3086,10 @@ fn run_blocking_source_admission(persisted: bool, source: BlockingSource) {
         },
         ExecutionLimit::unlimited(),
         &mut |batch| {
+            if matches!(source, BlockingSource::ThreadCountTarget) {
+                assert_eq!(batch.len(), 1);
+                assert_eq!(batch[0].values["legacy_messages"], Value::Int(1));
+            }
             rows.set(rows.get() + batch.len());
             Ok(BatchControl::Continue)
         },
@@ -3060,8 +3103,21 @@ fn run_blocking_source_admission(persisted: bool, source: BlockingSource) {
         "{source:?} copied an unused node payload before source admission"
     );
     drop(window);
-    assert!(matches!(result, Err(HawDBError::Execution(_))));
-    assert_eq!(rows.get(), 0);
+    if matches!(
+        source,
+        BlockingSource::ThreadRepair | BlockingSource::ThreadCountTarget
+    ) {
+        assert!(
+            result.is_ok(),
+            "unused unrelated payload must not be admitted: {result:?}"
+        );
+    } else {
+        assert!(matches!(result, Err(HawDBError::Execution(_))));
+    }
+    assert_eq!(
+        rows.get(),
+        usize::from(matches!(source, BlockingSource::ThreadCountTarget))
+    );
     assert_eq!(external.calls.get(), 0);
     assert_eq!(ledger.snapshot().used_bytes, 0);
     assert_eq!(store.node_owned(id).unwrap().unwrap().id, id);
@@ -3078,12 +3134,12 @@ fn count_sum_admits_cold_unused_payload_before_decode() {
 }
 
 #[test]
-fn thread_repair_admits_native_unused_payload_before_copy() {
+fn thread_repair_ignores_native_unused_payload_before_copy() {
     run_blocking_source_admission(false, BlockingSource::ThreadRepair);
 }
 
 #[test]
-fn thread_repair_admits_cold_unused_payload_before_copy() {
+fn thread_repair_ignores_cold_unused_payload_before_copy() {
     run_blocking_source_admission(true, BlockingSource::ThreadRepair);
 }
 
@@ -3443,4 +3499,89 @@ fn expand_optional_native_output_admitted_before_copy() {
 #[test]
 fn expand_optional_cold_output_admitted_before_copy() {
     run_expand_output_admission(true, ExpandOutputOwner::Optional);
+}
+
+#[test]
+fn owned_record_bounds_cover_actual_container_and_nested_value_allocations() {
+    use hawdb_core::ids::{
+        node_allocation_bytes, project_node_record_ref, projected_node_allocation_bytes,
+        relationship_allocation_bytes,
+    };
+    for count in [0, 1, 2, 5, 11, 12, 23, 32, 128] {
+        let properties: BTreeMap<_, _> = (0..count)
+            .map(|id| {
+                (
+                    format!("property-{id}"),
+                    Value::Map(BTreeMap::from([(
+                        "nested".into(),
+                        Value::List(vec![
+                            Value::String("payload".repeat(3)),
+                            Value::Binary(vec![7; 19]),
+                            Value::Int(id),
+                        ]),
+                    )])),
+                )
+            })
+            .collect();
+        let node = hawdb_core::ids::NodeRecord {
+            id: hawdb_core::ids::NodeId(7),
+            labels: BTreeSet::from([hawdb_core::LabelId(2)]),
+            properties,
+        };
+        let bound = node_allocation_bytes(&node);
+        let window = AllocationWindow::start(usize::MAX);
+        let copy = node.clone();
+        let allocated = WATCH_BYTES.with(Cell::get);
+        drop(window);
+        assert!(
+            allocated <= bound,
+            "full {count}: allocated {allocated} > bound {bound}"
+        );
+        assert_eq!(copy, node);
+        for selected in [count / 2, count] {
+            let properties = node
+                .properties
+                .keys()
+                .take(selected as usize)
+                .cloned()
+                .collect();
+            let bound = projected_node_allocation_bytes(&node, &properties);
+            let window = AllocationWindow::start(usize::MAX);
+            let copy = project_node_record_ref(&node, &properties);
+            let allocated = WATCH_BYTES.with(Cell::get);
+            drop(window);
+            assert!(
+                allocated <= bound,
+                "projected {selected}/{count}: allocated {allocated} > bound {bound}"
+            );
+            assert_eq!(copy.properties.len(), selected as usize);
+        }
+        let relationship = hawdb_core::ids::RelRecord {
+            id: hawdb_core::ids::RelId(1),
+            source: node.id,
+            target: node.id,
+            rel_type: hawdb_core::RelTypeId(1),
+            properties: node.properties.clone(),
+        };
+        let bound = relationship_allocation_bytes(&relationship);
+        let window = AllocationWindow::start(usize::MAX);
+        let copy = relationship.clone();
+        let allocated = WATCH_BYTES.with(Cell::get);
+        drop(window);
+        assert!(
+            allocated <= bound,
+            "relationship {count}: allocated {allocated} > bound {bound}"
+        );
+        assert_eq!(copy, relationship);
+    }
+}
+
+#[test]
+fn thread_repair_counts_native_targets_without_copying_unused_payloads() {
+    run_blocking_source_admission(false, BlockingSource::ThreadCountTarget);
+}
+
+#[test]
+fn thread_repair_counts_cold_targets_without_copying_unused_payloads() {
+    run_blocking_source_admission(true, BlockingSource::ThreadCountTarget);
 }

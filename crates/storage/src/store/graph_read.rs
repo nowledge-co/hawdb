@@ -24,6 +24,8 @@ use hawdb_core::ids::{
 };
 #[path = "graph_read/admission.rs"]
 mod admission;
+#[path = "graph_read/resident_pruning.rs"]
+mod resident_pruning;
 use admission::{AdmittedProjection, ProjectionAdmission, UnaccountedReadAllocation};
 
 struct PropertyRangeBounds<'a> {
@@ -2713,6 +2715,85 @@ impl GraphStore {
         mut consumer: impl FnMut(AdmittedRelationshipRecord) -> Result<GraphScanControl>,
     ) -> Result<(GraphScanControl, Option<ScanPruningReport>)> {
         let (node_id, rel_type, direction) = selection;
+        if self.canonical_base.is_none()
+            && let Some(rel_type) = rel_type
+        {
+            let adjacency_entries = self
+                .adjacency_relationship_ids(node_id, rel_type, direction)
+                .map(AdjacencyPostingList::len)
+                .unwrap_or_default();
+            let stopped = std::cell::Cell::new(false);
+            let candidate = self.prune_resident_relationships_admitted(
+                rel_type,
+                filter,
+                adjacency_entries,
+                &mut |bytes| {
+                    if stopped.get() {
+                        return Ok(None);
+                    }
+                    let allocation = admit(bytes)?;
+                    stopped.set(allocation.is_none());
+                    Ok(allocation)
+                },
+            )?;
+            if stopped.get() {
+                return Ok((GraphScanControl::Stop, None));
+            }
+            if let Some(candidate) = candidate {
+                let count = candidate.ids.len();
+                let Some(mut keys) = admit(0)? else {
+                    return Ok((GraphScanControl::Stop, None));
+                };
+                let mut charge = |bytes| grow_relationship_key_allocation(keys.as_mut(), bytes);
+                let mut entries = Vec::new();
+                let mut output_count = 0usize;
+                for id in candidate.ids.iter() {
+                    let record = self.relationships.get(id).ok_or_else(|| {
+                        HawDBError::StorageIntegrity(format!(
+                            "relationship property index references missing relationship {}",
+                            id.0
+                        ))
+                    })?;
+                    if property_filter_matches(filter, id.0, &record.properties) {
+                        output_count = output_count.saturating_add(1);
+                        if relationship_matches_endpoint(record, node_id, direction) {
+                            push_admitted_adjacency_key(
+                                &mut entries,
+                                ordered_relationship_key(record, direction),
+                                memory_budget_bytes,
+                                &mut charge,
+                            )?;
+                        }
+                    }
+                }
+                entries.sort_unstable();
+                entries.dedup();
+                for entry in entries {
+                    if emit_admitted_relationship(self, selection, entry, admit, &mut consumer)?
+                        == GraphScanControl::Stop
+                    {
+                        return Ok((GraphScanControl::Stop, None));
+                    }
+                }
+                let before = self.relationship_count_for_type(Some(rel_type));
+                return Ok((
+                    GraphScanControl::Continue,
+                    Some(ScanPruningReport {
+                        target_kind: ScanPruningTargetKind::Relationship,
+                        label_id: None,
+                        rel_type_id: Some(rel_type),
+                        strategy: candidate.strategy,
+                        pruned: true,
+                        exact_empty: count == 0,
+                        candidate_count_before_pruning: before,
+                        pruned_candidate_count: before.saturating_sub(count),
+                        candidate_count_before_filter: count,
+                        output_count,
+                        filtered_out_count: count.saturating_sub(output_count),
+                    }),
+                ));
+            }
+        }
         let fallback = |admit: &mut ControlledGraphReadAllocator<'_>,
                         consumer: &mut dyn FnMut(
             AdmittedRelationshipRecord,

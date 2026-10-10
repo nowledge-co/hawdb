@@ -325,7 +325,7 @@ fn spill_test_config(name: &str) -> ExecutionMemoryConfig {
         query_memory_bytes: NonZeroUsize::new(256 * 1024 * 1024).unwrap(),
         batch_rows: NonZeroUsize::new(2).unwrap(),
         batch_payload_bytes: NonZeroUsize::new(1024 * 1024).unwrap(),
-        blocking_operator_bytes: NonZeroUsize::new(1024).unwrap(),
+        blocking_operator_bytes: NonZeroUsize::new(4 * 1024).unwrap(),
         max_spill_bytes: NonZeroU64::new(64 * 1024 * 1024).unwrap(),
         max_spill_runs: NonZeroUsize::new(64).unwrap(),
         max_total_spill_bytes: NonZeroU64::new(256 * 1024 * 1024).unwrap(),
@@ -799,12 +799,12 @@ fn streaming_consumer_releases_query_memory_before_completion() {
 fn grouped_aggregate_pipeline_spills_and_merges_groups() {
     let mut catalog = Catalog::default();
     let mut store = GraphStore::in_memory();
-    for value in 0..20 {
+    for value in 0..80 {
         store
             .create_node(
                 &mut catalog,
                 "Item",
-                properties([("group", Value::Int(value % 8))]),
+                properties([("group", Value::Int(value % 32))]),
             )
             .unwrap();
     }
@@ -846,16 +846,12 @@ fn grouped_aggregate_pipeline_spills_and_merges_groups() {
             .iter()
             .map(|row| (row["group"].clone(), row["count"].clone()))
             .collect::<Vec<_>>(),
-        vec![
-            (Value::Int(0), Value::Int(3)),
-            (Value::Int(1), Value::Int(3)),
-            (Value::Int(2), Value::Int(3)),
-            (Value::Int(3), Value::Int(3)),
-            (Value::Int(4), Value::Int(2)),
-            (Value::Int(5), Value::Int(2)),
-            (Value::Int(6), Value::Int(2)),
-            (Value::Int(7), Value::Int(2)),
-        ]
+        (0..32)
+            .map(|group| (
+                Value::Int(group),
+                Value::Int(if group < 16 { 3 } else { 2 })
+            ))
+            .collect::<Vec<_>>()
     );
     let report = output
         .profile
@@ -863,9 +859,9 @@ fn grouped_aggregate_pipeline_spills_and_merges_groups() {
         .iter()
         .find(|report| report.operator == "AggregateExec")
         .unwrap();
-    assert_eq!(report.input_rows, 20);
+    assert_eq!(report.input_rows, 80);
     assert!(report.spill_run_count > 1);
-    assert_eq!(report.spilled_rows, 20);
+    assert_eq!(report.spilled_rows, 80);
     assert!(report.spilled_bytes > 0);
     assert!(report.spilled_bytes <= report.max_spill_bytes);
     assert!(report.spill_run_count <= report.max_spill_runs);
@@ -881,13 +877,13 @@ fn grouped_partial_aggregate_spill_does_not_write_unused_binding_payloads() {
     let mut catalog = Catalog::default();
     let mut store = GraphStore::in_memory();
     let payload = "x".repeat(4096);
-    for value in 0..24 {
+    for value in 0..192 {
         store
             .create_node(
                 &mut catalog,
                 "Item",
                 properties([
-                    ("group", Value::Int(value % 8)),
+                    ("group", Value::Int(value % 64)),
                     ("value", Value::Int(value)),
                     ("payload", Value::String(payload.clone())),
                 ]),
@@ -943,7 +939,7 @@ fn grouped_partial_aggregate_spill_does_not_write_unused_binding_payloads() {
         }),
     };
     let mut memory = spill_test_config("aggregate-partial-spill");
-    memory.blocking_operator_bytes = NonZeroUsize::new(2048).unwrap();
+    memory.blocking_operator_bytes = NonZeroUsize::new(16 * 1024).unwrap();
     let mut external = NoExternalReadOperator;
     let output = execute_with_row_limit_profile_and_external_and_memory(
         &plan,
@@ -956,13 +952,13 @@ fn grouped_partial_aggregate_spill_does_not_write_unused_binding_payloads() {
     )
     .unwrap();
 
-    assert_eq!(output.rows.len(), 8);
+    assert_eq!(output.rows.len(), 64);
     for (group, row) in output.rows.iter().enumerate() {
         assert_eq!(row["group"], Value::Int(group as i64));
         assert_eq!(row["count"], Value::Int(3));
         assert_eq!(row["min"], Value::Int(group as i64));
-        assert_eq!(row["max"], Value::Int(group as i64 + 16));
-        assert_eq!(row["avg"], Value::Float(group as f64 + 8.0));
+        assert_eq!(row["max"], Value::Int(group as i64 + 128));
+        assert_eq!(row["avg"], Value::Float(group as f64 + 64.0));
     }
     let report = output
         .profile
@@ -971,8 +967,8 @@ fn grouped_partial_aggregate_spill_does_not_write_unused_binding_payloads() {
         .find(|report| report.operator == "AggregateExec")
         .unwrap();
     assert!(report.spill_run_count > 1);
-    assert_eq!(report.spilled_rows, 24);
-    assert!(report.spilled_bytes < 24 * payload.len() as u64);
+    assert_eq!(report.spilled_rows, 192);
+    assert!(report.spilled_bytes < 192 * payload.len() as u64);
     assert!(std::fs::read_dir(&memory.spill_directory)
         .unwrap()
         .next()
@@ -1068,7 +1064,7 @@ fn distinct_spills_and_deduplicates_across_memory_bounded_runs() {
                 "Item",
                 properties([(
                     "value",
-                    Value::String(format!("{}-{}", value % 5, "x".repeat(96))),
+                    Value::String(format!("{}-{}", value % 5, "x".repeat(512))),
                 )]),
             )
             .unwrap();
@@ -1089,7 +1085,7 @@ fn distinct_spills_and_deduplicates_across_memory_bounded_runs() {
         }),
     };
     let memory = ExecutionMemoryConfig {
-        blocking_operator_bytes: NonZeroUsize::new(2048).unwrap(),
+        blocking_operator_bytes: NonZeroUsize::new(4 * 1024).unwrap(),
         ..spill_test_config("distinct-admission")
     };
     let mut external = NoExternalReadOperator;
@@ -1132,7 +1128,7 @@ fn collect_aggregate_rejects_unbounded_group_state() {
                 "Item",
                 properties([(
                     "value",
-                    Value::String(format!("{value}-{}", "x".repeat(64))),
+                    Value::String(format!("{value}-{}", "x".repeat(256))),
                 )]),
             )
             .unwrap();
@@ -1154,7 +1150,7 @@ fn collect_aggregate_rejects_unbounded_group_state() {
         }),
     };
     let memory = ExecutionMemoryConfig {
-        blocking_operator_bytes: NonZeroUsize::new(1024).unwrap(),
+        blocking_operator_bytes: NonZeroUsize::new(4 * 1024).unwrap(),
         ..spill_test_config("collect-admission")
     };
     let mut external = NoExternalReadOperator;
@@ -1175,13 +1171,13 @@ fn collect_aggregate_rejects_unbounded_group_state() {
 fn grouped_mixed_aggregate_spills_only_required_operands() {
     let mut catalog = Catalog::default();
     let mut store = GraphStore::in_memory();
-    for value in 0..64i64 {
+    for value in 0..1024i64 {
         store
             .create_node(
                 &mut catalog,
                 "Item",
                 properties([
-                    ("group", Value::Int(value % 4)),
+                    ("group", Value::Int(value % 64)),
                     ("value", Value::Int(value)),
                     ("payload", Value::String("x".repeat(16 * 1024))),
                 ]),
@@ -1222,7 +1218,7 @@ fn grouped_mixed_aggregate_spills_only_required_operands() {
         }),
     };
     let memory = ExecutionMemoryConfig {
-        blocking_operator_bytes: NonZeroUsize::new(4 * 1024).unwrap(),
+        blocking_operator_bytes: NonZeroUsize::new(32 * 1024).unwrap(),
         ..spill_test_config("aggregate-compact-operands")
     };
     let mut external = NoExternalReadOperator;
@@ -1237,7 +1233,7 @@ fn grouped_mixed_aggregate_spills_only_required_operands() {
     )
     .unwrap();
 
-    assert_eq!(output.rows.len(), 4);
+    assert_eq!(output.rows.len(), 64);
     for row in &output.rows {
         assert_eq!(row["distinct_values"], Value::Int(16));
         let Value::List(values) = &row["values"] else {
@@ -1252,7 +1248,7 @@ fn grouped_mixed_aggregate_spills_only_required_operands() {
         .find(|report| report.operator == "AggregateExec")
         .unwrap();
     assert!(report.spilled_bytes > 0);
-    assert!(report.spilled_bytes < 64 * 16 * 1024);
+    assert!(report.spilled_bytes < 1024 * 16 * 1024);
     assert!(report.peak_tracked_bytes <= report.budget_bytes);
     assert!(std::fs::read_dir(&memory.spill_directory)
         .unwrap()
@@ -1288,7 +1284,7 @@ fn cartesian_product_spills_an_oversized_build_side() {
         }),
     };
     let memory = ExecutionMemoryConfig {
-        blocking_operator_bytes: NonZeroUsize::new(1024).unwrap(),
+        blocking_operator_bytes: NonZeroUsize::new(4 * 1024).unwrap(),
         ..spill_test_config("cartesian-admission")
     };
     let mut external = NoExternalReadOperator;
@@ -1485,7 +1481,7 @@ fn untyped_adjacency_ordering_is_rejected_by_the_query_root_before_collection() 
         }),
     };
     let memory = ExecutionMemoryConfig {
-        query_memory_bytes: NonZeroUsize::new(1_024).unwrap(),
+        query_memory_bytes: NonZeroUsize::new(4 * 1_024).unwrap(),
         batch_payload_bytes: NonZeroUsize::new(16 * 1_024).unwrap(),
         blocking_operator_bytes: NonZeroUsize::new(16 * 1_024).unwrap(),
         ..ExecutionMemoryConfig::default()
@@ -1746,12 +1742,10 @@ fn graph_algorithm_rejects_unadmitted_resident_and_streaming_state() {
     assert!(
         error
             .to_string()
-            .contains("GraphAlgorithm streaming node scan"),
+            .contains("query memory account GraphAlgorithm"),
         "{error}"
     );
-    assert!(error
-        .to_string()
-        .contains("exceeding blocking_operator_bytes 150"));
+    assert!(error.to_string().contains("150-byte budget"));
 }
 
 #[test]
@@ -2603,4 +2597,68 @@ fn properties(items: impl IntoIterator<Item = (&'static str, Value)>) -> BTreeMa
         .into_iter()
         .map(|(key, value)| (key.to_string(), value))
         .collect()
+}
+
+#[test]
+fn graph_algorithm_source_overlap_selects_streaming_and_rejects_its_node_state() {
+    let mut catalog = Catalog::default();
+    let mut store = GraphStore::in_memory();
+    let nodes: Vec<_> = (0..16)
+        .map(|_| {
+            store
+                .create_node(&mut catalog, "Memory", BTreeMap::new())
+                .unwrap()
+        })
+        .collect();
+    for pair in nodes.windows(2) {
+        store
+            .create_relationship(&mut catalog, pair[0], pair[1], "MENTIONS", BTreeMap::new())
+            .unwrap();
+    }
+    store
+        .register_projected_graph(
+            "MemoryGraph",
+            hawdb_storage::projection::ProjectedGraphDefinition {
+                node_labels: vec!["Memory".into()],
+                rel_types: vec!["MENTIONS".into()],
+                relationship_predicates: BTreeMap::new(),
+            },
+        )
+        .unwrap();
+    let memory = ExecutionMemoryConfig {
+        blocking_operator_bytes: NonZeroUsize::new(1024).unwrap(),
+        ..spill_test_config("streaming-node-state")
+    };
+    let graph = try_projected_graph_with_node_filter(
+        &catalog,
+        &store,
+        &["Memory".into()],
+        &["MENTIONS".into()],
+        |_| true,
+        ProjectionLayout::Outgoing,
+        ProjectionMemoryBudget::new(memory.blocking_operator_bytes),
+    )
+    .unwrap();
+    let estimate = graph.page_rank_memory_estimate();
+    assert!(estimate.projection_bytes <= 1024);
+    assert!(estimate.total_peak_bytes > 1024);
+    let plan = graph_algorithm_plan(GraphAlgorithmKind::PageRank);
+    let mut external = NoExternalReadOperator;
+    let error = execute_with_row_limit_profile_and_external_and_memory(
+        &plan,
+        &mut catalog,
+        &mut store,
+        &BTreeMap::new(),
+        &mut external,
+        None,
+        &memory,
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("GraphAlgorithm streaming node scan"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("1024"), "{error}");
 }

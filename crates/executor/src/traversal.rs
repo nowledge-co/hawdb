@@ -43,7 +43,7 @@ use hawdb_storage::read_view::{AdmittedNodeRead, AdmittedNodeRecord};
 use hawdb_storage::{
     adjacency::AdjacencyDirection, mutation::PropertyFilter, NodeId, NodeRecord, RelRecord,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 
 mod shortest_path;
@@ -383,6 +383,26 @@ pub(crate) fn visit_one_hop_relationships_with_context(
     task_context: Option<&hawdb_core::RuntimeTaskContext>,
     consumer: &mut dyn FnMut(RelRecord, NodeRecord) -> Result<ScanControl>,
 ) -> Result<ScanControl> {
+    visit_one_hop_relationships_selected(
+        store,
+        spec,
+        memory,
+        observer,
+        task_context,
+        false,
+        consumer,
+    )
+}
+
+fn visit_one_hop_relationships_selected(
+    store: &dyn GraphExecutionRead,
+    spec: OneHopRelationshipSpec<'_>,
+    memory: AdjacencyReadMemory<'_>,
+    observer: &dyn ExecutionObserver,
+    task_context: Option<&RuntimeTaskContext>,
+    metadata_only: bool,
+    consumer: &mut dyn FnMut(RelRecord, NodeRecord) -> Result<ScanControl>,
+) -> Result<ScanControl> {
     let relationship_filter = combine_property_filters(
         property_filter_from_properties(spec.rel_properties),
         spec.relationship_scan_filter.cloned(),
@@ -399,6 +419,31 @@ pub(crate) fn visit_one_hop_relationships_with_context(
             })
         {
             return Ok(ScanControl::Continue);
+        }
+        if metadata_only {
+            let mut allocation = None;
+            let target =
+                store.projected_node_owned_admitted(target_id, &BTreeSet::new(), &mut |bytes| {
+                    allocation = Some(memory.admit_node(
+                        bytes,
+                        relationship_memory_bytes(&relationship),
+                        task_context,
+                    )?);
+                    Ok(())
+                })?;
+            let Some(target) = target else {
+                return Ok(ScanControl::Continue);
+            };
+            let target = NodeRecord {
+                id: target.id,
+                labels: target.labels,
+                properties: target.properties,
+            };
+            return if node_matches_label_pattern(&target, spec.target_label_ids) {
+                consumer(relationship, target)
+            } else {
+                Ok(ScanControl::Continue)
+            };
         }
         let mut admit_node = |bytes| {
             memory
@@ -685,12 +730,13 @@ fn count_one_hop_relationships(
 ) -> Result<usize> {
     runtime_checkpoint(task_context)?;
     let mut count = 0usize;
-    visit_one_hop_relationships_with_context(
+    visit_one_hop_relationships_selected(
         store,
         spec,
         memory,
         observer,
         task_context,
+        true,
         &mut |relationship, _| {
             runtime_checkpoint(task_context)?;
             if relationship_count_filter_matches(&relationship, count_filter) {
@@ -789,6 +835,85 @@ fn relationship_count_filter_matches(
     }
 }
 
+fn thread_repair_properties(
+    names: &[&str],
+    account: &QueryMemoryAccount,
+    task_context: Option<&RuntimeTaskContext>,
+) -> Result<(
+    BTreeSet<String>,
+    Box<dyn hawdb_storage::read_view::GraphReadAllocation>,
+)> {
+    // Admit field-selector scratch separately from retained summary state;
+    // both classes still share the same query root before any key is cloned.
+    let bytes = 392usize
+        .saturating_add(
+            names
+                .len()
+                .saturating_mul(2)
+                .max(4)
+                .saturating_mul(std::mem::size_of::<String>()),
+        )
+        .saturating_add(
+            names
+                .iter()
+                .fold(0usize, |bytes, name| bytes.saturating_add(name.len())),
+        );
+    let allocation = crate::store::admit_graph_read(account, task_context, bytes)?;
+    Ok((
+        names.iter().map(|name| (*name).to_string()).collect(),
+        allocation,
+    ))
+}
+
+fn visit_thread_repair_nodes(
+    store: &dyn GraphExecutionRead,
+    label_ids: Option<&[LabelId]>,
+    properties: &BTreeSet<String>,
+    account: &QueryMemoryAccount,
+    task_context: Option<&RuntimeTaskContext>,
+    consumer: &mut dyn FnMut(NodeRecord) -> Result<ScanControl>,
+) -> Result<()> {
+    let mut scan = |label_id| {
+        let mut admit =
+            |bytes| crate::store::admit_graph_read(account, task_context, bytes).map(Some);
+        store.visit_projected_nodes_with_allocation(
+            label_id,
+            properties,
+            &mut admit,
+            &mut |input| {
+                let (node, _allocation) = input.into_parts();
+                runtime_checkpoint(task_context)?;
+                // Multi-label patterns count a record once, without allocating a
+                // second retained set of node ids.
+                if let Some(label_ids) = label_ids {
+                    let first = label_ids.iter().find(|id| node.labels.contains(id));
+                    if first.copied() != label_id {
+                        return Ok(ScanControl::Continue);
+                    }
+                }
+                consumer(NodeRecord {
+                    id: node.id,
+                    labels: node.labels,
+                    properties: node.properties,
+                })
+            },
+        )?;
+        Ok::<_, HawDBError>(())
+    };
+    match label_ids {
+        Some(ids) => {
+            for (index, id) in ids.iter().enumerate() {
+                if ids[..index].contains(id) {
+                    continue;
+                }
+                scan(Some(*id))?;
+            }
+        }
+        None => scan(None)?,
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn thread_repair_stats_rows(
     catalog: &Catalog,
@@ -821,31 +946,62 @@ pub fn thread_repair_stats_rows(
         memory_budget,
     );
     let mut tracker = OperatorMemoryTracker::with_account(memory_budget, blocking_account.clone());
+    let property_account = memory_ledger.account(
+        QueryMemoryClass::ExternalRead,
+        "ThreadRepairStatsExec properties",
+        memory_budget,
+    );
     let mut identity_bytes = 0usize;
-    let mut admit =
-        |bytes| crate::store::admit_graph_read(&blocking_account, task_context, bytes).map(Some);
-    let mut visit = |input: AdmittedNodeRecord| {
-        let (node, _allocation) = input.into_parts();
-        runtime_checkpoint(task_context)?;
-        if node_matches_label_pattern(&node, identity_label_ids.as_deref())
-            && let Some(identity_ref) = node.properties.get(identity_ref_property)
-        {
-            if let Some(count) = identity_counts.get_mut(identity_ref) {
-                *count = count.saturating_add(1);
-            } else {
-                let bytes = thread_repair_identity_entry_bytes(identity_ref);
-                if tracker.would_exceed(bytes) {
-                    return Err(HawDBError::Execution(format!(
-                        "ThreadRepairStatsExec state exceeds blocking_operator_bytes {}",
-                        tracker.budget_bytes
-                    )));
+    // Identity counts and thread state have different property requirements.
+    // Select labels before ownership, then project only each phase's fields.
+    let (identity_properties, identity_property_allocation) =
+        thread_repair_properties(&[identity_ref_property], &property_account, task_context)?;
+    visit_thread_repair_nodes(
+        store,
+        identity_label_ids.as_deref(),
+        &identity_properties,
+        &blocking_account,
+        task_context,
+        &mut |node| {
+            if let Some(identity_ref) = node.properties.get(identity_ref_property) {
+                if let Some(count) = identity_counts.get_mut(identity_ref) {
+                    *count = count.saturating_add(1);
+                } else {
+                    let bytes = thread_repair_identity_entry_bytes(identity_ref);
+                    if tracker.would_exceed(bytes) {
+                        return Err(HawDBError::Execution(format!(
+                            "ThreadRepairStatsExec state exceeds blocking_operator_bytes {}",
+                            tracker.budget_bytes
+                        )));
+                    }
+                    tracker.try_charge(bytes)?;
+                    identity_bytes = identity_bytes.saturating_add(bytes);
+                    identity_counts.insert(identity_ref.clone(), 1);
                 }
-                tracker.try_charge(bytes)?;
-                identity_bytes = identity_bytes.saturating_add(bytes);
-                identity_counts.insert(identity_ref.clone(), 1);
             }
-        }
-        if node_matches_label_pattern(&node, thread_label_ids.as_deref()) {
+            Ok(ScanControl::Continue)
+        },
+    )?;
+    drop(identity_properties);
+    drop(identity_property_allocation);
+    let (thread_properties, _thread_property_allocation) = thread_repair_properties(
+        &[
+            "id",
+            thread_id_property,
+            "thread_id",
+            "space_id",
+            "message_count",
+        ],
+        &property_account,
+        task_context,
+    )?;
+    visit_thread_repair_nodes(
+        store,
+        thread_label_ids.as_deref(),
+        &thread_properties,
+        &blocking_account,
+        task_context,
+        &mut |node| {
             let bytes = ThreadRepairThread::borrowed_memory_bytes(&node, thread_id_property);
             if tracker.would_exceed(bytes) {
                 return Err(HawDBError::Execution(format!(
@@ -860,10 +1016,9 @@ pub fn thread_repair_stats_rows(
                 )
             })?;
             threads.push(ThreadRepairThread::from_node(node, thread_id_property));
-        }
-        Ok(ScanControl::Continue)
-    };
-    store.visit_nodes_with_allocation(None, &mut admit, &mut visit)?;
+            Ok(ScanControl::Continue)
+        },
+    )?;
     threads.sort_by(|left, right| left.id.cmp(&right.id));
     let mut rows = Vec::new();
     for thread in threads {
