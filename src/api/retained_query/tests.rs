@@ -78,6 +78,44 @@ fn fixture_with_unrequested_payload(bytes: usize) -> Database {
 }
 
 #[test]
+fn precreated_read_snapshots_reuse_the_same_source_capacity_bound() {
+    let mut db = fixture_with_unrequested_payload(128 * 1024);
+    let first_snapshot = db.begin_read_transaction().unwrap();
+    let second_snapshot = db.begin_read_transaction().unwrap();
+    let mut first = first_snapshot
+        .into_retained_query(QUERY, &params(), options())
+        .unwrap();
+    let old_bound = first.profile().source_pinned_capacity_bytes;
+    assert_eq!(first.profile().source_preflight_rows, 10);
+    let mut second = second_snapshot
+        .into_retained_query(QUERY, &params(), options())
+        .unwrap();
+    assert_eq!(second.profile().source_preflight_rows, 0);
+    assert_eq!(second.profile().source_pinned_capacity_bytes, old_bound);
+    db.query_with_params(
+        "MATCH (n:Other) SET n.pad = $pad",
+        &BTreeMap::from([("pad".into(), Value::String("y".repeat(256 * 1024)))]),
+    )
+    .unwrap();
+    let mut current = db
+        .query_with_params_retained(QUERY, &params(), options())
+        .unwrap();
+    assert_eq!(current.profile().source_preflight_rows, 10);
+    assert!(current.profile().source_pinned_capacity_bytes > old_bound);
+    assert_eq!(first.profile().source_pinned_capacity_bytes, old_bound);
+    assert_eq!(second.profile().source_pinned_capacity_bytes, old_bound);
+    assert_eq!(scores(&first.next_batch().unwrap().unwrap()), vec![2]);
+    assert_eq!(scores(&second.next_batch().unwrap().unwrap()), vec![2]);
+    first.close();
+    second.close();
+    current.close();
+    drop((first, second, current));
+    let governor = db.retained_runtime.bound.get().unwrap();
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+    assert_eq!(governor.retained_result_snapshot().retained_bytes, 0);
+}
+
+#[test]
 fn unrequested_source_capacity_refuses_before_pinning_and_rolls_back_admission() {
     let mut db = fixture_with_unrequested_payload(128 * 1024);
     db.config.execution_memory.query_memory_bytes = nz(64 * 1024);

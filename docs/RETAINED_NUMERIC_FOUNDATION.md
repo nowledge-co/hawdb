@@ -196,10 +196,14 @@ Overflow or excessive value nesting refuses admission without publishing a
 cursor. Canonical/out-of-core sources remain unsupported.
 
 The bound uses the pinned Rust 1.97.1 B-tree layout. A cold preflight borrows all
-records without cloning source values; a snapshot-local inline cache avoids
-repeating that walk for an unchanged version. Writer mutations invalidate only
-their own cache, and ordinary writes do not recalculate capacity. Admission
-conservatively charges each cursor's full source bound, even when cursors share
+records without cloning source values. The immutable page directory owns its
+capacity cache, so snapshots created before the first preflight also reuse the
+same initialized bound. Cloning a map shares the directory and does not copy a
+cache. A writer detaching a shared directory starts with an empty cache; all
+mutable directory/page access invalidates the writer's cache. Ordinary writes
+do not recalculate capacity. The directory's cache metadata is included in its
+retained capacity. Admission conservatively charges each cursor's full source
+bound, even when cursors share
 pages. This can refuse a narrow projection over a large row store, or multiple
 cursors over one shared source, earlier than an allocation-deduplicated policy.
 The cold walk checks cancellation before and after creation, not between rows.
@@ -215,9 +219,13 @@ The source admission argument has four invariants:
    with checked arithmetic. Shared pages appear once in a source directory;
    charging the entire source separately to each cursor conservatively bounds
    the union of allocations retained by admitted cursors.
-3. Every mutable map access invalidates the writer's cached bound before
-   publication. An older snapshot's immutable directory and cached bound remain
-   unchanged. A cached bound therefore describes the same source version.
+3. A directory and its cached bound have the same immutable generation.
+   Snapshot cloning shares that pair, including before cache initialization.
+   `Arc::make_mut` either obtains an exclusive directory or clones its page
+   references into a new directory with an empty cache. `DerefMut` invalidates
+   the cache before mutable directory/page access. An older snapshot retains
+   its unchanged directory and bound. Thus no published bound can describe a
+   different source generation.
 4. Both memory reservations precede source capture. Failed construction drops
    provisional leases. Terminal release destroys source references before its
    query/runtime charges; produced result owners retain neither source nor
@@ -229,9 +237,11 @@ not a machine-checked proof of allocator/RSS or whole-query boundedness.
 Arrow export itself does not change WAL or commit processing. Source retention
 can affect concurrent writes: while a cursor holds an old page, modifying that
 page requires COW publication; slow consumers extend that retention window.
-The capacity cache also adds inline metadata to the shared segmented map, its
-clone path and mutation invalidation. Qualification must therefore measure
-ordinary writes and writes while a slow cursor remains open separately, with
+The capacity cache adds metadata to the page directory and invalidation before
+mutable access. Sharing it removes per-map cache copies and duplicate cold walks
+across snapshots of one directory; it does not eliminate COW page retention.
+Qualification must therefore measure ordinary writes and writes while a slow
+cursor remains open separately, with
 identical durability and workload. A read-boundary speedup does not establish
 write neutrality or qualify these shared storage changes.
 The scoped [write controls](../bindings/benchmarks/RETAINED_WRITE_RESULTS.md)

@@ -5,6 +5,8 @@ These local tools measure the ordinary owned Rust, Python and pure-Go APIs for
 gate in [the interchange spec](../../docs/specs/ZERO_COPY_COLUMNAR_INTERCHANGE_SPEC.md).
 They do not enable a strict zero-copy query path or change database defaults.
 [Initial observations](RESULTS.md) record partial measurements and remaining gates.
+[Current-main Rust controls](RUST_ORDINARY_RESULTS.md) preserve the complete scoped
+paired comparison, unfavorable observations and default-budget refusals.
 
 Build every engine dependency together in the same optimized configuration:
 

@@ -59,7 +59,7 @@ impl CowSegmentedMap<NodeId, NodeRecord> {
     /// Concurrent readers share initialization; a cache hit inspects no records.
     pub fn retained_capacity_preflight(&self) -> (Option<usize>, usize) {
         let mut inspected = 0usize;
-        let capacity = *self.retained_capacity.get_or_init(|| {
+        let capacity = *self.segments.retained_capacity.get_or_init(|| {
             self.segments
                 .iter()
                 .try_fold(self.directory_capacity_bytes(), |bytes, page| {
@@ -140,7 +140,32 @@ mod tests {
     }
 
     #[test]
-    fn capacity_cache_is_snapshot_local_and_every_mutation_invalidates_it() {
+    fn snapshots_created_before_preflight_share_the_source_bound() {
+        let node = NodeRecord {
+            id: NodeId(1),
+            labels: BTreeSet::new(),
+            properties: BTreeMap::from([("pad".into(), Value::String("x".repeat(1024)))]),
+        };
+        let mut map = CowSegmentedMap::from(BTreeMap::from([(node.id, node)]));
+        let first = map.clone();
+        let second = map.clone();
+        let (bound, inspected) = first.retained_capacity_preflight();
+        assert_eq!(inspected, 1);
+        assert_eq!(second.retained_capacity_preflight(), (bound, 0));
+        assert_eq!(map.retained_capacity_preflight(), (bound, 0));
+        map.get_mut(&NodeId(1))
+            .unwrap()
+            .properties
+            .insert("pad".into(), Value::String("y".repeat(16 * 1024)));
+        let (new_bound, inspected) = map.retained_capacity_preflight();
+        assert_eq!(inspected, 1);
+        assert!(new_bound > bound);
+        assert_eq!(first.retained_capacity_preflight(), (bound, 0));
+        assert_eq!(second.retained_capacity_preflight(), (bound, 0));
+    }
+
+    #[test]
+    fn capacity_cache_is_generation_local_and_every_mutation_invalidates_it() {
         let node = NodeRecord {
             id: NodeId(1),
             labels: BTreeSet::new(),
@@ -179,8 +204,8 @@ mod tests {
         assert_eq!(map.retained_capacity_preflight().1, 1);
         assert_eq!(snapshot.retained_capacity_preflight(), (bound, 0));
         let mut defaults = CowSegmentedMap::<NodeId, Vec<Value>>::default();
-        defaults.retained_capacity.set(Some(1)).unwrap();
+        defaults.segments.retained_capacity.set(Some(1)).unwrap();
         defaults.entry_or_default(NodeId(3)).push(Value::Int(1));
-        assert!(defaults.retained_capacity.get().is_none());
+        assert!(defaults.segments.retained_capacity.get().is_none());
     }
 }
