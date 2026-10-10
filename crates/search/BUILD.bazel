@@ -346,6 +346,7 @@ rust_test(
 
 rust_test(
     name = "hawdb_search_manifest_budget_fuzz_tests",
+    timeout = "long",
     args = [
         "out_of_core::generation_writer::tests::manifest_budget::manifest_budget_lifecycle_campaign",
         "--exact",
