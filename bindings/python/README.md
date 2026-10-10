@@ -123,7 +123,7 @@ pytest and PyArrow (locally verified with 26.0.0):
 
 ```bash
 bazel test //bindings/python:hawdb_python_tests
-PYTHONPATH="$PWD/bazel-bin/bindings/python/hawdb_python_tests.runfiles/_main/bindings/python/python" \
+PYTHONPATH="$PWD/bazel-bin/bindings/python/hawdb_python_retained_tests.runfiles/_main/bindings/python/python" \
   /path/to/consumer-venv/bin/python -m pytest --import-mode=importlib \
   --rootdir="$PWD" bindings/python/tests/test_arrow_consumer.py -v
 ```
@@ -317,6 +317,11 @@ Without Pydantic installed, the extra's tests skip and the rest prove that
 `import hawdb` does not need it. Install `pydantic` to run them. Bazel runs the
 two environments as `//bindings/python:hawdb_python_tests` and
 `//bindings/python:hawdb_python_pydantic_tests`.
+
+The default suite includes independent `hawdb_python_row_tests` and
+`hawdb_python_retained_tests` targets. Both keep the small-test deadline and
+per-case database isolation; the split retains every ordinary and retained/Arrow
+test without weakening durability or increasing timeouts.
 
 To refresh the Bazel test dependency lock:
 

@@ -71,10 +71,14 @@ pub(super) fn execute_ordered_index_projection<'a>(
                 return Ok(BatchControl::Stop);
             }
             if output.len() >= limits.max_output_rows {
-                return Err(HawDBError::Execution(format!(
-                    "relational SQL output exceeds max_output_rows {}",
-                    limits.max_output_rows
-                )));
+                return Err(HawDBError::read_budget_exceeded(
+                    hawdb_core::ReadBudgetResource::Rows,
+                    limits.max_output_rows,
+                    format!(
+                        "relational SQL output exceeds max_output_rows {}",
+                        limits.max_output_rows
+                    ),
+                ));
             }
             let locator = locators.relational_row_locator(row_index).ok_or_else(|| {
                 HawDBError::Execution(format!(
@@ -102,10 +106,14 @@ pub(super) fn execute_ordered_index_projection<'a>(
             let projected = project_bound_row(&bound, &select.projection, parameters)?;
             payload_bytes = payload_bytes.saturating_add(map_payload_bytes(&projected));
             if payload_bytes > limits.max_output_payload_bytes {
-                return Err(HawDBError::Execution(format!(
-                    "relational SQL output exceeds max_output_payload_bytes {}",
-                    limits.max_output_payload_bytes
-                )));
+                return Err(HawDBError::read_budget_exceeded(
+                    hawdb_core::ReadBudgetResource::PayloadBytes,
+                    limits.max_output_payload_bytes,
+                    format!(
+                        "relational SQL output exceeds max_output_payload_bytes {}",
+                        limits.max_output_payload_bytes
+                    ),
+                ));
             }
             output.push(projected);
         }
@@ -233,18 +241,26 @@ pub(super) fn execute_streaming_projection<'a>(
                     return Ok(false);
                 }
                 if output.len() >= limits.max_output_rows {
-                    return Err(HawDBError::Execution(format!(
-                        "relational SQL output exceeds max_output_rows {}",
-                        limits.max_output_rows
-                    )));
+                    return Err(HawDBError::read_budget_exceeded(
+                        hawdb_core::ReadBudgetResource::Rows,
+                        limits.max_output_rows,
+                        format!(
+                            "relational SQL output exceeds max_output_rows {}",
+                            limits.max_output_rows
+                        ),
+                    ));
                 }
                 let projected = project_bound_row(&row, &select.projection, parameters)?;
                 payload_bytes = payload_bytes.saturating_add(map_payload_bytes(&projected));
                 if payload_bytes > limits.max_output_payload_bytes {
-                    return Err(HawDBError::Execution(format!(
-                        "relational SQL output exceeds max_output_payload_bytes {}",
-                        limits.max_output_payload_bytes
-                    )));
+                    return Err(HawDBError::read_budget_exceeded(
+                        hawdb_core::ReadBudgetResource::PayloadBytes,
+                        limits.max_output_payload_bytes,
+                        format!(
+                            "relational SQL output exceeds max_output_payload_bytes {}",
+                            limits.max_output_payload_bytes
+                        ),
+                    ));
                 }
                 output.push(projected);
                 Ok(output.len() < requested)
@@ -320,10 +336,14 @@ pub(super) fn execute_borrowed_streaming_full_scan(
                 return Ok(false);
             }
             if output_rows >= limits.max_output_rows {
-                return Err(HawDBError::Execution(format!(
-                    "relational SQL output exceeds max_output_rows {}",
-                    limits.max_output_rows
-                )));
+                return Err(HawDBError::read_budget_exceeded(
+                    hawdb_core::ReadBudgetResource::Rows,
+                    limits.max_output_rows,
+                    format!(
+                        "relational SQL output exceeds max_output_rows {}",
+                        limits.max_output_rows
+                    ),
+                ));
             }
             projection.project_into(
                 row,

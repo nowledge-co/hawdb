@@ -576,11 +576,16 @@ pub fn query_sql_with_params<Store: SystemSqlStore>(
     let payload_bytes = rows.iter().fold(0usize, |total, row| {
         total.saturating_add(map_payload_bytes(row))
     });
-    if max_payload_bytes.is_some_and(|limit| payload_bytes > limit) {
-        return Err(HawDBError::Execution(format!(
-            "SQL query payload uses {payload_bytes} bytes, exceeding max_read_result_payload_bytes {}",
-            max_payload_bytes.unwrap_or_default()
-        )));
+    if let Some(limit) = max_payload_bytes
+        && payload_bytes > limit
+    {
+        return Err(HawDBError::read_budget_exceeded(
+            hawdb_core::ReadBudgetResource::PayloadBytes,
+            limit,
+            format!(
+                "SQL query payload uses {payload_bytes} bytes, exceeding max_read_result_payload_bytes {limit}"
+            ),
+        ));
     }
     Ok(QueryOutput { rows: rows.into() })
 }
@@ -770,9 +775,13 @@ fn execute_system_table_scan<Store: SystemSqlStore>(
     if let Some(max_rows) = max_rows
         && rows.len() > max_rows
     {
-        return Err(HawDBError::Execution(format!(
+        return Err(HawDBError::read_budget_exceeded(
+            hawdb_core::ReadBudgetResource::Rows,
+            max_rows,
+            format!(
                 "SQL query returned more than {max_rows} rows, exceeding max_read_result_rows {max_rows}"
-            )));
+            ),
+        ));
     }
 
     project_rows(rows, &scan.projection)
@@ -2705,27 +2714,42 @@ mod tests {
             memory_pressure_events: 1,
         };
 
-        let output = query_sql(
-            "SELECT value FROM system.plan_cache WHERE metric = 'hits'",
-            None,
-            None,
-            &SystemSqlContext {
-                catalog: &catalog,
-                store: &store,
-                relational_state: &relational_state,
-                append_state: &append_state,
-                runtime: default_runtime(),
-                plan_cache_stats: &stats,
-                slow_queries: &[],
-                statement_summaries: &[],
-            },
-        )
-        .expect("system plan cache query");
+        let context = SystemSqlContext {
+            catalog: &catalog,
+            store: &store,
+            relational_state: &relational_state,
+            append_state: &append_state,
+            runtime: default_runtime(),
+            plan_cache_stats: &stats,
+            slow_queries: &[],
+            statement_summaries: &[],
+        };
+        let sql = "SELECT value FROM system.plan_cache WHERE metric = 'hits'";
+        let output = query_sql(sql, None, None, &context).expect("system plan cache query");
 
         assert_eq!(
             output.rows,
             vec![BTreeMap::from([("value".to_string(), Value::Int(5))])]
         );
+        let payload_bytes = output.payload_bytes();
+        let exact = query_sql(sql, Some(1), Some(payload_bytes), &context).unwrap();
+        assert_eq!(exact.rows, output.rows);
+        for (rows, payload, resource, limit) in [
+            (Some(0), Some(0), hawdb_core::ReadBudgetResource::Rows, 0),
+            (
+                Some(1),
+                Some(payload_bytes - 1),
+                hawdb_core::ReadBudgetResource::PayloadBytes,
+                payload_bytes - 1,
+            ),
+        ] {
+            let error = query_sql(sql, rows, payload, &context).unwrap_err();
+            assert!(
+                matches!(&error, HawDBError::ReadBudgetExceeded(cause)
+                    if cause.resource == resource && cause.limit == limit),
+                "system SQL lost its result budget cause: {error}"
+            );
+        }
     }
 
     #[test]

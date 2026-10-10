@@ -209,6 +209,11 @@ fn relational_projection_coalesce_keeps_result_limits() {
             .contains("relational SQL output exceeds max_output_rows 1"),
         "unexpected error: {row_error}"
     );
+    assert!(
+        matches!(&row_error, crate::HawDBError::ReadBudgetExceeded(cause)
+            if cause.resource == crate::ReadBudgetResource::Rows && cause.limit == 1),
+        "projection lost its row budget cause: {row_error}"
+    );
 
     let error = database
         .query_sql_with_params_options(
@@ -225,5 +230,10 @@ fn relational_projection_coalesce_keeps_result_limits() {
             .to_string()
             .contains("relational SQL output exceeds max_output_payload_bytes 1"),
         "unexpected error: {error}"
+    );
+    assert!(
+        matches!(&error, crate::HawDBError::ReadBudgetExceeded(cause)
+            if cause.resource == crate::ReadBudgetResource::PayloadBytes && cause.limit == 1),
+        "projection lost its payload budget cause: {error}"
     );
 }

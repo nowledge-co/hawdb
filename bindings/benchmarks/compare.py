@@ -17,7 +17,7 @@ import sys
 import run as matrix
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-BASELINE = "69d526a2d2d4b75741a731d0203949ffc1d123fb"
+BASELINE = "5a5c4639a0df03487a35a4b71794cc276a26466f"
 TARGETS = (
     "//:hawdb_bench_host_boundary", "//bindings/benchmarks:python_boundary",
     "//bindings/go/cmd/boundary", "//bindings/ffi:hawdb_ffi",
@@ -85,8 +85,7 @@ def prepare_baseline(destination, revision):
             "tree": command(["git", "write-tree"], destination),
             "adapter_patch_sha256": sha256(patch), "adapter_spec_sha256": sha256(adapter),
             "adaptations": ["Identical ordinary harness and manual targets.",
-                            "Identical untimed in-memory opening adapter.",
-                            "Exhaustive Python graph-expansion error mapping; success path unchanged."]}
+                            "Identical untimed in-memory opening adapter."]}
 
 
 def build_producer(repository, directory):

@@ -143,7 +143,7 @@ fn having_rejection_does_not_bypass_work_memory_or_output_limits() {
     let state = batched_index_join_state();
     let memory = hawdb_executor::ExecutionMemoryConfig::default();
     let limits = batched_index_join_limits();
-    for (sql, limits, memory, expected) in [
+    for (sql, limits, memory, expected, budget) in [
         (
             "SELECT COUNT(*) FROM batch_outer HAVING COUNT(*) < 0",
             RelationalQueryLimits {
@@ -152,6 +152,7 @@ fn having_rejection_does_not_bypass_work_memory_or_output_limits() {
             },
             memory.clone(),
             "max_intermediate_rows",
+            None,
         ),
         (
             "SELECT COUNT(*) FROM batch_outer HAVING COUNT(*) >= 0",
@@ -161,6 +162,7 @@ fn having_rejection_does_not_bypass_work_memory_or_output_limits() {
             },
             memory.clone(),
             "max_output_rows",
+            Some((hawdb_core::ReadBudgetResource::Rows, 0)),
         ),
         (
             "SELECT COUNT(*) FROM batch_outer HAVING COUNT(*) >= 0",
@@ -170,6 +172,27 @@ fn having_rejection_does_not_bypass_work_memory_or_output_limits() {
             },
             memory.clone(),
             "max_output_payload_bytes",
+            Some((hawdb_core::ReadBudgetResource::PayloadBytes, 1)),
+        ),
+        (
+            "SELECT COUNT(DISTINCT join_key) FROM batch_outer",
+            RelationalQueryLimits {
+                max_output_rows: 0,
+                ..limits
+            },
+            memory.clone(),
+            "max_output_rows",
+            Some((hawdb_core::ReadBudgetResource::Rows, 0)),
+        ),
+        (
+            "SELECT COUNT(DISTINCT join_key) FROM batch_outer",
+            RelationalQueryLimits {
+                max_output_payload_bytes: 1,
+                ..limits
+            },
+            memory.clone(),
+            "max_output_payload_bytes",
+            Some((hawdb_core::ReadBudgetResource::PayloadBytes, 1)),
         ),
         (
             "SELECT COUNT(DISTINCT join_key) FROM batch_outer HAVING COUNT(*) >= 0",
@@ -179,6 +202,7 @@ fn having_rejection_does_not_bypass_work_memory_or_output_limits() {
                 ..memory.clone()
             },
             "blocking_operator_bytes",
+            None,
         ),
     ] {
         let error = execute_relational_query_sql_with_runtime(
@@ -192,6 +216,15 @@ fn having_rejection_does_not_bypass_work_memory_or_output_limits() {
         )
         .unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");
+        if let Some((resource, limit)) = budget {
+            assert!(
+                matches!(&error, HawDBError::ReadBudgetExceeded(cause)
+                    if cause.resource == resource && cause.limit == limit),
+                "aggregate output lost its result budget cause: {error}"
+            );
+        } else {
+            assert!(matches!(error, HawDBError::Execution(_)), "{error}");
+        }
     }
     let cancellation = hawdb_core::RuntimeCancellationToken::new();
     let context = hawdb_core::RuntimeTaskContext::without_deadline(cancellation.clone());

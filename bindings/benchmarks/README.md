@@ -93,11 +93,10 @@ backends, one discarded iteration and three measured iterations. Large cases
 can reach the workflow's six-hour execution ceiling; partial reports and raw
 failures are uploaded and cannot count as completed qualification.
 
-`compare.py` pins baseline `69d526a2d2d4b75741a731d0203949ffc1d123fb` and records
+`compare.py` pins baseline `5a5c4639a0df03487a35a4b71794cc276a26466f` and records
 the candidate HEAD and staged tree. The isolated baseline adds the identical
 ordinary harness and the patch in `main-baseline-adapters.json`: an untimed
-in-memory constructor/Go opening adapter and the exhaustive Python error mapping
-needed to compile this main revision. Query, conversion, write and durability
+in-memory constructor/Go opening adapter. Query, conversion, write and durability
 implementations remain the baseline's. The patch is not applied to production
 main and refuses any other baseline revision. Build logs, exact staged source,
 native/launcher hashes and all raw matrix outcomes remain in the artifact.

@@ -1,5 +1,5 @@
 {
-  "baseline": "69d526a2d2d4b75741a731d0203949ffc1d123fb",
+  "baseline": "5a5c4639a0df03487a35a4b71794cc276a26466f",
   "patch_lines": [
     "diff --git a/benchmarks.bzl b/benchmarks.bzl\n",
     "index 8044d7e4..1df8ea19 100644\n",
@@ -129,21 +129,6 @@
     "+\n",
     "+func lookupSharedSymbol(handle uintptr, name string) (uintptr, error) {\n",
     "+\treturn syscall.GetProcAddress(syscall.Handle(handle), name)\n",
-    "+}\n",
-    "diff --git a/bindings/python/src/errors.rs b/bindings/python/src/errors.rs\n",
-    "index b4e3aa9e..3cfb58e7 100644\n",
-    "--- a/bindings/python/src/errors.rs\n",
-    "+++ b/bindings/python/src/errors.rs\n",
-    "@@ -99,7 +99,9 @@ pub fn format_hawdb_error(error: &HawDBError) -> PyErr {\n",
-    "         HawDBError::Storage(_) => StorageError::new_err(message),\n",
-    "         HawDBError::FileDescriptors(_) => DescriptorError::new_err(message),\n",
-    "         HawDBError::StorageIntegrity(_) => IntegrityError::new_err(message),\n",
-    "-        HawDBError::Execution(_) => ExecutionError::new_err(message),\n",
-    "+        HawDBError::Execution(_)\n",
-    "+        | HawDBError::GraphExpansionCandidateLimitExceeded { .. }\n",
-    "+        | HawDBError::GraphExpansionPayloadLimitExceeded { .. } => ExecutionError::new_err(message),\n",
-    "         HawDBError::TransactionConflict { .. } | HawDBError::AppendSequenceExhausted { .. } => {\n",
-    "             ConflictError::new_err(message)\n",
-    "         }\n"
+    "+}\n"
   ]
 }

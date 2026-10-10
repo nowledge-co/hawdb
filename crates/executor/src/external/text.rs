@@ -87,21 +87,21 @@ mod tests {
                 "payload" => (oversized.as_str(), 2.0),
                 _ => ("b", f64::INFINITY),
             };
-            assert!(output.push(id, Some("canonical:b"), score).is_err());
+            let error = output.push(id, Some("canonical:b"), score).unwrap_err();
+            if failure == "row" {
+                assert!(matches!(&error, HawDBError::ReadBudgetExceeded(cause)
+                    if cause.resource == hawdb_core::ReadBudgetResource::Rows && cause.limit == 1));
+            } else {
+                assert!(matches!(&error, HawDBError::Execution(_)));
+            }
             assert_eq!(
                 ledger.snapshot().used_bytes,
                 before,
                 "{failure} charged a rejected copy"
             );
             assert_eq!(output.rows().len(), 1);
-            assert!(
-                output.validate(&account, budget).is_err(),
-                "{failure} returned partial success"
-            );
-            assert!(
-                output.push("c", None, 3.0).is_err(),
-                "failed builder resumed"
-            );
+            assert_eq!(output.validate(&account, budget).unwrap_err(), error);
+            assert_eq!(output.push("c", None, 3.0).unwrap_err(), error);
             assert_eq!(ledger.snapshot().used_bytes, before);
             drop(output);
             assert_eq!(ledger.snapshot().used_bytes, 0);
@@ -125,6 +125,20 @@ mod tests {
             let output = TextSeedExecutionOutput::new(wrong, budget).unwrap();
             assert!(output.validate(&account, budget).is_err());
         }
+        let mut output = TextSeedExecutionOutput::new(&account, budget).unwrap();
+        output.push("a", None, 1.0).unwrap();
+        let before = ledger.snapshot().used_bytes;
+        let narrowed = ExternalReadResultBudget {
+            max_rows: 0,
+            ..budget
+        };
+        assert!(matches!(output.validate(&account, narrowed),
+            Err(HawDBError::ReadBudgetExceeded(cause))
+                if cause.resource == hawdb_core::ReadBudgetResource::Rows && cause.limit == 0));
+        assert_eq!(output.rows().len(), 1);
+        assert_eq!(ledger.snapshot().used_bytes, before);
+        drop(output);
+        assert_eq!(ledger.snapshot().used_bytes, 0);
         let held = account.reserve(bytes.get()).unwrap();
         assert!(TextSeedExecutionOutput::new(&account, budget).is_err());
         assert_eq!(ledger.snapshot().used_bytes, bytes.get());
@@ -153,7 +167,7 @@ pub struct TextSeedExecutionRow {
 pub struct TextSeedExecutionOutput {
     rows: Vec<TextSeedExecutionRow>,
     budget: ExternalReadResultBudget,
-    failed: bool,
+    failure: Option<HawDBError>,
     reservation: QueryMemoryLease,
 }
 
@@ -175,21 +189,26 @@ impl TextSeedExecutionOutput {
         Ok(Self {
             rows,
             budget,
-            failed: false,
+            failure: None,
             reservation,
         })
     }
 
     pub fn push(&mut self, id: &str, external_id: Option<&str>, score: f64) -> Result<()> {
-        if self.failed {
-            return Err(HawDBError::Execution(
-                "text seed output construction already failed".into(),
-            ));
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
         }
         let result = (|| {
-            if !score.is_finite() || self.rows.len() >= self.budget.max_rows {
+            if !score.is_finite() {
                 return Err(HawDBError::Execution(
-                    "text seed score must be finite and within the result row budget".into(),
+                    "text seed score must be finite".into(),
+                ));
+            }
+            if self.rows.len() >= self.budget.max_rows {
+                return Err(HawDBError::read_budget_exceeded(
+                    hawdb_core::ReadBudgetResource::Rows,
+                    self.budget.max_rows,
+                    "text seed result exceeds its row budget",
                 ));
             }
             let bytes = id
@@ -214,8 +233,8 @@ impl TextSeedExecutionOutput {
             });
             Ok(())
         })();
-        if result.is_err() {
-            self.failed = true;
+        if let Err(error) = &result {
+            self.failure = Some(error.clone());
         }
         result
     }
@@ -229,11 +248,22 @@ impl TextSeedExecutionOutput {
         account: &QueryMemoryAccount,
         budget: ExternalReadResultBudget,
     ) -> Result<()> {
-        if self.failed
-            || !self.reservation.belongs_to(account)
-            || self.rows.len() > budget.max_rows
-            || self.reservation.bytes() > budget.max_memory_bytes.get()
-        {
+        if !self.reservation.belongs_to(account) {
+            return Err(HawDBError::Execution(
+                "text seed output did not retain the admitted result account and budget".into(),
+            ));
+        }
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
+        }
+        if self.rows.len() > budget.max_rows {
+            return Err(HawDBError::read_budget_exceeded(
+                hawdb_core::ReadBudgetResource::Rows,
+                budget.max_rows,
+                "text seed result exceeds its validated row budget",
+            ));
+        }
+        if self.reservation.bytes() > budget.max_memory_bytes.get() {
             return Err(HawDBError::Execution(
                 "text seed output did not retain the admitted result account and budget".into(),
             ));

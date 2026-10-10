@@ -69,10 +69,16 @@ py_library(
     imports = ["python"],
 )
 
+_RETAINED_TEST_SRCS = [
+    "tests/test_arrow.py",
+    "tests/test_arrow_consumer.py",
+    "tests/test_retained.py",
+]
+
 py_test(
-    name = "hawdb_python_tests",
+    name = "hawdb_python_row_tests",
     size = "small",
-    srcs = glob(["tests/*.py"]),
+    srcs = glob(["tests/*.py"], exclude = _RETAINED_TEST_SRCS),
     legacy_create_init = False,
     main = "tests/pytest_main.py",
     deps = [
@@ -81,7 +87,32 @@ py_test(
     ],
 )
 
-# The default target above runs without Pydantic, so it also proves the extra is
+py_test(
+    name = "hawdb_python_retained_tests",
+    size = "small",
+    srcs = [
+        "tests/conftest.py",
+        "tests/pytest_main.py",
+    ] + _RETAINED_TEST_SRCS,
+    legacy_create_init = False,
+    main = "tests/pytest_main.py",
+    deps = [
+        ":hawdb",
+        requirement("pytest"),
+    ],
+)
+
+# Preserve the full default suite while each independent group keeps the same
+# small-test deadline and per-case durable/in-memory database isolation.
+test_suite(
+    name = "hawdb_python_tests",
+    tests = [
+        ":hawdb_python_row_tests",
+        ":hawdb_python_retained_tests",
+    ],
+)
+
+# The default suite above runs without Pydantic, so it also proves the extra is
 # optional; this one installs the extra and runs its coverage.
 py_test(
     name = "hawdb_python_pydantic_tests",
