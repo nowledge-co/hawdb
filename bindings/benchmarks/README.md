@@ -76,6 +76,9 @@ must release before the next iteration. Persistent writes retain the default
 ordinary baseline without retained APIs; the other modes require this PR's
 experimental source admission. This bulk-update control does not replace the
 five-case matrix, single-write controls or whole-operation memory measurement.
+Scoped source-cache and slow-reader observations, including unfavorable writes
+and failed large-result baselines, are in
+[RETAINED_WRITE_RESULTS.md](RETAINED_WRITE_RESULTS.md).
 
 ```console
 bazel build -c opt //bindings/benchmarks:retained_write_control

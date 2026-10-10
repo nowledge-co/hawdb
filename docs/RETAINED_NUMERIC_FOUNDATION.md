@@ -234,6 +234,9 @@ clone path and mutation invalidation. Qualification must therefore measure
 ordinary writes and writes while a slow cursor remains open separately, with
 identical durability and workload. A read-boundary speedup does not establish
 write neutrality or qualify these shared storage changes.
+The scoped [write controls](../bindings/benchmarks/RETAINED_WRITE_RESULTS.md)
+preserve measured slow-reader costs and unfavorable inter-producer observations;
+they do not complete the ordinary-write gate.
 
 Pulling is serialized by Rust's mutable cursor borrow. Slot/byte/handle pressure
 returns a retryable error before source advancement, without waiting for a
