@@ -325,10 +325,7 @@ impl GraphStore {
         property: String,
         value: Value,
     ) {
-        if let Some(node) = self.nodes.get(&id).cloned() {
-            self.remove_node_from_composite_property_indexes(catalog, &node);
-            self.remove_node_from_full_text_property_indexes(catalog, &node);
-        }
+        self.remove_stored_node_from_derived_property_indexes(catalog, id, &property);
         let Some(mut node) = self.nodes.get_mut(&id) else {
             return;
         };
@@ -355,10 +352,7 @@ impl GraphStore {
                     .insert(id);
             }
         }
-        if let Some(node) = self.nodes.get(&id).cloned() {
-            self.add_node_to_composite_property_indexes(catalog, &node);
-            self.add_node_to_full_text_property_indexes(catalog, &node);
-        }
+        self.add_stored_node_to_derived_property_indexes(catalog, id, &property);
     }
 
     pub(super) fn apply_set_relationship_property(

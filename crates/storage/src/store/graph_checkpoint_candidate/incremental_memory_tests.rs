@@ -327,3 +327,335 @@ fn controlled_nested_relationship_replay_denies_before_wide_pinned_page_copy() {
     drop(pinned);
     assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
 }
+
+fn assert_node_record_replay_denies_before_pinned_copy(
+    operation: impl FnOnce(NodeId, NodeId) -> WalOp,
+) {
+    const OWNER: u64 = 4096;
+    let mut catalog = Catalog::default();
+    let mut store = GraphStore::default();
+    let body = "索引".repeat(64 * 1024);
+    let id = store
+        .create_node(
+            &mut catalog,
+            "Memory",
+            BTreeMap::from([
+                ("body".into(), Value::String(body.clone())),
+                ("rank".into(), Value::Int(0)),
+            ]),
+        )
+        .unwrap();
+    let pinned = store.snapshot();
+    let epoch = store.commit_epoch();
+    assert!(store.nodes.shares_storage_with(&pinned.nodes));
+    let governor = RuntimeGovernor::new(
+        RuntimeGovernorConfig {
+            memory_budget_bytes: Some(4 * 1024 * 1024),
+            background_task_limit: Some(NonZeroUsize::MIN),
+            ..RuntimeGovernorConfig::shared_host()
+        },
+        RuntimeResourceSnapshot::from_parts(
+            RuntimeResourceBudget::from_limits(NonZeroUsize::MIN, None, None),
+            RuntimeMemorySnapshot::from_limits(Some(1 << 30), Some(1 << 30), None, None, None),
+        ),
+        IoConcurrencyBudget::new(2, 1),
+    );
+    let admission = governor
+        .try_admit_incremental_maintenance(OWNER, OWNER, 1, RuntimeTaskContext::default())
+        .unwrap();
+    let work =
+        crate::background::CheckpointWorkContext::new(admission.task_context().unwrap().clone());
+    let created = NodeId(id.0 + 1);
+    let operation = operation(id, created);
+    let mut mutation_started = false;
+    let observer = crate::test_allocator::AllocationObservation::start();
+    let result = work.classify(|work| {
+        store.apply_replayed_checkpoint_wal_transaction_with_boundary(
+            &mut catalog,
+            operation,
+            work,
+            &mut mutation_started,
+            None,
+        )
+    });
+    let large_allocations = observer.finish();
+    assert_eq!(
+        large_allocations, 0,
+        "controlled WAL replay must admit pinned page copies before large allocation"
+    );
+    assert!(matches!(
+        result,
+        Err(crate::background::CheckpointOperationError::Work(
+            crate::background::CheckpointWorkError::Memory(_)
+        ))
+    ));
+    assert!(
+        !mutation_started,
+        "memory denial must precede transaction mutation"
+    );
+    assert_eq!(store.commit_epoch(), epoch);
+    assert!(store.node_owned(created).unwrap().is_none());
+    assert!(store.nodes.shares_storage_with(&pinned.nodes));
+    for handle in [&store, &pinned] {
+        let node = handle.node_owned(id).unwrap().unwrap();
+        assert_eq!(node.properties["body"], Value::String(body.clone()));
+        assert_eq!(node.properties["rank"], Value::Int(0));
+    }
+    assert_eq!(admission.memory_report().live_accounted_bytes, 0);
+    drop(work);
+    drop(admission);
+    drop(store);
+    drop(pinned);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}
+
+fn assert_relationship_record_replay_denies_before_pinned_copy(
+    operation: impl FnOnce(RelId, NodeId, NodeId) -> WalOp,
+) {
+    const OWNER: u64 = 4096;
+    let mut catalog = Catalog::default();
+    let mut store = GraphStore::default();
+    let body = "索引".repeat(64 * 1024);
+    let a = store
+        .create_node(&mut catalog, "Memory", BTreeMap::new())
+        .unwrap();
+    let b = store
+        .create_node(&mut catalog, "Memory", BTreeMap::new())
+        .unwrap();
+    let id = store
+        .create_relationship(
+            &mut catalog,
+            a,
+            b,
+            "Memory",
+            BTreeMap::from([
+                ("body".into(), Value::String(body.clone())),
+                ("rank".into(), Value::Int(0)),
+            ]),
+        )
+        .unwrap();
+    let pinned = store.snapshot();
+    let epoch = store.commit_epoch();
+    assert!(store
+        .relationships
+        .shares_storage_with(&pinned.relationships));
+    let governor = RuntimeGovernor::new(
+        RuntimeGovernorConfig {
+            memory_budget_bytes: Some(4 * 1024 * 1024),
+            background_task_limit: Some(NonZeroUsize::MIN),
+            ..RuntimeGovernorConfig::shared_host()
+        },
+        RuntimeResourceSnapshot::from_parts(
+            RuntimeResourceBudget::from_limits(NonZeroUsize::MIN, None, None),
+            RuntimeMemorySnapshot::from_limits(Some(1 << 30), Some(1 << 30), None, None, None),
+        ),
+        IoConcurrencyBudget::new(2, 1),
+    );
+    let admission = governor
+        .try_admit_incremental_maintenance(OWNER, OWNER, 1, RuntimeTaskContext::default())
+        .unwrap();
+    let work =
+        crate::background::CheckpointWorkContext::new(admission.task_context().unwrap().clone());
+    let operation = WalOp::Batch(vec![WalOp::Batch(vec![operation(id, a, b)])]);
+    let mut mutation_started = false;
+    let observer = crate::test_allocator::AllocationObservation::start();
+    let result = work.classify(|work| {
+        store.apply_replayed_checkpoint_wal_transaction_with_boundary(
+            &mut catalog,
+            operation,
+            work,
+            &mut mutation_started,
+            None,
+        )
+    });
+    let large_allocations = observer.finish();
+    assert_eq!(
+        large_allocations, 0,
+        "controlled WAL replay must admit pinned page copies before large allocation"
+    );
+    assert!(matches!(
+        result,
+        Err(crate::background::CheckpointOperationError::Work(
+            crate::background::CheckpointWorkError::Memory(_)
+        ))
+    ));
+    assert!(
+        !mutation_started,
+        "memory denial must precede transaction mutation"
+    );
+    assert_eq!(store.commit_epoch(), epoch);
+    assert!(store
+        .relationships
+        .shares_storage_with(&pinned.relationships));
+    for handle in [&store, &pinned] {
+        let node = handle.relationship_owned(id).unwrap().unwrap();
+        assert_eq!(node.properties["body"], Value::String(body.clone()));
+        assert_eq!(node.properties["rank"], Value::Int(0));
+    }
+    assert_eq!(admission.memory_report().live_accounted_bytes, 0);
+    drop(work);
+    drop(admission);
+    drop(store);
+    drop(pinned);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}
+
+#[test]
+fn controlled_record_create_node_denies_before_pinned_page_copy() {
+    assert_node_record_replay_denies_before_pinned_copy(|_, created| WalOp::CreateNode {
+        id: created,
+        label: "Memory".into(),
+        properties: BTreeMap::new(),
+    });
+}
+
+#[test]
+fn controlled_record_delete_node_denies_before_pinned_page_copy() {
+    assert_node_record_replay_denies_before_pinned_copy(|id, _| WalOp::DeleteNode { id });
+}
+
+#[test]
+fn controlled_record_create_relationship_denies_before_pinned_page_copy() {
+    assert_relationship_record_replay_denies_before_pinned_copy(|id, source, target| {
+        WalOp::CreateRelationship {
+            id: RelId(id.0 + 1),
+            source,
+            target,
+            rel_type: "Memory".into(),
+            properties: BTreeMap::new(),
+        }
+    });
+}
+
+#[test]
+fn controlled_record_delete_relationship_denies_before_pinned_page_copy() {
+    assert_relationship_record_replay_denies_before_pinned_copy(|id, _, _| {
+        WalOp::DeleteRelationship { id }
+    });
+}
+
+#[test]
+fn controlled_unshared_node_update_borrows_index_inputs_without_copying_wide_payloads() {
+    for scenario in 0..5 {
+        let mut catalog = Catalog::default();
+        let mut store = GraphStore::default();
+        let body = "索引".repeat(64 * 1024);
+        let id = store
+            .create_node(
+                &mut catalog,
+                "Memory",
+                BTreeMap::from([
+                    ("body".into(), Value::String(body.clone())),
+                    ("category".into(), Value::String("small".into())),
+                    ("rank".into(), Value::Int(0)),
+                ]),
+            )
+            .unwrap();
+        match scenario {
+            1 => {
+                store
+                    .create_composite_property_index(
+                        &mut catalog,
+                        "Memory",
+                        &["rank".into(), "category".into()],
+                    )
+                    .unwrap();
+            }
+            2 => {
+                store
+                    .create_composite_property_index(
+                        &mut catalog,
+                        "Memory",
+                        &["body".into(), "category".into()],
+                    )
+                    .unwrap();
+            }
+            3 => {
+                store
+                    .create_full_text_property_index(&mut catalog, "Memory", "rank")
+                    .unwrap();
+            }
+            4 => {
+                store
+                    .create_full_text_property_index(&mut catalog, "Memory", "body")
+                    .unwrap();
+            }
+            _ => {}
+        }
+        let previous_composite = store.composite_property_index.clone();
+        let previous_text = store.full_text_property_index.clone();
+        let governor = RuntimeGovernor::new(
+            RuntimeGovernorConfig {
+                memory_budget_bytes: Some(4 * 1024 * 1024),
+                background_task_limit: Some(NonZeroUsize::MIN),
+                ..RuntimeGovernorConfig::shared_host()
+            },
+            RuntimeResourceSnapshot::from_parts(
+                RuntimeResourceBudget::from_limits(NonZeroUsize::MIN, None, None),
+                RuntimeMemorySnapshot::from_limits(Some(1 << 30), Some(1 << 30), None, None, None),
+            ),
+            IoConcurrencyBudget::new(2, 1),
+        );
+        let admission = governor
+            .try_admit_incremental_maintenance(4096, 4096, 1, RuntimeTaskContext::default())
+            .unwrap();
+        let work = crate::background::CheckpointWorkContext::new(
+            admission.task_context().unwrap().clone(),
+        );
+        let epoch = store.commit_epoch();
+        let operation = WalOp::SetNodeProperty {
+            id,
+            property: "rank".into(),
+            value: Value::Int(1),
+        };
+        let mut mutation_started = false;
+        let observer = crate::test_allocator::AllocationObservation::start();
+        let result = work.classify(|work| {
+            store.apply_replayed_checkpoint_wal_transaction_with_boundary(
+                &mut catalog,
+                operation,
+                work,
+                &mut mutation_started,
+                None,
+            )
+        });
+        let large_allocations = observer.finish();
+        assert_eq!(
+            large_allocations, 0,
+            "scenario {scenario}: small property updates must borrow unrelated wide payloads"
+        );
+        result.unwrap();
+        assert!(mutation_started);
+        assert_eq!(store.commit_epoch(), epoch + 1);
+        let node = store.nodes.get(&id).unwrap();
+        assert_eq!(node.properties["body"], Value::String(body));
+        assert_eq!(node.properties["rank"], Value::Int(1));
+        if scenario == 2 {
+            assert_eq!(
+                store.composite_property_index.iter().collect::<Vec<_>>(),
+                previous_composite.iter().collect::<Vec<_>>()
+            );
+        }
+        if scenario == 4 {
+            assert_eq!(
+                store.full_text_property_index.iter().collect::<Vec<_>>(),
+                previous_text.iter().collect::<Vec<_>>()
+            );
+        }
+        if scenario == 1 {
+            assert_eq!(store.composite_property_index.len(), 1);
+            let (_, key) = store.composite_property_index.keys().next().unwrap();
+            assert_eq!(
+                key,
+                &vec![
+                    ("rank".into(), Value::Int(1)),
+                    ("category".into(), Value::String("small".into()))
+                ]
+            );
+        }
+        assert_eq!(admission.memory_report().live_accounted_bytes, 0);
+        drop(work);
+        drop(admission);
+        assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+    }
+}

@@ -17,6 +17,52 @@
 use super::*;
 
 impl GraphStore {
+    pub(super) fn remove_stored_node_from_derived_property_indexes(
+        &mut self,
+        catalog: &Catalog,
+        id: NodeId,
+        property: &str,
+    ) {
+        let Some(node) = self.nodes.get(&id) else {
+            return;
+        };
+        remove_node_composite_entries(
+            &mut self.composite_property_index,
+            catalog,
+            node,
+            Some(property),
+        );
+        remove_node_text_entries(
+            &mut self.full_text_property_index,
+            catalog,
+            node,
+            Some(property),
+        );
+    }
+
+    pub(super) fn add_stored_node_to_derived_property_indexes(
+        &mut self,
+        catalog: &Catalog,
+        id: NodeId,
+        property: &str,
+    ) {
+        let Some(node) = self.nodes.get(&id) else {
+            return;
+        };
+        add_node_composite_entries(
+            &mut self.composite_property_index,
+            catalog,
+            node,
+            Some(property),
+        );
+        add_node_text_entries(
+            &mut self.full_text_property_index,
+            catalog,
+            node,
+            Some(property),
+        );
+    }
+
     pub fn create_node_label(&mut self, catalog: &mut Catalog, label: &str) -> Result<LabelId> {
         if let Some(id) = catalog.label_id(label) {
             return Ok(id);
@@ -880,17 +926,7 @@ impl GraphStore {
         catalog: &Catalog,
         node: &NodeRecord,
     ) {
-        for index in catalog.composite_property_indexes() {
-            if !node.labels.contains(&index.label_id) {
-                continue;
-            }
-            let Some(key) = composite_property_index_key(node, &index.properties) else {
-                continue;
-            };
-            self.composite_property_index
-                .entry_or_default((index.label_id, key))
-                .insert(node.id);
-        }
+        add_node_composite_entries(&mut self.composite_property_index, catalog, node, None);
     }
 
     pub(super) fn remove_node_from_composite_property_indexes(
@@ -898,25 +934,7 @@ impl GraphStore {
         catalog: &Catalog,
         node: &NodeRecord,
     ) {
-        for index in catalog.composite_property_indexes() {
-            if !node.labels.contains(&index.label_id) {
-                continue;
-            }
-            let Some(key) = composite_property_index_key(node, &index.properties) else {
-                continue;
-            };
-            let map_key = (index.label_id, key);
-            let empty = self
-                .composite_property_index
-                .get_mut(&map_key)
-                .is_some_and(|mut ids| {
-                    ids.remove(&node.id);
-                    ids.is_empty()
-                });
-            if empty {
-                self.composite_property_index.remove(&map_key);
-            }
-        }
+        remove_node_composite_entries(&mut self.composite_property_index, catalog, node, None);
     }
 
     /// Indexes the nodes that already carry `property` under `label_id`.
@@ -1054,19 +1072,7 @@ impl GraphStore {
         catalog: &Catalog,
         node: &NodeRecord,
     ) {
-        for index in catalog.property_indexes() {
-            if index.kind != IndexKind::FullText || !node.labels.contains(&index.label_id) {
-                continue;
-            }
-            let Some(Value::String(value)) = node.properties.get(&index.property) else {
-                continue;
-            };
-            for token in full_text_index_tokens(value) {
-                self.full_text_property_index
-                    .entry_or_default((index.label_id, index.property.clone(), token))
-                    .insert(node.id);
-            }
-        }
+        add_node_text_entries(&mut self.full_text_property_index, catalog, node, None);
     }
 
     pub(super) fn remove_node_from_full_text_property_indexes(
@@ -1074,27 +1080,7 @@ impl GraphStore {
         catalog: &Catalog,
         node: &NodeRecord,
     ) {
-        for index in catalog.property_indexes() {
-            if index.kind != IndexKind::FullText || !node.labels.contains(&index.label_id) {
-                continue;
-            }
-            let Some(Value::String(value)) = node.properties.get(&index.property) else {
-                continue;
-            };
-            for token in full_text_index_tokens(value) {
-                let map_key = (index.label_id, index.property.clone(), token);
-                let empty =
-                    self.full_text_property_index
-                        .get_mut(&map_key)
-                        .is_some_and(|mut ids| {
-                            ids.remove(&node.id);
-                            ids.is_empty()
-                        });
-                if empty {
-                    self.full_text_property_index.remove(&map_key);
-                }
-            }
-        }
+        remove_node_text_entries(&mut self.full_text_property_index, catalog, node, None);
     }
 
     pub(super) fn rebuild_full_text_property_index_for_descriptor(
@@ -1357,6 +1343,118 @@ impl GraphStore {
                 });
             if empty {
                 self.relationship_property_index.remove(&key);
+            }
+        }
+    }
+}
+
+fn add_node_composite_entries(
+    index: &mut CompositePropertyIndex,
+    catalog: &Catalog,
+    node: &NodeRecord,
+    changed_property: Option<&str>,
+) {
+    for descriptor in catalog.composite_property_indexes() {
+        if changed_property.is_some_and(|property| {
+            !descriptor
+                .properties
+                .iter()
+                .any(|candidate| candidate.as_str() == property)
+        }) {
+            continue;
+        }
+        if !node.labels.contains(&descriptor.label_id) {
+            continue;
+        }
+        let Some(key) = composite_property_index_key(node, &descriptor.properties) else {
+            continue;
+        };
+        index
+            .entry_or_default((descriptor.label_id, key))
+            .insert(node.id);
+    }
+}
+
+fn remove_node_composite_entries(
+    index: &mut CompositePropertyIndex,
+    catalog: &Catalog,
+    node: &NodeRecord,
+    changed_property: Option<&str>,
+) {
+    for descriptor in catalog.composite_property_indexes() {
+        if changed_property.is_some_and(|property| {
+            !descriptor
+                .properties
+                .iter()
+                .any(|candidate| candidate.as_str() == property)
+        }) {
+            continue;
+        }
+        if !node.labels.contains(&descriptor.label_id) {
+            continue;
+        }
+        let Some(key) = composite_property_index_key(node, &descriptor.properties) else {
+            continue;
+        };
+        let map_key = (descriptor.label_id, key);
+        let empty = index.get_mut(&map_key).is_some_and(|mut ids| {
+            ids.remove(&node.id);
+            ids.is_empty()
+        });
+        if empty {
+            index.remove(&map_key);
+        }
+    }
+}
+
+fn add_node_text_entries(
+    index: &mut FullTextPropertyIndex,
+    catalog: &Catalog,
+    node: &NodeRecord,
+    changed_property: Option<&str>,
+) {
+    for descriptor in catalog.property_indexes() {
+        if changed_property.is_some_and(|property| descriptor.property != property) {
+            continue;
+        }
+        if descriptor.kind != IndexKind::FullText || !node.labels.contains(&descriptor.label_id) {
+            continue;
+        }
+        let Some(Value::String(value)) = node.properties.get(&descriptor.property) else {
+            continue;
+        };
+        for token in full_text_index_tokens(value) {
+            index
+                .entry_or_default((descriptor.label_id, descriptor.property.clone(), token))
+                .insert(node.id);
+        }
+    }
+}
+
+fn remove_node_text_entries(
+    index: &mut FullTextPropertyIndex,
+    catalog: &Catalog,
+    node: &NodeRecord,
+    changed_property: Option<&str>,
+) {
+    for descriptor in catalog.property_indexes() {
+        if changed_property.is_some_and(|property| descriptor.property != property) {
+            continue;
+        }
+        if descriptor.kind != IndexKind::FullText || !node.labels.contains(&descriptor.label_id) {
+            continue;
+        }
+        let Some(Value::String(value)) = node.properties.get(&descriptor.property) else {
+            continue;
+        };
+        for token in full_text_index_tokens(value) {
+            let map_key = (descriptor.label_id, descriptor.property.clone(), token);
+            let empty = index.get_mut(&map_key).is_some_and(|mut ids| {
+                ids.remove(&node.id);
+                ids.is_empty()
+            });
+            if empty {
+                index.remove(&map_key);
             }
         }
     }

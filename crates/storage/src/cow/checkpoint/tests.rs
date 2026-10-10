@@ -117,6 +117,43 @@ fn graph_page_copy_charge_follows_pins_after_pause_and_foreground_detachment() {
 }
 
 #[test]
+fn missing_key_update_keeps_shared_storage_without_a_copy_charge() {
+    let mut map = CowSegmentedMap::from(BTreeMap::from([(NodeId(0), record(0, "value"))]));
+    let pin = map.clone();
+    let (governor, admission, work) = admitted(4096, RuntimeTaskContext::default(), scheduler());
+    map.prepare_checkpoint_copy_for_key(&NodeId(1), &work)
+        .unwrap();
+    assert!(map.shares_storage_with(&pin));
+    assert_eq!(admission.memory_report().live_accounted_bytes, 0);
+    drop(work);
+    drop(admission);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}
+
+#[test]
+fn absent_key_insertion_copies_the_target_page_with_retained_ownership() {
+    let body = "copy".repeat(1024);
+    let mut map = CowSegmentedMap::from(BTreeMap::from([(NodeId(0), record(0, &body))]));
+    let pin = map.clone();
+    let (governor, admission, work) =
+        admitted(2 * 1024 * 1024, RuntimeTaskContext::default(), scheduler());
+    map.prepare_checkpoint_insert_copy_for_key(&NodeId(1), &work)
+        .unwrap();
+    assert!(!map.shares_storage_with(&pin));
+    assert!(admission.memory_report().live_accounted_bytes >= body.len() as u64);
+    map.insert(NodeId(1), record(1, "new"));
+    assert_eq!(map.len(), 2);
+    assert_eq!(pin.len(), 1);
+    assert!(pin.get(&NodeId(1)).is_none());
+    assert_eq!(map.get(&NodeId(0)), pin.get(&NodeId(0)));
+    drop(work);
+    drop(admission);
+    assert!(governor.snapshot().admitted_memory_bytes >= body.len() as u64);
+    drop(map);
+    assert_eq!(governor.snapshot().admitted_memory_bytes, 0);
+}
+
+#[test]
 fn large_directory_denies_before_allocating_and_keeps_every_shared_page() {
     let len = 10_000;
     // A valid sorted directory of small one-record pages isolates directory

@@ -2363,9 +2363,10 @@ The genuine published-writer baseline and four removal controls fail
 at runtime while the fixed regressions pass. Whole-sort comparisons, UTF-8
 validation and broader preparation resumption remain outside this bound.
 
-Controlled node/relationship property-update replay, including nested WAL
-batches, now admits copies of pinned record pages and their directory before
-allocating them. The borrowed bound covers the pinned std B-tree/Arc layouts
+Controlled node/relationship property-update and direct create/delete replay,
+including nested WAL batches, now admits copies of pinned primary record pages
+and their directory before allocating them. The borrowed bound covers the
+pinned std B-tree/Arc layouts
 and nested record payloads. A denied single-page build installs no copied
 pointer; its buffers are destroyed before admission is refunded. Copied page
 and directory objects retain allocation ownership through snapshot sharing,
@@ -2374,9 +2375,24 @@ shows three large allocations under a 4 KiB work ceiling; the fixed replay
 regression denies before those allocations. Three genuine controls catch
 missing page admission, directory admission and retained data ownership.
 Directory pointers copy in 64 KiB groups and record copies use separate units.
-Wide-record traversal/copy time, growth/split admission, other index/schema and
-relational structures, decoded-record lifetime and complete serving-reader
+Insertion preflight covers the target page even when the new key is absent;
+missing-key updates/deletes keep their shared page without copying it. Target
+page-copy denial precedes transaction mutation and preserves old snapshots.
+Wide-record traversal/copy time, growth/split admission, indirect relationship
+deletion, other index/schema and relational structures, decoded-record
+lifetime and complete serving-reader
 ownership remain open; this does not qualify the automatic fixed-owner switch.
+
+Node-property index maintenance borrows the stored record instead of cloning
+all properties before and after an update. Create/delete and property updates
+share the composite/full-text key maintenance routines; updates visit only
+descriptors affected by the changed property. A real unshared-page baseline
+copies a wide payload twice under a 4 KiB work ceiling. The fixed regression
+observes no large allocation across five index scenarios, verifies the changed
+composite key and retains unaffected composite/full-text entries. Removing the
+property filter fails the same test for an unrelated wide composite key;
+restoring it passes. This removes unnecessary payload copies, not the remaining
+capacity-growth, affected-index allocation or complete fixed-owner gates.
 
 ### Publication lock scope and duplicated descriptors
 

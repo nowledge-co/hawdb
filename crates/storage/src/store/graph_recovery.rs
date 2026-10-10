@@ -989,14 +989,23 @@ impl GraphStore {
                 WalOp::Batch(operations) => {
                     self.prepare_replayed_checkpoint_record_copies(operations, work)?;
                 }
-                WalOp::SetNodeProperty { id, .. } => self
+                WalOp::CreateNode { id, .. } => self
+                    .nodes
+                    .prepare_checkpoint_insert_copy_for_key(id, work)
+                    .map_err(HawDBError::from_storage_error)?,
+                WalOp::CreateRelationship { id, .. } => self
+                    .relationships
+                    .prepare_checkpoint_insert_copy_for_key(id, work)
+                    .map_err(HawDBError::from_storage_error)?,
+                WalOp::SetNodeProperty { id, .. } | WalOp::DeleteNode { id } => self
                     .nodes
                     .prepare_checkpoint_copy_for_key(id, work)
                     .map_err(HawDBError::from_storage_error)?,
-                WalOp::SetRelationshipProperty { id, .. } => self
-                    .relationships
-                    .prepare_checkpoint_copy_for_key(id, work)
-                    .map_err(HawDBError::from_storage_error)?,
+                WalOp::SetRelationshipProperty { id, .. } | WalOp::DeleteRelationship { id } => {
+                    self.relationships
+                        .prepare_checkpoint_copy_for_key(id, work)
+                        .map_err(HawDBError::from_storage_error)?
+                }
                 _ => {}
             }
         }

@@ -102,10 +102,37 @@ where
         K: CheckpointCopyBytes,
         V: CheckpointCopyBytes,
     {
+        self.prepare_checkpoint_page_copy(key, false, work)
+    }
+
+    pub(crate) fn prepare_checkpoint_insert_copy_for_key(
+        &mut self,
+        key: &K,
+        work: &CheckpointWorkContext,
+    ) -> Result<()>
+    where
+        K: CheckpointCopyBytes,
+        V: CheckpointCopyBytes,
+    {
+        self.prepare_checkpoint_page_copy(key, true, work)
+    }
+
+    fn prepare_checkpoint_page_copy(
+        &mut self,
+        key: &K,
+        inserting: bool,
+        work: &CheckpointWorkContext,
+    ) -> Result<()>
+    where
+        K: CheckpointCopyBytes,
+        V: CheckpointCopyBytes,
+    {
         let Some(index) = self.segment_index(key) else {
             return Ok(());
         };
-        if !self.segments[index].contains_key(key) {
+        // Insertion detaches the target page even when the key is absent.
+        // Missing-key updates/deletes leave the original page untouched.
+        if !inserting && !self.segments[index].contains_key(key) {
             return Ok(());
         }
         let copy_directory = Arc::strong_count(&self.segments.0) > 1;
