@@ -1,0 +1,20 @@
+Computing main repo mapping: 
+Loading: 
+Loading: 0 packages loaded
+Analyzing: target //:hawdb_branch_project_open_tests (1 packages loaded, 0 targets configured)
+Analyzing: target //:hawdb_branch_project_open_tests (1 packages loaded, 0 targets configured)
+
+INFO: Analyzed target //:hawdb_branch_project_open_tests (13 packages loaded, 406 targets configured).
+[750 / 751] [Prepa] runfiles for //:hawdb_branch_project_open_tests
+[751 / 752] Testing //:hawdb_branch_project_open_tests; 1s darwin-sandbox
+[751 / 752] Testing //:hawdb_branch_project_open_tests; 5s darwin-sandbox
+INFO: Found 1 test target...
+Target //:hawdb_branch_project_open_tests up-to-date:
+  bazel-bin/hawdb_branch_project_open_tests
+INFO: Elapsed time: 7.212s, Critical Path: 6.96s
+INFO: 5 processes: 22 action cache hit, 3 internal, 3 darwin-sandbox.
+INFO: Build completed successfully, 5 total actions
+//:hawdb_branch_project_open_tests                                       PASSED in 5.1s
+
+Executed 1 out of 1 test: 1 test passes.
+There were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.

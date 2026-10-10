@@ -1,0 +1,12 @@
+    Finished `test` profile [unoptimized] target(s) in 0.57s
+     Running unittests src/lib.rs (/private/tmp/hawdb-291-incremental-repair-native-target/debug/deps/hawdb-b395bd9a19a25d8e)
+
+running 5 tests
+test api::tests::search_projection_rebuild_facade::database_facade_background_search_projection_metadata_repair_uses_qos_admission ... ok
+test api::tests::search_projection_rebuild_facade::database_facade_background_search_projection_rebuild_uses_qos_admission ... ok
+test api::tests::search_projection_rebuild_facade::database_facade_repairs_search_projection_metadata_from_graph ... ok
+test api::tests::search_projection_rebuild_facade::database_facade_scheduled_search_projection_metadata_repair_releases_background_budget ... ok
+test api::tests::search_projection_rebuild_facade::database_facade_scheduled_search_projection_rebuild_releases_background_budget ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 1826 filtered out; finished in 0.10s
+

@@ -1,0 +1,10 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/storage:hawdb_storage_durable_envelope_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+durable envelope campaign: seeds=128 steps=64 cases=131072
+test text::envelope::tests::durable_envelope_differential_campaign ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1068 filtered out; finished in 4.92s
+

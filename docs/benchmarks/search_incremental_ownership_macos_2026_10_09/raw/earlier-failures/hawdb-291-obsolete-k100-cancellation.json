@@ -1,0 +1,18 @@
+{
+  "runtime_commit": "c9252815db4ae243b27aac6b04fa6b039afa8a79",
+  "reason": "Completed 20 GiB K10 fails unchanged 256 MiB RSS acceptance. Retain its complete measurements; avoid rebuilding the same known failing implementation for K100 while a cleanup-memory fix is prepared.",
+  "k10_peak_resident_bytes": 1385447424,
+  "k10_max_steady_resident_bytes": 1298857984,
+  "budget_bytes": 268435456,
+  "cancelled_cell": "d327680-k100",
+  "cargo_pid": 48356,
+  "benchmark_pid": 48365,
+  "benchmark_command": "/private/tmp/hawdb-291-descriptor-review/target/release/deps/search_mutation-aeb2717e65ef569b --bench",
+  "signal": "SIGINT",
+  "signalled_unix_seconds": 1791410945.191015,
+  "state": "terminal",
+  "exit_code": 101,
+  "elapsed_seconds": 10.040992975234985,
+  "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stderr_sha256": "bb8845a598b015d260ab51f3bef5ae8160052f95a9f05e7fd5dbb0a0745d1872"
+}

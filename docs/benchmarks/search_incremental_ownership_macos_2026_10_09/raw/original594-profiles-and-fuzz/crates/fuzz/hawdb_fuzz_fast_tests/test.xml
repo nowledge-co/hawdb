@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="crates/fuzz/hawdb_fuzz_fast_tests" tests="1" failures="0" errors="0">
+    <testcase name="crates/fuzz/hawdb_fuzz_fast_tests" classname="" status="run" duration="317" time="317"></testcase>
+      <system-out>
+Generated test.log (if the file is not UTF-8, then this may be unreadable):
+<![CDATA[exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/fuzz:hawdb_fuzz_fast_tests
+-----------------------------------------------------------------------------
+
+running 44 tests
+test capability_parity_tests::forwarded_features_match_compiled_hawdb_capabilities ... ok
+test parser_oracle::tests::fingerprints_preserve_byte_identity ... ok
+test sql_oracle::generator::tests::positional_parameters_are_rebased_without_touching_plain_text ... ok
+test predicate_rewrite::tests::case_selection_covers_every_rewrite_deterministically ... ok
+test coverage::tests::optimizer_stage_names_are_deduped_without_rule_counts ... ok
+test coverage::tests::coverage_novelty_is_independent_from_repeated_plans ... ok
+test sql_oracle::tests::join_generator_covers_costing_dimensions ... ok
+test parser_oracle::tests::seed_corpus_covers_known_parser_regressions ... ok
+test parser_oracle::tests::byte_mutation_is_bounded_and_replayable ... ok
+test process_memory_oracle::tests::process_memory_state_machine_matches_interval_oracle ... ok
+test output::tests::success_writes_only_the_current_report ... ok
+test sql_oracle::tests::sql_plan_signature_normalizes_stage_timings ... ok
+test tests::bag_comparison_preserves_duplicate_multiplicity ... ok
+test output::tests::explicit_report_output_writes_json_to_stdout ... ok
+test output::tests::current_report_refresh_is_readable_and_replaces_previous_state ... ok
+test tests::campaign_rejects_unbounded_or_empty_runs ... ok
+test output::tests::failure_preserves_a_reproduction_report ... ok
+test tests::graph_predicate_rewrite_detects_and_reduces_invalid_relation ... ok
+test tests::graph_tlp_aggregate_detects_an_invalid_partition_relation ... ok
+test tests::invalid_generated_case_fails_closed_with_replay ... ok
+test tests::graph_tlp_detects_an_invalid_partition_relation ... ok
+test tests::replay_bundle_retains_typed_parameters ... ok
+test tests::metamorphic_oracle_has_independent_direction_failure_signature ... ok
+test tests::semantic_mismatch_signature_cannot_reduce_to_execution_error ... ok
+test tests::oracle_runs_both_hints_on_one_pinned_snapshot ... ok
+test tests::typed_comparison_distinguishes_missing_null_and_float_bits ... ok
+test tests::typed_value_json_preserves_uuid_values ... ok
+test tests::state_aware_generator_emits_parseable_queries_for_all_oracles ... ok
+test sql_oracle::tests::sql_join_rewrite_detects_and_reduces_invalid_reference ... ok
+test sql_oracle::tests::sql_predicate_rewrite_detects_and_reduces_invalid_relation ... ok
+test sql_oracle::tests::sql_aggregate_tlp_detects_and_reduces_invalid_partition ... ok
+test tests::graph_tlp_covers_nullable_and_relationship_predicates ... ok
+test tests::graph_tlp_aggregate_recombines_partition_counts ... ok
+test sql_oracle::tests::sql_tlp_detects_and_reduces_invalid_partition ... ok
+test sql_oracle::tests::sql_setup_errors_fail_closed_with_replay ... ok
+test tests::campaign_is_reproducible_from_seed ... ok
+test tests::exact_case_replay_preserves_generated_case_and_oracle_results ... ok
+test tests::sharded_campaign_resumes_without_reexecuting_completed_cases ... ok
+test tests::campaign_covers_every_query_shape_and_all_oracles ... ok
+test sql_oracle::tests::generated_sql_cases_cover_all_shapes_and_oracles ... ok
+test sql_oracle::tests::spill_backed_hash_join_matches_the_in_memory_reference_across_skewed_cases ... ok
+test wal_tail_oracle::tests::wal_tail_replay_is_identical_from_fresh_state ... ok
+test row_page_oracle::tests::row_page_compaction_state_machine_matches_pins_and_reopen has been running for over 60 seconds
+test wal_tail_oracle::tests::seeded_wal_tail_recovery_covers_fragment_boundaries_and_residency_modes has been running for over 60 seconds
+test row_page_oracle::tests::row_page_compaction_state_machine_matches_pins_and_reopen ... ok
+test wal_tail_oracle::tests::seeded_wal_tail_recovery_covers_fragment_boundaries_and_residency_modes ... ok
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 312.82s]]>
+      </system-out>
+    </testsuite>
+</testsuites>

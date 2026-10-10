@@ -1,0 +1,37 @@
+{
+  "state": "passed",
+  "commit": "a90dc40ced8c0c527e1035d79168d9d25b9a9657",
+  "source_receipt": "/private/tmp/hawdb-979-observe-final-source.json",
+  "exit_code": 0,
+  "test_summaries": [
+    [
+      "ok",
+      "1",
+      "0",
+      "0"
+    ],
+    [
+      "ok",
+      "1",
+      "0",
+      "0"
+    ],
+    [
+      "ok",
+      "1",
+      "0",
+      "0"
+    ]
+  ],
+  "artifacts": [
+    {
+      "path": "/private/tmp/hawdb-979-observe-evidence/minimal/test.log",
+      "sha256": "6ff269a558a7ac791121544389e58744d9ba8d60c1adc809e5d12692f7503b9e"
+    },
+    {
+      "path": "/private/tmp/hawdb-979-observe-evidence/minimal/test.xml",
+      "sha256": "0d2ae29ab89de8560e5a7efe08fef4bba57d7e6db9286609d6d663378a4a6a59"
+    }
+  ],
+  "recorded_unix_seconds": 1791545744.4950342
+}

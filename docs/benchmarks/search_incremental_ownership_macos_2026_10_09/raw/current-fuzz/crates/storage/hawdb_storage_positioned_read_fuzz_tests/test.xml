@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="crates/storage/hawdb_storage_positioned_read_fuzz_tests" tests="1" failures="0" errors="0">
+    <testcase name="crates/storage/hawdb_storage_positioned_read_fuzz_tests" classname="" status="run" duration="0" time="0"></testcase>
+      <system-out>
+Generated test.log (if the file is not UTF-8, then this may be unreadable):
+<![CDATA[exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/storage:hawdb_storage_positioned_read_fuzz_tests
+-----------------------------------------------------------------------------
+
+running 1 test
+cases=5940; success=2088; eof=792; denied=792; overflow=2268
+test io::tests::positioned_read_differential_campaign ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1134 filtered out; finished in 0.01s]]>
+      </system-out>
+    </testsuite>
+</testsuites>

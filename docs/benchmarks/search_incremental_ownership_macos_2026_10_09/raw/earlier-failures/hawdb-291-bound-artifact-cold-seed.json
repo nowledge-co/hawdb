@@ -1,0 +1,16 @@
+{
+  "state": "finished",
+  "command": [
+    "/private/tmp/hawdb-291-bound-artifact-cold-seed-probe",
+    "327680",
+    "/private/tmp/hawdb-291-bound-artifact-cold-seed-fixture-1791421281374053000"
+  ],
+  "source_compile_receipt": "/private/tmp/hawdb-291-bound-artifact-cold-seed-compile.json",
+  "compile_receipt_sha256": "998850026b8ffb2b9c8d03998eff087ce21be0f4eaf84ba39d8112d61d8ffa45",
+  "log": "/private/tmp/hawdb-291-bound-artifact-cold-seed.log",
+  "scope": "Diagnostic only. Same prototype/20GiB immutable base/384D/32coldseed opens/K10/budgets; fresh construction excluded. New release includes currentmain combination, whose prior tests and sources are separately recorded. Independent bounded-buffer experiment isolates allocation cause. No universal/fullscale qualification claim.",
+  "pid": 40436,
+  "exit_code": 0,
+  "elapsed_seconds": 15.690549082999999,
+  "log_sha256": "c81e1f6254381c19db7d89b5d5e9e6bdcdcd37b33161859a2de07201effcc362"
+}

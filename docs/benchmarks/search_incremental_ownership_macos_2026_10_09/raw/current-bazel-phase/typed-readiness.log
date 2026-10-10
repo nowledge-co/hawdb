@@ -1,0 +1,35 @@
+Computing main repo mapping: 
+Loading: 
+Loading: 0 packages loaded
+Analyzing: target //crates/readiness:hawdb_readiness_tests (1 packages loaded, 0 targets configured)
+Analyzing: target //crates/readiness:hawdb_readiness_tests (1 packages loaded, 0 targets configured)
+
+INFO: Analyzed target //crates/readiness:hawdb_readiness_tests (55 packages loaded, 1543 targets configured).
+[702 / 731] Compiling Rust rlib hawdb_sql_syntax (10 files); 1s darwin-sandbox ... (9 actions, 8 running)
+[712 / 731] Compiling Rust rlib hawdb_search (202 files); 2s darwin-sandbox ... (4 actions running)
+[714 / 731] Compiling Rust rlib hawdb_search (202 files); 3s darwin-sandbox ... (3 actions running)
+[716 / 731] Compiling Rust rlib hawdb_search (202 files); 4s darwin-sandbox ... (2 actions running)
+[717 / 731] Compiling Rust rlib hawdb_search (202 files); 5s darwin-sandbox ... (2 actions, 1 running)
+[718 / 731] Compiling Rust rlib hawdb_search (202 files); 6s darwin-sandbox ... (2 actions, 1 running)
+[719 / 731] Compiling Rust rlib hawdb_search (202 files); 8s darwin-sandbox ... (2 actions, 1 running)
+[722 / 731] Running Cargo build script psm; 1s darwin-sandbox
+[724 / 731] Compiling Rust rlib stacker v0.1.24 (12 files); 0s darwin-sandbox
+[725 / 731] Compiling Rust rlib recursive v0.1.1 (2 files); 0s darwin-sandbox
+[726 / 731] Compiling Rust rlib sqlparser v0.63.0 (44 files); 0s darwin-sandbox
+[727 / 731] [Prepa] Compiling Rust rlib hawdb_sql (30 files)
+[727 / 731] Compiling Rust rlib hawdb_sql (30 files); 1s darwin-sandbox
+[728 / 731] [Prepa] Compiling Rust rlib hawdb_system_sql (2 files)
+[728 / 731] Compiling Rust rlib hawdb_system_sql (2 files); 1s darwin-sandbox
+[729 / 731] Compiling Rust bin hawdb_readiness_tests (35 files); 0s darwin-sandbox
+[730 / 731] [Prepa] runfiles for //crates/readiness:hawdb_readiness_tests
+[731 / 732] 1 / 1 tests; Testing //crates/readiness:hawdb_readiness_tests; 1s darwin-sandbox
+INFO: Found 1 test target...
+Target //crates/readiness:hawdb_readiness_tests up-to-date:
+  bazel-bin/crates/readiness/hawdb_readiness_tests
+INFO: Elapsed time: 30.508s, Critical Path: 29.32s
+INFO: 62 processes: 116 action cache hit, 20 internal, 43 darwin-sandbox.
+INFO: Build completed successfully, 62 total actions
+//crates/readiness:hawdb_readiness_tests                                 PASSED in 0.9s
+
+Executed 1 out of 1 test: 1 test passes.
+There were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.

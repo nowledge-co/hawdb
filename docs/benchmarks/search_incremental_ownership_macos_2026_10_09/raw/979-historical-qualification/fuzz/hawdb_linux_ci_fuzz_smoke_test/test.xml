@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="hawdb_linux_ci_fuzz_smoke_test" tests="1" failures="0" errors="0">
+    <testcase name="hawdb_linux_ci_fuzz_smoke_test" classname="" status="run" duration="253" time="253"></testcase>
+      <system-out>
+Generated test.log (if the file is not UTF-8, then this may be unreadable):
+<![CDATA[exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //:hawdb_linux_ci_fuzz_smoke_test
+-----------------------------------------------------------------------------]]>
+      </system-out>
+    </testsuite>
+</testsuites>

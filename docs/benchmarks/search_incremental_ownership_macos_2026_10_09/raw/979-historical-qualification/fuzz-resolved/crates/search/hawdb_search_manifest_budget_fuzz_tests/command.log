@@ -1,0 +1,20 @@
+Computing main repo mapping: 
+Loading: 
+Loading: 0 packages loaded
+Analyzing: target //crates/search:hawdb_search_manifest_budget_fuzz_tests (0 packages loaded, 0 targets configured)
+Analyzing: target //crates/search:hawdb_search_manifest_budget_fuzz_tests (0 packages loaded, 0 targets configured)
+
+INFO: Analyzed target //crates/search:hawdb_search_manifest_budget_fuzz_tests (0 packages loaded, 0 targets configured).
+[676 / 677] Testing //crates/search:hawdb_search_manifest_budget_fuzz_tests; 1s darwin-sandbox
+[676 / 677] Testing //crates/search:hawdb_search_manifest_budget_fuzz_tests; 12s darwin-sandbox
+[676 / 677] Testing //crates/search:hawdb_search_manifest_budget_fuzz_tests; 42s darwin-sandbox
+[676 / 677] Testing //crates/search:hawdb_search_manifest_budget_fuzz_tests; 62s darwin-sandbox
+INFO: Found 1 test target...
+Target //crates/search:hawdb_search_manifest_budget_fuzz_tests up-to-date:
+  bazel-bin/crates/search/hawdb_search_manifest_budget_fuzz_tests
+INFO: Elapsed time: 62.478s, Critical Path: 62.21s
+INFO: 2 processes: 1 internal, 2 darwin-sandbox.
+INFO: Build completed successfully, 2 total actions
+//crates/search:hawdb_search_manifest_budget_fuzz_tests                  PASSED in 62.0s
+
+Executed 1 out of 1 test: 1 test passes.

@@ -1,0 +1,83 @@
+{
+  "candidate_commit": "c9252815db4ae243b27aac6b04fa6b039afa8a79",
+  "qualified_source_hashes_match_commit": true,
+  "all_three_cells_passed": false,
+  "cells": [
+    {
+      "label": "d81920-k10",
+      "state": "passed",
+      "checks": {
+        "successful_exit_and_log_hashes": true,
+        "fixture_shape": true,
+        "vector_fixture": true,
+        "explicit_resource_configuration": true,
+        "sustained_rounds_and_merges": true,
+        "expected_visible_counts": true,
+        "complete_peak_and_steady_rss": true,
+        "new_bytes_smaller_than_full": true
+      },
+      "logical_corpus_bytes": 5368709120,
+      "touches": 10,
+      "full_artifact_bytes": 362009531,
+      "upsert_artifact_bytes": 87051,
+      "delete_artifact_bytes": 38720,
+      "upsert_vector_payload_bytes": 18236,
+      "upsert_rabitq_artifact_bytes": 2847,
+      "upsert_source_hydrated_documents": 0,
+      "delete_source_hydrated_documents": 0,
+      "peak_resident_bytes": 111558656,
+      "max_steady_resident_bytes": 92454912,
+      "rounds": 128,
+      "merges": 128,
+      "sustained_checkpoint_bytes": 6802167,
+      "sustained_merge_artifact_bytes": 7791779,
+      "sustained_merge_source_bytes": 2598108,
+      "sustained_artifact_write_amplification": 0.849946349631739,
+      "elapsed_seconds": 3345.814441919327,
+      "scratch_allocated_highwater_bytes": 11510099968,
+      "raw_stdout_sha256": "f2f8628f658f3f429efa3884f03b045f0b412e204347bf5c491c0262af9fb823",
+      "raw_stderr_sha256": "94e228509f15b2979b6c9726a415191bb4221502f57abdd5259cfc6f6d25f2e4"
+    },
+    {
+      "label": "d327680-k10",
+      "state": "failed",
+      "checks": {
+        "successful_exit_and_log_hashes": true,
+        "fixture_shape": true,
+        "vector_fixture": true,
+        "explicit_resource_configuration": true,
+        "sustained_rounds_and_merges": true,
+        "expected_visible_counts": true,
+        "complete_peak_and_steady_rss": false,
+        "new_bytes_smaller_than_full": true
+      },
+      "logical_corpus_bytes": 21474836480,
+      "touches": 10,
+      "full_artifact_bytes": 1448169531,
+      "upsert_artifact_bytes": 86990,
+      "delete_artifact_bytes": 38736,
+      "upsert_vector_payload_bytes": 18205,
+      "upsert_rabitq_artifact_bytes": 2844,
+      "upsert_source_hydrated_documents": 0,
+      "delete_source_hydrated_documents": 0,
+      "peak_resident_bytes": 1385447424,
+      "max_steady_resident_bytes": 1298857984,
+      "rounds": 128,
+      "merges": 128,
+      "sustained_checkpoint_bytes": 6803480,
+      "sustained_merge_artifact_bytes": 7802434,
+      "sustained_merge_source_bytes": 2597167,
+      "sustained_artifact_write_amplification": 0.8506433617977696,
+      "elapsed_seconds": 6794.802139759064,
+      "scratch_allocated_highwater_bytes": 45960081408,
+      "raw_stdout_sha256": "d05018e5a14ef711b25dbb14a3e8fbfd2b0bf0a53901ca90b68020cb7bd77dfe",
+      "raw_stderr_sha256": "a9ed0c69bb3d1fe357a04d3b42f28a5f27ef38315a36cfb04281f376092fe625"
+    },
+    {
+      "label": "d327680-k100",
+      "state": "failed",
+      "exit_code": 101,
+      "log_hashes_match": true
+    }
+  ]
+}

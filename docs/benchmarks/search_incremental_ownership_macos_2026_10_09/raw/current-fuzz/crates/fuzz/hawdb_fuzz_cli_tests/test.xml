@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="crates/fuzz/hawdb_fuzz_cli_tests" tests="1" failures="0" errors="0">
+    <testcase name="crates/fuzz/hawdb_fuzz_cli_tests" classname="" status="run" duration="0" time="0"></testcase>
+      <system-out>
+Generated test.log (if the file is not UTF-8, then this may be unreadable):
+<![CDATA[exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //crates/fuzz:hawdb_fuzz_cli_tests
+-----------------------------------------------------------------------------
+
+running 4 tests
+test tests::parses_exact_case_index ... ok
+test tests::parses_sharding_progress_and_resume_options ... ok
+test tests::parses_seed_and_case_count ... ok
+test tests::parses_output_options ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s]]>
+      </system-out>
+    </testsuite>
+</testsuites>
