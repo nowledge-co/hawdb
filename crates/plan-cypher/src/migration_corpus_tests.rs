@@ -21,6 +21,23 @@ const DEFAULT_PIPELINE: &str =
     include_str!("../../cypher/fixtures/migration_default_pipeline_v1.json");
 const MANIFEST: &str = include_str!("../../cypher/fixtures/migration_manifest_v1.json");
 
+// The immutable pre-migration corpus predates the optional lookup policy slot.
+// Expect its explicit None default without rewriting that historical corpus;
+// a populated policy or any other plan change still fails the exact comparison.
+fn frozen_plan_text(case: &Value) -> String {
+    let baseline = case["plan"]["text"].as_str().unwrap();
+    let mut parts = baseline.split("NodeColumnLookup {");
+    let mut expected = parts.next().unwrap().to_owned();
+    for part in parts {
+        expected.push_str("NodeColumnLookup {");
+        let (fields, input) = part.split_once(", input:").unwrap();
+        expected.push_str(fields);
+        expected.push_str(", node_visibility_predicate: None, input:");
+        expected.push_str(input);
+    }
+    expected
+}
+
 #[test]
 fn migration_corpus_preserves_bindings_and_logical_plans() {
     let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
@@ -66,15 +83,18 @@ fn migration_corpus_preserves_bindings_and_logical_plans() {
                     format!("{plan:?}"),
                     migration["logical_plan_representations"]
                         .get(id)
-                        .unwrap_or(&case["plan"]["text"])
-                        .as_str()
-                        .unwrap(),
+                        .map(|text| text.as_str().unwrap().to_owned())
+                        .unwrap_or_else(|| frozen_plan_text(&case)),
                     "{id}: logical plan changed"
                 );
             }
             "missing_parameters" | "binding_rejected" | "session_control" => {
                 let error = planned.expect_err(id).to_string();
-                assert_eq!(error, case["plan"]["text"], "{id}: binding outcome changed");
+                assert_eq!(
+                    error,
+                    frozen_plan_text(&case),
+                    "{id}: binding outcome changed"
+                );
             }
             _ => panic!("{id}: unknown plan outcome {kind}"),
         }
@@ -141,10 +161,11 @@ fn ordered_read_pipeline_preserves_corpus_binding_outcomes() {
         let actual = crate::plan_pipeline_query(query, &parameters(&case["parameters"]));
         match (kind, actual) {
             ("golden", Ok(_)) => {}
-            ("missing_parameters", Err(error)) if error.to_string() == case["plan"]["text"] => {}
+            ("missing_parameters", Err(error)) if error.to_string() == frozen_plan_text(&case) => {}
             (_, actual) => failures.push(format!(
                 "{}: {actual:?}; expected {}; {query}",
-                case["id"], case["plan"]["text"]
+                case["id"],
+                frozen_plan_text(&case)
             )),
         }
     }
@@ -198,10 +219,11 @@ fn ordered_mutation_pipeline_preserves_frozen_plans_and_errors() {
             }
             Err(error) => error.to_string(),
         };
-        if text != case["plan"]["text"] {
+        if text != frozen_plan_text(&case) {
             failures.push(format!(
                 "{}: {text}; expected {}; {query}",
-                case["id"], case["plan"]["text"]
+                case["id"],
+                frozen_plan_text(&case)
             ));
         }
     }
@@ -251,8 +273,9 @@ fn ordered_procedure_and_shortest_path_plans_preserve_frozen_outcomes() {
         };
         let expected = migration["logical_plan_representations"]
             .get(case["id"].as_str().unwrap())
-            .unwrap_or(&case["plan"]["text"]);
-        assert_eq!(text, expected.as_str().unwrap(), "{}: {query}", case["id"]);
+            .map(|plan| plan.as_str().unwrap().to_owned())
+            .unwrap_or_else(|| frozen_plan_text(&case));
+        assert_eq!(text, expected, "{}: {query}", case["id"]);
     }
     assert_eq!(
         covered,
@@ -282,10 +305,11 @@ fn complete_ordered_query_corpus_preserves_binding_outcomes() {
         let actual = crate::plan_pipeline_query(query, &parameters(&case["parameters"]));
         match actual {
             Ok(_) if kind == "golden" => {}
-            Err(error) if kind != "golden" && error.to_string() == case["plan"]["text"] => {}
+            Err(error) if kind != "golden" && error.to_string() == frozen_plan_text(&case) => {}
             actual => failures.push(format!(
                 "{}: {query}; {actual:?}; expected {}",
-                case["id"], case["plan"]["text"]
+                case["id"],
+                frozen_plan_text(&case)
             )),
         }
     }
@@ -320,10 +344,10 @@ fn normalized_pipeline_frozen_plan_coverage() {
             &case["clock_slots"],
             before.min(after)..=before.max(after),
         );
-        if format!("{actual:?}") == case["plan"]["text"] {
+        if format!("{actual:?}") == frozen_plan_text(&case) {
             exact += 1;
         } else {
-            differences.push(serde_json::json!({"id":case["id"], "query":query, "expected":case["plan"]["text"], "actual":format!("{actual:?}")}));
+            differences.push(serde_json::json!({"id":case["id"], "query":query, "expected":frozen_plan_text(&case), "actual":format!("{actual:?}")}));
         }
     }
     eprintln!(

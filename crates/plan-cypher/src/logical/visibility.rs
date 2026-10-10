@@ -49,13 +49,18 @@ pub fn apply_node_visibility_predicates(
             property,
             column,
             optional,
+            node_visibility_predicate,
             input,
         } => LogicalPlan::NodeColumnLookup {
-            variable,
+            variable: variable.clone(),
             label,
             property,
             column,
             optional,
+            node_visibility_predicate: Some(match node_visibility_predicate {
+                Some(existing) => Predicate::And(vec![existing, predicate_for(&variable)]),
+                None => predicate_for(&variable),
+            }),
             input: Box::new(apply_node_visibility_predicates(*input, predicate_for)),
         },
         LogicalPlan::Expand {
@@ -109,6 +114,24 @@ pub fn apply_node_visibility_predicates(
             target_properties,
             alias,
             input: Box::new(apply_node_visibility_predicates(*input, predicate_for)),
+        },
+        LogicalPlan::GraphSeed {
+            query_parameter,
+            label,
+            variable,
+            score_column,
+            top_k,
+            node_visibility_predicate,
+        } => LogicalPlan::GraphSeed {
+            query_parameter,
+            label,
+            score_column,
+            top_k,
+            node_visibility_predicate: Some(match node_visibility_predicate {
+                Some(existing) => Predicate::And(vec![existing, predicate_for(&variable)]),
+                None => predicate_for(&variable),
+            }),
+            variable,
         },
         LogicalPlan::GraphAlgorithm {
             algorithm,

@@ -22,8 +22,10 @@ use crate::predicate::{
     property_filter_from_properties,
 };
 use crate::store::{AdjacencyReadMemory, GraphExecutionRead, ScanControl};
-use crate::traversal::{visit_one_hop_relationships_with_budget, OneHopRelationshipSpec};
-use hawdb_core::{Catalog, HawDBError, RelationshipDirection, Result, Value, ValueRef};
+use crate::traversal::{visit_one_hop_relationships_with_context, OneHopRelationshipSpec};
+use hawdb_core::{
+    Catalog, HawDBError, RelationshipDirection, Result, RuntimeTaskContext, Value, ValueRef,
+};
 use hawdb_plan_cypher::{
     CoalesceDifferenceProjectionTerm, ComparisonOp, DatePart, Predicate, Projection,
     ProjectionExpression, SortDirection, SortItem, SortKey,
@@ -35,7 +37,9 @@ type ValueRangeBound = (Value, bool);
 type ValueRangeBounds = (Option<ValueRangeBound>, Option<ValueRangeBound>);
 
 mod predicate;
+mod projection;
 mod value;
 
 pub use predicate::*;
+pub(crate) use projection::{prepare_borrowed_projection, push_borrowed_projection};
 pub use value::*;

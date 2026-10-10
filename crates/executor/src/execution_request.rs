@@ -27,6 +27,7 @@ pub struct ExecutionRequest<'a> {
     output_limits: OutputLimits,
     memory: &'a ExecutionMemoryConfig,
     task_context: Option<&'a RuntimeTaskContext>,
+    host_scorer: Option<&'a dyn crate::scoring::HostScorerProvider>,
 }
 
 impl<'a> ExecutionRequest<'a> {
@@ -41,6 +42,7 @@ impl<'a> ExecutionRequest<'a> {
             output_limits: OutputLimits::default(),
             memory,
             task_context: None,
+            host_scorer: None,
         }
     }
 
@@ -87,6 +89,20 @@ impl<'a> ExecutionRequest<'a> {
 
     pub fn task_context(self) -> Option<&'a RuntimeTaskContext> {
         self.task_context
+    }
+
+    #[doc(hidden)]
+    pub fn with_optional_host_scorer(
+        mut self,
+        scorer: Option<&'a dyn crate::scoring::HostScorerProvider>,
+    ) -> Self {
+        self.host_scorer = scorer;
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn host_scorer(self) -> Option<&'a dyn crate::scoring::HostScorerProvider> {
+        self.host_scorer
     }
 }
 

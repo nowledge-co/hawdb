@@ -168,6 +168,17 @@ impl QueryMemoryLedger {
         }
     }
 
+    /// Test observation of the actual owner, rather than unrelated root charges.
+    #[cfg(test)]
+    pub(crate) fn test_owner_used_bytes(&self, class: QueryMemoryClass, owner: &str) -> usize {
+        lock_recover(&self.inner.state)
+            .accounts
+            .values()
+            .filter(|account| account.class == class && account.owner.as_ref() == owner)
+            .map(|account| account.used_bytes)
+            .sum()
+    }
+
     fn reserve(&self, account_id: u64, bytes: usize) -> Result<()> {
         if bytes == 0 {
             return Ok(());
@@ -439,6 +450,11 @@ pub struct QueryMemoryLease {
 }
 
 impl QueryMemoryLease {
+    pub(crate) fn belongs_to(&self, account: &QueryMemoryAccount) -> bool {
+        self.account.account_id == account.account_id
+            && Arc::ptr_eq(&self.account.ledger.inner, &account.ledger.inner)
+    }
+
     pub fn bytes(&self) -> usize {
         self.bytes
     }

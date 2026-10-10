@@ -1,21 +1,24 @@
 //! Correlated MATCH execution with one optional boundary around the complete clause.
 
 use crate::binding::{binding_memory_bytes, node_memory_bytes, relationship_memory_bytes, Binding};
-use crate::expression::evaluate_predicate_with_memory;
+use crate::expression::evaluate_predicate_with_context;
 use crate::pipeline::{
     runtime_checkpoint, AccountedBindingBatch, BatchControl, BatchExecutionContext, BindingBatch,
     BindingBatchSource,
 };
 use crate::predicate::{label_ids_for_pattern, node_matches_label_pattern};
-use crate::store::{AdjacencyReadMemory, GraphExecutionRead, ScanControl};
+use crate::store::{admit_graph_read, AdjacencyReadMemory, GraphExecutionRead, ScanControl};
 use crate::traversal::{
     visit_bounded_expand_targets, visit_one_hop_relationships_with_context,
     visit_zero_hop_expand_target, BoundedExpandSpec, OneHopRelationshipSpec,
 };
-use crate::{ExecutionLimit, QueryMemoryAccount, QueryMemoryClass, QueryMemoryLease};
+use crate::{ExecutionLimit, QueryMemoryAccount, QueryMemoryClass};
 use hawdb_core::{HawDBError, Result, Value};
 use hawdb_plan_cypher::{
     GraphEntityKind, GraphMatchNode, GraphMatchProgram, GraphMatchStep, PhysicalPlan,
+};
+use hawdb_storage::read_view::{
+    AdmittedNodeRead, AdmittedVec, GraphReadAdmission, GraphReadAllocation,
 };
 use hawdb_storage::{adjacency::AdjacencyDirection, NodeId, NodeRecord, RelId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -119,8 +122,8 @@ pub(crate) fn stream_graph_match(
                 row.relationships.remove(name);
                 row.values.insert(name.clone(), Value::Null);
             }
-            if context.observer.vector_graph_scoring_input().is_some() {
-                crate::scoring::advance_vector_hop(&mut row, 0, false)?;
+            if context.observer.seed_graph_scoring_input().is_some() {
+                crate::scoring::advance_seed_hop(&mut row, 0, false)?;
             }
             if append(&row)? == ScanControl::Stop {
                 return Ok(BatchControl::Stop);
@@ -161,8 +164,18 @@ impl MatchRuntime<'_> {
         }
     }
 
-    fn prepare(&self, input: &Binding) -> Result<(Binding, Vec<QueryMemoryLease>)> {
-        let mut leases = vec![self.account.reserve(binding_memory_bytes(input))?];
+    fn prepare(
+        &self,
+        input: &Binding,
+    ) -> Result<(Binding, AdmittedVec<Box<dyn GraphReadAllocation>>)> {
+        let mut admit = |bytes| admit_graph_read(self.account, self.context.task_context, bytes);
+        let admission = GraphReadAdmission::new(&mut admit);
+        let mut leases = AdmittedVec::new(&admission)?;
+        leases.try_push(admit_graph_read(
+            self.account,
+            self.context.task_context,
+            binding_memory_bytes(input),
+        )?)?;
         let mut row = input.clone();
         for name in &self.program.introduced {
             row.nodes.remove(name);
@@ -190,50 +203,64 @@ impl MatchRuntime<'_> {
             let id = entity_id(values, "_id")?;
             match import.kind {
                 GraphEntityKind::Node => {
-                    let node = self.store.node_owned(NodeId(id))?.ok_or_else(|| {
-                        HawDBError::Execution("bound node disappeared during MATCH".to_string())
-                    })?;
-                    leases.push(
-                        self.account.reserve(
-                            import
-                                .variable
-                                .len()
-                                .saturating_add(node_memory_bytes(&node)),
-                        )?,
-                    );
+                    let mut admit_node = |bytes: usize| {
+                        admit_graph_read(
+                            self.account,
+                            self.context.task_context,
+                            bytes
+                                .saturating_add(import.variable.len())
+                                .saturating_add(1024),
+                        )
+                        .map(Some)
+                    };
+                    let AdmittedNodeRead::Node(node) =
+                        self.store
+                            .node_with_allocation(NodeId(id), None, &mut admit_node)?
+                    else {
+                        return Err(HawDBError::Execution(
+                            "bound node disappeared during MATCH".to_string(),
+                        ));
+                    };
+                    let (node, allocation) = node.into_parts();
+                    leases.try_push(allocation)?;
                     row.nodes.insert(import.variable.clone(), node);
                 }
                 GraphEntityKind::Relationship => {
                     let source = NodeId(entity_id(values, "source_id")?);
                     let mut found = None;
-                    self.store.visit_ordered_adjacent_relationships_owned(
-                        source,
-                        None,
-                        AdjacencyDirection::Outgoing,
-                        self.adjacency_memory(),
-                        &mut |relationship| {
-                            runtime_checkpoint(self.context.task_context)?;
-                            if relationship.id == RelId(id) {
-                                found = Some(relationship);
-                                Ok(ScanControl::Stop)
-                            } else {
-                                Ok(ScanControl::Continue)
-                            }
-                        },
-                    )?;
-                    let relationship = found.ok_or_else(|| {
+                    self.store
+                        .visit_ordered_adjacent_relationships_with_allocation(
+                            source,
+                            None,
+                            AdjacencyDirection::Outgoing,
+                            self.adjacency_memory(),
+                            &mut |bytes| {
+                                admit_graph_read(
+                                    self.account,
+                                    self.context.task_context,
+                                    bytes
+                                        .saturating_add(import.variable.len())
+                                        .saturating_add(1024),
+                                )
+                                .map(Some)
+                            },
+                            &mut |input| {
+                                let (relationship, allocation) = input.into_parts();
+                                runtime_checkpoint(self.context.task_context)?;
+                                if relationship.id == RelId(id) {
+                                    found = Some((relationship, allocation));
+                                    Ok(ScanControl::Stop)
+                                } else {
+                                    Ok(ScanControl::Continue)
+                                }
+                            },
+                        )?;
+                    let (relationship, allocation) = found.ok_or_else(|| {
                         HawDBError::Execution(
                             "bound relationship disappeared during MATCH".to_string(),
                         )
                     })?;
-                    leases.push(
-                        self.account.reserve(
-                            import
-                                .variable
-                                .len()
-                                .saturating_add(relationship_memory_bytes(&relationship)),
-                        )?,
-                    );
+                    leases.try_push(allocation)?;
                     row.relationships
                         .insert(import.variable.clone(), relationship);
                 }
@@ -252,13 +279,14 @@ impl MatchRuntime<'_> {
         runtime_checkpoint(self.context.task_context)?;
         let Some(step) = self.program.steps.get(index) else {
             if let Some(predicate) = &self.program.predicate
-                && !evaluate_predicate_with_memory(
+                && !evaluate_predicate_with_context(
                     predicate,
                     self.context.catalog,
                     self.store,
                     row,
                     self.context.observer,
                     self.adjacency_memory(),
+                    self.context.task_context,
                 )?
             {
                 return Ok(ScanControl::Continue);
@@ -285,20 +313,29 @@ impl MatchRuntime<'_> {
                         None
                     }
                 });
-                self.store.visit_nodes_owned(label, &mut |node| {
-                    runtime_checkpoint(self.context.task_context)?;
-                    if !self.node_matches(pattern, &node) {
-                        return Ok(ScanControl::Continue);
-                    }
-                    let _lease = self.account.reserve(
-                        binding_memory_bytes(row)
-                            .saturating_add(node_memory_bytes(&node))
-                            .saturating_add(pattern.variable.len()),
-                    )?;
-                    let mut next = row.clone();
-                    next.nodes.insert(pattern.variable.clone(), node);
-                    self.visit(index + 1, &next, used, emit)
-                })
+                self.store.visit_nodes_with_allocation(
+                    label,
+                    &mut |bytes| {
+                        crate::store::admit_graph_read(
+                            self.account,
+                            self.context.task_context,
+                            bytes
+                                .saturating_add(binding_memory_bytes(row))
+                                .saturating_add(1024 + pattern.variable.len()),
+                        )
+                        .map(Some)
+                    },
+                    &mut |input| {
+                        let (node, _allocation) = input.into_parts();
+                        runtime_checkpoint(self.context.task_context)?;
+                        if !self.node_matches(pattern, &node) {
+                            return Ok(ScanControl::Continue);
+                        }
+                        let mut next = row.clone();
+                        next.nodes.insert(pattern.variable.clone(), node);
+                        self.visit(index + 1, &next, used, emit)
+                    },
+                )
             }
             GraphMatchStep::Expand {
                 source,
@@ -433,8 +470,8 @@ impl MatchRuntime<'_> {
         )?;
         let mut next = row.clone();
         next.nodes.insert(pattern.variable.clone(), node);
-        if self.context.observer.vector_graph_scoring_input().is_some() {
-            crate::scoring::advance_vector_hop(&mut next, hop, true)?;
+        if self.context.observer.seed_graph_scoring_input().is_some() {
+            crate::scoring::advance_seed_hop(&mut next, hop, true)?;
         }
         self.visit(index + 1, &next, used, emit)
     }

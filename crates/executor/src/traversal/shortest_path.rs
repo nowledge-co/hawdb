@@ -201,7 +201,7 @@ pub(super) fn search_shortest_paths(
             }
             visited_paths = visited_paths.saturating_add(1);
             let edge_start = dag.edges.len();
-            visit_one_hop_relationships_with_budget(
+            visit_one_hop_relationships_with_context(
                 store,
                 OneHopRelationshipSpec {
                     source: dag.nodes[current].id,
@@ -216,6 +216,7 @@ pub(super) fn search_shortest_paths(
                     account: Some(&memory_account),
                 },
                 observer,
+                task_context,
                 &mut |_, next| {
                     runtime_checkpoint(task_context)?;
                     if next.id == search.source

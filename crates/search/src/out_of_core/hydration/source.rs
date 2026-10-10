@@ -93,7 +93,7 @@ impl Source {
                 expected_checksum: Some(self.checksum),
             },
             Control {
-                memory: Some(&self.memory),
+                memory: Some(crate::analyzer_memory::Memory::Build(&self.memory)),
                 task: Some(&self.task),
                 ..Control::default()
             },
@@ -132,7 +132,7 @@ impl RecordSource for Source {
                 expected_checksum: Some(self.checksum),
             },
             Control {
-                memory: Some(&self.memory),
+                memory: Some(crate::analyzer_memory::Memory::Build(&self.memory)),
                 task: Some(&self.task),
                 ..Control::default()
             },

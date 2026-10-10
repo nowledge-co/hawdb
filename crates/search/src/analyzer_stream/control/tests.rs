@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use super::*;
+use crate::build_memory::BuildMemory;
 use hawdb_core::RuntimeMemoryReservation;
 
 fn memory() -> BuildMemory {
@@ -27,7 +28,7 @@ fn memory() -> BuildMemory {
 fn dedup_growth_admits_replacement_beside_the_old_table() {
     let memory = memory();
     let control = Control {
-        memory: Some(&memory),
+        memory: Some(crate::analyzer_memory::Memory::Build(&memory)),
         ..Default::default()
     };
     let mut dedup = Dedup::new();
@@ -71,7 +72,7 @@ fn dedup_growth_admits_replacement_beside_the_old_table() {
 fn dedup_shares_owned_text_and_keeps_consumers_alive_after_scope_reset() {
     let memory = memory();
     let control = Control {
-        memory: Some(&memory),
+        memory: Some(crate::analyzer_memory::Memory::Build(&memory)),
         ..Default::default()
     };
     let term = Term::copy("owned text", Some(&memory)).unwrap();
@@ -121,7 +122,7 @@ fn dedup_shares_owned_text_and_keeps_consumers_alive_after_scope_reset() {
 fn dedup_reset_reuses_its_admitted_table_capacity() {
     let memory = memory();
     let control = Control {
-        memory: Some(&memory),
+        memory: Some(crate::analyzer_memory::Memory::Build(&memory)),
         ..Default::default()
     };
     let mut dedup = Dedup::new();
@@ -159,7 +160,7 @@ fn lowercase_bounds_cover_every_unicode_scalar_and_contextual_sigma() {
     }
     let memory = memory();
     let control = Control {
-        memory: Some(&memory),
+        memory: Some(crate::analyzer_memory::Memory::Build(&memory)),
         ..Default::default()
     };
     let raw = Text::lowercase("\u{39f}\u{3a3}", false, control).unwrap();
@@ -174,7 +175,7 @@ fn lowercase_bounds_cover_every_unicode_scalar_and_contextual_sigma() {
 fn rejected_term_materialization_keeps_the_replacement_admitted_for_retry() {
     let memory = memory();
     let control = Control {
-        memory: Some(&memory),
+        memory: Some(crate::analyzer_memory::Memory::Build(&memory)),
         ..Default::default()
     };
     let next = "new-key".repeat(512);
@@ -220,7 +221,7 @@ fn duplicates_need_no_new_admission_with_full_or_spare_capacity() {
     for count in [3, 4] {
         let memory = memory();
         let control = Control {
-            memory: Some(&memory),
+            memory: Some(crate::analyzer_memory::Memory::Build(&memory)),
             ..Default::default()
         };
         let mut dedup = Dedup::new();

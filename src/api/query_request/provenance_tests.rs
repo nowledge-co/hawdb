@@ -187,6 +187,171 @@ fn score(row: &Row) -> f64 {
     score
 }
 
+struct HostVectorScorer {
+    version: std::rc::Rc<std::cell::Cell<&'static str>>,
+    calls: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl crate::HostScorer for HostVectorScorer {
+    fn descriptor(&self) -> crate::HostScorerDescriptor<'_> {
+        crate::HostScorerDescriptor::new(
+            "vector-cohort",
+            self.version.get(),
+            std::num::NonZeroU64::new(2).unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn score_batch(&mut self, batch: crate::HostScorerBatch<'_>, scores: &mut [f64]) -> Result<()> {
+        self.calls.set(self.calls.get() + 1);
+        assert_eq!(batch.features.len(), 5);
+        for (row, output) in batch.features.iter().zip(scores) {
+            batch.checkpoint()?;
+            assert!(matches!(row.returned_value("id"), Some(Value::String(_))));
+            assert_eq!(row.returned_value("score"), Some(&Value::Float(999.0)));
+            // These keys actually exist on the vector-produced binding. They
+            // are engine metadata, never a host-visible returned column.
+            assert_eq!(row.returned_value("\0hawdb.scoring.seed_score"), None);
+            assert_eq!(row.returned_value("\0hawdb.scoring.hops"), None);
+            assert_eq!(row.graph_seed_score(), None);
+            *output = row.search_score().unwrap()
+                * row.numeric_property("pagerank").unwrap()
+                * 2f64.powi(-(row.hop_distance().unwrap() as i32))
+                * (batch.reference_time_millis as f64 / 1000.0);
+        }
+        Ok(())
+    }
+}
+
+fn host_vector_request(scorer: &mut HostVectorScorer, clock: u64) -> crate::HostScoringRequest<'_> {
+    crate::HostScoringRequest::new(scorer, "score", std::num::NonZeroUsize::new(8).unwrap(), 1)
+        .unwrap()
+        .with_reference_time_millis(clock)
+        .with_vector_graph_input("seed", "candidate")
+        .unwrap()
+}
+
+#[test]
+fn host_query_vector_producer_preserves_original_similarity_hops_canonical_properties_and_metadata()
+{
+    let database = fixture();
+    let parameters = params();
+    let version = std::rc::Rc::new(std::cell::Cell::new("v1"));
+    let mut snapshot = database.begin_read_transaction().unwrap();
+    for clock in [1000, 2000] {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut scorer = HostVectorScorer {
+            version: std::rc::Rc::clone(&version),
+            calls: std::rc::Rc::clone(&calls),
+        };
+        let request = host_vector_request(&mut scorer, clock);
+        let mut seeds = Seeds::new(vec![("a", 0.2), ("b", 0.9)]);
+        let mut rows = Vec::new();
+        snapshot
+            .query_request_streaming_with_external(
+                QueryRequest::new(QUERY)
+                    .with_params(&parameters)
+                    .with_host_scoring(&request),
+                &mut seeds,
+                |row| {
+                    rows.push(row);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], Value::String("b-child".into()));
+        assert_eq!(
+            score(&rows[0]).to_bits(),
+            (1.8 * (clock as f64 / 1000.0)).to_bits()
+        );
+        assert_eq!(rows[0]["pagerank"], Value::Float(999.0));
+        assert_eq!(rows[0]["hop"], Value::Int(999));
+        assert!(rows[0].keys().all(|key| !key.contains('\0')));
+        assert_eq!(calls.get(), 1);
+        assert_eq!(seeds.calls, 1);
+        assert_eq!(seeds.admitted_rows, [8]);
+        let reserved = QUERY.replace(
+            "candidate.id AS id",
+            "candidate.id AS `\0hawdb.scoring.hops`",
+        );
+        assert!(snapshot
+            .query_request_streaming_with_external(
+                QueryRequest::new(&reserved)
+                    .with_params(&parameters)
+                    .with_host_scoring(&request),
+                &mut seeds,
+                |_| panic!("reserved projection cannot deliver a row"),
+            )
+            .is_err());
+        assert_eq!(calls.get(), 1);
+    }
+}
+
+#[test]
+fn host_query_external_candidate_staging_cannot_change_the_planned_identity() {
+    struct ChangingSeeds {
+        seeds: Seeds,
+        version: std::rc::Rc<std::cell::Cell<&'static str>>,
+    }
+    impl ExternalReadOperator for ChangingSeeds {
+        fn execute_vector_seed(
+            &mut self,
+            request: VectorSeedExecutionRequest<'_>,
+        ) -> Result<VectorSeedExecutionOutput> {
+            self.version.set("v2");
+            self.seeds.execute_vector_seed(request)
+        }
+    }
+    let database = fixture();
+    let parameters = params();
+    let version = std::rc::Rc::new(std::cell::Cell::new("v1"));
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let mut scorer = HostVectorScorer {
+        version: std::rc::Rc::clone(&version),
+        calls: std::rc::Rc::clone(&calls),
+    };
+    let request = host_vector_request(&mut scorer, 1000);
+    let mut seeds = ChangingSeeds {
+        seeds: Seeds::new(vec![("a", 0.2), ("b", 0.9)]),
+        version: std::rc::Rc::clone(&version),
+    };
+    let mut snapshot = database.begin_read_transaction().unwrap();
+    let mut delivered = 0;
+    let error = snapshot
+        .query_request_streaming_with_external(
+            QueryRequest::new(QUERY)
+                .with_params(&parameters)
+                .with_host_scoring(&request),
+            &mut seeds,
+            |_| {
+                delivered += 1;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("identity"), "{error}");
+    assert_eq!(calls.get(), 0);
+    assert_eq!(delivered, 0);
+    assert_eq!(seeds.seeds.calls, 1);
+    version.set("v1");
+    let mut healthy = Seeds::new(vec![("a", 0.2), ("b", 0.9)]);
+    snapshot
+        .query_request_streaming_with_external(
+            QueryRequest::new(QUERY)
+                .with_params(&parameters)
+                .with_host_scoring(&request),
+            &mut healthy,
+            |_| {
+                delivered += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(calls.get(), 1);
+    assert_eq!(delivered, 1);
+}
+
 #[test]
 fn vector_graph_uses_real_similarity_hops_and_canonical_properties_after_projection() {
     let database = fixture();
@@ -298,7 +463,7 @@ fn vector_graph_unmatched_optional_hop_is_missing_instead_of_zero() {
 fn vector_graph_descriptor_separates_cache_and_explain_identity() {
     let first = program(8);
     let mut other = first.clone();
-    other.vector_graph_input = Some(ScoringVectorGraphInput::new("seed", "middle").unwrap());
+    other.seed_graph_input = Some(ScoringSeedGraphInput::new("seed", "middle").unwrap());
     assert_ne!(first.bind().cache_key(), other.bind().cache_key());
     let database = fixture();
     let parameters = params();
@@ -314,7 +479,7 @@ fn vector_graph_descriptor_separates_cache_and_explain_identity() {
     let Value::String(plan) = &output.rows[0]["plan"] else {
         panic!("expected explain JSON");
     };
-    assert!(plan.contains("ScoringVectorGraphInput"), "{plan}");
+    assert!(plan.contains("ScoringSeedGraphInput"), "{plan}");
     assert!(plan.contains("candidate"), "{plan}");
 }
 
@@ -495,4 +660,57 @@ fn vector_graph_unknown_relationship_zero_hop_preserves_actual_score() {
         assert_eq!(seeds.calls, 1);
         assert_eq!(seeds.admitted_rows, [8]);
     }
+}
+
+#[cfg(feature = "acl")]
+#[test]
+fn vector_seed_lookup_rechecks_canonical_scope_for_plain_and_program_rows() {
+    let mut database = Database::new();
+    database
+        .query("CREATE (:Memory {id: 'a', space_id: 'allowed', pagerank: 2.0})")
+        .unwrap();
+    database
+        .query("CREATE (:Memory {id: 'b', space_id: 'blocked', pagerank: 10000.0})")
+        .unwrap();
+    let query = "CALL vector_search($embedding, topK := 8) YIELD id, score MATCH (seed:Memory) RETURN seed.id AS id";
+    let parameters = params();
+    let scoring = program(8).with_vector_graph_input("seed", "seed").unwrap();
+    let mut seeds = Seeds::new(vec![("a", 1.0), ("b", 10.0)]);
+    let mut snapshot = database.begin_read_transaction().unwrap();
+    for scored in [false, true] {
+        for (space, expected) in [
+            ("allowed", Some(("a", 2.0))),
+            ("blocked", Some(("b", 100000.0))),
+            ("missing", None),
+        ] {
+            let access = QueryAccessControlContext::visibility_scope(7, "space_id", space);
+            let request = QueryRequest::new(query)
+                .with_params(&parameters)
+                .with_access_control(&access);
+            let request = if scored {
+                request.with_scoring(&scoring)
+            } else {
+                request
+            };
+            let mut rows = Vec::new();
+            snapshot
+                .query_request_streaming_with_external(request, &mut seeds, |row| {
+                    rows.push(row);
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(
+                rows.len(),
+                usize::from(expected.is_some()),
+                "vector sibling leaked canonical seed ({space}, scored={scored})"
+            );
+            if let Some((id, score)) = expected {
+                assert_eq!(rows[0]["id"], Value::String(id.into()));
+                if scored {
+                    assert_eq!(rows[0][SCORING_RERANK_SCORE_COLUMN], Value::Float(score));
+                }
+            }
+        }
+    }
+    assert_eq!(seeds.calls, 6);
 }

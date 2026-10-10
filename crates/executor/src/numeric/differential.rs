@@ -12,11 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::lending::OwnedNumericBatchBuffer;
 use super::*;
+use crate::binding::Binding;
 use hawdb_core::PropertyType;
 use hawdb_plan_cypher::ComparisonOp;
 use hawdb_storage::NodeId;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug)]
 enum Path {
@@ -164,7 +166,20 @@ fn check_case(seed: usize, batch_rows: usize, path: Path, exit: Exit) {
             Exit::Error => Err(HawDBError::Execution("numeric consumer failure".into())),
         }
     };
-    let mut emitter = NumericBatchEmitter::new(fragment, &items, limit, None, &observer, &mut emit);
+    let memory = ExecutionMemoryConfig {
+        batch_rows: NonZeroUsize::new(batch_rows).unwrap(),
+        ..ExecutionMemoryConfig::default()
+    };
+    let ledger = QueryMemoryLedger::new(memory.query_memory_bytes);
+    let mut emitter = NumericBatchEmitter::new(
+        fragment,
+        &items,
+        limit,
+        (&memory, &ledger),
+        None,
+        &observer,
+        &mut emit,
+    );
     let mut input_rows = 0;
     let result = (|| -> Result<BatchControl> {
         let schema = numeric_columnar_schema(fragment, true)?;

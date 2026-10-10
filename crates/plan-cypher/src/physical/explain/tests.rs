@@ -87,9 +87,10 @@ fn unary(kind: usize, fixture: Fixture, seed: usize) -> Fixture {
                 property: "title".to_string(),
                 column: "c0".to_string(),
                 optional,
+                node_visibility_predicate: None,
                 input,
             },
-            format!("NodeColumnLookupExec variable=n label=Memory property=title column=c0 optional={optional}"),
+            format!("NodeColumnLookupExec variable=n label=Memory property=title column=c0 optional={optional} visibility=None"),
         ),
         1 => (
             PhysicalPlan::AdjacencyExpandExec {

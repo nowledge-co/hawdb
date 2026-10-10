@@ -20,12 +20,13 @@
 use crate::analytics::{GraphAlgorithmContext, GraphAlgorithmSpec};
 use crate::binding::{binding_memory_bytes, Binding};
 use crate::expression::{
-    evaluate_predicate_with_memory as evaluate_predicate_observed,
+    evaluate_predicate_with_context as evaluate_predicate_observed,
     exact_relationship_scan_filter_from_predicate, predicate_references_only_variable,
     property_filter_from_predicate,
 };
 use crate::external::seed::{
-    BatchExternalRead, BatchExternalReadAdapter, VectorSeedContext, VectorSeedScanSpec,
+    BatchExternalRead, BatchExternalReadAdapter, TextSeedScanSpec, VectorSeedContext,
+    VectorSeedScanSpec,
 };
 use crate::graph::GraphExpansionExecutionState;
 use crate::kernel::{push_bounded_operator_binding, OperatorMemoryTracker};
@@ -41,8 +42,8 @@ use crate::pipeline::{
 use crate::predicate::{label_ids_for_pattern, node_matches_label_pattern, node_properties_match};
 use crate::scan::{
     single_node_binding, source_scan_pruning_strategy, source_storage_scan_predicate,
-    stream_expand_binding, AdjacencyExpandFilters, AdjacencyExpandSpec, NodeColumnLookupSpec,
-    NodeProjectionScanSpec, NodeScanContext, NodeScanSpec,
+    stream_expand_binding_admitted, AdjacencyExpandFilters, AdjacencyExpandSpec,
+    NodeColumnLookupSpec, NodeProjectionScanSpec, NodeScanContext, NodeScanSpec,
 };
 use crate::store::{ScanControl, SourceScanCandidateVisit, SourceScanReadLimits};
 use crate::traversal::{
@@ -64,6 +65,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 
 mod blocking;
 mod dispatch;
+mod graph_seed;
 mod numeric;
 mod prepared;
 mod procedures;
@@ -91,6 +93,7 @@ pub struct ExecutionContext<'a> {
     pub memory_ledger: &'a QueryMemoryLedger,
     pub task_context: Option<&'a RuntimeTaskContext>,
     pub observer: &'a QueryExecutionObserver,
+    pub host_scorer: Option<&'a dyn crate::scoring::HostScorerProvider>,
 }
 
 fn stream_node_column_lookup_batches(
@@ -100,9 +103,16 @@ fn stream_node_column_lookup_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    let mut output = Vec::with_capacity(context.memory.batch_rows.get());
+    let output_account = context.memory_ledger.account(
+        QueryMemoryClass::PipelineBatch,
+        "NodeColumnLookupExec output",
+        context.memory.batch_payload_bytes,
+    );
+    let mut output_lease = output_account.reserve(0)?;
+    let mut output = Vec::new();
+    let mut output_bytes = 0usize;
     let mut emitted = 0usize;
-    execute_prepared_binding_batches(
+    let control = execute_prepared_binding_batches(
         BatchPlanRef::descendant(input),
         context,
         ExecutionLimit::unlimited(),
@@ -123,15 +133,35 @@ fn stream_node_column_lookup_batches(
                 },
             )?;
             for binding in bindings {
+                let bytes = binding_memory_bytes(&binding);
+                if bytes > context.memory.batch_payload_bytes.get() {
+                    return Err(HawDBError::Execution(format!(
+                        "lookup row uses {bytes} bytes, exceeding batch_payload_bytes {}",
+                        context.memory.batch_payload_bytes
+                    )));
+                }
+                if !output.is_empty()
+                    && output_bytes.saturating_add(bytes) > context.memory.batch_payload_bytes.get()
+                {
+                    let control = emit(std::mem::take(&mut output));
+                    output_lease.reset();
+                    output_bytes = 0;
+                    if control? == BatchControl::Stop {
+                        return Ok(BatchControl::Stop);
+                    }
+                }
+                output_lease.grow(bytes)?;
+                output_bytes = output_bytes.saturating_add(bytes);
+                crate::pipeline::reserve_binding_slot(&mut output);
                 output.push(binding);
                 emitted = emitted.saturating_add(1);
-                if output.len() == context.memory.batch_rows.get()
-                    && emit(std::mem::replace(
-                        &mut output,
-                        Vec::with_capacity(context.memory.batch_rows.get()),
-                    ))? == BatchControl::Stop
-                {
-                    return Ok(BatchControl::Stop);
+                if output.len() == context.memory.batch_rows.get() {
+                    let control = emit(std::mem::take(&mut output));
+                    output_lease.reset();
+                    output_bytes = 0;
+                    if control? == BatchControl::Stop {
+                        return Ok(BatchControl::Stop);
+                    }
                 }
                 if execution_limit.is_reached(emitted) {
                     return Ok(BatchControl::Stop);
@@ -140,10 +170,14 @@ fn stream_node_column_lookup_batches(
             Ok(BatchControl::Continue)
         },
     )?;
-    if !output.is_empty() && emit(output)? == BatchControl::Stop {
-        return Ok(BatchControl::Stop);
+    if !output.is_empty() {
+        let control = emit(output);
+        output_lease.reset();
+        if control? == BatchControl::Stop {
+            return Ok(BatchControl::Stop);
+        }
     }
-    Ok(BatchControl::Continue)
+    Ok(control)
 }
 
 #[derive(Clone, Copy)]
@@ -205,7 +239,7 @@ impl OptionalDegreeSpec<'_> {
                             ))
                         })?;
                         let mut degree = 0usize;
-                        crate::traversal::visit_one_hop_relationships_with_budget(
+                        crate::traversal::visit_one_hop_relationships_with_context(
                             context.store,
                             crate::traversal::OneHopRelationshipSpec {
                                 source: source.id,
@@ -220,6 +254,7 @@ impl OptionalDegreeSpec<'_> {
                                 account: Some(&adjacency_account),
                             },
                             context.observer,
+                            context.task_context,
                             &mut |_, target| {
                                 if node_properties_match(&target, target_properties) {
                                     degree = degree.saturating_add(1);
@@ -258,6 +293,7 @@ pub struct BatchReadContext<'a> {
     pub memory_ledger: &'a QueryMemoryLedger,
     pub task_context: Option<&'a RuntimeTaskContext>,
     pub observer: &'a QueryExecutionObserver,
+    pub host_scorer: Option<&'a dyn crate::scoring::HostScorerProvider>,
 }
 
 impl<'a> BatchReadContext<'a> {
@@ -331,6 +367,7 @@ pub fn collect_batch_pipeline(
         memory_ledger: execution_context.memory_ledger,
         task_context,
         observer: execution_context.observer,
+        host_scorer: execution_context.host_scorer,
     };
     execute_prepared_binding_batches(plan, context, execution_limit, &mut |batch| {
         for binding in batch {
@@ -702,6 +739,51 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
                 emit,
             )
         }),
+        PhysicalPlan::GraphSeedScan {
+            query_parameter,
+            label,
+            variable,
+            score_column,
+            top_k,
+            node_visibility_predicate,
+        } => dispatch.supported(|context, execution_limit, emit| {
+            graph_seed::GraphSeedScanSpec {
+                query_parameter,
+                label,
+                variable,
+                score_column,
+                top_k: *top_k,
+                node_visibility_predicate: node_visibility_predicate.as_ref(),
+            }
+            .stream(context, execution_limit, emit)
+        }),
+        PhysicalPlan::TextSeedScan {
+            query_parameter,
+            top_k,
+            output_external_id,
+            metadata_filters,
+            resource_profile,
+        } => dispatch.supported(|context, execution_limit, emit| {
+            TextSeedScanSpec {
+                query_parameter,
+                top_k: *top_k,
+                output_external_id: *output_external_id,
+                metadata_filters,
+                resource_profile: *resource_profile,
+            }
+            .stream(
+                VectorSeedContext {
+                    parameters: context.parameters,
+                    external: context.external,
+                    memory: context.memory,
+                    memory_ledger: context.memory_ledger,
+                    task_context: context.task_context,
+                    observer: context.observer,
+                },
+                execution_limit,
+                emit,
+            )
+        }),
         PhysicalPlan::VectorSeedScan {
             embedding_parameter,
             output_external_id,
@@ -735,6 +817,7 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
             property,
             column,
             optional,
+            node_visibility_predicate,
             input,
         } => dispatch.supported(|context, execution_limit, emit| {
             stream_node_column_lookup_batches(
@@ -744,6 +827,7 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
                     property,
                     column,
                     optional: *optional,
+                    node_visibility_predicate: node_visibility_predicate.as_ref(),
                 },
                 input,
                 context,
@@ -878,15 +962,15 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
         }
         PhysicalPlan::ScoringProgramExec {
             score_column,
-            vector_graph_input,
+            seed_graph_input,
             program,
             reference_time_millis,
             limit,
             input,
         } => dispatch.supported(|context, execution_limit, emit| {
-            if let Some(source) = vector_graph_input {
+            if let Some(source) = seed_graph_input {
                 source.validate_plan(input)?;
-                if context.observer.vector_graph_scoring_input() != Some(source) {
+                if context.observer.seed_graph_scoring_input() != Some(source) {
                     return Err(HawDBError::Execution(
                         "vector scoring requires its query-owned producer descriptor".into(),
                     ));
@@ -902,6 +986,34 @@ fn dispatch_batch_operator<D: BatchDispatch>(plan: &PhysicalPlan, dispatch: D) -
                 execution_limit,
                 emit,
             )
+        }),
+        PhysicalPlan::HostScoringExec {
+            scoring,
+            reference_time_millis,
+            input,
+        } => dispatch.supported(|context, execution_limit, emit| {
+            if let Some(source) = scoring.seed_graph_input() {
+                source.validate_plan(input)?;
+                if context.observer.seed_graph_scoring_input() != Some(source) {
+                    return Err(HawDBError::Execution(
+                        "host scoring requires its query-owned vector producer descriptor".into(),
+                    ));
+                }
+            }
+            let provider = context.host_scorer.ok_or_else(|| {
+                HawDBError::Execution("host scoring plan has no request-owned callback".into())
+            })?;
+            provider.with_scorer(&mut |scorer| {
+                stream_host_scoring_batches(
+                    input,
+                    scoring,
+                    *reference_time_millis,
+                    scorer,
+                    context,
+                    execution_limit,
+                    emit,
+                )
+            })
         }),
         PhysicalPlan::ScoringRerankExec {
             score_column,

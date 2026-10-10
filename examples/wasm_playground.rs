@@ -84,7 +84,10 @@ impl QueryBridge {
                     HawDBError::Storage(_) => "storage",
                     HawDBError::StorageIntegrity(_) => "storage_integrity",
                     HawDBError::FileDescriptors(_) => "file_descriptors",
-                    HawDBError::Execution(_) | HawDBError::ReadBudgetExceeded(_) => "execution",
+                    HawDBError::Execution(_)
+                    | HawDBError::ReadBudgetExceeded(_)
+                    | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
+                    | HawDBError::GraphExpansionPayloadLimitExceeded { .. } => "execution",
                     HawDBError::BranchCommandUnsupported { .. } => "branch_command_unsupported",
                     HawDBError::BranchBusy { .. } => "branch_busy",
                     HawDBError::TransactionConflict { .. } => "transaction_conflict",

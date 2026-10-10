@@ -1266,7 +1266,7 @@ mod tests {
         let path = unique_test_path("cancel-row-stream");
         let mut config = crate::DatabaseConfig::default();
         config.execution_memory.batch_rows = NonZeroUsize::new(1).unwrap();
-        config.execution_memory.batch_payload_bytes = NonZeroUsize::new(1024).unwrap();
+        config.execution_memory.batch_payload_bytes = NonZeroUsize::new(4 * 1024).unwrap();
         let embedded = HawDBTokioEmbedded::open_owned(
             HawDBEmbeddedOpenOptions::new(&path).with_config(config),
         )
@@ -1280,7 +1280,7 @@ mod tests {
             }
         });
 
-        let stream = embedded
+        let mut stream = embedded
             .runtime()
             .block_on(embedded.query_stream_with_options(
                 "MATCH (p:Probe) RETURN p.value AS value",
@@ -1291,6 +1291,13 @@ mod tests {
             ))
             .unwrap()
             .unwrap();
+        let first_batch = embedded
+            .runtime()
+            .block_on(stream.next_batch())
+            .unwrap()
+            .expect("producer failed before backpressure")
+            .expect("producer ended before backpressure");
+        assert_eq!(first_batch.len(), 1);
         for _ in 0..100 {
             if embedded.runtime_snapshot().active_blocking_tasks == 1 {
                 break;
@@ -1404,7 +1411,7 @@ mod tests {
         let path = unique_test_path("deadline-row-stream");
         let mut config = crate::DatabaseConfig::default();
         config.execution_memory.batch_rows = NonZeroUsize::new(1).unwrap();
-        config.execution_memory.batch_payload_bytes = NonZeroUsize::new(1024).unwrap();
+        config.execution_memory.batch_payload_bytes = NonZeroUsize::new(4 * 1024).unwrap();
         let embedded = HawDBTokioEmbedded::open_owned(
             HawDBEmbeddedOpenOptions::new(&path).with_config(config),
         )

@@ -15,8 +15,23 @@
 //! Read, scan, seek, and scan-pruning methods for [`GraphStore`].
 
 use super::*;
-use hawdb_core::ids::{project_node_record_ref, projected_node_allocation_bytes};
-use hawdb_storage::ids::project_node_record;
+use crate::read_view::{
+    AdmittedNodeRead, AdmittedNodeRecord, AdmittedRelationshipRead, AdmittedRelationshipRecord,
+    ControlledGraphReadAllocator,
+};
+use hawdb_core::ids::{
+    node_allocation_bytes, project_node_record_ref, projected_node_allocation_bytes,
+};
+#[path = "graph_read/admission.rs"]
+mod admission;
+#[path = "graph_read/resident_pruning.rs"]
+mod resident_pruning;
+use admission::{AdmittedProjection, ProjectionAdmission, UnaccountedReadAllocation};
+
+struct PropertyRangeBounds<'a> {
+    lower: Option<&'a (Value, bool)>,
+    upper: Option<&'a (Value, bool)>,
+}
 
 enum RangeRecord<'a> {
     Live(&'a NodeRecord),
@@ -80,6 +95,56 @@ impl GraphStore {
             .map(Option::flatten)
     }
 
+    /// Admit full point ownership before copying Values. The same immutable
+    /// reader pins canonical preflight and decode; caller refusal never poisons it.
+    pub fn node_with_allocation(
+        &self,
+        id: NodeId,
+        label_ids: Option<&[LabelId]>,
+        admit: &mut ControlledGraphReadAllocator<'_>,
+    ) -> Result<AdmittedNodeRead> {
+        if self.node_tombstones.contains(&id) {
+            return Ok(AdmittedNodeRead::Missing);
+        }
+        if let Some(node) = self.nodes.get(&id) {
+            if label_ids
+                .is_some_and(|labels| !labels.iter().any(|label| node.labels.contains(label)))
+            {
+                return Ok(AdmittedNodeRead::Missing);
+            }
+            let Some(allocation) = admit(node_allocation_bytes(node))? else {
+                return Ok(AdmittedNodeRead::Stopped);
+            };
+            return AdmittedNodeRecord::clone_admitted(node, allocation)
+                .map(AdmittedNodeRead::Node);
+        }
+        let Some(reader) = self.canonical_base.as_ref() else {
+            return Ok(AdmittedNodeRead::Missing);
+        };
+        let Some(bytes) = reader
+            .node_allocation_bytes(id, label_ids)
+            .map_err(canonical_segment_error)?
+        else {
+            return Ok(AdmittedNodeRead::Missing);
+        };
+        let Some(allocation) = admit(bytes)? else {
+            return Ok(AdmittedNodeRead::Stopped);
+        };
+        if allocation.bytes() < bytes {
+            return Err(HawDBError::Execution(
+                "full node admission returned an insufficient allocation permit".into(),
+            ));
+        }
+        reader
+            .get_node(id)
+            .map_err(canonical_segment_error)
+            .map(|node| {
+                node.map_or(AdmittedNodeRead::Missing, |node| {
+                    AdmittedNodeRead::Node(AdmittedNodeRecord::new(node, allocation))
+                })
+            })
+    }
+
     /// Admit the selected node allocation before cloning or decoding values.
     /// The immutable reader pins the same record across preflight and decoding.
     pub fn projected_node_owned_admitted(
@@ -124,6 +189,54 @@ impl GraphStore {
             .map(Option::flatten)
     }
 
+    /// Full point ownership is admitted before resident clone or canonical decode.
+    pub fn relationship_with_allocation(
+        &self,
+        id: RelId,
+        admit: &mut ControlledGraphReadAllocator<'_>,
+    ) -> Result<AdmittedRelationshipRead> {
+        if self.relationship_tombstones.contains(&id) {
+            return Ok(AdmittedRelationshipRead::Missing);
+        }
+        if let Some(relationship) = self.relationships.get(&id) {
+            let Some(allocation) =
+                admit(hawdb_core::ids::relationship_allocation_bytes(relationship))?
+            else {
+                return Ok(AdmittedRelationshipRead::Stopped);
+            };
+            return AdmittedRelationshipRecord::clone_admitted(relationship, allocation)
+                .map(AdmittedRelationshipRead::Relationship);
+        }
+        let Some(reader) = self.canonical_base.as_ref() else {
+            return Ok(AdmittedRelationshipRead::Missing);
+        };
+        let Some(bytes) = reader
+            .relationship_allocation_bytes(id)
+            .map_err(canonical_segment_error)?
+        else {
+            return Ok(AdmittedRelationshipRead::Missing);
+        };
+        let Some(allocation) = admit(bytes)? else {
+            return Ok(AdmittedRelationshipRead::Stopped);
+        };
+        if allocation.bytes() < bytes {
+            return Err(HawDBError::Execution(
+                "relationship admission returned an insufficient allocation permit".into(),
+            ));
+        }
+        reader
+            .get_relationship(id)
+            .map_err(canonical_segment_error)
+            .map(|relationship| {
+                relationship.map_or(AdmittedRelationshipRead::Missing, |relationship| {
+                    AdmittedRelationshipRead::Relationship(AdmittedRelationshipRecord::new(
+                        relationship,
+                        allocation,
+                    ))
+                })
+            })
+    }
+
     pub fn visit_nodes_owned(
         &self,
         label_id: Option<LabelId>,
@@ -142,9 +255,14 @@ impl GraphStore {
         &self,
         label_id: Option<LabelId>,
         required_properties: &BTreeSet<String>,
-        consumer: impl FnMut(ProjectedNodeRecord) -> GraphScanControl,
+        mut consumer: impl FnMut(ProjectedNodeRecord) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
-        self.visit_selected_nodes_owned(label_id, Some(required_properties), consumer)
+        self.visit_projected_nodes_admitted(
+            label_id,
+            required_properties,
+            &mut |bytes| Ok(Box::new(UnaccountedReadAllocation(bytes))),
+            &mut |node| Ok(consumer(node)),
+        )
     }
 
     pub fn visit_projected_nodes_by_access_owned(
@@ -152,18 +270,36 @@ impl GraphStore {
         label_id: LabelId,
         access: &hawdb_plan_cypher::NodeProjectionAccess,
         required_properties: &BTreeSet<String>,
-        consumer: impl FnMut(ProjectedNodeRecord) -> GraphScanControl,
+        mut consumer: impl FnMut(ProjectedNodeRecord) -> GraphScanControl,
+    ) -> Result<GraphScanControl> {
+        self.visit_projected_nodes_by_access_admitted(
+            label_id,
+            access,
+            required_properties,
+            &mut |bytes| Ok(Box::new(UnaccountedReadAllocation(bytes))),
+            &mut |node| Ok(consumer(node)),
+        )
+    }
+
+    fn visit_projected_nodes_by_access_with_admission(
+        &self,
+        label_id: LabelId,
+        access: &hawdb_plan_cypher::NodeProjectionAccess,
+        required_properties: Option<&BTreeSet<String>>,
+        admission: &ProjectionAdmission<'_>,
+        consumer: impl FnMut(AdmittedProjection) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
         match access {
             hawdb_plan_cypher::NodeProjectionAccess::LabelScan => {
-                self.visit_projected_nodes_owned(Some(label_id), required_properties, consumer)
+                self.visit_selected_nodes_with_admission(Some(label_id), required_properties, admission, consumer)
             }
             hawdb_plan_cypher::NodeProjectionAccess::PropertyValues { property, values } => self
-                .visit_projected_nodes_by_property_owned(
+                .visit_projected_nodes_by_property_with_admission(
                     label_id,
                     property,
                     values,
                     required_properties,
+                    admission,
                     consumer,
                 ),
             hawdb_plan_cypher::NodeProjectionAccess::PropertyUnion { .. } => Err(HawDBError::Execution(
@@ -171,37 +307,40 @@ impl GraphStore {
                     .to_string(),
             )),
             hawdb_plan_cypher::NodeProjectionAccess::CompositeEquality { predicates } => self
-                .visit_projected_nodes_by_composite_property_owned(
+                .visit_projected_nodes_by_composite_property_with_admission(
                     label_id,
                     predicates,
                     required_properties,
+                    admission,
                     consumer,
                 ),
             hawdb_plan_cypher::NodeProjectionAccess::CompositeRange { seek } => self
-                .visit_projected_nodes_by_composite_range_owned(
+                .visit_projected_nodes_by_composite_range_with_admission(
                     label_id,
                     seek,
                     required_properties,
+                    admission,
                     consumer,
                 ),
             hawdb_plan_cypher::NodeProjectionAccess::PropertyRange {
                 property,
                 lower,
                 upper,
-            } => self.visit_projected_nodes_by_property_range_owned(
+            } => self.visit_projected_nodes_by_property_range_with_admission(
                 label_id,
                 property,
-                lower.as_ref(),
-                upper.as_ref(),
+                PropertyRangeBounds { lower: lower.as_ref(), upper: upper.as_ref() },
                 required_properties,
+                admission,
                 consumer,
             ),
             hawdb_plan_cypher::NodeProjectionAccess::FullText { property, query } => self
-                .visit_projected_nodes_by_full_text_property_owned(
+                .visit_projected_nodes_by_full_text_property_with_admission(
                     label_id,
                     property,
                     query,
                     required_properties,
+                    admission,
                     consumer,
                 ),
         }
@@ -309,6 +448,80 @@ impl GraphStore {
             Some(error) => Err(error),
             None => Ok(control),
         }
+    }
+
+    /// Stream live relationships in ID order, admitting each full record before
+    /// cloning or decoding. Callback errors and normal Stop keep the reader healthy.
+    pub fn visit_relationships_with_allocation(
+        &self,
+        rel_type: Option<RelTypeId>,
+        admit: &mut ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(AdmittedRelationshipRecord) -> Result<GraphScanControl>,
+    ) -> Result<GraphScanControl> {
+        let mut visit = |id| match self.relationship_with_allocation(id, admit)? {
+            AdmittedRelationshipRead::Missing => Ok(GraphScanControl::Continue),
+            AdmittedRelationshipRead::Stopped => Ok(GraphScanControl::Stop),
+            AdmittedRelationshipRead::Relationship(record) => consumer(record),
+        };
+        let mut delta = self.relationships.iter().peekable();
+        if let Some(reader) = &self.canonical_base {
+            let mut stopped = false;
+            let mut callback_error = None;
+            reader
+                .scan_relationship_layouts_control(|id, layout| {
+                    let result = (|| {
+                        while delta.peek().is_some_and(|(next, _)| **next < id) {
+                            let (next, record) = delta.next().expect("peeked delta exists");
+                            if !self.relationship_tombstones.contains(next)
+                                && self.relationship_matches_type(record, rel_type)
+                                && visit(*next)? == GraphScanControl::Stop
+                            {
+                                return Ok(GraphScanControl::Stop);
+                            }
+                        }
+                        if delta.peek().is_some_and(|(next, _)| **next == id) {
+                            let (next, record) = delta.next().expect("matching delta exists");
+                            if !self.relationship_tombstones.contains(next)
+                                && self.relationship_matches_type(record, rel_type)
+                            {
+                                return visit(*next);
+                            }
+                        } else if !self.relationship_tombstones.contains(&id)
+                            && rel_type.is_none_or(|selected| selected == layout.rel_type)
+                        {
+                            return visit(id);
+                        }
+                        Ok(GraphScanControl::Continue)
+                    })();
+                    match result {
+                        Ok(GraphScanControl::Continue) => Ok(CanonicalScanControl::Continue),
+                        Ok(GraphScanControl::Stop) => {
+                            stopped = true;
+                            Ok(CanonicalScanControl::Stop)
+                        }
+                        Err(error) => {
+                            callback_error = Some(error);
+                            Ok(CanonicalScanControl::Stop)
+                        }
+                    }
+                })
+                .map_err(canonical_segment_error)?;
+            if let Some(error) = callback_error {
+                return Err(error);
+            }
+            if stopped {
+                return Ok(GraphScanControl::Stop);
+            }
+        }
+        for (id, record) in delta {
+            if !self.relationship_tombstones.contains(id)
+                && self.relationship_matches_type(record, rel_type)
+                && visit(*id)? == GraphScanControl::Stop
+            {
+                return Ok(GraphScanControl::Stop);
+            }
+        }
+        Ok(GraphScanControl::Continue)
     }
 
     pub fn visit_relationships_owned(
@@ -503,68 +716,90 @@ impl GraphStore {
         label_id: Option<LabelId>,
         filter: Option<&PropertyFilter>,
     ) -> ScanPrunedNodeScan<'a> {
-        let candidate =
-            filter.and_then(|filter| self.prune_node_candidates(catalog, label_id, filter));
-        let Some(candidate) = candidate else {
-            let candidate_count_before_filter = self.node_count_for_label(label_id);
-            let nodes = self
-                .scan_nodes(label_id)
-                .filter(|node| {
-                    filter
-                        .map(|filter| property_filter_matches(filter, node.id.0, &node.properties))
-                        .unwrap_or(true)
-                })
-                .collect::<Vec<_>>();
-            let output_count = nodes.len();
-            return ScanPrunedNodeScan {
+        self.scan_nodes_with_filter_pruning_admitted(catalog, label_id, filter, &mut |bytes| {
+            Ok(Box::new(admission::UnaccountedReadAllocation(bytes)))
+        })
+        .expect("standalone graph-read allocation policy cannot refuse")
+        .0
+    }
+
+    /// Admit every concurrently live candidate set and the returned reference
+    /// vector before allocation. The returned permit must outlive that vector.
+    pub fn scan_nodes_with_filter_pruning_admitted<'a>(
+        &'a self,
+        catalog: &Catalog,
+        label_id: Option<LabelId>,
+        filter: Option<&PropertyFilter>,
+        admit: &mut crate::read_view::GraphReadAllocator<'_>,
+    ) -> Result<(
+        ScanPrunedNodeScan<'a>,
+        Box<dyn crate::read_view::GraphReadAllocation>,
+    )> {
+        let admission = crate::read_view::GraphReadAdmission::new(admit);
+        let candidate = filter
+            .map(|filter| self.prune_node_candidates(catalog, label_id, filter, &admission))
+            .transpose()?
+            .flatten();
+        let candidate_count_before_pruning = self.node_count_for_label(label_id);
+        let mut nodes = crate::read_view::AdmittedVec::new(&admission)?;
+        let (strategy, pruned, exact_empty, candidate_count_before_filter) =
+            if let Some(candidate) = candidate {
+                for id in candidate.node_ids.iter() {
+                    if let Some(node) = self.nodes.get(id)
+                        && self.node_matches_label(node, label_id)
+                        && filter.is_none_or(|filter| {
+                            property_filter_matches(filter, node.id.0, &node.properties)
+                        })
+                    {
+                        nodes.try_push(node)?;
+                    }
+                }
+                (
+                    candidate.strategy,
+                    true,
+                    candidate.exact_empty,
+                    candidate.node_ids.len(),
+                )
+            } else {
+                for node in self.scan_nodes(label_id) {
+                    if filter.is_none_or(|filter| {
+                        property_filter_matches(filter, node.id.0, &node.properties)
+                    }) {
+                        nodes.try_push(node)?;
+                    }
+                }
+                (
+                    ScanPruningStrategy::FullLabelScan,
+                    false,
+                    false,
+                    candidate_count_before_pruning,
+                )
+            };
+        let (nodes, allocation) = nodes.into_parts();
+        let output_count = nodes.len();
+        Ok((
+            ScanPrunedNodeScan {
                 nodes,
                 report: ScanPruningReport {
                     target_kind: ScanPruningTargetKind::Node,
                     label_id,
                     rel_type_id: None,
-                    strategy: ScanPruningStrategy::FullLabelScan,
-                    pruned: false,
-                    exact_empty: false,
-                    candidate_count_before_pruning: candidate_count_before_filter,
-                    pruned_candidate_count: 0,
+                    strategy,
+                    pruned,
+                    exact_empty,
+                    candidate_count_before_pruning,
+                    pruned_candidate_count: if pruned {
+                        candidate_count_before_pruning.saturating_sub(candidate_count_before_filter)
+                    } else {
+                        0
+                    },
                     candidate_count_before_filter,
                     output_count,
                     filtered_out_count: candidate_count_before_filter.saturating_sub(output_count),
                 },
-            };
-        };
-
-        let candidate_count_before_pruning = self.node_count_for_label(label_id);
-        let candidate_count_before_filter = candidate.node_ids.len();
-        let nodes = candidate
-            .node_ids
-            .iter()
-            .filter_map(|node_id| self.nodes.get(node_id))
-            .filter(|node| self.node_matches_label(node, label_id))
-            .filter(|node| {
-                filter
-                    .map(|filter| property_filter_matches(filter, node.id.0, &node.properties))
-                    .unwrap_or(true)
-            })
-            .collect::<Vec<_>>();
-        let output_count = nodes.len();
-        ScanPrunedNodeScan {
-            nodes,
-            report: ScanPruningReport {
-                target_kind: ScanPruningTargetKind::Node,
-                label_id,
-                rel_type_id: None,
-                strategy: candidate.strategy,
-                pruned: true,
-                exact_empty: candidate.exact_empty,
-                candidate_count_before_pruning,
-                pruned_candidate_count: candidate_count_before_pruning
-                    .saturating_sub(candidate_count_before_filter),
-                candidate_count_before_filter,
-                output_count,
-                filtered_out_count: candidate_count_before_filter.saturating_sub(output_count),
             },
-        }
+            allocation,
+        ))
     }
 
     pub fn node_count_for_label(&self, label_id: Option<LabelId>) -> usize {
@@ -579,9 +814,7 @@ impl GraphStore {
     }
 
     fn node_matches_label(&self, node: &NodeRecord, label_id: Option<LabelId>) -> bool {
-        label_id
-            .map(|label_id| node.labels.contains(&label_id))
-            .unwrap_or(true)
+        label_id.is_none_or(|label_id| node.labels.contains(&label_id))
     }
 
     fn prune_node_candidates(
@@ -589,95 +822,150 @@ impl GraphStore {
         catalog: &Catalog,
         label_id: Option<LabelId>,
         filter: &PropertyFilter,
-    ) -> Option<ScanPruningCandidate> {
-        // Every branch below that reads `property_index` first passes through
-        // `indexes_property`. The index only holds declared properties, so a
-        // candidate set built from an undeclared one would be empty rather
-        // than complete, and the caller treats candidates as exact.
-        match filter {
+        admission: &crate::read_view::GraphReadAdmission<'_>,
+    ) -> Result<Option<ScanPruningCandidate>> {
+        let (strategy, node_ids) = match filter {
             PropertyFilter::And(filters) => {
-                self.prune_and_node_candidates(catalog, label_id, filters)
+                return self.prune_and_node_candidates(catalog, label_id, filters, admission);
             }
             PropertyFilter::Or(filters) => {
-                self.prune_or_node_candidates(catalog, label_id, filters)
+                return self.prune_or_node_candidates(catalog, label_id, filters, admission);
             }
-            PropertyFilter::Not(_) => None,
-            PropertyFilter::IdEq { value } => Some(ScanPruningCandidate::exact(
+            PropertyFilter::Not(_)
+            | PropertyFilter::IdNotEq { .. }
+            | PropertyFilter::ListContains { .. }
+            | PropertyFilter::ListContainsLower { .. }
+            | PropertyFilter::Contains { .. }
+            | PropertyFilter::StartsWith { .. }
+            | PropertyFilter::EndsWith { .. }
+            | PropertyFilter::RegexMatch { .. } => return Ok(None),
+            PropertyFilter::IdEq { value } => (
                 ScanPruningStrategy::IdEq,
-                self.node_ids_for_id_values(label_id, std::slice::from_ref(value)),
-            )),
-            PropertyFilter::IdNotEq { .. } => None,
-            PropertyFilter::IdRange { lower, upper } => {
-                if lower.is_none() && upper.is_none() {
-                    return None;
-                }
-                Some(ScanPruningCandidate::exact(
-                    ScanPruningStrategy::IdRange,
-                    self.node_ids_for_id_range(label_id, lower.as_ref(), upper.as_ref()),
-                ))
-            }
-            PropertyFilter::IdIn { values } => Some(ScanPruningCandidate::exact(
+                self.node_ids_for_id_values(label_id, std::slice::from_ref(value), admission)?,
+            ),
+            PropertyFilter::IdIn { values } => (
                 if values.is_empty() {
                     ScanPruningStrategy::Empty
                 } else {
                     ScanPruningStrategy::IdIn
                 },
-                self.node_ids_for_id_values(label_id, values),
-            )),
-            PropertyFilter::Eq { property, value } => {
-                self.indexes_property(catalog, label_id, property).then(|| {
-                    ScanPruningCandidate::exact(
-                        ScanPruningStrategy::PropertyEq {
-                            property: property.clone(),
-                        },
-                        self.node_ids_for_property_values(
-                            label_id,
-                            property,
-                            std::slice::from_ref(value),
-                        ),
-                    )
-                })
+                self.node_ids_for_id_values(label_id, values, admission)?,
+            ),
+            PropertyFilter::IdRange { lower, upper } => {
+                if lower.is_none() && upper.is_none() {
+                    return Ok(None);
+                }
+                (
+                    ScanPruningStrategy::IdRange,
+                    self.collect_node_ids(
+                        self.nodes
+                            .values()
+                            .filter(|node| self.node_matches_label(node, label_id))
+                            .filter(|node| {
+                                range_bounds_match(
+                                    &Value::Int(node.id.0 as i64),
+                                    lower.as_ref(),
+                                    upper.as_ref(),
+                                )
+                            })
+                            .map(|node| node.id),
+                        admission,
+                    )?,
+                )
             }
-            PropertyFilter::NotEq { property, value } => {
-                self.indexes_property(catalog, label_id, property).then(|| {
-                    ScanPruningCandidate::exact(
-                        ScanPruningStrategy::PropertyNotEq {
-                            property: property.clone(),
-                        },
-                        self.node_ids_for_property_not_in_values(
-                            label_id,
-                            property,
-                            std::slice::from_ref(value),
-                        ),
-                    )
-                })
+            PropertyFilter::Eq { property, value } | PropertyFilter::NotEq { property, value } => {
+                if !self.indexes_property(catalog, label_id, property) {
+                    return Ok(None);
+                }
+                let negated = matches!(filter, PropertyFilter::NotEq { .. });
+                let strategy = if negated {
+                    ScanPruningStrategy::PropertyNotEq {
+                        property: property.clone(),
+                    }
+                } else {
+                    ScanPruningStrategy::PropertyEq {
+                        property: property.clone(),
+                    }
+                };
+                (
+                    strategy,
+                    self.node_ids_for_property_values(
+                        label_id,
+                        property,
+                        std::iter::once(value),
+                        negated,
+                        admission,
+                    )?,
+                )
             }
-            PropertyFilter::IsNull { property } => {
-                self.indexes_property(catalog, label_id, property).then(|| {
-                    ScanPruningCandidate::exact(
+            PropertyFilter::IsNull { property } | PropertyFilter::IsNotNull { property } => {
+                if !self.indexes_property(catalog, label_id, property) {
+                    return Ok(None);
+                }
+                if matches!(filter, PropertyFilter::IsNull { .. }) {
+                    (
                         ScanPruningStrategy::PropertyMissingOrNull {
                             property: property.clone(),
                         },
-                        self.node_ids_for_property_missing_or_null(label_id, property),
+                        self.node_ids_for_property_missing_or_null(label_id, property, admission)?,
                     )
-                })
-            }
-            PropertyFilter::IsNotNull { property } => {
-                self.indexes_property(catalog, label_id, property).then(|| {
-                    ScanPruningCandidate::exact(
+                } else {
+                    (
                         ScanPruningStrategy::PropertyExists {
                             property: property.clone(),
                         },
-                        self.node_ids_for_property_exists(label_id, property),
+                        self.node_ids_for_indexed_property(
+                            label_id,
+                            property,
+                            |value| value != &Value::Null,
+                            admission,
+                        )?,
                     )
-                })
+                }
             }
-            PropertyFilter::ListContains { .. }
-            | PropertyFilter::ListContainsLower { .. }
-            | PropertyFilter::Contains { .. }
-            | PropertyFilter::StartsWith { .. }
-            | PropertyFilter::EndsWith { .. }
-            | PropertyFilter::RegexMatch { .. } => None,
+            PropertyFilter::In { property, values } => {
+                if !self.indexes_property(catalog, label_id, property) {
+                    return Ok(None);
+                }
+                (
+                    if values.is_empty() {
+                        ScanPruningStrategy::Empty
+                    } else {
+                        ScanPruningStrategy::PropertyIn {
+                            property: property.clone(),
+                        }
+                    },
+                    self.node_ids_for_property_values(
+                        label_id,
+                        property,
+                        values.iter(),
+                        false,
+                        admission,
+                    )?,
+                )
+            }
+            PropertyFilter::Range {
+                property,
+                lower,
+                upper,
+            } => {
+                if (lower.is_none() && upper.is_none())
+                    || !self.indexes_property(catalog, label_id, property)
+                {
+                    return Ok(None);
+                }
+                (
+                    ScanPruningStrategy::PropertyRange {
+                        property: property.clone(),
+                    },
+                    self.node_ids_for_indexed_property(
+                        label_id,
+                        property,
+                        |value| range_bounds_match(value, lower.as_ref(), upper.as_ref()),
+                        admission,
+                    )?,
+                )
+            }
             PropertyFilter::DefaultIfNullOrEq {
                 property,
                 empty,
@@ -686,64 +974,40 @@ impl GraphStore {
                 negated,
             } => {
                 if !self.indexes_property(catalog, label_id, property) {
-                    return None;
+                    return Ok(None);
                 }
-                let strategy = if *negated {
-                    ScanPruningStrategy::PropertyDefaultIfNullNotEq {
-                        property: property.clone(),
-                    }
-                } else {
-                    ScanPruningStrategy::PropertyDefaultIfNullEq {
-                        property: property.clone(),
-                    }
-                };
-                let node_ids = if *negated {
-                    self.node_ids_for_default_if_null_not_eq(
-                        label_id, property, empty, default, value,
-                    )
-                } else {
-                    self.node_ids_for_default_if_null_eq(label_id, property, empty, default, value)
-                };
-                Some(ScanPruningCandidate::exact(strategy, node_ids))
-            }
-            PropertyFilter::In { property, values } => {
-                self.indexes_property(catalog, label_id, property).then(|| {
-                    ScanPruningCandidate::exact(
-                        if values.is_empty() {
-                            ScanPruningStrategy::Empty
-                        } else {
-                            ScanPruningStrategy::PropertyIn {
-                                property: property.clone(),
-                            }
+                let equal = self.node_ids_for_default_if_null_eq(
+                    label_id,
+                    property,
+                    (empty, default, value),
+                    admission,
+                )?;
+                if *negated {
+                    let ids = self.collect_node_ids(
+                        self.nodes
+                            .values()
+                            .filter(|node| self.node_matches_label(node, label_id))
+                            .filter(|node| !equal.contains(&node.id))
+                            .map(|node| node.id),
+                        admission,
+                    )?;
+                    (
+                        ScanPruningStrategy::PropertyDefaultIfNullNotEq {
+                            property: property.clone(),
                         },
-                        self.node_ids_for_property_values(label_id, property, values),
+                        ids,
                     )
-                })
-            }
-            PropertyFilter::Range {
-                property,
-                lower,
-                upper,
-            } => {
-                if lower.is_none() && upper.is_none() {
-                    return None;
+                } else {
+                    (
+                        ScanPruningStrategy::PropertyDefaultIfNullEq {
+                            property: property.clone(),
+                        },
+                        equal,
+                    )
                 }
-                if !self.indexes_property(catalog, label_id, property) {
-                    return None;
-                }
-                Some(ScanPruningCandidate::exact(
-                    ScanPruningStrategy::PropertyRange {
-                        property: property.clone(),
-                    },
-                    self.node_ids_for_property_range(
-                        label_id,
-                        property,
-                        lower.as_ref(),
-                        upper.as_ref(),
-                    ),
-                ))
             }
-        }
+        };
+        Ok(Some(ScanPruningCandidate::exact(strategy, node_ids)))
     }
 
     fn prune_and_node_candidates(
@@ -751,24 +1015,26 @@ impl GraphStore {
         catalog: &Catalog,
         label_id: Option<LabelId>,
         filters: &[PropertyFilter],
-    ) -> Option<ScanPruningCandidate> {
+        admission: &crate::read_view::GraphReadAdmission<'_>,
+    ) -> Result<Option<ScanPruningCandidate>> {
         let mut best: Option<ScanPruningCandidate> = None;
         for filter in filters {
-            let Some(candidate) = self.prune_node_candidates(catalog, label_id, filter) else {
+            let Some(candidate) =
+                self.prune_node_candidates(catalog, label_id, filter, admission)?
+            else {
                 continue;
             };
             if candidate.exact_empty {
-                return Some(candidate);
+                return Ok(Some(candidate));
             }
             if best
                 .as_ref()
-                .map(|best| candidate.node_ids.len() < best.node_ids.len())
-                .unwrap_or(true)
+                .is_none_or(|best| candidate.node_ids.len() < best.node_ids.len())
             {
                 best = Some(candidate);
             }
         }
-        best
+        Ok(best)
     }
 
     fn prune_or_node_candidates(
@@ -776,206 +1042,151 @@ impl GraphStore {
         catalog: &Catalog,
         label_id: Option<LabelId>,
         filters: &[PropertyFilter],
-    ) -> Option<ScanPruningCandidate> {
-        if filters.is_empty() {
-            return Some(ScanPruningCandidate {
-                strategy: ScanPruningStrategy::Empty,
-                node_ids: BTreeSet::new(),
-                exact_empty: true,
-            });
-        }
-
-        let mut node_ids = BTreeSet::new();
+        admission: &crate::read_view::GraphReadAdmission<'_>,
+    ) -> Result<Option<ScanPruningCandidate>> {
+        let mut ids = crate::read_view::AdmittedKeySet::new(admission)?;
         for filter in filters {
-            let candidate = self.prune_node_candidates(catalog, label_id, filter)?;
-            node_ids.extend(candidate.node_ids);
+            let Some(candidate) =
+                self.prune_node_candidates(catalog, label_id, filter, admission)?
+            else {
+                return Ok(None);
+            };
+            ids.try_extend(candidate.node_ids.iter().copied())?;
         }
-        Some(ScanPruningCandidate::exact(
-            ScanPruningStrategy::OrUnion,
-            node_ids,
-        ))
+        Ok(Some(ScanPruningCandidate::exact(
+            if filters.is_empty() {
+                ScanPruningStrategy::Empty
+            } else {
+                ScanPruningStrategy::OrUnion
+            },
+            ids,
+        )))
+    }
+
+    fn collect_node_ids(
+        &self,
+        ids: impl IntoIterator<Item = NodeId>,
+        admission: &crate::read_view::GraphReadAdmission<'_>,
+    ) -> Result<crate::read_view::AdmittedKeySet<NodeId>> {
+        let mut result = crate::read_view::AdmittedKeySet::new(admission)?;
+        result.try_extend(ids)?;
+        Ok(result)
     }
 
     fn node_ids_for_id_values(
         &self,
         label_id: Option<LabelId>,
         values: &[Value],
-    ) -> BTreeSet<NodeId> {
-        values
-            .iter()
-            .filter_map(|value| match value {
-                Value::Int(value) => u64::try_from(*value).ok().map(NodeId),
-                _ => None,
-            })
-            .filter(|node_id| {
-                self.nodes
-                    .get(node_id)
-                    .map(|node| self.node_matches_label(node, label_id))
-                    .unwrap_or(false)
-            })
-            .collect()
+        admission: &crate::read_view::GraphReadAdmission<'_>,
+    ) -> Result<crate::read_view::AdmittedKeySet<NodeId>> {
+        self.collect_node_ids(
+            values
+                .iter()
+                .filter_map(|value| match value {
+                    Value::Int(value) => u64::try_from(*value).ok().map(NodeId),
+                    _ => None,
+                })
+                .filter(|id| {
+                    self.nodes
+                        .get(id)
+                        .is_some_and(|node| self.node_matches_label(node, label_id))
+                }),
+            admission,
+        )
     }
 
-    fn node_ids_for_label(&self, label_id: Option<LabelId>) -> BTreeSet<NodeId> {
-        self.nodes
-            .values()
-            .filter(|node| self.node_matches_label(node, label_id))
-            .map(|node| node.id)
-            .collect()
-    }
-
-    fn node_ids_for_id_range(
-        &self,
-        label_id: Option<LabelId>,
-        lower: Option<&(Value, bool)>,
-        upper: Option<&(Value, bool)>,
-    ) -> BTreeSet<NodeId> {
-        self.nodes
-            .keys()
-            .copied()
-            .filter(|node_id| range_bounds_match(&Value::Int(node_id.0 as i64), lower, upper))
-            .filter(|node_id| {
-                self.nodes
-                    .get(node_id)
-                    .map(|node| self.node_matches_label(node, label_id))
-                    .unwrap_or(false)
-            })
-            .collect()
-    }
-
-    fn node_ids_for_property_values(
+    fn node_ids_for_indexed_property(
         &self,
         label_id: Option<LabelId>,
         property: &str,
-        values: &[Value],
-    ) -> BTreeSet<NodeId> {
-        if values.is_empty() {
-            return BTreeSet::new();
-        }
-        let values = values.iter().collect::<BTreeSet<_>>();
-        self.property_index
-            .iter()
-            .filter(|((candidate_label_id, candidate_property, value), _)| {
-                label_id
-                    .map(|label_id| *candidate_label_id == label_id)
-                    .unwrap_or(true)
-                    && candidate_property == property
-                    && values.contains(value)
-            })
-            .flat_map(|(_, node_ids)| node_ids.iter().copied())
-            .collect()
+        mut matches: impl FnMut(&Value) -> bool,
+        admission: &crate::read_view::GraphReadAdmission<'_>,
+    ) -> Result<crate::read_view::AdmittedKeySet<NodeId>> {
+        self.collect_node_ids(
+            self.property_index
+                .iter()
+                .filter(|((candidate_label, candidate_property, value), _)| {
+                    label_id.is_none_or(|label| *candidate_label == label)
+                        && candidate_property == property
+                        && matches(value)
+                })
+                .flat_map(|(_, ids)| ids.iter().copied()),
+            admission,
+        )
     }
 
-    fn node_ids_for_property_not_in_values(
+    fn node_ids_for_property_values<'value>(
         &self,
         label_id: Option<LabelId>,
         property: &str,
-        values: &[Value],
-    ) -> BTreeSet<NodeId> {
-        let values = values.iter().collect::<BTreeSet<_>>();
-        self.property_index
-            .iter()
-            .filter(|((candidate_label_id, candidate_property, value), _)| {
-                label_id
-                    .map(|label_id| *candidate_label_id == label_id)
-                    .unwrap_or(true)
-                    && candidate_property == property
-                    && !values.contains(value)
-            })
-            .flat_map(|(_, node_ids)| node_ids.iter().copied())
-            .collect()
-    }
-
-    fn node_ids_for_property_exists(
-        &self,
-        label_id: Option<LabelId>,
-        property: &str,
-    ) -> BTreeSet<NodeId> {
-        self.property_index
-            .iter()
-            .filter(|((candidate_label_id, candidate_property, value), _)| {
-                label_id
-                    .map(|label_id| *candidate_label_id == label_id)
-                    .unwrap_or(true)
-                    && candidate_property == property
-                    && value != &Value::Null
-            })
-            .flat_map(|(_, node_ids)| node_ids.iter().copied())
-            .collect()
+        values: impl IntoIterator<Item = &'value Value>,
+        negated: bool,
+        admission: &crate::read_view::GraphReadAdmission<'_>,
+    ) -> Result<crate::read_view::AdmittedKeySet<NodeId>> {
+        let mut keys = crate::read_view::AdmittedKeySet::new(admission)?;
+        keys.try_extend(values)?;
+        self.node_ids_for_indexed_property(
+            label_id,
+            property,
+            |value| keys.contains(value) != negated,
+            admission,
+        )
     }
 
     fn node_ids_for_property_missing_or_null(
         &self,
         label_id: Option<LabelId>,
         property: &str,
-    ) -> BTreeSet<NodeId> {
-        let non_null = self.node_ids_for_property_exists(label_id, property);
-        self.nodes
-            .values()
-            .filter(|node| self.node_matches_label(node, label_id))
-            .filter(|node| !non_null.contains(&node.id))
-            .map(|node| node.id)
-            .collect()
+        admission: &crate::read_view::GraphReadAdmission<'_>,
+    ) -> Result<crate::read_view::AdmittedKeySet<NodeId>> {
+        let non_null = self.node_ids_for_indexed_property(
+            label_id,
+            property,
+            |value| value != &Value::Null,
+            admission,
+        )?;
+        self.collect_node_ids(
+            self.nodes
+                .values()
+                .filter(|node| self.node_matches_label(node, label_id))
+                .filter(|node| !non_null.contains(&node.id))
+                .map(|node| node.id),
+            admission,
+        )
     }
 
     fn node_ids_for_default_if_null_eq(
         &self,
         label_id: Option<LabelId>,
         property: &str,
-        empty: &Value,
-        default: &Value,
-        value: &Value,
-    ) -> BTreeSet<NodeId> {
+        values: (&Value, &Value, &Value),
+        admission: &crate::read_view::GraphReadAdmission<'_>,
+    ) -> Result<crate::read_view::AdmittedKeySet<NodeId>> {
+        let (empty, default, value) = values;
         if value == default {
-            let mut node_ids = self.node_ids_for_property_missing_or_null(label_id, property);
-            let mut values = vec![empty.clone()];
-            if value != empty {
-                values.push(value.clone());
-            }
-            node_ids.extend(self.node_ids_for_property_values(label_id, property, &values));
-            return node_ids;
+            let mut ids =
+                self.node_ids_for_property_missing_or_null(label_id, property, admission)?;
+            // Borrow the two lookup values; the old temporary cloned payloads.
+            let matched = self.node_ids_for_property_values(
+                label_id,
+                property,
+                [empty, value],
+                false,
+                admission,
+            )?;
+            ids.try_extend(matched.iter().copied())?;
+            return Ok(ids);
         }
-
         if value == empty || value == &Value::Null {
-            return BTreeSet::new();
+            return crate::read_view::AdmittedKeySet::new(admission);
         }
-        self.node_ids_for_property_values(label_id, property, std::slice::from_ref(value))
-    }
-
-    fn node_ids_for_default_if_null_not_eq(
-        &self,
-        label_id: Option<LabelId>,
-        property: &str,
-        empty: &Value,
-        default: &Value,
-        value: &Value,
-    ) -> BTreeSet<NodeId> {
-        let equal_node_ids =
-            self.node_ids_for_default_if_null_eq(label_id, property, empty, default, value);
-        self.node_ids_for_label(label_id)
-            .difference(&equal_node_ids)
-            .copied()
-            .collect()
-    }
-
-    fn node_ids_for_property_range(
-        &self,
-        label_id: Option<LabelId>,
-        property: &str,
-        lower: Option<&(Value, bool)>,
-        upper: Option<&(Value, bool)>,
-    ) -> BTreeSet<NodeId> {
-        self.property_index
-            .iter()
-            .filter(|((candidate_label_id, candidate_property, value), _)| {
-                label_id
-                    .map(|label_id| *candidate_label_id == label_id)
-                    .unwrap_or(true)
-                    && candidate_property == property
-                    && range_bounds_match(value, lower, upper)
-            })
-            .flat_map(|(_, node_ids)| node_ids.iter().copied())
-            .collect()
+        self.node_ids_for_property_values(
+            label_id,
+            property,
+            std::iter::once(value),
+            false,
+            admission,
+        )
     }
 
     pub fn seek_nodes_by_property<'a>(
@@ -1102,10 +1313,38 @@ impl GraphStore {
         required_properties: &BTreeSet<String>,
         mut consumer: impl FnMut(ProjectedNodeRecord) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
+        self.visit_projected_nodes_by_property_admitted(
+            label_id,
+            property,
+            values,
+            required_properties,
+            &mut |bytes| Ok(Box::new(UnaccountedReadAllocation(bytes))),
+            &mut |node| Ok(consumer(node)),
+        )
+    }
+
+    fn visit_projected_nodes_by_property_with_admission(
+        &self,
+        label_id: LabelId,
+        property: &str,
+        values: &[Value],
+        required_properties: Option<&BTreeSet<String>>,
+        admission: &ProjectionAdmission<'_>,
+        mut consumer: impl FnMut(AdmittedProjection) -> GraphScanControl,
+    ) -> Result<GraphScanControl> {
         let Some(reader) = &self.canonical_base else {
-            return self.visit_nodes_by_property_owned(label_id, property, values, |node| {
-                consumer(project_node_record(node, required_properties))
-            });
+            let mut decode_properties = required_properties.cloned();
+            if let Some(properties) = &mut decode_properties {
+                properties.insert(property.to_string());
+            }
+            return self.visit_projected_property_fallback_with_admission(
+                label_id,
+                property,
+                values,
+                decode_properties.as_ref(),
+                admission,
+                consumer,
+            );
         };
         let Some(projection) = self
             .persistent_property_projection
@@ -1118,26 +1357,36 @@ impl GraphStore {
                 )
             })
         else {
-            return self.visit_nodes_by_property_owned(label_id, property, values, |node| {
-                consumer(project_node_record(node, required_properties))
-            });
+            let mut decode_properties = required_properties.cloned();
+            if let Some(properties) = &mut decode_properties {
+                properties.insert(property.to_string());
+            }
+            return self.visit_projected_property_fallback_with_admission(
+                label_id,
+                property,
+                values,
+                decode_properties.as_ref(),
+                admission,
+                consumer,
+            );
         };
 
-        let mut decode_properties = required_properties.clone();
-        decode_properties.insert(property.to_string());
-        let mut seen = BTreeSet::new();
+        let mut decode_properties = required_properties.cloned();
+        if let Some(properties) = &mut decode_properties {
+            properties.insert(property.to_string());
+        }
+        let mut seen = admission.key_set()?;
         for value in values {
             let mut graph_control = GraphScanControl::Continue;
             let (report, projection_control) = projection
                 .scan_equality_candidates(label_id, property, value, |node_id| {
                     if self.node_tombstones.contains(&node_id)
                         || self.nodes.contains_key(&node_id)
-                        || !seen.insert(node_id)
+                        || !admission.insert_key(&mut seen, node_id)?
                     {
                         return Ok(CanonicalScanControl::Continue);
                     }
-                    let node = reader
-                        .get_projected_node(node_id, &decode_properties)?
+                    let node = admission.canonical_selection(reader, node_id, decode_properties.as_ref())?
                         .ok_or_else(|| {
                             PersistentPropertyProjectionError::Corrupt(format!(
                                 "property projection references missing canonical node {}",
@@ -1171,7 +1420,7 @@ impl GraphStore {
                     .properties
                     .get(property)
                     .is_some_and(|candidate| values.iter().any(|value| candidate == value))
-                && consumer(project_node_record(node.clone(), &decode_properties))
+                && admission.visit_live_selection(node, decode_properties.as_ref(), &mut consumer)
                     == GraphScanControl::Stop
             {
                 return Ok(GraphScanControl::Stop);
@@ -1289,12 +1538,13 @@ impl GraphStore {
         )
     }
 
-    fn visit_projected_nodes_by_composite_property_owned(
+    fn visit_projected_nodes_by_composite_property_with_admission(
         &self,
         label_id: LabelId,
         predicates: &[(String, Value)],
-        required_properties: &BTreeSet<String>,
-        mut consumer: impl FnMut(ProjectedNodeRecord) -> GraphScanControl,
+        required_properties: Option<&BTreeSet<String>>,
+        admission: &ProjectionAdmission<'_>,
+        mut consumer: impl FnMut(AdmittedProjection) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
         let properties = predicates
             .iter()
@@ -1310,13 +1560,43 @@ impl GraphStore {
                     .supports_composite_equality(label_id, &properties)
             })
         else {
-            return self.visit_nodes_by_composite_property_owned(label_id, predicates, |node| {
-                consumer(project_node_record(node, required_properties))
-            });
+            let mut decode_properties = required_properties.cloned();
+            if let Some(selected) = &mut decode_properties {
+                selected.extend(properties.iter().cloned());
+            }
+            let mut consume = |node: AdmittedProjection| {
+                if predicates
+                    .iter()
+                    .all(|(property, value)| node.properties.get(property) == Some(value))
+                {
+                    consumer(node)
+                } else {
+                    GraphScanControl::Continue
+                }
+            };
+            return if let Some((property, value)) = predicates.first() {
+                self.visit_projected_nodes_by_property_with_admission(
+                    label_id,
+                    property,
+                    std::slice::from_ref(value),
+                    decode_properties.as_ref(),
+                    admission,
+                    consume,
+                )
+            } else {
+                self.visit_selected_nodes_with_admission(
+                    Some(label_id),
+                    decode_properties.as_ref(),
+                    admission,
+                    &mut consume,
+                )
+            };
         };
 
-        let mut decode_properties = required_properties.clone();
-        decode_properties.extend(properties.iter().cloned());
+        let mut decode_properties = required_properties.cloned();
+        if let Some(selected) = &mut decode_properties {
+            selected.extend(properties.iter().cloned());
+        }
         let values = predicates
             .iter()
             .map(|(_, value)| value)
@@ -1327,8 +1607,8 @@ impl GraphStore {
                 if self.node_tombstones.contains(&node_id) || self.nodes.contains_key(&node_id) {
                     return Ok(CanonicalScanControl::Continue);
                 }
-                let node = reader
-                    .get_projected_node(node_id, &decode_properties)?
+                let node = admission
+                    .canonical_selection(reader, node_id, decode_properties.as_ref())?
                     .ok_or_else(|| {
                         PersistentPropertyProjectionError::Corrupt(format!(
                             "composite property projection references missing canonical node {}",
@@ -1362,7 +1642,7 @@ impl GraphStore {
                 && predicates
                     .iter()
                     .all(|(property, value)| node.properties.get(property) == Some(value))
-                && consumer(project_node_record(node.clone(), &decode_properties))
+                && admission.visit_live_selection(node, decode_properties.as_ref(), &mut consumer)
                     == GraphScanControl::Stop
             {
                 return Ok(GraphScanControl::Stop);
@@ -1460,12 +1740,13 @@ impl GraphStore {
         )
     }
 
-    fn visit_projected_nodes_by_composite_range_owned(
+    fn visit_projected_nodes_by_composite_range_with_admission(
         &self,
         label_id: LabelId,
         seek: &hawdb_plan_cypher::CompositeRangeSeek,
-        required_properties: &BTreeSet<String>,
-        mut consumer: impl FnMut(ProjectedNodeRecord) -> GraphScanControl,
+        required_properties: Option<&BTreeSet<String>>,
+        admission: &ProjectionAdmission<'_>,
+        mut consumer: impl FnMut(AdmittedProjection) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
         validate_composite_range_seek(seek)?;
         let Some((reader, projection)) = self
@@ -1478,18 +1759,44 @@ impl GraphStore {
                     .supports_composite_equality(label_id, &seek.index_properties)
             })
         else {
-            return self.visit_nodes_by_composite_range_owned(label_id, seek, |node| {
-                consumer(project_node_record(node, required_properties))
-            });
+            let mut decode_properties = required_properties.cloned();
+            if let Some(properties) = &mut decode_properties {
+                properties.extend(
+                    seek.equality_prefix
+                        .iter()
+                        .map(|(property, _)| property.clone()),
+                );
+                properties.insert(seek.range_property.clone());
+            }
+            let (property, value) = seek
+                .equality_prefix
+                .first()
+                .expect("validated composite range equality prefix");
+            return self.visit_projected_nodes_by_property_with_admission(
+                label_id,
+                property,
+                std::slice::from_ref(value),
+                decode_properties.as_ref(),
+                admission,
+                |node| {
+                    if projected_node_matches_composite_range(&node, seek) {
+                        consumer(node)
+                    } else {
+                        GraphScanControl::Continue
+                    }
+                },
+            );
         };
 
-        let mut decode_properties = required_properties.clone();
-        decode_properties.extend(
-            seek.equality_prefix
-                .iter()
-                .map(|(property, _)| property.clone()),
-        );
-        decode_properties.insert(seek.range_property.clone());
+        let mut decode_properties = required_properties.cloned();
+        if let Some(properties) = &mut decode_properties {
+            properties.extend(
+                seek.equality_prefix
+                    .iter()
+                    .map(|(property, _)| property.clone()),
+            );
+            properties.insert(seek.range_property.clone());
+        }
         let equality_values = seek
             .equality_prefix
             .iter()
@@ -1508,8 +1815,8 @@ impl GraphStore {
                     {
                         return Ok(CanonicalScanControl::Continue);
                     }
-                    let node = reader
-                        .get_projected_node(node_id, &decode_properties)?
+                    let node = admission
+                        .canonical_selection(reader, node_id, decode_properties.as_ref())?
                         .ok_or_else(|| {
                             PersistentPropertyProjectionError::Corrupt(format!(
                                 "composite range projection references missing canonical node {}",
@@ -1539,7 +1846,9 @@ impl GraphStore {
         }
         for node in self.nodes.values() {
             if node.labels.contains(&label_id) && node_matches_composite_range(node, seek) {
-                let node = project_node_record(node.clone(), &decode_properties);
+                let node = admission
+                    .live_selection(node, decode_properties.as_ref())
+                    .map_err(canonical_segment_error)?;
                 if consumer(node) == GraphScanControl::Stop {
                     return Ok(GraphScanControl::Stop);
                 }
@@ -1622,25 +1931,28 @@ impl GraphStore {
         })
     }
 
-    fn visit_projected_nodes_by_property_range_owned(
+    fn visit_projected_nodes_by_property_range_with_admission(
         &self,
         label_id: LabelId,
         property: &str,
-        lower: Option<&(Value, bool)>,
-        upper: Option<&(Value, bool)>,
-        required_properties: &BTreeSet<String>,
-        mut consumer: impl FnMut(ProjectedNodeRecord) -> GraphScanControl,
+        bounds: PropertyRangeBounds<'_>,
+        required_properties: Option<&BTreeSet<String>>,
+        admission: &ProjectionAdmission<'_>,
+        mut consumer: impl FnMut(AdmittedProjection) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
-        let mut decode_properties = required_properties.clone();
-        decode_properties.insert(property.to_string());
+        let PropertyRangeBounds { lower, upper } = bounds;
+        let mut decode_properties = required_properties.cloned();
+        if let Some(properties) = &mut decode_properties {
+            properties.insert(property.to_string());
+        }
         if let Some(control) =
             self.try_visit_ordered_range(label_id, property, lower, upper, |value, source| {
                 let node = match source {
                     RangeRecord::Live(node) => {
-                        project_node_record(node.clone(), &decode_properties)
+                        admission.live_selection(node, decode_properties.as_ref())?
                     }
-                    RangeRecord::Canonical(reader, id) => reader
-                        .get_projected_node(id, &decode_properties)?
+                    RangeRecord::Canonical(reader, id) => admission
+                        .canonical_selection(reader, id, decode_properties.as_ref())?
                         .ok_or_else(|| {
                             PersistentPropertyProjectionError::Corrupt(format!(
                                 "range projection references missing canonical node {}",
@@ -1660,9 +1972,17 @@ impl GraphStore {
         {
             return Ok(control);
         }
-        self.visit_nodes_by_property_range_owned(label_id, property, lower, upper, |node| {
-            consumer(project_node_record(node, required_properties))
-        })
+        self.visit_projected_nodes_filtered_with_admission(
+            label_id,
+            decode_properties.as_ref(),
+            admission,
+            |properties| {
+                properties
+                    .get(property)
+                    .is_some_and(|value| range_bounds_match(value, lower, upper))
+            },
+            consumer,
+        )
     }
 
     fn try_visit_ordered_range(
@@ -1899,13 +2219,14 @@ impl GraphStore {
         Ok(GraphScanControl::Continue)
     }
 
-    fn visit_projected_nodes_by_full_text_property_owned(
+    fn visit_projected_nodes_by_full_text_property_with_admission(
         &self,
         label_id: LabelId,
         property: &str,
         query: &str,
-        required_properties: &BTreeSet<String>,
-        mut consumer: impl FnMut(ProjectedNodeRecord) -> GraphScanControl,
+        required_properties: Option<&BTreeSet<String>>,
+        admission: &ProjectionAdmission<'_>,
+        mut consumer: impl FnMut(AdmittedProjection) -> GraphScanControl,
     ) -> Result<GraphScanControl> {
         let query_tokens = full_text_query_tokens(query);
         if query_tokens.is_empty() {
@@ -1923,16 +2244,29 @@ impl GraphStore {
                 )
             })
         else {
-            return self.visit_nodes_by_full_text_property_owned(
+            let mut decode_properties = required_properties.cloned();
+            if let Some(properties) = &mut decode_properties {
+                properties.insert(property.to_string());
+            }
+            return self.visit_projected_nodes_filtered_with_admission(
                 label_id,
-                property,
-                query,
-                |node| consumer(project_node_record(node, required_properties)),
+                decode_properties.as_ref(),
+                admission,
+                |properties| match properties.get(property) {
+                    Some(Value::String(value)) => {
+                        let tokens = full_text_index_tokens(value);
+                        query_tokens.iter().all(|token| tokens.contains(token))
+                    }
+                    _ => false,
+                },
+                consumer,
             );
         };
 
-        let mut decode_properties = required_properties.clone();
-        decode_properties.insert(property.to_string());
+        let mut decode_properties = required_properties.cloned();
+        if let Some(properties) = &mut decode_properties {
+            properties.insert(property.to_string());
+        }
         let matches_query = |properties: &BTreeMap<String, Value>| match properties.get(property) {
             Some(Value::String(value)) => {
                 let tokens = full_text_index_tokens(value);
@@ -1964,8 +2298,8 @@ impl GraphStore {
                 if self.node_tombstones.contains(&node_id) || self.nodes.contains_key(&node_id) {
                     return Ok(CanonicalScanControl::Continue);
                 }
-                let node = reader
-                    .get_projected_node(node_id, &decode_properties)?
+                let node = admission
+                    .canonical_selection(reader, node_id, decode_properties.as_ref())?
                     .ok_or_else(|| {
                         PersistentPropertyProjectionError::Corrupt(format!(
                             "property projection references missing canonical node {}",
@@ -1994,7 +2328,7 @@ impl GraphStore {
             }
             if node.labels.contains(&label_id)
                 && matches_query(&node.properties)
-                && consumer(project_node_record(node.clone(), &decode_properties))
+                && admission.visit_live_selection(node, decode_properties.as_ref(), &mut consumer)
                     == GraphScanControl::Stop
             {
                 return Ok(GraphScanControl::Stop);
@@ -2160,6 +2494,449 @@ impl GraphStore {
             }
         }
         Ok(GraphScanControl::Continue)
+    }
+
+    /// Ordered keys remain separately bounded; each selected payload transfers
+    /// its own before-copy permit. No property is owned while sorting keys.
+    pub fn visit_ordered_adjacent_relationships_with_allocation(
+        &self,
+        node_id: NodeId,
+        rel_type: Option<RelTypeId>,
+        direction: AdjacencyDirection,
+        memory_budget_bytes: usize,
+        admit: &mut ControlledGraphReadAllocator<'_>,
+        mut consumer: impl FnMut(AdmittedRelationshipRecord) -> Result<GraphScanControl>,
+    ) -> Result<GraphScanControl> {
+        if let Some(rel_type) = rel_type
+            && (self.canonical_base.is_none() || self.canonical_adjacency.is_some())
+        {
+            return self.visit_typed_adjacent_relationships_with_allocation(
+                node_id,
+                rel_type,
+                direction,
+                admit,
+                &mut consumer,
+            );
+        }
+        let Some(mut key_allocation) = admit(0)? else {
+            return Ok(GraphScanControl::Stop);
+        };
+        let mut charge_key_bytes =
+            |bytes| grow_relationship_key_allocation(key_allocation.as_mut(), bytes);
+        let mut entries = Vec::new();
+        let adjacency = match direction {
+            AdjacencyDirection::Outgoing => &self.outgoing,
+            AdjacencyDirection::Incoming => &self.incoming,
+        };
+        for ((_, group_type), postings) in
+            adjacency.range(&(node_id, RelTypeId(0)), &(node_id, RelTypeId(u32::MAX)))
+        {
+            if rel_type.is_none_or(|expected| expected == *group_type) {
+                for entry in postings.iter_copied() {
+                    push_admitted_adjacency_key(
+                        &mut entries,
+                        entry,
+                        memory_budget_bytes,
+                        &mut charge_key_bytes,
+                    )?;
+                }
+            }
+        }
+        if let Some(reader) = self.canonical_base.as_ref() {
+            let mut collect_error = None;
+            if let Some(adjacency) = self.canonical_adjacency.as_ref() {
+                let (report, _) = adjacency
+                    .scan_endpoint_inputs_control(node_id, direction, rel_type, |input| {
+                        if !self
+                            .relationship_tombstones
+                            .contains(&input.relationship_id)
+                            && !self.relationships.contains_key(&input.relationship_id)
+                            && let Err(error) = push_admitted_adjacency_key(
+                                &mut entries,
+                                OrderedAdjacencyEntry {
+                                    neighbor_id: input.neighbor_id,
+                                    relationship_id: input.relationship_id,
+                                },
+                                memory_budget_bytes,
+                                &mut charge_key_bytes,
+                            )
+                        {
+                            collect_error = Some(error);
+                            return Ok(CanonicalScanControl::Stop);
+                        }
+                        Ok(CanonicalScanControl::Continue)
+                    })
+                    .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
+                self.graph_index_read_metrics.record_adjacency(
+                    match direction {
+                        AdjacencyDirection::Outgoing => PersistentGraphIndexClass::ForwardAdjacency,
+                        AdjacencyDirection::Incoming => PersistentGraphIndexClass::ReverseAdjacency,
+                    },
+                    report,
+                );
+            } else {
+                // Older supported layouts lack the adjacency artifact. Keep the
+                // existing canonical scan fallback, with properties encoded.
+                reader
+                    .scan_relationship_layouts_control(|id, layout| {
+                        let (endpoint, neighbor) = match direction {
+                            AdjacencyDirection::Outgoing => (layout.source, layout.target),
+                            AdjacencyDirection::Incoming => (layout.target, layout.source),
+                        };
+                        if endpoint == node_id
+                            && rel_type.is_none_or(|expected| expected == layout.rel_type)
+                            && !self.relationship_tombstones.contains(&id)
+                            && !self.relationships.contains_key(&id)
+                            && let Err(error) = push_admitted_adjacency_key(
+                                &mut entries,
+                                OrderedAdjacencyEntry {
+                                    neighbor_id: neighbor,
+                                    relationship_id: id,
+                                },
+                                memory_budget_bytes,
+                                &mut charge_key_bytes,
+                            )
+                        {
+                            collect_error = Some(error);
+                            return Ok(CanonicalScanControl::Stop);
+                        }
+                        Ok(CanonicalScanControl::Continue)
+                    })
+                    .map_err(canonical_segment_error)?;
+            }
+            if let Some(error) = collect_error {
+                return Err(error);
+            }
+        }
+        entries.sort_unstable();
+        entries.dedup();
+        for entry in entries {
+            if emit_admitted_relationship(
+                self,
+                (node_id, rel_type, direction),
+                entry,
+                admit,
+                &mut consumer,
+            )? == GraphScanControl::Stop
+            {
+                return Ok(GraphScanControl::Stop);
+            }
+        }
+        Ok(GraphScanControl::Continue)
+    }
+
+    fn visit_typed_adjacent_relationships_with_allocation(
+        &self,
+        node_id: NodeId,
+        rel_type: RelTypeId,
+        direction: AdjacencyDirection,
+        admit: &mut ControlledGraphReadAllocator<'_>,
+        consumer: &mut impl FnMut(AdmittedRelationshipRecord) -> Result<GraphScanControl>,
+    ) -> Result<GraphScanControl> {
+        let selection = (node_id, Some(rel_type), direction);
+        let mut live_entries = self
+            .adjacency_relationship_ids(node_id, rel_type, direction)
+            .into_iter()
+            .flat_map(AdjacencyPostingList::iter_copied)
+            .peekable();
+        let Some(adjacency) = self.canonical_adjacency.as_ref() else {
+            return emit_admitted_live_before(
+                self,
+                selection,
+                &mut live_entries,
+                None,
+                admit,
+                consumer,
+            );
+        };
+        let mut consumer_error = None;
+        let (report, control) = adjacency
+            .scan_endpoint_inputs_control(node_id, direction, Some(rel_type), |input| {
+                if self
+                    .relationship_tombstones
+                    .contains(&input.relationship_id)
+                    || self.relationships.contains_key(&input.relationship_id)
+                {
+                    return Ok(CanonicalScanControl::Continue);
+                }
+                let entry = OrderedAdjacencyEntry {
+                    neighbor_id: input.neighbor_id,
+                    relationship_id: input.relationship_id,
+                };
+                let result = emit_admitted_live_before(
+                    self,
+                    selection,
+                    &mut live_entries,
+                    Some(entry),
+                    admit,
+                    consumer,
+                )
+                .and_then(|control| match control {
+                    GraphScanControl::Continue => {
+                        emit_admitted_relationship(self, selection, entry, admit, consumer)
+                    }
+                    GraphScanControl::Stop => Ok(GraphScanControl::Stop),
+                });
+                match result {
+                    Ok(GraphScanControl::Continue) => Ok(CanonicalScanControl::Continue),
+                    Ok(GraphScanControl::Stop) => Ok(CanonicalScanControl::Stop),
+                    Err(error) => {
+                        // Query admission/consumer failure is not storage corruption.
+                        consumer_error = Some(error);
+                        Ok(CanonicalScanControl::Stop)
+                    }
+                }
+            })
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
+        self.graph_index_read_metrics.record_adjacency(
+            match direction {
+                AdjacencyDirection::Outgoing => PersistentGraphIndexClass::ForwardAdjacency,
+                AdjacencyDirection::Incoming => PersistentGraphIndexClass::ReverseAdjacency,
+            },
+            report,
+        );
+        if let Some(error) = consumer_error {
+            return Err(error);
+        }
+        if control == CanonicalScanControl::Stop {
+            return Ok(GraphScanControl::Stop);
+        }
+        emit_admitted_live_before(self, selection, &mut live_entries, None, admit, consumer)
+    }
+
+    /// Filtered ordering retains projection pruning while admitting every
+    /// selected source payload and every retained sort key before ownership.
+    pub fn visit_filtered_ordered_relationships_with_allocation(
+        &self,
+        selection: (NodeId, Option<RelTypeId>, AdjacencyDirection),
+        filter: &PropertyFilter,
+        memory_budget_bytes: usize,
+        admit: &mut ControlledGraphReadAllocator<'_>,
+        mut consumer: impl FnMut(AdmittedRelationshipRecord) -> Result<GraphScanControl>,
+    ) -> Result<(GraphScanControl, Option<ScanPruningReport>)> {
+        let (node_id, rel_type, direction) = selection;
+        if self.canonical_base.is_none()
+            && let Some(rel_type) = rel_type
+        {
+            let adjacency_entries = self
+                .adjacency_relationship_ids(node_id, rel_type, direction)
+                .map(AdjacencyPostingList::len)
+                .unwrap_or_default();
+            let stopped = std::cell::Cell::new(false);
+            let candidate = self.prune_resident_relationships_admitted(
+                rel_type,
+                filter,
+                adjacency_entries,
+                &mut |bytes| {
+                    if stopped.get() {
+                        return Ok(None);
+                    }
+                    let allocation = admit(bytes)?;
+                    stopped.set(allocation.is_none());
+                    Ok(allocation)
+                },
+            )?;
+            if stopped.get() {
+                return Ok((GraphScanControl::Stop, None));
+            }
+            if let Some(candidate) = candidate {
+                let count = candidate.ids.len();
+                let Some(mut keys) = admit(0)? else {
+                    return Ok((GraphScanControl::Stop, None));
+                };
+                let mut charge = |bytes| grow_relationship_key_allocation(keys.as_mut(), bytes);
+                let mut entries = Vec::new();
+                let mut output_count = 0usize;
+                for id in candidate.ids.iter() {
+                    let record = self.relationships.get(id).ok_or_else(|| {
+                        HawDBError::StorageIntegrity(format!(
+                            "relationship property index references missing relationship {}",
+                            id.0
+                        ))
+                    })?;
+                    if property_filter_matches(filter, id.0, &record.properties) {
+                        output_count = output_count.saturating_add(1);
+                        if relationship_matches_endpoint(record, node_id, direction) {
+                            push_admitted_adjacency_key(
+                                &mut entries,
+                                ordered_relationship_key(record, direction),
+                                memory_budget_bytes,
+                                &mut charge,
+                            )?;
+                        }
+                    }
+                }
+                entries.sort_unstable();
+                entries.dedup();
+                for entry in entries {
+                    if emit_admitted_relationship(self, selection, entry, admit, &mut consumer)?
+                        == GraphScanControl::Stop
+                    {
+                        return Ok((GraphScanControl::Stop, None));
+                    }
+                }
+                let before = self.relationship_count_for_type(Some(rel_type));
+                return Ok((
+                    GraphScanControl::Continue,
+                    Some(ScanPruningReport {
+                        target_kind: ScanPruningTargetKind::Relationship,
+                        label_id: None,
+                        rel_type_id: Some(rel_type),
+                        strategy: candidate.strategy,
+                        pruned: true,
+                        exact_empty: count == 0,
+                        candidate_count_before_pruning: before,
+                        pruned_candidate_count: before.saturating_sub(count),
+                        candidate_count_before_filter: count,
+                        output_count,
+                        filtered_out_count: count.saturating_sub(output_count),
+                    }),
+                ));
+            }
+        }
+        let fallback = |admit: &mut ControlledGraphReadAllocator<'_>,
+                        consumer: &mut dyn FnMut(
+            AdmittedRelationshipRecord,
+        ) -> Result<GraphScanControl>| {
+            self.visit_ordered_adjacent_relationships_with_allocation(
+                node_id,
+                rel_type,
+                direction,
+                memory_budget_bytes,
+                admit,
+                |row| {
+                    let (record, allocation) = row.into_parts();
+                    if property_filter_matches(filter, record.id.0, &record.properties) {
+                        consumer(AdmittedRelationshipRecord::new(record, allocation))
+                    } else {
+                        Ok(GraphScanControl::Continue)
+                    }
+                },
+            )
+            .map(|control| (control, None))
+        };
+        let (Some(rel_type), Some(adjacency), Some(projection)) = (
+            rel_type,
+            self.canonical_adjacency.as_ref(),
+            self.persistent_property_projection.as_ref(),
+        ) else {
+            return fallback(admit, &mut consumer);
+        };
+        // Probe alternatives contain borrowed filter values. Admit their small
+        // descriptor/vector scratch before constructing the index probe.
+        let probe_bytes = relationship_probe_allocation_bytes(filter);
+        let Some(_probe_allocation) = admit(probe_bytes)? else {
+            return Ok((GraphScanControl::Stop, None));
+        };
+        if _probe_allocation.bytes() < probe_bytes {
+            return Err(HawDBError::Execution(
+                "relationship probe admission returned an insufficient allocation permit".into(),
+            ));
+        }
+        let Some(probe) = relationship_projection_probe(projection, rel_type, filter)
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?
+        else {
+            return fallback(admit, &mut consumer);
+        };
+        let adjacency_entries = adjacency
+            .estimate_endpoint_entries(node_id, direction, Some(rel_type))
+            .map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
+        if probe.estimated_entries() > adjacency_entries {
+            self.graph_index_read_metrics
+                .record_property(probe.index_class(), probe.estimate_report());
+            return fallback(admit, &mut consumer);
+        }
+        let Some(mut key_allocation) = admit(0)? else {
+            return Ok((GraphScanControl::Stop, None));
+        };
+        let mut charge = |bytes| grow_relationship_key_allocation(key_allocation.as_mut(), bytes);
+        let mut entries = Vec::new();
+        let mut read_error = None;
+        let mut candidate_count = 0usize;
+        let mut output_count = 0usize;
+        let (report, control) = probe.scan(projection, |id| {
+            if self.relationship_tombstones.contains(&id) || self.relationships.contains_key(&id) {
+                return Ok(CanonicalScanControl::Continue);
+            }
+            candidate_count = candidate_count.saturating_add(1);
+            let row = match self.relationship_with_allocation(id, admit) {
+                Ok(AdmittedRelationshipRead::Relationship(row)) => row,
+                Ok(AdmittedRelationshipRead::Stopped) => return Ok(CanonicalScanControl::Stop),
+                Ok(AdmittedRelationshipRead::Missing) => return Err(PersistentPropertyProjectionError::Corrupt(
+                    format!("relationship property projection references missing canonical relationship {}", id.0),
+                )),
+                Err(error) => { read_error = Some(error); return Ok(CanonicalScanControl::Stop); }
+            };
+            let (record, _allocation) = row.into_parts();
+            if record.rel_type != rel_type || !probe.matches(&record) {
+                return Err(PersistentPropertyProjectionError::Corrupt(format!(
+                    "relationship property projection candidate {} fails its canonical seek predicate", id.0,
+                )));
+            }
+            if relationship_matches_endpoint(&record, node_id, direction)
+                && property_filter_matches(filter, id.0, &record.properties)
+            {
+                output_count = output_count.saturating_add(1);
+                if let Err(error) = push_admitted_adjacency_key(
+                    &mut entries, ordered_relationship_key(&record, direction), memory_budget_bytes, &mut charge,
+                ) {
+                    read_error = Some(error);
+                    return Ok(CanonicalScanControl::Stop);
+                }
+            }
+            Ok(CanonicalScanControl::Continue)
+        }).map_err(|error| HawDBError::StorageIntegrity(error.to_string()))?;
+        self.graph_index_read_metrics
+            .record_property(probe.index_class(), report);
+        if let Some(error) = read_error {
+            return Err(error);
+        }
+        if control == CanonicalScanControl::Stop {
+            return Ok((GraphScanControl::Stop, None));
+        }
+        for record in self.relationships.values() {
+            if record.rel_type != rel_type || !probe.matches(record) {
+                continue;
+            }
+            candidate_count = candidate_count.saturating_add(1);
+            if relationship_matches_endpoint(record, node_id, direction)
+                && property_filter_matches(filter, record.id.0, &record.properties)
+            {
+                output_count = output_count.saturating_add(1);
+                push_admitted_adjacency_key(
+                    &mut entries,
+                    ordered_relationship_key(record, direction),
+                    memory_budget_bytes,
+                    &mut charge,
+                )?;
+            }
+        }
+        entries.sort_unstable();
+        entries.dedup();
+        for entry in entries {
+            if emit_admitted_relationship(self, selection, entry, admit, &mut consumer)?
+                == GraphScanControl::Stop
+            {
+                return Ok((GraphScanControl::Stop, None));
+            }
+        }
+        let before = self.relationship_count_for_type(Some(rel_type));
+        Ok((
+            GraphScanControl::Continue,
+            Some(ScanPruningReport {
+                target_kind: ScanPruningTargetKind::Relationship,
+                label_id: None,
+                rel_type_id: Some(rel_type),
+                strategy: probe.strategy(),
+                pruned: true,
+                exact_empty: candidate_count == 0,
+                candidate_count_before_pruning: before,
+                pruned_candidate_count: before.saturating_sub(candidate_count),
+                candidate_count_before_filter: candidate_count,
+                output_count,
+                filtered_out_count: candidate_count.saturating_sub(output_count),
+            }),
+        ))
     }
 
     pub fn try_visit_ordered_adjacent_relationships_owned(
@@ -3438,6 +4215,114 @@ fn ordered_relationship_key(
         neighbor_id: neighbor,
         relationship_id: relationship.id,
     }
+}
+
+fn grow_relationship_key_allocation(
+    allocation: &mut dyn crate::read_view::GraphReadAllocation,
+    bytes: usize,
+) -> Result<()> {
+    let required = allocation
+        .bytes()
+        .checked_add(bytes)
+        .ok_or_else(|| HawDBError::Execution("relationship key allocation size overflow".into()))?;
+    allocation.grow(bytes)?;
+    if allocation.bytes() < required {
+        return Err(HawDBError::Execution(
+            "relationship key admission returned an insufficient allocation permit".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn relationship_probe_allocation_bytes(filter: &PropertyFilter) -> usize {
+    let count = match filter {
+        PropertyFilter::In { values, .. } => values.len(),
+        PropertyFilter::And(filters) | PropertyFilter::Or(filters) => {
+            return filters.iter().fold(128usize, |total, child| {
+                total.saturating_add(relationship_probe_allocation_bytes(child))
+            });
+        }
+        _ => 1,
+    };
+    128usize.saturating_add(count.saturating_mul(std::mem::size_of::<&Value>()))
+}
+
+fn emit_admitted_relationship(
+    store: &GraphStore,
+    selection: (NodeId, Option<RelTypeId>, AdjacencyDirection),
+    entry: OrderedAdjacencyEntry,
+    admit: &mut ControlledGraphReadAllocator<'_>,
+    consumer: &mut impl FnMut(AdmittedRelationshipRecord) -> Result<GraphScanControl>,
+) -> Result<GraphScanControl> {
+    let relationship = match store.relationship_with_allocation(entry.relationship_id, admit)? {
+        AdmittedRelationshipRead::Missing => {
+            return Err(HawDBError::StorageIntegrity(format!(
+                "ordered adjacency references missing relationship {}",
+                entry.relationship_id.0,
+            )))
+        }
+        AdmittedRelationshipRead::Stopped => return Ok(GraphScanControl::Stop),
+        AdmittedRelationshipRead::Relationship(relationship) => relationship,
+    };
+    let (record, allocation) = relationship.into_parts();
+    let (node_id, rel_type, direction) = selection;
+    let (endpoint, neighbor) = match direction {
+        AdjacencyDirection::Outgoing => (record.source, record.target),
+        AdjacencyDirection::Incoming => (record.target, record.source),
+    };
+    if endpoint != node_id
+        || neighbor != entry.neighbor_id
+        || rel_type.is_some_and(|expected| expected != record.rel_type)
+    {
+        return Err(HawDBError::StorageIntegrity(
+            "ordered relationship does not match its adjacency key".into(),
+        ));
+    }
+    consumer(AdmittedRelationshipRecord::new(record, allocation))
+}
+
+fn emit_admitted_live_before(
+    store: &GraphStore,
+    selection: (NodeId, Option<RelTypeId>, AdjacencyDirection),
+    entries: &mut std::iter::Peekable<impl Iterator<Item = OrderedAdjacencyEntry>>,
+    before: Option<OrderedAdjacencyEntry>,
+    admit: &mut ControlledGraphReadAllocator<'_>,
+    consumer: &mut impl FnMut(AdmittedRelationshipRecord) -> Result<GraphScanControl>,
+) -> Result<GraphScanControl> {
+    while let Some(entry) = entries.peek().copied() {
+        if before.is_some_and(|before| entry >= before) {
+            break;
+        }
+        entries.next();
+        if emit_admitted_relationship(store, selection, entry, admit, consumer)?
+            == GraphScanControl::Stop
+        {
+            return Ok(GraphScanControl::Stop);
+        }
+    }
+    Ok(GraphScanControl::Continue)
+}
+
+fn push_admitted_adjacency_key(
+    entries: &mut Vec<OrderedAdjacencyEntry>,
+    entry: OrderedAdjacencyEntry,
+    memory_budget_bytes: usize,
+    charge: &mut impl FnMut(usize) -> Result<()>,
+) -> Result<()> {
+    if entries.len() == entries.capacity() {
+        let size = std::mem::size_of::<OrderedAdjacencyEntry>();
+        let maximum = memory_budget_bytes / size;
+        let capacity = entries.capacity().saturating_mul(2).max(4).min(maximum);
+        if capacity <= entries.len() {
+            return Err(HawDBError::Execution(
+                "ordered adjacency keys exceed blocking_operator_bytes".into(),
+            ));
+        }
+        charge((capacity - entries.capacity()).saturating_mul(size))?;
+        entries.reserve_exact(capacity - entries.len());
+    }
+    entries.push(entry);
+    Ok(())
 }
 
 fn push_compact_adjacency_key(

@@ -112,6 +112,34 @@ pub(super) fn bind_vector_embedding(
     Ok((name.clone(), values.len()))
 }
 
+pub(super) fn bind_text_seed(
+    search: &CypherTextSearch,
+    parameters: &BTreeMap<String, Value>,
+    output_external_id: bool,
+) -> Result<LogicalPlan> {
+    let ValueExpressionKind::Parameter(query_parameter) = &search.query.kind else {
+        return Err(HawDBError::Semantic(
+            "text search query must be a string parameter".into(),
+        ));
+    };
+    if !matches!(parameters.get(query_parameter), Some(Value::String(_))) {
+        return Err(HawDBError::Semantic(
+            "text search query must be a string parameter".into(),
+        ));
+    }
+    let top_k = search
+        .top_k
+        .as_ref()
+        .map(|value| bind_non_negative_usize(value, parameters, "topK"))
+        .transpose()?
+        .unwrap_or(10);
+    Ok(LogicalPlan::TextSeed {
+        query_parameter: query_parameter.clone(),
+        top_k,
+        output_external_id,
+    })
+}
+
 pub(super) fn bind_vector_seed(
     search: &CypherVectorSearch,
     parameters: &BTreeMap<String, Value>,

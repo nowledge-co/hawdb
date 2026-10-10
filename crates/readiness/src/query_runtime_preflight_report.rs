@@ -367,6 +367,8 @@ pub const fn hawdb_error_class(error: &HawDBError) -> &'static str {
         | HawDBError::BranchBusy { .. } => "storage",
         HawDBError::Execution(_)
         | HawDBError::ReadBudgetExceeded(_)
+        | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
+        | HawDBError::GraphExpansionPayloadLimitExceeded { .. }
         | HawDBError::TransactionConflict { .. }
         | HawDBError::BranchCommandUnsupported { .. } => "execution",
         HawDBError::CapabilityUnavailable { .. } => "capability_unavailable",

@@ -316,6 +316,26 @@ impl<K: Ord, V> CowSegmentedMap<K, V> {
         self.segments.iter().flat_map(|segment| segment.iter())
     }
 
+    /// Borrow a key interval without scanning unrelated immutable segments.
+    pub(crate) fn range<'a>(
+        &'a self,
+        first: &'a K,
+        last: &'a K,
+    ) -> impl Iterator<Item = (&'a K, &'a V)> {
+        assert!(first <= last, "invalid segmented-map key interval");
+        let start = self.segments.partition_point(|segment| {
+            segment.last_key_value().is_some_and(|(key, _)| key < first)
+        });
+        let end = self.segments.partition_point(|segment| {
+            segment
+                .first_key_value()
+                .is_some_and(|(key, _)| key <= last)
+        });
+        self.segments[start..end]
+            .iter()
+            .flat_map(move |segment| segment.range(first..=last))
+    }
+
     pub fn keys(&self) -> impl Iterator<Item = &K> {
         self.iter().map(|(key, _)| key)
     }
@@ -458,5 +478,62 @@ impl<K, V> CowSegmentedMap<K, V> {
                     .any(|other_segment| Arc::ptr_eq(segment, other_segment))
             })
             .count()
+    }
+}
+
+#[cfg(test)]
+mod segmented_range_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_key_interval_matches_btree_across_segments_and_snapshots() {
+        let mut oracle: BTreeMap<NodeId, NodeId> = (0..3000)
+            .map(|key| (NodeId(key * 2), NodeId(key)))
+            .collect();
+        let mut map = CowSegmentedMap::from(oracle.clone());
+        assert!(map.segment_count() > 1);
+        let snapshot = map.clone();
+        let previous = oracle.clone();
+        for key in [0, 512, 2048, 5998] {
+            assert_eq!(map.remove(&NodeId(key)), oracle.remove(&NodeId(key)));
+        }
+        for key in [1, 513, 2049, 6000] {
+            assert_eq!(
+                map.insert(NodeId(key), NodeId(9)),
+                oracle.insert(NodeId(key), NodeId(9))
+            );
+        }
+        for (first, last) in [
+            (0, 0),
+            (1, 1),
+            (3, 3),
+            (511, 514),
+            (1023, 4097),
+            (5998, 7000),
+            (7001, u64::MAX),
+        ] {
+            let (first, last) = (NodeId(first), NodeId(last));
+            let actual: Vec<_> = map
+                .range(&first, &last)
+                .map(|(key, value)| (*key, *value))
+                .collect();
+            let expected: Vec<_> = oracle
+                .range(first..=last)
+                .map(|(key, value)| (*key, *value))
+                .collect();
+            assert_eq!(actual, expected);
+            assert_eq!(
+                snapshot
+                    .range(&first, &last)
+                    .map(|(key, value)| (*key, *value))
+                    .collect::<Vec<_>>(),
+                previous
+                    .range(first..=last)
+                    .map(|(key, value)| (*key, *value))
+                    .collect::<Vec<_>>()
+            );
+        }
+        let empty = CowSegmentedMap::<NodeId, NodeId>::default();
+        assert_eq!(empty.range(&NodeId(0), &NodeId(u64::MAX)).count(), 0);
     }
 }

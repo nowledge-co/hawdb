@@ -426,7 +426,7 @@ fn decode_binding_record(payload: &[u8]) -> Result<(u64, Binding)> {
 }
 
 fn estimate_binding_memory_bytes(input: &mut Cursor<&[u8]>) -> Result<usize> {
-    let (mut payload_bytes, values) = estimate_value_map_payload(input, 0)?;
+    let (mut payload_bytes, values) = estimate_value_map_memory(input, 0, false)?;
     let nodes = read_len(input)?;
     for _ in 0..nodes {
         payload_bytes = encoded_len_add(payload_bytes, skip_string(input)?)?;
@@ -440,7 +440,7 @@ fn estimate_binding_memory_bytes(input: &mut Cursor<&[u8]>) -> Result<usize> {
             payload_bytes,
             encoded_len_mul(labels, std::mem::size_of::<LabelId>())?,
         )?;
-        let (properties, _) = estimate_value_map_payload(input, 0)?;
+        let (properties, _) = estimate_value_map_memory(input, 0, true)?;
         payload_bytes = encoded_len_add(payload_bytes, properties)?;
     }
     let relationships = read_len(input)?;
@@ -454,7 +454,7 @@ fn estimate_binding_memory_bytes(input: &mut Cursor<&[u8]>) -> Result<usize> {
             payload_bytes,
             std::mem::size_of::<u64>() * 3 + std::mem::size_of::<RelTypeId>(),
         )?;
-        let (properties, _) = estimate_value_map_payload(input, 0)?;
+        let (properties, _) = estimate_value_map_memory(input, 0, true)?;
         payload_bytes = encoded_len_add(payload_bytes, properties)?;
     }
     let entry_count = values
@@ -470,58 +470,93 @@ fn estimate_binding_memory_bytes(input: &mut Cursor<&[u8]>) -> Result<usize> {
     )
 }
 
-fn estimate_value_map_payload(input: &mut Cursor<&[u8]>, depth: usize) -> Result<(usize, usize)> {
+fn estimate_value_map_memory(
+    input: &mut Cursor<&[u8]>,
+    depth: usize,
+    include_entry_storage: bool,
+) -> Result<(usize, usize)> {
     check_depth(depth)?;
     let count = read_len(input)?;
-    let mut payload_bytes = 0usize;
+    let mut payload_bytes = if include_entry_storage {
+        encoded_len_add(
+            std::mem::size_of::<BTreeMap<String, Value>>(),
+            encoded_len_mul(count, std::mem::size_of::<(String, Value)>() * 3)?,
+        )?
+    } else {
+        0
+    };
     for _ in 0..count {
         payload_bytes = encoded_len_add(payload_bytes, skip_string(input)?)?;
-        payload_bytes = encoded_len_add(payload_bytes, estimate_value_payload(input, depth + 1)?)?;
+        payload_bytes = encoded_len_add(
+            payload_bytes,
+            estimate_value_memory(input, depth + 1, include_entry_storage)?,
+        )?;
     }
     Ok((payload_bytes, count))
 }
 
-fn estimate_value_payload(input: &mut Cursor<&[u8]>, depth: usize) -> Result<usize> {
+/// Mirror binding retention without decoding or allocating a Value. A nested
+/// container owns each Value slot; a binding entry keeps its existing inline
+/// scalar charge and admits the container's recursive storage separately.
+fn estimate_value_memory(
+    input: &mut Cursor<&[u8]>,
+    depth: usize,
+    include_value_slot: bool,
+) -> Result<usize> {
     check_depth(depth)?;
-    match read_u8(input)? {
-        0 => Ok(0),
+    let (storage_bytes, inline_bytes) = match read_u8(input)? {
+        0 => (0, 0),
         1 => match read_u8(input)? {
-            0 | 1 => Ok(std::mem::size_of::<bool>()),
-            value => Err(HawDBError::Execution(format!(
-                "invalid boolean tag in spill record: {value}"
-            ))),
+            0 | 1 => (0, std::mem::size_of::<bool>()),
+            value => {
+                return Err(HawDBError::Execution(format!(
+                    "invalid boolean tag in spill record: {value}"
+                )))
+            }
         },
         2 => {
             read_i64(input)?;
-            Ok(std::mem::size_of::<i64>())
+            (0, std::mem::size_of::<i64>())
         }
         3 => {
             read_u64(input)?;
-            Ok(std::mem::size_of::<f64>())
+            (0, std::mem::size_of::<f64>())
         }
-        4 => skip_string(input),
+        4 => (skip_string(input)?, 0),
         5 => {
             let count = read_len(input)?;
-            let mut payload_bytes = 0usize;
+            let mut payload_bytes = std::mem::size_of::<Vec<Value>>();
             for _ in 0..count {
-                payload_bytes =
-                    encoded_len_add(payload_bytes, estimate_value_payload(input, depth + 1)?)?;
+                payload_bytes = encoded_len_add(
+                    payload_bytes,
+                    estimate_value_memory(input, depth + 1, true)?,
+                )?;
             }
-            Ok(payload_bytes)
+            (payload_bytes, 0)
         }
-        6 => estimate_value_map_payload(input, depth + 1).map(|(bytes, _)| bytes),
-        7 => skip_binary(input),
+        6 => (estimate_value_map_memory(input, depth + 1, true)?.0, 0),
+        7 => (skip_binary(input)?, 0),
         8 => {
             let mut bytes = [0_u8; 16];
             input.read_exact(&mut bytes).map_err(|error| {
                 HawDBError::Execution(format!("truncated UUID in spill record: {error}"))
             })?;
-            Ok(bytes.len())
+            (bytes.len(), 0)
         }
-        tag => Err(HawDBError::Execution(format!(
-            "invalid value tag in spill record: {tag}"
-        ))),
-    }
+        tag => {
+            return Err(HawDBError::Execution(format!(
+                "invalid value tag in spill record: {tag}"
+            )))
+        }
+    };
+    encoded_len_add(
+        storage_bytes,
+        if include_value_slot {
+            std::mem::size_of::<Value>()
+        } else {
+            inline_bytes
+        },
+    )
 }
 
 fn skip_string(input: &mut Cursor<&[u8]>) -> Result<usize> {
@@ -1225,12 +1260,12 @@ mod tests {
             assert_eq!(encoded.len(), 17);
             for end in 1..encoded.len() {
                 let error =
-                    estimate_value_payload(&mut Cursor::new(&encoded[..end]), 0).unwrap_err();
+                    estimate_value_memory(&mut Cursor::new(&encoded[..end]), 0, false).unwrap_err();
                 assert!(error.to_string().contains("truncated UUID"), "{error}");
             }
             write_value(&mut encoded, &Value::Int(42), 0).unwrap();
             let mut cursor = Cursor::new(encoded.as_slice());
-            assert_eq!(estimate_value_payload(&mut cursor, 0).unwrap(), 16);
+            assert_eq!(estimate_value_memory(&mut cursor, 0, false).unwrap(), 16);
             assert_eq!(cursor.position(), 17);
             assert_eq!(read_value(&mut cursor, 0).unwrap(), Value::Int(42));
             assert_eq!(cursor.position() as usize, encoded.len());

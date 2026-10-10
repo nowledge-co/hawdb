@@ -14,7 +14,22 @@
 
 //! Private batch scan and count handlers.
 
+use super::scan::stream_node_access_batches;
 use super::*;
+use hawdb_plan_cypher::NodeProjectionAccess;
+
+fn admit_access_copy<'a>(
+    context: BatchReadContext<'_>,
+    properties: impl Iterator<Item = &'a str>,
+    values: impl Iterator<Item = &'a Value>,
+) -> Result<Box<dyn hawdb_storage::read_view::GraphReadAllocation>> {
+    let account = context.memory_ledger.account(
+        QueryMemoryClass::BlockingState,
+        "IndexNodeAccess keys",
+        context.memory.blocking_operator_bytes,
+    );
+    crate::scan::owned::admit_access_copy(&account, context.task_context, properties, values)
+}
 
 pub(super) fn stream_composite_node_seek_batches(
     variable: &str,
@@ -24,14 +39,21 @@ pub(super) fn stream_composite_node_seek_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    let Some(label_id) = context.catalog.label_id(label) else {
-        return Ok(BatchControl::Continue);
-    };
-    stream_visited_node_batches(variable, context, execution_limit, emit, |consumer| {
-        context
-            .store
-            .visit_nodes_by_composite_property_owned(label_id, predicates, consumer)
-    })
+    let _access_copy = admit_access_copy(
+        context,
+        predicates.iter().map(|(key, _)| key.as_str()),
+        predicates.iter().map(|(_, value)| value),
+    )?;
+    stream_node_access_batches(
+        variable,
+        label,
+        &NodeProjectionAccess::CompositeEquality {
+            predicates: predicates.to_vec(),
+        },
+        context,
+        execution_limit,
+        emit,
+    )
 }
 
 pub(super) fn stream_composite_node_range_seek_batches(
@@ -42,14 +64,27 @@ pub(super) fn stream_composite_node_range_seek_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    let Some(label_id) = context.catalog.label_id(label) else {
-        return Ok(BatchControl::Continue);
-    };
-    stream_visited_node_batches(variable, context, execution_limit, emit, |consumer| {
-        context
-            .store
-            .visit_nodes_by_composite_range_owned(label_id, seek, consumer)
-    })
+    let _access_copy = admit_access_copy(
+        context,
+        seek.index_properties
+            .iter()
+            .map(String::as_str)
+            .chain(seek.equality_prefix.iter().map(|(key, _)| key.as_str()))
+            .chain(std::iter::once(seek.range_property.as_str())),
+        seek.equality_prefix
+            .iter()
+            .map(|(_, value)| value)
+            .chain(seek.lower.iter().map(|(value, _)| value))
+            .chain(seek.upper.iter().map(|(value, _)| value)),
+    )?;
+    stream_node_access_batches(
+        variable,
+        label,
+        &NodeProjectionAccess::CompositeRange { seek: seek.clone() },
+        context,
+        execution_limit,
+        emit,
+    )
 }
 
 pub(super) struct NodeRangeSeekSpec<'a> {
@@ -74,18 +109,26 @@ impl NodeRangeSeekSpec<'_> {
             lower,
             upper,
         } = self;
-        let Some(label_id) = context.catalog.label_id(label) else {
-            return Ok(BatchControl::Continue);
-        };
-        stream_visited_node_batches(variable, context, execution_limit, emit, |consumer| {
-            context.store.visit_nodes_by_property_range_owned(
-                label_id,
-                property,
-                lower.as_ref(),
-                upper.as_ref(),
-                consumer,
-            )
-        })
+        let _access_copy = admit_access_copy(
+            context,
+            std::iter::once(property),
+            lower
+                .iter()
+                .map(|(value, _)| value)
+                .chain(upper.iter().map(|(value, _)| value)),
+        )?;
+        stream_node_access_batches(
+            variable,
+            label,
+            &NodeProjectionAccess::PropertyRange {
+                property: property.to_owned(),
+                lower: lower.clone(),
+                upper: upper.clone(),
+            },
+            context,
+            execution_limit,
+            emit,
+        )
     }
 }
 
@@ -98,14 +141,19 @@ pub(super) fn stream_node_text_seek_batches(
     execution_limit: ExecutionLimit,
     emit: &mut dyn FnMut(BindingBatch) -> Result<BatchControl>,
 ) -> Result<BatchControl> {
-    let Some(label_id) = context.catalog.label_id(label) else {
-        return Ok(BatchControl::Continue);
-    };
-    stream_visited_node_batches(variable, context, execution_limit, emit, |consumer| {
-        context
-            .store
-            .visit_nodes_by_full_text_property_owned(label_id, property, query, consumer)
-    })
+    let _access_copy =
+        admit_access_copy(context, [property, query].into_iter(), std::iter::empty())?;
+    stream_node_access_batches(
+        variable,
+        label,
+        &NodeProjectionAccess::FullText {
+            property: property.to_owned(),
+            query: query.to_owned(),
+        },
+        context,
+        execution_limit,
+        emit,
+    )
 }
 
 pub(super) fn stream_optional_relationship_count_sum_batches(
@@ -125,34 +173,40 @@ pub(super) fn stream_optional_relationship_count_sum_batches(
     );
     let mut total = 0usize;
     let mut nodes_since_checkpoint = 0usize;
-    context.store.visit_nodes_owned(None, &mut |node| {
-        nodes_since_checkpoint += 1;
-        if nodes_since_checkpoint == context.memory.batch_rows.get() {
-            nodes_since_checkpoint = 0;
-            runtime_checkpoint(context.task_context)?;
-        }
-        if !node_matches_label_pattern(&node, label_ids.as_deref())
-            || !node_properties_match(&node, properties)
-        {
-            return Ok(ScanControl::Continue);
-        }
-        for leg in legs {
-            let count = relationship_count_sum_leg(
-                context.catalog,
-                context.store,
-                node.id,
-                leg,
-                crate::store::AdjacencyReadMemory {
-                    budget_bytes: context.memory.blocking_operator_bytes.get(),
-                    account: Some(&count_account),
-                },
-                context.observer,
-                context.task_context,
-            )?;
-            total = total.saturating_add(count);
-        }
-        Ok(ScanControl::Continue)
-    })?;
+    let mut admit = |bytes| {
+        crate::store::admit_graph_read(&count_account, context.task_context, bytes).map(Some)
+    };
+    context
+        .store
+        .visit_nodes_with_allocation(None, &mut admit, &mut |input| {
+            let (node, _allocation) = input.into_parts();
+            nodes_since_checkpoint += 1;
+            if nodes_since_checkpoint == context.memory.batch_rows.get() {
+                nodes_since_checkpoint = 0;
+                runtime_checkpoint(context.task_context)?;
+            }
+            if !node_matches_label_pattern(&node, label_ids.as_deref())
+                || !node_properties_match(&node, properties)
+            {
+                return Ok(ScanControl::Continue);
+            }
+            for leg in legs {
+                let count = relationship_count_sum_leg(
+                    context.catalog,
+                    context.store,
+                    node.id,
+                    leg,
+                    crate::store::AdjacencyReadMemory {
+                        budget_bytes: context.memory.blocking_operator_bytes.get(),
+                        account: Some(&count_account),
+                    },
+                    context.observer,
+                    context.task_context,
+                )?;
+                total = total.saturating_add(count);
+            }
+            Ok(ScanControl::Continue)
+        })?;
     emit(vec![Binding {
         values: BTreeMap::from([(output.to_owned(), Value::Int(total as i64))]),
         nodes: BTreeMap::new(),

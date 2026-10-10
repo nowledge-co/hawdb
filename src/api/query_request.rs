@@ -16,23 +16,49 @@ use super::{QueryAccessControlContext, QueryStreamOptions};
 use crate::{HawDBError, Result, Value};
 use hawdb_core::graph_rag::{ScoringProgram, ScoringProgramShape};
 use hawdb_plan_cypher::{
-    visit_plan, PhysicalPlan, ScoringVectorGraphInput, SCORING_RERANK_SCORE_COLUMN,
+    visit_plan, PhysicalPlan, ScoringSeedGraphInput, SCORING_RERANK_SCORE_COLUMN,
 };
 use std::collections::BTreeMap;
 
+mod host;
+pub use host::HostScoringRequest;
+
+#[derive(Clone, Copy)]
+pub(super) enum ScoringAttachment<'a> {
+    Program(&'a ScoringRequest),
+    Host {
+        plan: &'a hawdb_plan_cypher::HostScoringPlan,
+        candidate_window: bool,
+        reference_time_millis: Option<u64>,
+        provider: &'a dyn hawdb_executor::scoring::HostScorerProvider,
+    },
+}
+
+impl<'a> ScoringAttachment<'a> {
+    pub(super) fn bind(self) -> BoundScoringRequest<'a> {
+        match self {
+            Self::Program(request) => request.bind(),
+            Self::Host {
+                reference_time_millis,
+                ..
+            } => BoundScoringRequest {
+                request: self,
+                reference_time_millis: reference_time_millis
+                    .unwrap_or_else(hawdb_executor::scoring::reference_time_millis),
+            },
+        }
+    }
+}
+
 /// Optional engine-owned ranking of the complete returned candidate stream.
 /// Property names in the program refer to declared returned value aliases.
-/// Equal scores retain candidate arrival order, including through spills.
-/// Use a total upstream `ORDER BY` when ties must be reproducible across runs.
-/// A rejected missing feature or nonfinite score fails the entire request;
-/// scoring never silently drops a candidate or returns a partial ranking.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScoringRequest {
     program: ScoringProgram,
     score_column: String,
     limit: usize,
     candidate_window: bool,
-    vector_graph_input: Option<ScoringVectorGraphInput>,
+    seed_graph_input: Option<ScoringSeedGraphInput>,
     reference_time_millis: Option<u64>,
 }
 
@@ -57,7 +83,7 @@ impl ScoringRequest {
             score_column,
             limit,
             candidate_window: false,
-            vector_graph_input: None,
+            seed_graph_input: None,
             reference_time_millis: None,
         })
     }
@@ -83,7 +109,34 @@ impl ScoringRequest {
         seed_variable: impl Into<String>,
         candidate_variable: impl Into<String>,
     ) -> Result<Self> {
-        self.vector_graph_input = Some(ScoringVectorGraphInput::new(
+        self.seed_graph_input = Some(ScoringSeedGraphInput::new(
+            seed_variable,
+            candidate_variable,
+        )?);
+        Ok(self)
+    }
+
+    /// Bind actual text BM25, observed cumulative hops and canonical candidate properties.
+    pub fn with_text_graph_input(
+        mut self,
+        seed_variable: impl Into<String>,
+        candidate_variable: impl Into<String>,
+    ) -> Result<Self> {
+        self.seed_graph_input = Some(ScoringSeedGraphInput::new_text(
+            seed_variable,
+            candidate_variable,
+        )?);
+        Ok(self)
+    }
+
+    /// Bind canonical graph-retriever relevance, observed hops and candidate properties.
+    /// This supplies GraphSeedScore; vector/text SearchScore remains distinct.
+    pub fn with_graph_seed_input(
+        mut self,
+        seed_variable: impl Into<String>,
+        candidate_variable: impl Into<String>,
+    ) -> Result<Self> {
+        self.seed_graph_input = Some(ScoringSeedGraphInput::new_graph(
             seed_variable,
             candidate_variable,
         )?);
@@ -96,7 +149,7 @@ impl ScoringRequest {
 
     pub(super) fn bind(&self) -> BoundScoringRequest<'_> {
         BoundScoringRequest {
-            request: self,
+            request: ScoringAttachment::Program(self),
             reference_time_millis: self
                 .reference_time_millis
                 .unwrap_or_else(hawdb_executor::scoring::reference_time_millis),
@@ -109,7 +162,7 @@ impl ScoringRequest {
 pub struct QueryRequest<'a> {
     pub(super) cypher: &'a str,
     pub(super) parameters: Option<&'a BTreeMap<String, Value>>,
-    pub(super) scoring: Option<&'a ScoringRequest>,
+    pub(super) scoring: Option<ScoringAttachment<'a>>,
     pub(super) access_control: Option<&'a QueryAccessControlContext>,
     pub(super) task_context: Option<&'a hawdb_core::RuntimeTaskContext>,
     pub(super) output_limits: QueryStreamOptions,
@@ -133,7 +186,17 @@ impl<'a> QueryRequest<'a> {
     }
 
     pub fn with_scoring(mut self, scoring: &'a ScoringRequest) -> Self {
-        self.scoring = Some(scoring);
+        self.scoring = Some(ScoringAttachment::Program(scoring));
+        self
+    }
+
+    pub fn with_host_scoring(mut self, scoring: &'a HostScoringRequest<'_>) -> Self {
+        self.scoring = Some(ScoringAttachment::Host {
+            plan: &scoring.plan,
+            candidate_window: scoring.candidate_window,
+            reference_time_millis: scoring.reference_time_millis,
+            provider: scoring,
+        });
         self
     }
 
@@ -153,31 +216,72 @@ impl<'a> QueryRequest<'a> {
         self.output_limits = limits;
         self
     }
+
+    /// An enclosing snapshot can restrict a request without widening the
+    /// request's own previously declared caps.
+    pub(crate) fn with_restrictive_output_limits(mut self, limits: QueryStreamOptions) -> Self {
+        self.output_limits = QueryStreamOptions {
+            max_rows: super::restrictive_query_limit(self.output_limits.max_rows, limits.max_rows),
+            max_payload_bytes: super::restrictive_query_limit(
+                self.output_limits.max_payload_bytes,
+                limits.max_payload_bytes,
+            ),
+        };
+        self
+    }
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct BoundScoringRequest<'a> {
-    request: &'a ScoringRequest,
+    request: ScoringAttachment<'a>,
     reference_time_millis: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(super) struct ScoringPlanCacheKey {
+pub(super) enum ScoringPlanCacheKey {
+    Program(ScoringProgramCacheKey),
+    Host {
+        plan: hawdb_plan_cypher::HostScoringPlan,
+        candidate_window: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(super) struct ScoringProgramCacheKey {
     program: ScoringProgramShape,
     score_column: String,
     limit: usize,
     candidate_window: bool,
-    vector_graph_input: Option<ScoringVectorGraphInput>,
+    seed_graph_input: Option<ScoringSeedGraphInput>,
 }
 
-impl BoundScoringRequest<'_> {
+impl<'a> BoundScoringRequest<'a> {
     pub(super) fn cache_key(self) -> ScoringPlanCacheKey {
-        ScoringPlanCacheKey {
-            program: self.request.program.shape(),
-            score_column: self.request.score_column.clone(),
-            limit: self.request.limit,
-            candidate_window: self.request.candidate_window,
-            vector_graph_input: self.request.vector_graph_input.clone(),
+        match self.request {
+            ScoringAttachment::Program(request) => {
+                ScoringPlanCacheKey::Program(ScoringProgramCacheKey {
+                    program: request.program.shape(),
+                    score_column: request.score_column.clone(),
+                    limit: request.limit,
+                    candidate_window: request.candidate_window,
+                    seed_graph_input: request.seed_graph_input.clone(),
+                })
+            }
+            ScoringAttachment::Host {
+                plan,
+                candidate_window,
+                ..
+            } => ScoringPlanCacheKey::Host {
+                plan: plan.clone(),
+                candidate_window,
+            },
+        }
+    }
+
+    pub(super) fn host_scorer(self) -> Option<&'a dyn hawdb_executor::scoring::HostScorerProvider> {
+        match self.request {
+            ScoringAttachment::Program(_) => None,
+            ScoringAttachment::Host { provider, .. } => Some(provider),
         }
     }
 
@@ -185,7 +289,20 @@ impl BoundScoringRequest<'_> {
         if hawdb_executor::mutation::is_mutation_plan(&input)? {
             return Err(HawDBError::Semantic("scoring requires a read query".into()));
         }
-        if !self.request.candidate_window {
+        if hawdb_executor::batch::BatchPlanRef::try_new(&input).is_none() {
+            return Err(crate::executor::unsupported_scoring_input_error());
+        }
+        let (candidate_window, seed_graph_input) = match self.request {
+            ScoringAttachment::Program(request) => {
+                (request.candidate_window, request.seed_graph_input.as_ref())
+            }
+            ScoringAttachment::Host {
+                plan,
+                candidate_window,
+                ..
+            } => (candidate_window, plan.seed_graph_input()),
+        };
+        if !candidate_window {
             let mut windowed = false;
             visit_plan(&input, &mut |node| {
                 windowed |= matches!(
@@ -201,23 +318,52 @@ impl BoundScoringRequest<'_> {
                 ));
             }
         }
-        if let Some(source) = &self.request.vector_graph_input {
+        if let Some(source) = seed_graph_input {
             source.validate_plan(&input)?;
         }
-        Ok(PhysicalPlan::ScoringProgramExec {
-            score_column: self.request.score_column.clone(),
-            vector_graph_input: self.request.vector_graph_input.clone(),
-            program: self.request.program.neutral_template(),
-            reference_time_millis: 0,
-            limit: self.request.limit,
-            input: Box::new(input),
+        Ok(match self.request {
+            ScoringAttachment::Program(request) => PhysicalPlan::ScoringProgramExec {
+                score_column: request.score_column.clone(),
+                seed_graph_input: request.seed_graph_input.clone(),
+                program: request.program.neutral_template(),
+                reference_time_millis: 0,
+                limit: request.limit,
+                input: Box::new(input),
+            },
+            ScoringAttachment::Host { plan, .. } => PhysicalPlan::HostScoringExec {
+                scoring: plan.clone(),
+                reference_time_millis: 0,
+                input: Box::new(input),
+            },
         })
     }
 
     pub(super) fn rebind(self, plan: &mut PhysicalPlan) -> Result<()> {
+        let ScoringAttachment::Program(request) = self.request else {
+            let ScoringAttachment::Host { plan: expected, .. } = self.request else {
+                unreachable!()
+            };
+            let PhysicalPlan::HostScoringExec {
+                scoring,
+                reference_time_millis,
+                ..
+            } = plan
+            else {
+                return Err(HawDBError::Execution(
+                    "cached host scoring plan is missing its scoring operator".into(),
+                ));
+            };
+            if scoring != expected {
+                return Err(HawDBError::Execution(
+                    "cached host scoring plan has a different scoring identity or structure".into(),
+                ));
+            }
+            *reference_time_millis = self.reference_time_millis;
+            return Ok(());
+        };
         let PhysicalPlan::ScoringProgramExec {
             score_column,
-            vector_graph_input,
+            seed_graph_input,
             program,
             reference_time_millis,
             limit,
@@ -228,16 +374,16 @@ impl BoundScoringRequest<'_> {
                 "cached scoring plan is missing its scoring operator".into(),
             ));
         };
-        if *vector_graph_input != self.request.vector_graph_input
-            || *score_column != self.request.score_column
-            || *limit != self.request.limit
-            || program.shape() != self.request.program.shape()
+        if *seed_graph_input != request.seed_graph_input
+            || *score_column != request.score_column
+            || *limit != request.limit
+            || program.shape() != request.program.shape()
         {
             return Err(HawDBError::Execution(
                 "cached scoring plan has a different scoring structure".into(),
             ));
         }
-        *program = self.request.program.clone();
+        *program = request.program.clone();
         *reference_time_millis = self.reference_time_millis;
         Ok(())
     }
@@ -343,9 +489,9 @@ mod tests {
         ScoringTerm,
     };
 
-    const QUERY: &str = "MATCH (m:Memory) WHERE m.kind = $kind RETURN m.id AS id, m.seed AS score, m.importance AS importance, m.created AS created ORDER BY id";
+    pub(super) const QUERY: &str = "MATCH (m:Memory) WHERE m.kind = $kind RETURN m.id AS id, m.seed AS score, m.importance AS importance, m.created AS created ORDER BY id";
 
-    fn fixture() -> Database {
+    pub(super) fn fixture() -> Database {
         let mut database = Database::new_with_config(crate::DatabaseConfig {
             runtime_capabilities: hawdb_core::RuntimeCapabilities::default().with(
                 hawdb_core::RuntimeCapability::AccessControl,
@@ -363,7 +509,7 @@ mod tests {
         database
     }
 
-    fn parameters(kind: &str) -> BTreeMap<String, Value> {
+    pub(super) fn parameters(kind: &str) -> BTreeMap<String, Value> {
         BTreeMap::from([("kind".into(), Value::String(kind.into()))])
     }
 
@@ -858,3 +1004,15 @@ mod tests {
 #[cfg(test)]
 #[path = "query_request/provenance_tests.rs"]
 mod provenance_tests;
+
+#[cfg(all(test, feature = "full-text-search"))]
+#[path = "query_request/text_provenance_tests.rs"]
+mod text_provenance_tests;
+
+#[cfg(test)]
+#[path = "query_request/graph_seed_tests.rs"]
+mod graph_seed_tests;
+
+#[cfg(test)]
+#[path = "query_request/expansion_budget_tests.rs"]
+mod expansion_budget_tests;

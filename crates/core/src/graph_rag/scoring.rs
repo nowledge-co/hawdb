@@ -70,6 +70,12 @@ pub trait ScoringFeatureSource {
     fn hop_distance(&self) -> Option<usize>;
     fn numeric_property(&self, property: &str) -> Option<f64>;
     fn timestamp_millis(&self, property: &str) -> Option<u64>;
+
+    /// Borrowed, explicitly returned metadata for a host's cohort policy, such
+    /// as an exact reason/tie key. It does not establish retrieval provenance.
+    fn returned_value(&self, _column: &str) -> Option<&crate::Value> {
+        None
+    }
 }
 
 /// One candidate's evaluation, carrying per-term provenance.

@@ -141,13 +141,13 @@ pub use api::{
     HawDBLightningInitialImportSourceBundleReadiness, HawDBLightningInitialImportSourceFingerprint,
     HawDBLightningInitialImportStartupReadinessReport,
     HawDBLightningInitialImportStreamingBatchAdvanceReport, HawDBLightningRelationalStream,
-    HawDBLightningRelationalStreamValidation, KnowledgeCandidate, KnowledgeCandidateScoreBreakdown,
-    KnowledgeCandidateScoringPolicy, KnowledgeCandidateSource, KnowledgeEvidence,
-    KnowledgeFallbackReasonCode, KnowledgeFanoutReasonCode, KnowledgeFanoutReasonDetail,
-    KnowledgeGraphContextPath, KnowledgeGraphPathDirection, KnowledgeGraphSeed,
-    KnowledgeRetrievalDiagnostics, KnowledgeRetrievalEmptyReasonCode, KnowledgeRetrievalOutput,
-    KnowledgeRetrievalRequest, KnowledgeRetrieverCandidate, KnowledgeRetrieverReport,
-    KnowledgeSourceCandidateRow, KnowledgeSourceCandidateScanOrigin,
+    HawDBLightningRelationalStreamValidation, HostScoringRequest, KnowledgeCandidate,
+    KnowledgeCandidateScoreBreakdown, KnowledgeCandidateScoringPolicy, KnowledgeCandidateSource,
+    KnowledgeEvidence, KnowledgeFallbackReasonCode, KnowledgeFanoutReasonCode,
+    KnowledgeFanoutReasonDetail, KnowledgeGraphContextPath, KnowledgeGraphPathDirection,
+    KnowledgeGraphSeed, KnowledgeRetrievalDiagnostics, KnowledgeRetrievalEmptyReasonCode,
+    KnowledgeRetrievalOutput, KnowledgeRetrievalRequest, KnowledgeRetrieverCandidate,
+    KnowledgeRetrieverReport, KnowledgeSourceCandidateRow, KnowledgeSourceCandidateScanOrigin,
     KnowledgeSourceCandidateScanOutput, KnowledgeSourceCandidateScanRequest,
     KnowledgeTruncationReasonCode, MissingScoringFeature, NowledgeGraphAdapter,
     NowledgeGraphExplainOutput, NowledgeGraphStatement, NowledgeGraphTransactionOutput,
@@ -293,10 +293,12 @@ pub use hawdb_core::{
     DEFAULT_GRAPH_RAG_MAX_PROPERTIES_PER_SUBJECT, DEFAULT_GRAPH_RAG_MAX_RELATIONSHIP_TYPES,
     DEFAULT_GRAPH_RAG_MAX_ROUTES, GRAPH_RAG_SCHEMA_CONTEXT_PROTOCOL, MAX_GRAPH_RAG_QUERY_LIMIT,
 };
+pub use hawdb_executor::scoring::{HostScorer, HostScorerBatch, HostScorerDescriptor};
 pub use hawdb_optimizer::{
     AdaptiveVectorBackendPolicy, Distribution, GroupId, Memo as OptimizerMemo,
     MemoGroup as OptimizerMemoGroup, PhysicalProperties, RequiredProperties,
 };
+pub use hawdb_plan_cypher::GraphExpansionBudget;
 pub use hawdb_qos::{
     IoConcurrencyBudget, ProcessMemoryCapabilities, ProcessMemoryPolicy, ProcessMemoryPolicyConfig,
     ProcessMemoryPolicySnapshot, ProcessMemoryProfile, ProcessMemorySnapshot, RuntimeAdmissionCode,
@@ -516,17 +518,17 @@ pub use search::{
     SearchProjectionProbeOptions, SearchProjectionQualificationIdentity, SearchProjectionRow,
     SearchQueryOptions, SearchRangeReadConfig, SearchRebuildOptions, SearchRebuildSummary,
     SearchResultSet, SearchRetrieverCandidateSetReport, SearchScoredCandidate,
-    SearchStagingCleanupReport, SearchTopKScoreParity, SearchTruncationReasonCode,
-    SearchVerifiedBody, VectorProjectionQualificationIdentity, VectorProjectionResourceEvidence,
-    VectorRecallProductionQualificationReport, VectorRecallValidationBlocker,
-    VectorRecallValidationOptions, VectorRecallValidationReport, VectorSearchExecutionOptions,
-    VectorSearchKernelPreference, DEFAULT_VECTOR_SEARCH_WORKING_BYTES,
-    MAX_VECTOR_RECALL_VALIDATION_CANDIDATE_LIMIT, MAX_VECTOR_RECALL_VALIDATION_SAMPLES,
-    MAX_VECTOR_RECALL_VALIDATION_TOP_K, MINIMUM_VECTOR_QUALIFICATION_DOCUMENT_COUNT,
-    NOWLEDGE_MEMORY_MATERIALIZED_METADATA_PATHS, NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS,
-    SEARCH_LEXICAL_QUALIFICATION_PROTOCOL, SEARCH_LEXICAL_QUALIFICATION_PROTOCOL_VERSION,
-    SEARCH_PROJECTION_CLEANUP_PROTOCOL, VECTOR_RECALL_PRODUCTION_QUALIFICATION_PROTOCOL,
-    VECTOR_RECALL_VALIDATION_PROTOCOL,
+    SearchStagingCleanupReport, SearchTextSeedOutput, SearchTextSeedReport, SearchTopKScoreParity,
+    SearchTruncationReasonCode, SearchVerifiedBody, VectorProjectionQualificationIdentity,
+    VectorProjectionResourceEvidence, VectorRecallProductionQualificationReport,
+    VectorRecallValidationBlocker, VectorRecallValidationOptions, VectorRecallValidationReport,
+    VectorSearchExecutionOptions, VectorSearchKernelPreference,
+    DEFAULT_VECTOR_SEARCH_WORKING_BYTES, MAX_VECTOR_RECALL_VALIDATION_CANDIDATE_LIMIT,
+    MAX_VECTOR_RECALL_VALIDATION_SAMPLES, MAX_VECTOR_RECALL_VALIDATION_TOP_K,
+    MINIMUM_VECTOR_QUALIFICATION_DOCUMENT_COUNT, NOWLEDGE_MEMORY_MATERIALIZED_METADATA_PATHS,
+    NOWLEDGE_SEARCH_PROJECTION_SCAN_FILTER_FIELDS, SEARCH_LEXICAL_QUALIFICATION_PROTOCOL,
+    SEARCH_LEXICAL_QUALIFICATION_PROTOCOL_VERSION, SEARCH_PROJECTION_CLEANUP_PROTOCOL,
+    VECTOR_RECALL_PRODUCTION_QUALIFICATION_PROTOCOL, VECTOR_RECALL_VALIDATION_PROTOCOL,
 };
 pub use search_candidate_shadow_evidence::parse_search_candidate_shadow_probe;
 pub use search_projection_evidence::{

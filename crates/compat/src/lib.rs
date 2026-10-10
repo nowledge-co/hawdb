@@ -429,6 +429,8 @@ impl ExpectedErrorClass {
             | HawDBError::BranchBusy { .. } => Self::Storage,
             HawDBError::Execution(_)
             | HawDBError::ReadBudgetExceeded(_)
+            | HawDBError::GraphExpansionCandidateLimitExceeded { .. }
+            | HawDBError::GraphExpansionPayloadLimitExceeded { .. }
             | HawDBError::TransactionConflict { .. }
             | HawDBError::BranchCommandUnsupported { .. } => Self::Execution,
             HawDBError::CapabilityUnavailable { .. } => Self::CapabilityUnavailable,

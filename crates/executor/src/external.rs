@@ -18,11 +18,14 @@
 pub mod seed;
 
 use crate::VectorExecutionReport;
+
+mod text;
 use hawdb_core::{HawDBError, Result, RuntimeTaskContext};
 use hawdb_plan_cypher::VectorPhysicalPlan;
 use std::collections::BTreeMap;
 use std::mem::size_of;
 use std::num::NonZeroUsize;
+pub use text::{TextSeedExecutionOutput, TextSeedExecutionRequest, TextSeedExecutionRow};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExternalReadResultBudget {
@@ -112,6 +115,16 @@ impl VectorSeedExecutionOutput {
 }
 
 pub trait ExternalReadOperator {
+    fn execute_text_seed(
+        &mut self,
+        request: TextSeedExecutionRequest<'_>,
+    ) -> Result<TextSeedExecutionOutput> {
+        request.resources.checkpoint()?;
+        Err(HawDBError::Execution(
+            "text search capability is unavailable without a text projection".into(),
+        ))
+    }
+
     fn execute_vector_seed(
         &mut self,
         request: VectorSeedExecutionRequest<'_>,

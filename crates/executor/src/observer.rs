@@ -36,6 +36,11 @@ pub use query::{blocking_operator_kinds, QueryExecutionObserver, QueryExecutionR
 
 pub trait ExecutionObserver {
     #[doc(hidden)]
+    fn seed_graph_scoring_input(&self) -> Option<&hawdb_plan_cypher::ScoringSeedGraphInput> {
+        self.vector_graph_scoring_input()
+    }
+
+    #[doc(hidden)]
     fn vector_graph_scoring_input(&self) -> Option<&hawdb_plan_cypher::ScoringVectorGraphInput> {
         None
     }

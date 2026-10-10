@@ -33,6 +33,9 @@ struct ChainStore {
     stop_after: usize,
     failure: bool,
     panic: bool,
+    cancel_before_admission: bool,
+    output_node: Option<NodeRecord>,
+    node_copies: Cell<usize>,
 }
 
 impl GraphExecutionRead for ChainStore {
@@ -46,11 +49,34 @@ impl GraphExecutionRead for ChainStore {
         5
     }
     fn node_owned(&self, id: NodeId) -> Result<Option<NodeRecord>> {
-        Ok(Some(NodeRecord {
+        self.node_copies.set(self.node_copies.get() + 1);
+        Ok(Some(self.output_node.clone().unwrap_or(NodeRecord {
             id,
             labels: BTreeSet::new(),
             properties: BTreeMap::new(),
-        }))
+        })))
+    }
+    fn node_with_allocation(
+        &self,
+        id: NodeId,
+        label_ids: Option<&[hawdb_core::LabelId]>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+    ) -> Result<hawdb_storage::read_view::AdmittedNodeRead> {
+        use hawdb_storage::read_view::{AdmittedNodeRead, AdmittedNodeRecord};
+        let empty = NodeRecord {
+            id,
+            labels: BTreeSet::new(),
+            properties: BTreeMap::new(),
+        };
+        let node = self.output_node.as_ref().unwrap_or(&empty);
+        if !crate::predicate::node_matches_label_pattern(node, label_ids) {
+            return Ok(AdmittedNodeRead::Missing);
+        }
+        let Some(allocation) = admit(hawdb_core::ids::node_allocation_bytes(node))? else {
+            return Ok(AdmittedNodeRead::Stopped);
+        };
+        self.node_copies.set(self.node_copies.get() + 1);
+        AdmittedNodeRecord::clone_admitted(node, allocation).map(AdmittedNodeRead::Node)
     }
     fn visit_adjacent_relationships_owned(
         &self,
@@ -81,6 +107,40 @@ impl GraphExecutionRead for ChainStore {
         }
         Ok(control)
     }
+    fn visit_ordered_adjacent_relationships_with_allocation(
+        &self,
+        node_id: NodeId,
+        rel_type: Option<RelTypeId>,
+        direction: AdjacencyDirection,
+        memory: AdjacencyReadMemory<'_>,
+        admit: &mut hawdb_storage::read_view::ControlledGraphReadAllocator<'_>,
+        consumer: &mut dyn FnMut(
+            hawdb_storage::read_view::AdmittedRelationshipRecord,
+        ) -> Result<ScanControl>,
+    ) -> Result<ScanControl> {
+        let _ = memory;
+        if self.cancel_before_admission {
+            self.context.cancellation().cancel();
+        }
+        let Some(_source) = admit(2048)? else {
+            return Ok(ScanControl::Stop);
+        };
+        self.visit_adjacent_relationships_owned(node_id, rel_type, direction, &mut |relationship| {
+            let Some(allocation) = admit(hawdb_core::ids::relationship_allocation_bytes(
+                &relationship,
+            ))?
+            else {
+                return Ok(ScanControl::Stop);
+            };
+            consumer(
+                hawdb_storage::read_view::AdmittedRelationshipRecord::clone_admitted(
+                    &relationship,
+                    allocation,
+                )?,
+            )
+        })
+    }
+
     fn scan_nodes_borrowed<'a>(
         &'a self,
         _: Option<LabelId>,
@@ -223,6 +283,9 @@ fn level_boundary_cancellation_and_storage_failures_release_all_state() {
                 stop_after,
                 failure: mode == 1,
                 panic: mode == 2,
+                cancel_before_admission: false,
+                output_node: None,
+                node_copies: Cell::new(0),
             };
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 search_shortest_paths(
@@ -334,4 +397,144 @@ fn vector_growth_reserves_old_and_new_allocations_together() {
     assert!(grow_vec(&mut values, &mut tracker).is_err());
     assert_eq!(values, [0, 1, 2, 3]);
     assert_eq!(tracker.used_bytes, 4 * size_of::<usize>());
+}
+
+#[test]
+fn shortest_path_length_result_accounts_shared_binding_footprint() {
+    let budget = NonZeroUsize::new(4096).unwrap();
+    let ledger = QueryMemoryLedger::new(budget);
+    let account = ledger.account(QueryMemoryClass::BlockingState, "length guard", budget);
+    let mut tracker = OperatorMemoryTracker::with_account(budget, account.clone());
+    tracker.try_charge(std::mem::size_of::<Binding>()).unwrap();
+    let binding = shortest_path_binding(
+        &hawdb_storage::store::GraphStore::default(),
+        &[NodeId(1), NodeId(2)],
+        &[ShortestPathProjection {
+            name: "length".into(),
+            expression: ShortestPathProjectionExpression::Length,
+        }],
+        &mut tracker,
+        &account,
+        None,
+    )
+    .unwrap();
+    assert_eq!(tracker.used_bytes, binding_memory_bytes(&binding));
+    drop(tracker);
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn shortest_path_length_result_refuses_before_retained_budget_overflow() {
+    let expected = Binding {
+        values: BTreeMap::from([("length".into(), Value::Int(1))]),
+        nodes: BTreeMap::new(),
+        relationships: BTreeMap::new(),
+    };
+    let budget = NonZeroUsize::new(binding_memory_bytes(&expected) - 1).unwrap();
+    let ledger = QueryMemoryLedger::new(budget);
+    let account = ledger.account(QueryMemoryClass::BlockingState, "length guard", budget);
+    let mut tracker = OperatorMemoryTracker::with_account(budget, account.clone());
+    tracker.try_charge(std::mem::size_of::<Binding>()).unwrap();
+    let result = shortest_path_binding(
+        &hawdb_storage::store::GraphStore::default(),
+        &[NodeId(1), NodeId(2)],
+        &[ShortestPathProjection {
+            name: "length".into(),
+            expression: ShortestPathProjectionExpression::Length,
+        }],
+        &mut tracker,
+        &account,
+        None,
+    );
+    assert!(result.is_err());
+    drop(tracker);
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn shortest_path_output_refuses_native_point_copy_before_allocation() {
+    let budget = NonZeroUsize::new(4096).unwrap();
+    let ledger = QueryMemoryLedger::new(budget);
+    let account = ledger.account(
+        QueryMemoryClass::BlockingState,
+        "output source guard",
+        budget,
+    );
+    let mut tracker = OperatorMemoryTracker::with_account(budget, account.clone());
+    let store = ChainStore {
+        context: RuntimeTaskContext::default(),
+        visits: Cell::new(0),
+        stop_after: usize::MAX,
+        failure: false,
+        panic: false,
+        cancel_before_admission: false,
+        output_node: Some(NodeRecord {
+            id: NodeId(1),
+            labels: BTreeSet::new(),
+            properties: BTreeMap::from([(
+                "body".into(),
+                Value::String("x".repeat(1024 * 1024 + 137)),
+            )]),
+        }),
+        node_copies: Cell::new(0),
+    };
+    let result = shortest_path_binding(
+        &store,
+        &[NodeId(1)],
+        &[ShortestPathProjection {
+            name: "body".into(),
+            expression: ShortestPathProjectionExpression::NodePropertyList {
+                property: "body".into(),
+            },
+        }],
+        &mut tracker,
+        &account,
+        None,
+    );
+    assert!(result.is_err());
+    assert_eq!(
+        store.node_copies.get(),
+        0,
+        "output cloned native point before source admission"
+    );
+    drop(tracker);
+    assert_eq!(ledger.snapshot().used_bytes, 0);
+}
+
+#[test]
+fn shortest_path_forwards_cancellation_to_source_admission() {
+    let budget = NonZeroUsize::new(64 * 1024).unwrap();
+    let ledger = QueryMemoryLedger::new(budget);
+    let account = ledger.account(
+        QueryMemoryClass::BlockingState,
+        "cancellation source guard",
+        budget,
+    );
+    let store = ChainStore {
+        context: RuntimeTaskContext::default(),
+        visits: Cell::new(0),
+        stop_after: usize::MAX,
+        failure: false,
+        panic: false,
+        cancel_before_admission: true,
+        output_node: None,
+        node_copies: Cell::new(0),
+    };
+    let result = search_shortest_paths(
+        &store,
+        search(),
+        budget,
+        10,
+        account,
+        Some(&store.context),
+        &NoopExecutionObserver,
+    );
+    assert!(result.is_err());
+    assert_eq!(
+        store.visits.get(),
+        0,
+        "cancelled source copied an adjacency record"
+    );
+    assert_eq!(store.node_copies.get(), 0);
+    assert_eq!(ledger.snapshot().used_bytes, 0);
 }

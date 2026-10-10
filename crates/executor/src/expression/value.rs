@@ -2,7 +2,10 @@ use super::predicate::{predicate_comparison_truth, PredicateTruth};
 use super::*;
 use hawdb_plan_cypher::ScalarBinaryOp;
 
-pub fn insert_projected_value(values: &mut BTreeMap<String, Value>, name: &str, value: Value) {
+mod borrowed;
+pub(crate) use borrowed::{evaluate_projection_borrowed, ProjectedValue};
+
+pub fn insert_projected_value<V>(values: &mut BTreeMap<String, V>, name: &str, value: V) {
     let mut candidate = name.to_string();
     let mut suffix = 2;
     loop {
@@ -28,375 +31,7 @@ pub fn evaluate_projection_expression(
     catalog: &Catalog,
     binding: &Binding,
 ) -> Result<Value> {
-    match expression {
-        ProjectionExpression::Case {
-            operand,
-            branches,
-            otherwise,
-        } => {
-            let operand = operand
-                .as_deref()
-                .map(|value| project_expression_value(value, catalog, binding))
-                .transpose()?;
-            for (condition, result) in branches {
-                let condition = project_expression_value(condition, catalog, binding)?;
-                let matches = if let Some(operand) = &operand {
-                    predicate_comparison_truth(Some(operand), &condition, |left, right| {
-                        left == right
-                    })
-                    .is_true()
-                } else {
-                    scalar_truth(condition)?.is_true()
-                };
-                if matches {
-                    return project_expression_value(result, catalog, binding);
-                }
-            }
-            otherwise
-                .as_deref()
-                .map(|value| project_expression_value(value, catalog, binding))
-                .transpose()
-                .map(|value| value.unwrap_or(Value::Null))
-        }
-        ProjectionExpression::Binary { left, op, right } => {
-            evaluate_scalar_binary(left, *op, right, catalog, binding)
-        }
-        ProjectionExpression::Not(child) => Ok(truth_value(
-            scalar_truth(project_expression_value(child, catalog, binding)?)?.not(),
-        )),
-        ProjectionExpression::IsNull {
-            expression,
-            negated,
-        } => Ok(Value::Bool(
-            (project_expression_value(expression, catalog, binding)? == Value::Null) != *negated,
-        )),
-        ProjectionExpression::Variable { variable } => binding_value(binding, catalog, variable)
-            .ok_or_else(|| {
-                HawDBError::Execution(format!("missing variable '{variable}' during projection"))
-            }),
-        ProjectionExpression::Property { variable, property } => {
-            if !binding_declares_variable(binding, variable) {
-                return Err(HawDBError::Execution(format!(
-                    "missing variable '{variable}' during projection"
-                )));
-            }
-            Ok(binding_property(binding, variable, property)
-                .cloned()
-                .unwrap_or(Value::Null))
-        }
-        ProjectionExpression::Id { variable }
-            if binding.values.get(variable) == Some(&Value::Null)
-                && !binding_has_variable(binding, variable) =>
-        {
-            Ok(Value::Null)
-        }
-        ProjectionExpression::Id { variable } => binding_id(binding, variable).ok_or_else(|| {
-            HawDBError::Execution(format!("missing variable '{variable}' during projection"))
-        }),
-        ProjectionExpression::RelationshipType { variable }
-            if binding.values.get(variable) == Some(&Value::Null)
-                && !binding_has_variable(binding, variable) =>
-        {
-            Ok(Value::Null)
-        }
-        ProjectionExpression::RelationshipType { variable } => {
-            let relationship = binding.relationships.get(variable).ok_or_else(|| {
-                HawDBError::Execution(format!("missing variable '{variable}' during projection"))
-            })?;
-            Ok(catalog
-                .rel_type_name(relationship.rel_type)
-                .map(|rel_type| Value::String(rel_type.to_string()))
-                .unwrap_or(Value::Null))
-        }
-        ProjectionExpression::Literal(value) => Ok(value.clone()),
-        ProjectionExpression::Coalesce(expressions) => {
-            for expression in expressions {
-                let value = project_expression_value(expression, catalog, binding)?;
-                if value != Value::Null {
-                    return Ok(value);
-                }
-            }
-            Ok(Value::Null)
-        }
-        ProjectionExpression::Left { expression, length } => {
-            match project_expression_value(expression, catalog, binding)? {
-                Value::Null => Ok(Value::Null),
-                Value::String(value) => Ok(Value::String(value.chars().take(*length).collect())),
-                value => Err(HawDBError::Execution(format!(
-                    "LEFT expression requires a string value, got {value:?}"
-                ))),
-            }
-        }
-        ProjectionExpression::Lower(expression) => {
-            match project_expression_value(expression, catalog, binding)? {
-                Value::Null => Ok(Value::Null),
-                Value::String(value) => Ok(Value::String(value.to_lowercase())),
-                value => Err(HawDBError::Execution(format!(
-                    "LOWER expression requires a string value, got {value:?}"
-                ))),
-            }
-        }
-        ProjectionExpression::DatePart {
-            part,
-            variable,
-            property,
-        } => {
-            if !binding_declares_variable(binding, variable) {
-                return Err(HawDBError::Execution(format!(
-                    "missing variable '{variable}' during projection"
-                )));
-            }
-            match binding_property(binding, variable, property) {
-                Some(Value::Int(nanos)) => Ok(Value::Int(timestamp_date_part(*part, *nanos))),
-                Some(Value::Null) | None => Ok(Value::Null),
-                Some(value) => Err(HawDBError::Execution(format!(
-                    "date_part requires an integer timestamp value, got {value:?}"
-                ))),
-            }
-        }
-        ProjectionExpression::DefaultIfNullOrEq {
-            variable,
-            property,
-            empty,
-            default,
-        } => {
-            if !binding_declares_variable(binding, variable) {
-                return Err(HawDBError::Execution(format!(
-                    "missing variable '{variable}' during projection"
-                )));
-            }
-            let value = binding_property(binding, variable, property)
-                .map(Value::as_ref)
-                .unwrap_or(ValueRef::Null);
-            if value.is_null() || value == empty {
-                Ok(default.clone())
-            } else {
-                Ok(value.to_owned_value())
-            }
-        }
-        ProjectionExpression::DefaultIfNull {
-            variable,
-            property,
-            default,
-        } => {
-            if !binding_declares_variable(binding, variable) {
-                return Err(HawDBError::Execution(format!(
-                    "missing variable '{variable}' during projection"
-                )));
-            }
-            let value = binding_property(binding, variable, property)
-                .map(Value::as_ref)
-                .unwrap_or(ValueRef::Null);
-            if value.is_null() {
-                Ok(default.clone())
-            } else {
-                Ok(value.to_owned_value())
-            }
-        }
-        ProjectionExpression::CasePropertyNotNullOrEq {
-            variable,
-            property,
-            empty,
-            non_empty,
-            null_or_empty,
-        } => {
-            if !binding_declares_variable(binding, variable) {
-                return Err(HawDBError::Execution(format!(
-                    "missing variable '{variable}' during projection"
-                )));
-            }
-            let value = binding_property(binding, variable, property)
-                .map(Value::as_ref)
-                .unwrap_or(ValueRef::Null);
-            if !value.is_null() && value != empty {
-                Ok(non_empty.clone())
-            } else {
-                Ok(null_or_empty.clone())
-            }
-        }
-        ProjectionExpression::CasePropertyEqualsRank {
-            variable,
-            property,
-            branches,
-            default,
-        } => {
-            if !binding_declares_variable(binding, variable) {
-                return Err(HawDBError::Execution(format!(
-                    "missing variable '{variable}' during projection"
-                )));
-            }
-            let value = binding_property(binding, variable, property)
-                .map(Value::as_ref)
-                .unwrap_or(ValueRef::Null);
-            for (candidate, rank) in branches {
-                if value == candidate {
-                    return Ok(rank.clone());
-                }
-            }
-            Ok(default.clone())
-        }
-        ProjectionExpression::CaseLowerPropertyDefault {
-            variable,
-            property,
-            default,
-        } => {
-            if !binding_declares_variable(binding, variable) {
-                return Err(HawDBError::Execution(format!(
-                    "missing variable '{variable}' during projection"
-                )));
-            }
-            match binding_property(binding, variable, property) {
-                Some(Value::String(value)) => Ok(Value::String(value.to_lowercase())),
-                Some(Value::Null) | None => Ok(default.clone()),
-                Some(value) => Err(HawDBError::Execution(format!(
-                    "CASE lower-default requires a string value, got {value:?}"
-                ))),
-            }
-        }
-        ProjectionExpression::CaseCoalesceDifferenceFloorZero { variable, terms } => {
-            if !binding_declares_variable(binding, variable) {
-                return Err(HawDBError::Execution(format!(
-                    "missing variable '{variable}' during projection"
-                )));
-            }
-            Ok(Value::Int(
-                coalesce_difference(binding, variable, terms)?.max(0),
-            ))
-        }
-        ProjectionExpression::CaseEntitySearchRank(expression) => {
-            if !binding_has_variable(binding, &expression.variable) {
-                return Err(HawDBError::Execution(format!(
-                    "missing variable '{}' during projection",
-                    expression.variable
-                )));
-            }
-            let name_matches = match binding_property(
-                binding,
-                &expression.variable,
-                &expression.name_property,
-            ) {
-                Some(Value::String(name)) => {
-                    let lowered = name.to_lowercase();
-                    matches!(&expression.raw_query, Value::String(query) if lowered == *query)
-                        || matches!(&expression.normalized_query, Value::String(query) if lowered == *query)
-                }
-                None | Some(Value::Null) => false,
-                Some(value) => {
-                    return Err(HawDBError::Execution(format!(
-                        "LOWER expression requires a string value, got {value:?}"
-                    )))
-                }
-            };
-            if name_matches {
-                return Ok(expression.exact_rank.clone());
-            }
-            let alias_matches =
-                match binding_property(binding, &expression.variable, &expression.aliases_property)
-                {
-                    Some(Value::List(values)) => {
-                        values.iter().any(|alias| alias == &expression.raw_input)
-                    }
-                    _ => false,
-                };
-            if alias_matches {
-                Ok(expression.alias_rank.clone())
-            } else {
-                Ok(expression.fallback_rank.clone())
-            }
-        }
-        ProjectionExpression::CaseColumnSearchRank(expression) => {
-            let column = binding.values.get(&expression.column).ok_or_else(|| {
-                HawDBError::Execution(format!(
-                    "missing column '{}' during projection",
-                    expression.column
-                ))
-            })?;
-            let matches = |query: &Value| {
-                predicate_comparison_truth(Some(column), query, |left, right| left == right)
-                    .is_true()
-            };
-            if matches(&expression.raw_query) || matches(&expression.normalized_query) {
-                return Ok(expression.exact_rank.clone());
-            }
-            let Value::String(value) = column else {
-                return Ok(expression.fallback_rank.clone());
-            };
-            if matches!(&expression.raw_query, Value::String(query) if value.contains(query))
-                || matches!(&expression.normalized_query, Value::String(query) if value.contains(query))
-            {
-                Ok(expression.contains_rank.clone())
-            } else {
-                Ok(expression.fallback_rank.clone())
-            }
-        }
-        ProjectionExpression::ColumnDefaultIfNullOrEq {
-            column,
-            property,
-            empty,
-            default,
-        } => {
-            let value = binding.values.get(column).ok_or_else(|| {
-                HawDBError::Execution(format!("missing column '{column}' during projection"))
-            })?;
-            let value = match value {
-                Value::Map(values) => values
-                    .get(property)
-                    .map(Value::as_ref)
-                    .unwrap_or(ValueRef::Null),
-                Value::Null => ValueRef::Null,
-                value => {
-                    return Err(HawDBError::Execution(format!(
-                        "column default expression requires a map value, got {value:?}"
-                    )));
-                }
-            };
-            if value.is_null() || value == empty {
-                Ok(default.clone())
-            } else {
-                Ok(value.to_owned_value())
-            }
-        }
-        ProjectionExpression::ColumnValueDefaultIfNull { column, default } => {
-            let value = binding.values.get(column).ok_or_else(|| {
-                HawDBError::Execution(format!("missing column '{column}' during projection"))
-            })?;
-            if value == &Value::Null {
-                Ok(default.clone())
-            } else {
-                Ok(value.clone())
-            }
-        }
-        ProjectionExpression::ColumnValueCasePropertyNotNullOrEq {
-            column,
-            empty,
-            non_empty,
-            null_or_empty,
-        } => {
-            let value = binding.values.get(column).ok_or_else(|| {
-                HawDBError::Execution(format!("missing column '{column}' during projection"))
-            })?;
-            if value == &Value::Null || value == empty {
-                Ok(null_or_empty.clone())
-            } else {
-                Ok(non_empty.clone())
-            }
-        }
-        ProjectionExpression::Column(name) => binding.values.get(name).cloned().ok_or_else(|| {
-            HawDBError::Execution(format!("missing column '{name}' during projection"))
-        }),
-        ProjectionExpression::ColumnProperty { column, property } => {
-            let value = binding.values.get(column).ok_or_else(|| {
-                HawDBError::Execution(format!("missing column '{column}' during projection"))
-            })?;
-            match value {
-                Value::Map(values) => Ok(values.get(property).cloned().unwrap_or(Value::Null)),
-                Value::Null => Ok(Value::Null),
-                value => Err(HawDBError::Execution(format!(
-                    "column property projection requires a map value, got {value:?}"
-                ))),
-            }
-        }
-    }
+    evaluate_projection_borrowed(expression, catalog, binding, None).map(ProjectedValue::into_owned)
 }
 
 pub(super) fn project_expression_value(
@@ -588,9 +223,9 @@ pub fn binding_identity_key(binding: &Binding, variable: &str) -> Option<(u8, u6
         })
 }
 
-fn scalar_truth(value: Value) -> Result<PredicateTruth> {
+fn scalar_truth(value: &Value) -> Result<PredicateTruth> {
     match value {
-        Value::Bool(value) => Ok(PredicateTruth::from_bool(value)),
+        Value::Bool(value) => Ok(PredicateTruth::from_bool(*value)),
         Value::Null => Ok(PredicateTruth::Unknown),
         value => Err(HawDBError::Execution(format!(
             "CASE condition requires a boolean value, got {value:?}"
@@ -606,78 +241,11 @@ fn truth_value(truth: PredicateTruth) -> Value {
     }
 }
 
-fn evaluate_scalar_binary(
-    left: &ProjectionExpression,
-    op: ScalarBinaryOp,
-    right: &ProjectionExpression,
-    catalog: &Catalog,
-    binding: &Binding,
-) -> Result<Value> {
-    let left = project_expression_value(left, catalog, binding)?;
-    if matches!(op, ScalarBinaryOp::And | ScalarBinaryOp::Or) {
-        let left = scalar_truth(left)?;
-        if (op == ScalarBinaryOp::And && left == PredicateTruth::False)
-            || (op == ScalarBinaryOp::Or && left == PredicateTruth::True)
-        {
-            return Ok(truth_value(left));
-        }
-        let right = scalar_truth(project_expression_value(right, catalog, binding)?)?;
-        return Ok(truth_value(if op == ScalarBinaryOp::And {
-            left.and(right)
-        } else {
-            left.or(right)
-        }));
-    }
-    let right = project_expression_value(right, catalog, binding)?;
-    if matches!(
-        op,
-        ScalarBinaryOp::Add
-            | ScalarBinaryOp::Subtract
-            | ScalarBinaryOp::Multiply
-            | ScalarBinaryOp::Divide
-            | ScalarBinaryOp::Remainder
-    ) {
-        return evaluate_arithmetic(left, op, right);
-    }
-    if op == ScalarBinaryOp::ListContains {
-        return Ok(match left {
-            Value::Null => Value::Null,
-            Value::List(values) => Value::Bool(values.contains(&right)),
-            _ => Value::Bool(false),
-        });
-    }
-    Ok(truth_value(predicate_comparison_truth(
-        Some(&left),
-        &right,
-        |left, right| match op {
-            ScalarBinaryOp::Eq => left == right,
-            ScalarBinaryOp::NotEq => left != right,
-            ScalarBinaryOp::Lt => compare_property_values(left, ComparisonOp::Lt, right),
-            ScalarBinaryOp::Lte => compare_property_values(left, ComparisonOp::Lte, right),
-            ScalarBinaryOp::Gt => compare_property_values(left, ComparisonOp::Gt, right),
-            ScalarBinaryOp::Gte => compare_property_values(left, ComparisonOp::Gte, right),
-            ScalarBinaryOp::Contains => {
-                matches!((left, right), (Value::String(left), Value::String(right)) if left.contains(right))
-            }
-            ScalarBinaryOp::ListContains
-            | ScalarBinaryOp::And
-            | ScalarBinaryOp::Or
-            | ScalarBinaryOp::Add
-            | ScalarBinaryOp::Subtract
-            | ScalarBinaryOp::Multiply
-            | ScalarBinaryOp::Divide
-            | ScalarBinaryOp::Remainder => {
-                unreachable!("handled before comparison")
-            }
-        },
-    )))
-}
-
-fn evaluate_arithmetic(left: Value, op: ScalarBinaryOp, right: Value) -> Result<Value> {
+fn evaluate_arithmetic(left: &Value, op: ScalarBinaryOp, right: &Value) -> Result<Value> {
     if matches!(left, Value::Null) || matches!(right, Value::Null) {
         return Ok(Value::Null);
     }
-    if let (Value::Int(left), Value::Int(right)) = (&left, &right) {
+    if let (Value::Int(left), Value::Int(right)) = (left, right) {
         if matches!(op, ScalarBinaryOp::Divide | ScalarBinaryOp::Remainder) && *right == 0 {
             return Err(HawDBError::Execution("division by zero".to_string()));
         }
@@ -693,9 +261,9 @@ fn evaluate_arithmetic(left: Value, op: ScalarBinaryOp, right: Value) -> Result<
             .map(Value::Int)
             .ok_or_else(|| HawDBError::Execution("integer arithmetic overflow".to_string()));
     }
-    let numeric = |value| match value {
-        Value::Int(value) => Ok(value as f64),
-        Value::Float(value) => Ok(value),
+    let numeric = |value: &Value| match value {
+        Value::Int(value) => Ok(*value as f64),
+        Value::Float(value) => Ok(*value),
         _ => Err(HawDBError::Execution(
             "arithmetic requires numeric operands".to_string(),
         )),
@@ -1024,7 +592,7 @@ mod arithmetic_tests {
             ),
             (ScalarBinaryOp::Add, Value::Null, Value::Int(7), Value::Null),
         ] {
-            assert_eq!(evaluate_arithmetic(left, op, right).unwrap(), expected);
+            assert_eq!(evaluate_arithmetic(&left, op, &right).unwrap(), expected);
         }
     }
 

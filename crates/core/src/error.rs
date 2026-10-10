@@ -88,6 +88,14 @@ pub enum HawDBError {
     StorageIntegrity(String),
     Execution(String),
     ReadBudgetExceeded(ReadBudgetError),
+    GraphExpansionCandidateLimitExceeded {
+        requested: usize,
+        limit: usize,
+    },
+    GraphExpansionPayloadLimitExceeded {
+        requested: usize,
+        limit: usize,
+    },
     TransactionConflict {
         read_epoch: u64,
         committed_epoch: u64,
@@ -122,6 +130,14 @@ impl Display for HawDBError {
             }
             HawDBError::Execution(message) => write!(f, "execution error: {message}"),
             HawDBError::ReadBudgetExceeded(error) => write!(f, "execution error: {error}"),
+            HawDBError::GraphExpansionCandidateLimitExceeded { requested, limit } => write!(
+                f,
+                "graph expansion candidate_limit exceeded: requested {requested} rows, limit {limit} rows; configure ExecutionMemoryConfig.graph_expansion_budget.candidate_limit"
+            ),
+            HawDBError::GraphExpansionPayloadLimitExceeded { requested, limit } => write!(
+                f,
+                "graph expansion payload_byte_limit exceeded: requested {requested} bytes, limit {limit} bytes; configure ExecutionMemoryConfig.graph_expansion_budget.payload_byte_limit"
+            ),
             HawDBError::TransactionConflict {
                 read_epoch,
                 committed_epoch,

@@ -57,6 +57,8 @@ pub enum PhysicalPlanKind {
     ProjectGraph,
     GraphAlgorithm,
     VectorSeedScan,
+    TextSeedScan,
+    GraphSeedScan,
     CreateNode,
     UnwindMutationExec,
     MergeNode,
@@ -107,6 +109,7 @@ pub enum PhysicalPlanKind {
     LimitExec,
     ScoringRerankExec,
     ScoringProgramExec,
+    HostScoringExec,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -159,6 +162,8 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::ProjectGraph,
             PhysicalPlanKind::GraphAlgorithm,
             PhysicalPlanKind::VectorSeedScan,
+            PhysicalPlanKind::TextSeedScan,
+            PhysicalPlanKind::GraphSeedScan,
             PhysicalPlanKind::CreateNode,
             PhysicalPlanKind::UnwindMutationExec,
             PhysicalPlanKind::MergeNode,
@@ -209,6 +214,7 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::LimitExec,
             PhysicalPlanKind::ScoringRerankExec,
             PhysicalPlanKind::ScoringProgramExec,
+            PhysicalPlanKind::HostScoringExec,
         ];
         ALL
     }
@@ -239,6 +245,8 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::ProjectGraph => "ProjectGraph",
             PhysicalPlanKind::GraphAlgorithm => "GraphAlgorithm",
             PhysicalPlanKind::VectorSeedScan => "VectorSeedScan",
+            PhysicalPlanKind::TextSeedScan => "TextSeedScan",
+            PhysicalPlanKind::GraphSeedScan => "GraphSeedScan",
             PhysicalPlanKind::CreateNode => "CreateNode",
             PhysicalPlanKind::UnwindMutationExec => "UnwindMutationExec",
             PhysicalPlanKind::MergeNode => "MergeNode",
@@ -297,6 +305,7 @@ impl PhysicalPlanKind {
             PhysicalPlanKind::LimitExec => "LimitExec",
             PhysicalPlanKind::ScoringRerankExec => "ScoringRerankExec",
             PhysicalPlanKind::ScoringProgramExec => "ScoringProgramExec",
+            PhysicalPlanKind::HostScoringExec => "HostScoringExec",
         }
     }
 
@@ -367,10 +376,13 @@ impl PhysicalPlanKind {
             | PhysicalPlanKind::TopNExec
             | PhysicalPlanKind::LimitExec
             | PhysicalPlanKind::ScoringRerankExec
-            | PhysicalPlanKind::ScoringProgramExec => PhysicalPlanClass::Relational,
+            | PhysicalPlanKind::ScoringProgramExec
+            | PhysicalPlanKind::HostScoringExec => PhysicalPlanClass::Relational,
             PhysicalPlanKind::ProjectGraph
             | PhysicalPlanKind::GraphAlgorithm
             | PhysicalPlanKind::VectorSeedScan
+            | PhysicalPlanKind::TextSeedScan
+            | PhysicalPlanKind::GraphSeedScan
             | PhysicalPlanKind::ThreadRepairStatsExec => PhysicalPlanClass::Procedure,
         }
     }

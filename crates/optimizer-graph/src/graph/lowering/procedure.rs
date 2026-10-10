@@ -47,6 +47,39 @@ pub(super) fn lower(
             return_node_identity: *return_node_identity,
             node_visibility_predicate: node_visibility_predicate.clone(),
         }),
+        LogicalPlan::GraphSeed {
+            query_parameter,
+            label,
+            variable,
+            score_column,
+            top_k,
+            node_visibility_predicate,
+        } => Some(PhysicalPlan::GraphSeedScan {
+            query_parameter: query_parameter.clone(),
+            label: label.clone(),
+            variable: variable.clone(),
+            score_column: score_column.clone(),
+            top_k: *top_k,
+            node_visibility_predicate: node_visibility_predicate.clone(),
+        }),
+        LogicalPlan::TextSeed {
+            query_parameter,
+            top_k,
+            output_external_id,
+        } => {
+            let hints = optimizer_context.resource_hints();
+            Some(PhysicalPlan::TextSeedScan {
+                query_parameter: query_parameter.clone(),
+                top_k: *top_k,
+                output_external_id: *output_external_id,
+                metadata_filters: Default::default(),
+                resource_profile: hawdb_plan_cypher::VectorExecutionResourceProfile {
+                    priority: hints.priority,
+                    max_parallelism: hints.max_parallelism.max(1),
+                    max_working_memory_bytes: hints.max_memory_bytes,
+                },
+            })
+        }
         LogicalPlan::VectorSeed {
             embedding_parameter,
             embedding_dimension,

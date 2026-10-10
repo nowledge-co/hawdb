@@ -17,12 +17,12 @@
 use crate::binding::Binding;
 use hawdb_core::graph_rag::ScoringFeatureSource;
 use hawdb_core::{HawDBError, Result, RuntimeTaskContext, Value};
-use hawdb_plan_cypher::ScoringVectorGraphInput;
-use std::num::NonZeroU64;
+use hawdb_plan_cypher::ScoringSeedGraphInput;
+use std::num::{NonZeroU64, NonZeroUsize};
 
 /// Validated identity and logical per-row cost for a host's batch scorer.
-/// A future query attachment must include name/version in its cache identity
-/// or bypass the cache. This cost is a planning hint, not elapsed time.
+/// Query attachments include name/version in their cache identity. This cost
+/// is a planning hint, not elapsed time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostScorerDescriptor<'a> {
     name: &'a str,
@@ -58,6 +58,15 @@ impl<'a> HostScorerDescriptor<'a> {
     pub fn cpu_units_per_row(self) -> NonZeroU64 {
         self.cpu_units_per_row
     }
+
+    pub(crate) fn ensure_matches(self, actual: Self) -> Result<()> {
+        if self != actual {
+            return Err(HawDBError::Execution(
+                "host scorer identity changed from its planned identity or cost".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Borrowed inputs for the host-scoring escape hatch.
@@ -78,8 +87,8 @@ impl HostScorerBatch<'_> {
 
 /// Batch scorer contract for a concrete formula that templates cannot express.
 ///
-/// This declaration does not register or execute callbacks in queries. When
-/// integrated, the engine owns a score slice exactly matching the feature-row
+/// A host query attachment supplies the callback for the current request. The
+/// engine owns a score slice exactly matching the complete finite feature-row
 /// count, checkpoints cancellation before/after the call, and validates every
 /// finite output before TopN or consumer delivery. Implementations must write
 /// every score in input order, be deterministic for the declared identity,
@@ -90,57 +99,201 @@ pub trait HostScorer {
     fn score_batch(&mut self, request: HostScorerBatch<'_>, scores: &mut [f64]) -> Result<()>;
 }
 
-const VECTOR_SCORE_ANNOTATION: &str = "\0hawdb.scoring.vector_score";
-const VECTOR_HOP_ANNOTATION: &str = "\0hawdb.scoring.hops";
-
-pub(crate) fn annotate_vector_seed(
-    values: &mut std::collections::BTreeMap<String, Value>,
-    score: f64,
-) {
-    values.insert(VECTOR_SCORE_ANNOTATION.into(), Value::Float(score));
-    values.insert(VECTOR_HOP_ANNOTATION.into(), Value::Int(0));
+/// Borrowed, request-owned access to a callback. Cache entries never retain it.
+#[doc(hidden)]
+pub trait HostScorerProvider {
+    fn with_scorer(
+        &self,
+        run: &mut dyn FnMut(&mut dyn HostScorer) -> Result<crate::pipeline::BatchControl>,
+    ) -> Result<crate::pipeline::BatchControl>;
 }
 
-pub(crate) fn advance_vector_hop(binding: &mut Binding, hop: usize, matched: bool) -> Result<()> {
-    let previous = binding.values.get(VECTOR_HOP_ANNOTATION).ok_or_else(|| {
-        HawDBError::Execution("vector scoring lost producer hop provenance".into())
-    })?;
+/// Engine-owned callback scores whose allocation remains charged until drop.
+/// The borrower cannot detach the score buffer from its query reservation.
+#[derive(Debug)]
+pub struct AccountedHostScores {
+    scores: Box<[f64]>,
+    _reservation: crate::QueryMemoryLease,
+}
+
+impl AccountedHostScores {
+    pub fn scores(&self) -> &[f64] {
+        &self.scores
+    }
+}
+
+pub(crate) struct FrozenHostScorerIdentity {
+    name: Box<str>,
+    version: Box<str>,
+    cpu_units_per_row: NonZeroU64,
+    _reservation: crate::QueryMemoryLease,
+}
+
+impl FrozenHostScorerIdentity {
+    pub(crate) fn new(
+        descriptor: HostScorerDescriptor<'_>,
+        account: &crate::QueryMemoryAccount,
+    ) -> Result<Self> {
+        let bytes = descriptor
+            .name()
+            .len()
+            .checked_add(descriptor.version().len())
+            .ok_or_else(|| HawDBError::Execution("host scorer identity size overflow".into()))?;
+        let reservation = account.reserve(bytes)?;
+        Ok(Self {
+            name: descriptor.name().into(),
+            version: descriptor.version().into(),
+            cpu_units_per_row: descriptor.cpu_units_per_row(),
+            _reservation: reservation,
+        })
+    }
+
+    fn ensure_matches(&self, scorer: &dyn HostScorer) -> Result<()> {
+        HostScorerDescriptor {
+            name: &self.name,
+            version: &self.version,
+            cpu_units_per_row: self.cpu_units_per_row,
+        }
+        .ensure_matches(scorer.descriptor())
+    }
+}
+
+/// Executes one complete, explicitly bounded cohort supplied by the engine.
+///
+/// The caller must stage and account the complete candidate/feature cohort;
+/// `max_candidate_rows` is independent of the final result window. Output and
+/// the frozen callback identity are admitted before allocation. No callback
+/// result is available until cancellation, identity and every score validate.
+/// This primitive does not itself attach callbacks to query plans or cache keys.
+pub fn execute_host_scorer(
+    scorer: &mut dyn HostScorer,
+    request: HostScorerBatch<'_>,
+    max_candidate_rows: NonZeroUsize,
+) -> Result<AccountedHostScores> {
+    execute_host_scorer_with_identity(scorer, request, max_candidate_rows, None)
+}
+
+pub(crate) fn execute_host_scorer_with_identity(
+    scorer: &mut dyn HostScorer,
+    request: HostScorerBatch<'_>,
+    max_candidate_rows: NonZeroUsize,
+    frozen: Option<&FrozenHostScorerIdentity>,
+) -> Result<AccountedHostScores> {
+    request.checkpoint()?;
+    let rows = request.features.len();
+    if rows > max_candidate_rows.get() {
+        return Err(HawDBError::Execution(format!(
+            "host scoring cohort has {rows} rows, exceeding candidate limit {max_candidate_rows}"
+        )));
+    }
+    let account = request.scratch_account;
+    if rows == 0 {
+        return Ok(AccountedHostScores {
+            scores: Box::new([]),
+            _reservation: account.reserve(0)?,
+        });
+    }
+    let owned;
+    let identity = match frozen {
+        Some(identity) => identity,
+        None => {
+            owned = FrozenHostScorerIdentity::new(scorer.descriptor(), account)?;
+            &owned
+        }
+    };
+    identity.ensure_matches(scorer)?;
+    let output_bytes = rows
+        .checked_mul(std::mem::size_of::<f64>())
+        .ok_or_else(|| HawDBError::Execution("host scorer output size overflow".into()))?;
+    let reservation = account.reserve(output_bytes)?;
+    // NaN distinguishes an unwritten slot from every accepted finite score,
+    // including legitimate zero and negative values.
+    let mut scores = vec![f64::NAN; rows].into_boxed_slice();
+    let task_context = request.task_context;
+    request.checkpoint()?;
+    scorer.score_batch(request, &mut scores)?;
+    crate::pipeline::runtime_checkpoint(task_context)?;
+    identity.ensure_matches(scorer)?;
+    for (index, score) in scores.iter().enumerate() {
+        crate::pipeline::runtime_checkpoint(task_context)?;
+        if !score.is_finite() {
+            return Err(HawDBError::Execution(format!(
+                "host scorer did not produce a finite score for candidate {index}"
+            )));
+        }
+    }
+    Ok(AccountedHostScores {
+        scores,
+        _reservation: reservation,
+    })
+}
+
+#[cfg(test)]
+mod host_tests;
+
+const SEED_SCORE_ANNOTATION: &str = "\0hawdb.scoring.seed_score";
+const SEED_HOP_ANNOTATION: &str = "\0hawdb.scoring.hops";
+
+pub(crate) fn annotate_seed(values: &mut std::collections::BTreeMap<String, Value>, score: f64) {
+    values.insert(SEED_SCORE_ANNOTATION.into(), Value::Float(score));
+    values.insert(SEED_HOP_ANNOTATION.into(), Value::Int(0));
+}
+
+fn next_seed_hop(binding: &Binding, hop: usize, matched: bool) -> Result<Value> {
+    let previous = binding
+        .values
+        .get(SEED_HOP_ANNOTATION)
+        .ok_or_else(|| HawDBError::Execution("seed scoring lost producer hop provenance".into()))?;
     let next = if !matched || previous == &Value::Null {
         Value::Null
     } else {
         let Value::Int(previous) = previous else {
-            return Err(HawDBError::Execution(
-                "invalid vector hop provenance".into(),
-            ));
+            return Err(HawDBError::Execution("invalid seed hop provenance".into()));
         };
         let hop = i64::try_from(hop).map_err(|_| {
-            HawDBError::Execution("vector hop distance exceeds supported range".into())
+            HawDBError::Execution("seed hop distance exceeds supported range".into())
         })?;
         Value::Int(
             previous
                 .checked_add(hop)
-                .ok_or_else(|| HawDBError::Execution("vector hop distance overflow".into()))?,
+                .ok_or_else(|| HawDBError::Execution("seed hop distance overflow".into()))?,
         )
     };
+    Ok(next)
+}
+
+pub(crate) fn seed_hop_payload_reduction(
+    binding: &Binding,
+    hop: usize,
+    matched: bool,
+) -> Result<usize> {
+    let next = next_seed_hop(binding, hop, matched)?;
+    let previous = binding
+        .values
+        .get(SEED_HOP_ANNOTATION)
+        .expect("provenance key was checked");
+    Ok(crate::binding::value_payload_bytes(previous)
+        .saturating_sub(crate::binding::value_payload_bytes(&next)))
+}
+
+pub(crate) fn advance_seed_hop(binding: &mut Binding, hop: usize, matched: bool) -> Result<()> {
+    let next = next_seed_hop(binding, hop, matched)?;
     *binding
         .values
-        .get_mut(VECTOR_HOP_ANNOTATION)
+        .get_mut(SEED_HOP_ANNOTATION)
         .expect("provenance key was checked") = next;
     Ok(())
 }
 
-pub(crate) fn preserve_vector_annotations(
-    values: &mut std::collections::BTreeMap<String, Value>,
+pub(crate) fn borrowed_seed_annotations(
     binding: &Binding,
-) {
-    for name in [VECTOR_SCORE_ANNOTATION, VECTOR_HOP_ANNOTATION] {
-        if let Some(value) = binding.values.get(name) {
-            values.insert(name.into(), value.clone());
-        }
-    }
+) -> impl Iterator<Item = (&'static str, &Value)> {
+    [SEED_SCORE_ANNOTATION, SEED_HOP_ANNOTATION]
+        .into_iter()
+        .filter_map(|name| binding.values.get(name).map(|value| (name, value)))
 }
 
-pub(crate) fn strip_vector_annotations(binding: &mut Binding) {
+pub(crate) fn strip_seed_annotations(binding: &mut Binding) {
     binding
         .values
         .retain(|name, _| !name.starts_with(hawdb_plan_cypher::SCORING_PROVENANCE_PREFIX));
@@ -149,13 +302,13 @@ pub(crate) fn strip_vector_annotations(binding: &mut Binding) {
 /// Reads scoring features from one row.
 ///
 /// The legacy source reads the declared score column and returned value aliases.
-/// The opt-in vector source reads engine-owned original similarity/observed hop
+/// The opt-in retriever source reads engine-owned original score/observed hop
 /// annotations and properties of its canonical pinned candidate node. Graph-seed
-/// relevance remains a distinct absent signal in both paths.
+/// relevance is supplied only by the declared canonical graph-seed producer.
 pub struct BindingScoreFeatures<'a> {
     binding: &'a Binding,
     score_column: &'a str,
-    vector_graph_input: Option<&'a ScoringVectorGraphInput>,
+    seed_graph_input: Option<&'a ScoringSeedGraphInput>,
 }
 
 impl<'a> BindingScoreFeatures<'a> {
@@ -163,24 +316,24 @@ impl<'a> BindingScoreFeatures<'a> {
         Self {
             binding,
             score_column,
-            vector_graph_input: None,
+            seed_graph_input: None,
         }
     }
 
-    pub(crate) fn with_vector_graph_input(
+    pub(crate) fn with_seed_graph_input(
         binding: &'a Binding,
         score_column: &'a str,
-        source: Option<&'a ScoringVectorGraphInput>,
+        source: Option<&'a ScoringSeedGraphInput>,
     ) -> Self {
         Self {
             binding,
             score_column,
-            vector_graph_input: source,
+            seed_graph_input: source,
         }
     }
 
     fn property(&self, name: &str) -> Option<&Value> {
-        match self.vector_graph_input {
+        match self.seed_graph_input {
             Some(source) => self
                 .binding
                 .nodes
@@ -201,26 +354,39 @@ impl<'a> BindingScoreFeatures<'a> {
 }
 
 impl ScoringFeatureSource for BindingScoreFeatures<'_> {
+    fn returned_value(&self, column: &str) -> Option<&Value> {
+        if column.contains('\0') {
+            return None;
+        }
+        self.binding.values.get(column)
+    }
+
     fn search_score(&self) -> Option<f64> {
-        self.numeric(
-            self.binding
-                .values
-                .get(if self.vector_graph_input.is_some() {
-                    VECTOR_SCORE_ANNOTATION
-                } else {
-                    self.score_column
-                }),
-        )
+        if self
+            .seed_graph_input
+            .is_some_and(|source| source.kind() == hawdb_plan_cypher::ScoringSeedKind::Graph)
+        {
+            return None;
+        }
+        self.numeric(self.binding.values.get(if self.seed_graph_input.is_some() {
+            SEED_SCORE_ANNOTATION
+        } else {
+            self.score_column
+        }))
     }
 
     fn graph_seed_score(&self) -> Option<f64> {
-        None
+        let source = self.seed_graph_input?;
+        if source.kind() != hawdb_plan_cypher::ScoringSeedKind::Graph {
+            return None;
+        }
+        self.numeric(self.binding.values.get(SEED_SCORE_ANNOTATION))
     }
 
     fn hop_distance(&self) -> Option<usize> {
-        let source = self.vector_graph_input?;
+        let source = self.seed_graph_input?;
         self.binding.nodes.get(source.candidate_variable())?;
-        match self.binding.values.get(VECTOR_HOP_ANNOTATION)? {
+        match self.binding.values.get(SEED_HOP_ANNOTATION)? {
             Value::Int(hops) => usize::try_from(*hops).ok(),
             _ => None,
         }

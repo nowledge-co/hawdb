@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::*;
-use crate::binding::{node_memory_bytes, relationship_memory_bytes, value_memory_bytes};
+use crate::binding::value_memory_bytes;
 use hawdb_analytics::{AnalyticsEdgeSource, StreamingGraph};
 use hawdb_storage::{adjacency::AdjacencyDirection, NodeId};
 use std::cell::Cell;
@@ -45,40 +45,52 @@ impl AnalyticsEdgeSource for EdgeSource<'_> {
         runtime_checkpoint(self.context.task_context)?;
         let mut ordinal = 0usize;
         let mut scan = |direction, rel_type| {
-            let control = self.context.store.visit_adjacent_relationships_owned(
-                node,
-                Some(rel_type),
-                direction,
-                &mut |relationship| {
-                    if ordinal.is_multiple_of(1024) {
-                        runtime_checkpoint(self.context.task_context)?;
-                    }
-                    ordinal = ordinal.saturating_add(1);
-                    let bytes = relationship_memory_bytes(&relationship);
-                    if bytes > self.record_budget {
-                        return Err(HawDBError::Execution(format!(
-                            "GraphAlgorithm streaming adjacency record requires {bytes} bytes, exceeding remaining blocking_operator_bytes {}",
-                            self.record_budget,
-                        )));
-                    }
-                    let _record = self.record_account.reserve(bytes)?;
-                    self.record_peak.set(self.record_peak.get().max(bytes));
-                    if self
-                        .context
-                        .catalog
-                        .rel_type_name(relationship.rel_type)
-                        .and_then(|name| self.relationship_predicates.get(name))
-                        .is_some_and(|predicate| !predicate.matches(&relationship.properties))
-                    {
-                        return Ok(ScanControl::Continue);
-                    }
-                    visitor(match direction {
-                        AdjacencyDirection::Outgoing => relationship.target,
-                        AdjacencyDirection::Incoming => relationship.source,
-                    })?;
-                    Ok(ScanControl::Continue)
-                },
-            )?;
+            let mut admit = |bytes| {
+                if bytes > self.record_budget {
+                    return Err(HawDBError::Execution(format!("GraphAlgorithm streaming adjacency record requires {bytes} bytes, exceeding remaining blocking_operator_bytes {}", self.record_budget)));
+                }
+                self.record_peak.set(self.record_peak.get().max(bytes));
+                crate::store::admit_graph_read(
+                    &self.record_account,
+                    self.context.task_context,
+                    bytes,
+                )
+                .map(Some)
+            };
+            let control = self
+                .context
+                .store
+                .visit_ordered_adjacent_relationships_with_allocation(
+                    node,
+                    Some(rel_type),
+                    direction,
+                    crate::store::AdjacencyReadMemory {
+                        budget_bytes: self.record_budget,
+                        account: Some(&self.record_account),
+                    },
+                    &mut admit,
+                    &mut |input| {
+                        let (relationship, _allocation) = input.into_parts();
+                        if ordinal.is_multiple_of(1024) {
+                            runtime_checkpoint(self.context.task_context)?;
+                        }
+                        ordinal = ordinal.saturating_add(1);
+                        if self
+                            .context
+                            .catalog
+                            .rel_type_name(relationship.rel_type)
+                            .and_then(|name| self.relationship_predicates.get(name))
+                            .is_some_and(|predicate| !predicate.matches(&relationship.properties))
+                        {
+                            return Ok(ScanControl::Continue);
+                        }
+                        visitor(match direction {
+                            AdjacencyDirection::Outgoing => relationship.target,
+                            AdjacencyDirection::Incoming => relationship.source,
+                        })?;
+                        Ok(ScanControl::Continue)
+                    },
+                )?;
             if control == ScanControl::Stop {
                 return Err(HawDBError::Execution(
                     "streaming analytics adjacency scan is incomplete".into(),
@@ -121,13 +133,14 @@ impl GraphAlgorithmSpec<'_> {
             .as_ref()
             .map(property_filter_from_predicate)
             .transpose()?;
+        let source_account = context.memory_ledger.account(
+            QueryMemoryClass::BlockingState,
+            "GraphAlgorithm",
+            context.memory.blocking_operator_bytes,
+        );
         let mut tracker = OperatorMemoryTracker::with_account(
             context.memory.blocking_operator_bytes,
-            context.memory_ledger.account(
-                QueryMemoryClass::BlockingState,
-                "GraphAlgorithm",
-                context.memory.blocking_operator_bytes,
-            ),
+            source_account.clone(),
         );
         let mut node_count = 0;
         let result = (|| {
@@ -179,29 +192,35 @@ impl GraphAlgorithmSpec<'_> {
                 {
                     return Ok(ScanControl::Continue);
                 }
-                let transient = node_memory_bytes(&node);
-                charge_graph_algorithm_memory(
-                    "streaming",
-                    "node scan",
-                    &mut tracker,
-                    per_node.saturating_add(transient),
-                )?;
+                charge_graph_algorithm_memory("streaming", "node scan", &mut tracker, per_node)?;
                 nodes.push(node.id);
-                tracker.release(transient);
                 Ok(ScanControl::Continue)
             };
+            let mut admit = |bytes| {
+                crate::store::admit_graph_read(&source_account, context.task_context, bytes)
+                    .map(Some)
+            };
             let control = if visibility.is_none() {
-                context
-                    .store
-                    .visit_projected_nodes_owned(None, &BTreeSet::new(), &mut |node| {
+                context.store.visit_projected_nodes_with_allocation(
+                    None,
+                    &BTreeSet::new(),
+                    &mut admit,
+                    &mut |input| {
+                        let (node, _allocation) = input.into_parts();
                         consume(NodeRecord {
                             id: node.id,
                             labels: node.labels,
                             properties: node.properties,
                         })
-                    })?
+                    },
+                )?
             } else {
-                context.store.visit_nodes_owned(None, &mut consume)?
+                context
+                    .store
+                    .visit_nodes_with_allocation(None, &mut admit, &mut |input| {
+                        let (node, _allocation) = input.into_parts();
+                        consume(node)
+                    })?
             };
             if control == ScanControl::Stop {
                 return Err(HawDBError::Execution(
