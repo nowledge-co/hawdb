@@ -2221,3 +2221,28 @@ an occupied physical I/O wave, invalid retirement ownership, debt preservation
 and both manual facades under critical background pressure. Manual return still
 proves a complete checkpoint: independent read-only reopen needs no WAL replay,
 and snapshots captured before the call keep their original values.
+
+### Foreground admission and retirement pressure waits
+
+A foreground caller can hold the only CPU admission while its mutation waits
+for deferred background retirement. Retirement cannot acquire that CPU until
+the caller completes. The owner now records a completed retirement-denial
+epoch after restoring the retained retirement object and releasing execution.
+A pressure waiter may continue after observing one such denial, allowing the
+caller to finish and return its admission. Hard mutation, WAL and delta limits
+still apply; the retained candidate, original memory and reclamation debt are
+preserved until cleanup can acquire its own execution and I/O admission.
+
+This exception applies while retirement is parked. If the worker has already
+taken the object for another admission decision or active cleanup, the caller
+continues waiting even if a previous denial woke it. Publication and active
+retirement barriers retain their original behavior.
+
+Two byte-identical before/after fixtures reproduce the original dependency
+through a governed contextual mutation and through the public
+`begin_admitted_transaction` API. A third fixture forces readmission between a
+denial wakeup and the caller's reevaluation, verifying no new commit occurs
+while cleanup owns CPU/task/I/O. All fixtures preserve the one-CPU limit,
+200 MiB candidate budget, 16 KiB out-of-core delta limit, 512-byte values,
+pinned old readers and independent reopen. Both synchronous manual checkpoint
+APIs continue to complete below thresholds and during background denial.

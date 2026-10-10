@@ -165,6 +165,7 @@ pub(super) struct State {
     last_identity: Option<CheckpointSourceIdentity>,
     sync_group_active: bool,
     attempts_started: u64,
+    retirement_deferrals: u64,
     debt: Option<CheckpointDebtSnapshot>,
     selected: Option<Selected>,
     retired: Option<Retired>,
@@ -179,6 +180,8 @@ pub(super) struct State {
     retirement_probe: Option<Arc<OwnerPauseProbe>>,
     #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
     frontend_wait_probe: Option<std::sync::mpsc::Sender<Phase>>,
+    #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+    frontend_resume_probe: Option<Arc<OwnerPauseProbe>>,
     #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
     preparation_error_probe: Option<std::sync::mpsc::Sender<String>>,
     #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
@@ -209,6 +212,7 @@ impl Control {
         self.ensure_healthy()?;
         let mut state = self.lock()?;
         let observed_attempts = state.attempts_started;
+        let observed_retirement_deferrals = state.retirement_deferrals;
         let mut notified_owner = false;
         while state.phase == Phase::Finalizing
             || (state.phase == Phase::Draining && !state.sync_group_active)
@@ -217,6 +221,8 @@ impl Control {
                 && needs_headroom(&state))
             || (state.phase == Phase::Retiring
                 && !state.sync_group_active
+                && (state.retired.is_none()
+                    || state.retirement_deferrals == observed_retirement_deferrals)
                 && pressure_pending(&state)
                 && needs_headroom(&state))
             || (state.phase == Phase::Idle
@@ -240,6 +246,12 @@ impl Control {
                 let _ = probe.send(state.phase);
             }
             state = self.changed.wait(state).map_err(|_| Self::poisoned())?;
+            #[cfg(all(test, feature = "background-maintenance", not(target_arch = "wasm32")))]
+            if let Some(probe) = state.frontend_resume_probe.take() {
+                drop(state);
+                probe.observe();
+                state = self.lock()?;
+            }
         }
         self.ensure_healthy()?;
         Ok(state)
@@ -583,6 +595,12 @@ fn run(
                                 .unwrap_or_else(|error| error.into_inner());
                             state.retired = Some(retired);
                             state.task = None;
+                            // A foreground caller may itself hold the CPU or
+                            // I/O admission needed by retirement. End that
+                            // caller's pressure wait after one denied attempt
+                            // so it can finish and release its resources.
+                            // Active cleanup never advances this epoch.
+                            state.retirement_deferrals = state.retirement_deferrals.wrapping_add(1);
                             state.report.deferred_attempts += 1;
                             control.changed.notify_all();
                             if state.stopping || state.suspensions != 0 {
