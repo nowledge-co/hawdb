@@ -2354,6 +2354,15 @@ pause without execution slots and complete charge refund. Actual negative
 controls removing each admission fail their runtime assertions; these do not
 establish complete relational reconstruction or replay/COW allocation coverage.
 
+The property-projection writer additionally admits subject-tree nodes, grouped
+array capacities and decoded composite-name bytes before allocating them. Its
+plan retains the inventory until those buffers are destroyed, including failed
+preparation and paused execution. Sorting equivalent definitions in place avoids
+stable-sort scratch; completeness and definition-key deduplication are preserved.
+The genuine published-writer baseline and four removed-admission controls fail
+at runtime while the fixed regressions pass. Whole-sort comparisons, UTF-8
+validation and broader preparation resumption remain outside this bound.
+
 ### Publication lock scope and duplicated descriptors
 
 The initial full storage suite exposed a controlled overflow cancellation case

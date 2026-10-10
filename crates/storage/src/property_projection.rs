@@ -938,6 +938,13 @@ impl EntryKey {
     }
 }
 
+mod definition_plan;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod definition_writer_memory_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod memory_test_support;
+
 pub struct PersistentPropertyProjectionWriter {
     source_admits: bool,
     config: PersistentPropertyProjectionConfig,
@@ -1118,7 +1125,11 @@ impl PersistentPropertyProjectionWriter {
         }
         {
             let unit = work.start_unit()?;
-            definitions.sort_by(|left, right| definition_key(left).cmp(&definition_key(right)));
+            // Equal definitions are deduplicated and completeness is reset
+            // below. Their input order is immaterial; an in-place sort avoids
+            // allocating scratch space for stable sorting.
+            definitions
+                .sort_unstable_by(|left, right| definition_key(left).cmp(&definition_key(right)));
             definitions.dedup_by(|left, right| {
                 left.label_id == right.label_id
                     && left.property == right.property
@@ -1135,26 +1146,10 @@ impl PersistentPropertyProjectionWriter {
         }
         let definition_count = definition_admission.definition_count();
         let definition_bytes = definition_admission.resident_bytes();
-        let mut by_subject: BTreeMap<ProjectionSubject, Vec<PreparedProjectionDefinition>> =
-            BTreeMap::new();
-        for (index, definition) in definitions.iter_mut().enumerate() {
+        let by_subject = definition_plan::prepare(&definitions, &work)?;
+        for definition in &mut definitions {
             let unit = work.start_unit()?;
             definition.complete = true;
-            let value_source =
-                if definition.kind == PersistentPropertyProjectionKind::CompositeEquality {
-                    ProjectionValueSource::Composite(decode_composite_property_identity(
-                        &definition.property,
-                    )?)
-                } else {
-                    ProjectionValueSource::Scalar
-                };
-            by_subject
-                .entry(definition_subject(definition))
-                .or_default()
-                .push(PreparedProjectionDefinition {
-                    definition_index: index,
-                    value_source,
-                });
             unit.finish();
         }
         let mut runs = ProjectionSpillRuns::new(path, generation, self.config, work.clone());
@@ -3340,6 +3335,13 @@ fn kind_from_tag(
 fn decode_composite_property_identity(
     identity: &str,
 ) -> Result<Vec<String>, PersistentPropertyProjectionError> {
+    decode_composite_property_identity_inner(identity, None)
+}
+
+fn decode_composite_property_identity_inner(
+    identity: &str,
+    work: Option<&crate::background::CheckpointDecodeContext>,
+) -> Result<Vec<String>, PersistentPropertyProjectionError> {
     let encoded = identity
         .strip_prefix(COMPOSITE_PROPERTY_IDENTITY_PREFIX)
         .and_then(|suffix| suffix.strip_prefix(':'))
@@ -3348,10 +3350,16 @@ fn decode_composite_property_identity(
                 "composite property projection has an invalid identity prefix".to_string(),
             )
         })?;
-    let properties = encoded
-        .split(':')
-        .map(|property| decode_utf8_hex(property, "composite property identity"))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut properties = Vec::new();
+    for property in encoded.split(':') {
+        let property = decode_utf8_hex_inner(property, "composite property identity", work)?;
+        if let Some(work) = work {
+            work.push(&mut properties, property)
+                .map_err(|error| PersistentPropertyProjectionError::Source(error.to_string()))?;
+        } else {
+            properties.push(property);
+        }
+    }
     if properties.len() < 2 {
         return Err(PersistentPropertyProjectionError::Corrupt(
             "composite property projection identity has fewer than two properties".to_string(),
@@ -3398,28 +3406,81 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 fn decode_hex(value: &str, name: &str) -> Result<Vec<u8>, PersistentPropertyProjectionError> {
+    decode_hex_inner(value, name, None)
+}
+
+fn decode_hex_inner(
+    value: &str,
+    name: &str,
+    work: Option<&crate::background::CheckpointDecodeContext>,
+) -> Result<Vec<u8>, PersistentPropertyProjectionError> {
     if !value.len().is_multiple_of(2) {
         return Err(PersistentPropertyProjectionError::Corrupt(format!(
             "property projection {name} has an invalid hexadecimal length"
         )));
     }
-    (0..value.len())
-        .step_by(2)
-        .map(|offset| {
-            value
+    let capacity = value.len() / 2;
+    let mut bytes = if let Some(work) = work {
+        let token = work.memory.borrow_mut().reserve(capacity, work)?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(capacity).map_err(|error| {
+            work.record_failure(CheckpointWorkError::Allocation {
+                bytes: capacity as u64,
+                reason: error.to_string(),
+            })
+        })?;
+        if bytes.capacity() != capacity {
+            return Err(work
+                .record_failure(CheckpointWorkError::Allocation {
+                    bytes: capacity as u64,
+                    reason: "property projection hex capacity differs from admission".into(),
+                })
+                .into());
+        }
+        token.address(bytes.as_ptr() as usize);
+        bytes
+    } else {
+        Vec::with_capacity(capacity)
+    };
+    // One unit decodes at most 64 KiB. UTF-8 conversion below moves this same
+    // admitted allocation into the final string rather than making a copy.
+    for start in (0..value.len()).step_by(128 * 1024) {
+        let unit = work.map(|work| work.start_unit()).transpose()?;
+        for offset in (start..value.len().min(start.saturating_add(128 * 1024))).step_by(2) {
+            let byte = value
                 .get(offset..offset + 2)
                 .and_then(|pair| u8::from_str_radix(pair, 16).ok())
                 .ok_or_else(|| {
                     PersistentPropertyProjectionError::Corrupt(format!(
                         "property projection {name} has invalid hexadecimal data"
                     ))
-                })
-        })
-        .collect()
+                })?;
+            bytes.push(byte);
+        }
+        if let Some(unit) = unit {
+            unit.finish();
+        }
+    }
+    if let Some(work) = work {
+        work.checkpoint()?;
+    }
+    Ok(bytes)
 }
 
 fn decode_utf8_hex(value: &str, name: &str) -> Result<String, PersistentPropertyProjectionError> {
-    String::from_utf8(decode_hex(value, name)?).map_err(|error| {
+    decode_utf8_hex_inner(value, name, None)
+}
+
+fn decode_utf8_hex_inner(
+    value: &str,
+    name: &str,
+    work: Option<&crate::background::CheckpointDecodeContext>,
+) -> Result<String, PersistentPropertyProjectionError> {
+    let bytes = match work {
+        Some(_) => decode_hex_inner(value, name, work)?,
+        None => decode_hex(value, name)?,
+    };
+    String::from_utf8(bytes).map_err(|error| {
         PersistentPropertyProjectionError::Corrupt(format!(
             "property projection {name} is not UTF-8: {error}"
         ))
