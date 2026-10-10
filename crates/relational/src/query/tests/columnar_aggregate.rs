@@ -148,7 +148,7 @@ fn columnar_aggregation_retains_facade_limits_and_cancellation() {
     let sql = "SELECT COUNT(*) AS rows, SUM(n) AS total FROM aggregate_records";
     let limits = batched_index_join_limits();
     let memory = hawdb_executor::ExecutionMemoryConfig::default();
-    for (limits, memory, message) in [
+    for (limits, memory, message, budget) in [
         (
             RelationalQueryLimits {
                 max_output_rows: 0,
@@ -156,6 +156,7 @@ fn columnar_aggregation_retains_facade_limits_and_cancellation() {
             },
             memory.clone(),
             "max_output_rows",
+            Some((hawdb_core::ReadBudgetResource::Rows, 0)),
         ),
         (
             RelationalQueryLimits {
@@ -164,6 +165,7 @@ fn columnar_aggregation_retains_facade_limits_and_cancellation() {
             },
             memory.clone(),
             "max_output_payload_bytes",
+            Some((hawdb_core::ReadBudgetResource::PayloadBytes, 1)),
         ),
         (
             RelationalQueryLimits {
@@ -172,6 +174,7 @@ fn columnar_aggregation_retains_facade_limits_and_cancellation() {
             },
             memory.clone(),
             "max_intermediate_rows",
+            None,
         ),
         (
             limits,
@@ -180,6 +183,7 @@ fn columnar_aggregation_retains_facade_limits_and_cancellation() {
                 ..memory.clone()
             },
             "batch_payload_bytes",
+            None,
         ),
         (
             limits,
@@ -188,6 +192,7 @@ fn columnar_aggregation_retains_facade_limits_and_cancellation() {
                 ..memory.clone()
             },
             "blocking_operator_bytes",
+            None,
         ),
     ] {
         let error = execute_relational_query_sql_with_runtime(
@@ -201,6 +206,15 @@ fn columnar_aggregation_retains_facade_limits_and_cancellation() {
         )
         .unwrap_err();
         assert!(error.to_string().contains(message), "{error}");
+        if let Some((resource, limit)) = budget {
+            assert!(
+                matches!(&error, HawDBError::ReadBudgetExceeded(cause)
+                    if cause.resource == resource && cause.limit == limit),
+                "columnar aggregate lost its result budget cause: {error}"
+            );
+        } else {
+            assert!(matches!(error, HawDBError::Execution(_)), "{error}");
+        }
     }
     let cancellation = hawdb_core::RuntimeCancellationToken::new();
     let context = hawdb_core::RuntimeTaskContext::without_deadline(cancellation.clone());

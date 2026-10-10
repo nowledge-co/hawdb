@@ -41,6 +41,7 @@ pub struct BranchCreateRequest {
 mod tests {
     use super::*;
     use crate::api::ConcurrentTransactionOptions;
+    use crate::ReadBudgetResource;
     use hawdb_core::Value;
     use hawdb_storage::config::{DurabilityPolicy, WalReplayConfig};
     use hawdb_storage::store::{BranchAdmissionRequest, GraphStore};
@@ -824,19 +825,32 @@ mod tests {
         ];
         let catalog_path = database.branch_catalog_path().unwrap();
         let before = std::fs::read(&catalog_path).unwrap();
-        for options in [
-            super::super::QueryStreamOptions {
-                max_rows: Some(0),
-                max_payload_bytes: None,
-            },
-            super::super::QueryStreamOptions {
-                max_rows: None,
-                max_payload_bytes: Some(1),
-            },
+        for (options, resource, limit) in [
+            (
+                super::super::QueryStreamOptions {
+                    max_rows: Some(0),
+                    max_payload_bytes: None,
+                },
+                ReadBudgetResource::Rows,
+                0,
+            ),
+            (
+                super::super::QueryStreamOptions {
+                    max_rows: None,
+                    max_payload_bytes: Some(1),
+                },
+                ReadBudgetResource::PayloadBytes,
+                1,
+            ),
         ] {
-            assert!(database
+            let error = database
                 .query_sql_with_params_options(sql, &parameters, options)
-                .is_err());
+                .unwrap_err();
+            assert!(
+                matches!(&error, HawDBError::ReadBudgetExceeded(cause)
+                    if cause.resource == resource && cause.limit == limit),
+                "branch creation lost its result budget cause: {error}"
+            );
             assert_eq!(std::fs::read(&catalog_path).unwrap(), before);
         }
         let created = database.query_sql_with_params(sql, &parameters).unwrap();
@@ -845,6 +859,46 @@ mod tests {
         };
         let revision = created.rows[0]["metadata_revision"].clone();
         let drop_sql = "DROP BRANCH ID $1 AT REVISION $2";
+        let before_drop = std::fs::read(&catalog_path).unwrap();
+        for (options, resource, limit) in [
+            (
+                super::super::QueryStreamOptions {
+                    max_rows: Some(0),
+                    max_payload_bytes: None,
+                },
+                ReadBudgetResource::Rows,
+                0,
+            ),
+            (
+                super::super::QueryStreamOptions {
+                    max_rows: None,
+                    max_payload_bytes: Some(1),
+                },
+                ReadBudgetResource::PayloadBytes,
+                1,
+            ),
+        ] {
+            let error = database
+                .query_sql_with_params_options(
+                    drop_sql,
+                    &[Value::Uuid(first), revision.clone()],
+                    options,
+                )
+                .unwrap_err();
+            assert!(
+                matches!(&error, HawDBError::ReadBudgetExceeded(cause)
+                    if cause.resource == resource && cause.limit == limit),
+                "branch deletion lost its result budget cause: {error}"
+            );
+            assert_eq!(std::fs::read(&catalog_path).unwrap(), before_drop);
+            assert_eq!(
+                database
+                    .describe_branch(BranchSelector::Id(first))
+                    .unwrap()
+                    .state,
+                BranchLifecycleState::Ready
+            );
+        }
         assert!(database
             .query_sql_with_params(drop_sql, &[Value::Uuid(first), Value::Int(1)])
             .is_err());
@@ -1322,7 +1376,7 @@ mod tests {
             Some(&Value::String(child.name.clone()))
         );
 
-        assert!(database
+        let error = database
             .query_sql_with_params_options(
                 "SHOW BRANCHES LIMIT $1",
                 &[Value::Int(2)],
@@ -1331,7 +1385,12 @@ mod tests {
                     max_payload_bytes: None,
                 },
             )
-            .is_err());
+            .unwrap_err();
+        assert!(
+            matches!(&error, HawDBError::ReadBudgetExceeded(cause)
+                if cause.resource == ReadBudgetResource::Rows && cause.limit == 1),
+            "branch inspection lost its result budget cause: {error}"
+        );
         let large_page = database
             .query_sql_with_params_options(
                 "SHOW BRANCHES OFFSET 0 LIMIT 1_000",
