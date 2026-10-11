@@ -2111,13 +2111,15 @@ fn configured_commit_lag_defers_statistics_refresh_on_query_path() {
         optimizer_statistics_inline_commit_lag: Some(4),
         ..DatabaseConfig::default()
     });
+    // Establish the schema before warming so implicit label creation cannot
+    // reset the data-lag window through a later read-side schema refresh.
+    db.query("CREATE NODE TABLE Memory").unwrap();
     // Warm the statistics cache through the public path.
     db.explain_query("MATCH (m:Memory) RETURN m.id AS id")
         .unwrap();
 
-    // Five commits leave lag == 4, still inside the tolerated window; each
-    // write's own planning sees a pre-commit epoch, so none recompute.
-    for id in 0..5 {
+    // Four commits leave lag == 4, inside the tolerated window.
+    for id in 0..4 {
         db.query(&format!("CREATE (:Memory {{id: {id}}})")).unwrap();
     }
     let within_boundary = db
@@ -2133,8 +2135,14 @@ fn configured_commit_lag_defers_statistics_refresh_on_query_path() {
         within_boundary.trace.decisions
     );
 
+    assert!(within_boundary
+        .trace
+        .decisions
+        .iter()
+        .any(|decision| decision.contains("commit_lag=4")));
+
     // One more commit pushes lag to 5 > 4: the next fresh plan recomputes.
-    db.query("CREATE (:Memory {id: 5})").unwrap();
+    db.query("CREATE (:Memory {id: 4})").unwrap();
     let boundary = db
         .explain_query("MATCH (m:Memory) RETURN m.title AS title, m.id AS id")
         .unwrap();
@@ -2148,9 +2156,15 @@ fn configured_commit_lag_defers_statistics_refresh_on_query_path() {
         boundary.trace.decisions
     );
 
-    // Two more commits sit below the new refresh point: the next fresh plan
+    assert!(boundary
+        .trace
+        .decisions
+        .iter()
+        .any(|decision| decision.contains("commit_lag=0")));
+
+    // Three more commits sit below the new refresh point: the next fresh plan
     // hits the cached statistics.
-    for id in 6..8 {
+    for id in 5..8 {
         db.query(&format!("CREATE (:Memory {{id: {id}}})")).unwrap();
     }
     let within = db
@@ -2165,6 +2179,12 @@ fn configured_commit_lag_defers_statistics_refresh_on_query_path() {
         "{:?}",
         within.trace.decisions
     );
+
+    assert!(within
+        .trace
+        .decisions
+        .iter()
+        .any(|decision| decision.contains("commit_lag=3")));
 
     // Stale statistics only affect plan choice: results stay correct.
     let output = db.query("MATCH (m:Memory) RETURN m.id AS id").unwrap();
